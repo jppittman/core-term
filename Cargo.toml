@@ -1,0 +1,12 @@
+[package]
+name = "myterm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+libc = "0.2.172"
+x11 = "2.21.0"
+
+[build-dependencies]
+pkg-config = "0.3.32"
