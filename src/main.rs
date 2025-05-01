@@ -3,79 +3,64 @@
 // screen state, resizing, backend abstraction, and basic ANSI parsing.
 // This is NOT a a production-ready terminal emulator.
 
-// Temporarily allow unused imports for constants related to TIOCSPTLCK,
-// which is commented out to work around environment issues.
-#[allow(unused_imports)]
 use libc::{
-    openpty, fork, execvp, ioctl, close, // Removed setsid, tcsetpgrp, TIOCSCTTY
-    winsize, TIOCSWINSZ, TIOCSPTLCK, // Keep TIOCSPTLCK for context, but commented out
+    openpty, fork, execvp, ioctl, close,
+    winsize, TIOCSWINSZ,
     STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO,
     c_int, pid_t, size_t,
     epoll_create1, epoll_ctl, epoll_wait, epoll_event,
     EPOLL_CTL_ADD, EPOLLIN, EPOLL_CLOEXEC,
     EPOLLERR, EPOLLHUP,
-    termios, tcgetattr, tcsetattr, TCSAFLUSH, // Imports for raw mode
-    ICANON, ECHO, ISIG, IXON, ICRNL, OPOST, // Flags for raw mode
+    termios, tcsetattr, TCSAFLUSH,
+    // Added for job control
+    setsid, TIOCSPGRP, TIOCSCTTY,
 };
 use std::ffi::{CString, CStr};
 use std::ptr;
 use std::process;
-use std::io::{self, Read, Write};
-use std::os::unix::io::{FromRawFd, RawFd, AsRawFd}; // Import AsRawFd trait
-use std::mem; // For mem::zeroed
+use std::io::{self, Read};
+use std::os::unix::io::{FromRawFd, RawFd, AsRawFd};
+use std::mem;
 
-use anyhow::{Result, Context};
+use anyhow::{Result, Context, Error as AnyhowError};
 
-// --- Xlib Imports ---
-// To use these, you need to add the 'x11' crate to your Cargo.toml:
-// [dependencies]
-// x11 = "2.18.2" // Use the latest version available
-// You also need the X11 development libraries installed on your system
-// (e.g., libx11-dev on Debian/Ubuntu, xorg-devel on Fedora/CentOS, or libx11 on Arch Linux).
-// Ensure pkg-config can find your X11 installation (check with `pkg-config --libs x11`).
-// If `pkg-config --cflags x11` is empty, you may need to manually specify include/library paths.
-// Try building with:
-// CFLAGS="-I/usr/include/X11" cargo build
-// Or more explicitly with RUSTFLAGS:
-// RUSTFLAGS="-C link-arg=-L/usr/lib -C link-arg=-lX11 -C link-arg=-lXext -C link-arg=-lXft -C link-arg=-lfontconfig -C link-arg=-lfreetype" cargo build
-extern crate x11; // Link the x11 crate
+extern crate x11;
 use x11::xlib;
-// Comment out specific unused imports for now to reduce warnings
-use x11::xlib::{XEvent, XOpenDisplay, XConnectionNumber, XPending, XNextEvent, XCloseDisplay,
-                 XDefaultScreen, XDefaultRootWindow, XCreateSimpleWindow, XMapWindow, XSelectInput,
-                 XBlackPixel, XWhitePixel, XSetForeground, XDefaultGC, XFillRectangle, XFlush, XDestroyWindow,
-                 /* XDrawString, XFontStruct, XLoadFont, XFreeFont, XTextExtents, XSetFont, XGCValues, XCreateGC, XFreeGC, XClearWindow */
-                };
+use x11::xlib::{
+    XEvent, XConnectionNumber, XPending,
+    XKeyEvent,
+};
 
 
 // Define constants
-const BUFSIZ: usize = 4096;
+const BUFSIZ: usize = 496;
 const MAX_EPOLL_EVENTS: c_int = 10;
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
-const DEFAULT_WIDTH_PX: usize = 640; // Example window width
-const DEFAULT_HEIGHT_PX: usize = 480; // Example window height
+const DEFAULT_WIDTH_PX: usize = 640;
+const DEFAULT_HEIGHT_PX: usize = 480;
+const DEFAULT_FONT_NAME: &str = "fixed";
 
 // Struct to hold and restore original terminal attributes
 // This is primarily for the ConsoleBackend and will not be used by XBackend.
+#[allow(dead_code)] // Allow dead code since this struct is not used by the current backend
 struct OriginalTermios(termios);
 
+#[allow(dead_code)] // Allow dead code since this struct is not used by the current backend
 impl Drop for OriginalTermios {
     fn drop(&mut self) {
         // Restore original terminal attributes when this struct goes out of scope
         unsafe {
             if tcsetattr(STDIN_FILENO, TCSAFLUSH, &self.0) < 0 {
-                // We can't return a Result from Drop, so just print an error
                 eprintln!("Error restoring terminal attributes: {}", io::Error::last_os_error());
             }
         }
     }
 }
 
-
 // Simplified Terminal State
 struct Term {
-    _child_pid: pid_t, // PID of the child process (shell) - prefixed with _ as it's unused in MVP
+    _child_pid: pid_t, // PID of the child process (shell)
     pty_parent: std::fs::File, // Parent side of the PTY
 
     // Basic screen buffer (simplified: just characters, no attributes yet)
@@ -87,18 +72,19 @@ struct Term {
     cursor_x: usize,
     cursor_y: usize,
 
-    // ANSI Parsing State (Simplified)
+    // ANSI Parsing State
     parser_state: ParserState,
     escape_buffer: Vec<u8>,
 }
 
-// Simplified ANSI Parser States
+// ANSI Parser States
 #[derive(Debug, PartialEq)]
 enum ParserState {
     Ground,          // Normal character processing
     Escape,          // Received ESC (0x1B)
     Csi,             // Received ESC [ (Control Sequence Introducer)
-    // Add other states for different sequence types if needed (OSC, DCS, etc.)
+    Osc,             // Received ESC ] (Operating System Command)
+    // Add other states for different sequence types if needed (DCS, etc.)
 }
 
 // Enum to represent the direction/scope of erase operations
@@ -120,9 +106,10 @@ enum CsiSequence {
     CursorDown { n: usize },                   // B
     CursorForward { n: usize },                // C
     CursorBackward { n: usize },               // D
+    PrivateModeSet(usize),                     // ?...h
+    PrivateModeReset(usize),                   // ?...l
     Unsupported(u8, Vec<usize>),               // Catch-all for unsupported sequences
 }
-
 
 impl Term {
     // Initialize a new terminal state
@@ -132,7 +119,7 @@ impl Term {
             screen.push(vec![' '; cols]);
         }
         Term {
-            _child_pid: child_pid, // Store pid, but currently unused in MVP logic
+            _child_pid: child_pid,
             pty_parent,
             screen,
             cols,
@@ -145,8 +132,7 @@ impl Term {
     }
 
     // Resize the terminal
-    // This method is currently unused in the ConsoleBackend but is part of the
-    // Term's API for future backend implementations that handle window resizing.
+    #[allow(dead_code)] // Keep for future X backend resize handling
     fn resize(&mut self, new_cols: usize, new_rows: usize) -> Result<()> {
         if new_cols < 1 || new_rows < 1 {
             anyhow::bail!("Terminal size must be at least 1x1");
@@ -164,13 +150,9 @@ impl Term {
         self.screen.resize(self.rows, vec![' '; self.cols]);
         for row_idx in 0..self.rows {
              if row_idx < old_rows {
-                 // Resize existing rows
                  self.screen[row_idx].resize(self.cols, ' ');
-             } else {
-                 // New rows are already initialized with spaces by resize above
              }
         }
-
 
         // Update cursor position to be within new bounds
         self.cursor_x = std::cmp::min(self.cursor_x, self.cols.saturating_sub(1));
@@ -184,8 +166,6 @@ impl Term {
         };
 
         unsafe {
-            // Use as_raw_fd() from the imported trait
-            // Corrected context usage
             if ioctl(self.pty_parent.as_raw_fd(), TIOCSWINSZ, &mut win_size) < 0 {
                 return Err(io::Error::last_os_error()).context("Failed to set window size on PTY parent");
             }
@@ -212,16 +192,16 @@ impl Term {
                         self.cursor_x = 0;
                     }
                     0x08 => { // Backspace (BS)
-                        // Move cursor back, clear character, move cursor back again
                         if self.cursor_x > 0 {
                             self.cursor_x -= 1;
                             self.screen[self.cursor_y][self.cursor_x] = ' ';
-                            // No second cursor move back needed for simple overwrite
                         }
+                    }
+                    0x07 => { // BEL (Bell) - often used to terminate OSC
+                        // Ignore BEL in Ground state
                     }
                     0..=31 | 127 => {
                         // Ignore most C0 and DEL control characters for this MVP
-                        // Note: 0x7F (DEL) could also be handled for deletion
                     }
                     _ => {
                         // Treat as printable character
@@ -231,15 +211,13 @@ impl Term {
                         }
 
                         if self.cursor_y >= self.rows {
-                            // Handle scrolling by creating a new screen vector
+                            // Handle scrolling
                             let mut new_screen = Vec::with_capacity(self.rows);
-                            // Copy all rows except the first one
                             for r in 1..self.rows {
-                                new_screen.push(self.screen[r].clone()); // Clone the row data
+                                new_screen.push(self.screen[r].clone());
                             }
-                            // Add a new, empty row at the bottom
                             new_screen.push(vec![' '; self.cols]);
-                            self.screen = new_screen; // Replace the old screen
+                            self.screen = new_screen;
                             self.cursor_y = self.rows - 1;
                         }
 
@@ -256,29 +234,58 @@ impl Term {
                     b'[' => { // CSI
                         self.parser_state = ParserState::Csi;
                     }
-                    // Add handling for other sequences starting with ESC if needed
+                    b']' => { // OSC
+                         self.parser_state = ParserState::Osc;
+                         self.escape_buffer.clear();
+                    }
                     _ => {
-                        // Unknown escape sequence, return to ground state
                         eprintln!("Warning: Unknown escape sequence: ESC {}", byte as char);
                         self.parser_state = ParserState::Ground;
                     }
                 }
             }
             ParserState::Csi => {
-                // Collect bytes for the CSI sequence
                 self.escape_buffer.push(byte);
 
                 // Check for the final byte of a CSI sequence (usually >= 0x40 and <= 0x7E)
+                // Or check for intermediate bytes (0x20-0x2F) or parameter bytes (0x30-0x3F)
                 if byte >= 0x40 && byte <= 0x7E {
                     // Process the CSI sequence
                     match self.parse_csi_sequence() {
                         Ok(sequence) => self.handle_csi_sequence(sequence),
                         Err(e) => eprintln!("Error parsing CSI sequence: {}", e),
                     }
-                    self.parser_state = ParserState::Ground; // Return to ground state
+                    self.parser_state = ParserState::Ground;
+                    self.escape_buffer.clear();
+                } else if byte < 0x20 || byte > 0x7E {
+                    // Invalid byte in CSI sequence, reset parser
+                    eprintln!("Warning: Invalid byte in CSI sequence: {}", byte);
+                    self.parser_state = ParserState::Ground;
                     self.escape_buffer.clear();
                 }
-                // Handle potential errors or sequences that exceed buffer size
+                // Otherwise, it's an intermediate or parameter byte, continue collecting
+            }
+            ParserState::Osc => {
+                // Collect bytes for the OSC sequence until a terminator (ST or BEL)
+                if byte == 0x07 { // BEL
+                    // Process OSC sequence (e.g., set window title - not implemented yet)
+                    // println!("Received OSC sequence: {}", String::from_utf8_lossy(&self.escape_buffer)); // Optional debug
+                    self.parser_state = ParserState::Ground;
+                    self.escape_buffer.clear();
+                } else if byte == 0x1B { // ESC (might be followed by \)
+                    // Potentially the start of ST (ESC \)
+                    self.escape_buffer.push(byte);
+                } else if byte == b'\\' && self.escape_buffer.last() == Some(&0x1B) {
+                    // Received ST (ESC \)
+                    self.escape_buffer.pop(); // Remove the ESC
+                    // Process OSC sequence (e.g., set window title - not implemented yet)
+                    // println!("Received OSC sequence: {}", String::from_utf8_lossy(&self.escape_buffer)); // Optional debug
+                    self.parser_state = ParserState::Ground;
+                    self.escape_buffer.clear();
+                } else {
+                    // Collect other bytes in the OSC sequence
+                    self.escape_buffer.push(byte);
+                }
             }
         }
     }
@@ -291,18 +298,29 @@ impl Term {
         }
 
         let final_byte = *sequence.last().unwrap();
-        let params_bytes = &sequence[..sequence.len() - 1];
+        let mut params_bytes = &sequence[..sequence.len() - 1];
 
-        // Parse parameters (simplified: assumes semicolon-separated numbers)
+        // Check for private mode indicator '?'
+        let is_private = if let Some((&first, rest)) = params_bytes.split_first() {
+            if first == b'?' {
+                params_bytes = rest; // Consume the '?'
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+
         let params_str = String::from_utf8_lossy(params_bytes);
         let params: Vec<usize> = params_str
             .split(';')
             .filter_map(|s| s.parse().ok())
             .collect();
 
-        // Helper to parse the single parameter for erase operations
         let parse_erase_param = |p: Option<&usize>| {
-            match p.copied().unwrap_or(0) { // Default is 0
+            match p.copied().unwrap_or(0) {
                 0 => EraseDirection::ToEnd,
                 1 => EraseDirection::ToStart,
                 2 => EraseDirection::WholeLine,
@@ -310,11 +328,10 @@ impl Term {
             }
         };
 
-
         match final_byte {
             b'H' => { // CSI n ; m H - Cursor Position
-                let row = params.get(0).copied().unwrap_or(1); // Default 1
-                let col = params.get(1).copied().unwrap_or(1); // Default 1
+                let row = params.get(0).copied().unwrap_or(1);
+                let col = params.get(1).copied().unwrap_or(1);
                 Ok(CsiSequence::CursorPosition { row, col })
             }
             b'K' => { // CSI n K - Erase in Line
@@ -326,27 +343,33 @@ impl Term {
                 Ok(CsiSequence::EraseInDisplay(direction))
             }
             b'A' => { // CSI n A - Cursor Up
-                let n = params.get(0).copied().unwrap_or(1); // Default 1
+                let n = params.get(0).copied().unwrap_or(1);
                 Ok(CsiSequence::CursorUp { n })
             }
             b'B' => { // CSI n B - Cursor Down
-                let n = params.get(0).copied().unwrap_or(1); // Default 1
+                let n = params.get(0).copied().unwrap_or(1);
                 Ok(CsiSequence::CursorDown { n })
             }
             b'C' => { // CSI n C - Cursor Forward
-                let n = params.get(0).copied().unwrap_or(1); // Default 1
+                let n = params.get(0).copied().unwrap_or(1);
                 Ok(CsiSequence::CursorForward { n })
             }
             b'D' => { // CSI n D - Cursor Backward
-                let n = params.get(0).copied().unwrap_or(1); // Default 1
+                let n = params.get(0).copied().unwrap_or(1);
                 Ok(CsiSequence::CursorBackward { n })
             }
-            // Add parsing for other CSI sequences here (SGR for colors, etc.)
+            b'h' if is_private => { // CSI ? n h - Set Private Mode
+                 let mode = params.get(0).copied().unwrap_or(0);
+                 Ok(CsiSequence::PrivateModeSet(mode))
+            }
+            b'l' if is_private => { // CSI ? n l - Reset Private Mode
+                 let mode = params.get(0).copied().unwrap_or(0);
+                 Ok(CsiSequence::PrivateModeReset(mode))
+            }
             _ => {
-                // Unknown CSI sequence
                 eprintln!("Warning: Unknown CSI sequence: ESC [{}{}",
                           String::from_utf8_lossy(params_bytes), final_byte as char);
-                Ok(CsiSequence::Unsupported(final_byte, params)) // Return as unsupported
+                Ok(CsiSequence::Unsupported(final_byte, params))
             }
         }
     }
@@ -355,29 +378,27 @@ impl Term {
     fn handle_csi_sequence(&mut self, sequence: CsiSequence) {
         match sequence {
             CsiSequence::CursorPosition { row, col } => {
-                // CursorPosition is 1-indexed in ANSI, convert to 0-indexed
                 self.cursor_y = std::cmp::min(row.saturating_sub(1), self.rows.saturating_sub(1));
                 self.cursor_x = std::cmp::min(col.saturating_sub(1), self.cols.saturating_sub(1));
             }
             CsiSequence::EraseInLine(direction) => {
-                if self.cursor_y >= self.rows { return; } // Ensure cursor is within bounds
+                if self.cursor_y >= self.rows { return; }
 
                 match direction {
-                    EraseDirection::ToEnd => { // Erase from cursor to end of line
+                    EraseDirection::ToEnd => {
                         for x in self.cursor_x..self.cols {
                             self.screen[self.cursor_y][x] = ' ';
                         }
                     }
-                    EraseDirection::ToStart => { // Erase from cursor to start of line
+                    EraseDirection::ToStart => {
                         for x in 0..=self.cursor_x.saturating_sub(1) {
                             self.screen[self.cursor_y][x] = ' ';
                         }
-                         // Also clear the character at the cursor position itself, as per spec
                          if self.cursor_x < self.cols {
                              self.screen[self.cursor_y][self.cursor_x] = ' ';
                          }
                     }
-                    EraseDirection::WholeLine => { // Erase whole line
+                    EraseDirection::WholeLine => {
                         self.screen[self.cursor_y].fill(' ');
                     }
                     EraseDirection::Unsupported(param) => {
@@ -387,20 +408,17 @@ impl Term {
             }
             CsiSequence::EraseInDisplay(direction) => {
                 match direction {
-                    EraseDirection::ToEnd => { // Erase from cursor to end of display
-                        // Clear from cursor to end of current line
+                    EraseDirection::ToEnd => {
                         if self.cursor_y < self.rows {
                             for x in self.cursor_x..self.cols {
                                 self.screen[self.cursor_y][x] = ' ';
                             }
                         }
-                        // Clear all lines below the current line
                         for y in self.cursor_y.saturating_add(1)..self.rows {
                             self.screen[y].fill(' ');
                         }
                     }
-                    EraseDirection::ToStart => { // Erase from cursor to start of display
-                         // Clear from start of current line to cursor
+                    EraseDirection::ToStart => {
                          if self.cursor_y < self.rows {
                             for x in 0..=self.cursor_x.saturating_sub(1) {
                                 self.screen[self.cursor_y][x] = ' ';
@@ -409,20 +427,18 @@ impl Term {
                                  self.screen[self.cursor_y][self.cursor_x] = ' ';
                              }
                         }
-                        // Clear all lines above the current line
                         for y in 0..self.cursor_y {
                              if y < self.rows {
                                 self.screen[y].fill(' ');
                             }
                         }
                     }
-                    EraseDirection::WholeLine => { // Erase whole display
+                    EraseDirection::WholeLine => {
                         for y in 0..self.rows {
                              if y < self.rows {
                                 self.screen[y].fill(' ');
                             }
                         }
-                        // Move cursor to home position (top-left)
                         self.cursor_x = 0;
                         self.cursor_y = 0;
                     }
@@ -443,12 +459,25 @@ impl Term {
             CsiSequence::CursorBackward { n } => {
                 self.cursor_x = self.cursor_x.saturating_sub(n);
             }
-            CsiSequence::Unsupported(_final_byte, _params) => { // Prefix unused variables
-                // Warning already printed in parse_csi_sequence
+            CsiSequence::PrivateModeSet(mode) => {
+                // Basic handling for bracketed paste mode (2004)
+                if mode == 2004 {
+                    // println!("Debug: Set bracketed paste mode"); // Optional debug
+                } else {
+                    eprintln!("Warning: Unhandled Private Mode Set: {}", mode);
+                }
             }
+            CsiSequence::PrivateModeReset(mode) => {
+                // Basic handling for bracketed paste mode (2004)
+                 if mode == 2004 {
+                    // println!("Debug: Reset bracketed paste mode"); // Optional debug
+                } else {
+                    eprintln!("Warning: Unhandled Private Mode Reset: {}", mode);
+                }
+            }
+            CsiSequence::Unsupported(_final_byte, _params) => {}
         }
     }
-
 
     // Process incoming data from the PTY based on parser state
     fn process_pty_data(&mut self, data: &[u8]) -> Result<()> {
@@ -459,10 +488,8 @@ impl Term {
     }
 
     // Get the raw file descriptor for the PTY parent
-    // This method is used implicitly by the AsRawFd trait implementation for File.
-    // Keeping it explicit for clarity and potential future direct use.
+    #[allow(dead_code)] // Keep for potential future use
     fn pty_parent_fd(&self) -> RawFd {
-        // Use as_raw_fd() from the imported trait
         self.pty_parent.as_raw_fd()
     }
 }
@@ -470,10 +497,10 @@ impl Term {
 // --- Terminal Backend Trait ---
 // Defines the interface for different terminal display backends (Console, X, Wayland, etc.)
 trait TerminalBackend {
-    // Perform any backend-specific initialization (e.g., open window, set up raw mode)
+    // Perform any backend-specific initialization
     fn init(&mut self) -> Result<()>;
 
-    // Get a list of file descriptors the backend wants to be polled by the event loop
+    // Get a list of file descriptors the backend wants to be polled
     fn get_event_fds(&self) -> Vec<RawFd>;
 
     // Handle an event for a specific file descriptor managed by the backend.
@@ -487,438 +514,374 @@ trait TerminalBackend {
     fn get_dimensions(&self) -> (usize, usize);
 }
 
-// --- Console Backend Implementation ---
-// Implements the TerminalBackend trait for a standard console/TTY
-struct ConsoleBackend {
-    original_termios: Option<OriginalTermios>, // Store original termios settings
-}
-
-impl ConsoleBackend {
-    fn new() -> Self {
-        ConsoleBackend {
-            original_termios: None, // Initialize as None
-        }
-    }
-
-    // Helper to clear the console screen using ANSI escape codes
-    fn clear_screen(&mut self) -> Result<()> { // Needs mutable self to write to stdout
-        print!("\x1B[2J\x1B[H"); // ANSI escape to clear screen and move cursor home
-        io::stdout().flush().context("Failed to flush stdout after clear")?;
-        Ok(())
-    }
-
-    // Helper to set the cursor position on the console using ANSI escape codes
-    // ANSI cursor position is 1-indexed (row, col)
-    fn set_cursor_position(&mut self, row: usize, col: usize) -> Result<()> { // Needs mutable self
-         print!("\x1B[{};{}H", row + 1, col + 1); // Convert 0-indexed to 1-indexed
-         io::stdout().flush().context("Failed to flush stdout after set cursor")?;
-         Ok(())
-    }
-}
-
-impl TerminalBackend for ConsoleBackend {
-    fn init(&mut self) -> Result<()> {
-        // Set terminal to raw mode
-        unsafe {
-            let mut original_termios: termios = mem::zeroed();
-            // Get current terminal attributes
-            if tcgetattr(STDIN_FILENO, &mut original_termios) < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to get terminal attributes");
-            }
-
-            // Save original settings
-            self.original_termios = Some(OriginalTermios(original_termios));
-
-            let mut raw_termios = original_termios;
-            // Disable canonical mode (ICANON), echoing (ECHO), and signal characters (ISIG)
-            raw_termios.c_lflag &= !(ICANON | ECHO | ISIG);
-            // Disable IXON (Ctrl+S, Ctrl+Q flow control) and ICRNL (CR to NL translation)
-            raw_termios.c_iflag &= !(IXON | ICRNL);
-            // Disable output processing (OPOST)
-            raw_termios.c_oflag &= !(OPOST);
-
-            // Set minimum number of input characters (VMIN) and timeout (VTIME)
-            raw_termios.c_cc[libc::VMIN] = 0; // Read returns immediately if no bytes are available
-            raw_termios.c_cc[libc::VTIME] = 0; // No timeout
-
-            // Set the new terminal attributes
-            if tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw_termios) < 0 {
-                return Err(io::Error::last_os_error()).context("Failed to set raw terminal attributes");
-            }
-        }
-
-        Ok(())
-    }
-
-    fn get_event_fds(&self) -> Vec<RawFd> {
-        vec![STDIN_FILENO]
-    }
-
-    fn handle_event(&mut self, term: &mut Term, event_fd: RawFd, event_kind: u32) -> Result<bool> {
-        if event_fd != STDIN_FILENO || event_kind & (EPOLLIN as u32) == 0 { // Cast EPOLLIN
-             // Should not happen with this backend/event type, but handle defensively
-             eprintln!("ConsoleBackend received unexpected event for fd {}", event_fd);
-             return Ok(false);
-        }
-
-        let mut stdin_buf = vec![0u8; BUFSIZ];
-        match io::stdin().read(&mut stdin_buf) {
-            Ok(0) => {
-                println!("Stdin closed. Exiting.");
-                Ok(true)
-            }
-            Ok(nread) => {
-                let slice = &stdin_buf[..nread];
-                unsafe { // Still need unsafe for libc::write
-                     // Use as_raw_fd() from the imported trait
-                     if libc::write(term.pty_parent.as_raw_fd(), slice.as_ptr() as *const libc::c_void, nread as size_t) < 0 {
-                         // Corrected context usage
-                         return Err(io::Error::last_os_error()).context("Error writing stdin to PTY");
-                     }
-                }
-                Ok(false)
-            }
-             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {
-                Ok(false)
-            }
-            Err(e) => {
-                // Corrected context usage
-                return Err(e).context("Error reading from stdin");
-            }
-        }
-    }
-
-    // Draw the current state of the Term to the backend's display
-    fn draw(&mut self, term: &Term) -> Result<()> {
-        self.clear_screen()?; // Clear the entire screen
-
-        // Draw each line
-        for y in 0..term.rows {
-            // Move cursor to the start of the line before printing
-            self.set_cursor_position(y, 0)?;
-            let line: String = term.screen[y].iter().collect();
-            // Print the line content
-            print!("{}", line);
-        }
-
-        // After drawing the whole screen, set the cursor to the correct position
-        self.set_cursor_position(term.cursor_y, term.cursor_x)?;
-        io::stdout().flush().context("Failed to flush stdout after drawing")?; // Flush to ensure changes are visible
-
-        Ok(())
-    }
-
-    fn get_dimensions(&self) -> (usize, usize) {
-        (DEFAULT_COLS, DEFAULT_ROWS)
-    }
-}
-
 // --- X Backend Implementation ---
 // Implements the TerminalBackend trait for an X window.
 struct XBackend {
-    // Xlib Display connection
     display: *mut xlib::Display,
-
-    // The X window ID
     window: xlib::Window,
-
-    // The X connection file descriptor for epoll
     x_fd: RawFd,
+    gc: xlib::GC,
+    font_struct: *mut xlib::XFontStruct,
+    font_width: i32,
+    font_height: i32,
+    font_ascent: i32,
+    font_descent: i32,
 }
 
 impl XBackend {
-    fn new() -> Self {
-        // Initialize with null/zero values
-        XBackend {
-            display: ptr::null_mut(),
-            window: 0,
-            x_fd: -1,
-        }
-    }
+     fn new() -> Self {
+         XBackend {
+             display: ptr::null_mut(),
+             window: 0,
+             x_fd: -1,
+             gc: ptr::null_mut(),
+             font_struct: ptr::null_mut(),
+             font_width: 0,
+             font_height: 0,
+             font_ascent: 0,
+             font_descent: 0,
+         }
+     }
 }
 
 impl TerminalBackend for XBackend {
-    fn init(&mut self) -> Result<()> {
-        // Open the X display connection
-        let display = unsafe { XOpenDisplay(ptr::null()) };
-        if display.is_null() {
-            anyhow::bail!("Failed to open X display");
-        }
-        self.display = display;
+     fn init(&mut self) -> Result<()> {
+         let display = unsafe { xlib::XOpenDisplay(ptr::null()) };
+         if display.is_null() {
+             anyhow::bail!("Failed to open X display");
+         }
+         self.display = display;
 
-        let screen = unsafe { xlib::XDefaultScreen(display) };
-        let root_window = unsafe { xlib::XDefaultRootWindow(display) };
+         let screen = unsafe { xlib::XDefaultScreen(display) };
+         let root_window = unsafe { xlib::XDefaultRootWindow(display) };
 
-        // Create a simple window
-        let window = unsafe {
-            xlib::XCreateSimpleWindow(
-                display,
-                root_window,
-                0, 0, // x, y
-                DEFAULT_WIDTH_PX as u32, DEFAULT_HEIGHT_PX as u32, // width, height (initial size)
-                0, // border_width
-                xlib::XBlackPixel(display, screen), // border color
-                xlib::XWhitePixel(display, screen), // background color
-            )
-        };
-        self.window = window;
+         let window = unsafe {
+             xlib::XCreateSimpleWindow(
+                 display,
+                 root_window,
+                 0, 0, // x, y
+                 DEFAULT_WIDTH_PX as u32, DEFAULT_HEIGHT_PX as u32, // width, height (initial size)
+                 0, // border_width
+                 xlib::XBlackPixel(display, screen), // border color
+                 xlib::XWhitePixel(display, screen), // background color
+             )
+         };
+         self.window = window;
 
-        // Select input events we are interested in
-        unsafe {
-            xlib::XSelectInput(
-                display,
-                window,
-                xlib::ExposureMask | xlib::KeyPressMask | xlib::StructureNotifyMask, // Redraw, KeyPress, Resize
-            );
-        }
+         unsafe {
+             xlib::XSelectInput(
+                 display,
+                 window,
+                 xlib::ExposureMask | xlib::KeyPressMask | xlib::StructureNotifyMask, // Redraw, KeyPress, Resize
+             );
+         }
 
-        // Map the window to make it visible
-        unsafe { xlib::XMapWindow(display, window) };
+         unsafe { xlib::XMapWindow(display, window) };
 
-        // Get the file descriptor for the X connection for use with epoll
-        self.x_fd = unsafe { XConnectionNumber(display) };
-        if self.x_fd < 0 {
-             // Corrected context usage
-             return Err(io::Error::last_os_error()).context("Failed to get X connection file descriptor");
-        }
+         self.x_fd = unsafe { XConnectionNumber(display) };
+         if self.x_fd < 0 {
+              return Err(io::Error::last_os_error()).context("Failed to get X connection file descriptor");
+         }
 
-        println!("X Backend initialized. Window created.");
-        Ok(())
-    }
+         // --- Load Font and Create Graphics Context (Using XLoadQueryFont) ---
+         let font_name_cstring = CString::new(DEFAULT_FONT_NAME).context("Failed to create CString for font name")?;
+         let font_struct = unsafe { xlib::XLoadQueryFont(display, font_name_cstring.as_ptr()) };
+         if font_struct.is_null() {
+             let io_err = AnyhowError::from(io::Error::last_os_error()).context(format!("Failed to load and query font: {}", DEFAULT_FONT_NAME));
+             return Err(io_err);
+         }
+         self.font_struct = font_struct;
 
-    fn get_event_fds(&self) -> Vec<RawFd> {
-        // Return the X connection file descriptor for epoll
-        vec![self.x_fd]
-    }
+         // Calculate font metrics from the queried structure
+         unsafe {
+             self.font_width = (*self.font_struct).max_bounds.width as i32;
+             self.font_height = (*self.font_struct).ascent + (*self.font_struct).descent;
+             self.font_ascent = (*self.font_struct).ascent;
+             self.font_descent = (*self.font_struct).descent;
+         }
 
-    fn handle_event(&mut self, term: &mut Term, event_fd: RawFd, event_kind: u32) -> Result<bool> {
-        // --- Xlib Event Handling Placeholder ---
-        // This is where we would process X events from the X connection file descriptor.
-        // For example, read key presses, handle window expose/resize events.
-        if event_fd == self.x_fd && event_kind & (EPOLLIN as u32) != 0 {
-            let mut event: XEvent = unsafe { mem::zeroed() };
-            while unsafe { XPending(self.display) } > 0 {
-                unsafe { xlib::XNextEvent(self.display, &mut event) };
-                unsafe { // Unsafe block for accessing event.type_
-                    match event.type_ {
-                        xlib::KeyPress => {
-                            // Handle key press - translate X event to bytes and write to PTY
-                            // This is complex and requires keycode to keysym to character mapping
-                            println!("X KeyPress event (handling not implemented)");
-                            // For now, just print a message. Later, translate key and write to term.pty_parent
-                            // let key_bytes = ... // Translate X event to bytes
-                            // unsafe { libc::write(term.pty_parent.as_raw_fd(), key_bytes.as_ptr() as *const libc::c_void, key_bytes.len() as size_t) };
-                        }
-                        xlib::Expose => {
-                            // Handle expose event - redraw the window content
-                            // We need to draw the current state of the terminal buffer
-                            self.draw(term)?; // Call the draw method
-                            println!("X Expose event (handling implemented basic redraw)");
-                        }
-                        xlib::ConfigureNotify => {
-                            // Handle resize event - update terminal dimensions and notify PTY
-                            // This is complex and requires calculating cols/rows based on font size
-                            // and then calling term.resize() and notifying the PTY.
-                            // let new_width = event.configure2.width;
-                            // let new_height = event.configure2.height;
-                            // Calculate new cols/rows based on font size (not implemented yet)
-                            // term.resize(new_cols, new_rows)?;
-                            println!("X ConfigureNotify event (handling not implemented)");
-                        }
-                        _ => {
-                            // Ignore other events for now
-                        }
-                    }
-                } // End unsafe block for accessing event.type_
-            }
-        }
-        // Return false to continue the main loop
-        Ok(false)
-    }
+         let gc = unsafe { xlib::XCreateGC(display, window, 0, ptr::null_mut()) };
+         if gc.is_null() {
+              let io_err = AnyhowError::from(io::Error::last_os_error()).context("Failed to create Graphics Context");
+              unsafe {
+                  xlib::XFreeFontInfo(ptr::null_mut(), self.font_struct, 1);
+              }
+              return Err(io_err);
+         }
+         self.gc = gc;
 
-    // Draw the current state of the Term to the backend's display
-    fn draw(&mut self, _term: &Term) -> Result<()> { // Prefix term with _
-        // --- Xlib Drawing Placeholder ---
-        // This is where we would use Xlib drawing functions (XDrawString, XFillRectangle, etc.)
-        // to render the contents of term.screen to the X window.
-        // This also involves handling colors and attributes (not implemented in Term yet).
+         // Set default foreground and background colors and font in the GC
+         unsafe {
+             let foreground_pixel = xlib::XBlackPixel(display, screen);
+             let background_pixel = xlib::XWhitePixel(display, screen);
+             xlib::XSetForeground(display, gc, foreground_pixel);
+             xlib::XSetBackground(display, gc, background_pixel);
+             xlib::XSetFont(display, gc, (*self.font_struct).fid);
+         }
 
-        // For this basic implementation, we'll just clear the window and print a message.
-        // A real implementation would draw characters from term.screen.
+         println!("X Backend initialized. Window created. Font loaded.");
+         Ok(())
+     }
 
-        unsafe {
-             // Clear the window
-            let screen = xlib::XDefaultScreen(self.display);
-            let background_pixel = xlib::XWhitePixel(self.display, screen);
-            xlib::XSetForeground(self.display, xlib::XDefaultGC(self.display, screen), background_pixel);
-            xlib::XFillRectangle(self.display, self.window, xlib::XDefaultGC(self.display, screen),
-                                 0, 0, // x, y
-                                 DEFAULT_WIDTH_PX as u32, DEFAULT_HEIGHT_PX as u32); // width, height
+     fn get_event_fds(&self) -> Vec<RawFd> {
+         vec![self.x_fd]
+     }
 
-            // For now, let's draw some text to indicate it's the X window
-            let _text = "X Backend Window (Drawing Placeholder)"; // Prefix text with _
-            let foreground_pixel = xlib::XBlackPixel(self.display, screen);
-            xlib::XSetForeground(self.display, xlib::XDefaultGC(self.display, screen), foreground_pixel);
-            // Note: Drawing text properly requires a font and calculating positions,
-            // which is more complex. This is a very basic placeholder.
-            // xlib::XDrawString(self.display, self.window, xlib::XDefaultGC(self.display, screen),
-            //                    10, 20, // x, y (approximate position)
-            //                    text.as_ptr() as *const i8, text.len() as i32);
+     fn handle_event(&mut self, term: &mut Term, event_fd: RawFd, event_kind: u32) -> Result<bool> {
+         // --- Xlib Event Handling ---
+         if event_fd == self.x_fd && event_kind & (EPOLLIN as u32) != 0 {
+             let mut event: XEvent = unsafe { mem::zeroed() };
+             while unsafe { XPending(self.display) } > 0 {
+                 unsafe { xlib::XNextEvent(self.display, &mut event) };
+                 unsafe {
+                     match event.type_ {
+                         xlib::KeyPress => {
+                             // Handle key press
+                             let mut key_event: XKeyEvent = From::from(event); // Convert XEvent to XKeyEvent
+                             let mut buffer: [c_int; 20] = [0; 20]; // Buffer for translated string
+                             let mut keysym: xlib::KeySym = 0; // KeySym value
+                             // XLookupString takes a *mut XComposeStatus, we can pass null if we don't need it
+                             // A real terminal would likely need to manage this state.
+                             let mut compose_status: xlib::XComposeStatus = mem::zeroed();
 
-            xlib::XFlush(self.display); // Ensure drawing commands are sent to the X server
-        }
+                             // Translate the key press event into a string
+                             let count = xlib::XLookupString(
+                                 &mut key_event, // Pass mutable reference cast to mutable pointer
+                                 buffer.as_mut_ptr() as *mut i8, // Cast to *mut i8 for the buffer
+                                 buffer.len() as c_int,
+                                 &mut keysym,
+                                 &mut compose_status, // Pass mutable reference
+                             );
+                             // We are not storing compose_status in XBackend state in this version
 
-        println!("X Backend drawing (placeholder)."); // Console message for debugging
-        Ok(())
-    }
+                             if count > 0 {
+                                 // Successfully translated to a string, write to PTY
+                                 let byte_slice = std::slice::from_raw_parts(
+                                     buffer.as_ptr() as *const u8, // Cast to *const u8 for the slice
+                                     count as usize,
+                                 );
+                                 // Write the key press bytes to the PTY parent
+                                 if libc::write(term.pty_parent.as_raw_fd(), byte_slice.as_ptr() as *const libc::c_void, count as size_t) < 0 {
+                                     eprintln!("Error writing key press to PTY: {}", io::Error::last_os_error());
+                                 } else {
+                                     // Redraw the terminal after input is sent to the shell
+                                     // The shell's output will cause a PTY read event, which will trigger a redraw.
+                                     // No need to redraw immediately here unless we want local echo.
+                                 }
+                             } else {
+                                 // No string translation (e.g., modifier keys, function keys)
+                                 // You might handle specific KeySyms here for control sequences (e.g., arrow keys)
+                                 // println!("KeyPress with no string: KeySym = {}", keysym); // Optional debug print
+                             }
+                         }
+                         xlib::Expose => {
+                             if event.expose.count == 0 {
+                                 self.draw(term)?;
+                             }
+                         }
+                         xlib::ConfigureNotify => {
+                             // Handle resize event - update terminal dimensions and notify PTY
+                             println!("X ConfigureNotify event (handling not implemented)");
+                         }
+                         _ => {}
+                     }
+                 }
+             }
+         }
+         Ok(false)
+     }
 
-    fn get_dimensions(&self) -> (usize, usize) {
-        // --- Xlib Dimensions Placeholder ---
-        // Get window dimensions and calculate cols/rows based on font size.
-        // (80, 24) // Default size for now
-        // In a real implementation, query the window size:
-        // let mut attributes: xlib::XWindowAttributes = unsafe { mem::zeroed() };
-        // unsafe { xlib::XGetWindowAttributes(self.display, self.window, &mut attributes) };
-        // let pixel_width = attributes.width;
-        // let pixel_height = attributes.height;
-        // Calculate cols/rows based on font size (not implemented yet)
-        (DEFAULT_COLS, DEFAULT_ROWS) // Use default for now
-    }
+     fn draw(&mut self, term: &Term) -> Result<()> {
+         unsafe {
+              // Clear the entire window area
+             let screen = xlib::XDefaultScreen(self.display);
+             let background_pixel = xlib::XWhitePixel(self.display, screen);
+             xlib::XSetForeground(self.display, self.gc, background_pixel);
+             xlib::XFillRectangle(self.display, self.window, self.gc,
+                                  0, 0,
+                                  (term.cols * self.font_width as usize) as u32,
+                                  (term.rows * self.font_height as usize) as u32);
+
+             // Set foreground color for drawing text
+             let foreground_pixel = xlib::XBlackPixel(self.display, screen);
+             xlib::XSetForeground(self.display, self.gc, foreground_pixel);
+
+             // Draw each character from the screen buffer
+             for y in 0..term.rows {
+                 for x in 0..term.cols {
+                     let character = term.screen[y][x];
+                     // Convert char to a byte slice for XDrawString
+                     let mut char_bytes = [0u8; 4];
+                     let char_slice = character.encode_utf8(&mut char_bytes).as_bytes();
+
+                     // Calculate position for the character
+                     let draw_x = (x * self.font_width as usize) as i32;
+                     let draw_y = (y * self.font_height as usize + self.font_ascent as usize) as i32;
+
+                     // Draw the character
+                     if character != ' ' {
+                         xlib::XDrawString(self.display, self.window, self.gc,
+                                           draw_x, draw_y,
+                                           char_slice.as_ptr() as *const i8, char_slice.len() as i32);
+                     }
+                 }
+             }
+
+             // --- Draw Cursor ---
+             let cursor_x_px = (term.cursor_x * self.font_width as usize) as i32;
+             let cursor_y_px = (term.cursor_y * self.font_height as usize) as i32;
+
+             // Set cursor color (e.g., inverse of foreground)
+             let cursor_color = xlib::XWhitePixel(self.display, screen);
+             xlib::XSetForeground(self.display, self.gc, cursor_color);
+
+             xlib::XFillRectangle(self.display, self.window, self.gc,
+                                  cursor_x_px, cursor_y_px,
+                                  self.font_width as u32, self.font_height as u32);
+
+             xlib::XFlush(self.display);
+         }
+
+         Ok(())
+     }
+
+     fn get_dimensions(&self) -> (usize, usize) {
+         let cols = if self.font_width > 0 { DEFAULT_WIDTH_PX / self.font_width as usize } else { DEFAULT_COLS };
+         let rows = if self.font_height > 0 { DEFAULT_HEIGHT_PX / self.font_height as usize } else { DEFAULT_ROWS };
+         (cols, rows)
+     }
 }
 
 impl Drop for XBackend {
     fn drop(&mut self) {
-        // Clean up Xlib resources when the XBackend is dropped
-        if !self.display.is_null() {
-            unsafe {
-                // Destroy the window
+        unsafe {
+            if !self.display.is_null() {
+                if !self.gc.is_null() {
+                    xlib::XFreeGC(self.display, self.gc);
+                    self.gc = ptr::null_mut();
+                }
+                if !self.font_struct.is_null() {
+                    xlib::XFreeFontInfo(ptr::null_mut(), self.font_struct, 1);
+                    self.font_struct = ptr::null_mut();
+                }
                 if self.window != 0 {
                     xlib::XDestroyWindow(self.display, self.window);
+                    self.window = 0;
                 }
-                // Close the display connection
                 xlib::XCloseDisplay(self.display);
+                self.display = ptr::null_mut();
             }
             println!("X Backend cleaned up.");
         }
     }
 }
 
-
 // Create PTY, fork, and exec the shell
 unsafe fn create_pty_and_fork(shell_path: &CStr, shell_args: &mut [*mut i8]) -> Result<(pid_t, std::fs::File)> {
     let mut pty_parent_fd: c_int = -1;
     let mut pty_child_fd: c_int = -1;
 
-    // Wrap libc calls in explicit unsafe blocks within the unsafe fn
-    unsafe { // Explicit unsafe block for openpty
-        if openpty(&mut pty_parent_fd, &mut pty_child_fd, ptr::null_mut(), ptr::null_mut(), ptr::null_mut()) < 0 {
-            // Corrected context usage
-            return Err(io::Error::last_os_error()).context("Failed to open pseudo-terminal");
-        }
+    // Attempt to open a new pseudo-terminal pair
+    let openpty_res = unsafe { openpty(&mut pty_parent_fd, &mut pty_child_fd, ptr::null_mut(), ptr::null_mut(), ptr::null_mut()) };
+    if openpty_res < 0 {
+        return Err(AnyhowError::from(io::Error::last_os_error()).context("Failed to open pseudo-terminal"));
     }
 
-
-    let _one: c_int = 1; // Prefixed with _ to mark as unused
-    // Temporarily commenting out TIOCSPTLCK as it seems to be causing issues in your environment
-    // In a real terminal, this is used to lock the PTY child before the shell takes over.
-    // unsafe { // Explicit unsafe block for ioctl
-    //     if ioctl(pty_child_fd, TIOCSPTLCK, &_one as *const c_int) < 0 { // Use _one
-    //         // Corrected context usage
-    //         let io_err = io::Error::last_os_error();
-    //         close(pty_parent_fd); // Removed unnecessary unsafe
-    //         close(pty_child_fd); // Removed unnecessary unsafe
-    //         return Err(io_err).context("Failed to lock PTY child");
-    //     }
-    // }
-
-
-    // Wrap libc calls in explicit unsafe blocks within the unsafe fn
-    let child_pid: pid_t = unsafe { fork() }; // Explicit unsafe block for fork
+    // Fork the process
+    let child_pid: pid_t = unsafe { fork() };
 
     if child_pid < 0 {
-        // Corrected context usage
-        let io_err = io::Error::last_os_error();
-        unsafe { close(pty_parent_fd) }; // Explicit unsafe block for close
-        unsafe { close(pty_child_fd) }; // Explicit unsafe block for close
-        return Err(io_err).context("Failed to fork process");
+        let io_err = AnyhowError::from(io::Error::last_os_error()).context("Failed to fork process");
+        unsafe { close(pty_parent_fd) };
+        unsafe { close(pty_child_fd) };
+        return Err(io_err);
     }
 
     if child_pid != 0 { // Parent process
-        unsafe { close(pty_child_fd) }; // Close the PTY child in the parent - Explicit unsafe block for close
-        // Use FromRawFd from the imported trait
-        let pty_parent_file = unsafe { std::fs::File::from_raw_fd(pty_parent_fd) }; // Explicit unsafe block for from_raw_fd
-        return Ok((child_pid, pty_parent_file)); // Early return for the parent
+        unsafe { close(pty_child_fd) };
+        let pty_parent_file = unsafe { std::fs::File::from_raw_fd(pty_parent_fd) };
+        return Ok((child_pid, pty_parent_file));
     }
 
     // Child process continues here
 
-    // --- Job Control Setup (Removed for Console Backend) ---
-    // The following calls were removed because achieving reliable job control
-    // when running this program within another terminal emulator proved problematic.
-    // For the X backend, job control will be handled differently, if needed.
+    // Close the master side of the PTY in the child
+    unsafe { close(pty_parent_fd) };
 
-    // // Create a new session and process group, making the child the session leader
-    // // and process group leader. This is necessary for job control.
-    // unsafe { // Explicit unsafe block for setsid
-    //     if setsid() < 0 {
-    //         eprintln!("Failed to create new session: {}", io::Error::last_os_error());
-    //         close(pty_parent_fd); // Clean up file descriptors before exiting - Removed unnecessary unsafe
-    //         close(pty_child_fd); // Removed unnecessary unsafe
-    //         process::exit(1);
-    //     }
-    // }
+    // Create a new session and process group, making the child the session leader
+    // and process group leader. This is necessary for job control.
+    let setsid_res = unsafe { setsid() };
+    if setsid_res < 0 {
+        eprintln!("Failed to create new session: {}", io::Error::last_os_error());
+        unsafe { close(pty_child_fd) }; // Clean up file descriptor before exiting
+        process::exit(1);
+    }
 
-    // // Make the PTY child the controlling terminal for the new session.
-    // // This is done by an ioctl call on the PTY child's file descriptor.
-    // // We use STDIN_FILENO here because we've already dup2'd the PTY child
-    // // to stdin, stdout, and stderr.
-    // // Explicitly specify the type for ptr::null_mut()
-    // unsafe { // Explicit unsafe block for ioctl
-    //     if ioctl(STDIN_FILENO, TIOCSCTTY, ptr::null_mut::<c_int>()) < 0 {
-    //          eprintln!("Failed to set controlling terminal: {}", io::Error::last_os_error());
-    //          close(pty_parent_fd); // Clean up file descriptors before exiting - Removed unnecessary unsafe
-    //          close(pty_child_fd); // Removed unnecessary unsafe
-    //          process::exit(1);
-    //     }
-    // }
+    // Duplicate the slave PTY file descriptor to stdin, stdout, and stderr
+    // dup2(oldfd, newfd)
+    // This should happen *before* TIOCSCTTY, matching st.c.
+    let dup2_stdin_res = unsafe { libc::dup2(pty_child_fd, STDIN_FILENO) };
+    if dup2_stdin_res < 0 {
+        eprintln!("Failed to duplicate PTY slave to stdin in child: {}", io::Error::last_os_error());
+        unsafe { close(pty_child_fd) }; // Close the original slave fd on failure
+        process::exit(1);
+    }
 
-    unsafe { close(pty_parent_fd) }; // Close the PTY parent in the child - Explicit unsafe block for close
+    let dup2_stdout_res = unsafe { libc::dup2(pty_child_fd, STDOUT_FILENO) };
+    if dup2_stdout_res < 0 {
+        eprintln!("Failed to duplicate PTY slave to stdout in child: {}", io::Error::last_os_error());
+        // STDIN might be duplicated, so we only close the original slave fd
+        unsafe { close(pty_child_fd) };
+        process::exit(1);
+    }
 
+    let dup2_stderr_res = unsafe { libc::dup2(pty_child_fd, STDERR_FILENO) };
+    if dup2_stderr_res < 0 {
+        eprintln!("Failed to duplicate PTY slave to stderr in child: {}", io::Error::last_os_error());
+        // STDIN/STDOUT might be duplicated, so we only close the original slave fd
+        unsafe { close(pty_child_fd) };
+        process::exit(1);
+    }
 
-    // Temporarily commenting out TIOCSPTLCK unlock in child
-    // let zero: c_int = 0;
-    // unsafe { // Explicit unsafe block for ioctl
-    //     if ioctl(pty_child_fd, TIOCSPTLCK, &zero as *const c_int) < 0 { // Removed unnecessary unsafe
-    //          eprintln!("Failed to unlock PTY child in child: {}", io::Error::last_os_error());
-    //          process::exit(1);
-    //     }
-    // }
-
-    // Wrap libc calls in explicit unsafe blocks within the unsafe fn
-    unsafe { // Explicit unsafe block for dup2 calls
-        if libc::dup2(pty_child_fd, STDIN_FILENO) < 0 ||
-           libc::dup2(pty_child_fd, STDOUT_FILENO) < 0 ||
-           libc::dup2(pty_child_fd, STDERR_FILENO) < 0 {
-            eprintln!("Failed to duplicate PTY child descriptor in child: {}", io::Error::last_os_error());
-            close(pty_child_fd); // Wrap close in unsafe
-            process::exit(1);
+    // Make the PTY child (now STDIN_FILENO) the controlling terminal for the new session.
+    // This is done by an ioctl call on the PTY child's file descriptor.
+    // This call now happens *after* dup2, matching st.c's sequence.
+    // Explicitly specify the type for ptr::null_mut()
+    // Note: st.c calls ioctl(s, TIOCSCTTY, NULL) where s is the original slave fd.
+    // After dup2, STDIN_FILENO points to the same file description as s.
+    // Calling ioctl on STDIN_FILENO here should be equivalent and is more common
+    // after dup2. Let's stick to STDIN_FILENO for now.
+    if pty_child_fd >= 0 { // Ensure pty_child_fd is valid before calling ioctl on it
+        let tiocsctty_res = unsafe { ioctl(STDIN_FILENO, TIOCSCTTY, ptr::null_mut::<c_int>()) };
+        if tiocsctty_res < 0 {
+                 eprintln!("Failed to set controlling terminal: {}", io::Error::last_os_error());
+                 // Clean up file descriptor before exiting - pty_child_fd is already closed by dup2 if it was 0,1,2
+                 // If pty_child_fd was > 2, we need to close it here.
+                 if pty_child_fd > 2 {
+                     unsafe { close(pty_child_fd) };
+                 }
+                 process::exit(1);
         }
+    } else {
+         eprintln!("Error: Invalid pty_child_fd before TIOCSCTTY");
+         // pty_child_fd should be valid here if openpty succeeded, but defensive check
+         process::exit(1);
     }
 
 
-    unsafe { close(pty_child_fd) }; // Close the original PTY child descriptor - Explicit unsafe block for close
+    // Close the original slave PTY file descriptor if its value was > 2.
+    // If it was 0, 1, or 2, dup2 effectively closed the originals and s now points to them,
+    // so we shouldn't close it again. This matches st.c's logic.
+    if pty_child_fd > 2 {
+        unsafe { close(pty_child_fd) };
+    }
 
-    // Corrected type for argv to match execvp signature (*const *const i8)
-    let shell_args_ptr_const: Vec<*const i8> = shell_args.iter().map(|&s| s as *const i8).collect();
-    // Wrap libc calls in explicit unsafe blocks within the unsafe fn
-    unsafe { execvp(shell_path.as_ptr(), shell_args_ptr_const.as_ptr()) }; // Explicit unsafe block for execvp
 
-    // If execvp returns, it failed
+    let shell_args_ptr_const: Vec<*const i8> = shell_args.iter().map(|&s| unsafe { *s as *const i8 }).collect();
+    unsafe { execvp(shell_path.as_ptr(), shell_args_ptr_const.as_ptr()) };
+
     eprintln!("Error executing shell: {}", io::Error::last_os_error());
     process::exit(1);
-
-    // Note: This point should not be reached if execvp succeeds.
-    // The process::exit(1) calls handle the failure case.
 }
 
 // Handles reading from the PTY parent and processing data.
@@ -935,75 +898,76 @@ fn handle_pty_read(term: &mut Term, buf: &mut [u8]) -> Result<bool> {
             Ok(false)
         }
         Err(ref e) if e.kind() == io::ErrorKind::Interrupted => Ok(false),
-        Err(e) => return Err(e).context("Error reading from PTY"), // Corrected context usage
+        Err(e) => return Err(AnyhowError::from(e).context("Error reading from PTY")),
     }
 }
-
 
 // Main function implementing the epoll event loop
 fn main() -> Result<()> {
     let shell_path_str = "/bin/sh";
-    let shell_path = CString::new(shell_path_str).context("Failed to create CString for shell path")?; // Use .context()
-    let mut shell_args_c: Vec<CString> = vec![CString::new("-l").context("Failed to create CString for shell arg")?]; // Use .context()
+    let shell_path = CString::new(shell_path_str).context("Failed to create CString for shell path")?;
+    let mut shell_args_c: Vec<CString> = vec![CString::new("-l").context("Failed to create CString for shell arg")?];
     let mut shell_args_ptr: Vec<*mut i8> = shell_args_c.iter_mut().map(|s| s.as_ptr() as *mut i8).collect();
     shell_args_ptr.push(ptr::null_mut());
 
-    unsafe { // Main unsafe block for raw file descriptor operations and libc calls
-        let (child_pid, pty_parent_file) = create_pty_and_fork(&shell_path, &mut shell_args_ptr)
-            .context("Failed during PTY creation or shell fork/exec")?; // Use .context()
+    // Main unsafe block for raw file descriptor operations and libc calls
+    unsafe {
+        let (child_pid, mut pty_parent_file) = create_pty_and_fork(&shell_path, &mut shell_args_ptr)
+            .context("Failed during PTY creation or shell fork/exec")?;
 
-        // --- Job Control Setup (Removed for Console Backend) ---
-        // The call to tcsetpgrp was removed here because it requires the PTY parent
-        // to be the controlling terminal of the calling process, which is not
-        // reliably the case when running within another terminal emulator.
-        // Job control will be handled differently in the X backend.
-        // if tcsetpgrp(pty_parent_file.as_raw_fd(), child_pid) < 0 {
-        //      eprintln!("Warning: Failed to set foreground process group: {}", io::Error::last_os_error());
-        // }
+        let child_pid_ptr: *const pid_t = &child_pid; // Pointer to child PID
+        if ioctl(pty_parent_file.as_raw_fd(), TIOCSPGRP, child_pid_ptr) < 0 {
+             eprintln!("Warning: Failed to set foreground process group using ioctl(TIOCSPGRP): {}", io::Error::last_os_error());
+        }
+
+        // --- Diagnostic Read ---
+        // Attempt to read any immediate output from the shell after launch.
+        // This might capture error messages before the epoll loop starts.
+        let mut initial_output_buf = vec![0u8; 1024];
+        match pty_parent_file.read(&mut initial_output_buf) {
+            Ok(0) => {
+                 eprintln!("Diagnostic: PTY closed immediately after fork/exec.");
+            }
+            Ok(nread) => {
+                 eprintln!("Diagnostic: Received initial output from shell:");
+                 eprintln!("{}", String::from_utf8_lossy(&initial_output_buf[..nread]));
+            }
+            Err(e) => {
+                 eprintln!("Diagnostic: Error reading initial output from PTY: {}", e);
+            }
+        }
+        // --- End Diagnostic Read ---
 
 
-        // --- Backend Selection ---
-        // Choose the backend to use (ConsoleBackend or XBackend)
-        // let mut backend: Box<dyn TerminalBackend> = Box::new(ConsoleBackend::new()); // Use ConsoleBackend for console testing
-        let mut backend: Box<dyn TerminalBackend> = Box::new(XBackend::new()); // Switch to XBackend for X development
-
+        let mut backend: Box<dyn TerminalBackend> = Box::new(XBackend::new());
 
         backend.init()?;
 
         let (initial_cols, initial_rows) = backend.get_dimensions();
         let mut term = Term::new(child_pid, pty_parent_file, initial_cols, initial_rows);
 
-        // Use as_raw_fd() from the imported trait
         let pty_parent_fd = term.pty_parent.as_raw_fd();
-        let backend_fds = backend.get_event_fds(); // Removed mut
+        let backend_fds = backend.get_event_fds();
 
-
-        let epoll_fd = unsafe { epoll_create1(EPOLL_CLOEXEC) }; // Explicit unsafe block
+        let epoll_fd = epoll_create1(EPOLL_CLOEXEC);
         if epoll_fd < 0 {
-            // Corrected context usage
-            return Err(io::Error::last_os_error()).context("Failed to create epoll instance");
+            return Err(AnyhowError::from(io::Error::last_os_error()).context("Failed to create epoll instance"));
         }
 
-        let mut pty_event = epoll_event { events: EPOLLIN as u32, u64: pty_parent_fd as u64 }; // Cast EPOLLIN
-        unsafe { // Explicit unsafe block
-            if epoll_ctl(epoll_fd, EPOLL_CTL_ADD, pty_parent_fd, &mut pty_event) < 0 {
-                // Corrected context usage
-                let io_err = io::Error::last_os_error();
-                close(epoll_fd);
-                return Err(io_err).context("Failed to add PTY parent to epoll");
-            }
+        let mut pty_event = epoll_event { events: EPOLLIN as u32, u64: pty_parent_fd as u64 };
+        if epoll_ctl(epoll_fd, EPOLL_CTL_ADD, pty_parent_fd, &mut pty_event) < 0 {
+            let io_err = AnyhowError::from(io::Error::last_os_error()).context("Failed to add PTY parent to epoll");
+            close(epoll_fd);
+            return Err(io_err);
         }
-
 
         for &fd in &backend_fds {
-            let mut backend_event = epoll_event { events: EPOLLIN as u32, u64: fd as u64 }; // Cast EPOLLIN
-             unsafe { // Explicit unsafe block
-                 if epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &mut backend_event) < 0 { // Corrected typo back to EPOOL_CTL_ADD - this should be EPOLL_CTL_ADD, fixing it now
-                      let io_err = io::Error::last_os_error();
-                      close(epoll_fd);
-                      return Err(io_err).context(format!("Failed to add backend fd {} to epoll", fd));
-                 }
-             }
+            let mut backend_event = epoll_event { events: EPOLLIN as u32, u64: fd as u64 };
+            if epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &mut backend_event) < 0 {
+                 let io_err = AnyhowError::from(io::Error::last_os_error()).context(format!("Failed to add backend fd {} to epoll", fd));
+                 close(epoll_fd);
+                 return Err(io_err);
+            }
         }
 
         let mut pty_buf = vec![0u8; BUFSIZ];
@@ -1013,15 +977,14 @@ fn main() -> Result<()> {
         backend.draw(&term)?; // Initial draw
 
         loop {
-            let num_events = unsafe { epoll_wait(epoll_fd, events.as_mut_ptr(), MAX_EPOLL_EVENTS, -1) }; // Explicit unsafe block
+            let num_events = epoll_wait(epoll_fd, events.as_mut_ptr(), MAX_EPOLL_EVENTS, -1);
 
             if num_events < 0 {
                 let epoll_err = io::Error::last_os_error();
                 if epoll_err.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
-                // Corrected context usage
-                return Err(epoll_err).context("Error during epoll_wait");
+                return Err(AnyhowError::from(epoll_err).context("Error during epoll_wait"));
             }
 
             let mut should_exit = false;
@@ -1031,45 +994,36 @@ fn main() -> Result<()> {
                 let event_fd = event.u64 as RawFd;
                 let event_kind = event.events;
 
-                // Use match to handle events based on file descriptor
-                match event_fd {
-                    fd if fd == pty_parent_fd => {
-                        if event_kind & (EPOLLIN as u32) != 0 { // Cast EPOLLIN
-                            if handle_pty_read(&mut term, &mut pty_buf)? {
-                                should_exit = true;
-                                break; // Exit event processing loop
-                            }
-                            backend.draw(&term)?; // Redraw after PTY data
-                        }
-                        if event_kind & ((EPOLLERR | EPOLLHUP) as u32) != 0 { // Cast EPOLLERR | EPOLLHUP
-                            eprintln!("Error or hang-up on PTY parent file descriptor.");
+                // Process read events
+                if event_kind & (EPOLLIN as u32) != 0 {
+                    if event_fd == pty_parent_fd {
+                        if handle_pty_read(&mut term, &mut pty_buf)? {
                             should_exit = true;
-                            break; // Exit event processing loop
+                            break;
                         }
-                    }
-                    fd if backend_fds.contains(&fd) => {
-                         if event_kind & (EPOLLIN as u32) != 0 { // Cast EPOLLIN
-                             if backend.handle_event(&mut term, event_fd, event_kind)? {
-                                should_exit = true;
-                                break; // Exit event processing loop
-                            }
-                            // Redraw after backend event if needed (e.g., resize)
-                            // backend.draw(&term)?; // Drawing is handled within handle_event for X Expose
-                         }
-                         if event_kind & ((EPOLLERR | EPOLLHUP) as u32) != 0 { // Cast EPOLLERR | EPOLLHUP
-                             eprintln!("Error or hang-up on backend file descriptor {}.", event_fd);
+                        backend.draw(&term)?; // Redraw after PTY data
+                    } else if backend_fds.contains(&event_fd) {
+                         if backend.handle_event(&mut term, event_fd, event_kind)? {
                              should_exit = true;
-                             break; // Exit event processing loop
+                             break;
                          }
                     }
-                    _ => {
-                        // Unexpected file descriptor
-                        eprintln!("Received event for unknown file descriptor: {}", event_fd);
-                         if event_kind & ((EPOLLERR | EPOLLHUP) as u32) != 0 { // Cast EPOLLERR | EPOLLHUP
-                             eprintln!("Error or hang-up on unknown file descriptor {}.", event_fd);
-                             should_exit = true;
-                             break; // Exit event processing loop
-                         }
+                }
+
+                // Process error/hang-up events
+                if event_kind & ((EPOLLERR | EPOLLHUP) as u32) != 0 {
+                    if event_fd == pty_parent_fd {
+                        eprintln!("Error or hang-up on PTY parent file descriptor.");
+                        should_exit = true;
+                        break;
+                    } else if backend_fds.contains(&event_fd) {
+                        eprintln!("Error or hang-up on backend file descriptor {}.", event_fd);
+                        should_exit = true;
+                        break;
+                    } else {
+                         eprintln!("Received error/hang-up event for unknown file descriptor: {}", event_fd);
+                         should_exit = true;
+                         break;
                     }
                 }
             }
@@ -1079,11 +1033,10 @@ fn main() -> Result<()> {
             }
         }
 
-        unsafe { close(epoll_fd) }; // Explicit unsafe block for close
-        // libc::waitpid(term.child_pid, ..., 0); // Wait for child process exit
+        close(epoll_fd);
 
         println!("Terminal MVP exiting.");
-    } // End of unsafe block
+    }
 
     Ok(())
 }

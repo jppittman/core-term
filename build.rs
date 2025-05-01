@@ -1,8 +1,5 @@
 // build.rs
 
-use std::process::Command;
-use std::io::{self, Write};
-
 fn main() {
     // --- Link against X11 and its dependencies ---
     // We'll try to use pkg-config first, which is the standard way to find
