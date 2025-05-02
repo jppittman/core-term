@@ -183,6 +183,7 @@ fn run_terminal() -> Result<()> {
 
 /// Application entry point. Parses arguments and runs the terminal.
 fn main() {
+    env_logger::init();
     // Execute the main terminal logic.
     if let Err(e) = run_terminal() {
         // Print detailed error information using anyhow's multi-line format.
