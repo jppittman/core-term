@@ -1,397 +1,473 @@
-// From src/backends/x11.rs
+// src/backends/x11.rs
 
-// Imports assumed from the full xbackend.rs file context
-use crate::glyph::*;
-use super::TerminalBackend;
-use crate::Term;
-use crate::{DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_WIDTH_PX, DEFAULT_HEIGHT_PX, DEFAULT_FONT_NAME};
-use libc::{
-    c_int, size_t,
-    EPOLLERR, EPOLLIN, EPOLLRDHUP, EPOLLHUP,
-};
-use std::os::unix::io::{RawFd, AsRawFd};
-use std::collections::HashMap;
-use std::ffi::CString;
-use std::io;
-use std::mem;
+#![allow(non_snake_case)] // Allow non-snake case for X11 types
+
+use crate::term::Term;
+use crate::glyph::{Color, AttrFlags};
+use crate::backends::{TerminalBackend, BackendEvent};
+
+use anyhow::{Context, Result};
+use std::ffi::{CStr, CString};
+use std::os::unix::io::RawFd;
 use std::ptr;
-use anyhow::{Context, Result, Error as AnyhowError};
-use x11::xlib::{
-    self, Display, Window, GC, XEvent, XColor, XFontStruct, KeySym,
-    XNextEvent, XConnectionNumber, XPending, XOpenDisplay, XDefaultScreen,
-    XDefaultRootWindow, XCreateSimpleWindow, XMapWindow, XSelectInput,
-    XDestroyWindow, XCloseDisplay, XBlackPixel, XWhitePixel, XCreateGC, XFreeGC,
-    XSetForeground, XSetBackground, XLoadQueryFont, XSetFont, XFlush,
-    XFillRectangle, XDrawString, XDrawLine, XAllocColor, XAllocNamedColor,
-    XDefaultColormap, DoRed, DoGreen, DoBlue, XFreeColors, XKeyEvent,
-    XLookupString, XComposeStatus, ExposureMask, KeyPressMask, StructureNotifyMask,
-};
+use std::mem;
+use std::cmp::min;
 
-// --- X Backend Implementation ---
-pub struct XBackend { /* ... fields as before ... */
-    display: *mut Display,
-    window: Window,
-    x_fd: RawFd,
-    gc: GC,
-    font_struct: *mut XFontStruct,
-    font_width: i32,
-    font_height: i32,
-    font_ascent: i32,
-    color_cache: HashMap<ColorSpec, u64>,
-    default_fg_pixel: u64,
-    default_bg_pixel: u64,
+// Removed unused c_void
+use libc::{c_char, c_int, c_uint, c_ulong, winsize, TIOCSWINSZ, c_void}; // Re-add c_void for libc::write
+use x11::xlib;
+use x11::keysym;
+
+// --- Constants ---
+const DEFAULT_FONT_NAME: &str = "monospace:size=10";
+const MIN_FONT_WIDTH: u32 = 5;
+const MIN_FONT_HEIGHT: u32 = 5;
+const DRAW_BUFFER_SIZE: usize = 4096;
+const DEFAULT_FG_IDX: usize = 256;
+const DEFAULT_BG_IDX: usize = 257;
+const TOTAL_COLOR_COUNT: usize = DEFAULT_BG_IDX + 1;
+
+/// X11 backend implementation for the terminal.
+pub struct XBackend {
+    display: *mut xlib::Display,
+    screen: c_int,
+    window: xlib::Window,
+    gc: xlib::GC,
+    colormap: xlib::Colormap,
+    font: *mut xlib::XFontStruct,
+    font_width: u32,
+    font_height: u32,
+    font_ascent: u32,
+    colors: [xlib::XColor; TOTAL_COLOR_COUNT],
+    wm_delete_window: xlib::Atom,
+    protocols_atom: xlib::Atom,
 }
 
-impl XBackend {
-     pub fn new() -> Self { 
-        XBackend {
-             display: ptr::null_mut(), window: 0, x_fd: -1, gc: ptr::null_mut(),
-             font_struct: ptr::null_mut(), font_width: 0, font_height: 0, font_ascent: 0,
-             color_cache: HashMap::new(), default_fg_pixel: 0, default_bg_pixel: 0,
-         }
-     }
-     unsafe fn alloc_color(&mut self, spec: ColorSpec) -> Result<u64> {
-         // 1. Check cache first (early return)
-         if let Some(&pixel) = self.color_cache.get(&spec) {
-             return Ok(pixel);
-         }
-
-         // 2. Determine RGB values based on spec
-         let rgb_result: Option<(u8, u8, u8)> = match spec {
-             ColorSpec::Default => {
-                 // This case ideally shouldn't be hit if defaults are resolved beforehand.
-                 eprintln!("Warning: alloc_color called with ColorSpec::Default");
-                 None // Indicate failure to resolve RGB for Default spec here
-             }
-             ColorSpec::Idx(idx) => map_index_to_rgb(idx), // Use helper
-             ColorSpec::Rgb(r, g, b) => Some((r, g, b)),
-         };
-
-         // 3. Handle cases where RGB couldn't be determined (e.g., invalid index)
-         let (r, g, b) = match rgb_result {
-             Some(rgb) => rgb,
-             None => {
-                 // Failed to get RGB (invalid index or Default spec).
-                 // Cache and return the fallback pixel.
-                 eprintln!("Warning: Could not determine RGB for {:?}, using fallback.", spec);
-                 let fallback_pixel = self.default_bg_pixel; // Or another appropriate fallback
-                 self.color_cache.insert(spec, fallback_pixel);
-                 return Ok(fallback_pixel);
-             }
-         };
-
-         // 4. Prepare XColor struct
-         let cmap = unsafe{XDefaultColormap(self.display, XDefaultScreen(self.display))};
-         let mut xcolor = XColor {
-             pixel: 0, // Will be filled by XAllocColor
-             red: (r as u16) << 8,
-             green: (g as u16) << 8,
-             blue: (b as u16) << 8,
-             flags: DoRed | DoGreen | DoBlue,
-             pad: 0,
-         };
-
-         // 5. Attempt to allocate the color (early return on failure)
-         // SAFETY: XAllocColor is FFI.
-         if unsafe{XAllocColor(self.display, cmap, &mut xcolor)} == 0 {
-             // Allocation failed
-             eprintln!("Warning: Failed to allocate XColor for {:?} (RGB: {},{},{})", spec, r, g, b);
-             let fallback_pixel = self.default_bg_pixel; // Use fallback
-             self.color_cache.insert(spec, fallback_pixel); // Cache the fallback result
-             return Ok(fallback_pixel);
-         }
-
-         // 6. Allocation succeeded, cache and return the pixel value
-         let pixel = xcolor.pixel;
-         self.color_cache.insert(spec, pixel);
-         Ok(pixel)
-     }
-
-     // --- Private Helper Methods for Event Handling ---
-     fn handle_key_press(&mut self, term: &mut Term, event: &XEvent) -> Result<()> {
-        // SAFETY: Accessing union field event.key and FFI calls are unsafe.
-        unsafe {
-            let mut key_event: XKeyEvent = event.key;
-            let mut buffer: [u8; 32] = [0; 32];
-            let mut keysym: KeySym = 0;
-            let mut compose_status: XComposeStatus = mem::zeroed();
-
-            // SAFETY: XLookupString is FFI.
-            let count = XLookupString( &mut key_event, buffer.as_mut_ptr() as *mut i8, buffer.len() as c_int, &mut keysym, &mut compose_status );
-
-            if count <= 0 { return Ok(()); } // Nothing to write
-
-            let byte_slice = &buffer[..count as usize];
-            // SAFETY: write is FFI.
-            if libc::write(term.pty_parent.as_raw_fd(), byte_slice.as_ptr() as *const libc::c_void, count as size_t) < 0 {
-                eprintln!("Error writing key press to PTY: {}", io::Error::last_os_error());
-            }
-        }
-        Ok(())
-    }
-
-    fn handle_expose(&mut self, term: &Term, event: &XEvent) -> Result<()> {
-        // SAFETY: Accessing union field event.expose is unsafe.
-        let expose_event = unsafe { event.expose };
-        if expose_event.count != 0 { return Ok(()); } // Only redraw on last expose
-
-        // SAFETY: draw involves FFI calls.
-        if let Err(e) = self.draw(term) { eprintln!("Error redrawing on expose: {}", e); }
-        Ok(())
-    }
-
-    fn handle_configure_notify(&mut self, term: &mut Term, event: &XEvent) -> Result<()> {
-        // SAFETY: Accessing union field event.configure is unsafe.
-        let configure_event = unsafe { event.configure };
-        let new_pixel_width = configure_event.width;
-        let new_pixel_height = configure_event.height;
-
-        if new_pixel_width <= 0 || new_pixel_height <= 0 { return Ok(()); } // Ignore invalid
-        let new_pixel_width = new_pixel_width as usize;
-        let new_pixel_height = new_pixel_height as usize;
-
-        let new_cols = if self.font_width > 0 { (new_pixel_width / self.font_width as usize).max(1) } else { term.cols };
-        let new_rows = if self.font_height > 0 { (new_pixel_height / self.font_height as usize).max(1) } else { term.rows };
-
-        if new_cols == term.cols && new_rows == term.rows { return Ok(()); } // No change
-
-        // println!( "X ConfigureNotify: Resizing from {}x{} to {}x{} ({}x{} px)", term.cols, term.rows, new_cols, new_rows, new_pixel_width, new_pixel_height ); // Debug
-        if let Err(e) = term.resize(new_cols, new_rows) { eprintln!("Error resizing terminal state: {}", e); return Ok(()); }
-        // SAFETY: draw involves FFI calls.
-        if let Err(e) = self.draw(term) { eprintln!("Error redrawing after resize: {}", e); }
-        Ok(())
-    }
-}
 
 impl TerminalBackend for XBackend {
-      fn init(&mut self) -> Result<()> {
-         // SAFETY: All Xlib calls are FFI.
-         unsafe {
-             // Open display connection
-             self.display = XOpenDisplay(ptr::null());
-             if self.display.is_null() {
-                 anyhow::bail!("Failed to open X display");
-             }
+    fn new(width: usize, height: usize) -> Result<Self> {
+        let display = unsafe { xlib::XOpenDisplay(ptr::null()) };
+        if display.is_null() {
+            return Err(anyhow::anyhow!("Failed to open X display"));
+        }
 
-             // Get screen and root window
-             let screen = XDefaultScreen(self.display);
-             let root_window = XDefaultRootWindow(self.display);
+        let mut backend = XBackend {
+            display,
+            screen: unsafe { xlib::XDefaultScreen(display) },
+            window: 0,
+            gc: ptr::null_mut(),
+            colormap: 0,
+            font: ptr::null_mut(),
+            font_width: 0,
+            font_height: 0,
+            font_ascent: 0,
+            colors: unsafe { mem::zeroed() },
+            wm_delete_window: 0,
+            protocols_atom: 0,
+        };
 
-             // Create a simple window
-             self.window = XCreateSimpleWindow(
-                 self.display,
-                 root_window,
-                 0, 0, // x, y
-                 DEFAULT_WIDTH_PX as u32, DEFAULT_HEIGHT_PX as u32, // Initial size
-                 0, // border_width
-                 XBlackPixel(self.display, screen), // border color
-                 XWhitePixel(self.display, screen), // background color
-             );
-             if self.window == 0 {
-                 XCloseDisplay(self.display); // Cleanup display connection
-                 anyhow::bail!("Failed to create X window");
-             }
+        // Safety: FFI calls
+        unsafe {
+            backend.colormap = xlib::XDefaultColormap(backend.display, backend.screen);
+            // Removed redundant nested unsafe blocks
+            backend.protocols_atom = xlib::XInternAtom(backend.display, b"WM_PROTOCOLS\0".as_ptr() as *mut _, xlib::False);
+            backend.wm_delete_window = xlib::XInternAtom(backend.display, b"WM_DELETE_WINDOW\0".as_ptr() as *mut _, xlib::False);
+        }
 
-             // Select input events we care about
-             XSelectInput(
-                 self.display,
-                 self.window,
-                 ExposureMask | KeyPressMask | StructureNotifyMask
-             );
+        backend.load_font().context("Failed to load font")?;
+        backend.init_colors().context("Failed to initialize colors")?;
+        backend.create_window(width, height).context("Failed to create window")?;
+        backend.create_gc().context("Failed to create graphics context")?;
+        backend.setup_wm();
+        backend.setup_input();
 
-             // Map the window (make it visible)
-             XMapWindow(self.display, self.window);
+        unsafe {
+            xlib::XMapWindow(backend.display, backend.window);
+            xlib::XFlush(backend.display);
+        }
 
-             // Get the file descriptor for the X connection (for epoll)
-             self.x_fd = XConnectionNumber(self.display);
-             if self.x_fd < 0 {
-                 // Cleanup before erroring
-                 XDestroyWindow(self.display, self.window);
-                 XCloseDisplay(self.display);
-                 return Err(io::Error::last_os_error()).context("Failed to get X connection file descriptor");
-             }
+        Ok(backend)
+    }
 
-             // Load font
-             let font_name_cstring = CString::new(DEFAULT_FONT_NAME)?;
-             self.font_struct = XLoadQueryFont(self.display, font_name_cstring.as_ptr());
-             if self.font_struct.is_null() {
-                 // Cleanup before erroring
-                 XDestroyWindow(self.display, self.window);
-                 XCloseDisplay(self.display);
-                 anyhow::bail!("Failed to load font: {}", DEFAULT_FONT_NAME);
-             }
+    /// Runs the X11 event loop, translating native events to `BackendEvent`s.
+    fn run(&mut self, term: &mut Term, pty_fd: RawFd) -> Result<bool> {
+        let mut event: xlib::XEvent = unsafe { mem::zeroed() };
+        let mut key_text_buffer: [c_char; 32] = [0; 32];
 
-             // Calculate and store font metrics
-             if !(*self.font_struct).per_char.is_null() { self.font_width = (*self.font_struct).max_bounds.width as i32; }
-             else if (*self.font_struct).min_bounds.width == (*self.font_struct).max_bounds.width { self.font_width = (*self.font_struct).max_bounds.width as i32; }
-             else { self.font_width = (*self.font_struct).max_bounds.width as i32; } // Fallback width
-             self.font_ascent = (*self.font_struct).ascent as i32;
-             self.font_height = ((*self.font_struct).ascent + (*self.font_struct).descent) as i32;
-             if self.font_width <= 0 || self.font_height <= 0 {
-                 // Cleanup before erroring
-                 // XFreeFontInfo might be needed here depending on XLoadQueryFont specifics
-                 XDestroyWindow(self.display, self.window);
-                 XCloseDisplay(self.display);
-                 anyhow::bail!("Invalid font dimensions for {}", DEFAULT_FONT_NAME);
-             }
+        loop {
+            // Safety: FFI call
+            unsafe { xlib::XNextEvent(self.display, &mut event) };
 
-             // Create Graphics Context (GC)
-             self.gc = XCreateGC(self.display, self.window, 0, ptr::null_mut());
-             if self.gc.is_null() {
-                 // Cleanup before erroring
-                 // XFreeFontInfo might be needed here
-                 XDestroyWindow(self.display, self.window);
-                 XCloseDisplay(self.display);
-                 return Err(io::Error::last_os_error()).context("Failed to create Graphics Context (GC)");
-             }
+            let mut backend_event: Option<BackendEvent> = None;
+            let mut should_exit = false;
 
-             // Initialize Default Colors and cache them
-             let cmap = XDefaultColormap(self.display, screen);
-             let mut xcolor_struct = XColor { pixel: 0, red: 0, green: 0, blue: 0, flags: DoRed | DoGreen | DoBlue, pad: 0 };
-             // Use X defaults as initial values
-             self.default_fg_pixel = XBlackPixel(self.display, screen);
-             self.default_bg_pixel = XWhitePixel(self.display, screen);
-             // Try to allocate named colors for better theme matching (but ignore errors)
-             if XAllocNamedColor(self.display, cmap, b"black\0".as_ptr() as *const i8, &mut xcolor_struct, &mut xcolor_struct) != 0 { self.default_fg_pixel = xcolor_struct.pixel; }
-             if XAllocNamedColor(self.display, cmap, b"white\0".as_ptr() as *const i8, &mut xcolor_struct, &mut xcolor_struct) != 0 { self.default_bg_pixel = xcolor_struct.pixel; }
-             // Cache the default spec mapping (using FG pixel arbitrarily, could be BG too)
-             self.color_cache.insert(ColorSpec::Default, self.default_fg_pixel);
+            // Safety: Accessing event.type_ requires unsafe block
+            let event_type = unsafe { event.type_ };
+            match event_type {
+                xlib::Expose => {
+                    // Safety: Accessing union field
+                    let xexpose = unsafe { event.expose };
+                    if xexpose.count == 0 {
+                        self.draw(term).context("Failed during draw on expose")?;
+                    }
+                }
+                xlib::ConfigureNotify => {
+                    // Safety: Accessing union field
+                    let xconfigure = unsafe { event.configure };
+                    backend_event = Some(BackendEvent::Resize {
+                        width_px: xconfigure.width as u16,
+                        height_px: xconfigure.height as u16,
+                    });
+                }
+                xlib::KeyPress => {
+                    let mut keysym: xlib::KeySym = 0;
+                    // Safety: FFI call and accessing union field requires unsafe block
+                    let count = unsafe {
+                         xlib::XLookupString(&mut event.key, key_text_buffer.as_mut_ptr(), key_text_buffer.len() as c_int, &mut keysym, ptr::null_mut())
+                    };
+                    // Safety: Assuming buffer is valid C string after XLookupString
+                    let text = unsafe {
+                        CStr::from_ptr(key_text_buffer.as_ptr()).to_str().unwrap_or("")
+                    };
 
-             // Set initial GC state using determined defaults
-             XSetForeground(self.display, self.gc, self.default_fg_pixel);
-             XSetBackground(self.display, self.gc, self.default_bg_pixel);
-             XSetFont(self.display, self.gc, (*self.font_struct).fid);
+                    backend_event = Some(BackendEvent::Key {
+                        keysym: keysym as u32,
+                        text,
+                    });
+                }
+                xlib::ClientMessage => {
+                    // Safety: Accessing union field requires unsafe block
+                    let xclient = unsafe { event.client_message }; // Use client_message field
+                    if xclient.message_type == self.protocols_atom && xclient.data.get_long(0) as xlib::Atom == self.wm_delete_window {
+                        should_exit = true;
+                    }
+                }
+                 xlib::FocusIn => { backend_event = Some(BackendEvent::FocusGained); }
+                 xlib::FocusOut => { backend_event = Some(BackendEvent::FocusLost); }
+                _ => {}
+            }
 
-             // Ensure all setup commands are sent to the X server
-             XFlush(self.display);
-         }
-         println!("X Backend initialized. Window created. Font loaded.");
+            if let Some(be) = backend_event {
+                 let event_to_handle = match be {
+                     BackendEvent::Key { keysym, text } => BackendEvent::Key { keysym, text: &text.to_string() },
+                     other => other,
+                 };
+                self.handle_event(event_to_handle, term, pty_fd).context("Failed handling backend event")?;
+            }
+
+            if should_exit {
+                return Ok(true);
+            }
+        }
+    }
+
+    /// Handles translated backend events.
+    fn handle_event(&mut self, event: BackendEvent, term: &mut Term, pty_fd: RawFd) -> Result<()> {
+        match event {
+            BackendEvent::Key { text, keysym } => {
+                let bytes_to_write: &[u8] = if !text.is_empty() && keysym != keysym::XK_BackSpace {
+                    text.as_bytes()
+                } else {
+                    match keysym {
+                        keysym::XK_Return => b"\r", keysym::XK_Left => b"\x1b[D", keysym::XK_Right => b"\x1b[C",
+                        keysym::XK_Up => b"\x1b[A", keysym::XK_Down => b"\x1b[B", keysym::XK_BackSpace => b"\x08",
+                        keysym::XK_Tab => b"\t", keysym::XK_ISO_Left_Tab => b"\x1b[Z", keysym::XK_Home => b"\x1b[H",
+                        keysym::XK_End => b"\x1b[F", keysym::XK_Page_Up => b"\x1b[5~", keysym::XK_Page_Down => b"\x1b[6~",
+                        keysym::XK_Delete => b"\x1b[3~", keysym::XK_Insert => b"\x1b[2~",
+                        _ => b"",
+                    }
+                };
+
+                if bytes_to_write.is_empty() { return Ok(()); }
+
+                let count = bytes_to_write.len();
+                // Safety: FFI call to libc::write
+                let written = unsafe { libc::write(pty_fd, bytes_to_write.as_ptr() as *const libc::c_void, count) };
+
+                if written < 0 {
+                    return Err(anyhow::Error::from(std::io::Error::last_os_error())
+                        .context("X11Backend: Failed to write key event to PTY"));
+                }
+                if (written as usize) != count {
+                    eprintln!("X11Backend: Warning: Partial write to PTY ({} out of {})", written, count);
+                }
+            }
+            BackendEvent::Resize { width_px, height_px } => {
+                if self.font_width == 0 || self.font_height == 0 { return Ok(()); }
+
+                let new_width = (width_px as u32 / self.font_width).max(1) as usize;
+                let new_height = (height_px as u32 / self.font_height).max(1) as usize;
+
+                let (current_width, current_height) = term.get_dimensions();
+                if new_width == current_width && new_height == current_height { return Ok(()); }
+
+                term.resize(new_width, new_height);
+
+                let winsz = winsize { ws_row: new_height as u16, ws_col: new_width as u16, ws_xpixel: width_px, ws_ypixel: height_px };
+                // Safety: FFI call to libc::ioctl
+                if unsafe { libc::ioctl(pty_fd, TIOCSWINSZ, &winsz) } < 0 {
+                    eprintln!("X11Backend: Warning: ioctl(TIOCSWINSZ) failed: {}", std::io::Error::last_os_error());
+                }
+
+                self.draw(term)?;
+            }
+            BackendEvent::CloseRequested => {}
+            BackendEvent::FocusGained => { self.draw(term)?; }
+            BackendEvent::FocusLost => { self.draw(term)?; }
+        }
+        Ok(())
+    }
+
+    /// Renders the terminal state to the X11 window.
+    fn draw(&mut self, term: &Term) -> Result<()> {
+        let (term_width, term_height) = term.get_dimensions();
+        let mut draw_buffer: [c_char; DRAW_BUFFER_SIZE] = [0; DRAW_BUFFER_SIZE];
+        let mut buffer_idx: usize = 0;
+        let mut current_fg = self.colors[DEFAULT_FG_IDX].pixel;
+        let mut current_bg = self.colors[DEFAULT_BG_IDX].pixel;
+        let mut current_flags = AttrFlags::empty();
+        let mut run_start_x = 0;
+        let mut run_start_y = 0;
+
+        // Safety: FFI calls for drawing. Assumes display/gc valid.
+        unsafe {
+            xlib::XSetForeground(self.display, self.gc, self.colors[DEFAULT_BG_IDX].pixel);
+            xlib::XFillRectangle(self.display, self.window, self.gc, 0, 0, term_width as u32 * self.font_width, term_height as u32 * self.font_height);
+            xlib::XSetForeground(self.display, self.gc, current_fg);
+            xlib::XSetBackground(self.display, self.gc, current_bg);
+
+            for y in 0..term_height {
+                for x in 0..term_width {
+                    let glyph = term.get_glyph(x, y).cloned().unwrap_or_default();
+                    let flags = glyph.attr.flags;
+                    let (fg_pixel, bg_pixel) = self.resolve_colors(glyph.attr.fg, glyph.attr.bg); // Contains unsafe alloc_color
+                    let (effective_fg, effective_bg) = if flags.contains(AttrFlags::REVERSE) { (bg_pixel, fg_pixel) } else { (fg_pixel, bg_pixel) };
+                    let attr_changed = effective_fg != current_fg || effective_bg != current_bg || flags != current_flags;
+                    let position_changed = x == 0 || x != run_start_x + buffer_idx;
+
+                    if buffer_idx > 0 && (attr_changed || position_changed || buffer_idx >= DRAW_BUFFER_SIZE - 1 || x == term_width) {
+                        self.flush_draw_buffer(run_start_x, run_start_y, &draw_buffer, buffer_idx)?; // Unsafe internally
+                        buffer_idx = 0;
+                    }
+
+                    if attr_changed {
+                        xlib::XSetForeground(self.display, self.gc, effective_fg);
+                        xlib::XSetBackground(self.display, self.gc, effective_bg);
+                        current_fg = effective_fg; current_bg = effective_bg; current_flags = flags;
+                    }
+
+                    if buffer_idx == 0 { run_start_x = x; run_start_y = y; }
+
+                    if glyph.c.is_ascii() && glyph.c != '\0' {
+                        draw_buffer[buffer_idx] = glyph.c as c_char;
+                        buffer_idx += 1;
+                    } else if glyph.c != '\0' {
+                        if buffer_idx > 0 { self.flush_draw_buffer(run_start_x, run_start_y, &draw_buffer, buffer_idx)?; buffer_idx = 0; }
+                        self.draw_single_char(x, y, glyph.c)?; // Unsafe internally
+                        run_start_x = x + 1; run_start_y = y;
+                    } else {
+                         if buffer_idx == 0 { run_start_x = x + 1; run_start_y = y; }
+                    }
+
+                    let line_y_base = ((y as u32 + 1) * self.font_height) as c_int;
+                    if flags.contains(AttrFlags::UNDERLINE) {
+                        xlib::XDrawLine(self.display, self.window, self.gc, (x as u32 * self.font_width) as c_int, line_y_base - 1, ((x + 1) as u32 * self.font_width) as c_int -1, line_y_base - 1);
+                    }
+                    if flags.contains(AttrFlags::STRIKETHROUGH) {
+                         let strike_y = line_y_base - (self.font_height / 2) as c_int;
+                         xlib::XDrawLine(self.display, self.window, self.gc, (x as u32 * self.font_width) as c_int, strike_y, ((x + 1) as u32 * self.font_width) as c_int -1, strike_y);
+                    }
+                }
+                if buffer_idx > 0 { self.flush_draw_buffer(run_start_x, run_start_y, &draw_buffer, buffer_idx)?; buffer_idx = 0; }
+            }
+
+            self.draw_cursor(term)?; // Unsafe internally
+            xlib::XFlush(self.display);
+        }
+        Ok(())
+    }
+
+    /// Cleans up X11 resources.
+    fn cleanup(&mut self) -> Result<()> {
+        // Safety: FFI calls to free X resources. Checks ensure we don't double-free.
+        unsafe {
+            if !self.font.is_null() { xlib::XFreeFont(self.display, self.font); self.font = ptr::null_mut(); }
+            if !self.gc.is_null() { xlib::XFreeGC(self.display, self.gc); self.gc = ptr::null_mut(); }
+            if self.window != 0 { xlib::XDestroyWindow(self.display, self.window); self.window = 0; }
+            if !self.display.is_null() { xlib::XCloseDisplay(self.display); self.display = ptr::null_mut(); }
+        }
+        Ok(())
+    }
+}
+
+// Private helper methods for XBackend
+impl XBackend {
+    /// Loads the specified font. Contains unsafe FFI calls.
+    fn load_font(&mut self) -> Result<()> {
+        let font_name = CString::new(DEFAULT_FONT_NAME).unwrap_or_default();
+        // Safety: FFI call
+        self.font = unsafe { xlib::XLoadQueryFont(self.display, font_name.as_ptr()) };
+        if self.font.is_null() { anyhow::bail!("Failed to load font: {}", DEFAULT_FONT_NAME); }
+        // Safety: Dereferencing raw font pointer, assumed valid after check above.
+        unsafe {
+            self.font_width = (*self.font).max_bounds.width as u32;
+            self.font_height = ((*self.font).ascent + (*self.font).descent) as u32;
+            self.font_ascent = (*self.font).ascent as u32;
+        }
+        if self.font_width < MIN_FONT_WIDTH || self.font_height < MIN_FONT_HEIGHT { anyhow::bail!("Font dimensions too small ({}x{})", self.font_width, self.font_height); }
+        Ok(())
+    }
+
+    /// Initializes default colors. Contains unsafe FFI calls.
+    fn init_colors(&mut self) -> Result<()> {
+        // Safety: FFI calls to alloc_color helper
+        unsafe {
+            Self::alloc_color(self.display, self.colormap, &mut self.colors[DEFAULT_FG_IDX], 0xffff, 0xffff, 0xffff).context("Failed to allocate default foreground color")?;
+            Self::alloc_color(self.display, self.colormap, &mut self.colors[DEFAULT_BG_IDX], 0x0000, 0x0000, 0x0000).context("Failed to allocate default background color")?;
+        }
+        Ok(())
+    }
+
+    /// Creates the main application window. Contains unsafe FFI calls.
+    fn create_window(&mut self, initial_width_chars: usize, initial_height_chars: usize) -> Result<()> {
+        // Safety: FFI calls
+        unsafe {
+            let root = xlib::XRootWindow(self.display, self.screen);
+            let black = xlib::XBlackPixel(self.display, self.screen);
+            let white = xlib::XWhitePixel(self.display, self.screen);
+            let initial_pixel_width = (initial_width_chars as u32 * self.font_width) as c_uint;
+            let initial_pixel_height = (initial_height_chars as u32 * self.font_height) as c_uint;
+            self.window = xlib::XCreateSimpleWindow(self.display, root, 0, 0, initial_pixel_width, initial_pixel_height, 0, black, white);
+        }
+        Ok(())
+    }
+
+     /// Creates the Graphics Context (GC). Contains unsafe FFI calls.
+     fn create_gc(&mut self) -> Result<()> {
+        // Safety: FFI calls
+        unsafe {
+            self.gc = xlib::XCreateGC(self.display, self.window, 0, ptr::null_mut());
+            if self.gc.is_null() { anyhow::bail!("Failed to create Graphics Context"); }
+            if !self.font.is_null() { xlib::XSetFont(self.display, self.gc, (*self.font).fid); }
+        }
+        Ok(())
+     }
+
+    /// Sets up Window Manager hints and protocols. Contains unsafe FFI calls.
+    fn setup_wm(&mut self) {
+        // Safety: FFI calls and struct manipulation for FFI
+        unsafe {
+            let mut size_hints: xlib::XSizeHints = mem::zeroed();
+            size_hints.flags = xlib::PResizeInc | xlib::PMinSize;
+            size_hints.width_inc = self.font_width as c_int;
+            size_hints.height_inc = self.font_height as c_int;
+            size_hints.min_width = self.font_width as c_int;
+            size_hints.min_height = self.font_height as c_int;
+            xlib::XSetWMNormalHints(self.display, self.window, &mut size_hints);
+            // Pass pointer directly
+            xlib::XSetWMProtocols(self.display, self.window, [self.wm_delete_window].as_mut_ptr(), 1);
+            let title = CString::new("myterm").unwrap_or_default();
+            xlib::XStoreName(self.display, self.window, title.as_ptr() as *mut c_char);
+        }
+    }
+
+    /// Sets up input event selection. Contains unsafe FFI calls.
+    fn setup_input(&mut self) {
+        // Safety: FFI call
+        unsafe {
+            xlib::XSelectInput(self.display, self.window, xlib::ExposureMask | xlib::KeyPressMask | xlib::StructureNotifyMask | xlib::FocusChangeMask);
+        }
+    }
+
+    /// Allocates a specific color. Marked unsafe as it's an FFI call wrapper.
+    unsafe fn alloc_color(display: *mut xlib::Display, colormap: xlib::Colormap, color: &mut xlib::XColor, r: u16, g: u16, b: u16) -> Result<()> {
+        color.red = r; color.green = g; color.blue = b;
+        color.flags = xlib::DoRed | xlib::DoGreen | xlib::DoBlue;
+        // Safety: FFI call required by caller
+        if unsafe { xlib::XAllocColor(display, colormap, color) } == 0 {
+            anyhow::bail!("Failed to allocate color ({}, {}, {})", r, g, b);
+        }
+        Ok(())
+    }
+
+    /// Resolves internal `Color` enum to X11 pixel values. Contains unsafe calls.
+    fn resolve_colors(&self, fg: Color, bg: Color) -> (c_ulong, c_ulong) {
+        // Simplified: Needs proper color allocation/caching
+        let fg_pixel = match fg {
+            Color::Idx(idx) => if (idx as usize) < TOTAL_COLOR_COUNT { self.colors[idx as usize].pixel } else { self.colors[DEFAULT_FG_IDX].pixel },
+            Color::Rgb(r, g, b) => {
+                 let mut temp_color: xlib::XColor = unsafe { mem::zeroed() };
+                 // Safety: FFI wrapper call
+                 if unsafe { Self::alloc_color(self.display, self.colormap, &mut temp_color, (r as u16) * 257, (g as u16) * 257, (b as u16) * 257).is_ok() } { temp_color.pixel }
+                 else { self.colors[DEFAULT_FG_IDX].pixel }
+            },
+            Color::Default => self.colors[DEFAULT_FG_IDX].pixel,
+        };
+        let bg_pixel = match bg {
+             Color::Idx(idx) => if (idx as usize) < TOTAL_COLOR_COUNT { self.colors[idx as usize].pixel } else { self.colors[DEFAULT_BG_IDX].pixel },
+             Color::Rgb(r, g, b) => {
+                  let mut temp_color: xlib::XColor = unsafe { mem::zeroed() };
+                  // Safety: FFI wrapper call
+                  if unsafe { Self::alloc_color(self.display, self.colormap, &mut temp_color, (r as u16) * 257, (g as u16) * 257, (b as u16) * 257).is_ok() } { temp_color.pixel }
+                  else { self.colors[DEFAULT_BG_IDX].pixel }
+             },
+            Color::Default => self.colors[DEFAULT_BG_IDX].pixel,
+        };
+        (fg_pixel, bg_pixel)
+    }
+
+     /// Helper to flush the drawing buffer. Marked unsafe as it calls XDrawString.
+     unsafe fn flush_draw_buffer(&self, x: usize, y: usize, buffer: &[c_char], count: usize) -> Result<()> {
+         if count == 0 { return Ok(()); }
+         let baseline_y = ((y as u32 + 1) * self.font_height - (self.font_height - self.font_ascent)) as c_int;
+         let start_x = (x as u32 * self.font_width) as c_int;
+         // Safety: FFI call required by caller
+         unsafe { xlib::XDrawString(self.display, self.window, self.gc, start_x, baseline_y, buffer.as_ptr(), count as c_int); }
          Ok(())
      }
 
-     fn get_event_fds(&self) -> Vec<RawFd> { vec![self.x_fd] }
-
-     fn handle_event(&mut self, term: &mut Term, event_fd: RawFd, event_kind: u32) -> Result<bool> {
-        // Guard clauses for invalid FD or non-readable/error states
-        if event_fd != self.x_fd { return Ok(false); } // Not our FD
-        if event_kind & ((EPOLLERR | EPOLLHUP | EPOLLRDHUP) as u32) != 0 {
-            eprintln!("Error or hang-up on X connection fd (event kind: 0x{:x}).", event_kind);
-            return Ok(true); // Signal exit
-        }
-        if event_kind & (EPOLLIN as u32) == 0 { return Ok(false); } // Not readable
-
-        let mut needs_redraw = false;
-        // Process all pending X events
-        // SAFETY: FFI calls within loop.
-        unsafe {
-            while XPending(self.display) > 0 {
-                let mut event: XEvent = mem::zeroed();
-                XNextEvent(self.display, &mut event);
-                let event_type = event.type_; // Access type safely inside unsafe block
-
-                // Dispatch to helper methods based on event type
-                let result = match event_type {
-                    xlib::KeyPress => self.handle_key_press(term, &event),
-                    xlib::Expose => {
-                        // Handle expose event - only mark for redraw on the last one
-                        let expose_event = event.expose; // Access within unsafe
-                        if expose_event.count == 0 {
-                            needs_redraw = true;
-                        }
-                        Ok(())
-                    },
-                    xlib::ConfigureNotify => {
-                        // Handle resize/move event
-                        needs_redraw = true; // Assume redraw needed after configure
-                        self.handle_configure_notify(term, &event)
-                    },
-                    _ => Ok(()), // Ignore other event types for this MVP
-                };
-
-                // Log errors from handlers, but don't necessarily exit
-                if let Err(e) = result {
-                     eprintln!("Error handling X event type {}: {}", event_type, e);
-                }
-            } // End while XPending
-        } // End unsafe block for X event loop
-
-        // Perform redraw *after* processing all pending events if necessary
-        if needs_redraw {
-             // Draw needs &mut self because alloc_color needs it
-             if let Err(e) = self.draw(term) {
-                 eprintln!("Error drawing after X events: {}", e);
-                 // Decide if this should be fatal - maybe return Ok(true)?
-             }
-        }
-
-        Ok(false) // Signal main loop to continue
-    }
-     // ** FIX: Needs &mut self to match trait and allow alloc_color **
-     fn draw(&mut self, term: &Term) -> Result<()> {
-         // SAFETY: FFI calls.
-         unsafe {
-             if self.display.is_null() || self.gc.is_null() || self.window == 0 { return Err(AnyhowError::msg("X draw called with invalid state")); }
-             for y in 0..term.rows { for x in 0..term.cols {
-                 let glyph = term.screen[y][x]; let flags = glyph.attr.flags;
-                 let mut eff_fg_spec = glyph.attr.fg; let mut eff_bg_spec = glyph.attr.bg;
-                 if flags.contains(AttrFlags::REVERSE) { std::mem::swap(&mut eff_fg_spec, &mut eff_bg_spec); }
-                 let fg_pixel = match eff_fg_spec { ColorSpec::Default => self.default_fg_pixel, spec => self.alloc_color(spec).unwrap_or(self.default_fg_pixel) };
-                 let bg_pixel = match eff_bg_spec { ColorSpec::Default => self.default_bg_pixel, spec => self.alloc_color(spec).unwrap_or(self.default_bg_pixel) };
-                 let dx = (x * self.font_width as usize) as i32; let dy = (y * self.font_height as usize) as i32;
-                 XSetForeground(self.display, self.gc, bg_pixel);
-                 XFillRectangle(self.display, self.window, self.gc, dx, dy, self.font_width as u32, self.font_height as u32);
-                 if glyph.c != ' ' {
-                     let mut bytes = [0u8; 4];
-                     // ** FIX: Call encode_utf8 on the char field **
-                     let slice = glyph.c.encode_utf8(&mut bytes).as_bytes();
-                     let draw_y_baseline = dy + self.font_ascent;
-                     XSetForeground(self.display, self.gc, fg_pixel);
-                     XDrawString( self.display, self.window, self.gc, dx, draw_y_baseline, slice.as_ptr() as *const i8, slice.len() as i32 );
-                     if flags.contains(AttrFlags::BOLD) { XDrawString( self.display, self.window, self.gc, dx + 1, draw_y_baseline, slice.as_ptr() as *const i8, slice.len() as i32 ); }
-                     if flags.contains(AttrFlags::UNDERLINE) { let line_y = draw_y_baseline + 1; XDrawLine(self.display, self.window, self.gc, dx, line_y, dx + self.font_width - 1, line_y); }
-                 }
-             } }
-             let cx = std::cmp::min(term.cursor_x, term.cols.saturating_sub(1)); let cy = std::cmp::min(term.cursor_y, term.rows.saturating_sub(1));
-             let cursor_glyph = term.screen[cy][cx]; let cursor_flags = cursor_glyph.attr.flags;
-             let mut cursor_fg_spec = cursor_glyph.attr.fg; let mut cursor_bg_spec = cursor_glyph.attr.bg;
-             if cursor_flags.contains(AttrFlags::REVERSE) { std::mem::swap(&mut cursor_fg_spec, &mut cursor_bg_spec); }
-             let cursor_fg_pixel = match cursor_fg_spec { ColorSpec::Default => self.default_fg_pixel, spec => self.alloc_color(spec).unwrap_or(self.default_fg_pixel) };
-             let cursor_bg_pixel = match cursor_bg_spec { ColorSpec::Default => self.default_bg_pixel, spec => self.alloc_color(spec).unwrap_or(self.default_bg_pixel) };
-             let cx_px = (cx * self.font_width as usize) as i32; let cy_px = (cy * self.font_height as usize) as i32;
-             XSetForeground(self.display, self.gc, cursor_fg_pixel);
-             XFillRectangle(self.display, self.window, self.gc, cx_px, cy_px, self.font_width as u32, self.font_height as u32);
-             if cursor_glyph.c != ' ' {
-                 let mut bytes = [0u8; 4];
-                 // ** FIX: Call encode_utf8 on the char field **
-                 let slice = cursor_glyph.c.encode_utf8(&mut bytes).as_bytes();
-                 let draw_y_baseline = cy_px + self.font_ascent;
-                 XSetForeground(self.display, self.gc, cursor_bg_pixel);
-                 XDrawString( self.display, self.window, self.gc, cx_px, draw_y_baseline, slice.as_ptr() as *const i8, slice.len() as i32 );
-             }
-             XFlush(self.display);
-         }
-         Ok(())
+      /// Helper to draw a single char. Marked unsafe as it calls XDrawString.
+      unsafe fn draw_single_char(&self, x: usize, y: usize, c: char) -> Result<()> {
+          let s = c.to_string();
+          let c_str = CString::new(s).unwrap_or_default();
+          let baseline_y = ((y as u32 + 1) * self.font_height - (self.font_height - self.font_ascent)) as c_int;
+          let start_x = (x as u32 * self.font_width) as c_int;
+          // Safety: FFI call required by caller
+          unsafe { xlib::XDrawString(self.display, self.window, self.gc, start_x, baseline_y, c_str.as_ptr(), c_str.as_bytes().len() as c_int); }
+          Ok(())
       }
-     fn get_dimensions(&self) -> (usize, usize) { /* ... implementation as before ... */ (DEFAULT_COLS, DEFAULT_ROWS) }
+
+      /// Draws the terminal cursor. Marked unsafe as it calls XDrawImageString.
+      unsafe fn draw_cursor(&self, term: &Term) -> Result<()> {
+            let (cursor_x, cursor_y) = term.get_cursor();
+            let (term_width, term_height) = term.get_dimensions();
+            let cx = min(cursor_x, term_width.saturating_sub(1));
+            let cy = min(cursor_y, term_height.saturating_sub(1));
+            let cursor_glyph = term.get_glyph(cx, cy).cloned().unwrap_or_default();
+            let (glyph_fg_pixel, glyph_bg_pixel) = self.resolve_colors(cursor_glyph.attr.fg, cursor_glyph.attr.bg); // Unsafe internally
+            let cursor_draw_fg = glyph_bg_pixel;
+            let cursor_draw_bg = glyph_fg_pixel;
+
+            // Safety: FFI calls required by caller
+            unsafe {
+                xlib::XSetForeground(self.display, self.gc, cursor_draw_fg);
+                xlib::XSetBackground(self.display, self.gc, cursor_draw_bg);
+            }
+
+            let cursor_x_px = (cx as u32 * self.font_width) as c_int;
+            let baseline_y = ((cy as u32 + 1) * self.font_height - (self.font_height - self.font_ascent)) as c_int;
+            let cursor_char_str = cursor_glyph.c.to_string();
+            let c_str = CString::new(cursor_char_str).unwrap_or_default();
+
+            // Safety: FFI call required by caller
+            unsafe { xlib::XDrawImageString(self.display, self.window, self.gc, cursor_x_px, baseline_y, c_str.as_ptr(), c_str.as_bytes().len() as c_int); }
+            Ok(())
+      }
 }
 
+
 impl Drop for XBackend {
-     fn drop(&mut self) {
-        // SAFETY: FFI calls.
-        unsafe {
-            if !self.display.is_null() {
-                if !self.color_cache.is_empty() {
-                    let cmap = XDefaultColormap(self.display, XDefaultScreen(self.display));
-                    let mut pixels: Vec<u64> = self.color_cache.values().copied().collect();
-                     if !pixels.is_empty() {
-                         // **FIX: Cast pointer mutability**
-                         XFreeColors(self.display, cmap, pixels.as_mut_ptr(), pixels.len() as c_int, 0);
-                     }
-                }
-                if !self.gc.is_null() { XFreeGC(self.display, self.gc); }
-                if self.window != 0 { XDestroyWindow(self.display, self.window); }
-                XCloseDisplay(self.display);
-            }
-        }
+    fn drop(&mut self) {
+        let _ = self.cleanup();
     }
 }
