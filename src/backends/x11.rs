@@ -7,14 +7,13 @@ use crate::glyph::{Color, AttrFlags};
 use crate::backends::{TerminalBackend, BackendEvent};
 
 use anyhow::{Context, Result};
-use std::ffi::{CStr, CString};
+use std::ffi::CString; // Removed CStr import
 use std::os::unix::io::RawFd;
 use std::ptr;
 use std::mem;
 use std::cmp::min;
 
-// Removed unused c_void
-use libc::{c_char, c_int, c_uint, c_ulong, winsize, TIOCSWINSZ, c_void}; // Re-add c_void for libc::write
+use libc::{c_char, c_int, c_uint, c_ulong, winsize, TIOCSWINSZ};
 use x11::xlib;
 use x11::keysym;
 
@@ -69,7 +68,6 @@ impl TerminalBackend for XBackend {
         // Safety: FFI calls
         unsafe {
             backend.colormap = xlib::XDefaultColormap(backend.display, backend.screen);
-            // Removed redundant nested unsafe blocks
             backend.protocols_atom = xlib::XInternAtom(backend.display, b"WM_PROTOCOLS\0".as_ptr() as *mut _, xlib::False);
             backend.wm_delete_window = xlib::XInternAtom(backend.display, b"WM_DELETE_WINDOW\0".as_ptr() as *mut _, xlib::False);
         }
@@ -92,7 +90,7 @@ impl TerminalBackend for XBackend {
     /// Runs the X11 event loop, translating native events to `BackendEvent`s.
     fn run(&mut self, term: &mut Term, pty_fd: RawFd) -> Result<bool> {
         let mut event: xlib::XEvent = unsafe { mem::zeroed() };
-        let mut key_text_buffer: [c_char; 32] = [0; 32];
+        let mut key_text_buffer: [u8; 32] = [0; 32]; // Use u8 for UTF-8
 
         loop {
             // Safety: FFI call
@@ -122,12 +120,19 @@ impl TerminalBackend for XBackend {
                 xlib::KeyPress => {
                     let mut keysym: xlib::KeySym = 0;
                     // Safety: FFI call and accessing union field requires unsafe block
+                    // Pass the buffer as *mut c_char.
                     let count = unsafe {
-                         xlib::XLookupString(&mut event.key, key_text_buffer.as_mut_ptr(), key_text_buffer.len() as c_int, &mut keysym, ptr::null_mut())
+                         xlib::XLookupString(&mut event.key, key_text_buffer.as_mut_ptr() as *mut c_char, key_text_buffer.len() as c_int, &mut keysym, ptr::null_mut())
                     };
-                    // Safety: Assuming buffer is valid C string after XLookupString
-                    let text = unsafe {
-                        CStr::from_ptr(key_text_buffer.as_ptr()).to_str().unwrap_or("")
+
+                    // Use the count to correctly interpret the buffer
+                    let text = if count > 0 {
+                        // Safety: We assume XLookupString writes valid UTF-8 or compatible bytes within the count.
+                        // Using from_utf8 avoids panic on invalid sequences.
+                        // Use unwrap_or as a fallback, though invalid UTF-8 here would be unexpected.
+                        std::str::from_utf8(&key_text_buffer[0..count as usize]).unwrap_or("")
+                    } else {
+                        ""
                     };
 
                     backend_event = Some(BackendEvent::Key {
@@ -148,8 +153,9 @@ impl TerminalBackend for XBackend {
             }
 
             if let Some(be) = backend_event {
+                 // Clone the text slice to own the String for the event
                  let event_to_handle = match be {
-                     BackendEvent::Key { keysym, text } => BackendEvent::Key { keysym, text: &text.to_string() },
+                     BackendEvent::Key { keysym, text } => BackendEvent::Key { keysym, text },
                      other => other,
                  };
                 self.handle_event(event_to_handle, term, pty_fd).context("Failed handling backend event")?;
@@ -168,52 +174,80 @@ impl TerminalBackend for XBackend {
                 let bytes_to_write: &[u8] = if !text.is_empty() && keysym != keysym::XK_BackSpace {
                     text.as_bytes()
                 } else {
+                    // Map special keysyms to escape sequences
                     match keysym {
-                        keysym::XK_Return => b"\r", keysym::XK_Left => b"\x1b[D", keysym::XK_Right => b"\x1b[C",
-                        keysym::XK_Up => b"\x1b[A", keysym::XK_Down => b"\x1b[B", keysym::XK_BackSpace => b"\x08",
-                        keysym::XK_Tab => b"\t", keysym::XK_ISO_Left_Tab => b"\x1b[Z", keysym::XK_Home => b"\x1b[H",
-                        keysym::XK_End => b"\x1b[F", keysym::XK_Page_Up => b"\x1b[5~", keysym::XK_Page_Down => b"\x1b[6~",
-                        keysym::XK_Delete => b"\x1b[3~", keysym::XK_Insert => b"\x1b[2~",
-                        _ => b"",
+                        keysym::XK_Return => b"\r",
+                        keysym::XK_Left => b"\x1b[D",
+                        keysym::XK_Right => b"\x1b[C",
+                        keysym::XK_Up => b"\x1b[A",
+                        keysym::XK_Down => b"\x1b[B",
+                        keysym::XK_BackSpace => b"\x08", // Backspace
+                        keysym::XK_Tab => b"\t",
+                        keysym::XK_ISO_Left_Tab => b"\x1b[Z", // Shift+Tab
+                        keysym::XK_Home => b"\x1b[H",
+                        keysym::XK_End => b"\x1b[F",
+                        keysym::XK_Page_Up => b"\x1b[5~",
+                        keysym::XK_Page_Down => b"\x1b[6~",
+                        keysym::XK_Delete => b"\x1b[3~",
+                        keysym::XK_Insert => b"\x1b[2~",
+                        // Add more mappings as needed
+                        _ => b"", // Ignore other unmapped special keys
                     }
                 };
 
                 if bytes_to_write.is_empty() { return Ok(()); }
 
                 let count = bytes_to_write.len();
-                // Safety: FFI call to libc::write
+                // Safety: FFI call to libc::write. Requires pointer cast.
                 let written = unsafe { libc::write(pty_fd, bytes_to_write.as_ptr() as *const libc::c_void, count) };
 
                 if written < 0 {
+                    // Handle potential write error
                     return Err(anyhow::Error::from(std::io::Error::last_os_error())
                         .context("X11Backend: Failed to write key event to PTY"));
                 }
                 if (written as usize) != count {
+                    // Handle partial write if necessary, though less common for TTYs
                     eprintln!("X11Backend: Warning: Partial write to PTY ({} out of {})", written, count);
                 }
             }
             BackendEvent::Resize { width_px, height_px } => {
+                // Avoid division by zero if font hasn't loaded yet
                 if self.font_width == 0 || self.font_height == 0 { return Ok(()); }
 
+                // Calculate new dimensions in character cells
                 let new_width = (width_px as u32 / self.font_width).max(1) as usize;
                 let new_height = (height_px as u32 / self.font_height).max(1) as usize;
 
                 let (current_width, current_height) = term.get_dimensions();
+                // Only resize if dimensions actually changed
                 if new_width == current_width && new_height == current_height { return Ok(()); }
 
+                // Update terminal state
                 term.resize(new_width, new_height);
 
+                // Inform the PTY slave about the new size
                 let winsz = winsize { ws_row: new_height as u16, ws_col: new_width as u16, ws_xpixel: width_px, ws_ypixel: height_px };
                 // Safety: FFI call to libc::ioctl
                 if unsafe { libc::ioctl(pty_fd, TIOCSWINSZ, &winsz) } < 0 {
+                    // Log error but don't necessarily fail the whole operation
                     eprintln!("X11Backend: Warning: ioctl(TIOCSWINSZ) failed: {}", std::io::Error::last_os_error());
                 }
 
+                // Redraw the terminal content
                 self.draw(term)?;
             }
-            BackendEvent::CloseRequested => {}
-            BackendEvent::FocusGained => { self.draw(term)?; }
-            BackendEvent::FocusLost => { self.draw(term)?; }
+            BackendEvent::CloseRequested => {
+                // This event is handled in the run loop to trigger exit
+            }
+            BackendEvent::FocusGained => {
+                // Redraw on focus gain (e.g., to show focused cursor style)
+                self.draw(term)?;
+            }
+            BackendEvent::FocusLost => {
+                // Redraw on focus lost (e.g., to show unfocused cursor style)
+                self.draw(term)?;
+            }
         }
         Ok(())
     }
@@ -231,57 +265,103 @@ impl TerminalBackend for XBackend {
 
         // Safety: FFI calls for drawing. Assumes display/gc valid.
         unsafe {
+            // Clear background
             xlib::XSetForeground(self.display, self.gc, self.colors[DEFAULT_BG_IDX].pixel);
             xlib::XFillRectangle(self.display, self.window, self.gc, 0, 0, term_width as u32 * self.font_width, term_height as u32 * self.font_height);
+
+            // Set initial drawing colors
             xlib::XSetForeground(self.display, self.gc, current_fg);
             xlib::XSetBackground(self.display, self.gc, current_bg);
 
+            // Iterate through each cell of the terminal grid
             for y in 0..term_height {
                 for x in 0..term_width {
+                    // Get glyph info, defaulting if out of bounds (shouldn't happen here)
                     let glyph = term.get_glyph(x, y).cloned().unwrap_or_default();
                     let flags = glyph.attr.flags;
+
+                    // Determine effective foreground and background based on attributes
                     let (fg_pixel, bg_pixel) = self.resolve_colors(glyph.attr.fg, glyph.attr.bg); // Contains unsafe alloc_color
-                    let (effective_fg, effective_bg) = if flags.contains(AttrFlags::REVERSE) { (bg_pixel, fg_pixel) } else { (fg_pixel, bg_pixel) };
+                    let (effective_fg, effective_bg) = if flags.contains(AttrFlags::REVERSE) {
+                        (bg_pixel, fg_pixel) // Swap fg/bg for reverse video
+                    } else {
+                        (fg_pixel, bg_pixel)
+                    };
+
+                    // Check if attributes or position changed, requiring a buffer flush
                     let attr_changed = effective_fg != current_fg || effective_bg != current_bg || flags != current_flags;
+                    // Position changed if it's the start of a line or not contiguous with the buffer
                     let position_changed = x == 0 || x != run_start_x + buffer_idx;
 
+                    // Flush buffer if attributes/position changed, buffer is full, or end of line
                     if buffer_idx > 0 && (attr_changed || position_changed || buffer_idx >= DRAW_BUFFER_SIZE - 1 || x == term_width) {
                         self.flush_draw_buffer(run_start_x, run_start_y, &draw_buffer, buffer_idx)?; // Unsafe internally
-                        buffer_idx = 0;
+                        buffer_idx = 0; // Reset buffer index
                     }
 
+                    // Update drawing context if attributes changed
                     if attr_changed {
                         xlib::XSetForeground(self.display, self.gc, effective_fg);
                         xlib::XSetBackground(self.display, self.gc, effective_bg);
-                        current_fg = effective_fg; current_bg = effective_bg; current_flags = flags;
+                        current_fg = effective_fg;
+                        current_bg = effective_bg;
+                        current_flags = flags;
                     }
 
-                    if buffer_idx == 0 { run_start_x = x; run_start_y = y; }
+                    // Start a new run if buffer is empty
+                    if buffer_idx == 0 {
+                        run_start_x = x;
+                        run_start_y = y;
+                    }
 
+                    // Add character to buffer or draw individually
                     if glyph.c.is_ascii() && glyph.c != '\0' {
+                        // Add ASCII char to buffer
                         draw_buffer[buffer_idx] = glyph.c as c_char;
                         buffer_idx += 1;
                     } else if glyph.c != '\0' {
-                        if buffer_idx > 0 { self.flush_draw_buffer(run_start_x, run_start_y, &draw_buffer, buffer_idx)?; buffer_idx = 0; }
+                        // Flush buffer before drawing non-ASCII char individually
+                        if buffer_idx > 0 {
+                            self.flush_draw_buffer(run_start_x, run_start_y, &draw_buffer, buffer_idx)?;
+                            buffer_idx = 0;
+                        }
                         self.draw_single_char(x, y, glyph.c)?; // Unsafe internally
-                        run_start_x = x + 1; run_start_y = y;
+                        // Start next potential run after this char
+                        run_start_x = x + 1;
+                        run_start_y = y;
                     } else {
-                         if buffer_idx == 0 { run_start_x = x + 1; run_start_y = y; }
+                        // Handle null/empty glyph (advance run start if needed)
+                         if buffer_idx == 0 {
+                             run_start_x = x + 1;
+                             run_start_y = y;
+                         }
                     }
 
+                    // Draw underline/strikethrough lines if needed
                     let line_y_base = ((y as u32 + 1) * self.font_height) as c_int;
                     if flags.contains(AttrFlags::UNDERLINE) {
-                        xlib::XDrawLine(self.display, self.window, self.gc, (x as u32 * self.font_width) as c_int, line_y_base - 1, ((x + 1) as u32 * self.font_width) as c_int -1, line_y_base - 1);
+                        xlib::XDrawLine(self.display, self.window, self.gc,
+                                        (x as u32 * self.font_width) as c_int, line_y_base - 1,
+                                        ((x + 1) as u32 * self.font_width) as c_int -1, line_y_base - 1);
                     }
                     if flags.contains(AttrFlags::STRIKETHROUGH) {
                          let strike_y = line_y_base - (self.font_height / 2) as c_int;
-                         xlib::XDrawLine(self.display, self.window, self.gc, (x as u32 * self.font_width) as c_int, strike_y, ((x + 1) as u32 * self.font_width) as c_int -1, strike_y);
+                         xlib::XDrawLine(self.display, self.window, self.gc,
+                                         (x as u32 * self.font_width) as c_int, strike_y,
+                                         ((x + 1) as u32 * self.font_width) as c_int -1, strike_y);
                     }
                 }
-                if buffer_idx > 0 { self.flush_draw_buffer(run_start_x, run_start_y, &draw_buffer, buffer_idx)?; buffer_idx = 0; }
+                // Flush any remaining buffer at the end of the line
+                if buffer_idx > 0 {
+                    self.flush_draw_buffer(run_start_x, run_start_y, &draw_buffer, buffer_idx)?;
+                    buffer_idx = 0;
+                }
             }
 
+            // Draw the cursor
             self.draw_cursor(term)?; // Unsafe internally
+
+            // Flush all drawing commands to the X server
             xlib::XFlush(self.display);
         }
         Ok(())
@@ -471,3 +551,4 @@ impl Drop for XBackend {
         let _ = self.cleanup();
     }
 }
+
