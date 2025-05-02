@@ -15,6 +15,7 @@ The primary goal is code clarity. Comments should supplement clear code structur
 ## Code Structure
 
 1.  **Avoid Deep Nesting:** Prefer guard clauses and early returns to deeply nested `if`/`else` or `match` blocks. Aim for a flatter control flow where possible. (Think Go's `if err != nil { return err }` style).
+2.  **Prefer `match` over `else`:** When choosing between complex `if`/`else if`/`else` chains and a `match` statement, prefer `match`.
 
 ## Magic Numbers
 
