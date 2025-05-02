@@ -93,7 +93,7 @@ impl TerminalBackend for ConsoleBackend {
                     // Simulate Key events from raw stdin bytes
                     for byte in &buf[..n] {
                         let text = std::str::from_utf8(std::slice::from_ref(byte)).unwrap_or("");
-                        self.handle_event(BackendEvent::Key { keysym: 0, text }, term, pty_fd)?;
+                        self.handle_event(BackendEvent::Key { keysym: 0, text: text.to_string() }, term, pty_fd)?;
                     }
                 }
                  Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
