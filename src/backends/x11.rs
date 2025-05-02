@@ -7,7 +7,7 @@ use crate::glyph::{Color, AttrFlags};
 use crate::backends::{TerminalBackend, BackendEvent};
 
 use anyhow::{Context, Result};
-use std::ffi::CString; // Removed CStr import
+use std::ffi::CString;
 use std::os::unix::io::RawFd;
 use std::ptr;
 use std::mem;
@@ -18,7 +18,8 @@ use x11::xlib;
 use x11::keysym;
 
 // --- Constants ---
-const DEFAULT_FONT_NAME: &str = "monospace:size=10";
+// Using a basic XLFD for now, will switch to Xft loading later
+const DEFAULT_FONT_NAME: &str = "fixed";
 const MIN_FONT_WIDTH: u32 = 5;
 const MIN_FONT_HEIGHT: u32 = 5;
 const DRAW_BUFFER_SIZE: usize = 4096;
@@ -44,7 +45,10 @@ pub struct XBackend {
 
 
 impl TerminalBackend for XBackend {
+    /// Creates and initializes a new X11 backend instance.
+    /// Connects to the X server, loads fonts, creates window and GC.
     fn new(width: usize, height: usize) -> Result<Self> {
+        // Safety: FFI call to connect to X server.
         let display = unsafe { xlib::XOpenDisplay(ptr::null()) };
         if display.is_null() {
             return Err(anyhow::anyhow!("Failed to open X display"));
@@ -53,25 +57,27 @@ impl TerminalBackend for XBackend {
         let mut backend = XBackend {
             display,
             screen: unsafe { xlib::XDefaultScreen(display) },
-            window: 0,
-            gc: ptr::null_mut(),
-            colormap: 0,
-            font: ptr::null_mut(),
+            window: 0, // Initialized later
+            gc: ptr::null_mut(), // Initialized later
+            colormap: 0, // Initialized later
+            font: ptr::null_mut(), // Initialized later
             font_width: 0,
             font_height: 0,
             font_ascent: 0,
-            colors: unsafe { mem::zeroed() },
-            wm_delete_window: 0,
-            protocols_atom: 0,
+            colors: unsafe { mem::zeroed() }, // Initialized later
+            wm_delete_window: 0, // Initialized later
+            protocols_atom: 0, // Initialized later
         };
 
-        // Safety: FFI calls
+        // Safety: FFI calls to get default colormap and atoms.
         unsafe {
             backend.colormap = xlib::XDefaultColormap(backend.display, backend.screen);
+            // Use CString literals for safety, ensuring null termination.
             backend.protocols_atom = xlib::XInternAtom(backend.display, b"WM_PROTOCOLS\0".as_ptr() as *mut _, xlib::False);
             backend.wm_delete_window = xlib::XInternAtom(backend.display, b"WM_DELETE_WINDOW\0".as_ptr() as *mut _, xlib::False);
         }
 
+        // Load resources and create window components
         backend.load_font().context("Failed to load font")?;
         backend.init_colors().context("Failed to initialize colors")?;
         backend.create_window(width, height).context("Failed to create window")?;
@@ -79,6 +85,8 @@ impl TerminalBackend for XBackend {
         backend.setup_wm();
         backend.setup_input();
 
+        // Map and flush window to make it visible
+        // Safety: FFI calls assuming valid display and window.
         unsafe {
             xlib::XMapWindow(backend.display, backend.window);
             xlib::XFlush(backend.display);
@@ -90,77 +98,91 @@ impl TerminalBackend for XBackend {
     /// Runs the X11 event loop, translating native events to `BackendEvent`s.
     fn run(&mut self, term: &mut Term, pty_fd: RawFd) -> Result<bool> {
         let mut event: xlib::XEvent = unsafe { mem::zeroed() };
+        // Buffer for XLookupString result (must be large enough)
         let mut key_text_buffer: [u8; 32] = [0; 32]; // Use u8 for UTF-8
 
         loop {
-            // Safety: FFI call
+            // Block until the next X event arrives.
+            // Safety: FFI call, assumes display is valid.
             unsafe { xlib::XNextEvent(self.display, &mut event) };
 
             let mut backend_event: Option<BackendEvent> = None;
             let mut should_exit = false;
 
-            // Safety: Accessing event.type_ requires unsafe block
+            // Determine event type and process accordingly.
+            // Safety: Accessing event.type_ requires unsafe block.
             let event_type = unsafe { event.type_ };
             match event_type {
                 xlib::Expose => {
-                    // Safety: Accessing union field
+                    // Handle window exposure events (redraw needed).
+                    // Safety: Accessing union field.
                     let xexpose = unsafe { event.expose };
+                    // Redraw only on the last expose event in a series.
                     if xexpose.count == 0 {
                         self.draw(term).context("Failed during draw on expose")?;
                     }
                 }
                 xlib::ConfigureNotify => {
-                    // Safety: Accessing union field
+                    // Handle window resize/configure events.
+                    // Safety: Accessing union field.
                     let xconfigure = unsafe { event.configure };
+                    // Create a resize event with pixel dimensions.
                     backend_event = Some(BackendEvent::Resize {
                         width_px: xconfigure.width as u16,
                         height_px: xconfigure.height as u16,
                     });
                 }
                 xlib::KeyPress => {
+                    // Handle key press events.
                     let mut keysym: xlib::KeySym = 0;
-                    // Safety: FFI call and accessing union field requires unsafe block
-                    // Pass the buffer as *mut c_char.
+                    // Safety: FFI call to translate key event to keysym and string.
+                    // Also accesses union field event.key.
+                    // Pass the buffer as *mut c_char as expected by XLookupString.
                     let count = unsafe {
                          xlib::XLookupString(&mut event.key, key_text_buffer.as_mut_ptr() as *mut c_char, key_text_buffer.len() as c_int, &mut keysym, ptr::null_mut())
                     };
 
-                    // Use the count to correctly interpret the buffer
+                    // Use the count to correctly interpret the buffer content.
                     let text = if count > 0 {
-                        // Safety: We assume XLookupString writes valid UTF-8 or compatible bytes within the count.
-                        // Using from_utf8 avoids panic on invalid sequences.
-                        // Use unwrap_or as a fallback, though invalid UTF-8 here would be unexpected.
-                        std::str::from_utf8(&key_text_buffer[0..count as usize]).unwrap_or("")
+                        // Convert the resulting bytes (up to count) into an owned String.
+                        // Using from_utf8_lossy handles potential invalid sequences.
+                        String::from_utf8_lossy(&key_text_buffer[0..count as usize]).to_string()
                     } else {
-                        ""
+                        // No text generated by the key event.
+                        String::new()
                     };
 
+                    // Create a key event with the owned String.
                     backend_event = Some(BackendEvent::Key {
                         keysym: keysym as u32,
-                        text,
+                        text, // text is now an owned String
                     });
                 }
                 xlib::ClientMessage => {
-                    // Safety: Accessing union field requires unsafe block
-                    let xclient = unsafe { event.client_message }; // Use client_message field
+                    // Handle messages from the window manager (e.g., close request).
+                    // Safety: Accessing union field event.client_message.
+                    let xclient = unsafe { event.client_message };
+                    // Check if it's a WM_DELETE_WINDOW message.
                     if xclient.message_type == self.protocols_atom && xclient.data.get_long(0) as xlib::Atom == self.wm_delete_window {
-                        should_exit = true;
+                        should_exit = true; // Signal the loop to exit.
                     }
                 }
-                 xlib::FocusIn => { backend_event = Some(BackendEvent::FocusGained); }
-                 xlib::FocusOut => { backend_event = Some(BackendEvent::FocusLost); }
-                _ => {}
+                 xlib::FocusIn => { // Handle focus gain event.
+                     backend_event = Some(BackendEvent::FocusGained);
+                 }
+                 xlib::FocusOut => { // Handle focus lost event.
+                     backend_event = Some(BackendEvent::FocusLost);
+                 }
+                _ => {} // Ignore other event types.
             }
 
+            // If a translatable event occurred, handle it.
             if let Some(be) = backend_event {
-                 // Clone the text slice to own the String for the event
-                 let event_to_handle = match be {
-                     BackendEvent::Key { keysym, text } => BackendEvent::Key { keysym, text },
-                     other => other,
-                 };
-                self.handle_event(event_to_handle, term, pty_fd).context("Failed handling backend event")?;
+                // No need to clone here anymore, as Key event already owns the String.
+                self.handle_event(be, term, pty_fd).context("Failed handling backend event")?;
             }
 
+            // Exit loop if requested (e.g., by WM_DELETE_WINDOW).
             if should_exit {
                 return Ok(true);
             }
@@ -171,10 +193,13 @@ impl TerminalBackend for XBackend {
     fn handle_event(&mut self, event: BackendEvent, term: &mut Term, pty_fd: RawFd) -> Result<()> {
         match event {
             BackendEvent::Key { text, keysym } => {
+                // Determine the byte sequence to send to the PTY based on keysym and text.
+                // text is now an owned String.
                 let bytes_to_write: &[u8] = if !text.is_empty() && keysym != keysym::XK_BackSpace {
+                    // If text is available and it's not Backspace, send the text.
                     text.as_bytes()
                 } else {
-                    // Map special keysyms to escape sequences
+                    // Otherwise, map special keysyms to escape sequences.
                     match keysym {
                         keysym::XK_Return => b"\r",
                         keysym::XK_Left => b"\x1b[D",
@@ -195,57 +220,58 @@ impl TerminalBackend for XBackend {
                     }
                 };
 
-                if bytes_to_write.is_empty() { return Ok(()); }
+                // Write the determined bytes to the PTY master fd.
+                if !bytes_to_write.is_empty() {
+                    let count = bytes_to_write.len();
+                    // Safety: FFI call to libc::write. Requires pointer cast.
+                    let written = unsafe { libc::write(pty_fd, bytes_to_write.as_ptr() as *const libc::c_void, count) };
 
-                let count = bytes_to_write.len();
-                // Safety: FFI call to libc::write. Requires pointer cast.
-                let written = unsafe { libc::write(pty_fd, bytes_to_write.as_ptr() as *const libc::c_void, count) };
-
-                if written < 0 {
-                    // Handle potential write error
-                    return Err(anyhow::Error::from(std::io::Error::last_os_error())
-                        .context("X11Backend: Failed to write key event to PTY"));
-                }
-                if (written as usize) != count {
-                    // Handle partial write if necessary, though less common for TTYs
-                    eprintln!("X11Backend: Warning: Partial write to PTY ({} out of {})", written, count);
+                    if written < 0 {
+                        // Handle potential write error.
+                        return Err(anyhow::Error::from(std::io::Error::last_os_error())
+                            .context("X11Backend: Failed to write key event to PTY"));
+                    }
+                    if (written as usize) != count {
+                        // Handle partial write if necessary, though less common for TTYs.
+                        eprintln!("X11Backend: Warning: Partial write to PTY ({} out of {})", written, count);
+                    }
                 }
             }
             BackendEvent::Resize { width_px, height_px } => {
-                // Avoid division by zero if font hasn't loaded yet
+                // Avoid division by zero if font hasn't loaded yet.
                 if self.font_width == 0 || self.font_height == 0 { return Ok(()); }
 
-                // Calculate new dimensions in character cells
+                // Calculate new dimensions in character cells.
                 let new_width = (width_px as u32 / self.font_width).max(1) as usize;
                 let new_height = (height_px as u32 / self.font_height).max(1) as usize;
 
                 let (current_width, current_height) = term.get_dimensions();
-                // Only resize if dimensions actually changed
+                // Only resize if dimensions actually changed.
                 if new_width == current_width && new_height == current_height { return Ok(()); }
 
-                // Update terminal state
+                // Update terminal state.
                 term.resize(new_width, new_height);
 
-                // Inform the PTY slave about the new size
+                // Inform the PTY slave about the new size.
                 let winsz = winsize { ws_row: new_height as u16, ws_col: new_width as u16, ws_xpixel: width_px, ws_ypixel: height_px };
-                // Safety: FFI call to libc::ioctl
+                // Safety: FFI call to libc::ioctl.
                 if unsafe { libc::ioctl(pty_fd, TIOCSWINSZ, &winsz) } < 0 {
-                    // Log error but don't necessarily fail the whole operation
+                    // Log error but don't necessarily fail the whole operation.
                     eprintln!("X11Backend: Warning: ioctl(TIOCSWINSZ) failed: {}", std::io::Error::last_os_error());
                 }
 
-                // Redraw the terminal content
+                // Redraw the terminal content with the new size.
                 self.draw(term)?;
             }
             BackendEvent::CloseRequested => {
-                // This event is handled in the run loop to trigger exit
+                // This event is handled in the run loop to trigger exit.
             }
             BackendEvent::FocusGained => {
-                // Redraw on focus gain (e.g., to show focused cursor style)
+                // Redraw on focus gain (e.g., to show focused cursor style).
                 self.draw(term)?;
             }
             BackendEvent::FocusLost => {
-                // Redraw on focus lost (e.g., to show unfocused cursor style)
+                // Redraw on focus lost (e.g., to show unfocused cursor style).
                 self.draw(term)?;
             }
         }
@@ -255,13 +281,15 @@ impl TerminalBackend for XBackend {
     /// Renders the terminal state to the X11 window.
     fn draw(&mut self, term: &Term) -> Result<()> {
         let (term_width, term_height) = term.get_dimensions();
+        // Buffer for drawing runs of characters with the same attributes.
         let mut draw_buffer: [c_char; DRAW_BUFFER_SIZE] = [0; DRAW_BUFFER_SIZE];
-        let mut buffer_idx: usize = 0;
+        let mut buffer_idx: usize = 0; // Current index within draw_buffer.
+        // Track current drawing attributes to optimize state changes.
         let mut current_fg = self.colors[DEFAULT_FG_IDX].pixel;
         let mut current_bg = self.colors[DEFAULT_BG_IDX].pixel;
         let mut current_flags = AttrFlags::empty();
-        let mut run_start_x = 0;
-        let mut run_start_y = 0;
+        let mut run_start_x = 0; // Start column of the current run.
+        let mut run_start_y = 0; // Start row of the current run.
 
         // Safety: FFI calls for drawing. Assumes display/gc valid.
         unsafe {
