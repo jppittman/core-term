@@ -8,7 +8,7 @@ use std::os::unix::io::RawFd;
 pub mod console;
 pub mod x11;
 
-pub use console::ConsoleBackend;
+// pub use console::ConsoleBackend; // Not currently used by main binary
 pub use x11::XBackend;
 
 /// Represents the different kinds of events a backend might need to process.

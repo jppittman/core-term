@@ -9,9 +9,9 @@ use backends::{TerminalBackend, XBackend}; // Using X11 backend
 use term::Term;
 
 use anyhow::{Context, Result};
-use std::ffi::{CStr, CString};
+use std::ffi::CStr; // Removed CString
 use std::fs::File;
-use std::io; // Keep for potential future use (e.g., io::Error)
+// Removed std::io
 use std::os::unix::io::{RawFd, FromRawFd};
 use std::os::unix::process::CommandExt; // for Command::pre_exec
 use std::process::{Command, Stdio};
@@ -190,3 +190,4 @@ fn main() {
         std::process::exit(1); // Exit with a non-zero code to indicate failure.
     }
 }
+
