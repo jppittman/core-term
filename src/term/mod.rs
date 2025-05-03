@@ -9,7 +9,7 @@ use crate::glyph::{Glyph, Attributes, REPLACEMENT_CHARACTER};
 use std::str;
 use std::cmp::max; // Import max directly
 // Add log crate import
-use log::trace;
+use log::{trace, debug, warn}; // Use warn for unexpected conditions
 
 // --- Constants ---
 /// Default tab stop interval.
@@ -73,9 +73,8 @@ impl Utf8Decoder {
 
     /// Resets the decoder state.
     fn reset(&mut self) {
-        trace!("Utf8Decoder: Resetting state (len was {})", self.len);
+        // No need for trace log here, called frequently
         self.len = 0;
-        // No need to clear the buffer contents explicitly
     }
 
     /// Decodes the next byte in a potential UTF-8 sequence using `std::str::from_utf8`.
@@ -85,17 +84,17 @@ impl Utf8Decoder {
     /// * `Ok(None)` if more bytes are needed for the current sequence.
     /// * `Err(())` if an invalid UTF-8 sequence is detected.
     fn decode(&mut self, byte: u8) -> Result<Option<char>, ()> {
-        trace!("Utf8Decoder: decode(0x{:02X}), current len={}", byte, self.len);
+        // trace!("Utf8Decoder: decode(0x{:02X}), current len={}", byte, self.len); // Too verbose
 
         // If the buffer is empty and we get ASCII, handle it directly
         if self.len == 0 && byte.is_ascii() {
-            trace!("Utf8Decoder: Direct ASCII '0x{:02X}' -> '{}'", byte, byte as char);
+            // trace!("Utf8Decoder: Direct ASCII '0x{:02X}' -> '{}'", byte, byte as char); // Too verbose
             return Ok(Some(byte as char));
         }
 
         // Prevent buffer overflow
         if self.len >= UTF8_BUFFER_SIZE {
-            trace!("Utf8Decoder: Buffer overflow (len={}), resetting and returning Err", self.len);
+            // trace!("Utf8Decoder: Buffer overflow (len={}), resetting and returning Err", self.len); // Too verbose
             self.reset();
             // Return error because we received a byte when buffer was full.
             return Err(());
@@ -104,32 +103,25 @@ impl Utf8Decoder {
         // Add byte to buffer
         self.buffer[self.len] = byte;
         self.len += 1;
-        trace!("Utf8Decoder: Buffer = {:02X?}, len = {}", &self.buffer[0..self.len], self.len);
+        // trace!("Utf8Decoder: Buffer = {:02X?}, len = {}", &self.buffer[0..self.len], self.len); // Too verbose
 
 
         // Try decoding the current buffer
         match str::from_utf8(&self.buffer[0..self.len]) {
             Ok(s) => {
                 // Successfully decoded a valid UTF-8 sequence.
-                // Since from_utf8 succeeded, this *must* be a complete character.
                 let chr = s.chars().next(); // Should always succeed and contain exactly one char
-                trace!("Utf8Decoder: Decoded Ok('{}'), resetting.", chr.unwrap_or('?'));
+                // trace!("Utf8Decoder: Decoded Ok('{}'), resetting.", chr.unwrap_or('?')); // Too verbose
                 self.reset(); // Clear buffer as we consumed the character
                 Ok(chr)
             }
             Err(e) => {
-                trace!("Utf8Decoder: from_utf8 returned Err: {:?}", e);
-                // from_utf8 failed. Check if it's because we simply need more bytes,
-                // or if the sequence is truly invalid.
-                // error_len() is None means "valid UTF-8 prefix" -> incomplete.
+                // trace!("Utf8Decoder: from_utf8 returned Err: {:?}", e); // Too verbose
                 if e.error_len().is_none() {
-                    trace!("Utf8Decoder: Incomplete sequence (error_len=None), returning Ok(None).");
-                    // Incomplete sequence error according to from_utf8.
-                    // Stay in the current state and wait for more bytes.
+                    // trace!("Utf8Decoder: Incomplete sequence (error_len=None), returning Ok(None)."); // Too verbose
                     Ok(None)
                 } else {
-                    trace!("Utf8Decoder: Invalid sequence (error_len=Some), resetting and returning Err.");
-                    // Invalid sequence detected by from_utf8 (e.g., invalid byte, overlong).
+                    // trace!("Utf8Decoder: Invalid sequence (error_len=Some), resetting and returning Err."); // Too verbose
                     self.reset();
                     Err(())
                 }
@@ -150,8 +142,8 @@ impl Default for DecModes {
 
 
 // --- Main Term Struct Definition ---
+#[allow(dead_code)] // Allow unused fields for now
 pub struct Term {
-    // Make fields pub(super) so screen.rs and parser.rs can access them
     pub(super) width: usize,
     pub(super) height: usize,
     pub(super) cursor: Cursor,
@@ -160,9 +152,9 @@ pub struct Term {
     pub(super) using_alt_screen: bool,
     // Saved cursor/attributes state (for DECSC/DECRC, Alt Screen switching)
     pub(super) saved_cursor: Cursor,
-    pub(super) saved_attributes: Attributes,
+    pub(super) saved_attributes: Attributes, // WARNING: unused field
     pub(super) saved_cursor_alt: Cursor,
-    pub(super) saved_attributes_alt: Attributes,
+    pub(super) saved_attributes_alt: Attributes, // WARNING: unused field
     // Current state
     pub(super) current_attributes: Attributes,
     pub(super) default_attributes: Attributes,
@@ -177,13 +169,13 @@ pub struct Term {
     pub(super) dec_modes: DecModes,
     pub(super) tabs: Vec<bool>,
     // Scrolling region boundaries (inclusive, 0-based)
-    pub(super) top: usize,
-    pub(super) bot: usize,
+    pub(super) top: usize, // WARNING: unused field
+    pub(super) bot: usize, // WARNING: unused field
     pub(super) scroll_top: usize,
     pub(super) scroll_bot: usize,
 
     // Dirty flags for rendering optimization
-    pub(super) dirty: Vec<u8>, // Using u8 for simplicity (0=clean, 1=dirty)
+    pub(super) dirty: Vec<u8>, // WARNING: unused field
 }
 
 // --- Public API Implementation ---
@@ -245,62 +237,74 @@ impl Term {
 
     /// Processes a slice of bytes received from the PTY or input source.
     pub fn process_bytes(&mut self, bytes: &[u8]) {
+        // Log the whole chunk at DEBUG level
+        if log::log_enabled!(log::Level::Debug) {
+            let printable_bytes: String = bytes.iter().map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else if b == 0x1b {
+                    '␛' // ESC symbol
+                } else if b < 0x20 || b == 0x7f {
+                    '.' // Replacement for other C0/DEL
+                } else {
+                    '?' // Placeholder for non-ASCII or non-printable
+                }
+            }).collect();
+            debug!("Processing {} bytes from PTY: '{}'", bytes.len(), printable_bytes);
+        }
         for &byte in bytes {
             self.process_byte(byte);
         }
     }
 
     /// Processes a single byte received from the PTY or input source.
-    /// Handles UTF-8 decoding using the Utf8Decoder and delegates
-    /// to escape sequence parser or character handler.
     pub fn process_byte(&mut self, byte: u8) {
-        // Always feed the byte to the decoder first
+        let initial_state = self.parser_state;
+        // Reduce verbosity of per-byte logging, maybe use trace! if needed later
+        // trace!("process_byte(0x{:02X} '{}'), state: {:?}", byte, if byte.is_ascii_graphic() || byte == b' ' { byte as char } else { '.' } , initial_state);
+
         match self.utf8_decoder.decode(byte) {
             Ok(Some(c)) => {
-                // Successfully decoded a character
+                // trace!(" -> Decoded char: '{}' (U+{:X})", c, c as u32); // Too verbose
                 self.handle_decoded_char(c, byte);
             }
             Ok(None) => {
-                // Incomplete sequence, wait for more bytes. Do nothing.
+                // trace!(" -> Incomplete UTF-8 sequence, waiting for more bytes."); // Too verbose
             }
             Err(()) => {
-                // Invalid sequence detected by the decoder.
-                // Handle the error by printing a replacement character.
+                debug!(" -> Invalid UTF-8 sequence detected starting with 0x{:02X}!", byte);
                 screen::handle_printable(self, REPLACEMENT_CHARACTER);
-                // The decoder reset itself internally.
-                // Now, try to process the byte that *caused* the error
-                // as if it were a new character, but only if it's valid standalone.
                 if byte.is_ascii() {
-                    // Re-process the ASCII byte that broke the sequence
+                    // trace!(" -> Re-processing invalid byte 0x{:02X} as ASCII", byte); // Too verbose
                     self.handle_decoded_char(byte as char, byte);
+                } else {
+                     // trace!(" -> Discarding invalid non-ASCII byte 0x{:02X}", byte); // Too verbose
                 }
-                // If the error-causing byte was not ASCII, it's discarded.
             }
+        }
+        if self.parser_state != initial_state {
+             trace!(" -> State transition: {:?} -> {:?}", initial_state, self.parser_state); // Keep state transitions at trace
         }
     }
 
     /// Handles a successfully decoded character.
-    /// Decides whether to pass to parser state machine or handle as printable.
-    /// `initiating_byte` is the first byte of the sequence for this char,
-    /// needed for passing to parser handlers like handle_ground_byte.
     fn handle_decoded_char(&mut self, c: char, initiating_byte: u8) {
         match self.parser_state {
             ParserState::Ground => {
-                // Check for C0/C1 controls or escape sequences
                 if c == '\x1B' || // ESC
                    (c >= '\u{0080}' && c <= '\u{009F}') || // C1 controls
                    c < '\u{0020}' || c == '\u{007F}' // C0 controls
                 {
-                    // Pass the *byte* that initiated the sequence/control
+                    // trace!(" -> Handling as control code/escape initiator: 0x{:02X}", initiating_byte); // Too verbose
                     parser::handle_ground_byte(self, initiating_byte);
                 } else {
-                    // Handle printable character
+                    // Log printable chars at debug level
+                    debug!(" -> Handling as printable character: '{}'", c);
                     screen::handle_printable(self, c);
                 }
             }
-            // If already in a sequence, let the parser handle the raw byte
-            // that completed the character.
             _ => {
+                // trace!(" -> Passing byte 0x{:02X} to parser state {:?}", initiating_byte, self.parser_state); // Too verbose
                 self.process_byte_in_parser(initiating_byte);
             }
         }
@@ -310,8 +314,7 @@ impl Term {
     /// Helper to pass a byte to the parser state machine (used internally)
     fn process_byte_in_parser(&mut self, byte: u8) {
          match self.parser_state {
-            // Ground state already handled in handle_decoded_char
-            ParserState::Ground => { /* Should not be reached here */ } ,
+            ParserState::Ground => { warn!("process_byte_in_parser called in Ground state"); } , // Should not happen
             ParserState::Escape => parser::handle_escape_byte(self, byte),
             ParserState::CSIEntry => parser::handle_csi_entry_byte(self, byte),
             ParserState::CSIParam => parser::handle_csi_param_byte(self, byte),
@@ -324,7 +327,6 @@ impl Term {
 
 
      /// Resizes the terminal emulator state.
-     /// (Implementation moved to screen.rs)
      pub fn resize(&mut self, new_width: usize, new_height: usize) {
          screen::resize(self, new_width, new_height);
      }
@@ -333,7 +335,7 @@ impl Term {
 // --- Unit Tests ---
 #[cfg(test)]
 mod tests {
-    use super::*; // Import items from parent module (mod.rs)
+    use super::*;
     // Remove unused import: use test_log::test;
 
     #[test_log::test] // Use test_log attribute
@@ -341,141 +343,108 @@ mod tests {
         let width = 80;
         let height = 24;
         let term = Term::new(width, height);
-
-        // Check dimensions
         assert_eq!(term.width, width);
         assert_eq!(term.height, height);
-
-        // Check default scrolling region
-        assert_eq!(term.top, 0, "Initial top margin should be 0");
-        assert_eq!(term.bot, height - 1, "Initial bottom margin should be height - 1");
-
-        // Check default DEC modes
-        assert!(!term.dec_modes.origin_mode, "Origin mode (DECOM) should be off by default");
-        assert!(!term.dec_modes.cursor_keys_app_mode, "Cursor keys app mode should be off by default");
-
-        // Check default cursor position
-        assert_eq!(term.cursor, Cursor { x: 0, y: 0 }, "Cursor should start at (0, 0)");
-
-        // Check default attributes
-        assert_eq!(term.current_attributes, term.default_attributes, "Current attributes should match default");
-
-        // Check saved states initialization
-        assert_eq!(term.saved_cursor, Cursor { x: 0, y: 0 }, "Saved cursor should be (0, 0)");
-        assert_eq!(term.saved_attributes, term.default_attributes, "Saved attributes should match default");
-        assert_eq!(term.saved_cursor_alt, Cursor { x: 0, y: 0 }, "Alt saved cursor should be (0, 0)");
-        assert_eq!(term.saved_attributes_alt, term.default_attributes, "Alt saved attributes should match default");
-
-        // Check screen buffer sizes
-        assert_eq!(term.screen.len(), height, "Screen height mismatch");
-        assert_eq!(term.screen[0].len(), width, "Screen width mismatch");
-        assert_eq!(term.alt_screen.len(), height, "Alt screen height mismatch");
-        assert_eq!(term.alt_screen[0].len(), width, "Alt screen width mismatch");
-
-        // Check dirty flags
-        assert_eq!(term.dirty.len(), height, "Dirty flags height mismatch");
-        assert!(term.dirty.iter().all(|&d| d == 1), "All lines should be dirty initially");
-
-        // Check tabs
+        assert_eq!(term.top, 0);
+        assert_eq!(term.bot, height - 1);
+        assert!(!term.dec_modes.origin_mode);
+        assert!(!term.dec_modes.cursor_keys_app_mode);
+        assert_eq!(term.cursor, Cursor { x: 0, y: 0 });
+        assert_eq!(term.current_attributes, term.default_attributes);
+        assert_eq!(term.saved_cursor, Cursor { x: 0, y: 0 });
+        assert_eq!(term.saved_attributes, term.default_attributes);
+        assert_eq!(term.saved_cursor_alt, Cursor { x: 0, y: 0 });
+        assert_eq!(term.saved_attributes_alt, term.default_attributes);
+        assert_eq!(term.screen.len(), height);
+        assert_eq!(term.screen[0].len(), width);
+        assert_eq!(term.alt_screen.len(), height);
+        assert_eq!(term.alt_screen[0].len(), width);
+        assert_eq!(term.dirty.len(), height);
+        assert!(term.dirty.iter().all(|&d| d == 1));
         assert_eq!(term.tabs.len(), width);
-        assert!(term.tabs[0]); // Tab stop at column 0
-        assert!(term.tabs[DEFAULT_TAB_INTERVAL]); // Tab stop at default interval
-        assert!(!term.tabs[1]); // No tab stop at column 1
-
-        // Check Utf8Decoder state
+        assert!(term.tabs[0]);
+        assert!(term.tabs[DEFAULT_TAB_INTERVAL]);
+        assert!(!term.tabs[1]);
         assert_eq!(term.utf8_decoder.len, 0);
     }
 
-    // --- Keep the original Utf8Decoder tests, now testing the std wrapper ---
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_utf8_decoder_ascii() {
         let mut decoder = Utf8Decoder::new();
         assert_eq!(decoder.decode(b'A'), Ok(Some('A')));
         assert_eq!(decoder.len, 0);
     }
 
-     #[test_log::test] // Use test_log attribute
+     #[test_log::test]
     fn test_utf8_decoder_multi_byte_complete() {
         let mut decoder = Utf8Decoder::new();
-        // Example: é (0xC3 0xA9)
-        assert_eq!(decoder.decode(0xC3), Ok(None)); // Need more bytes
+        assert_eq!(decoder.decode(0xC3), Ok(None));
         assert_eq!(decoder.len, 1);
         assert_eq!(decoder.decode(0xA9), Ok(Some('é')));
-        assert_eq!(decoder.len, 0); // Decoder reset
+        assert_eq!(decoder.len, 0);
     }
 
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_utf8_decoder_multi_byte_incomplete() {
         let mut decoder = Utf8Decoder::new();
-        // Example: Start of € (0xE2 0x82 0xAC)
         assert_eq!(decoder.decode(0xE2), Ok(None));
         assert_eq!(decoder.len, 1);
         assert_eq!(decoder.decode(0x82), Ok(None));
         assert_eq!(decoder.len, 2);
-        // Still need 0xAC -> should return Ok(None)
-        assert_eq!(decoder.decode(0xAC), Ok(Some('€'))); // Complete
+        assert_eq!(decoder.decode(0xAC), Ok(Some('€')));
         assert_eq!(decoder.len, 0);
     }
 
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_utf8_decoder_invalid_sequence_start() {
         let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0x80), Err(())); // Invalid start byte (continuation byte)
+        assert_eq!(decoder.decode(0x80), Err(()));
         assert_eq!(decoder.len, 0);
-        assert_eq!(decoder.decode(0xFF), Err(())); // Invalid start byte
+        assert_eq!(decoder.decode(0xFF), Err(()));
         assert_eq!(decoder.len, 0);
     }
 
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_utf8_decoder_invalid_sequence_mid() {
         let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0xC3), Ok(None)); // Expecting continuation byte
-        assert_eq!(decoder.decode(b'A'), Err(())); // Invalid continuation byte (ASCII)
+        assert_eq!(decoder.decode(0xC3), Ok(None));
+        assert_eq!(decoder.decode(b'A'), Err(()));
         assert_eq!(decoder.len, 0);
-
-        assert_eq!(decoder.decode(0xE2), Ok(None)); // Expecting 2 continuation bytes
-        assert_eq!(decoder.decode(0xC3), Err(())); // Invalid continuation byte (start byte)
+        assert_eq!(decoder.decode(0xE2), Ok(None));
+        assert_eq!(decoder.decode(0xC3), Err(()));
         assert_eq!(decoder.len, 0);
     }
 
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_utf8_decoder_max_bytes() {
          let mut decoder = Utf8Decoder::new();
-         // Valid 4-byte sequence for Label emoji 🏷 (U+1F3F7)
          let label_bytes = [0xF0, 0x9F, 0x8F, 0xB7];
          assert_eq!(decoder.decode(label_bytes[0]), Ok(None));
          assert_eq!(decoder.decode(label_bytes[1]), Ok(None));
          assert_eq!(decoder.decode(label_bytes[2]), Ok(None));
-         // Correct test assertion: Expect Ok(Some('🏷')) for complete char
          assert_eq!(decoder.decode(label_bytes[3]), Ok(Some('🏷')));
          assert_eq!(decoder.len, 0);
-
-         // Try feeding 5 bytes (invalid)
-         // Re-feed the 4 bytes, then the 5th
          assert_eq!(decoder.decode(0xF0), Ok(None));
          assert_eq!(decoder.decode(0x9F), Ok(None));
          assert_eq!(decoder.decode(0x8F), Ok(None));
-         assert_eq!(decoder.decode(0xB7), Ok(Some('🏷'))); // Should succeed here
-         assert_eq!(decoder.len, 0); // Should reset
-         // The 5th byte (0x01) is now processed as a new character
+         assert_eq!(decoder.decode(0xB7), Ok(Some('🏷')));
+         assert_eq!(decoder.len, 0);
          assert_eq!(decoder.decode(0x01), Ok(Some('\u{1}')));
          assert_eq!(decoder.len, 0);
     }
 
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_utf8_decoder_reset_on_error() {
         let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0xE2), Ok(None)); // Start 3-byte
+        assert_eq!(decoder.decode(0xE2), Ok(None));
         assert_eq!(decoder.len, 1);
-        assert_eq!(decoder.decode(0x41), Err(())); // Invalid continuation
-        assert_eq!(decoder.len, 0); // Decoder should be reset
-        assert_eq!(decoder.decode(b'B'), Ok(Some('B'))); // Should decode next byte correctly
+        assert_eq!(decoder.decode(0x41), Err(()));
+        assert_eq!(decoder.len, 0);
+        assert_eq!(decoder.decode(b'B'), Ok(Some('B')));
         assert_eq!(decoder.len, 0);
     }
 
-    // --- Tests for process_byte logic (using the new decoder) ---
-
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_process_byte_ascii_printable_via_term() {
         let mut term = Term::new(10, 1);
         term.process_byte(b'A');
@@ -486,56 +455,51 @@ mod tests {
         assert_eq!(term.utf8_decoder.len, 0);
     }
 
-     #[test_log::test] // Use test_log attribute
+     #[test_log::test]
     fn test_process_byte_ascii_control_via_term() {
         let mut term = Term::new(10, 2);
         term.process_byte(b'A');
-        term.process_byte(b'\n'); // LF
+        term.process_byte(b'\n');
         assert_eq!(term.get_glyph(0, 0).unwrap().c, 'A');
-        assert_eq!(term.cursor.x, 0); // Moved by newline
-        assert_eq!(term.cursor.y, 1); // Moved by newline
+        assert_eq!(term.cursor.x, 0);
+        assert_eq!(term.cursor.y, 1);
         assert_eq!(term.utf8_decoder.len, 0);
     }
 
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_process_byte_multi_byte_complete_via_term() {
         let mut term = Term::new(10, 1);
-        term.process_byte(0xC3); // Start 'é'
+        term.process_byte(0xC3);
         assert_eq!(term.utf8_decoder.len, 1);
-        assert_eq!(term.cursor.x, 0); // No char processed yet
-        term.process_byte(0xA9); // Complete 'é'
-        assert_eq!(term.utf8_decoder.len, 0); // Decoder reset
+        assert_eq!(term.cursor.x, 0);
+        term.process_byte(0xA9);
+        assert_eq!(term.utf8_decoder.len, 0);
         assert_eq!(term.get_glyph(0, 0).unwrap().c, 'é');
-        assert_eq!(term.cursor.x, 1); // Cursor advanced
+        assert_eq!(term.cursor.x, 1);
     }
 
-    #[test_log::test] // Use test_log attribute
+    #[test_log::test]
     fn test_process_byte_invalid_sequence_via_term() {
         let mut term = Term::new(10, 1);
-        term.process_byte(0xC3); // Start 'é'
+        term.process_byte(0xC3);
         assert_eq!(term.utf8_decoder.len, 1);
-        term.process_byte(0x20); // Invalid continuation (space)
-        assert_eq!(term.utf8_decoder.len, 0); // Decoder reset on error
-        // Should have printed replacement char for the invalid sequence
+        term.process_byte(0x20);
+        assert_eq!(term.utf8_decoder.len, 0);
         assert_eq!(term.get_glyph(0, 0).unwrap().c, REPLACEMENT_CHARACTER);
-        // The space itself should then be processed because it's ASCII
         assert_eq!(term.get_glyph(1, 0).unwrap().c, ' ');
-        // Correct test assertion: Cursor should be at x=2 after replacement + space
         assert_eq!(term.cursor.x, 2);
     }
 
-     #[test_log::test] // Use test_log attribute
+     #[test_log::test]
     fn test_process_byte_invalid_start_byte_via_term() {
         let mut term = Term::new(10, 1);
-        term.process_byte(0x80); // Invalid start byte
-        assert_eq!(term.utf8_decoder.len, 0); // Decoder reset on error
+        term.process_byte(0x80);
+        assert_eq!(term.utf8_decoder.len, 0);
         assert_eq!(term.get_glyph(0, 0).unwrap().c, REPLACEMENT_CHARACTER);
         assert_eq!(term.cursor.x, 1);
-        // Ensure subsequent valid byte works
         term.process_byte(b'X');
         assert_eq!(term.get_glyph(1, 0).unwrap().c, 'X');
         assert_eq!(term.cursor.x, 2);
 
     }
 }
-
