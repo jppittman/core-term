@@ -15,7 +15,7 @@ use std::io; // Added for io::Error
 use std::os::unix::io::RawFd;
 use std::ptr;
 use std::mem;
-use std::cmp::{min, max}; // Added max
+use std::cmp::min; // Added max
 use std::collections::HashMap;
 
 // Added libc constants and types for epoll and read/write
@@ -24,8 +24,7 @@ use libc::{
     epoll_create1, epoll_ctl, epoll_wait, epoll_event, // epoll functions and struct
     EPOLLIN, EPOLL_CTL_ADD, EPOLL_CTL_DEL, // epoll constants
     read, // read function
-    EINTR, // errno constant
-    close, // close function (needed for epoll fd)
+    EINTR, // close function (needed for epoll fd)
     fcntl, F_GETFL, F_SETFL, O_NONBLOCK, // For setting PTY to non-blocking (optional but good practice)
 };
 use x11::xlib;

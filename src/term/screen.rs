@@ -4,7 +4,7 @@
 
 use super::{Term, Cursor}; // Import Term and Cursor from parent module (mod.rs)
 // FIX: Remove unused imports
-use crate::glyph::{Glyph, Attributes};
+use crate::glyph::Glyph;
 use std::cmp::min;
 use std::mem;
 
