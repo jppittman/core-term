@@ -340,8 +340,8 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
          }
 
         // Scrolling
-        b'S' => { let n = get_csi_param(term, 0, 1); super::screen::scroll_up(term, top, bot, n as usize); } // SU
-        b'T' => { let n = get_csi_param(term, 0, 1); super::screen::scroll_down(term, top, bot, n as usize); } // SD
+        b'S' => { let n = get_csi_param(term, 0, 1); super::screen::scroll_up(term, n as usize); } // SU
+        b'T' => { let n = get_csi_param(term, 0, 1); super::screen::scroll_down(term, n as usize); } // SD
 
         // Set Scrolling Region
         b'r' if !is_private => { // DECSTBM

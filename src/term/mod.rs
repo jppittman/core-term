@@ -179,6 +179,9 @@ pub struct Term {
     // Scrolling region boundaries (inclusive, 0-based)
     pub(super) top: usize,
     pub(super) bot: usize,
+    pub(super) scroll_top: usize,
+    pub(super) scroll_bot: usize,
+
     // Dirty flags for rendering optimization
     pub(super) dirty: Vec<u8>, // Using u8 for simplicity (0=clean, 1=dirty)
 }
@@ -222,6 +225,8 @@ impl Term {
             // Initialize scrolling region to full screen
             top: 0,
             bot: height.saturating_sub(1), // Use saturating_sub for safety if height is 0
+            scroll_top: 0,
+            scroll_bot: height.saturating_sub(1),
             dirty,
         }
     }
