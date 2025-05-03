@@ -15,7 +15,7 @@ use std::io; // Added for io::Error
 use std::os::unix::io::RawFd;
 use std::ptr;
 use std::mem;
-use std::cmp::min; // Added max
+use std::cmp::min;
 use std::collections::HashMap;
 
 // Added libc constants and types for epoll and read/write
@@ -194,11 +194,11 @@ impl TerminalBackend for XBackend {
 
         let mut events: [epoll_event; MAX_EPOLL_EVENTS] = unsafe { mem::zeroed() };
         let mut pty_buffer = [0u8; PTY_READ_BUF_SIZE];
-        let mut needs_redraw = false; // Track if a redraw is needed after processing events
+        //let mut needs_redraw = false; // Track if a redraw is needed after processing events
 
         loop {
             // Reset redraw flag before waiting
-            needs_redraw = false;
+            // needs_redraw = false; // No longer needed, redraw happens on expose/pty read
 
             trace!("Calling epoll_wait (timeout -1)...");
             // Safety: FFI call to epoll_wait.
@@ -239,7 +239,11 @@ impl TerminalBackend for XBackend {
                                 debug!("Received Expose event");
                                 let xexpose = unsafe { event.expose };
                                 if xexpose.count == 0 {
-                                    needs_redraw = true; // Mark for redraw after handling all events in this batch
+                                    // Redraw immediately on expose
+                                    if let Err(e) = self.draw(term) {
+                                         error!("Error during expose redraw: {:?}", e);
+                                         // Decide if error is fatal?
+                                     }
                                 } else {
                                     trace!("Ignoring Expose event with count > 0 ({})", xexpose.count);
                                 }
@@ -332,21 +336,18 @@ impl TerminalBackend for XBackend {
                         debug!("Read {} bytes from PTY", bytes_read);
                         // Process the received bytes through the terminal state machine
                         term.process_bytes(&pty_buffer[0..bytes_read as usize]);
-                        needs_redraw = true; // PTY output likely changed terminal state
+                        // Redraw after processing PTY data
+                        if let Err(e) = self.draw(term) {
+                            error!("Error during PTY read redraw: {:?}", e);
+                            // Decide if error is fatal?
+                        }
                     }
                 } else {
                     warn!("epoll_wait returned event for unknown fd: {}", current_event_fd);
                 }
             } // End for nfds
 
-            // Perform redraw if needed after processing all events in this batch
-            if needs_redraw {
-                 trace!("Redraw triggered after event processing");
-                if let Err(e) = self.draw(term) {
-                     error!("Error during redraw: {:?}", e);
-                     // Decide if error is fatal, maybe return Err(e)?
-                }
-            }
+            // No explicit redraw call needed here anymore, handled on expose/pty read
 
         } // End loop
     }
@@ -358,11 +359,15 @@ impl TerminalBackend for XBackend {
         let mut needs_redraw = false; // Track if this specific event requires a redraw
         match event {
             BackendEvent::Key { text, keysym } => {
+                trace!("handle_event Key: keysym={}, text='{}'", keysym, text);
+
+                // FIX: Explicitly type as &[u8] to allow different slice lengths
                 let bytes_to_write: &[u8] = if !text.is_empty() && keysym != keysym::XK_BackSpace {
+                    trace!("  -> Using text bytes: {:?}", text.as_bytes());
                     text.as_bytes()
                 } else {
-                    match keysym {
-                        keysym::XK_Return => b"\r",
+                    let seq = match keysym {
+                        keysym::XK_Return => b"\r" as &[u8], // Cast literal to slice
                         keysym::XK_Left => b"\x1b[D",
                         keysym::XK_Right => b"\x1b[C",
                         keysym::XK_Up => b"\x1b[A",
@@ -377,11 +382,13 @@ impl TerminalBackend for XBackend {
                         keysym::XK_Delete => b"\x1b[3~",
                         keysym::XK_Insert => b"\x1b[2~",
                         _ => b"",
-                    }
+                    };
+                    trace!("  -> Using sequence bytes for keysym {}: {:?}", keysym, seq);
+                    seq
                 };
 
                 if !bytes_to_write.is_empty() {
-                    trace!("Writing {:?} to PTY", bytes_to_write);
+                    trace!("  -> Writing to PTY: {:?}", bytes_to_write);
                     let count = bytes_to_write.len();
                     // Safety: FFI call to libc::write. Requires pointer cast.
                     let written = unsafe { libc::write(pty_fd, bytes_to_write.as_ptr() as *const libc::c_void, count) };
@@ -478,9 +485,9 @@ impl TerminalBackend for XBackend {
             trace!("Starting cell drawing loop");
             for y in 0..term_height {
                 for x in 0..term_width {
+                    // Get glyph first (immutable borrow of term)
                     let glyph = term.get_glyph(x, y).cloned().unwrap_or_default();
                     let flags = glyph.attr.flags;
-                    // Use trace level for per-cell details as it can be very verbose
                     trace!("Processing cell ({}, {}): char='{}', flags={:?}", x, y, glyph.c, flags);
 
                     // Skip drawing default background cells if glyph is just a space
@@ -490,11 +497,9 @@ impl TerminalBackend for XBackend {
                         continue;
                     }
 
-                    // Calculate cell position and dimensions using local variables
-                    let cell_x = (x as u32 * font_width) as c_int;
-                    let cell_y = (y as u32 * font_height) as c_int;
-
-                    // Resolve colors just before drawing this cell to minimize borrow scope
+                    // Resolve colors (mutable borrow of self)
+                    // This requires &mut self, so we do it after getting the glyph
+                    // FIX: Get owned XftColor structs to drop the mutable borrow immediately
                     let (fg_color, bg_color) = self.resolve_xft_colors(glyph.attr.fg, glyph.attr.bg)?;
                     let (effective_fg, effective_bg) = if flags.contains(AttrFlags::REVERSE) {
                         (bg_color, fg_color)
@@ -503,10 +508,15 @@ impl TerminalBackend for XBackend {
                     };
                     trace!("Cell ({}, {}): Effective FG pixel={}, BG pixel={}", x, y, effective_fg.pixel, effective_bg.pixel);
 
+                    // Calculate cell position and dimensions using local variables
+                    let cell_x = (x as u32 * font_width) as c_int;
+                    let cell_y = (y as u32 * font_height) as c_int;
+
                     // Draw the background rectangle for this cell only if it's not the default
+                    // FIX: Pass reference to the owned color struct
                     if effective_bg.pixel != default_bg_color_pixel {
                          trace!("Drawing background rect for cell ({}, {})", x, y);
-                        xft::XftDrawRect(self.xft_draw, effective_bg, cell_x, cell_y, font_width, font_height);
+                        xft::XftDrawRect(self.xft_draw, &effective_bg, cell_x, cell_y, font_width, font_height);
                     }
 
                     // Draw the character using XftDrawStringUtf8
@@ -517,7 +527,8 @@ impl TerminalBackend for XBackend {
                         let c_str = CString::new(char_str).unwrap_or_default();
                         let baseline_y = (cell_y as u32 + font_ascent) as c_int;
 
-                        xft::XftDrawStringUtf8(self.xft_draw, effective_fg, self.xft_font,
+                        // FIX: Pass reference to the owned color struct
+                        xft::XftDrawStringUtf8(self.xft_draw, &effective_fg, self.xft_font,
                                                cell_x, baseline_y,
                                                c_str.as_ptr() as *const u8, c_str.as_bytes().len() as c_int);
                     }
@@ -526,12 +537,14 @@ impl TerminalBackend for XBackend {
                     let line_y_base = cell_y + font_height as c_int;
                     if flags.contains(AttrFlags::UNDERLINE) {
                          trace!("Drawing underline for cell ({}, {})", x, y);
-                         xft::XftDrawRect(self.xft_draw, effective_fg, cell_x, line_y_base - 1, font_width, 1);
+                         // FIX: Pass reference to the owned color struct
+                         xft::XftDrawRect(self.xft_draw, &effective_fg, cell_x, line_y_base - 1, font_width, 1);
                     }
                     if flags.contains(AttrFlags::STRIKETHROUGH) {
                          trace!("Drawing strikethrough for cell ({}, {})", x, y);
                          let strike_y = cell_y + (font_ascent / 2) as c_int;
-                         xft::XftDrawRect(self.xft_draw, effective_fg, cell_x, strike_y, font_width, 1);
+                          // FIX: Pass reference to the owned color struct
+                         xft::XftDrawRect(self.xft_draw, &effective_fg, cell_x, strike_y, font_width, 1);
                     }
                 }
             }
@@ -723,8 +736,12 @@ impl XBackend {
     /// Sets up Window Manager hints and protocols. Contains unsafe FFI calls.
     fn setup_wm(&mut self) {
          debug!("Setting up window manager hints and protocols");
-        // Safety: FFI calls and struct manipulation for FFI
+        // Initialize atoms needed for WM interaction
+        // Safety: FFI calls
         unsafe {
+             self.wm_delete_window = xlib::XInternAtom(self.display, b"WM_DELETE_WINDOW\0".as_ptr() as *mut _, xlib::False);
+             self.protocols_atom = xlib::XInternAtom(self.display, b"WM_PROTOCOLS\0".as_ptr() as *mut _, xlib::False);
+
             let mut size_hints: xlib::XSizeHints = mem::zeroed();
             size_hints.flags = xlib::PResizeInc | xlib::PMinSize;
             size_hints.width_inc = self.font_width as c_int;
@@ -792,41 +809,89 @@ impl XBackend {
      }
 
 
-    /// Resolves internal `Color` enum to XftColor references. Uses cache.
-    // FIX: Changed signature from &mut self to &self to fix borrow errors.
-    //      This is okay for now as the function only reads self.xft_colors.
-    //      If/when caching logic (which needs &mut self) is added, this will
-    //      need to be refactored (e.g., move color resolution out of draw loop).
-    fn resolve_xft_colors(&self, fg: Color, bg: Color) -> Result<(&xft::XftColor, &xft::XftColor)> {
+    /// Resolves internal `Color` enum to XftColor structs (owned). Uses cache.
+    /// Takes &mut self because it might need to allocate and cache new colors.
+    /// FIX: Returns owned XftColor structs to avoid borrow checker issues.
+    fn resolve_xft_colors(&mut self, fg: Color, bg: Color) -> Result<(xft::XftColor, xft::XftColor)> {
          trace!("Resolving colors: fg={:?}, bg={:?}", fg, bg);
-         // Ensure colors are initialized before accessing them
+         // Ensure default colors are initialized before accessing them
          if self.xft_colors.is_empty() || DEFAULT_FG_IDX >= self.xft_colors.len() || DEFAULT_BG_IDX >= self.xft_colors.len() {
               error!("Attempted to resolve colors before Xft colors were initialized or defaults are out of bounds.");
               return Err(anyhow::anyhow!("Xft colors not initialized for resolving"));
          }
 
-        // TODO: Implement proper color name/index resolution and caching for XftColor
-        // For now, just return default fg/bg references.
-        // This requires implementing the logic to handle Color::Idx and Color::Rgb,
-        // potentially allocating new XftColors and storing them in the cache.
-        let fg_ref = match fg {
-             Color::Default => &self.xft_colors[DEFAULT_FG_IDX],
-             // Placeholder: Add logic for Idx and Rgb, using cache
-             _ => {
-                 // warn!("resolve_xft_colors: Unimplemented FG color type: {:?}", fg); // Optional warning
-                 &self.xft_colors[DEFAULT_FG_IDX]
-             },
+        // Resolve foreground color
+        let fg_color = match fg {
+            Color::Default => self.xft_colors[DEFAULT_FG_IDX],
+            Color::Idx(idx) => {
+                // TODO: Handle indexed colors properly (0-15 are pre-allocated, 16-255 need allocation/caching)
+                warn!("resolve_xft_colors: Unimplemented FG color index: {}", idx);
+                self.xft_colors[DEFAULT_FG_IDX]
+            }
+            Color::Rgb(r, g, b) => {
+                // Check cache first, return owned copy if found
+                if let Some(cached_color) = self.xft_color_cache_rgb.get(&(r, g, b)) {
+                    trace!("Found cached XftColor for RGB: ({}, {}, {})", r, g, b);
+                    *cached_color // Return copy
+                } else {
+                    // Not cached, allocate and insert
+                    trace!("Allocating new XftColor for RGB: ({}, {}, {})", r, g, b);
+                    let render_color = XRenderColor {
+                        red: (r as u16) << 8 | r as u16, // Scale 8-bit to 16-bit
+                        green: (g as u16) << 8 | g as u16,
+                        blue: (b as u16) << 8 | b as u16,
+                        alpha: 0xffff,
+                    };
+                    let mut xft_color: xft::XftColor = unsafe { mem::zeroed() };
+                    // Safety: FFI call
+                    if unsafe { xft::XftColorAllocValue(self.display, self.visual, self.colormap, &render_color, &mut xft_color) } == 0 {
+                        error!("Xft: Failed to allocate RGB color value ({}, {}, {})", r, g, b);
+                        // Fallback to default FG on allocation failure
+                        self.xft_colors[DEFAULT_FG_IDX]
+                    } else {
+                        trace!("Successfully allocated and cached RGB: ({}, {}, {}) -> pixel {}", r, g, b, xft_color.pixel);
+                        self.xft_color_cache_rgb.insert((r, g, b), xft_color);
+                        xft_color // Return the newly allocated color
+                    }
+                }
+            }
         };
-         let bg_ref = match bg {
-             Color::Default => &self.xft_colors[DEFAULT_BG_IDX],
-             // Placeholder: Add logic for Idx and Rgb, using cache
-             _ => {
-                 // warn!("resolve_xft_colors: Unimplemented BG color type: {:?}", bg); // Optional warning
-                 &self.xft_colors[DEFAULT_BG_IDX]
-             },
+
+        // Resolve background color (similar logic)
+         let bg_color = match bg {
+             Color::Default => self.xft_colors[DEFAULT_BG_IDX],
+             Color::Idx(idx) => {
+                 // TODO: Handle indexed colors properly
+                 warn!("resolve_xft_colors: Unimplemented BG color index: {}", idx);
+                 self.xft_colors[DEFAULT_BG_IDX]
+             }
+             Color::Rgb(r, g, b) => {
+                 if let Some(cached_color) = self.xft_color_cache_rgb.get(&(r, g, b)) {
+                    trace!("Found cached XftColor for RGB BG: ({}, {}, {})", r, g, b);
+                    *cached_color // Return copy
+                 } else {
+                     trace!("Allocating new XftColor for RGB BG: ({}, {}, {})", r, g, b);
+                     let render_color = XRenderColor {
+                         red: (r as u16) << 8 | r as u16,
+                         green: (g as u16) << 8 | g as u16,
+                         blue: (b as u16) << 8 | b as u16,
+                         alpha: 0xffff,
+                     };
+                     let mut xft_color: xft::XftColor = unsafe { mem::zeroed() };
+                     if unsafe { xft::XftColorAllocValue(self.display, self.visual, self.colormap, &render_color, &mut xft_color) } == 0 {
+                         error!("Xft: Failed to allocate RGB BG color value ({}, {}, {})", r, g, b);
+                         self.xft_colors[DEFAULT_BG_IDX]
+                     } else {
+                         trace!("Successfully allocated and cached RGB BG: ({}, {}, {}) -> pixel {}", r, g, b, xft_color.pixel);
+                         self.xft_color_cache_rgb.insert((r, g, b), xft_color);
+                         xft_color // Return the newly allocated color
+                     }
+                 }
+             }
          };
-         trace!("Resolved colors: fg_pixel={}, bg_pixel={}", fg_ref.pixel, bg_ref.pixel);
-        Ok((fg_ref, bg_ref))
+
+         trace!("Resolved colors: fg_pixel={}, bg_pixel={}", fg_color.pixel, bg_color.pixel);
+         Ok((fg_color, bg_color)) // Return owned structs
     }
 
 
@@ -840,10 +905,18 @@ impl XBackend {
             let cy = min(cursor_y, term_height.saturating_sub(1));
              trace!("Cursor position: ({}, {}) (clamped from {}, {})", cx, cy, cursor_x, cursor_y);
 
+            // Get glyph first
             let cursor_glyph = term.get_glyph(cx, cy).cloned().unwrap_or_default();
              trace!("Cursor glyph: char='{}', attr={:?}", cursor_glyph.c, cursor_glyph.attr);
 
-            // Read font metrics into local variables first
+            // Resolve colors (mutable borrow of self)
+            // FIX: Get owned XftColor structs
+            let (glyph_fg_color, glyph_bg_color) = self.resolve_xft_colors(cursor_glyph.attr.fg, cursor_glyph.attr.bg)?;
+            let cursor_draw_fg = glyph_bg_color; // Text color is original background
+            let cursor_draw_bg = glyph_fg_color; // Background color is original foreground
+             trace!("Cursor draw colors: FG pixel={}, BG pixel={}", cursor_draw_fg.pixel, cursor_draw_bg.pixel);
+
+            // Read font metrics into local variables
             let font_width = self.font_width;
             let font_height = self.font_height;
             let font_ascent = self.font_ascent;
@@ -852,18 +925,12 @@ impl XBackend {
             let cell_x = (cx as u32 * font_width) as c_int;
             let cell_y = (cy as u32 * font_height) as c_int;
 
-            // Resolve colors, swapping for cursor block effect
-            // Call resolve_xft_colors here to minimize borrow scope
-            let (glyph_fg_color, glyph_bg_color) = self.resolve_xft_colors(cursor_glyph.attr.fg, cursor_glyph.attr.bg)?;
-            let cursor_draw_fg = glyph_bg_color; // Text color is original background
-            let cursor_draw_bg = glyph_fg_color; // Background color is original foreground
-             trace!("Cursor draw colors: FG pixel={}, BG pixel={}", cursor_draw_fg.pixel, cursor_draw_bg.pixel);
-
             // Safety: FFI calls required by caller
             unsafe {
                 // Draw background rectangle for cursor block
                  trace!("Drawing cursor background rect");
-                xft::XftDrawRect(self.xft_draw, cursor_draw_bg, cell_x, cell_y, font_width, font_height);
+                 // FIX: Pass reference to owned color struct
+                xft::XftDrawRect(self.xft_draw, &cursor_draw_bg, cell_x, cell_y, font_width, font_height);
 
                 // Draw the character over the cursor block
                 if cursor_glyph.c != ' ' && cursor_glyph.c != '\0' {
@@ -872,7 +939,8 @@ impl XBackend {
                     let c_str = CString::new(cursor_char_str).unwrap_or_default();
                     let baseline_y = (cell_y as u32 + font_ascent) as c_int;
 
-                    xft::XftDrawStringUtf8(self.xft_draw, cursor_draw_fg, self.xft_font,
+                    // FIX: Pass reference to owned color struct
+                    xft::XftDrawStringUtf8(self.xft_draw, &cursor_draw_fg, self.xft_font,
                                            cell_x, baseline_y,
                                            c_str.as_ptr() as *const u8, c_str.as_bytes().len() as c_int);
                 }
@@ -1049,3 +1117,4 @@ mod tests {
         backend.cleanup().unwrap();
     }
 }
+
