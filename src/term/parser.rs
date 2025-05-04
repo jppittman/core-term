@@ -75,12 +75,22 @@ const SGR_BLINK_OFF: u16 = 25;
 const SGR_REVERSE_OFF: u16 = 27;
 const SGR_HIDDEN_OFF: u16 = 28;
 const SGR_STRIKETHROUGH_OFF: u16 = 29;
+// Basic color ranges (30-37 foreground, 40-47 background)
 const SGR_FG_OFFSET: u16 = 30;
+const SGR_FG_END: u16 = 37; // End of basic foreground range
 const SGR_BG_OFFSET: u16 = 40;
+const SGR_BG_END: u16 = 47; // End of basic background range
+// Bright color ranges (90-97 foreground, 100-107 background)
 const SGR_FG_BRIGHT_OFFSET: u16 = 90;
+const SGR_FG_BRIGHT_END: u16 = 97; // End of bright foreground range
 const SGR_BG_BRIGHT_OFFSET: u16 = 100;
+const SGR_BG_BRIGHT_END: u16 = 107; // End of bright background range
+// Offset to map SGR bright color codes to internal palette indices (8-15)
+const SGR_BRIGHT_COLOR_OFFSET: u16 = 8;
+// Default color codes
 const SGR_FG_DEFAULT: u16 = 39;
 const SGR_BG_DEFAULT: u16 = 49;
+// Extended color codes
 const SGR_EXTENDED_FG: u16 = 38;
 const SGR_EXTENDED_BG: u16 = 48;
 const SGR_EXTENDED_MODE_256: u16 = 5;
@@ -141,6 +151,7 @@ pub(super) fn push_csi_param(term: &mut Term, digit: u16) {
              warn!("CSI parameter overflow, clamped to {}", u16::MAX);
         }
     } else {
+        // This case should ideally not happen if the vector is non-empty.
         warn!("push_csi_param: Attempted to push to non-existent parameter slot.");
     }
 }
@@ -148,6 +159,7 @@ pub(super) fn push_csi_param(term: &mut Term, digit: u16) {
 /// Moves to the next CSI parameter slot by appending a 0.
 pub(super) fn next_csi_param(term: &mut Term) {
     if term.csi_params.is_empty() {
+        // Handle cases like CSI ; Pn... by adding an initial 0
         term.csi_params.push(0);
     }
     if term.csi_params.len() < MAX_CSI_PARAMS {
@@ -237,7 +249,8 @@ pub(super) fn handle_escape_byte(term: &mut Term, byte: u8) {
         }
         b'(' | b')' | b'*' | b'+' => { // SCS Start
             trace!("Escape -> Escape (charset designation started with '{}')", byte as char);
-            term.parser_state = ParserState::Escape; // Remain in Escape
+            // Remain in Escape state, waiting for the character set identifier
+            term.parser_state = ParserState::Escape;
         }
         b'D' => { super::screen::index(term); term.parser_state = ParserState::Ground; } // IND
         b'E' => { super::screen::newline(term); term.parser_state = ParserState::Ground; } // NEL
@@ -249,8 +262,10 @@ pub(super) fn handle_escape_byte(term: &mut Term, byte: u8) {
         b'8' => { super::screen::restore_cursor(term); term.parser_state = ParserState::Ground; } // DECRC
         b'=' => { debug!("DECPAM received (ESC = - Not Implemented)"); term.parser_state = ParserState::Ground; } // DECPAM
         b'>' => { debug!("DECPNM received (ESC > - Not Implemented)"); term.parser_state = ParserState::Ground; } // DECPNM
+        // Handle charset selection characters after SCS start (e.g., ESC ( B)
         b'B' => { trace!("Selected G0/G1/G2/G3 charset 'B' (US-ASCII)"); term.parser_state = ParserState::Ground; }
         b'0' => { trace!("Selected G0/G1/G2/G3 charset '0' (DEC Special Graphics)"); term.parser_state = ParserState::Ground; }
+        // TODO: Add other charset identifiers (A, K, etc.) if needed
         _ => { // Unknown ESC sequence
             debug!("Ignoring unknown byte after ESC: 0x{:02X} ('{}')", byte, if byte.is_ascii() { byte as char } else { '.' });
             term.parser_state = ParserState::Ground;
@@ -276,9 +291,12 @@ pub(super) fn handle_csi_entry_byte(term: &mut Term, byte: u8) {
             if term.csi_intermediates.is_empty() {
                  term.csi_intermediates.push(byte as char);
             } else {
-                 warn!("Multiple private markers encountered in CSI sequence");
+                 // Allow multiple private markers? st.c seems to only store the first.
+                 // Let's stick to storing only the first for now.
+                 warn!("Multiple private markers encountered in CSI sequence, ignoring subsequent ones.");
             }
-            term.parser_state = ParserState::CSIEntry; // Stay
+            // Stay in CSIEntry after a private marker, waiting for params or final byte
+            term.parser_state = ParserState::CSIEntry;
         }
         0x20..=0x2F => { // Intermediate bytes
             trace!("CSIEntry -> CSIIntermediate");
@@ -334,8 +352,12 @@ pub(super) fn handle_csi_param_byte(term: &mut Term, byte: u8) {
             term.parser_state = ParserState::CSIParam; // Stay
         }
         b'?' | b'>' | b'=' => { // Private marker (defensive)
+            // According to ECMA-48, parameters should not contain these bytes.
+            // If we receive them here, it's likely an error or non-standard sequence.
             warn!("Received private marker '{}' after CSI parameters, ignoring.", byte as char);
-            term.parser_state = ParserState::CSIParam; // Stay
+            // We could transition to CSIIgnore, but staying might allow recovery
+            // if the final byte is valid. Let's stay for now.
+            term.parser_state = ParserState::CSIParam;
         }
         0x20..=0x2F => { // Intermediate bytes
             trace!("CSIParam -> CSIIntermediate");
@@ -387,7 +409,7 @@ pub(super) fn handle_csi_intermediate_byte(term: &mut Term, byte: u8) {
              if term.csi_intermediates.len() < MAX_CSI_INTERMEDIATES {
                  term.csi_intermediates.push(byte as char);
                  trace!("  -> Pushed intermediate '{}', current intermediates: {:?}", byte as char, term.csi_intermediates);
-                 term.parser_state = ParserState::CSIIntermediate;
+                 term.parser_state = ParserState::CSIIntermediate; // Stay
                  trace!("  -> State explicitly set to: {:?}", term.parser_state);
              } else {
                  debug!("Max CSI intermediates ({}) reached, ignoring '{}', entering Ignore state", MAX_CSI_INTERMEDIATES, byte as char);
@@ -417,11 +439,13 @@ pub(super) fn handle_csi_intermediate_byte(term: &mut Term, byte: u8) {
               clear_csi_params(term);
               term.parser_state = ParserState::Ground;
          }
-         // Unexpected bytes - Abort sequence
+         // Unexpected bytes (including 0x30-0x3F which are params/private markers)
+         // ECMA-48 says these should be ignored in Intermediate state.
+         // Let's transition to Ignore state to be safe and consume until final byte.
          _ => {
-             warn!("Unexpected byte 0x{:02X} in CSIIntermediate state, aborting sequence.", byte);
-             clear_csi_params(term);
-             term.parser_state = ParserState::Ground;
+             warn!("Unexpected byte 0x{:02X} in CSIIntermediate state, entering Ignore state.", byte);
+             term.parser_state = ParserState::CSIIgnore;
+             // Do not clear params here, CSIIgnore will clear on final byte
          }
      }
      trace!("Exiting handle_csi_intermediate_byte, state is {:?}", term.parser_state);
@@ -481,6 +505,7 @@ pub(super) fn handle_osc_string_byte(term: &mut Term, byte: u8) {
         _ => {
             if term.osc_string.len() < MAX_OSC_STRING_LEN {
                 // FIXME: Assumes byte is valid for String. Use Vec<u8> for safety.
+                // For now, push the char representation, lossy if invalid utf8 byte
                 term.osc_string.push(byte as char);
             } else {
                  trace!("Maximum OSC string length ({}) exceeded, ignoring byte 0x{:02X}", MAX_OSC_STRING_LEN, byte);
@@ -521,23 +546,19 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
     match final_byte {
         // --- Cursor Movement ---
         b'A' => { // CUU
-            // WHY: Explicitly check for param 0, otherwise default to 1 for distance
-            let dist = if p1_or_0 == 0 { 0 } else { p1 as isize };
+            let dist = p1 as isize; // Use p1 (defaults to 1)
             if dist != 0 { super::screen::move_cursor(term, 0, -dist); }
         }
         b'B' => { // CUD
-            // WHY: Explicitly check for param 0, otherwise default to 1 for distance
-            let dist = if p1_or_0 == 0 { 0 } else { p1 as isize };
+            let dist = p1 as isize; // Use p1 (defaults to 1)
             if dist != 0 { super::screen::move_cursor(term, 0, dist); }
         }
         b'C' => { // CUF
-            // WHY: Explicitly check for param 0, otherwise default to 1 for distance
-            let dist = if p1_or_0 == 0 { 0 } else { p1 as isize };
+            let dist = p1 as isize; // Use p1 (defaults to 1)
             if dist != 0 { super::screen::move_cursor(term, dist, 0); }
         }
         b'D' => { // CUB
-            // WHY: Explicitly check for param 0, otherwise default to 1 for distance
-            let dist = if p1_or_0 == 0 { 0 } else { p1 as isize };
+            let dist = p1 as isize; // Use p1 (defaults to 1)
             if dist != 0 { super::screen::move_cursor(term, -dist, 0); }
         }
         b'E' => { // CNL (Defaults to 1)
@@ -549,6 +570,7 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
         b'G' => { // CHA (Defaults to 1)
              let target_x = p1.saturating_sub(1) as usize;
              term.cursor.x = min(target_x, term.width.saturating_sub(1));
+             term.wrap_next = false; // Explicit positioning resets wrap
         }
         b'H' | b'f' => { // CUP / HVP (Defaults to 1,1)
             let target_y = p1.saturating_sub(1).try_into().unwrap_or(0u16);
@@ -559,6 +581,7 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
              let target_y = p1.saturating_sub(1).try_into().unwrap_or(0u16);
              let current_x = term.cursor.x.try_into().unwrap_or(0u16);
              super::screen::set_cursor_pos(term, current_x + 1, target_y + 1);
+             // set_cursor_pos already handles wrap_next reset
         }
 
         // --- Erasing ---
@@ -585,6 +608,7 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
              let x_start = term.cursor.x;
              let y = term.cursor.y;
              super::screen::fill_range(term, y, x_start, x_start.saturating_add(n as usize));
+             // Erasing characters does not affect wrap_next state
         }
         b'P' => super::screen::delete_chars(term, p1 as usize), // DCH (Defaults to 1)
 
@@ -595,6 +619,7 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
         // --- Insertion/Deletion ---
         b'L' => super::screen::insert_blank_lines(term, p1 as usize), // IL (Defaults to 1)
         b'M' => super::screen::delete_lines(term, p1 as usize),       // DL (Defaults to 1)
+        // Note: IL/DL move cursor to column 0 inside their functions
         b'@' => super::screen::insert_blank_chars(term, p1 as usize), // ICH (Defaults to 1)
 
         // --- Tabs ---
@@ -638,13 +663,12 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
         b'c' => { // DA
              if p1_or_0 == 0 {
                  debug!("DA received - sending VT100 ID (Not Implemented)");
-                 // TODO: ttywrite(vtiden);
              } else {
                  warn!("Unknown DA parameter: {}", p1_or_0);
              }
         }
 
-        // --- Scrolling Region ---
+        // --- Scrolling Region --- (Resets cursor to home/region home)
         b'r' => { // DECSTBM
             let top = get_csi_param(term, 0, 1);
             let bot = get_csi_param(term, 1, term.height as u16);
@@ -653,6 +677,7 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
 
         // --- Cursor Save/Restore ---
         b's' => super::screen::save_cursor(term),   // SCOSC
+        // Note: restore_cursor clamps and resets wrap_next
         b'u' => super::screen::restore_cursor(term), // SCORC
 
         _ => { // Unhandled standard sequence
@@ -725,13 +750,13 @@ fn handle_sgr(term: &mut Term) {
             SGR_STRIKETHROUGH_OFF => term.current_attributes.flags &= !AttrFlags::STRIKETHROUGH,
 
             // Foreground colors
-            SGR_FG_OFFSET..=37 => term.current_attributes.fg = Color::Idx((p - SGR_FG_OFFSET) as u8),
-            SGR_FG_BRIGHT_OFFSET..=97 => term.current_attributes.fg = Color::Idx((p - SGR_FG_BRIGHT_OFFSET + 8) as u8),
+            SGR_FG_OFFSET..=SGR_FG_END => term.current_attributes.fg = Color::Idx((p - SGR_FG_OFFSET) as u8),
+            SGR_FG_BRIGHT_OFFSET..=SGR_FG_BRIGHT_END => term.current_attributes.fg = Color::Idx((p - SGR_FG_BRIGHT_OFFSET + SGR_BRIGHT_COLOR_OFFSET) as u8),
             SGR_FG_DEFAULT => term.current_attributes.fg = term.default_attributes.fg,
 
             // Background colors
-            SGR_BG_OFFSET..=47 => term.current_attributes.bg = Color::Idx((p - SGR_BG_OFFSET) as u8),
-            SGR_BG_BRIGHT_OFFSET..=107 => term.current_attributes.bg = Color::Idx((p - SGR_BG_BRIGHT_OFFSET + 8) as u8),
+            SGR_BG_OFFSET..=SGR_BG_END => term.current_attributes.bg = Color::Idx((p - SGR_BG_OFFSET) as u8),
+            SGR_BG_BRIGHT_OFFSET..=SGR_BG_BRIGHT_END => term.current_attributes.bg = Color::Idx((p - SGR_BG_BRIGHT_OFFSET + SGR_BRIGHT_COLOR_OFFSET) as u8),
             SGR_BG_DEFAULT => term.current_attributes.bg = term.default_attributes.bg,
 
             // Extended colors
@@ -745,7 +770,7 @@ fn handle_sgr(term: &mut Term) {
                         i += 1;
                         if i >= nparams { warn!("SGR: Missing color index after {} ; 5", p); break; }
                         let color_idx = params.get(i).copied().unwrap_or(0);
-                        if color_idx <= 255 {
+                        if color_idx <= u8::MAX as u16 { // Use u8::MAX instead of 255
                             let color = Color::Idx(color_idx as u8);
                             if p == SGR_EXTENDED_FG { term.current_attributes.fg = color; }
                             else { term.current_attributes.bg = color; }
@@ -755,9 +780,10 @@ fn handle_sgr(term: &mut Term) {
                     }
                     SGR_EXTENDED_MODE_RGB => { // Truecolor (RGB) mode
                         if i + 3 >= nparams { warn!("SGR: Missing RGB values after {} ; 2", p); break; }
-                        let r = params.get(i+1).copied().unwrap_or(0).min(255) as u8;
-                        let g = params.get(i+2).copied().unwrap_or(0).min(255) as u8;
-                        let b = params.get(i+3).copied().unwrap_or(0).min(255) as u8;
+                        // Use u8::MAX for clamping instead of 255
+                        let r = params.get(i+1).copied().unwrap_or(0).min(u8::MAX as u16) as u8;
+                        let g = params.get(i+2).copied().unwrap_or(0).min(u8::MAX as u16) as u8;
+                        let b = params.get(i+3).copied().unwrap_or(0).min(u8::MAX as u16) as u8;
                         i += 3;
                         let color = Color::Rgb(r, g, b);
                         if p == SGR_EXTENDED_FG { term.current_attributes.fg = color; }
@@ -766,9 +792,10 @@ fn handle_sgr(term: &mut Term) {
                     _ => {
                         warn!("SGR: Invalid specifier {} after {}", specifier, p);
                         // Attempt to recover - advance index past potential color values
-                        if specifier <= 255 { i += 1; }
-                        if i < nparams && params.get(i).copied().unwrap_or(0) <= 255 { i += 1; }
-                        if i < nparams && params.get(i).copied().unwrap_or(0) <= 255 { i += 1; }
+                        // Use u8::MAX for check instead of 255
+                        if specifier <= u8::MAX as u16 { i += 1; }
+                        if i < nparams && params.get(i).copied().unwrap_or(0) <= u8::MAX as u16 { i += 1; }
+                        if i < nparams && params.get(i).copied().unwrap_or(0) <= u8::MAX as u16 { i += 1; }
                         i = i.saturating_sub(1); // Decrement because outer loop increments
                     }
                 }
