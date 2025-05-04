@@ -3,11 +3,14 @@
 //! Tests for screen manipulation logic in screen.rs
 
 #[cfg(test)]
-mod original_tests {
-    use crate::term::{Term, Cursor, ParserState, screen::*}; // Import necessary items from parent
-    use crate::glyph::{Glyph, Attributes}; // Import necessary glyph items
+mod basic_tests {
+    // Use super to access items from the parent module (screen.rs)
+    use crate::term::screen::*;
+    // Import necessary items from sibling modules or parent crate root
+    use crate::term::{Term, Cursor, ParserState};
+    use crate::glyph::{Glyph, Attributes};
 
-    // Helper to get screen content as a Vec of Strings
+    // Helper to get screen content as a Vec of Strings for assertion checking.
     fn screen_to_string_vec(term: &Term) -> Vec<String> {
         let current_screen = if term.using_alt_screen { &term.alt_screen } else { &term.screen };
         current_screen.iter()
@@ -15,17 +18,8 @@ mod original_tests {
             .collect()
     }
 
-     // Helper to get screen content with attributes for debugging
-     #[allow(dead_code)]
-     fn screen_to_debug_vec(term: &Term) -> Vec<Vec<String>> {
-         let current_screen = if term.using_alt_screen { &term.alt_screen } else { &term.screen };
-         current_screen.iter().map(|row| {
-             row.iter().map(|g| format!("'{}'({:?}|{:?}|{:?})", g.c, g.attr.fg, g.attr.bg, g.attr.flags)).collect()
-         }).collect()
-     }
-
-
     // Helper to get a specific glyph, defaulting if out of bounds.
+    // Useful for checking specific cell content after operations.
     fn get_glyph_test(term: &Term, x: usize, y: usize) -> Glyph {
         term.get_glyph(x, y).cloned().unwrap_or_default()
     }
@@ -36,10 +30,10 @@ mod original_tests {
     fn test_backspace_stops_at_zero() {
         let mut term = Term::new(10, 1);
         term.cursor = Cursor { x: 5, y: 0 };
-        backspace(&mut term);
+        backspace(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 4);
         term.cursor.x = 0;
-        backspace(&mut term);
+        backspace(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 0);
     }
 
@@ -47,7 +41,7 @@ mod original_tests {
     fn test_carriage_return_moves_home() {
         let mut term = Term::new(10, 1);
         term.cursor = Cursor { x: 5, y: 0 };
-        carriage_return(&mut term);
+        carriage_return(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 0);
         assert_eq!(term.cursor.y, 0);
     }
@@ -60,14 +54,14 @@ mod original_tests {
         term.screen[2] = "33333".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.cursor = Cursor { x: 3, y: 1 };
 
-        newline(&mut term);
+        newline(&mut term); // Use function from parent module
 
         assert_eq!(term.cursor.x, 0, "Cursor X after newline");
         assert_eq!(term.cursor.y, 2, "Cursor Y after newline");
 
         // Test newline at bottom margin (should scroll)
         term.cursor = Cursor { x: 3, y: 2 };
-        newline(&mut term);
+        newline(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 0, "Cursor X after scroll");
         assert_eq!(term.cursor.y, 2, "Cursor Y after scroll");
         assert_eq!(screen_to_string_vec(&term), vec![
@@ -85,10 +79,10 @@ mod original_tests {
         term.screen[1] = "22222".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.screen[2] = "33333".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.screen[3] = "44444".chars().map(|c| Glyph { c, ..Default::default() }).collect();
-        set_scrolling_region(&mut term, 2, 3); // Region lines 1-2 (0-based)
+        set_scrolling_region(&mut term, 2, 3); // Use function from parent module
         term.cursor = Cursor { x: 0, y: 2 }; // Cursor on line 2 (333), which is scroll_bot
 
-        index(&mut term); // Should scroll region up
+        index(&mut term); // Use function from parent module
 
         assert_eq!(term.cursor.y, 2, "Cursor Y remains at bottom after scroll");
         assert_eq!(screen_to_string_vec(&term), vec![
@@ -106,10 +100,10 @@ mod original_tests {
         term.screen[1] = "22222".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.screen[2] = "33333".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.screen[3] = "44444".chars().map(|c| Glyph { c, ..Default::default() }).collect();
-        set_scrolling_region(&mut term, 2, 3); // Region lines 1-2 (0-based)
+        set_scrolling_region(&mut term, 2, 3); // Use function from parent module
         term.cursor = Cursor { x: 0, y: 1 }; // Cursor on line 1 (222), which is scroll_top
 
-        reverse_index(&mut term); // Should scroll region down
+        reverse_index(&mut term); // Use function from parent module
 
         assert_eq!(term.cursor.y, 1, "Cursor Y remains at top after scroll");
          assert_eq!(screen_to_string_vec(&term), vec![
@@ -123,48 +117,48 @@ mod original_tests {
     #[test]
     fn test_origin_mode_cursor_movement_relative() {
         let mut term = Term::new(10, 5);
-        set_scrolling_region(&mut term, 2, 4); // Region lines 1-3 (0-based)
-        enable_origin_mode(&mut term); // Enable origin mode, cursor moves to (0, 1)
+        set_scrolling_region(&mut term, 2, 4); // Use function from parent module
+        enable_origin_mode(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 0);
-        assert_eq!(term.cursor.y, 1); // Should be at top of region (1)
+        assert_eq!(term.cursor.y, 1);
 
-        index(&mut term);
+        index(&mut term); // Use function from parent module
         assert_eq!(term.cursor.y, 2, "Index within region");
-        index(&mut term);
+        index(&mut term); // Use function from parent module
         assert_eq!(term.cursor.y, 3, "Index at region bottom");
-        index(&mut term);
+        index(&mut term); // Use function from parent module
         assert_eq!(term.cursor.y, 3, "Index scrolls at region bottom");
-        reverse_index(&mut term);
+        reverse_index(&mut term); // Use function from parent module
         assert_eq!(term.cursor.y, 2, "Reverse Index within region");
-        reverse_index(&mut term);
+        reverse_index(&mut term); // Use function from parent module
         assert_eq!(term.cursor.y, 1, "Reverse Index at region top");
-        reverse_index(&mut term);
+        reverse_index(&mut term); // Use function from parent module
         assert_eq!(term.cursor.y, 1, "Reverse Index scrolls at region top");
     }
 
      #[test]
     fn test_origin_mode_cursor_addressing_cup() {
         let mut term = Term::new(10, 5);
-        set_scrolling_region(&mut term, 2, 4); // Region lines 1-3 (0-based)
+        set_scrolling_region(&mut term, 2, 4); // Use function from parent module
         term.cursor = Cursor{ x: 5, y: 2 };
 
-        enable_origin_mode(&mut term); // Cursor moves to (0, 1)
+        enable_origin_mode(&mut term); // Use function from parent module
 
-        set_cursor_pos(&mut term, 1, 1); // CUP 1,1 (relative)
+        set_cursor_pos(&mut term, 1, 1); // Use function from parent module
         assert_eq!(term.cursor.x, 0);
         assert_eq!(term.cursor.y, 1, "CUP 1,1 relative");
 
-        set_cursor_pos(&mut term, 3, 3); // CUP 3,3 (relative) -> absolute (2, 3)
+        set_cursor_pos(&mut term, 3, 3); // Use function from parent module
         assert_eq!(term.cursor.x, 2);
         assert_eq!(term.cursor.y, 3, "CUP 3,3 relative");
 
-        set_cursor_pos(&mut term, 1, 10); // CUP 1,10 (relative, > region height) -> clamps to (0, 3)
+        set_cursor_pos(&mut term, 1, 10); // Use function from parent module
         assert_eq!(term.cursor.x, 0);
         assert_eq!(term.cursor.y, 3, "CUP 1,10 relative clamped");
 
-        disable_origin_mode(&mut term); // Cursor moves to (0, 0)
+        disable_origin_mode(&mut term); // Use function from parent module
 
-        set_cursor_pos(&mut term, 2, 3); // CUP 2, 3 (absolute) -> (1, 2)
+        set_cursor_pos(&mut term, 2, 3); // Use function from parent module
         assert_eq!(term.cursor.x, 1);
         assert_eq!(term.cursor.y, 2, "CUP 2,3 absolute");
     }
@@ -172,17 +166,17 @@ mod original_tests {
     #[test]
     fn test_origin_mode_enable_disable() {
         let mut term = Term::new(10, 5);
-        set_scrolling_region(&mut term, 2, 4); // Region 1-3
+        set_scrolling_region(&mut term, 2, 4); // Use function from parent module
         term.cursor = Cursor { x: 5, y: 2 };
 
-        enable_origin_mode(&mut term); // Should set mode and move cursor to region home (0,1)
+        enable_origin_mode(&mut term); // Use function from parent module
         assert!(term.dec_modes.origin_mode);
         assert_eq!(term.cursor.x, 0, "Cursor X after enable");
         assert_eq!(term.cursor.y, 1, "Cursor Y after enable (region top)");
 
         term.cursor = Cursor { x: 3, y: 3 }; // Move cursor within region again
 
-        disable_origin_mode(&mut term); // Should unset mode and move cursor to absolute home (0,0)
+        disable_origin_mode(&mut term); // Use function from parent module
         assert!(!term.dec_modes.origin_mode);
         assert_eq!(term.cursor.x, 0, "Cursor X after disable");
         assert_eq!(term.cursor.y, 0, "Cursor Y after disable");
@@ -192,7 +186,7 @@ mod original_tests {
     fn test_deprecated_set_origin_mode() {
         // Test integration via process_bytes
         let mut term = Term::new(10, 5);
-        set_scrolling_region(&mut term, 2, 4);
+        set_scrolling_region(&mut term, 2, 4); // Use function from parent module
         term.process_bytes(b"\x1b[?6h"); // Enable origin mode
         assert!(term.dec_modes.origin_mode, "Origin mode enabled via CSI");
         assert_eq!(term.cursor.y, 1, "Cursor Y after enable via CSI");
@@ -213,19 +207,19 @@ mod original_tests {
         assert!(!term.tabs[9]);
 
         term.cursor.x = 0;
-        tab(&mut term);
+        tab(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 8, "Tab from 0");
 
         term.cursor.x = 5;
-        tab(&mut term);
+        tab(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 8, "Tab from 5");
 
         term.cursor.x = 8;
-        tab(&mut term);
+        tab(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 16, "Tab from 8");
 
         term.cursor.x = 17;
-        tab(&mut term);
+        tab(&mut term); // Use function from parent module
         assert_eq!(term.cursor.x, 19, "Tab from 17 (to end)");
     }
 
@@ -235,7 +229,7 @@ mod original_tests {
         term.process_bytes(b"abcdefghij");
         term.cursor = Cursor { x: 2, y: 0 }; // Cursor at 'c' (index 2)
 
-        insert_blank_chars(&mut term, 3); // ICH 3
+        insert_blank_chars(&mut term, 3); // Use function from parent module
 
         assert_eq!(screen_to_string_vec(&term), vec!["ab   cdefg".to_string()]);
         assert_eq!(term.cursor.x, 2, "Cursor unchanged after ICH");
@@ -247,7 +241,7 @@ mod original_tests {
         term.process_bytes(b"abcdefghij");
         term.cursor = Cursor { x: 2, y: 0 }; // Cursor at 'c' (index 2)
 
-        delete_chars(&mut term, 3); // DCH 3
+        delete_chars(&mut term, 3); // Use function from parent module
 
         assert_eq!(screen_to_string_vec(&term), vec!["abfghij   ".to_string()]);
         assert_eq!(term.cursor.x, 2, "Cursor unchanged after DCH");
@@ -261,10 +255,10 @@ mod original_tests {
         term.screen[2] = "33333".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.screen[3] = "44444".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.screen[4] = "55555".chars().map(|c| Glyph { c, ..Default::default() }).collect();
-        set_scrolling_region(&mut term, 2, 4); // Region lines 1-3 (0-based)
+        set_scrolling_region(&mut term, 2, 4); // Use function from parent module
         term.cursor = Cursor { x: 0, y: 2 }; // Cursor on line 2 (content: 333)
 
-        insert_blank_lines(&mut term, 1); // IL 1
+        insert_blank_lines(&mut term, 1); // Use function from parent module
         assert_eq!(screen_to_string_vec(&term), vec![
             "11111".to_string(), // Unaffected
             "22222".to_string(), // Unaffected (top of region)
@@ -276,7 +270,7 @@ mod original_tests {
 
         term.cursor = Cursor { x: 0, y: 2 }; // Cursor on the new blank line
 
-        delete_lines(&mut term, 2); // DL 2
+        delete_lines(&mut term, 2); // Use function from parent module
          assert_eq!(screen_to_string_vec(&term), vec![
             "11111".to_string(), // Unaffected
             "22222".to_string(), // Unaffected (top of region)
@@ -293,17 +287,17 @@ mod original_tests {
         term.process_bytes(b"abcde");
         term.cursor = Cursor { x: 2, y: 0 };
 
-        erase_line_to_end(&mut term); // EL 0
+        erase_line_to_end(&mut term); // Use function from parent module
         assert_eq!(screen_to_string_vec(&term), vec!["ab   ".to_string()], "EL 0 failed");
 
         term.screen[0] = "ab de".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.cursor = Cursor { x: 2, y: 0 };
-        erase_line_to_start(&mut term); // EL 1
+        erase_line_to_start(&mut term); // Use function from parent module
         assert_eq!(screen_to_string_vec(&term), vec!["   de".to_string()], "EL 1 failed");
 
         term.screen[0] = "abcde".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.cursor = Cursor { x: 2, y: 0 };
-        erase_whole_line(&mut term); // EL 2
+        erase_whole_line(&mut term); // Use function from parent module
         assert_eq!(screen_to_string_vec(&term), vec!["     ".to_string()], "EL 2 failed");
     }
 
@@ -315,7 +309,7 @@ mod original_tests {
         term.screen[2] = "33333".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.cursor = Cursor { x: 1, y: 1 };
 
-        erase_display_to_end(&mut term); // ED 0
+        erase_display_to_end(&mut term); // Use function from parent module
         assert_eq!(screen_to_string_vec(&term), vec![
             "11111".to_string(),
             "2    ".to_string(),
@@ -327,7 +321,7 @@ mod original_tests {
         term.screen[1] = "22222".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.screen[2] = "33333".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.cursor = Cursor { x: 1, y: 1 };
-        erase_display_to_start(&mut term); // ED 1
+        erase_display_to_start(&mut term); // Use function from parent module
         assert_eq!(screen_to_string_vec(&term), vec![
             "     ".to_string(),
             "  222".to_string(),
@@ -339,7 +333,7 @@ mod original_tests {
         term.screen[1] = "22222".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.screen[2] = "33333".chars().map(|c| Glyph { c, ..Default::default() }).collect();
         term.cursor = Cursor { x: 1, y: 1 };
-        erase_whole_display(&mut term); // ED 2
+        erase_whole_display(&mut term); // Use function from parent module
         assert_eq!(screen_to_string_vec(&term), vec![
             "     ".to_string(),
             "     ".to_string(),
@@ -357,7 +351,7 @@ mod original_tests {
         term.scroll_bot = 3;
         term.using_alt_screen = true;
 
-        reset(&mut term); // RIS
+        reset(&mut term); // Use function from parent module
 
         assert_eq!(term.get_cursor(), (0, 0), "Cursor after reset");
         assert_eq!(term.current_attributes, Attributes::default(), "Attributes after reset");
@@ -374,9 +368,9 @@ mod original_tests {
         let mut term = Term::new(10, 5);
         term.process_bytes(b"main");
         term.cursor = Cursor { x: 1, y: 1 }; // Cursor at (1, 1) on main screen
-        save_cursor(&mut term); // Save cursor for main screen
+        save_cursor(&mut term); // Use function from parent module
 
-        enter_alt_screen(&mut term);
+        enter_alt_screen(&mut term); // Use function from parent module
         assert!(term.using_alt_screen, "Entered alt screen");
         assert_eq!(term.get_cursor(), (0, 0), "Cursor home on alt screen");
         assert_eq!(screen_to_string_vec(&term)[0], "          ", "Alt screen initially blank");
@@ -385,28 +379,17 @@ mod original_tests {
         assert_eq!(get_glyph_test(&term, 0, 0).c, 'a', "Content on alt screen");
         term.cursor = Cursor { x: 5, y: 2 }; // Move cursor on alt screen
 
-        exit_alt_screen(&mut term);
+        exit_alt_screen(&mut term); // Use function from parent module
         assert!(!term.using_alt_screen, "Exited alt screen");
         assert_eq!(get_glyph_test(&term, 0, 0).c, 'm', "Main screen content restored");
     }
 }
 
 #[cfg(test)]
-mod control_sequences_robustness {
-    use crate::term::{Term, Cursor, ParserState, screen::*}; // Import necessary items
-    use crate::glyph::{Glyph, Attributes, Color, AttrFlags};
-
-    // Helper to get screen content as a Vec of Strings
-    fn screen_to_string_vec(term: &Term) -> Vec<String> {
-        let current_screen = if term.using_alt_screen { &term.alt_screen } else { &term.screen };
-        current_screen.iter()
-            .map(|row| row.iter().map(|g| g.c).collect())
-            .collect()
-    }
-     // Helper to get a specific glyph, defaulting if out of bounds.
-    fn get_glyph_test(term: &Term, x: usize, y: usize) -> Glyph {
-        term.get_glyph(x, y).cloned().unwrap_or_default()
-    }
+mod robustness_tests {
+    // Use super to access items from the parent module (screen.rs)
+    use crate::term::{Term, Cursor, ParserState};
+    use crate::glyph::{Attributes, Color, AttrFlags}; // Glyph already imported via super::*
 
     #[test]
     fn test_cub_variants() {
@@ -504,7 +487,7 @@ mod control_sequences_robustness {
         let mut term = Term::new(10, 1);
         term.process_bytes(b"A\x1b[1;"); // Enter CSIParam state
         assert_eq!(term.parser_state, ParserState::CSIParam);
-        term.process_bytes(b"\x1b"); // Interrupt with ESC
+        term.process_byte(b'\x1b'); // Interrupt with ESC
         assert_eq!(term.parser_state, ParserState::Escape, "Parser should transition to Escape");
         assert!(term.csi_params.is_empty(), "Params should be cleared on ESC interrupt");
     }
@@ -523,5 +506,34 @@ mod control_sequences_robustness {
         term.process_bytes(b"\x1b[?25h"); // Private sequence
         assert_eq!(term.parser_state, ParserState::Ground, "State after private sequence");
         assert!(term.csi_intermediates.is_empty(), "Intermediates cleared after private sequence");
+    }
+}
+
+// Module specific to tests that failed and were fixed or adjusted
+#[cfg(test)]
+mod fixed_tests {
+    // Use super to access items from the parent module (screen.rs)
+    use crate::term::Term;
+    use crate::glyph::Glyph; // Import necessary items
+
+     // Helper to get a specific glyph, defaulting if out of bounds.
+    fn get_glyph_test(term: &Term, x: usize, y: usize) -> Glyph {
+        term.get_glyph(x, y).cloned().unwrap_or_default()
+    }
+
+    // Test with corrected assertion
+    #[test]
+    fn test_process_bytes_simple_csi_fixed() {
+        let mut term = Term::new(10, 5);
+        term.process_bytes(b"ABC\x1b[2B\x1b[3DXYZ");
+        // Corrected assertion: Expect cursor position *after* printing XYZ
+        assert_eq!(term.get_cursor(), (3, 2), "Cursor after simple CSI");
+        assert_eq!(get_glyph_test(&term, 0, 0).c, 'A');
+        assert_eq!(get_glyph_test(&term, 1, 0).c, 'B');
+        assert_eq!(get_glyph_test(&term, 2, 0).c, 'C');
+        assert_eq!(get_glyph_test(&term, 0, 2).c, 'X');
+        assert_eq!(get_glyph_test(&term, 1, 2).c, 'Y');
+        assert_eq!(get_glyph_test(&term, 2, 2).c, 'Z');
+        assert_eq!(term.parser_state, crate::term::ParserState::Ground, "State after simple CSI");
     }
 }
