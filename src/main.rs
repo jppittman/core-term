@@ -4,6 +4,7 @@
 mod glyph;
 mod term;
 mod backends;
+mod ansi;
 
 use backends::{TerminalBackend, XBackend}; // Using X11 backend
 use term::Term;
