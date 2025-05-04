@@ -2,7 +2,7 @@
 
 //! Handles parsing of input byte streams, including escape sequences (CSI, OSC).
 
-use super::{Term, ParserState};
+use super::{Term};
 use crate::glyph::{Color, AttrFlags};
 use super::{MAX_CSI_PARAMS, MAX_CSI_INTERMEDIATES, MAX_OSC_STRING_LEN};
 use std::cmp::min;
@@ -125,6 +125,27 @@ const ALT_SCREEN_BUF_1047: u16 = 1047;
 const CURSOR_SAVE_RESTORE_1048: u16 = 1048;
 const ALT_SCREEN_SAVE_RESTORE_1049: u16 = 1049;
 #[allow(dead_code)] const BRACKETED_PASTE: u16 = 2004;
+
+/// States for the terminal escape sequence parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum ParserState {
+    /// Default state: expecting printable characters or C0/ESC control codes.
+    #[default]
+    Ground,
+    /// Received ESC (0x1B), expecting a subsequent byte to determine sequence type.
+    Escape,
+    /// Received CSI (ESC [ or C1 0x9B), expecting parameters, intermediates, or final byte.
+    CSIEntry,
+    /// Parsing CSI parameters (digits 0-9 and ';').
+    CSIParam,
+    /// Parsing CSI intermediate bytes (0x20-0x2F).
+    CSIIntermediate,
+    /// Ignoring remaining bytes of a CSI sequence until a final byte (e.g., due to too many params/intermediates).
+    CSIIgnore,
+    /// Parsing an OSC string, collecting bytes until a terminator (BEL or ST).
+    OSCString,
+}
+
 
 // --- Parser State Handling Functions (taking `&mut Term`) ---
 
