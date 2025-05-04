@@ -180,19 +180,24 @@ mod term_tests {
         let mut term = Term::new(5, 3);
         term.process_bytes(b"A\nB\rC\tD\x08E"); // LF, CR, HT, BS
 
+        // Corrected Assertion based on trace
         assert_eq!(screen_to_string_vec(&term), vec![
             "A    ".to_string(),
-            "C   E".to_string(),
+            "C  ED".to_string(), // Corrected expected screen state
             "     ".to_string(),
         ], "Screen content after C0 mix");
+        // Corrected Assertion: Cursor ends up after the 'E'
         assert_eq!(term.get_cursor(), (4, 1), "Cursor pos after C0 mix");
+        // Corrected Assertion: wrap_next is false after BS and E
+        assert!(!term.wrap_next, "wrap_next should be false after C0 mix");
         assert_eq!(term.parser_state, ParserState::Ground, "State after C0 mix");
     }
 
     #[test]
     fn test_process_bytes_simple_csi() {
         let term = term_with_bytes(10, 5, b"ABC\x1b[2B\x1b[3DXYZ");
-        assert_eq!(term.get_cursor(), (0, 2), "Cursor after simple CSI");
+        // Corrected Assertion: Cursor should be after 'Z'
+        assert_eq!(term.get_cursor(), (3, 2), "Cursor after simple CSI");
         assert_eq!(get_glyph_test(&term, 0, 0).c, 'A');
         assert_eq!(get_glyph_test(&term, 1, 0).c, 'B');
         assert_eq!(get_glyph_test(&term, 2, 0).c, 'C');
@@ -215,7 +220,7 @@ mod term_tests {
         assert_eq!(get_glyph_test(&term, 4, 0).attr, hello_attr, "SGR Test: o attr");
         assert_eq!(get_glyph_test(&term, 5, 0).c, ' ', "SGR Test: space");
         assert_eq!(get_glyph_test(&term, 5, 0).attr, space_attr, "SGR Test: space attr");
-        assert_eq!(get_glyph_test(&term, 6, 0).c, 'W', "SGR Test: W"); // Corrected assertion
+        assert_eq!(get_glyph_test(&term, 6, 0).c, 'W', "SGR Test: W");
         assert_eq!(get_glyph_test(&term, 6, 0).attr, space_attr, "SGR Test: W attr");
     }
 
@@ -265,7 +270,7 @@ mod term_tests {
         assert_eq!(term.parser_state, ParserState::Ground, "State after invalid UTF-8 in CSI");
         assert_eq!(get_glyph_test(&term, 0, 0).c, 'A');
         assert_eq!(get_glyph_test(&term, 1, 0).c, 'B'); // B should be printed at (1,0)
-        assert_eq!(term.get_cursor(), (2, 0), "Cursor after invalid UTF-8 in CSI"); // Corrected expected cursor pos
+        assert_eq!(term.get_cursor(), (2, 0), "Cursor after invalid UTF-8 in CSI");
         assert_eq!(term.current_attributes, Attributes::default(), "Attributes unchanged after aborted CSI");
     }
 
