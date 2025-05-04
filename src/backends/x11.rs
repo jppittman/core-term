@@ -176,9 +176,7 @@ impl TerminalBackend for XBackend {
         }
         debug!("Added PTY fd ({}) to epoll", pty_fd);
 
-        // Optional: Set PTY to non-blocking. This prevents the read call
-        // from blocking if there's a slight delay between epoll reporting
-        // readiness and the read call.
+        // Optional: Set PTY to non-blocking.
         unsafe {
             let flags = fcntl(pty_fd, F_GETFL, 0);
             if flags != -1 {
@@ -194,13 +192,9 @@ impl TerminalBackend for XBackend {
 
         let mut events: [epoll_event; MAX_EPOLL_EVENTS] = unsafe { mem::zeroed() };
         let mut pty_buffer = [0u8; PTY_READ_BUF_SIZE];
-        //let mut needs_redraw = false; // Track if a redraw is needed after processing events
 
         loop {
-            // Reset redraw flag before waiting
-            // needs_redraw = false; // No longer needed, redraw happens on expose/pty read
-
-            trace!("Calling epoll_wait (timeout -1)...");
+            // trace!("Calling epoll_wait (timeout -1)..."); // Too verbose
             // Safety: FFI call to epoll_wait.
             let nfds = unsafe { epoll_wait(self.epoll_fd, events.as_mut_ptr(), MAX_EPOLL_EVENTS as c_int, -1) };
 
@@ -214,38 +208,35 @@ impl TerminalBackend for XBackend {
                     return Err(anyhow::Error::from(err).context("epoll_wait failed"));
                 }
             }
-            trace!("epoll_wait returned {} events", nfds);
+            // trace!("epoll_wait returned {} events", nfds); // Too verbose
 
             for i in 0..nfds as usize {
                 let current_event_fd = events[i].u64 as RawFd;
 
                 if current_event_fd == x11_fd {
-                    trace!("Processing X11 events (fd={})", x11_fd);
+                    // trace!("Processing X11 events (fd={})", x11_fd); // Too verbose
                     // Process all pending X events non-blockingly
-                    // Safety: FFI calls, assumes display is valid.
                     while unsafe { xlib::XPending(self.display) } > 0 {
                         let mut event: xlib::XEvent = unsafe { mem::zeroed() };
-                        // Safety: FFI call, assumes display is valid.
                         unsafe { xlib::XNextEvent(self.display, &mut event) };
 
                         let event_type = unsafe { event.type_ };
-                        trace!("Received XEvent type: {}", event_type);
+                        // trace!("Received XEvent type: {}", event_type); // Too verbose
 
                         let mut backend_event: Option<BackendEvent> = None;
                         let mut should_exit = false;
 
                         match event_type {
                             xlib::Expose => {
-                                debug!("Received Expose event");
+                                // debug!("Received Expose event"); // Can be noisy
                                 let xexpose = unsafe { event.expose };
                                 if xexpose.count == 0 {
                                     // Redraw immediately on expose
                                     if let Err(e) = self.draw(term) {
                                          error!("Error during expose redraw: {:?}", e);
-                                         // Decide if error is fatal?
                                      }
                                 } else {
-                                    trace!("Ignoring Expose event with count > 0 ({})", xexpose.count);
+                                    // trace!("Ignoring Expose event with count > 0 ({})", xexpose.count); // Too verbose
                                 }
                             }
                             xlib::ConfigureNotify => {
@@ -268,7 +259,7 @@ impl TerminalBackend for XBackend {
                                 } else {
                                     String::new()
                                 };
-                                trace!("KeyPress details: keysym={}, text='{}'", keysym, text);
+                                // trace!("KeyPress details: keysym={}, text='{}'", keysym, text); // Moved to handle_event
                                 backend_event = Some(BackendEvent::Key {
                                     keysym: keysym as u32,
                                     text,
@@ -281,7 +272,7 @@ impl TerminalBackend for XBackend {
                                     info!("WM_DELETE_WINDOW received, requesting exit");
                                     should_exit = true;
                                 } else {
-                                    trace!("Ignoring ClientMessage type: {}", xclient.message_type);
+                                    // trace!("Ignoring ClientMessage type: {}", xclient.message_type); // Too verbose
                                 }
                             }
                             xlib::FocusIn => {
@@ -293,16 +284,14 @@ impl TerminalBackend for XBackend {
                                 backend_event = Some(BackendEvent::FocusLost);
                             }
                              _ => {
-                                trace!("Ignoring XEvent type: {}", event_type);
+                                // trace!("Ignoring XEvent type: {}", event_type); // Too verbose
                             }
                         }
 
                         if let Some(be) = backend_event {
-                            trace!("Handling BackendEvent from X11: {:?}", be);
-                            // Handle event immediately, it might trigger redraw flag itself
+                            // trace!("Handling BackendEvent from X11: {:?}", be); // Too verbose
                             if let Err(e) = self.handle_event(be, term, pty_fd) {
                                 error!("Error handling BackendEvent: {:?}", e);
-                                // Decide if error is fatal, maybe return Err(e)?
                             }
                         }
 
@@ -312,15 +301,13 @@ impl TerminalBackend for XBackend {
                         }
                     } // End while XPending
                 } else if current_event_fd == pty_fd {
-                    trace!("Processing PTY input (fd={})", pty_fd);
-                    // Safety: FFI call to read.
+                    // trace!("Processing PTY input (fd={})", pty_fd); // Too verbose
                     let bytes_read = unsafe { read(pty_fd, pty_buffer.as_mut_ptr() as *mut _, PTY_READ_BUF_SIZE) };
 
                     if bytes_read < 0 {
                         let err = io::Error::last_os_error();
-                        // EAGAIN or EWOULDBLOCK are expected for non-blocking reads with no data
                         if err.raw_os_error() == Some(libc::EAGAIN) || err.raw_os_error() == Some(libc::EWOULDBLOCK) {
-                             trace!("PTY read would block, continuing");
+                             // trace!("PTY read would block, continuing"); // Too verbose
                              continue;
                         } else if err.raw_os_error() == Some(EINTR) {
                             trace!("PTY read interrupted, continuing");
@@ -333,13 +320,10 @@ impl TerminalBackend for XBackend {
                         info!("PTY fd ({}) closed (EOF), exiting.", pty_fd);
                         return Ok(true); // PTY closed, likely shell exited
                     } else {
-                        debug!("Read {} bytes from PTY", bytes_read);
-                        // Process the received bytes through the terminal state machine
+                        // Debug level log moved to Term::process_bytes
                         term.process_bytes(&pty_buffer[0..bytes_read as usize]);
-                        // Redraw after processing PTY data
                         if let Err(e) = self.draw(term) {
                             error!("Error during PTY read redraw: {:?}", e);
-                            // Decide if error is fatal?
                         }
                     }
                 } else {
@@ -347,27 +331,24 @@ impl TerminalBackend for XBackend {
                 }
             } // End for nfds
 
-            // No explicit redraw call needed here anymore, handled on expose/pty read
-
         } // End loop
     }
 
 
     /// Handles translated backend events.
     fn handle_event(&mut self, event: BackendEvent, term: &mut Term, pty_fd: RawFd) -> Result<()> {
-        debug!("Handling BackendEvent: {:?}", event);
-        let mut needs_redraw = false; // Track if this specific event requires a redraw
+        // debug!("Handling BackendEvent: {:?}", event); // Can be noisy
+        let mut needs_redraw = false;
         match event {
             BackendEvent::Key { text, keysym } => {
                 trace!("handle_event Key: keysym={}, text='{}'", keysym, text);
 
-                // FIX: Explicitly type as &[u8] to allow different slice lengths
                 let bytes_to_write: &[u8] = if !text.is_empty() && keysym != keysym::XK_BackSpace {
                     trace!("  -> Using text bytes: {:?}", text.as_bytes());
                     text.as_bytes()
                 } else {
                     let seq = match keysym {
-                        keysym::XK_Return => b"\r" as &[u8], // Cast literal to slice
+                        keysym::XK_Return => b"\r" as &[u8],
                         keysym::XK_Left => b"\x1b[D",
                         keysym::XK_Right => b"\x1b[C",
                         keysym::XK_Up => b"\x1b[A",
@@ -390,7 +371,6 @@ impl TerminalBackend for XBackend {
                 if !bytes_to_write.is_empty() {
                     trace!("  -> Writing to PTY: {:?}", bytes_to_write);
                     let count = bytes_to_write.len();
-                    // Safety: FFI call to libc::write. Requires pointer cast.
                     let written = unsafe { libc::write(pty_fd, bytes_to_write.as_ptr() as *const libc::c_void, count) };
 
                     if written < 0 {
@@ -403,9 +383,8 @@ impl TerminalBackend for XBackend {
                         warn!("Partial write to PTY ({} out of {})", written, count);
                     }
                 } else {
-                     trace!("No bytes to write for keysym {}", keysym);
+                     // trace!("No bytes to write for keysym {}", keysym); // Too verbose
                 }
-                // Writing to PTY doesn't directly require redraw, wait for PTY read event
             }
             BackendEvent::Resize { width_px, height_px } => {
                 debug!("Handling Resize event: {}x{} px", width_px, height_px);
@@ -420,7 +399,7 @@ impl TerminalBackend for XBackend {
 
                 let (current_width, current_height) = term.get_dimensions();
                 if new_width == current_width && new_height == current_height {
-                    trace!("Resize resulted in same dimensions, skipping term resize.");
+                    // trace!("Resize resulted in same dimensions, skipping term resize."); // Too verbose
                     return Ok(());
                  }
 
@@ -428,17 +407,15 @@ impl TerminalBackend for XBackend {
                 info!("Resized terminal to {}x{}", new_width, new_height);
 
                 let winsz = winsize { ws_row: new_height as u16, ws_col: new_width as u16, ws_xpixel: width_px, ws_ypixel: height_px };
-                // Safety: FFI call to libc::ioctl.
                 if unsafe { libc::ioctl(pty_fd, TIOCSWINSZ, &winsz) } < 0 {
                     warn!("ioctl(TIOCSWINSZ) failed: {}", std::io::Error::last_os_error());
                 } else {
                      debug!("ioctl(TIOCSWINSZ) successful for {}x{}", new_width, new_height);
                 }
 
-                needs_redraw = true; // Resize requires redraw
+                needs_redraw = true;
             }
             BackendEvent::CloseRequested => {
-                // This event type is informational; the actual exit logic is in the run loop
                 info!("CloseRequested event handled (action taken in run loop).");
             }
             BackendEvent::FocusGained => {
@@ -450,7 +427,6 @@ impl TerminalBackend for XBackend {
                  needs_redraw = true;
             }
         }
-        // Trigger redraw here if this specific event required it
         if needs_redraw {
              self.draw(term)?;
         }
@@ -459,106 +435,85 @@ impl TerminalBackend for XBackend {
 
     /// Renders the terminal state to the display using Xft.
     fn draw(&mut self, term: &Term) -> Result<()> {
-        trace!("draw() called");
+        // trace!("draw() called"); // Too verbose
         let (term_width, term_height) = term.get_dimensions();
         let font_width = self.font_width;
         let font_height = self.font_height;
         let font_ascent = self.font_ascent;
 
-        // Check if colors are initialized before accessing them
         if self.xft_colors.is_empty() || DEFAULT_BG_IDX >= self.xft_colors.len() {
              error!("Attempted to draw before Xft colors were initialized or defaults are out of bounds.");
              return Err(anyhow::anyhow!("Xft colors not initialized"));
         }
         let default_bg_color_pixel = self.xft_colors[DEFAULT_BG_IDX].pixel;
-        trace!("Drawing {}x{} cells", term_width, term_height);
+        // trace!("Drawing {}x{} cells", term_width, term_height); // Too verbose
 
 
-        // Safety: FFI calls for drawing. Assumes display/gc/draw valid.
         unsafe {
-            // Clear background using the simple GC
-            trace!("Clearing background");
+            // trace!("Clearing background"); // Too verbose
             xlib::XSetForeground(self.display, self.clear_gc, default_bg_color_pixel);
             xlib::XFillRectangle(self.display, self.window, self.clear_gc, 0, 0, term_width as u32 * font_width, term_height as u32 * font_height);
 
-            // Iterate through each cell of the terminal grid
-            trace!("Starting cell drawing loop");
+            // trace!("Starting cell drawing loop"); // Too verbose
             for y in 0..term_height {
                 for x in 0..term_width {
-                    // Get glyph first (immutable borrow of term)
                     let glyph = term.get_glyph(x, y).cloned().unwrap_or_default();
                     let flags = glyph.attr.flags;
-                    trace!("Processing cell ({}, {}): char='{}', flags={:?}", x, y, glyph.c, flags);
+                    // trace!("Processing cell ({}, {}): char='{}', flags={:?}", x, y, glyph.c, flags); // Too verbose
 
-                    // Skip drawing default background cells if glyph is just a space
-                    // and has default attributes.
                     if glyph.c == ' ' && flags == AttrFlags::empty() && glyph.attr.fg == Color::Default && glyph.attr.bg == Color::Default {
-                         trace!("Skipping empty default cell ({}, {})", x, y);
+                         // trace!("Skipping empty default cell ({}, {})", x, y); // Too verbose
                         continue;
                     }
 
-                    // Resolve colors (mutable borrow of self)
-                    // This requires &mut self, so we do it after getting the glyph
-                    // FIX: Get owned XftColor structs to drop the mutable borrow immediately
                     let (fg_color, bg_color) = self.resolve_xft_colors(glyph.attr.fg, glyph.attr.bg)?;
                     let (effective_fg, effective_bg) = if flags.contains(AttrFlags::REVERSE) {
                         (bg_color, fg_color)
                     } else {
                         (fg_color, bg_color)
                     };
-                    trace!("Cell ({}, {}): Effective FG pixel={}, BG pixel={}", x, y, effective_fg.pixel, effective_bg.pixel);
+                    // trace!("Cell ({}, {}): Effective FG pixel={}, BG pixel={}", x, y, effective_fg.pixel, effective_bg.pixel); // Too verbose
 
-                    // Calculate cell position and dimensions using local variables
                     let cell_x = (x as u32 * font_width) as c_int;
                     let cell_y = (y as u32 * font_height) as c_int;
 
-                    // Draw the background rectangle for this cell only if it's not the default
-                    // FIX: Pass reference to the owned color struct
                     if effective_bg.pixel != default_bg_color_pixel {
-                         trace!("Drawing background rect for cell ({}, {})", x, y);
+                         // trace!("Drawing background rect for cell ({}, {})", x, y); // Too verbose
                         xft::XftDrawRect(self.xft_draw, &effective_bg, cell_x, cell_y, font_width, font_height);
                     }
 
-                    // Draw the character using XftDrawStringUtf8
                     if glyph.c != ' ' && glyph.c != '\0' {
-                         trace!("Drawing char '{}' for cell ({}, {})", glyph.c, x, y);
+                         // trace!("Drawing char '{}' for cell ({}, {})", glyph.c, x, y); // Too verbose
                         let char_str = glyph.c.to_string();
-                        // Use unwrap_or_default for safety, though null bytes shouldn't occur here
                         let c_str = CString::new(char_str).unwrap_or_default();
                         let baseline_y = (cell_y as u32 + font_ascent) as c_int;
 
-                        // FIX: Pass reference to the owned color struct
                         xft::XftDrawStringUtf8(self.xft_draw, &effective_fg, self.xft_font,
                                                cell_x, baseline_y,
                                                c_str.as_ptr() as *const u8, c_str.as_bytes().len() as c_int);
                     }
 
-                    // Draw underline/strikethrough lines if needed using XftDrawRect
                     let line_y_base = cell_y + font_height as c_int;
                     if flags.contains(AttrFlags::UNDERLINE) {
-                         trace!("Drawing underline for cell ({}, {})", x, y);
-                         // FIX: Pass reference to the owned color struct
+                         // trace!("Drawing underline for cell ({}, {})", x, y); // Too verbose
                          xft::XftDrawRect(self.xft_draw, &effective_fg, cell_x, line_y_base - 1, font_width, 1);
                     }
                     if flags.contains(AttrFlags::STRIKETHROUGH) {
-                         trace!("Drawing strikethrough for cell ({}, {})", x, y);
+                         // trace!("Drawing strikethrough for cell ({}, {})", x, y); // Too verbose
                          let strike_y = cell_y + (font_ascent / 2) as c_int;
-                          // FIX: Pass reference to the owned color struct
                          xft::XftDrawRect(self.xft_draw, &effective_fg, cell_x, strike_y, font_width, 1);
                     }
                 }
             }
-            trace!("Finished cell drawing loop");
+            // trace!("Finished cell drawing loop"); // Too verbose
 
-            // Draw the cursor using Xft
-            trace!("Drawing cursor");
+            // trace!("Drawing cursor"); // Too verbose
             self.draw_cursor_xft(term)?;
 
-            // Flush all drawing commands to the X server
-            trace!("Flushing X display");
+            // trace!("Flushing X display"); // Too verbose
             xlib::XFlush(self.display);
         }
-        trace!("draw() finished");
+        // trace!("draw() finished"); // Too verbose
         Ok(())
     }
 
@@ -566,14 +521,13 @@ impl TerminalBackend for XBackend {
     /// Cleans up X11 and Xft resources.
     fn cleanup(&mut self) -> Result<()> {
         info!("Cleaning up XBackend resources...");
-        // Safety: FFI calls to free X resources. Checks ensure we don't double-free.
         unsafe {
-            if self.epoll_fd >= 0 { // Check if epoll_fd is valid before closing
+            if self.epoll_fd >= 0 {
                  trace!("Closing epoll fd: {}", self.epoll_fd);
                  if libc::close(self.epoll_fd) == -1 {
                      warn!("Error closing epoll fd {}: {}", self.epoll_fd, io::Error::last_os_error());
                  }
-                 self.epoll_fd = -1; // Mark as closed
+                 self.epoll_fd = -1;
             }
             if !self.xft_font.is_null() {
                 trace!("Closing Xft font");
@@ -623,7 +577,6 @@ impl XBackend {
     fn load_font(&mut self) -> Result<()> {
         debug!("Loading font: {}", DEFAULT_FONT_NAME);
         let font_name = CString::new(DEFAULT_FONT_NAME)?;
-        // Safety: FFI call to open font using Xft
         self.xft_font = unsafe { xft::XftFontOpenName(self.display, self.screen, font_name.as_ptr()) };
         if self.xft_font.is_null() {
              error!("Xft: Failed to load font: {}", DEFAULT_FONT_NAME);
@@ -631,13 +584,11 @@ impl XBackend {
         }
         debug!("Font loaded successfully");
 
-        // Safety: Dereferencing raw pointer, assumed valid after non-null check.
         let font_info = unsafe { *self.xft_font };
         self.font_height = (font_info.ascent + font_info.descent) as u32;
         self.font_ascent = font_info.ascent as u32;
         trace!("Font metrics: height={}, ascent={}", self.font_height, self.font_ascent);
 
-        // Safety: FFI call, assumes valid font.
         let mut extents: XGlyphInfo = unsafe { mem::zeroed() };
         let sample_char = CString::new("M")?;
         unsafe {
@@ -659,7 +610,6 @@ impl XBackend {
         debug!("Initializing {} Xft colors", TOTAL_COLOR_COUNT);
         self.xft_colors.resize(TOTAL_COLOR_COUNT, unsafe { mem::zeroed() });
 
-        // Safety: Calls to unsafe helper must be within unsafe block
         unsafe {
             self.alloc_xft_color_value(DEFAULT_FG_IDX, 0xffff, 0xffff, 0xffff)
                 .context("Failed to allocate default Xft foreground color")?;
@@ -675,16 +625,13 @@ impl XBackend {
     /// Creates the main application window. Contains unsafe FFI calls.
     fn create_window(&mut self, initial_width_chars: usize, initial_height_chars: usize) -> Result<()> {
         debug!("Creating window ({}x{} chars)", initial_width_chars, initial_height_chars);
-        // Safety: FFI calls
         unsafe {
             let root = xlib::XRootWindow(self.display, self.screen);
-            // Ensure colors are initialized before accessing
             if self.xft_colors.is_empty() || DEFAULT_BG_IDX >= self.xft_colors.len() {
                  error!("Attempted to create window before Xft colors were initialized.");
                  return Err(anyhow::anyhow!("Xft colors not initialized for window creation"));
             }
             let bg_pixel = self.xft_colors[DEFAULT_BG_IDX].pixel;
-
 
             let initial_pixel_width = (initial_width_chars as u32 * self.font_width) as c_uint;
             let initial_pixel_height = (initial_height_chars as u32 * self.font_height) as c_uint;
@@ -720,7 +667,6 @@ impl XBackend {
      /// Creates the Graphics Context (GC) for clearing. Contains unsafe FFI calls.
      fn create_gc(&mut self) -> Result<()> {
          debug!("Creating graphics context (GC)");
-        // Safety: FFI calls
         unsafe {
             let gc_values: xlib::XGCValues = mem::zeroed();
             self.clear_gc = xlib::XCreateGC(self.display, self.window, 0, &gc_values as *const _ as *mut _);
@@ -736,8 +682,6 @@ impl XBackend {
     /// Sets up Window Manager hints and protocols. Contains unsafe FFI calls.
     fn setup_wm(&mut self) {
          debug!("Setting up window manager hints and protocols");
-        // Initialize atoms needed for WM interaction
-        // Safety: FFI calls
         unsafe {
              self.wm_delete_window = xlib::XInternAtom(self.display, b"WM_DELETE_WINDOW\0".as_ptr() as *mut _, xlib::False);
              self.protocols_atom = xlib::XInternAtom(self.display, b"WM_PROTOCOLS\0".as_ptr() as *mut _, xlib::False);
@@ -773,7 +717,6 @@ impl XBackend {
     /// Sets up input event selection. Contains unsafe FFI calls.
     fn setup_input(&mut self) {
          debug!("Setting up input event mask");
-        // Safety: FFI call
         unsafe {
             xlib::XSelectInput(self.display, self.window,
                                xlib::ExposureMask | xlib::KeyPressMask | xlib::StructureNotifyMask | xlib::FocusChangeMask | xlib::ButtonPressMask | xlib::ButtonReleaseMask | xlib::PointerMotionMask );
@@ -785,7 +728,6 @@ impl XBackend {
     unsafe fn alloc_xft_color_value(&mut self, index: usize, r: u16, g: u16, b: u16) -> Result<()> {
          trace!("Allocating Xft color value: index={}, r={}, g={}, b={}", index, r, g, b);
         let color = XRenderColor { red: r, green: g, blue: b, alpha: 0xffff };
-        // Safety: FFI call required by caller
         if unsafe { xft::XftColorAllocValue(self.display, self.visual, self.colormap, &color, &mut self.xft_colors[index]) } == 0 {
              error!("Xft: Failed to allocate color value ({}, {}, {})", r, g, b);
             anyhow::bail!("Xft: Failed to allocate color value ({}, {}, {})", r, g, b);
@@ -795,11 +737,11 @@ impl XBackend {
     }
 
      /// Allocates a specific Xft color by name. Marked unsafe as it's an FFI call wrapper.
+     #[allow(dead_code)] // This function is currently unused
      unsafe fn alloc_xft_color_name(&mut self, name: &str) -> Result<xft::XftColor> {
          debug!("Allocating Xft color by name: '{}'", name);
         let c_name = CString::new(name)?;
         let mut color: xft::XftColor = unsafe { mem::zeroed() };
-        // Safety: FFI call required by caller
         if unsafe { xft::XftColorAllocName(self.display, self.visual, self.colormap, c_name.as_ptr(), &mut color) } == 0 {
               error!("Xft: Failed to allocate color name '{}'", name);
              anyhow::bail!("Xft: Failed to allocate color name '{}'", name);
@@ -810,65 +752,54 @@ impl XBackend {
 
 
     /// Resolves internal `Color` enum to XftColor structs (owned). Uses cache.
-    /// Takes &mut self because it might need to allocate and cache new colors.
-    /// FIX: Returns owned XftColor structs to avoid borrow checker issues.
     fn resolve_xft_colors(&mut self, fg: Color, bg: Color) -> Result<(xft::XftColor, xft::XftColor)> {
-         trace!("Resolving colors: fg={:?}, bg={:?}", fg, bg);
-         // Ensure default colors are initialized before accessing them
+         // trace!("Resolving colors: fg={:?}, bg={:?}", fg, bg); // Too verbose
          if self.xft_colors.is_empty() || DEFAULT_FG_IDX >= self.xft_colors.len() || DEFAULT_BG_IDX >= self.xft_colors.len() {
               error!("Attempted to resolve colors before Xft colors were initialized or defaults are out of bounds.");
               return Err(anyhow::anyhow!("Xft colors not initialized for resolving"));
          }
 
-        // Resolve foreground color
         let fg_color = match fg {
             Color::Default => self.xft_colors[DEFAULT_FG_IDX],
             Color::Idx(idx) => {
-                // TODO: Handle indexed colors properly (0-15 are pre-allocated, 16-255 need allocation/caching)
                 warn!("resolve_xft_colors: Unimplemented FG color index: {}", idx);
                 self.xft_colors[DEFAULT_FG_IDX]
             }
             Color::Rgb(r, g, b) => {
-                // Check cache first, return owned copy if found
                 if let Some(cached_color) = self.xft_color_cache_rgb.get(&(r, g, b)) {
-                    trace!("Found cached XftColor for RGB: ({}, {}, {})", r, g, b);
-                    *cached_color // Return copy
+                    // trace!("Found cached XftColor for RGB: ({}, {}, {})", r, g, b); // Too verbose
+                    *cached_color
                 } else {
-                    // Not cached, allocate and insert
                     trace!("Allocating new XftColor for RGB: ({}, {}, {})", r, g, b);
                     let render_color = XRenderColor {
-                        red: (r as u16) << 8 | r as u16, // Scale 8-bit to 16-bit
+                        red: (r as u16) << 8 | r as u16,
                         green: (g as u16) << 8 | g as u16,
                         blue: (b as u16) << 8 | b as u16,
                         alpha: 0xffff,
                     };
                     let mut xft_color: xft::XftColor = unsafe { mem::zeroed() };
-                    // Safety: FFI call
                     if unsafe { xft::XftColorAllocValue(self.display, self.visual, self.colormap, &render_color, &mut xft_color) } == 0 {
                         error!("Xft: Failed to allocate RGB color value ({}, {}, {})", r, g, b);
-                        // Fallback to default FG on allocation failure
                         self.xft_colors[DEFAULT_FG_IDX]
                     } else {
                         trace!("Successfully allocated and cached RGB: ({}, {}, {}) -> pixel {}", r, g, b, xft_color.pixel);
                         self.xft_color_cache_rgb.insert((r, g, b), xft_color);
-                        xft_color // Return the newly allocated color
+                        xft_color
                     }
                 }
             }
         };
 
-        // Resolve background color (similar logic)
          let bg_color = match bg {
              Color::Default => self.xft_colors[DEFAULT_BG_IDX],
              Color::Idx(idx) => {
-                 // TODO: Handle indexed colors properly
                  warn!("resolve_xft_colors: Unimplemented BG color index: {}", idx);
                  self.xft_colors[DEFAULT_BG_IDX]
              }
              Color::Rgb(r, g, b) => {
                  if let Some(cached_color) = self.xft_color_cache_rgb.get(&(r, g, b)) {
-                    trace!("Found cached XftColor for RGB BG: ({}, {}, {})", r, g, b);
-                    *cached_color // Return copy
+                    // trace!("Found cached XftColor for RGB BG: ({}, {}, {})", r, g, b); // Too verbose
+                    *cached_color
                  } else {
                      trace!("Allocating new XftColor for RGB BG: ({}, {}, {})", r, g, b);
                      let render_color = XRenderColor {
@@ -884,68 +815,57 @@ impl XBackend {
                      } else {
                          trace!("Successfully allocated and cached RGB BG: ({}, {}, {}) -> pixel {}", r, g, b, xft_color.pixel);
                          self.xft_color_cache_rgb.insert((r, g, b), xft_color);
-                         xft_color // Return the newly allocated color
+                         xft_color
                      }
                  }
              }
          };
 
-         trace!("Resolved colors: fg_pixel={}, bg_pixel={}", fg_color.pixel, bg_color.pixel);
-         Ok((fg_color, bg_color)) // Return owned structs
+         // trace!("Resolved colors: fg_pixel={}, bg_pixel={}", fg_color.pixel, bg_color.pixel); // Too verbose
+         Ok((fg_color, bg_color))
     }
 
 
      /// Draws the terminal cursor using Xft. Marked unsafe as it calls XftDrawStringUtf8.
      unsafe fn draw_cursor_xft(&mut self, term: &Term) -> Result<()> {
-             trace!("draw_cursor_xft() called");
+             // trace!("draw_cursor_xft() called"); // Too verbose
             let (cursor_x, cursor_y) = term.get_cursor();
             let (term_width, term_height) = term.get_dimensions();
-            // Clamp cursor position
             let cx = min(cursor_x, term_width.saturating_sub(1));
             let cy = min(cursor_y, term_height.saturating_sub(1));
-             trace!("Cursor position: ({}, {}) (clamped from {}, {})", cx, cy, cursor_x, cursor_y);
+             // trace!("Cursor position: ({}, {}) (clamped from {}, {})", cx, cy, cursor_x, cursor_y); // Too verbose
 
-            // Get glyph first
             let cursor_glyph = term.get_glyph(cx, cy).cloned().unwrap_or_default();
-             trace!("Cursor glyph: char='{}', attr={:?}", cursor_glyph.c, cursor_glyph.attr);
+             // trace!("Cursor glyph: char='{}', attr={:?}", cursor_glyph.c, cursor_glyph.attr); // Too verbose
 
-            // Resolve colors (mutable borrow of self)
-            // FIX: Get owned XftColor structs
             let (glyph_fg_color, glyph_bg_color) = self.resolve_xft_colors(cursor_glyph.attr.fg, cursor_glyph.attr.bg)?;
-            let cursor_draw_fg = glyph_bg_color; // Text color is original background
-            let cursor_draw_bg = glyph_fg_color; // Background color is original foreground
-             trace!("Cursor draw colors: FG pixel={}, BG pixel={}", cursor_draw_fg.pixel, cursor_draw_bg.pixel);
+            let cursor_draw_fg = glyph_bg_color;
+            let cursor_draw_bg = glyph_fg_color;
+             // trace!("Cursor draw colors: FG pixel={}, BG pixel={}", cursor_draw_fg.pixel, cursor_draw_bg.pixel); // Too verbose
 
-            // Read font metrics into local variables
             let font_width = self.font_width;
             let font_height = self.font_height;
             let font_ascent = self.font_ascent;
 
-            // Calculate cell position
             let cell_x = (cx as u32 * font_width) as c_int;
             let cell_y = (cy as u32 * font_height) as c_int;
 
-            // Safety: FFI calls required by caller
             unsafe {
-                // Draw background rectangle for cursor block
-                 trace!("Drawing cursor background rect");
-                 // FIX: Pass reference to owned color struct
+                 // trace!("Drawing cursor background rect"); // Too verbose
                 xft::XftDrawRect(self.xft_draw, &cursor_draw_bg, cell_x, cell_y, font_width, font_height);
 
-                // Draw the character over the cursor block
                 if cursor_glyph.c != ' ' && cursor_glyph.c != '\0' {
-                     trace!("Drawing cursor char '{}'", cursor_glyph.c);
+                     // trace!("Drawing cursor char '{}'", cursor_glyph.c); // Too verbose
                     let cursor_char_str = cursor_glyph.c.to_string();
                     let c_str = CString::new(cursor_char_str).unwrap_or_default();
                     let baseline_y = (cell_y as u32 + font_ascent) as c_int;
 
-                    // FIX: Pass reference to owned color struct
                     xft::XftDrawStringUtf8(self.xft_draw, &cursor_draw_fg, self.xft_font,
                                            cell_x, baseline_y,
                                            c_str.as_ptr() as *const u8, c_str.as_bytes().len() as c_int);
                 }
             }
-             trace!("draw_cursor_xft() finished");
+             // trace!("draw_cursor_xft() finished"); // Too verbose
             Ok(())
       }
 
@@ -971,8 +891,6 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use std::io::{self};
-    // FIX: Removed unused import
-    // use nix::pty::openpty;
 
     // Helper to create a mock PTY pair for testing writes
     fn create_mock_pty() -> (RawFd, RawFd) {
@@ -1026,7 +944,7 @@ mod tests {
              xft_font: ptr::null_mut(), xft_draw: ptr::null_mut(), xft_colors: Vec::new(),
              xft_color_cache_rgb: HashMap::new(), font_width: 10, font_height: 20,
              font_ascent: 16, wm_delete_window: 0, protocols_atom: 0, clear_gc: ptr::null_mut(),
-             epoll_fd: -1, // Mock epoll fd for test struct initialization
+             epoll_fd: -1,
         };
 
         let event = BackendEvent::Key { keysym: 0, text: "hello".to_string() };
@@ -1051,7 +969,7 @@ mod tests {
              xft_font: ptr::null_mut(), xft_draw: ptr::null_mut(), xft_colors: Vec::new(),
              xft_color_cache_rgb: HashMap::new(), font_width: 10, font_height: 20,
              font_ascent: 16, wm_delete_window: 0, protocols_atom: 0, clear_gc: ptr::null_mut(),
-              epoll_fd: -1, // Mock epoll fd
+              epoll_fd: -1,
         };
 
         let event = BackendEvent::Key { keysym: keysym::XK_Return as u32, text: "".to_string() };
@@ -1076,7 +994,7 @@ mod tests {
              xft_font: ptr::null_mut(), xft_draw: ptr::null_mut(), xft_colors: Vec::new(),
              xft_color_cache_rgb: HashMap::new(), font_width: 10, font_height: 20,
              font_ascent: 16, wm_delete_window: 0, protocols_atom: 0, clear_gc: ptr::null_mut(),
-              epoll_fd: -1, // Mock epoll fd
+              epoll_fd: -1,
          };
 
          let event = BackendEvent::Key { keysym: keysym::XK_Up as u32, text: "".to_string() };
@@ -1091,12 +1009,10 @@ mod tests {
      }
 
     // Test resize event handling (basic check on Term state)
-    // Ignored by default because it requires a valid XBackend instance,
-    // which needs an X connection. Run with `cargo test -- --ignored` if you have X.
     #[test]
     #[ignore]
     fn test_handle_event_resize() {
-        let _ = env_logger::builder().is_test(true).try_init(); // Initialize logger for test
+        let _ = env_logger::builder().is_test(true).try_init();
         let mut backend = XBackend::new(80, 24).expect("Failed to create XBackend for resize test (requires X server)");
         let mut term = Term::new(80, 24);
         let (pty_fd, read_fd) = create_mock_pty();
@@ -1117,4 +1033,3 @@ mod tests {
         backend.cleanup().unwrap();
     }
 }
-
