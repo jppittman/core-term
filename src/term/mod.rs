@@ -54,6 +54,7 @@ pub(super) enum ParserState {
     CSIIgnore,
     OSCParse,
     OSCParam,
+    OSCString,
 }
 
 /// Holds DEC Private Mode settings.
@@ -295,8 +296,7 @@ impl Term {
                    (c >= '\u{0080}' && c <= '\u{009F}') || // C1 controls
                    c < '\u{0020}' || c == '\u{007F}' // C0 controls
                 {
-                    // trace!(" -> Handling as control code/escape initiator: 0x{:02X}", initiating_byte); // Too verbose
-                    parser::handle_ground_byte(self, initiating_byte);
+                    parser::handle_osc_string_byte(self, initiating_byte);
                 } else {
                     // Log printable chars at debug level
                     debug!(" -> Handling as printable character: '{}'", c);
@@ -320,8 +320,9 @@ impl Term {
             ParserState::CSIParam => parser::handle_csi_param_byte(self, byte),
             ParserState::CSIIntermediate => parser::handle_csi_intermediate_byte(self, byte),
             ParserState::CSIIgnore => parser::handle_csi_ignore_byte(self, byte),
-            ParserState::OSCParam => parser::handle_osc_param_byte(self, byte),
-            ParserState::OSCParse => parser::handle_osc_parse_byte(self, byte),
+            ParserState::OSCParam => parser::handle_osc_string_byte(self, byte),
+            ParserState::OSCParse => parser::handle_osc_string_byte(self, byte),
+            ParserState::OSCString => parser::handle_osc_string_byte(self, byte),
         }
     }
 
