@@ -169,12 +169,11 @@ pub(super) fn next_csi_param(term: &mut Term) {
     }
 }
 
- /// Gets the nth CSI parameter (0-based index), defaulting if absent or 0.
+ /// Gets the nth CSI parameter (0-based index), defaulting if absent.
+ /// **Important:** This distinguishes between a missing parameter (returns `default`)
+ /// and an explicitly provided parameter of 0 (returns `0`).
  pub(super) fn get_csi_param(term: &Term, index: usize, default: u16) -> u16 {
-    match term.csi_params.get(index) {
-        Some(&p) if p > 0 => p,
-        _ => default,
-    }
+    term.csi_params.get(index).copied().unwrap_or(default)
 }
 
  /// Gets the nth CSI parameter (0-based index), returning 0 if absent.
@@ -895,3 +894,4 @@ fn apply_dec_mode_actions(term: &mut Term, enable: bool) {
 
 #[cfg(test)]
 mod tests;
+
