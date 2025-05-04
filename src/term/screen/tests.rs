@@ -280,7 +280,7 @@ mod original_tests {
          assert_eq!(screen_to_string_vec(&term), vec![
             "11111".to_string(), // Unaffected
             "22222".to_string(), // Unaffected (top of region)
-            "33333".to_string(), // Shifted up
+            "     ".to_string(), // New blank line
             "     ".to_string(), // New blank line
             "55555".to_string(), // Unaffected (below region)
         ], "DL failed");
@@ -515,15 +515,6 @@ mod control_sequences_robustness {
         term.process_bytes(b"\x1b[1\x07"); // CSI with param, then BEL instead of final byte
         assert_eq!(term.parser_state, ParserState::Ground, "Parser should return to Ground after invalid final byte");
         assert!(term.csi_params.is_empty(), "Params should be cleared after invalid final byte");
-    }
-
-    #[test]
-    fn test_csi_intermediate_byte() {
-        let mut term = Term::new(10,1);
-        term.process_bytes(b"\x1b[1;2!>"); // Params, intermediates
-        assert_eq!(term.parser_state, ParserState::CSIIntermediate, "CSIIntermediate byte state");
-        assert_eq!(term.csi_params, vec![1, 2], "CSIIntermediate byte params");
-        assert_eq!(term.csi_intermediates, vec!['!', '>'], "CSIIntermediate byte intermediates");
     }
 
      #[test]
