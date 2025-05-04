@@ -2,24 +2,20 @@
 
 //! Handles parsing of input byte streams, including escape sequences (CSI, OSC).
 
-// Note: `Term` methods related to screen manipulation (scrolling, erasing, cursor movement, etc.)
-// will be called from here but defined in `screen.rs`.
-use super::{Term, ParserState}; // Import Term and ParserState from parent module (mod.rs)
+use super::{Term, ParserState};
 use crate::glyph::{Color, AttrFlags};
-use super::{MAX_CSI_PARAMS, MAX_CSI_INTERMEDIATES, MAX_OSC_STRING_LEN}; // Import constants
+use super::{MAX_CSI_PARAMS, MAX_CSI_INTERMEDIATES, MAX_OSC_STRING_LEN};
 use std::cmp::min;
-// Import logging macros
 use log::{trace, debug, warn};
 
 // --- Constants for Control Codes ---
-// C0 Controls
-const NUL: u8 = 0x00;
-const SOH: u8 = 0x01;
-const STX: u8 = 0x02;
-const ETX: u8 = 0x03;
-const EOT: u8 = 0x04;
-const ENQ: u8 = 0x05;
-const ACK: u8 = 0x06;
+#[allow(dead_code)] const NUL: u8 = 0x00;
+#[allow(dead_code)] const SOH: u8 = 0x01;
+#[allow(dead_code)] const STX: u8 = 0x02;
+#[allow(dead_code)] const ETX: u8 = 0x03;
+#[allow(dead_code)] const EOT: u8 = 0x04;
+#[allow(dead_code)] const ENQ: u8 = 0x05;
+#[allow(dead_code)] const ACK: u8 = 0x06;
 const BEL: u8 = 0x07;
 const BS: u8 = 0x08;
 const HT: u8 = 0x09;
@@ -29,37 +25,37 @@ const FF: u8 = 0x0C;
 const CR: u8 = 0x0D;
 const SO: u8 = 0x0E;
 const SI: u8 = 0x0F;
-const DLE: u8 = 0x10;
-const DC1: u8 = 0x11; // XON
-const DC2: u8 = 0x12;
-const DC3: u8 = 0x13; // XOFF
-const DC4: u8 = 0x14;
-const NAK: u8 = 0x15;
-const SYN: u8 = 0x16;
-const ETB: u8 = 0x17;
-const CAN: u8 = 0x18;
-const EM: u8 = 0x19;
+#[allow(dead_code)] const DLE: u8 = 0x10;
+#[allow(dead_code)] const DC1: u8 = 0x11; // XON
+#[allow(dead_code)] const DC2: u8 = 0x12;
+#[allow(dead_code)] const DC3: u8 = 0x13; // XOFF
+#[allow(dead_code)] const DC4: u8 = 0x14;
+#[allow(dead_code)] const NAK: u8 = 0x15;
+#[allow(dead_code)] const SYN: u8 = 0x16;
+#[allow(dead_code)] const ETB: u8 = 0x17;
+#[allow(dead_code)] const CAN: u8 = 0x18;
+#[allow(dead_code)] const EM: u8 = 0x19;
 const SUB: u8 = 0x1A;
-const ESC: u8 = 0x1B;
-const FS: u8 = 0x1C;
-const GS: u8 = 0x1D;
-const RS: u8 = 0x1E;
-const US: u8 = 0x1F;
-const DEL: u8 = 0x7F;
+pub(super) const ESC: u8 = 0x1B; // Made pub(super)
+#[allow(dead_code)] const FS: u8 = 0x1C;
+#[allow(dead_code)] const GS: u8 = 0x1D;
+#[allow(dead_code)] const RS: u8 = 0x1E;
+#[allow(dead_code)] const US: u8 = 0x1F;
+pub(super) const DEL: u8 = 0x7F; // <<< FIX: Made pub(super) >>>
 
-// C1 Controls (often represented as ESC + Fe)
-const IND: u8 = 0x84; // ESC D
-const NEL: u8 = 0x85; // ESC E
-const HTS: u8 = 0x88; // ESC H
-const RI: u8 = 0x8D;  // ESC M
-const SS2: u8 = 0x8E; // ESC N
-const SS3: u8 = 0x8F; // ESC O
-const DCS: u8 = 0x90; // ESC P
-const CSI: u8 = 0x9B; // ESC [
-const ST: u8 = 0x9C;  // ESC \
-const OSC: u8 = 0x9D; // ESC ]
-const PM: u8 = 0x9E;  // ESC ^
-const APC: u8 = 0x9F; // ESC _
+// C1 Controls
+const IND: u8 = 0x84;
+const NEL: u8 = 0x85;
+const HTS: u8 = 0x88;
+const RI: u8 = 0x8D;
+#[allow(dead_code)] const SS2: u8 = 0x8E;
+#[allow(dead_code)] const SS3: u8 = 0x8F;
+#[allow(dead_code)] const DCS: u8 = 0x90;
+const CSI: u8 = 0x9B;
+const ST: u8 = 0x9C;
+const OSC: u8 = 0x9D;
+#[allow(dead_code)] const PM: u8 = 0x9E;
+#[allow(dead_code)] const APC: u8 = 0x9F;
 
 // --- Constants for SGR ---
 const SGR_RESET: u16 = 0;
@@ -91,66 +87,54 @@ const SGR_EXTENDED_MODE_256: u16 = 5;
 const SGR_EXTENDED_MODE_RGB: u16 = 2;
 
 // --- Constants for DEC Private Modes (CSI ? Pn h/l) ---
-const DECCKM: u16 = 1;   // Cursor Keys Mode
-const DECANM: u16 = 2;   // ANSI/VT52 Mode
-const DECCOLM: u16 = 3;  // 132 Column Mode
-const DECSCLM: u16 = 4;  // Smooth Scroll
-const DECSCNM: u16 = 5;  // Screen Mode (Reverse Video)
-const DECOM: u16 = 6;    // Origin Mode
-const DECAWM: u16 = 7;   // Autowrap Mode
-const DECARM: u16 = 8;   // Autorepeat
-const X10_MOUSE: u16 = 9; // X10 Mouse Reporting
-const BLINK_CURSOR_ATT610: u16 = 12; // Blinking Cursor Enable Mode (att610)
-const DECPFF: u16 = 18;  // Print Form Feed
-const DECPEX: u16 = 19;  // Print Extent
-const DECTCEM: u16 = 25; // Text Cursor Enable Mode (Show/Hide)
-const DECNRCM: u16 = 42; // National Replacement Character sets
-const ALT_SCREEN_BUF_47: u16 = 47; // Use Alternate Screen Buffer
-const MOUSE_HIGHLIGHT: u16 = 1001; // Mouse Highlight Reporting
-const MOUSE_UTF8: u16 = 1005; // UTF8 Mouse Reporting
-const MOUSE_URXVT: u16 = 1015; // urxvt Mouse Mode
-const MOUSE_BTN_REPORT: u16 = 1000; // Send Mouse X & Y on button press and release.
-const MOUSE_BTN_MOTION_REPORT: u16 = 1002; // Send Mouse X & Y on button press and motion.
-const MOUSE_ANY_MOTION_REPORT: u16 = 1003; // Send Mouse X & Y on any motion.
-const FOCUS_EVENT_REPORT: u16 = 1004; // Send FocusIn/FocusOut events
-const MOUSE_SGR_REPORT: u16 = 1006; // SGR Mouse Mode
-const INPUT_MODE_8BIT: u16 = 1034; // Interpret "meta" key, sets eighth bit.
-const ALT_SCREEN_BUF_1047: u16 = 1047; // Use Alternate Screen Buffer (like 47)
-const CURSOR_SAVE_RESTORE_1048: u16 = 1048; // Save/Restore Cursor (like DECSC/DECRC)
-const ALT_SCREEN_SAVE_RESTORE_1049: u16 = 1049; // Combines 1047 and 1048
-const BRACKETED_PASTE: u16 = 2004; // Bracketed Paste Mode
-
-// Helper array for ALT_SCREEN modes
-const ALT_SCREEN_MODES: [u16; 3] = [ALT_SCREEN_BUF_47, ALT_SCREEN_BUF_1047, ALT_SCREEN_SAVE_RESTORE_1049];
-
+const DECCKM: u16 = 1;
+#[allow(dead_code)] const DECANM: u16 = 2;
+#[allow(dead_code)] const DECCOLM: u16 = 3;
+#[allow(dead_code)] const DECSCLM: u16 = 4;
+#[allow(dead_code)] const DECSCNM: u16 = 5;
+const DECOM: u16 = 6;
+#[allow(dead_code)] const DECAWM: u16 = 7;
+#[allow(dead_code)] const DECARM: u16 = 8;
+#[allow(dead_code)] const X10_MOUSE: u16 = 9;
+const BLINK_CURSOR_ATT610: u16 = 12;
+#[allow(dead_code)] const DECPFF: u16 = 18;
+#[allow(dead_code)] const DECPEX: u16 = 19;
+const DECTCEM: u16 = 25;
+#[allow(dead_code)] const DECNRCM: u16 = 42;
+const ALT_SCREEN_BUF_47: u16 = 47;
+#[allow(dead_code)] const MOUSE_HIGHLIGHT: u16 = 1001;
+#[allow(dead_code)] const MOUSE_UTF8: u16 = 1005;
+#[allow(dead_code)] const MOUSE_URXVT: u16 = 1015;
+#[allow(dead_code)] const MOUSE_BTN_REPORT: u16 = 1000;
+#[allow(dead_code)] const MOUSE_BTN_MOTION_REPORT: u16 = 1002;
+#[allow(dead_code)] const MOUSE_ANY_MOTION_REPORT: u16 = 1003;
+#[allow(dead_code)] const FOCUS_EVENT_REPORT: u16 = 1004;
+#[allow(dead_code)] const MOUSE_SGR_REPORT: u16 = 1006;
+#[allow(dead_code)] const INPUT_MODE_8BIT: u16 = 1034;
+const ALT_SCREEN_BUF_1047: u16 = 1047;
+const CURSOR_SAVE_RESTORE_1048: u16 = 1048;
+const ALT_SCREEN_SAVE_RESTORE_1049: u16 = 1049;
+#[allow(dead_code)] const BRACKETED_PASTE: u16 = 2004;
 
 // --- Parser State Handling Functions (taking `&mut Term`) ---
 
 /// Clears CSI parameters and intermediates.
-/// Should be called when entering ESC state or finishing/aborting a CSI sequence.
 pub(super) fn clear_csi_params(term: &mut Term) {
-    // trace!("Clearing CSI params and intermediates"); // Keep commented unless debugging parser
     term.csi_params.clear();
     term.csi_intermediates.clear();
 }
 
 /// Clears OSC string buffer.
-/// Should be called when entering ESC state or finishing/aborting an OSC sequence.
 pub(super) fn clear_osc_string(term: &mut Term) {
-    // trace!("Clearing OSC string"); // Keep commented unless debugging parser
     term.osc_string.clear();
 }
 
 /// Appends a digit to the last CSI parameter being built.
-/// Handles potential overflow and ignores digits if max parameters reached.
 pub(super) fn push_csi_param(term: &mut Term, digit: u16) {
-    // Ensure there's at least one parameter slot to work with.
     if term.csi_params.is_empty() {
         term.csi_params.push(digit);
         return;
     }
-
-    // Get the last parameter.
     if let Some(current_param) = term.csi_params.last_mut() {
         *current_param = current_param.saturating_mul(10).saturating_add(digit);
         if *current_param == u16::MAX {
@@ -162,12 +146,10 @@ pub(super) fn push_csi_param(term: &mut Term, digit: u16) {
 }
 
 /// Moves to the next CSI parameter slot by appending a 0.
-/// Does nothing if the maximum number of parameters has already been reached.
 pub(super) fn next_csi_param(term: &mut Term) {
     if term.csi_params.is_empty() {
         term.csi_params.push(0);
     }
-
     if term.csi_params.len() < MAX_CSI_PARAMS {
         term.csi_params.push(0);
     } else {
@@ -176,7 +158,6 @@ pub(super) fn next_csi_param(term: &mut Term) {
 }
 
  /// Gets the nth CSI parameter (0-based index), defaulting if absent or 0.
- /// Used when a parameter value of 0 should be treated as the default (often 1).
  pub(super) fn get_csi_param(term: &Term, index: usize, default: u16) -> u16 {
     match term.csi_params.get(index) {
         Some(&p) if p > 0 => p,
@@ -185,7 +166,6 @@ pub(super) fn next_csi_param(term: &mut Term) {
 }
 
  /// Gets the nth CSI parameter (0-based index), returning 0 if absent.
- /// Used when a missing parameter should be treated as 0.
  pub(super) fn get_csi_param_or_0(term: &Term, index: usize) -> u16 {
     term.csi_params.get(index).copied().unwrap_or(0)
 }
@@ -194,9 +174,10 @@ pub(super) fn next_csi_param(term: &mut Term) {
 // --- State Transition Handlers ---
 
 /// Handles C0 control codes and ESC when in the Ground state.
+/// Marked dead_code because the call site fix is in term/mod.rs
+#[allow(dead_code)]
 pub(super) fn handle_ground_control_or_esc(term: &mut Term, byte: u8) {
     match byte {
-        // C0 Control Codes - Delegate to screen module for actions
         BS => super::screen::backspace(term),
         HT => super::screen::tab(term),
         LF | VT | FF => super::screen::newline(term),
@@ -209,7 +190,6 @@ pub(super) fn handle_ground_control_or_esc(term: &mut Term, byte: u8) {
             clear_csi_params(term);
             clear_osc_string(term);
         }
-        // C1 Control Codes (0x80 - 0x9F)
         IND => { super::screen::index(term); }
         NEL => { super::screen::newline(term); }
         HTS => { debug!("HTS received (C1 0x88 - Not Implemented)"); }
@@ -225,9 +205,8 @@ pub(super) fn handle_ground_control_or_esc(term: &mut Term, byte: u8) {
              term.parser_state = ParserState::OSCString;
         }
         ST => { trace!("Ignoring ST (0x9C) in Ground state"); }
-        // Ignore other C0/C1 codes not explicitly handled
-        NUL..=ACK | DLE..=SUB | FS..=US | DEL | // Other C0
-        0x80..=0x83 | 0x86..=0x87 | 0x89..=0x8C | 0x8E..=0x9A | 0x9E..=0x9F // Other C1
+        NUL..=ACK | DLE..=SUB | FS..=US | DEL |
+        0x80..=0x83 | 0x86..=0x87 | 0x89..=0x8C | 0x8E..=0x9A | 0x9E..=0x9F
         => {
              trace!("Ignoring C0/C1 control code: 0x{:02X}", byte);
         }
@@ -260,7 +239,6 @@ pub(super) fn handle_escape_byte(term: &mut Term, byte: u8) {
             trace!("Escape -> Escape (charset designation started with '{}')", byte as char);
             term.parser_state = ParserState::Escape; // Remain in Escape
         }
-        // --- Standard ESC sequences ---
         b'D' => { super::screen::index(term); term.parser_state = ParserState::Ground; } // IND
         b'E' => { super::screen::newline(term); term.parser_state = ParserState::Ground; } // NEL
         b'H' => { debug!("HTS received (ESC H - Not Implemented)"); term.parser_state = ParserState::Ground; } // HTS
@@ -271,11 +249,8 @@ pub(super) fn handle_escape_byte(term: &mut Term, byte: u8) {
         b'8' => { super::screen::restore_cursor(term); term.parser_state = ParserState::Ground; } // DECRC
         b'=' => { debug!("DECPAM received (ESC = - Not Implemented)"); term.parser_state = ParserState::Ground; } // DECPAM
         b'>' => { debug!("DECPNM received (ESC > - Not Implemented)"); term.parser_state = ParserState::Ground; } // DECPNM
-
-        // --- Charset selection (second byte after ESC ( ) * + ) ---
         b'B' => { trace!("Selected G0/G1/G2/G3 charset 'B' (US-ASCII)"); term.parser_state = ParserState::Ground; }
         b'0' => { trace!("Selected G0/G1/G2/G3 charset '0' (DEC Special Graphics)"); term.parser_state = ParserState::Ground; }
-
         _ => { // Unknown ESC sequence
             debug!("Ignoring unknown byte after ESC: 0x{:02X} ('{}')", byte, if byte.is_ascii() { byte as char } else { '.' });
             term.parser_state = ParserState::Ground;
@@ -322,15 +297,23 @@ pub(super) fn handle_csi_entry_byte(term: &mut Term, byte: u8) {
             term.parser_state = ParserState::Ground;
             clear_csi_params(term);
         }
-        ESC | 0x80..=0x9F => { // Abort on ESC or C1 controls
-             warn!("CSI sequence aborted by ESC or C1 control: 0x{:02X}", byte);
+        ESC => { // Abort on ESC
+             warn!("CSI sequence aborted by ESC");
+             clear_csi_params(term);
+             term.parser_state = ParserState::Escape;
+        }
+        // Abort on C1 controls (except CSI itself, which shouldn't happen here)
+        0x80..=0x9A | 0x9C..=0x9F => {
+             warn!("CSI sequence aborted by C1 control: 0x{:02X}", byte);
              clear_csi_params(term);
              term.parser_state = ParserState::Ground;
         }
-        NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => { // Ignore other C0 controls
+        // Ignore other C0 controls within sequence
+        NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => {
              trace!("CSIEntry: Ignoring C0 control 0x{:02X}", byte);
         }
-        _ => { // Unexpected bytes - Abort sequence
+        // Unexpected bytes - Abort sequence
+        _ => {
             warn!("Unexpected byte 0x{:02X} in CSIEntry state, aborting sequence.", byte);
             clear_csi_params(term);
             term.parser_state = ParserState::Ground;
@@ -369,15 +352,23 @@ pub(super) fn handle_csi_param_byte(term: &mut Term, byte: u8) {
             term.parser_state = ParserState::Ground;
             clear_csi_params(term);
         }
-         ESC | 0x80..=0x9F => { // Abort on ESC or C1 controls
-              warn!("CSI sequence aborted by ESC or C1 control: 0x{:02X}", byte);
+         ESC => { // Abort on ESC
+              warn!("CSI sequence aborted by ESC");
+              clear_csi_params(term);
+              term.parser_state = ParserState::Escape;
+         }
+         // Abort on C1 controls
+         0x80..=0x9F => {
+              warn!("CSI sequence aborted by C1 control: 0x{:02X}", byte);
               clear_csi_params(term);
               term.parser_state = ParserState::Ground;
          }
-         NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => { // Ignore other C0 controls
+         // Ignore other C0 controls within sequence
+         NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => {
               trace!("CSIParam: Ignoring C0 control 0x{:02X}", byte);
          }
-         _ => { // Unexpected bytes - Abort sequence
+         // Unexpected bytes - Abort sequence
+         _ => {
              warn!("Unexpected byte 0x{:02X} in CSIParam state, aborting sequence.", byte);
              clear_csi_params(term);
              term.parser_state = ParserState::Ground;
@@ -391,7 +382,7 @@ pub(super) fn handle_csi_intermediate_byte(term: &mut Term, byte: u8) {
          0x20..=0x2F => { // Intermediate bytes
              if term.csi_intermediates.len() < MAX_CSI_INTERMEDIATES {
                  term.csi_intermediates.push(byte as char);
-                 term.parser_state = ParserState::CSIIntermediate; // Stay
+                 term.parser_state = ParserState::CSIIntermediate; // <<< FIX: Stay in Intermediate
              } else {
                  debug!("Max CSI intermediates ({}) reached, ignoring '{}', entering Ignore state", MAX_CSI_INTERMEDIATES, byte as char);
                  term.parser_state = ParserState::CSIIgnore;
@@ -403,15 +394,23 @@ pub(super) fn handle_csi_intermediate_byte(term: &mut Term, byte: u8) {
              term.parser_state = ParserState::Ground;
              clear_csi_params(term);
          }
-         ESC | 0x80..=0x9F => { // Abort on ESC or C1 controls
-              warn!("CSI sequence aborted by ESC or C1 control: 0x{:02X}", byte);
+         ESC => { // Abort on ESC
+              warn!("CSI sequence aborted by ESC");
+              clear_csi_params(term);
+              term.parser_state = ParserState::Escape;
+         }
+         // Abort on C1 controls
+         0x80..=0x9F => {
+              warn!("CSI sequence aborted by C1 control: 0x{:02X}", byte);
               clear_csi_params(term);
               term.parser_state = ParserState::Ground;
          }
-         NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => { // Ignore other C0 controls
+         // Ignore other C0 controls within sequence
+         NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => {
               trace!("CSIIntermediate: Ignoring C0 control 0x{:02X}", byte);
          }
-         _ => { // Unexpected bytes - Abort sequence
+         // Unexpected bytes (including digits, ';') - Abort sequence
+         _ => {
              warn!("Unexpected byte 0x{:02X} in CSIIntermediate state, aborting sequence.", byte);
              clear_csi_params(term);
              term.parser_state = ParserState::Ground;
@@ -428,15 +427,23 @@ pub(super) fn handle_csi_ignore_byte(term: &mut Term, byte: u8) {
              term.parser_state = ParserState::Ground;
              clear_csi_params(term);
          }
-          ESC | 0x80..=0x9F => { // Abort on ESC or C1 controls
-               warn!("Ignored CSI sequence aborted by ESC or C1 control: 0x{:02X}", byte);
+          ESC => { // Abort on ESC
+               warn!("Ignored CSI sequence aborted by ESC");
+               clear_csi_params(term);
+               term.parser_state = ParserState::Escape;
+          }
+          // Abort on C1 controls
+          0x80..=0x9F => {
+               warn!("Ignored CSI sequence aborted by C1 control: 0x{:02X}", byte);
                clear_csi_params(term);
                term.parser_state = ParserState::Ground;
           }
-         NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => { // Ignore other C0 controls
+         // Ignore other C0 controls within sequence
+         NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => {
               trace!("CSIIgnore: Ignoring C0 control 0x{:02X}", byte);
          }
-         _ => { // Ignore all other bytes while in this state
+         // Ignore all other bytes while in this state
+         _ => {
               trace!("CSIIgnore: Ignoring byte 0x{:02X}", byte);
          }
      }
@@ -446,23 +453,17 @@ pub(super) fn handle_csi_ignore_byte(term: &mut Term, byte: u8) {
 /// Collects bytes into `osc_string` until a terminator (BEL, ST) is found.
 pub(super) fn handle_osc_string_byte(term: &mut Term, byte: u8) {
     match byte {
-        BEL => { // BEL terminates OSC
-            trace!("OSCString -> Ground (BEL terminator)");
+        BEL | ST => { // BEL or C1 ST terminates OSC <<<< FIX: Added ST here
+            trace!("OSCString -> Ground ({})", if byte == BEL { "BEL" } else { "ST" });
             handle_osc_dispatch(term);
             term.parser_state = ParserState::Ground;
             clear_osc_string(term);
         }
-        ESC => { // ESC potentially starts ST (ESC \)
-             trace!("OSCString -> Escape (potential ST)");
-             term.parser_state = ParserState::Escape;
+        ESC => { // ESC potentially starts ST (ESC \) or aborts
+             trace!("OSCString -> Escape (potential ST or abort)");
              clear_osc_string(term); // Abort current OSC string
+             term.parser_state = ParserState::Escape;
         }
-         ST => { // ST (String Terminator) C1 form
-              trace!("OSCString -> Ground (ST C1 terminator)");
-              handle_osc_dispatch(term);
-              term.parser_state = ParserState::Ground;
-              clear_osc_string(term);
-         }
         // Ignore other C0/C1 controls within OSC string
         NUL..=ACK | BS..=SUB | 0x1C..=US | DEL | 0x80..=0x9B | 0x9D..=0x9F => {
              trace!("OSCString: Ignoring control byte 0x{:02X}", byte);
@@ -521,13 +522,16 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
              term.cursor.x = min(target_x, term.width.saturating_sub(1));
         }
         b'H' | b'f' => { // CUP / HVP
-            let target_y = p1.saturating_sub(1) as usize;
-            let target_x = p2.saturating_sub(1) as usize;
+            // <<< FIX: Convert usize results to u16 for screen::set_cursor_pos >>>
+            let target_y = p1.saturating_sub(1).try_into().unwrap_or(u16::MAX);
+            let target_x = p2.saturating_sub(1).try_into().unwrap_or(u16::MAX);
             super::screen::set_cursor_pos(term, target_x + 1, target_y + 1); // Pass 1-based
         }
         b'd' => { // VPA
-             let target_y = p1.saturating_sub(1) as usize;
-             super::screen::set_cursor_pos(term, term.cursor.x + 1, target_y + 1); // Pass 1-based
+             // <<< FIX: Convert usize results to u16 for screen::set_cursor_pos >>>
+             let target_y = p1.saturating_sub(1).try_into().unwrap_or(u16::MAX);
+             let current_x = term.cursor.x.try_into().unwrap_or(u16::MAX);
+             super::screen::set_cursor_pos(term, current_x + 1, target_y + 1); // Pass 1-based
         }
 
         // --- Erasing ---
@@ -628,7 +632,6 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
             );
         }
     }
-    // Parameters are cleared by the caller state handler after dispatch returns
 }
 
 

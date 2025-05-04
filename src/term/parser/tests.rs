@@ -8,8 +8,6 @@
 
 #[cfg(test)]
 mod parser_tests {
-    // Use crate::term::{Term, ParserState, MAX_CSI_PARAMS, MAX_OSC_STRING_LEN}; // Path from src/term/parser.rs
-    // If tests are moved to src/term/mod.rs, use super::* instead.
     // Assuming tests are in src/term/parser/tests.rs, relative to src/term/mod.rs:
     use crate::term::{Term, ParserState, MAX_CSI_PARAMS, MAX_OSC_STRING_LEN};
     use crate::glyph::REPLACEMENT_CHARACTER;
@@ -61,70 +59,47 @@ mod parser_tests {
     }
 
     #[test]
-    fn test_escape_to_osc_param() {
-        // Note: The state name changed from OSCParse to OSCParam in original upload
+    fn test_escape_to_osc_string() { // Updated state name
         let term = term_after_bytes(b"\x1b]");
-        assert_eq!(term.parser_state, ParserState::OSCParam, "Escape -> OSCParam");
+        assert_eq!(term.parser_state, ParserState::OSCString, "Escape -> OSCString"); // Expect OSCString
         assert!(term.osc_string.is_empty(), "OSC string cleared on OSC entry");
     }
 
     #[test]
     fn test_escape_single_byte_commands() {
-        // Test RIS (Reset to Initial State)
         let term = term_after_bytes(b"\x1bc");
         assert_clean_ground_state(&term, "ESC c (RIS)");
-
-        // Test DECSC (Save Cursor)
         let term = term_after_bytes(b"\x1b7");
         assert_clean_ground_state(&term, "ESC 7 (DECSC)");
-
-        // Test DECRC (Restore Cursor)
         let term = term_after_bytes(b"\x1b8");
         assert_clean_ground_state(&term, "ESC 8 (DECRC)");
-
-        // --- Test sequences assumed to be implemented later ---
-        // If these cause failures now, it indicates the parser logic
-        // in Term::process_byte_in_parser needs implementing/fixing.
-
-        // Test IND (Index)
         let term = term_after_bytes(b"\x1bD");
         assert_clean_ground_state(&term, "ESC D (IND)");
-
-        // Test NEL (Next Line)
         let term = term_after_bytes(b"\x1bE");
         assert_clean_ground_state(&term, "ESC E (NEL)");
-
-        // Test HTS (Horizontal Tab Set)
         let term = term_after_bytes(b"\x1bH");
         assert_clean_ground_state(&term, "ESC H (HTS)");
-
-        // Test RI (Reverse Index)
         let term = term_after_bytes(b"\x1bM");
         assert_clean_ground_state(&term, "ESC M (RI)");
     }
 
     #[test]
     fn test_escape_invalid_sequence() {
-        // ESC followed by a printable character should execute nothing, return to ground.
         let term = term_after_bytes(b"\x1bA");
         assert_clean_ground_state(&term, "ESC followed by printable");
-        // Screen check (in screen tests) would verify 'A' is NOT printed after ESC.
-        // The handler for 'A' in Ground state should be invoked instead.
     }
 
      #[test]
     fn test_escape_to_utf8_select() {
-        let term = term_after_bytes(b"\x1b%"); // Select UTF-8 charset
-        // State machine should consume '%', potentially set a flag, and return to Ground
+        let term = term_after_bytes(b"\x1b%");
         assert_clean_ground_state(&term, "ESC % (UTF-8 select)");
-        // TODO: Check term.mode for UTF-8 flag if relevant
     }
 
     #[test]
     fn test_escape_to_alt_charset() {
-        let term = term_after_bytes(b"\x1b("); // Designate G0 charset
+        let term = term_after_bytes(b"\x1b(");
         assert_eq!(term.parser_state, ParserState::Escape, "ESC ( -> Escape (waiting for char)");
-        let term = term_after_bytes(b"\x1b(B"); // Designate G0 as ASCII
+        let term = term_after_bytes(b"\x1b(B");
         assert_clean_ground_state(&term, "ESC ( B (G0 Select)");
     }
 
@@ -139,15 +114,16 @@ mod parser_tests {
 
     #[test]
     fn test_csi_entry_private_marker() {
-        let term = term_after_bytes(b"\x1b[?");
-        // The '?' is consumed, setting the private flag, stays in CSIEntry waiting for param/intermediate/final
-        assert_eq!(term.parser_state, ParserState::CSIEntry, "CSIEntry private marker");
-        assert!(term.csi_params.is_empty());
-        assert!(term.csi_intermediates.is_empty());
-        // We cannot assert on term.csi_private_marker as it likely doesn't exist.
-        // Test the effect by parsing a private sequence:
-        let term_private = term_after_bytes(b"\x1b[?25h"); // Show cursor (private)
-        assert_clean_ground_state(&term_private, "Private sequence parsed");
+        let term_intermediate = term_after_bytes(b"\x1b[?");
+        assert_eq!(term_intermediate.parser_state, ParserState::CSIEntry, "CSIEntry private marker state");
+        assert!(term_intermediate.csi_params.is_empty());
+        assert_eq!(term_intermediate.csi_intermediates, vec!['?'], "Private marker stored");
+
+        // Test the effect by parsing a full private sequence
+        let term_full = term_after_bytes(b"\x1b[?25h"); // Show cursor (private)
+        assert_clean_ground_state(&term_full, "Private sequence parsed");
+        // Intermediates should be cleared after dispatch
+        assert!(term_full.csi_intermediates.is_empty(), "Intermediates cleared after private sequence");
     }
 
     #[test]
@@ -175,7 +151,6 @@ mod parser_tests {
     fn test_csi_param_separator() {
         let term = term_after_bytes(b"\x1b[1;");
         assert_eq!(term.parser_state, ParserState::CSIParam, "CSIParam separator");
-        // Should add a new parameter initialized to 0
         assert_eq!(term.csi_params, vec![1, 0], "Params after separator");
     }
 
@@ -190,30 +165,25 @@ mod parser_tests {
     fn test_csi_param_leading_separator() {
         let term = term_after_bytes(b"\x1b[;5B"); // CUD with leading semicolon
         assert_clean_ground_state(&term, "CSI leading semicolon");
-        // Check effect in screen tests (should be equivalent to \x1b[5B or \x1b[0;5B)
     }
 
     #[test]
     fn test_csi_param_trailing_separator() {
         let term = term_after_bytes(b"\x1b[5;B"); // CUD with trailing semicolon
         assert_clean_ground_state(&term, "CSI trailing semicolon");
-        // Check effect in screen tests (should be equivalent to \x1b[5B or \x1b[5;0B)
     }
 
      #[test]
     fn test_csi_param_max_params() {
         let mut seq = b"\x1b[".to_vec();
-        // Build sequence like "[0;1;2;...;15;" (MAX_CSI_PARAMS parameters)
         for i in 0..MAX_CSI_PARAMS {
             seq.extend_from_slice(i.to_string().as_bytes());
             seq.push(b';');
         }
-        seq.extend_from_slice(b"99A"); // Add one more param (should be ignored) + final byte
+        seq.extend_from_slice(b"99A"); // Add one more param + final byte
 
         let term = term_after_bytes(&seq);
         assert_clean_ground_state(&term, "CSIParam max params");
-        // We can't easily check *which* params were kept without instrumenting Term.
-        // Rely on screen tests to check the *effect* uses the correct params.
     }
 
 
@@ -234,17 +204,17 @@ mod parser_tests {
     #[test]
     fn test_csi_intermediate_byte() {
         let term = term_after_bytes(b"\x1b[1;2!>"); // Params, intermediates
-        assert_eq!(term.parser_state, ParserState::CSIIntermediate, "CSIIntermediate byte");
-        assert_eq!(term.csi_params, vec![1, 2]);
-        assert_eq!(term.csi_intermediates, vec!['!', '>']);
+        // After processing '>', should still be waiting for final byte
+        assert_eq!(term.parser_state, ParserState::CSIIntermediate, "CSIIntermediate byte state");
+        assert_eq!(term.csi_params, vec![1, 2], "CSIIntermediate byte params");
+        assert_eq!(term.csi_intermediates, vec!['!', '>'], "CSIIntermediate byte intermediates");
     }
 
      #[test]
     fn test_csi_intermediate_max_intermediates() {
          // Assuming MAX_CSI_INTERMEDIATES is 2
-         let term = term_after_bytes(b"\x1b[1!<>A"); // 3 intermediates
+         let term = term_after_bytes(b"\x1b[1!<>A"); // 3 intermediates -> Ignore state -> Ground
          assert_clean_ground_state(&term, "CSIIntermediate max intermediates");
-         // Effect needs checking in screen tests. Parser should not crash.
      }
 
 
@@ -255,34 +225,29 @@ mod parser_tests {
     }
 
     #[test]
-    fn test_osc_param_collection() {
+    fn test_osc_string_collection() { // Updated test name and state
         let term = term_after_bytes(b"\x1b]0;title");
-        assert_eq!(term.parser_state, ParserState::OSCParam, "OSCParam collection state");
+        assert_eq!(term.parser_state, ParserState::OSCString, "OSCString collection state"); // Expect OSCString
         assert_eq!(term.osc_string, "0;title", "OSC string content");
     }
 
     #[test]
-    fn test_osc_param_max_len() {
+    fn test_osc_string_max_len() { // Updated test name and state
          let mut seq = b"\x1b]".to_vec();
-         // Create a string exactly MAX_OSC_STRING_LEN long + some extra
          let exact_string = "A".repeat(MAX_OSC_STRING_LEN);
          let extra_string = "EXTRA";
          seq.extend_from_slice(exact_string.as_bytes());
          seq.extend_from_slice(extra_string.as_bytes());
-         // No explicit terminator needed if max length is reached and parser handles it
 
          let mut term = Term::new(10, 5);
          term.process_bytes(&seq);
 
-         // Check state and truncated string immediately after processing the long sequence
-         // (before a terminator byte might clear it)
-         assert_eq!(term.parser_state, ParserState::OSCParam, "OSCParam state after max length");
+         assert_eq!(term.parser_state, ParserState::OSCString, "OSCString state after max length"); // Expect OSCString
          assert_eq!(term.osc_string.len(), MAX_OSC_STRING_LEN, "OSC string length truncated");
          assert_eq!(term.osc_string, exact_string, "OSC string content truncated");
 
-         // Now process a terminator
          term.process_byte(0x07); // BEL terminator
-         assert_clean_ground_state(&term, "OSCParam max length final state");
+         assert_clean_ground_state(&term, "OSCString max length final state");
     }
 
     #[test]
@@ -300,15 +265,13 @@ mod parser_tests {
     #[test]
     fn test_osc_termination_st_alternative() {
         let term = term_after_bytes(b"\x1b]0;title\x9c"); // ST termination (C1)
-        // C1 controls might be handled differently depending on UTF-8 mode,
-        // but ST (0x9C) should ideally terminate OSC regardless.
         assert_clean_ground_state(&term, "OSC ST (C1) termination");
     }
 
     #[test]
-    fn test_osc_interrupted_by_escape() {
+    fn test_osc_interrupted_by_escape() { // Updated state name
         let mut term = term_after_bytes(b"\x1b]0;tit");
-        assert_eq!(term.parser_state, ParserState::OSCParam);
+        assert_eq!(term.parser_state, ParserState::OSCString, "OSC state before interrupt"); // Expect OSCString
         term.process_byte(b'\x1b'); // Interrupt with ESC
         assert_eq!(term.parser_state, ParserState::Escape, "OSC interrupted -> Escape");
         assert!(term.osc_string.is_empty(), "OSC string cleared on interrupt");
@@ -319,6 +282,7 @@ mod parser_tests {
         let mut term = term_after_bytes(b"\x1b[1;");
         assert_eq!(term.parser_state, ParserState::CSIParam);
         term.process_byte(b'\x1b'); // Interrupt with ESC
+        // Expect state to become Escape, and params/intermediates to be cleared
         assert_eq!(term.parser_state, ParserState::Escape, "CSI interrupted -> Escape");
         assert!(term.csi_params.is_empty(), "CSI params cleared on interrupt");
         assert!(term.csi_intermediates.is_empty(), "CSI intermediates cleared on interrupt");
@@ -326,7 +290,6 @@ mod parser_tests {
 
     #[test]
     fn test_utf8_handling_in_parser() {
-        // Ensure multi-byte UTF-8 chars don't break parser states
         let term = term_after_bytes(b"\x1b]0;titre \xc3\xa9\x07"); // OSC with UTF-8
         assert_clean_ground_state(&term, "OSC with UTF-8");
 
@@ -346,11 +309,9 @@ mod parser_tests {
 
      #[test]
     fn test_invalid_utf8_within_csi_param() {
-         // Behavior here is less defined. Terminals might ignore the sequence,
-         // replace the byte and continue, or abort the sequence.
-         // Let's test that it returns to Ground and prints replacement char.
          let mut term = Term::new(10, 5);
          term.process_bytes(b"A\x1b[1\x80"); // Start CSI, param 1, then invalid byte
+         // Expect parser to reset to Ground after encountering invalid UTF-8
          assert_clean_ground_state(&term, "Invalid UTF-8 within CSI param");
          assert_eq!(term.get_glyph(0, 0).unwrap().c, 'A'); // A should be printed
          assert_eq!(term.get_glyph(1, 0).unwrap().c, REPLACEMENT_CHARACTER); // Replacement printed
@@ -359,12 +320,10 @@ mod parser_tests {
 
      #[test]
     fn test_invalid_utf8_within_osc_string() {
-         // Should replace the invalid byte within the collected string or abort.
-         // Aborting and returning to ground is simpler.
          let mut term = Term::new(10, 5);
          term.process_bytes(b"A\x1b]0;Ti\x80tle\x07B"); // Invalid byte in OSC string
+         // Expect parser to reset to Ground after encountering invalid UTF-8, OSC ignored
          assert_clean_ground_state(&term, "Invalid UTF-8 within OSC string");
-         // Check screen state: 'A', then replacement, then 'B' printed. OSC likely ignored.
          assert_eq!(term.get_glyph(0, 0).unwrap().c, 'A');
          assert_eq!(term.get_glyph(1, 0).unwrap().c, REPLACEMENT_CHARACTER);
          assert_eq!(term.get_glyph(2, 0).unwrap().c, 'B');
