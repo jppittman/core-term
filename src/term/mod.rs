@@ -8,7 +8,7 @@ mod parser;
 mod screen;
 
 // Use necessary items from glyph module
-use crate::glyph::{Glyph, Attributes, REPLACEMENT_CHARACTER};
+use crate::{term::parser::ParserState, glyph::{Glyph, Attributes, REPLACEMENT_CHARACTER}};
 use std::str;
 use std::cmp::max;
 use log::{trace, debug, warn};
@@ -41,26 +41,6 @@ pub(super) struct Utf8Decoder {
 pub struct Cursor {
     pub x: usize,
     pub y: usize,
-}
-
-/// States for the terminal escape sequence parser.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum ParserState {
-    /// Default state: expecting printable characters or C0/ESC control codes.
-    #[default]
-    Ground,
-    /// Received ESC (0x1B), expecting a subsequent byte to determine sequence type.
-    Escape,
-    /// Received CSI (ESC [ or C1 0x9B), expecting parameters, intermediates, or final byte.
-    CSIEntry,
-    /// Parsing CSI parameters (digits 0-9 and ';').
-    CSIParam,
-    /// Parsing CSI intermediate bytes (0x20-0x2F).
-    CSIIntermediate,
-    /// Ignoring remaining bytes of a CSI sequence until a final byte (e.g., due to too many params/intermediates).
-    CSIIgnore,
-    /// Parsing an OSC string, collecting bytes until a terminator (BEL or ST).
-    OSCString,
 }
 
 /// Holds DEC Private Mode settings.
@@ -142,6 +122,9 @@ impl Utf8Decoder {
 // --- Main Term Struct Definition ---
 /// Represents the state of the terminal emulator.
 pub struct Term {
+    /// Current state of the escape sequence parser.
+    parser_state: ParserState,
+
     /// Terminal width in columns.
     pub(super) width: usize,
     /// Terminal height in rows.
@@ -171,8 +154,6 @@ pub struct Term {
     pub(super) current_attributes: Attributes,
     /// Default character attributes (used for clearing, reset).
     pub(super) default_attributes: Attributes,
-    /// Current state of the escape sequence parser.
-    pub(super) parser_state: ParserState,
     /// Collected parameters for the current CSI sequence.
     pub(super) csi_params: Vec<u16>,
     /// Collected intermediate bytes for the current CSI sequence.
