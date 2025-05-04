@@ -278,14 +278,14 @@ pub(super) fn scroll_down(term: &mut Term, n: usize) {
 /// Gets the effective top boundary row index for cursor movement.
 /// Respects DEC Origin Mode (DECOM).
 #[inline]
-fn effective_top(term: &Term) -> usize {
+pub fn effective_top(term: &Term) -> usize {
     if term.dec_modes.origin_mode { term.scroll_top } else { 0 }
 }
 
 /// Gets the effective bottom boundary row index for cursor movement.
 /// Respects DEC Origin Mode (DECOM).
 #[inline]
-fn effective_bottom(term: &Term) -> usize {
+pub fn effective_bottom(term: &Term) -> usize {
     if term.dec_modes.origin_mode { term.scroll_bot } else { term.height.saturating_sub(1) }
 }
 
@@ -533,7 +533,7 @@ pub(super) fn restore_cursor(term: &mut Term) {
 /// * `y` - The 0-based row index to fill.
 /// * `x_start` - The 0-based starting column index (inclusive).
 /// * `x_end` - The 0-based ending column index (exclusive).
-fn fill_range(term: &mut Term, y: usize, x_start: usize, x_end: usize) {
+pub fn fill_range(term: &mut Term, y: usize, x_start: usize, x_end: usize) {
     let height = term.height;
     let width = term.width;
 
