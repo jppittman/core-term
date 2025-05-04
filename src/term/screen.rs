@@ -184,26 +184,31 @@ pub(super) fn handle_printable(term: &mut Term, c: char) {
 }
 
 /// Moves cursor down one line, scrolling if necessary (IND - Index).
+/// Moves cursor down one line, scrolling if necessary (IND - Index).
 pub(super) fn index(term: &mut Term) {
     trace!("index: cursor=({}, {})", term.cursor.x, term.cursor.y);
-    let effective_bot = effective_bottom(term);
-    if term.cursor.y == effective_bot {
+    // WHY: Scrolling for IND/NEL happens when cursor is at the defined bottom margin,
+    // regardless of origin mode. Compare with scroll_bot, not effective_bottom.
+    if term.cursor.y == term.scroll_bot {
         scroll_up(term, 1);
-        return;
+    } else {
+        // Move down, clamped to screen height (not scroll region)
+        term.cursor.y = term.cursor.y.saturating_add(1);
+        term.cursor.y = min(term.cursor.y, term.height.saturating_sub(1));
     }
-    term.cursor.y = term.cursor.y.saturating_add(1);
-    term.cursor.y = min(term.cursor.y, term.height.saturating_sub(1));
 }
 
 /// Moves cursor up one line, scrolling if necessary (RI - Reverse Index).
 pub(super) fn reverse_index(term: &mut Term) {
      trace!("reverse_index: cursor=({}, {})", term.cursor.x, term.cursor.y);
-     let effective_top = effective_top(term);
-    if term.cursor.y == effective_top {
+     // WHY: Scrolling for RI happens when cursor is at the defined top margin,
+     // regardless of origin mode. Compare with scroll_top, not effective_top.
+    if term.cursor.y == term.scroll_top {
         scroll_down(term, 1);
-        return;
+    } else {
+        // Move up (cannot go below 0)
+        term.cursor.y = term.cursor.y.saturating_sub(1);
     }
-    term.cursor.y = term.cursor.y.saturating_sub(1);
 }
 
 /// Moves cursor to start of next line (like CR + LF) (NEL - Next Line).
@@ -336,32 +341,10 @@ pub(super) fn scroll_down(term: &mut Term, n: usize) {
 // --- Insertion/Deletion ---
 
 /// Inserts `n` blank lines at the cursor's row, within the scroll region. (IL)
+/// Replaces rotate_right with manual copy for correctness when n == region_height.
 pub(super) fn insert_blank_lines(term: &mut Term, n: usize) {
      trace!("insert_blank_lines: n={}, cursor=({}, {})", n, term.cursor.x, term.cursor.y);
-    if term.cursor.y < term.scroll_top || term.cursor.y > term.scroll_bot {
-        return;
-    }
-    let n = min(n, term.scroll_bot + 1 - term.cursor.y);
-    if n == 0 { return; }
-
-    let current_screen = if term.using_alt_screen { &mut term.alt_screen } else { &mut term.screen };
-    let top = term.cursor.y;
-    let bot = term.scroll_bot;
-
-    current_screen[top..=bot].rotate_right(n);
-
-    let fill_glyph = Glyph { c: ' ', attr: term.default_attributes };
-    for y in top..(top + n) {
-         if let Some(row) = current_screen.get_mut(y) {
-            row.fill(fill_glyph);
-             // TODO: Mark line y dirty
-         }
-    }
-}
-
-/// Deletes `n` lines starting at the cursor's row, within the scroll region. (DL)
-pub(super) fn delete_lines(term: &mut Term, n: usize) {
-     trace!("delete_lines: n={}, cursor=({}, {})", n, term.cursor.x, term.cursor.y);
+     // Check if cursor is within scroll region
      if term.cursor.y < term.scroll_top || term.cursor.y > term.scroll_bot {
         return;
     }
@@ -372,15 +355,59 @@ pub(super) fn delete_lines(term: &mut Term, n: usize) {
     let top = term.cursor.y;
     let bot = term.scroll_bot;
 
-    current_screen[top..=bot].rotate_left(n);
+    // Manual copy down: Move lines [top..=bot-n] down to [top+n..=bot]
+    // We iterate downwards to avoid overwriting source lines before they are copied.
+    for i in (top..=bot.saturating_sub(n)).rev() {
+        // This clone might be inefficient for large screens/regions.
+        // A swap-based approach or Vec::spare_capacity_mut could be explored,
+        // but clone is simpler and correct for now.
+        current_screen[i+n] = current_screen[i].clone();
+    }
 
+    // Fill the newly opened lines at the top with blanks
     let fill_glyph = Glyph { c: ' ', attr: term.default_attributes };
-    for y in (bot + 1 - n)..=bot {
+    for y in top..(top + n) {
          if let Some(row) = current_screen.get_mut(y) {
-            row.fill(fill_glyph);
+            row.fill(fill_glyph.clone()); // Use clone if Glyph isn't Copy
              // TODO: Mark line y dirty
          }
     }
+     // WHY: Move cursor to start of line after IL, consistent with some terminals.
+     term.cursor.x = 0;
+}
+
+/// Deletes `n` lines starting at the cursor's row, within the scroll region. (DL)
+/// Replaces rotate_left with manual copy for correctness when n == region_height.
+pub(super) fn delete_lines(term: &mut Term, n: usize) {
+     trace!("delete_lines: n={}, cursor=({}, {})", n, term.cursor.x, term.cursor.y);
+     // Check if cursor is within scroll region
+     if term.cursor.y < term.scroll_top || term.cursor.y > term.scroll_bot {
+        return;
+    }
+    let n = min(n, term.scroll_bot + 1 - term.cursor.y);
+    if n == 0 { return; }
+
+    let current_screen = if term.using_alt_screen { &mut term.alt_screen } else { &mut term.screen };
+    let top = term.cursor.y;
+    let bot = term.scroll_bot;
+
+    // Manual copy up: Move lines [top+n..=bot] up to [top..=bot-n]
+    // We iterate upwards.
+    for i in top..=(bot.saturating_sub(n)) {
+        // See clone note in insert_blank_lines
+        current_screen[i] = current_screen[i+n].clone();
+    }
+
+    // Fill the new blank lines at the bottom with blanks
+    let fill_glyph = Glyph { c: ' ', attr: term.default_attributes };
+    for y in (bot + 1 - n)..=bot {
+         if let Some(row) = current_screen.get_mut(y) {
+            row.fill(fill_glyph.clone()); // Use clone if Glyph isn't Copy
+             // TODO: Mark line y dirty
+         }
+    }
+     // WHY: Move cursor to start of line after DL, consistent with some terminals.
+     term.cursor.x = 0;
 }
 
 /// Inserts `n` blank characters at the cursor position. (ICH)

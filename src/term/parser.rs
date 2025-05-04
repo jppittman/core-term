@@ -41,7 +41,7 @@ pub(super) const ESC: u8 = 0x1B; // Made pub(super)
 #[allow(dead_code)] const GS: u8 = 0x1D;
 #[allow(dead_code)] const RS: u8 = 0x1E;
 #[allow(dead_code)] const US: u8 = 0x1F;
-pub(super) const DEL: u8 = 0x7F; // <<< FIX: Made pub(super) >>>
+pub(super) const DEL: u8 = 0x7F;
 
 // C1 Controls
 const IND: u8 = 0x84;
@@ -258,7 +258,6 @@ pub(super) fn handle_escape_byte(term: &mut Term, byte: u8) {
     }
 }
 
-
 /// Handles the first byte after CSI (ESC [) has been received.
 pub(super) fn handle_csi_entry_byte(term: &mut Term, byte: u8) {
     match byte {
@@ -302,15 +301,17 @@ pub(super) fn handle_csi_entry_byte(term: &mut Term, byte: u8) {
              clear_csi_params(term);
              term.parser_state = ParserState::Escape;
         }
-        // Abort on C1 controls (except CSI itself, which shouldn't happen here)
+        // Abort on C1 controls
         0x80..=0x9A | 0x9C..=0x9F => {
              warn!("CSI sequence aborted by C1 control: 0x{:02X}", byte);
              clear_csi_params(term);
              term.parser_state = ParserState::Ground;
         }
-        // Ignore other C0 controls within sequence
+        // Abort on unexpected C0 controls
         NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => {
-             trace!("CSIEntry: Ignoring C0 control 0x{:02X}", byte);
+             warn!("CSI sequence aborted by unexpected C0 control: 0x{:02X}", byte);
+             clear_csi_params(term);
+             term.parser_state = ParserState::Ground;
         }
         // Unexpected bytes - Abort sequence
         _ => {
@@ -363,9 +364,11 @@ pub(super) fn handle_csi_param_byte(term: &mut Term, byte: u8) {
               clear_csi_params(term);
               term.parser_state = ParserState::Ground;
          }
-         // Ignore other C0 controls within sequence
+         // Abort on unexpected C0 controls
          NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => {
-              trace!("CSIParam: Ignoring C0 control 0x{:02X}", byte);
+              warn!("CSI sequence aborted by unexpected C0 control: 0x{:02X}", byte);
+              clear_csi_params(term);
+              term.parser_state = ParserState::Ground;
          }
          // Unexpected bytes - Abort sequence
          _ => {
@@ -378,11 +381,14 @@ pub(super) fn handle_csi_param_byte(term: &mut Term, byte: u8) {
 
 /// Handles CSI intermediate bytes (after params, before final byte).
 pub(super) fn handle_csi_intermediate_byte(term: &mut Term, byte: u8) {
+     trace!("Entering handle_csi_intermediate_byte with byte 0x{:02X}", byte);
      match byte {
          0x20..=0x2F => { // Intermediate bytes
              if term.csi_intermediates.len() < MAX_CSI_INTERMEDIATES {
                  term.csi_intermediates.push(byte as char);
-                 term.parser_state = ParserState::CSIIntermediate; // <<< FIX: Stay in Intermediate
+                 trace!("  -> Pushed intermediate '{}', current intermediates: {:?}", byte as char, term.csi_intermediates);
+                 term.parser_state = ParserState::CSIIntermediate;
+                 trace!("  -> State explicitly set to: {:?}", term.parser_state);
              } else {
                  debug!("Max CSI intermediates ({}) reached, ignoring '{}', entering Ignore state", MAX_CSI_INTERMEDIATES, byte as char);
                  term.parser_state = ParserState::CSIIgnore;
@@ -405,17 +411,20 @@ pub(super) fn handle_csi_intermediate_byte(term: &mut Term, byte: u8) {
               clear_csi_params(term);
               term.parser_state = ParserState::Ground;
          }
-         // Ignore other C0 controls within sequence
+         // Abort on unexpected C0 controls
          NUL..=BEL | SO..=SUB | 0x1C..=US | DEL => {
-              trace!("CSIIntermediate: Ignoring C0 control 0x{:02X}", byte);
+              warn!("CSI sequence aborted by unexpected C0 control: 0x{:02X}", byte);
+              clear_csi_params(term);
+              term.parser_state = ParserState::Ground;
          }
-         // Unexpected bytes (including digits, ';') - Abort sequence
+         // Unexpected bytes - Abort sequence
          _ => {
              warn!("Unexpected byte 0x{:02X} in CSIIntermediate state, aborting sequence.", byte);
              clear_csi_params(term);
              term.parser_state = ParserState::Ground;
          }
      }
+     trace!("Exiting handle_csi_intermediate_byte, state is {:?}", term.parser_state);
 }
 
 /// Handles bytes when ignoring the rest of a CSI sequence.
@@ -453,7 +462,7 @@ pub(super) fn handle_csi_ignore_byte(term: &mut Term, byte: u8) {
 /// Collects bytes into `osc_string` until a terminator (BEL, ST) is found.
 pub(super) fn handle_osc_string_byte(term: &mut Term, byte: u8) {
     match byte {
-        BEL | ST => { // BEL or C1 ST terminates OSC <<<< FIX: Added ST here
+        BEL | ST => {
             trace!("OSCString -> Ground ({})", if byte == BEL { "BEL" } else { "ST" });
             handle_osc_dispatch(term);
             term.parser_state = ParserState::Ground;
@@ -487,54 +496,73 @@ pub(super) fn handle_osc_string_byte(term: &mut Term, byte: u8) {
 /// Dispatches a completed CSI sequence based on the final byte.
 fn csi_dispatch(term: &mut Term, final_byte: u8) {
     let is_private = matches!(term.csi_intermediates.first(), Some(&'?') | Some(&'>') | Some(&'='));
-    let p1 = get_csi_param(term, 0, 1);
-    let p2 = get_csi_param(term, 1, 1);
+    // Use p1_or_0 for operations where 0 is meaningful and distinct from missing/default 1
     let p1_or_0 = get_csi_param_or_0(term, 0);
+    // Use p1 for operations where 0/missing defaults to 1
+    let p1 = get_csi_param(term, 0, 1);
+    // Use p2 for operations where 0/missing defaults to 1
+    let p2 = get_csi_param(term, 1, 1);
 
-    trace!("Dispatch CSI: final='{}', params={:?}, intermediates={:?}, private={}",
-           final_byte as char, term.csi_params, term.csi_intermediates, is_private);
+    trace!("Dispatch CSI: final='{}', params={:?}, intermediates={:?}, private={}, p1_or_0={}, p1={}, p2={}",
+           final_byte as char, term.csi_params, term.csi_intermediates, is_private, p1_or_0, p1, p2);
 
-    // --- Dispatch Logic (using early return for private sequences) ---
+    // --- Dispatch Logic ---
     if is_private {
+        // Handle private sequences (DECSET/DECRST)
         match final_byte {
-            b'h' => handle_dec_mode_enable(term),  // DECSET
-            b'l' => handle_dec_mode_disable(term), // DECRST
+            b'h' => handle_dec_mode_enable(term),
+            b'l' => handle_dec_mode_disable(term),
             _ => warn!("Unhandled private CSI sequence: final='{}'", final_byte as char),
         }
-        return; // Return early after handling private sequence
+        return;
     }
 
-    // --- Handle standard sequences (only reached if not private) ---
+    // --- Handle standard sequences ---
     match final_byte {
         // --- Cursor Movement ---
-        b'A' => super::screen::move_cursor(term, 0, -(p1 as isize)), // CUU
-        b'B' => super::screen::move_cursor(term, 0, p1 as isize),   // CUD
-        b'C' => super::screen::move_cursor(term, get_csi_param(term, 0, 1) as isize, 0), // CUF
-        b'D' => super::screen::move_cursor(term, -(get_csi_param(term, 0, 1) as isize), 0), // CUB
-        b'E' => { // CNL
+        b'A' => { // CUU
+            // WHY: Explicitly check for param 0, otherwise default to 1 for distance
+            let dist = if p1_or_0 == 0 { 0 } else { p1 as isize };
+            if dist != 0 { super::screen::move_cursor(term, 0, -dist); }
+        }
+        b'B' => { // CUD
+            // WHY: Explicitly check for param 0, otherwise default to 1 for distance
+            let dist = if p1_or_0 == 0 { 0 } else { p1 as isize };
+            if dist != 0 { super::screen::move_cursor(term, 0, dist); }
+        }
+        b'C' => { // CUF
+            // WHY: Explicitly check for param 0, otherwise default to 1 for distance
+            let dist = if p1_or_0 == 0 { 0 } else { p1 as isize };
+            if dist != 0 { super::screen::move_cursor(term, dist, 0); }
+        }
+        b'D' => { // CUB
+            // WHY: Explicitly check for param 0, otherwise default to 1 for distance
+            let dist = if p1_or_0 == 0 { 0 } else { p1 as isize };
+            if dist != 0 { super::screen::move_cursor(term, -dist, 0); }
+        }
+        b'E' => { // CNL (Defaults to 1)
             super::screen::move_cursor(term, -(term.cursor.x as isize), p1 as isize);
         }
-        b'F' => { // CPL
+        b'F' => { // CPL (Defaults to 1)
             super::screen::move_cursor(term, -(term.cursor.x as isize), -(p1 as isize));
         }
-        b'G' => { // CHA
+        b'G' => { // CHA (Defaults to 1)
              let target_x = p1.saturating_sub(1) as usize;
              term.cursor.x = min(target_x, term.width.saturating_sub(1));
         }
-        b'H' | b'f' => { // CUP / HVP
-            // <<< FIX: Convert usize results to u16 for screen::set_cursor_pos >>>
-            let target_y = p1.saturating_sub(1).try_into().unwrap_or(u16::MAX);
-            let target_x = p2.saturating_sub(1).try_into().unwrap_or(u16::MAX);
-            super::screen::set_cursor_pos(term, target_x + 1, target_y + 1); // Pass 1-based
+        b'H' | b'f' => { // CUP / HVP (Defaults to 1,1)
+            let target_y = p1.saturating_sub(1).try_into().unwrap_or(0u16);
+            let target_x = p2.saturating_sub(1).try_into().unwrap_or(0u16);
+            super::screen::set_cursor_pos(term, target_x + 1, target_y + 1);
         }
-        b'd' => { // VPA
-             // <<< FIX: Convert usize results to u16 for screen::set_cursor_pos >>>
-             let target_y = p1.saturating_sub(1).try_into().unwrap_or(u16::MAX);
-             let current_x = term.cursor.x.try_into().unwrap_or(u16::MAX);
-             super::screen::set_cursor_pos(term, current_x + 1, target_y + 1); // Pass 1-based
+        b'd' => { // VPA (Defaults to 1)
+             let target_y = p1.saturating_sub(1).try_into().unwrap_or(0u16);
+             let current_x = term.cursor.x.try_into().unwrap_or(0u16);
+             super::screen::set_cursor_pos(term, current_x + 1, target_y + 1);
         }
 
         // --- Erasing ---
+        // WHY: Use p1_or_0 because ED/EL param 0 is meaningful & distinct from default 1
         b'J' => { // ED
             match p1_or_0 {
                 0 => super::screen::erase_display_to_end(term),
@@ -552,31 +580,33 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
                 _ => warn!("Unknown EL parameter: {}", p1_or_0),
             }
         }
-        b'X' => { // ECH
+        b'X' => { // ECH (Defaults to 1)
              let n = p1;
              let x_start = term.cursor.x;
              let y = term.cursor.y;
-             super::screen::fill_range(term, y, x_start, x_start + n as usize);
+             super::screen::fill_range(term, y, x_start, x_start.saturating_add(n as usize));
         }
-        b'P' => super::screen::delete_chars(term, p1 as usize), // DCH
+        b'P' => super::screen::delete_chars(term, p1 as usize), // DCH (Defaults to 1)
 
         // --- Scrolling ---
-        b'S' => super::screen::scroll_up(term, p1 as usize),   // SU
-        b'T' => super::screen::scroll_down(term, p1 as usize), // SD
+        b'S' => super::screen::scroll_up(term, p1 as usize),   // SU (Defaults to 1)
+        b'T' => super::screen::scroll_down(term, p1 as usize), // SD (Defaults to 1)
 
         // --- Insertion/Deletion ---
-        b'L' => super::screen::insert_blank_lines(term, p1 as usize), // IL
-        b'M' => super::screen::delete_lines(term, p1 as usize),       // DL
-        b'@' => super::screen::insert_blank_chars(term, p1 as usize), // ICH
+        b'L' => super::screen::insert_blank_lines(term, p1 as usize), // IL (Defaults to 1)
+        b'M' => super::screen::delete_lines(term, p1 as usize),       // DL (Defaults to 1)
+        b'@' => super::screen::insert_blank_chars(term, p1 as usize), // ICH (Defaults to 1)
 
         // --- Tabs ---
-        b'I' => { // CHT
+        b'I' => { // CHT (Defaults to 1)
             for _ in 0..p1 { super::screen::tab(term); }
         }
         b'Z' => { // CBT
+             // WHY: Needs negative tab logic which isn't implemented
              debug!("CBT received (CSI Z) - Not Implemented");
         }
         b'g' => { // TBC
+             // WHY: Use p1_or_0 because TBC param 0 is meaningful
              match p1_or_0 {
                  0 => { debug!("TBC 0: Clear tab stop at current column - Not Implemented"); }
                  3 => { debug!("TBC 3: Clear all tab stops - Not Implemented"); }
@@ -585,18 +615,18 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
         }
 
         // --- Attributes ---
-        b'm' => { // SGR
-            handle_sgr(term);
-        }
+        b'm' => { handle_sgr(term); } // SGR
 
-        // --- Modes (Standard) ---
+        // --- Modes ---
+        // WHY: Standard modes use p1_or_0 if param 0 is distinct, otherwise p1
         b'h' => { warn!("Ignoring standard Set Mode (SM) sequence: CSI {} h", p1_or_0); }
         b'l' => { warn!("Ignoring standard Reset Mode (RM) sequence: CSI {} l", p1_or_0); }
 
         // --- Reporting ---
+        // WHY: Use p1_or_0 because DSR/DA param 0 is meaningful
         b'n' => { // DSR
             match p1_or_0 {
-                 5 => { debug!("DSR 5 (Status Report) received - sending OK"); /* ttywrite("\x1b[0n"); */ }
+                 5 => { debug!("DSR 5 (Status Report) received - sending OK"); /* TODO: ttywrite */ }
                  6 => { // CPR
                      let report = format!("\x1b[{};{}R", term.cursor.y + 1, term.cursor.x + 1);
                      debug!("DSR 6 (CPR) received - sending {}", report);
@@ -608,7 +638,7 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
         b'c' => { // DA
              if p1_or_0 == 0 {
                  debug!("DA received - sending VT100 ID (Not Implemented)");
-                 // ttywrite(vtiden);
+                 // TODO: ttywrite(vtiden);
              } else {
                  warn!("Unknown DA parameter: {}", p1_or_0);
              }
@@ -621,7 +651,7 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
             super::screen::set_scrolling_region(term, top as usize, bot as usize);
         }
 
-        // --- Cursor Save/Restore (ANSI.SYS / SCO) ---
+        // --- Cursor Save/Restore ---
         b's' => super::screen::save_cursor(term),   // SCOSC
         b'u' => super::screen::restore_cursor(term), // SCORC
 
@@ -633,7 +663,6 @@ fn csi_dispatch(term: &mut Term, final_byte: u8) {
         }
     }
 }
-
 
 /// Dispatches a completed OSC sequence based on the collected string.
 fn handle_osc_dispatch(term: &mut Term) {

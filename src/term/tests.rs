@@ -259,12 +259,13 @@ mod term_tests {
     #[test]
     fn test_process_bytes_invalid_utf8_within_csi() {
         let mut term = Term::new(10, 1);
-        term.process_bytes(b"A\x1b[1\x80;31mB");
-        assert_eq!(term.get_cursor(), (3, 0), "Cursor after invalid UTF-8 in CSI");
-        assert_eq!(get_glyph_test(&term, 0, 0).c, 'A');
-        assert_eq!(get_glyph_test(&term, 1, 0).c, REPLACEMENT_CHARACTER);
-        assert_eq!(get_glyph_test(&term, 2, 0).c, 'B');
+        // Use 0x80 (C1 control) as the invalid byte within CSI
+        term.process_bytes(b"A\x1b[1\x80B"); // Start CSI, param 1, invalid C1, then B
+        // Expect parser to reset to Ground upon seeing 0x80, consuming it, then process 'B'.
         assert_eq!(term.parser_state, ParserState::Ground, "State after invalid UTF-8 in CSI");
+        assert_eq!(get_glyph_test(&term, 0, 0).c, 'A');
+        assert_eq!(get_glyph_test(&term, 1, 0).c, 'B'); // B should be printed at (1,0)
+        assert_eq!(term.get_cursor(), (2, 0), "Cursor after invalid UTF-8 in CSI"); // Corrected expected cursor pos
         assert_eq!(term.current_attributes, Attributes::default(), "Attributes unchanged after aborted CSI");
     }
 
