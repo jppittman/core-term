@@ -3,9 +3,9 @@
 //! Handles screen manipulation, drawing, and scrolling logic.
 
 use super::{Term, Cursor, Glyph, Attributes, DEFAULT_TAB_INTERVAL, ParserState, DecModes};
-use crate::glyph::{AttrFlags, REPLACEMENT_CHARACTER};
+use crate::glyph::AttrFlags;
 use std::cmp::{min, max};
-use log::{trace, debug, warn};
+use log::{trace, debug};
 
 // --- Constants ---
 /// Default count parameter value (e.g., for cursor movement, erase).
