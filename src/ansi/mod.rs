@@ -2,23 +2,24 @@
 
 //! Handles ANSI escape sequence parsing.
 
-mod commands;
-mod lexer;
-mod parser;
+// Make submodules public so their contents can be used elsewhere
+pub mod commands;
+pub mod lexer;
+pub mod parser;
 
 // Re-export necessary items for public API
- // Keep AnsiCommand public
-// Removed unused re-exports: CsiCommand, C0Control
-// Also remove AnsiToken if not used publicly
-use lexer::AnsiLexer; // Keep AnsiLexer private if only used here
-use parser::AnsiParser; // Keep AnsiParser private
+pub use commands::AnsiCommand; // Keep AnsiCommand public
+
+// Keep internal components private to this module unless needed outside
+use lexer::AnsiLexer;
+use parser::AnsiParser;
 
 /// The main processor that combines the lexer and parser.
 /// It takes byte slices as input and provides parsed commands.
 #[derive(Debug, Default)]
 pub struct AnsiProcessor {
     lexer: AnsiLexer,
-    // Make parser public if tests need direct access
+    // Make parser public if tests need direct access to take_commands
     pub parser: AnsiParser,
 }
 
@@ -49,5 +50,4 @@ impl AnsiProcessor {
 // Include tests module if defined in this file
 #[cfg(test)]
 mod tests; // Assuming tests are in ansi/tests.rs
-
 
