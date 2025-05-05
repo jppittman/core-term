@@ -5,20 +5,21 @@
 mod commands;
 mod lexer;
 mod parser;
-// mod tests; // Keep tests separate if using #[cfg(test)]
 
 // Re-export necessary items for public API
-pub use commands::AnsiCommand; // Keep AnsiCommand public
+ // Keep AnsiCommand public
 // Removed unused re-exports: CsiCommand, C0Control
-use lexer::{AnsiLexer, AnsiToken};
-use parser::AnsiParser;
+// Also remove AnsiToken if not used publicly
+use lexer::AnsiLexer; // Keep AnsiLexer private if only used here
+use parser::AnsiParser; // Keep AnsiParser private
 
 /// The main processor that combines the lexer and parser.
 /// It takes byte slices as input and provides parsed commands.
 #[derive(Debug, Default)]
 pub struct AnsiProcessor {
     lexer: AnsiLexer,
-    parser: AnsiParser,
+    // Make parser public if tests need direct access
+    pub parser: AnsiParser,
 }
 
 impl AnsiProcessor {
@@ -43,12 +44,6 @@ impl AnsiProcessor {
             self.parser.process_token(token);
         }
     }
-
-    // Note: `take_commands` is now called directly on `processor.parser` in tests.
-    // If needed publicly, add a wrapper method here:
-    // pub fn take_commands(&mut self) -> Vec<AnsiCommand> {
-    //     self.parser.take_commands()
-    // }
 }
 
 // Include tests module if defined in this file

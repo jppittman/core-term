@@ -120,8 +120,6 @@ impl AnsiCommand {
         }
     }
 
-    /// Constructor for ESC sequences with an intermediate byte (like SCS).
-    /// Moved here from parser.rs
     pub fn from_esc_intermediate(intermediate: char, final_char: char) -> Option<Self> {
          if ['(', ')', '*', '+'].contains(&intermediate) {
              if final_char.is_ascii_uppercase() || final_char.is_ascii_digit() {
@@ -194,17 +192,23 @@ impl AnsiCommand {
     pub fn from_csi(
         params: Vec<u16>,
         intermediates: Vec<u8>,
-        is_private: bool,
+        is_private: bool, // This flag is set by the parser if '?' etc. is seen
         final_byte: u8,
     ) -> Option<Self> {
         let param_or = |idx: usize, default: u16| params.get(idx).copied().unwrap_or(default);
         let param_or_min = |idx: usize, default: u16, min: u16| param_or(idx, default).max(min);
 
-        match (is_private, intermediates.as_slice(), final_byte) {
-            (true, b"", b'h') => Some(AnsiCommand::Csi(CsiCommand::SetModePrivate(param_or(0, 0)))),
+        // Check for private marker intermediate explicitly if needed
+        let has_private_intermediate = intermediates.contains(&b'?'); // Or check other private markers
+
+        match (is_private || has_private_intermediate, intermediates.as_slice(), final_byte) {
+            // Mode Setting - Check private flag OR intermediate marker
+            (true, &[b'?'], b'h') | (true, b"", b'h') => Some(AnsiCommand::Csi(CsiCommand::SetModePrivate(param_or(0, 0)))),
             (false, b"", b'h') => Some(AnsiCommand::Csi(CsiCommand::SetMode(param_or(0, 0)))),
-            (true, b"", b'l') => Some(AnsiCommand::Csi(CsiCommand::ResetModePrivate(param_or(0, 0)))),
+            (true, &[b'?'], b'l') | (true, b"", b'l') => Some(AnsiCommand::Csi(CsiCommand::ResetModePrivate(param_or(0, 0)))),
             (false, b"", b'l') => Some(AnsiCommand::Csi(CsiCommand::ResetMode(param_or(0, 0)))),
+
+            // Cursor Movement (Should not be private)
             (false, b"", b'A') => Some(AnsiCommand::Csi(CsiCommand::CursorUp(param_or_min(0, 1, 1)))),
             (false, b"", b'B') => Some(AnsiCommand::Csi(CsiCommand::CursorDown(param_or_min(0, 1, 1)))),
             (false, b"", b'C') => Some(AnsiCommand::Csi(CsiCommand::CursorForward(param_or_min(0, 1, 1)))),
@@ -216,20 +220,28 @@ impl AnsiCommand {
                  let row = param_or_min(0, 1, 1); let col = param_or_min(1, 1, 1);
                  Some(AnsiCommand::Csi(CsiCommand::CursorPosition(row, col)))
             }
+             // Erasing
             (false, b"", b'J') => Some(AnsiCommand::Csi(CsiCommand::EraseInDisplay(param_or(0, 0)))),
             (false, b"", b'K') => Some(AnsiCommand::Csi(CsiCommand::EraseInLine(param_or(0, 0)))),
             (false, b"", b'X') => Some(AnsiCommand::Csi(CsiCommand::EraseCharacter(param_or_min(0, 1, 1)))),
+            // Inserting/Deleting
             (false, b"", b'@') => Some(AnsiCommand::Csi(CsiCommand::InsertCharacter(param_or_min(0, 1, 1)))),
             (false, b"", b'L') => Some(AnsiCommand::Csi(CsiCommand::InsertLine(param_or_min(0, 1, 1)))),
             (false, b"", b'P') => Some(AnsiCommand::Csi(CsiCommand::DeleteCharacter(param_or_min(0, 1, 1)))),
             (false, b"", b'M') => Some(AnsiCommand::Csi(CsiCommand::DeleteLine(param_or_min(0, 1, 1)))),
+             // Scrolling
             (false, b"", b'S') => Some(AnsiCommand::Csi(CsiCommand::ScrollUp(param_or_min(0, 1, 1)))),
             (false, b"", b'T') => Some(AnsiCommand::Csi(CsiCommand::ScrollDown(param_or_min(0, 1, 1)))),
+             // Tabulation
             (false, b"", b'g') => Some(AnsiCommand::Csi(CsiCommand::ClearTabStops(param_or(0, 0)))),
+             // Graphics Rendition
             (false, b"", b'm') => Some(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(Self::parse_sgr(params)))),
+             // Status Reports
             (false, b"", b'n') => Some(AnsiCommand::Csi(CsiCommand::DeviceStatusReport(param_or(0, 0)))),
+             // Cursor Saving/Restoring
             (false, b"", b's') => Some(AnsiCommand::Csi(CsiCommand::SaveCursor)),
             (false, b"", b'u') => Some(AnsiCommand::Csi(CsiCommand::RestoreCursor)),
+            // Default: Unsupported or Error
             _ => None,
         }
     }
@@ -240,4 +252,3 @@ impl fmt::Display for C0Control {
         write!(f, "{:?}", self)
     }
 }
-
