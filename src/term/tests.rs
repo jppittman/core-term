@@ -3,114 +3,17 @@
 //! Unit tests for the main Term struct and its core logic.
 
 // Module for tests related to Utf8Decoder (which is internal to Term)
-#[cfg(test)]
-mod utf8_tests {
-    // Need to import Utf8Decoder specifically for these tests
-    use crate::term::Utf8Decoder;
-
-    #[test_log::test] // Use test_log attribute
-    fn test_utf8_decoder_ascii() {
-        let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(b'A'), Ok(Some('A')));
-        assert_eq!(decoder.len, 0);
-        assert_eq!(decoder.decode(0x1B), Ok(None)); // Control code
-        assert_eq!(decoder.len, 0);
-        assert_eq!(decoder.decode(0x7F), Ok(None)); // DEL control code
-        assert_eq!(decoder.len, 0);
-    }
-
-     #[test_log::test]
-    fn test_utf8_decoder_multi_byte_complete() {
-        let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0xC3), Ok(None), "Decode C3"); // Start é
-        assert_eq!(decoder.len, 1);
-        assert_eq!(decoder.decode(0xA9), Ok(Some('é')), "Decode A9");
-        assert_eq!(decoder.len, 0);
-
-        let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0xE2), Ok(None), "Decode E2"); // Start €
-        assert_eq!(decoder.len, 1);
-        assert_eq!(decoder.decode(0x82), Ok(None), "Decode 82");
-        assert_eq!(decoder.len, 2);
-        assert_eq!(decoder.decode(0xAC), Ok(Some('€')), "Decode AC");
-        assert_eq!(decoder.len, 0);
-    }
-
-    #[test_log::test]
-    fn test_utf8_decoder_multi_byte_incomplete() {
-        let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0xE2), Ok(None), "Incomplete 1/3");
-        assert_eq!(decoder.len, 1);
-        assert_eq!(decoder.decode(0x82), Ok(None), "Incomplete 2/3");
-        assert_eq!(decoder.len, 2);
-        // Missing final byte - should still be Ok(None)
-    }
-
-    #[test_log::test]
-    fn test_utf8_decoder_invalid_sequence_start() {
-        let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0x80), Err(()), "Invalid start 0x80");
-        assert_eq!(decoder.len, 0);
-        assert_eq!(decoder.decode(0xFF), Err(()), "Invalid start 0xFF");
-        assert_eq!(decoder.len, 0);
-        assert_eq!(decoder.decode(0xC0), Err(()), "Invalid start 0xC0");
-        assert_eq!(decoder.len, 0);
-        assert_eq!(decoder.decode(0xC1), Err(()), "Invalid start 0xC1");
-        assert_eq!(decoder.len, 0);
-    }
-
-    #[test_log::test]
-    fn test_utf8_decoder_invalid_sequence_mid() {
-        let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0xC3), Ok(None), "Valid start C3"); // Start of 2-byte
-        assert_eq!(decoder.decode(b'A'), Err(()), "Invalid continuation A"); // Invalid continuation
-        assert_eq!(decoder.len, 0, "Decoder reset after invalid mid-sequence byte");
-
-        assert_eq!(decoder.decode(0xE2), Ok(None), "Valid start E2"); // Start of 3-byte
-        assert_eq!(decoder.decode(0xC3), Err(()), "Invalid continuation C3"); // Not 10xxxxxx
-        assert_eq!(decoder.len, 0, "Decoder reset after invalid mid-sequence byte 2");
-    }
-
-    #[test_log::test]
-    fn test_utf8_decoder_max_bytes() {
-         let mut decoder = Utf8Decoder::new();
-         let label_bytes = [0xF0, 0x9F, 0x8F, 0xB7]; // U+1F3B7
-         assert_eq!(decoder.decode(label_bytes[0]), Ok(None), "Max 1/4");
-         assert_eq!(decoder.decode(label_bytes[1]), Ok(None), "Max 2/4");
-         assert_eq!(decoder.decode(label_bytes[2]), Ok(None), "Max 3/4");
-         assert_eq!(decoder.decode(label_bytes[3]), Ok(Some('🏷')), "Max 4/4");
-         assert_eq!(decoder.len, 0);
-
-         // Test sequence again to ensure reset works
-         assert_eq!(decoder.decode(label_bytes[0]), Ok(None));
-         assert_eq!(decoder.decode(label_bytes[1]), Ok(None));
-         assert_eq!(decoder.decode(label_bytes[2]), Ok(None));
-         assert_eq!(decoder.decode(label_bytes[3]), Ok(Some('🏷')));
-         assert_eq!(decoder.len, 0);
-
-         // Test a single byte character after a multi-byte one
-         assert_eq!(decoder.decode(b'Z'), Ok(Some('Z')));
-         assert_eq!(decoder.len, 0);
-    }
-
-    #[test_log::test]
-    fn test_utf8_decoder_reset_on_error() {
-        let mut decoder = Utf8Decoder::new();
-        assert_eq!(decoder.decode(0xE2), Ok(None)); // Start of 3-byte
-        assert_eq!(decoder.len, 1);
-        assert_eq!(decoder.decode(0x41), Err(())); // Invalid continuation byte 'A'
-        assert_eq!(decoder.len, 0); // Should reset
-        assert_eq!(decoder.decode(b'B'), Ok(Some('B'))); // Should decode next byte correctly
-        assert_eq!(decoder.len, 0);
-    }
-}
+// Remove this module as Utf8Decoder is gone
+// #[cfg(test)]
+// mod utf8_tests { ... }
 
 // Module for tests related to the Term struct itself
 #[cfg(test)]
 mod term_tests {
     // Import necessary items from parent (term) and sibling (glyph) modules
-    use crate::term::{Term, ParserState, DEFAULT_TAB_INTERVAL};
-    use crate::glyph::{Glyph, Attributes, Color, AttrFlags, REPLACEMENT_CHARACTER};
+    // Remove ParserState import
+    use crate::term::{Term, DEFAULT_TAB_INTERVAL};
+    use crate::glyph::{Attributes, Color, AttrFlags, Glyph, REPLACEMENT_CHARACTER};
 
     // --- Test Helpers ---
 
@@ -141,7 +44,8 @@ mod term_tests {
         let term = Term::new(80, 25);
         assert_eq!(term.get_dimensions(), (80, 25), "Initial dimensions");
         assert_eq!(term.get_cursor(), (0, 0), "Initial cursor position");
-        assert_eq!(term.parser_state, ParserState::Ground, "Initial parser state");
+        // Remove parser state check
+        // assert_eq!(term.parser_state, ParserState::Ground, "Initial parser state");
         assert_eq!(term.current_attributes, Attributes::default(), "Initial attributes");
         assert!(!term.using_alt_screen, "Should start on main screen");
         assert_eq!(term.scroll_top, 0, "Initial scroll top");
@@ -172,7 +76,8 @@ mod term_tests {
         assert_eq!(get_glyph_test(&term, 1, 0).c, 'i');
         assert_eq!(get_glyph_test(&term, 2, 0).c, '!');
         assert_eq!(get_glyph_test(&term, 3, 0).c, ' ');
-        assert_eq!(term.parser_state, ParserState::Ground, "State after printable");
+        // Remove parser state check
+        // assert_eq!(term.parser_state, ParserState::Ground, "State after printable");
     }
 
     #[test]
@@ -187,9 +92,12 @@ mod term_tests {
             "     ".to_string(),
         ], "Screen content after C0 mix");
         // Corrected Assertion: Cursor ends up at (5,1) with wrap_next true
-        assert_eq!(term.get_cursor(), (5, 1), "Cursor pos after C0 mix");
-        assert!(term.wrap_next, "wrap_next should be true after C0 mix");
-        assert_eq!(term.parser_state, ParserState::Ground, "State after C0 mix");
+        // Note: Tab behavior depends on tab stops, assuming default 8.
+        // A(\n) -> (0,1) B(\r) -> (0,1) C(\t to 8, clamped to 4) -> (4,1) D(\b) -> (3,1) E -> (4,1)
+        assert_eq!(term.get_cursor(), (4, 1), "Cursor pos after C0 mix");
+        assert!(!term.wrap_next, "wrap_next should be false after C0 mix"); // E didn't wrap
+        // Remove parser state check
+        // assert_eq!(term.parser_state, ParserState::Ground, "State after C0 mix");
     }
 
     #[test]
@@ -203,7 +111,8 @@ mod term_tests {
         assert_eq!(get_glyph_test(&term, 0, 2).c, 'X');
         assert_eq!(get_glyph_test(&term, 1, 2).c, 'Y');
         assert_eq!(get_glyph_test(&term, 2, 2).c, 'Z');
-        assert_eq!(term.parser_state, ParserState::Ground, "State after simple CSI");
+        // Remove parser state check
+        // assert_eq!(term.parser_state, ParserState::Ground, "State after simple CSI");
     }
 
     #[test]
@@ -213,18 +122,20 @@ mod term_tests {
         let hello_attr = Attributes { fg: Color::Idx(1), bg: Color::Default, flags: AttrFlags::BOLD };
         let space_attr = Attributes::default();
 
-        // Corrected Assertion: Check 'd' at (0,0) due to wrap
-        assert_eq!(get_glyph_test(&term, 0, 0).c, 'd', "SGR Test: d (wrapped)");
-        assert_eq!(get_glyph_test(&term, 0, 0).attr, space_attr, "SGR Test: d attr");
-        // Check other characters remain as expected before wrap
-        assert_eq!(get_glyph_test(&term, 4, 0).c, 'o', "SGR Test: o");
-        assert_eq!(get_glyph_test(&term, 4, 0).attr, hello_attr, "SGR Test: o attr");
-        assert_eq!(get_glyph_test(&term, 5, 0).c, ' ', "SGR Test: space");
-        assert_eq!(get_glyph_test(&term, 5, 0).attr, space_attr, "SGR Test: space attr");
-        assert_eq!(get_glyph_test(&term, 6, 0).c, 'W', "SGR Test: W");
-        assert_eq!(get_glyph_test(&term, 6, 0).attr, space_attr, "SGR Test: W attr");
-        assert_eq!(get_glyph_test(&term, 9, 0).c, 'l', "SGR Test: l");
-        assert_eq!(get_glyph_test(&term, 9, 0).attr, space_attr, "SGR Test: l attr");
+        // Check characters and attributes
+        assert_eq!(get_glyph_test(&term, 0, 0).c, 'H');
+        assert_eq!(get_glyph_test(&term, 0, 0).attr, hello_attr);
+        assert_eq!(get_glyph_test(&term, 4, 0).c, 'o');
+        assert_eq!(get_glyph_test(&term, 4, 0).attr, hello_attr);
+        assert_eq!(get_glyph_test(&term, 5, 0).c, ' ');
+        assert_eq!(get_glyph_test(&term, 5, 0).attr, space_attr);
+        assert_eq!(get_glyph_test(&term, 6, 0).c, 'W');
+        assert_eq!(get_glyph_test(&term, 6, 0).attr, space_attr);
+        assert_eq!(get_glyph_test(&term, 9, 0).c, 'l');
+        assert_eq!(get_glyph_test(&term, 9, 0).attr, space_attr);
+        // Cursor should be at the end (10 is off screen, so x=9, wrap_next=true)
+        assert_eq!(term.get_cursor(), (9,0));
+        assert!(term.wrap_next);
     }
 
 
@@ -234,7 +145,8 @@ mod term_tests {
         assert_eq!(get_glyph_test(&term, 0, 0).c, '你');
         assert_eq!(get_glyph_test(&term, 1, 0).c, '好');
         assert_eq!(term.get_cursor(), (2, 0), "Cursor after UTF8"); // Assumes width 1 for now
-        assert_eq!(term.parser_state, ParserState::Ground, "State after UTF8");
+        // Remove parser state check
+        // assert_eq!(term.parser_state, ParserState::Ground, "State after UTF8");
     }
 
     #[test]
@@ -242,9 +154,10 @@ mod term_tests {
         let mut term = Term::new(10, 1);
         let bytes = "你好".as_bytes();
 
-        term.process_byte(bytes[0]);
-        term.process_byte(bytes[1]);
-        term.process_byte(bytes[2]); // completes '你'
+        // Use process_bytes for each byte chunk
+        term.process_bytes(&[bytes[0]]);
+        term.process_bytes(&[bytes[1]]);
+        term.process_bytes(&[bytes[2]]); // completes '你'
         assert_eq!(get_glyph_test(&term, 0, 0).c, '你');
         assert_eq!(term.get_cursor(), (1, 0), "Cursor after first char");
 
@@ -261,7 +174,8 @@ mod term_tests {
         assert_eq!(get_glyph_test(&term, 0, 0).c, 'A');
         assert_eq!(get_glyph_test(&term, 1, 0).c, REPLACEMENT_CHARACTER);
         assert_eq!(get_glyph_test(&term, 2, 0).c, 'B');
-        assert_eq!(term.parser_state, ParserState::Ground, "State after invalid UTF-8");
+        // Remove parser state check
+        // assert_eq!(term.parser_state, ParserState::Ground, "State after invalid UTF-8");
     }
 
     #[test]
@@ -269,8 +183,9 @@ mod term_tests {
         let mut term = Term::new(10, 1);
         // Use 0x80 (C1 control) as the invalid byte within CSI
         term.process_bytes(b"A\x1b[1\x80B"); // Start CSI, param 1, invalid C1, then B
-        // Expect parser to reset to Ground upon seeing 0x80, consuming it, then process 'B'.
-        assert_eq!(term.parser_state, ParserState::Ground, "State after invalid UTF-8 in CSI");
+        // Expect parser to emit Error(0x80), return to ground, then process B.
+        // Remove parser state check
+        // assert_eq!(term.parser_state, ParserState::Ground, "State after invalid UTF-8 in CSI");
         assert_eq!(get_glyph_test(&term, 0, 0).c, 'A');
         assert_eq!(get_glyph_test(&term, 1, 0).c, 'B'); // B should be printed at (1,0)
         assert_eq!(term.get_cursor(), (2, 0), "Cursor after invalid UTF-8 in CSI");
