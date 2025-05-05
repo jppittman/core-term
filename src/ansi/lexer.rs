@@ -1,6 +1,8 @@
 // src/ansi/lexer.rs
 
 use log::{debug, trace, warn}; // Import logging macros
+// FIX: Import AnsiCommand from the commands module to resolve E0433 errors.
+use super::commands::AnsiCommand;
 
 // --- Constants for Control Codes ---
 // C0 Controls (0x00 - 0x1F, 0x7F)
@@ -341,7 +343,7 @@ impl AnsiLexer {
             }
             ESC => { // Abort on ESC.
                 warn!("Two-byte ESC sequence aborted by second ESC");
-                self.push_token(AnsiCommand::Error(ESC)); // Report the aborting ESC as error.
+                self.push_token(AnsiToken::Error(ESC)); // Report the aborting ESC as error.
                 self.reset_state();
             }
             // Final bytes for 2-byte sequences (0x30-0x7E). e.g., 'B' in ESC ( B
@@ -388,7 +390,7 @@ impl AnsiLexer {
             }
             ESC => { // Abort on ESC.
                 warn!("CSI sequence aborted by ESC");
-                self.push_token(AnsiCommand::Error(ESC)); // Report the aborting ESC as error.
+                self.push_token(AnsiToken::Error(ESC)); // Report the aborting ESC as error.
                 self.reset_state();
             }
             // Parameter bytes (0x30-0x3F). Includes digits, ';', and private markers '?', '<', '=', '>'.
@@ -415,7 +417,7 @@ impl AnsiLexer {
             // Any other byte is unexpected.
              _ => {
                  warn!("Unexpected byte 0x{:02X} in CsiEntry state", byte);
-                 self.push_token(AnsiCommand::Error(byte));
+                 self.push_token(AnsiToken::Error(byte));
                  self.reset_state();
             }
         }
@@ -433,7 +435,7 @@ impl AnsiLexer {
             }
             ESC => { // Abort on ESC.
                 warn!("CSI sequence aborted by ESC");
-                self.push_token(AnsiCommand::Error(ESC));
+                self.push_token(AnsiToken::Error(ESC));
                 self.reset_state();
             }
             // Parameter bytes (0x30-0x3F).
@@ -460,7 +462,7 @@ impl AnsiLexer {
             // Any other byte is unexpected.
             _ => {
                  warn!("Unexpected byte 0x{:02X} in CsiParam state", byte);
-                 self.push_token(AnsiCommand::Error(byte));
+                 self.push_token(AnsiToken::Error(byte));
                  self.reset_state();
             }
         }
@@ -478,7 +480,7 @@ impl AnsiLexer {
             }
             ESC => { // Abort on ESC.
                 warn!("CSI sequence aborted by ESC");
-                self.push_token(AnsiCommand::Error(ESC));
+                self.push_token(AnsiToken::Error(ESC));
                 self.reset_state();
             }
             // Intermediate bytes (0x20-0x2F).
@@ -500,13 +502,13 @@ impl AnsiLexer {
             // Parameter bytes (0x30-0x3F) - Invalid here, abort.
             0x30..=0x3F => {
                 warn!("Unexpected parameter byte {:02X} in CsiIntermediate state", byte);
-                self.push_token(AnsiCommand::Error(byte));
+                self.push_token(AnsiToken::Error(byte));
                 self.reset_state();
             }
             // Any other byte is unexpected.
              _ => {
                  warn!("Unexpected byte 0x{:02X} in CsiIntermediate state", byte);
-                 self.push_token(AnsiCommand::Error(byte));
+                 self.push_token(AnsiToken::Error(byte));
                  self.reset_state();
             }
         }
@@ -554,7 +556,7 @@ impl AnsiLexer {
             // Any other byte is unexpected.
              _ => {
                  warn!("Unexpected byte 0x{:02X} in DcsEntry state", byte);
-                 self.push_token(AnsiCommand::Error(byte));
+                 self.push_token(AnsiToken::Error(byte));
                  self.reset_state();
             }
         }
@@ -600,7 +602,7 @@ impl AnsiLexer {
             // Any other byte is unexpected.
              _ => {
                  warn!("Unexpected byte 0x{:02X} in DcsParam state", byte);
-                 self.push_token(AnsiCommand::Error(byte));
+                 self.push_token(AnsiToken::Error(byte));
                  self.reset_state();
             }
         }
@@ -641,13 +643,13 @@ impl AnsiLexer {
             // Parameter bytes (0x30-0x3F) - Invalid here, abort.
             0x30..=0x3F => {
                 warn!("Unexpected parameter byte {:02X} in DcsIntermediate state", byte);
-                self.push_token(AnsiCommand::Error(byte));
+                self.push_token(AnsiToken::Error(byte));
                 self.reset_state();
             }
             // Any other byte is unexpected.
              _ => {
                  warn!("Unexpected byte 0x{:02X} in DcsIntermediate state", byte);
-                 self.push_token(AnsiCommand::Error(byte));
+                 self.push_token(AnsiToken::Error(byte));
                  self.reset_state();
             }
         }
