@@ -13,9 +13,7 @@ use super::{
 // Helper function to process bytes and get commands
 fn process_bytes(bytes: &[u8]) -> Vec<AnsiCommand> {
     let mut processor = AnsiProcessor::new();
-    // Corrected method name
     processor.process_bytes(bytes);
-    // Corrected method call to get commands from the parser field
     processor.parser.take_commands()
 }
 
@@ -24,9 +22,7 @@ fn process_bytes_fragments(fragments: &[&[u8]]) -> Vec<Vec<AnsiCommand>> {
     let mut processor = AnsiProcessor::new();
     let mut results = Vec::new();
     for frag in fragments {
-        // Corrected method name
         processor.process_bytes(frag);
-        // Corrected method call to get commands from the parser field
         results.push(processor.parser.take_commands());
     }
     results
@@ -98,12 +94,7 @@ fn test_process_c0_control_ff() {
 fn test_process_c0_control_esc() {
     let bytes = b"\x1B"; // ESC
     let commands = process_bytes(bytes);
-    // Standalone ESC is now handled by parser entering Escape state, no command emitted yet.
-    // If followed by nothing, take_commands won't yield anything specific unless parser handles timeout/end-of-stream.
-    // Let's assert empty for now, assuming no immediate error.
-    assert!(commands.is_empty());
-    // Original expectation was Error(0x1B) - this might need revisiting depending on desired behavior for standalone ESC.
-    // assert_eq!(commands, vec![AnsiCommand::Error(0x1B)]);
+    assert!(commands.is_empty()); // Parser enters Escape state, no command emitted yet
 }
 
 #[test]
@@ -230,12 +221,6 @@ fn test_process_scs_g1_esc() {
     assert_eq!(commands, vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet(')', '0'))]);
 }
 
-// Remove the old tests asserting SCS via CSI
-// #[test] fn test_process_csi_ss2_8bit() { ... }
-// #[test] fn test_process_csi_ss2_esc_n() { ... }
-// #[test] fn test_process_csi_ss3_8bit() { ... }
-// #[test] fn test_process_csi_ss3_esc_o() { ... }
-
 
 // --- CSI Basic Tests ---
 
@@ -304,9 +289,10 @@ fn test_process_csi_cup_two_params() {
 
 #[test]
 fn test_process_csi_cup_two_params_reverse_order() {
-     let bytes = b"\x1B[30;1f"; // CSI 30 ; 1 f -> CUP (1, 30)
+     let bytes = b"\x1B[30;1f"; // CSI 30 ; 1 f -> CUP (30, 1) or HVP(30, 1)
      let commands = process_bytes(bytes);
-     assert_eq!(commands, vec![AnsiCommand::Csi(CsiCommand::CursorPosition(1, 30))]);
+     // Corrected assertion: Both H and f use row;col
+     assert_eq!(commands, vec![AnsiCommand::Csi(CsiCommand::CursorPosition(30, 1))]);
 }
 
 #[test]
@@ -571,6 +557,7 @@ fn test_process_fragmented_csi_split_intermediate() {
      let fragments = [b"\x1B[?".as_slice(), b"25h".as_slice()];
      let results = process_bytes_fragments(&fragments);
      assert_eq!(results[0], vec![]);
+     // Should now correctly parse SetModePrivate
      assert_eq!(results[1], vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(25))]);
 }
 
@@ -578,7 +565,6 @@ fn test_process_fragmented_csi_split_intermediate() {
 fn test_process_fragmented_csi_split_esc() {
      let fragments = [b"\x1B".as_slice(), b"[1A".as_slice()];
      let results = process_bytes_fragments(&fragments);
-     // After ESC, parser is in Escape state, no command emitted yet
      assert_eq!(results[0], vec![]);
      assert_eq!(results[1], vec![AnsiCommand::Csi(CsiCommand::CursorUp(1))]);
 }
@@ -616,7 +602,6 @@ fn test_process_fragmented_string_with_print() {
 fn test_process_osc_string() {
     let bytes = b"\x1B]0;Set Title\x07";
     let commands = process_bytes(bytes);
-    // BEL terminates OSC but isn't consumed by dispatch_osc
     assert_eq!(commands, vec![AnsiCommand::Osc(b"0;Set Title".to_vec())]);
 }
 
@@ -624,7 +609,6 @@ fn test_process_osc_string() {
 fn test_process_osc_string_with_st() {
     let bytes = b"\x1B]2;Another Title\x1B\\";
     let commands = process_bytes(bytes);
-     // ST is consumed by dispatch_osc(true)
      assert_eq!(commands, vec![AnsiCommand::Osc(b"2;Another Title".to_vec())]);
 }
 
@@ -632,7 +616,6 @@ fn test_process_osc_string_with_st() {
 fn test_process_dcs_string() {
     let bytes = b"\x1BP1;1$rText\x1B\\";
     let commands = process_bytes(bytes);
-    // ST is consumed by dispatch_dcs(true)
     assert_eq!(commands, vec![AnsiCommand::Dcs(b"1;1$rText".to_vec())]);
 }
 
@@ -640,7 +623,6 @@ fn test_process_dcs_string() {
 fn test_process_pm_string() {
     let bytes = b"\x1B^Privacy Message\x1B\\";
     let commands = process_bytes(bytes);
-    // ST is consumed by dispatch_pm(true)
     assert_eq!(commands, vec![AnsiCommand::Pm(b"Privacy Message".to_vec())]);
 }
 
@@ -648,7 +630,6 @@ fn test_process_pm_string() {
 fn test_process_apc_string() {
     let bytes = b"\x1B_Application Command\x1B\\";
     let commands = process_bytes(bytes);
-    // ST is consumed by dispatch_apc(true)
      assert_eq!(commands, vec![AnsiCommand::Apc(b"Application Command".to_vec())]);
 }
 
@@ -713,7 +694,6 @@ fn test_process_incomplete_dcs_with_more_input() {
      let fragments = [b"\x1BPSt".as_slice(), b"uff\x1B\\".as_slice()];
      let results = process_bytes_fragments(&fragments);
      assert_eq!(results[0], vec![]);
-     // ST is consumed by dispatch_dcs(true)
      assert_eq!(results[1], vec![AnsiCommand::Dcs(b"Stuff".to_vec())]);
 }
 
@@ -722,18 +702,22 @@ fn test_process_incomplete_dcs_with_more_input() {
 fn test_process_c0_in_osc() {
     let bytes = b"\x1B]0;String\x08with\x07BEL";
     let commands = process_bytes(bytes);
-    // BEL terminates OSC, but isn't consumed. C0s inside are collected.
-    assert_eq!(commands, vec![AnsiCommand::Osc(b"0;String\x08with".to_vec())]);
+    // Corrected assertion: BEL terminates OSC, parser returns to ground, then processes 'B','E','L'
+    assert_eq!(commands, vec![
+        AnsiCommand::Osc(b"0;String\x08with".to_vec()),
+        AnsiCommand::Print('B'), AnsiCommand::Print('E'), AnsiCommand::Print('L'),
+    ]);
 }
 
 #[test]
 fn test_process_esc_in_osc() {
     let bytes = b"\x1B]0;String\x1B\x07BEL";
     let commands = process_bytes(bytes);
-    // ESC aborts OSC, C0(ESC) is emitted, then BEL is processed from Ground state.
+    // Corrected assertion: ESC aborts OSC, emits C0(ESC), returns to ground, processes BEL, then 'B','E','L'
     assert_eq!(commands, vec![
         AnsiCommand::C0Control(C0Control::ESC),
         AnsiCommand::C0Control(C0Control::BEL),
+        AnsiCommand::Print('B'), AnsiCommand::Print('E'), AnsiCommand::Print('L'),
     ]);
 }
 
@@ -742,7 +726,6 @@ fn test_process_esc_in_osc() {
 fn test_process_c0_in_dcs() {
     let bytes = b"\x1BPString\x08with\x0BC0\x1B\\";
     let commands = process_bytes(bytes);
-    // ST terminates DCS and is consumed. C0s inside are collected.
     assert_eq!(commands, vec![AnsiCommand::Dcs(b"String\x08with\x0BC0".to_vec())]);
 }
 
@@ -750,7 +733,6 @@ fn test_process_c0_in_dcs() {
 fn test_process_esc_in_dcs() {
     let bytes = b"\x1BPString\x1B\x1B\\";
     let commands = process_bytes(bytes);
-    // ESC aborts DCS, C0(ESC) is emitted, then ST (ESC \) is processed from Ground state.
      assert_eq!(commands, vec![
          AnsiCommand::C0Control(C0Control::ESC),
          AnsiCommand::StringTerminator,
@@ -771,12 +753,8 @@ fn test_process_st_in_ground_state() {
 fn test_process_esc_in_csi() {
     let bytes = b"\x1B[1;2\x1B[3m";
     let commands = process_bytes(bytes);
-    // First ESC enters Escape state. '[' enters CsiEntry. '1', ';', '2' enter CsiParam.
-    // Second ESC aborts CSI, clears CSI state, enters Escape state.
-    // '[' enters CsiEntry. '3' enters CsiParam. 'm' finalizes param 3, dispatches SGR.
+    // Corrected assertion: Expect SGR Italic (3m) after ESC aborts the first CSI
     assert_eq!(commands, vec![
-        AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Green)]))
+        AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Italic]))
     ]);
 }
-
-
