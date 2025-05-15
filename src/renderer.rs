@@ -64,7 +64,11 @@ impl Renderer {
     }
 
     /// Draws the current state of the `TerminalEmulator` using the provided `Driver`.
-    pub fn draw(&mut self, term: &mut impl TerminalInterface, driver: &mut dyn Driver) -> Result<()> {
+    pub fn draw(
+        &mut self,
+        term: &mut impl TerminalInterface,
+        driver: &mut dyn Driver,
+    ) -> Result<()> {
         let (term_width, term_height) = term.dimensions();
 
         if term_width == 0 || term_height == 0 {
@@ -74,16 +78,15 @@ impl Renderer {
 
         let initially_dirty_lines_from_term: HashSet<usize> =
             term.take_dirty_lines().into_iter().collect();
-        
+
         trace!(
             "Renderer::draw: Initially dirty lines from term: {:?}, term_dims: {}x{}, first_draw: {}",
             initially_dirty_lines_from_term, term_width, term_height, self.first_draw
         );
-        
+
         let mut lines_to_draw_content: HashSet<usize> = initially_dirty_lines_from_term;
         let (cursor_abs_x, cursor_abs_y) = term.get_screen_cursor_pos();
         let mut something_was_drawn = !lines_to_draw_content.is_empty();
-
 
         // Determine if a ClearAll is needed. Only if it's the very first draw.
         let perform_clear_all = self.first_draw;
@@ -91,9 +94,11 @@ impl Renderer {
         if self.first_draw {
             self.first_draw = false; // Reset for subsequent calls
         }
-        
+
         if perform_clear_all {
-            trace!("Renderer::draw: Full refresh (first_draw=true). Clearing all with RENDERER_DEFAULT_BG.");
+            trace!(
+                "Renderer::draw: Full refresh (first_draw=true). Clearing all with RENDERER_DEFAULT_BG."
+            );
             driver.clear_all(RENDERER_DEFAULT_BG)?;
             something_was_drawn = true;
             // If we cleared all, all lines effectively need their content redrawn.
@@ -105,24 +110,32 @@ impl Renderer {
             // as drawing the cursor implies the cell under it needs to be redrawn first.
             if term.is_cursor_visible() && cursor_abs_y < term_height {
                 if lines_to_draw_content.insert(cursor_abs_y) {
-                     trace!("Renderer::draw: Added cursor line y={} to draw set as it was not initially dirty.", cursor_abs_y);
-                     something_was_drawn = true; // Adding a line to draw means something will be drawn
+                    trace!(
+                        "Renderer::draw: Added cursor line y={} to draw set as it was not initially dirty.",
+                        cursor_abs_y
+                    );
+                    something_was_drawn = true; // Adding a line to draw means something will be drawn
                 }
             }
         }
 
-
         if !lines_to_draw_content.is_empty() {
             something_was_drawn = true; // Ensure this flag is true if there are lines to draw
         }
-        
+
         let mut sorted_lines_to_draw: Vec<usize> = lines_to_draw_content.into_iter().collect();
         sorted_lines_to_draw.sort_unstable();
-        trace!("Renderer::draw: Final lines to process for content: {:?}", sorted_lines_to_draw);
+        trace!(
+            "Renderer::draw: Final lines to process for content: {:?}",
+            sorted_lines_to_draw
+        );
 
         for &y_abs in &sorted_lines_to_draw {
             if y_abs >= term_height {
-                warn!("Renderer::draw: Attempted to draw out-of-bounds line y={}", y_abs);
+                warn!(
+                    "Renderer::draw: Attempted to draw out-of-bounds line y={}",
+                    y_abs
+                );
                 continue;
             }
             self.draw_line_content(y_abs, term_width, term, driver)?;
@@ -130,7 +143,14 @@ impl Renderer {
 
         if term.is_cursor_visible() {
             trace!("Renderer::draw: Cursor is visible, calling draw_cursor overlay.");
-            self.draw_cursor_overlay(cursor_abs_x, cursor_abs_y, term, driver, term_width, term_height)?;
+            self.draw_cursor_overlay(
+                cursor_abs_x,
+                cursor_abs_y,
+                term,
+                driver,
+                term_width,
+                term_height,
+            )?;
             something_was_drawn = true;
         }
 
@@ -145,7 +165,7 @@ impl Renderer {
 
     /// Draws the content of a single terminal line.
     fn draw_line_content(
-        &self, 
+        &self,
         y_abs: usize,
         term_width: usize,
         term: &impl TerminalInterface,
@@ -162,33 +182,60 @@ impl Renderer {
                 start_glyph.attr.flags,
             );
 
-            let char_for_log = if start_glyph.c == '\0' { ' ' } else { start_glyph.c };
+            let char_for_log = if start_glyph.c == '\0' {
+                ' '
+            } else {
+                start_glyph.c
+            };
             trace!(
                 "  Line {}, Col {}: Start glyph='{}' (attr:{:?}), EffectiveStyle(fg:{:?}, bg:{:?}, flags:{:?})",
                 y_abs, current_col, char_for_log, start_glyph.attr, eff_fg, eff_bg, eff_flags
             );
 
-            let cells_consumed = if start_glyph.c == '\0' { // Placeholder for wide char
+            let cells_consumed = if start_glyph.c == '\0' {
+                // Placeholder for wide char
                 self.draw_placeholder_cell(current_col, y_abs, eff_bg, driver)?
-            } else if start_glyph.c == ' ' { // Space character
+            } else if start_glyph.c == ' ' {
+                // Space character
                 // Attempt to draw a run of spaces
-                let space_run_len = self.draw_space_run(current_col, y_abs, term_width, &start_glyph, term, driver)?;
+                let space_run_len = self.draw_space_run(
+                    current_col,
+                    y_abs,
+                    term_width,
+                    &start_glyph,
+                    term,
+                    driver,
+                )?;
                 if space_run_len > 0 {
                     space_run_len // Consumed a run of spaces
                 } else {
                     // Should not happen if start_glyph.c is ' ', draw_space_run should return at least 1.
                     // But as a fallback, treat as a single text segment.
-                    warn!("Renderer::draw_line_content: draw_space_run returned 0 for a space at ({},{}). Treating as single char.", current_col, y_abs);
-                    self.draw_text_segment(current_col, y_abs, term_width, &start_glyph, term, driver)?
+                    warn!(
+                        "Renderer::draw_line_content: draw_space_run returned 0 for a space at ({},{}). Treating as single char.",
+                        current_col, y_abs
+                    );
+                    self.draw_text_segment(
+                        current_col,
+                        y_abs,
+                        term_width,
+                        &start_glyph,
+                        term,
+                        driver,
+                    )?
                 }
-            } else { // Regular text character
+            } else {
+                // Regular text character
                 self.draw_text_segment(current_col, y_abs, term_width, &start_glyph, term, driver)?
             };
-            
+
             if cells_consumed == 0 {
                 // This case should ideally be prevented by draw_placeholder_cell, draw_space_run, or draw_text_segment
                 // always returning at least 1 if they process the start_glyph.
-                warn!("Renderer::draw_line_content: A draw segment reported consuming 0 cells at ({}, {}), char '{}'. Advancing by 1 to prevent loop.", current_col, y_abs, start_glyph.c);
+                warn!(
+                    "Renderer::draw_line_content: A draw segment reported consuming 0 cells at ({}, {}), char '{}'. Advancing by 1 to prevent loop.",
+                    current_col, y_abs, start_glyph.c
+                );
                 current_col += 1;
             } else {
                 current_col += cells_consumed;
@@ -199,9 +246,23 @@ impl Renderer {
 
     /// Draws a placeholder cell (typically the second half of a wide character).
     /// Returns the number of cells consumed (always 1 for a placeholder).
-    fn draw_placeholder_cell(&self, x: usize, y: usize, effective_bg: Color, driver: &mut dyn Driver) -> Result<usize> {
-        let rect = CellRect { x, y, width: 1, height: 1 };
-        trace!("    Line {}, Col {}: Placeholder. FillRect with bg={:?}", y, x, effective_bg);
+    fn draw_placeholder_cell(
+        &self,
+        x: usize,
+        y: usize,
+        effective_bg: Color,
+        driver: &mut dyn Driver,
+    ) -> Result<usize> {
+        let rect = CellRect {
+            x,
+            y,
+            width: 1,
+            height: 1,
+        };
+        trace!(
+            "    Line {}, Col {}: Placeholder. FillRect with bg={:?}",
+            y, x, effective_bg
+        );
         driver.fill_rect(rect, effective_bg)?;
         Ok(1) // Consumes 1 cell
     }
@@ -228,7 +289,7 @@ impl Renderer {
         for x_offset in 0..(term_width - start_col) {
             let current_scan_col = start_col + x_offset;
             let glyph_at_scan = term.get_glyph(current_scan_col, y);
-            
+
             // Effective attributes of the currently scanned glyph
             let (_, current_scan_eff_bg, current_scan_flags) = self.get_effective_colors_and_flags(
                 glyph_at_scan.attr.fg,
@@ -237,22 +298,33 @@ impl Renderer {
             );
 
             // Break if not a space or if effective background/flags change
-            if glyph_at_scan.c != ' ' || current_scan_eff_bg != start_eff_bg || current_scan_flags != start_eff_flags {
+            if glyph_at_scan.c != ' '
+                || current_scan_eff_bg != start_eff_bg
+                || current_scan_flags != start_eff_flags
+            {
                 break;
             }
             space_run_len += 1;
         }
 
-        if space_run_len == 0 { 
+        if space_run_len == 0 {
             // This should not happen if called with start_glyph.c == ' '
-            return Ok(0); 
+            return Ok(0);
         }
 
         // Draw the identified run of spaces
-        let rect = CellRect { x: start_col, y, width: space_run_len, height: 1 };
-        trace!("    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}", y, start_col, space_run_len, start_eff_bg, start_eff_flags);
+        let rect = CellRect {
+            x: start_col,
+            y,
+            width: space_run_len,
+            height: 1,
+        };
+        trace!(
+            "    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}",
+            y, start_col, space_run_len, start_eff_bg, start_eff_flags
+        );
         driver.fill_rect(rect, start_eff_bg)?; // Use effective_bg for filling spaces
-        
+
         Ok(space_run_len) // Return number of cells consumed
     }
 
@@ -285,7 +357,9 @@ impl Renderer {
             // Stop conditions for the current text run:
             // 1. Encounter a space or placeholder (handled by other functions).
             // 2. Effective attributes change.
-            if glyph_at_scan.c == ' ' || glyph_at_scan.c == '\0' { break; }
+            if glyph_at_scan.c == ' ' || glyph_at_scan.c == '\0' {
+                break;
+            }
 
             let (current_glyph_eff_fg, current_glyph_eff_bg, current_glyph_flags) = self
                 .get_effective_colors_and_flags(
@@ -302,12 +376,16 @@ impl Renderer {
             }
 
             let char_display_width = get_char_display_width(glyph_at_scan.c);
-            
-            if char_display_width == 0 { // True zero-width char (e.g., combining mark not handled by precomposition)
+
+            if char_display_width == 0 {
+                // True zero-width char (e.g., combining mark not handled by precomposition)
                 // Append to text but don't increment run_total_cell_width or current_scan_col significantly.
                 // The main character it modifies should provide the width.
                 // This logic assumes ZWCs are rare and don't form runs by themselves.
-                trace!("    Line {}, Col {}: Appending zero-width char '{}' to text run. Scan column remains {}.", y, current_scan_col, glyph_at_scan.c, current_scan_col);
+                trace!(
+                    "    Line {}, Col {}: Appending zero-width char '{}' to text run. Scan column remains {}.",
+                    y, current_scan_col, glyph_at_scan.c, current_scan_col
+                );
                 run_text.push(glyph_at_scan.c);
                 // We need to advance past this ZWC in the grid for the next iteration.
                 // If it's the *only* char processed, draw_line_content's advance-by-1 will handle it.
@@ -320,7 +398,9 @@ impl Renderer {
             }
 
             // Check if adding this character would exceed terminal width for the run
-            if start_col + run_total_cell_width + char_display_width > term_width { break; }
+            if start_col + run_total_cell_width + char_display_width > term_width {
+                break;
+            }
 
             run_text.push(glyph_at_scan.c);
             run_total_cell_width += char_display_width;
@@ -332,16 +412,24 @@ impl Renderer {
             // that didn't form a run. The outer loop in draw_line_content expects cells_consumed > 0.
             // Return 1 to ensure the outer loop advances past this problematic single cell.
             let advance_by = get_char_display_width(start_glyph.c).max(1);
-             warn!(
+            warn!(
                 "    Line {}, Col {}: Single char '{}' (width {}) did not form text run. Advancing by {}.",
-                y, start_col, start_glyph.c, get_char_display_width(start_glyph.c), advance_by
+                y,
+                start_col,
+                start_glyph.c,
+                get_char_display_width(start_glyph.c),
+                advance_by
             );
             return Ok(advance_by);
         }
 
         // Draw the accumulated text run
         let coords = CellCoords { x: start_col, y };
-        let style = TextRunStyle { fg: start_eff_fg, bg: start_eff_bg, flags: start_eff_flags };
+        let style = TextRunStyle {
+            fg: start_eff_fg,
+            bg: start_eff_bg,
+            flags: start_eff_flags,
+        };
         trace!(
             "    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style={:?}",
             y, start_col, run_text, run_total_cell_width, style
@@ -353,14 +441,13 @@ impl Renderer {
         // The main loop in draw_line_content will eventually hit these '\0' cells and call draw_placeholder_cell,
         // which uses the placeholder's own background (which should match the wide char's).
         // So, no explicit placeholder filling is needed here if placeholder cells correctly inherit attributes.
-        
+
         Ok(run_total_cell_width) // Return number of cells consumed by this run
     }
 
-
     /// Draws the terminal cursor as an overlay.
     fn draw_cursor_overlay(
-        &self, 
+        &self,
         cursor_abs_x: usize,
         cursor_abs_y: usize,
         term: &impl TerminalInterface,
@@ -368,7 +455,10 @@ impl Renderer {
         term_width: usize,
         term_height: usize,
     ) -> Result<()> {
-        trace!("Renderer::draw_cursor_overlay: Screen cursor pos ({}, {})", cursor_abs_x, cursor_abs_y);
+        trace!(
+            "Renderer::draw_cursor_overlay: Screen cursor pos ({}, {})",
+            cursor_abs_x, cursor_abs_y
+        );
 
         if !(cursor_abs_x < term_width && cursor_abs_y < term_height) {
             warn!(
@@ -383,7 +473,11 @@ impl Renderer {
         let original_attrs_at_cursor: Attributes;
 
         let glyph_at_logical_cursor = term.get_glyph(cursor_abs_x, cursor_abs_y);
-        let char_for_log1 = if glyph_at_logical_cursor.c == '\0' { ' ' } else { glyph_at_logical_cursor.c };
+        let char_for_log1 = if glyph_at_logical_cursor.c == '\0' {
+            ' '
+        } else {
+            glyph_at_logical_cursor.c
+        };
         trace!(
             "  Cursor overlay: Glyph at logical cursor pos ({},{}): char='{}', attr={:?}",
             cursor_abs_x, cursor_abs_y, char_for_log1, glyph_at_logical_cursor.attr
@@ -393,10 +487,15 @@ impl Renderer {
             // Cursor is on the placeholder of a wide character.
             // Use the attributes and character of the first half of the wide char.
             let first_half_glyph = term.get_glyph(cursor_abs_x - 1, cursor_abs_y);
-            let char_for_log2 = if first_half_glyph.c == '\0' { '?' } else { first_half_glyph.c }; // Should not be '\0'
+            let char_for_log2 = if first_half_glyph.c == '\0' {
+                '?'
+            } else {
+                first_half_glyph.c
+            }; // Should not be '\0'
             trace!(
                 "    Cursor on placeholder, using first half: char='{}' from col {}",
-                char_for_log2, cursor_abs_x - 1
+                char_for_log2,
+                cursor_abs_x - 1
             );
 
             char_to_draw_at_cursor = first_half_glyph.c; // This is the wide char itself
@@ -422,17 +521,28 @@ impl Renderer {
         );
 
         // For cursor: swap effective FG and BG
-        let cursor_char_fg = resolved_original_bg; 
-        let cursor_cell_bg = resolved_original_fg; 
+        let cursor_char_fg = resolved_original_bg;
+        let cursor_cell_bg = resolved_original_fg;
         // Flags for cursor rendering should be the effective flags of the underlying cell
-        let cursor_display_flags = resolved_original_flags; 
+        let cursor_display_flags = resolved_original_flags;
 
-        let coords = CellCoords { x: physical_cursor_x_for_draw, y: cursor_abs_y };
-        let style = TextRunStyle { fg: cursor_char_fg, bg: cursor_cell_bg, flags: cursor_display_flags };
+        let coords = CellCoords {
+            x: physical_cursor_x_for_draw,
+            y: cursor_abs_y,
+        };
+        let style = TextRunStyle {
+            fg: cursor_char_fg,
+            bg: cursor_cell_bg,
+            flags: cursor_display_flags,
+        };
 
         // If the character under cursor was a placeholder, draw a space for the cursor.
         // Otherwise, draw the actual character.
-        let final_char_to_draw_for_cursor = if char_to_draw_at_cursor == '\0' { ' ' } else { char_to_draw_at_cursor };
+        let final_char_to_draw_for_cursor = if char_to_draw_at_cursor == '\0' {
+            ' '
+        } else {
+            char_to_draw_at_cursor
+        };
         trace!(
             "    Drawing cursor overlay: char='{}' at physical ({},{}) with style: {:?}",
             final_char_to_draw_for_cursor, physical_cursor_x_for_draw, cursor_abs_y, style

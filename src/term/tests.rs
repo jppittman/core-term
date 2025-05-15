@@ -867,7 +867,7 @@ mod term_tests {
         assert_eq!(get_glyph_at(&term, 0, 1).c, 'A');
         assert_cursor_pos(&term, 1, 1, "Cursor should be at (1,1) after 'A' wrapped");
     }
-       #[test]
+    #[test]
     fn test_esc_c_reset_to_initial_state_clears_and_homes_with_default_attrs() {
         let mut term = new_term(10, 3); // Create a 10x3 terminal
 
@@ -948,7 +948,8 @@ mod term_tests {
         let glyph_z = get_glyph_at(&term, 0, 0); // 'Z' is now at (0,0)
         assert_eq!(glyph_z.c, 'Z', "Char 'Z' printed after RIS");
         assert_eq!(
-            glyph_z.attr, expected_cleared_attr, // Should use the true default attributes
+            glyph_z.attr,
+            expected_cleared_attr, // Should use the true default attributes
             "Attributes of 'Z' printed after RIS should be default. Got: {:?}",
             glyph_z.attr
         );
@@ -963,10 +964,11 @@ mod term_tests {
         );
         let expected_dirty_lines: Vec<usize> = (0..term_height).collect();
         assert_eq!(
-            dirty_lines_after_ris, expected_dirty_lines,
+            dirty_lines_after_ris,
+            expected_dirty_lines,
             "All lines (0 to {}) should be dirty after RIS. Got: {:?}",
-            term_height - 1, dirty_lines_after_ris
+            term_height - 1,
+            dirty_lines_after_ris
         );
     }
-
 }
