@@ -18,7 +18,10 @@ fn main() {
         if result.is_err() {
             // If probing fails for any library, we'll assume pkg-config isn't fully working
             // or the library isn't found via pkg-config. We'll then use manual linking.
-            eprintln!("pkg-config failed for library '{}'. Falling back to manual linking.", lib);
+            eprintln!(
+                "pkg-config failed for library '{}'. Falling back to manual linking.",
+                lib
+            );
             pkg_config_success = false;
             // No need to print error from probe_library, it already prints
             break; // Stop probing and switch to manual mode
@@ -52,8 +55,9 @@ fn main() {
         // sufficient if the headers are in a standard include path that cc already checks.
         // If you still get compilation errors related to missing headers (e.g., Xlib.h not found),
         // you might need to set CFLAGS="-I/usr/include/X11" when running cargo build.
-        eprintln!("Manual linking flags applied. Ensure X11, Xft, Fontconfig, and Freetype development libraries are installed.");
-
+        eprintln!(
+            "Manual linking flags applied. Ensure X11, Xft, Fontconfig, and Freetype development libraries are installed."
+        );
     } else {
         // If pkg-config succeeded for all, it has already printed the necessary flags.
         eprintln!("pkg-config successfully found libraries. Linking configured automatically.");
@@ -65,4 +69,3 @@ fn main() {
     // - Compiling C helper files
     // - Embedding assets
 }
-

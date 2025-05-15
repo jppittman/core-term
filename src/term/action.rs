@@ -28,4 +28,3 @@ pub enum EmulatorAction {
     /// `true` for visible, `false` for hidden.
     SetCursorVisibility(bool),
 }
-

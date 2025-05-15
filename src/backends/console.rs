@@ -1,19 +1,19 @@
 // src/backends/console.rs
 
-use crate::glyph::{Color, AttrFlags}; // Added NamedColor for panic message clarity
 use crate::backends::{
-    Driver, BackendEvent, CellCoords, TextRunStyle, CellRect,
-    DEFAULT_WINDOW_WIDTH_CHARS, DEFAULT_WINDOW_HEIGHT_CHARS
+    BackendEvent, CellCoords, CellRect, DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
+    Driver, TextRunStyle,
 };
+use crate::glyph::{AttrFlags, Color}; // Added NamedColor for panic message clarity
 
 use anyhow::{Context, Result};
-use std::io::{self, Write, Read, stdout, stdin};
-use std::os::unix::io::RawFd;
-use termios::{Termios, TCSANOW, ECHO, ICANON, ISIG, VMIN, VTIME, tcsetattr};
-use libc::{winsize, TIOCGWINSZ, STDIN_FILENO};
+use libc::{STDIN_FILENO, TIOCGWINSZ, winsize};
+use std::io::{self, Read, Write, stdin, stdout};
 use std::mem;
+use std::os::unix::io::RawFd;
+use termios::{ECHO, ICANON, ISIG, TCSANOW, Termios, VMIN, VTIME, tcsetattr};
 
-use log::{debug, info, warn, trace, error};
+use log::{debug, error, info, trace, warn};
 
 const CURSOR_HIDE: &str = "\x1b[?25l";
 const CURSOR_SHOW: &str = "\x1b[?25h";
@@ -41,7 +41,10 @@ impl Driver for ConsoleDriver {
         let original_termios = match Termios::from_fd(STDIN_FILENO) {
             Ok(ts) => Some(ts),
             Err(e) => {
-                warn!("Failed to get initial termios: {}. Proceeding without raw mode.", e);
+                warn!(
+                    "Failed to get initial termios: {}. Proceeding without raw mode.",
+                    e
+                );
                 None
             }
         };
@@ -49,7 +52,8 @@ impl Driver for ConsoleDriver {
         if let Some(ref ots) = original_termios {
             let mut raw_termios = *ots;
             raw_termios.c_lflag &= !(ECHO | ICANON | ISIG);
-            raw_termios.c_iflag &= !(libc::IXON | libc::IXOFF | libc::ICRNL | libc::INLCR | libc::IGNCR);
+            raw_termios.c_iflag &=
+                !(libc::IXON | libc::IXOFF | libc::ICRNL | libc::INLCR | libc::IGNCR);
             raw_termios.c_oflag &= !libc::OPOST;
             raw_termios.c_cc[VMIN] = 0;
             raw_termios.c_cc[VTIME] = 0;
@@ -59,11 +63,16 @@ impl Driver for ConsoleDriver {
         }
 
         print!("{}", CURSOR_HIDE);
-        stdout().flush().context("ConsoleDriver: Failed to flush stdout for CURSOR_HIDE")?;
+        stdout()
+            .flush()
+            .context("ConsoleDriver: Failed to flush stdout for CURSOR_HIDE")?;
 
         let (initial_width, initial_height) = get_terminal_size_cells(STDIN_FILENO)
             .context("ConsoleDriver: Failed to get initial terminal size")?;
-        info!("ConsoleDriver: Initial terminal size: {}x{} cells.", initial_width, initial_height);
+        info!(
+            "ConsoleDriver: Initial terminal size: {}x{} cells.",
+            initial_width, initial_height
+        );
 
         Ok(ConsoleDriver {
             original_termios,
@@ -84,21 +93,31 @@ impl Driver for ConsoleDriver {
 
         match get_terminal_size_cells(STDIN_FILENO) {
             Ok((current_width_cells, current_height_cells)) => {
-                if current_width_cells != self.last_known_width_cells || current_height_cells != self.last_known_height_cells {
+                if current_width_cells != self.last_known_width_cells
+                    || current_height_cells != self.last_known_height_cells
+                {
                     info!(
                         "ConsoleDriver: Terminal resized from {}x{} to {}x{} cells.",
-                        self.last_known_width_cells, self.last_known_height_cells,
-                        current_width_cells, current_height_cells
+                        self.last_known_width_cells,
+                        self.last_known_height_cells,
+                        current_width_cells,
+                        current_height_cells
                     );
                     self.last_known_width_cells = current_width_cells;
                     self.last_known_height_cells = current_height_cells;
                     let width_px = current_width_cells.saturating_mul(self.font_width_px);
                     let height_px = current_height_cells.saturating_mul(self.font_height_px);
-                    backend_events.push(BackendEvent::Resize { width_px, height_px });
+                    backend_events.push(BackendEvent::Resize {
+                        width_px,
+                        height_px,
+                    });
                 }
             }
             Err(e) => {
-                warn!("ConsoleDriver: Failed to get terminal size: {}. Using last known.", e);
+                warn!(
+                    "ConsoleDriver: Failed to get terminal size: {}. Using last known.",
+                    e
+                );
             }
         }
 
@@ -134,17 +153,25 @@ impl Driver for ConsoleDriver {
     }
 
     fn get_display_dimensions_pixels(&self) -> (u16, u16) {
-        let width_px = self.last_known_width_cells.saturating_mul(self.font_width_px);
-        let height_px = self.last_known_height_cells.saturating_mul(self.font_height_px);
+        let width_px = self
+            .last_known_width_cells
+            .saturating_mul(self.font_width_px);
+        let height_px = self
+            .last_known_height_cells
+            .saturating_mul(self.font_height_px);
         (width_px, height_px)
     }
 
     /// Clears the entire display area. `bg` color MUST be concrete.
     fn clear_all(&mut self, bg: Color) -> Result<()> {
         if matches!(bg, Color::Default) {
-            error!("ConsoleDriver::clear_all received Color::Default. This is a bug in the Renderer.");
+            error!(
+                "ConsoleDriver::clear_all received Color::Default. This is a bug in the Renderer."
+            );
             // Fallback to terminal's default clear or panic
-            panic!("ConsoleDriver::clear_all received Color::Default. Renderer should resolve defaults.");
+            panic!(
+                "ConsoleDriver::clear_all received Color::Default. Renderer should resolve defaults."
+            );
         }
 
         let mut cmd = String::new();
@@ -160,30 +187,35 @@ impl Driver for ConsoleDriver {
         Self::sgr_append_concrete_bg_color(&mut sgr_codes, bg);
         if !sgr_codes.is_empty() {
             cmd.push_str(SGR_PREFIX);
-            cmd.push_str(&sgr_codes.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(&SGR_SEPARATOR.to_string()));
+            cmd.push_str(
+                &sgr_codes
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(&SGR_SEPARATOR.to_string()),
+            );
             cmd.push(SGR_SUFFIX);
             // To be certain, one might need to print spaces across the whole screen here.
             // For now, relying on the SGR BG + 2J.
         }
-        
+
         print!("{}", cmd);
         trace!("ConsoleDriver: clear_all command prepared: {:?}", cmd);
         Ok(())
     }
 
     /// Draws a run of text. `style.fg` and `style.bg` MUST be concrete.
-    fn draw_text_run(
-        &mut self,
-        coords: CellCoords,
-        text: &str,
-        style: TextRunStyle,
-    ) -> Result<()> {
+    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()> {
         if text.is_empty() {
             return Ok(());
         }
         if matches!(style.fg, Color::Default) || matches!(style.bg, Color::Default) {
-            error!("ConsoleDriver::draw_text_run received Color::Default in style. This is a bug in the Renderer.");
-            panic!("ConsoleDriver::draw_text_run received Color::Default. Renderer should resolve defaults.");
+            error!(
+                "ConsoleDriver::draw_text_run received Color::Default in style. This is a bug in the Renderer."
+            );
+            panic!(
+                "ConsoleDriver::draw_text_run received Color::Default. Renderer should resolve defaults."
+            );
         }
 
         let mut cmd = String::new();
@@ -195,27 +227,36 @@ impl Driver for ConsoleDriver {
 
         if !sgr_codes.is_empty() {
             cmd.push_str(SGR_PREFIX);
-            cmd.push_str(&sgr_codes.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(&SGR_SEPARATOR.to_string()));
+            cmd.push_str(
+                &sgr_codes
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(&SGR_SEPARATOR.to_string()),
+            );
             cmd.push(SGR_SUFFIX);
         }
         cmd.push_str(text);
         print!("{}", cmd);
-        trace!("ConsoleDriver: draw_text_run at ({},{}) text '{}' style {:?} cmd: {:?}", coords.x, coords.y, text, style, cmd);
+        trace!(
+            "ConsoleDriver: draw_text_run at ({},{}) text '{}' style {:?} cmd: {:?}",
+            coords.x, coords.y, text, style, cmd
+        );
         Ok(())
     }
 
     /// Fills a rectangular area. `color` MUST be concrete.
-    fn fill_rect(
-        &mut self,
-        rect: CellRect,
-        color: Color,
-    ) -> Result<()> {
+    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
         if rect.width == 0 || rect.height == 0 {
             return Ok(());
         }
         if matches!(color, Color::Default) {
-            error!("ConsoleDriver::fill_rect received Color::Default. This is a bug in the Renderer.");
-            panic!("ConsoleDriver::fill_rect received Color::Default. Renderer should resolve defaults.");
+            error!(
+                "ConsoleDriver::fill_rect received Color::Default. This is a bug in the Renderer."
+            );
+            panic!(
+                "ConsoleDriver::fill_rect received Color::Default. Renderer should resolve defaults."
+            );
         }
 
         let mut cmd = String::new();
@@ -225,7 +266,13 @@ impl Driver for ConsoleDriver {
 
         if !sgr_codes.is_empty() {
             cmd.push_str(SGR_PREFIX);
-            cmd.push_str(&sgr_codes.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(&SGR_SEPARATOR.to_string()));
+            cmd.push_str(
+                &sgr_codes
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(&SGR_SEPARATOR.to_string()),
+            );
             cmd.push(SGR_SUFFIX);
         }
 
@@ -236,18 +283,25 @@ impl Driver for ConsoleDriver {
             cmd.push_str(&spaces);
         }
         print!("{}", cmd);
-        trace!("ConsoleDriver: fill_rect at ({},{}, w:{}, h:{}) color {:?} cmd: {:?}", rect.x, rect.y, rect.width, rect.height, color, cmd);
+        trace!(
+            "ConsoleDriver: fill_rect at ({},{}, w:{}, h:{}) color {:?} cmd: {:?}",
+            rect.x, rect.y, rect.width, rect.height, color, cmd
+        );
         Ok(())
     }
 
     fn present(&mut self) -> Result<()> {
-        stdout().flush().context("ConsoleDriver: Failed to flush stdout during present")
+        stdout()
+            .flush()
+            .context("ConsoleDriver: Failed to flush stdout during present")
     }
 
     fn cleanup(&mut self) -> Result<()> {
         info!("ConsoleDriver: Cleaning up...");
         print!("{}", CURSOR_SHOW);
-        stdout().flush().context("ConsoleDriver: Failed to flush for CURSOR_SHOW cleanup")?;
+        stdout()
+            .flush()
+            .context("ConsoleDriver: Failed to flush for CURSOR_SHOW cleanup")?;
         if let Some(original_termios) = self.original_termios.take() {
             debug!("ConsoleDriver: Restoring original terminal attributes.");
             tcsetattr(STDIN_FILENO, TCSANOW, &original_termios)
@@ -262,13 +316,30 @@ impl Driver for ConsoleDriver {
 
 impl ConsoleDriver {
     /// Appends SGR codes for concrete foreground, background, and flags. Panics on Color::Default.
-    fn sgr_append_concrete_attributes(codes: &mut Vec<u16>, fg: Color, bg: Color, flags: AttrFlags) {
-        if flags.contains(AttrFlags::BOLD) { codes.push(1); }
-        if flags.contains(AttrFlags::ITALIC) { codes.push(3); }
-        if flags.contains(AttrFlags::UNDERLINE) { codes.push(4); }
-        if flags.contains(AttrFlags::BLINK) { codes.push(5); }
-        if flags.contains(AttrFlags::HIDDEN) { codes.push(8); }
-        if flags.contains(AttrFlags::STRIKETHROUGH) { codes.push(9); }
+    fn sgr_append_concrete_attributes(
+        codes: &mut Vec<u16>,
+        fg: Color,
+        bg: Color,
+        flags: AttrFlags,
+    ) {
+        if flags.contains(AttrFlags::BOLD) {
+            codes.push(1);
+        }
+        if flags.contains(AttrFlags::ITALIC) {
+            codes.push(3);
+        }
+        if flags.contains(AttrFlags::UNDERLINE) {
+            codes.push(4);
+        }
+        if flags.contains(AttrFlags::BLINK) {
+            codes.push(5);
+        }
+        if flags.contains(AttrFlags::HIDDEN) {
+            codes.push(8);
+        }
+        if flags.contains(AttrFlags::STRIKETHROUGH) {
+            codes.push(9);
+        }
 
         Self::sgr_append_concrete_fg_color(codes, fg);
         Self::sgr_append_concrete_bg_color(codes, bg);
@@ -277,26 +348,44 @@ impl ConsoleDriver {
     /// Appends SGR codes for a concrete foreground color. Panics on Color::Default.
     fn sgr_append_concrete_fg_color(codes: &mut Vec<u16>, fg: Color) {
         match fg {
-            Color::Default => panic!("ConsoleDriver received Color::Default for foreground. Renderer should resolve defaults."),
+            Color::Default => panic!(
+                "ConsoleDriver received Color::Default for foreground. Renderer should resolve defaults."
+            ),
             Color::Named(nc) => {
-                if (nc as u8) < 8 { codes.push(30 + nc as u8 as u16); }
-                else { codes.push(90 + (nc as u8 - 8) as u16); }
+                if (nc as u8) < 8 {
+                    codes.push(30 + nc as u8 as u16);
+                } else {
+                    codes.push(90 + (nc as u8 - 8) as u16);
+                }
             }
-            Color::Indexed(idx) => { codes.extend_from_slice(&[38, 5, idx as u16]); }
-            Color::Rgb(r, g, b) => { codes.extend_from_slice(&[38, 2, r as u16, g as u16, b as u16]); }
+            Color::Indexed(idx) => {
+                codes.extend_from_slice(&[38, 5, idx as u16]);
+            }
+            Color::Rgb(r, g, b) => {
+                codes.extend_from_slice(&[38, 2, r as u16, g as u16, b as u16]);
+            }
         }
     }
 
     /// Appends SGR codes for a concrete background color. Panics on Color::Default.
     fn sgr_append_concrete_bg_color(codes: &mut Vec<u16>, bg: Color) {
         match bg {
-            Color::Default => panic!("ConsoleDriver received Color::Default for background. Renderer should resolve defaults."),
+            Color::Default => panic!(
+                "ConsoleDriver received Color::Default for background. Renderer should resolve defaults."
+            ),
             Color::Named(nc) => {
-                if (nc as u8) < 8 { codes.push(40 + nc as u8 as u16); }
-                else { codes.push(100 + (nc as u8 - 8) as u16); }
+                if (nc as u8) < 8 {
+                    codes.push(40 + nc as u8 as u16);
+                } else {
+                    codes.push(100 + (nc as u8 - 8) as u16);
+                }
             }
-            Color::Indexed(idx) => { codes.extend_from_slice(&[48, 5, idx as u16]); }
-            Color::Rgb(r, g, b) => { codes.extend_from_slice(&[48, 2, r as u16, g as u16, b as u16]); }
+            Color::Indexed(idx) => {
+                codes.extend_from_slice(&[48, 5, idx as u16]);
+            }
+            Color::Rgb(r, g, b) => {
+                codes.extend_from_slice(&[48, 2, r as u16, g as u16, b as u16]);
+            }
         }
     }
 
@@ -312,8 +401,16 @@ fn get_terminal_size_cells(fd: RawFd) -> Result<(u16, u16)> {
             return Err(anyhow::Error::from(std::io::Error::last_os_error())
                 .context("ConsoleDriver: ioctl(TIOCGWINSZ) failed"));
         }
-        let cols = if winsz.ws_col == 0 { DEFAULT_WINDOW_WIDTH_CHARS as u16 } else { winsz.ws_col };
-        let rows = if winsz.ws_row == 0 { DEFAULT_WINDOW_HEIGHT_CHARS as u16 } else { winsz.ws_row };
+        let cols = if winsz.ws_col == 0 {
+            DEFAULT_WINDOW_WIDTH_CHARS as u16
+        } else {
+            winsz.ws_col
+        };
+        let rows = if winsz.ws_row == 0 {
+            DEFAULT_WINDOW_HEIGHT_CHARS as u16
+        } else {
+            winsz.ws_row
+        };
         Ok((cols, rows))
     }
 }

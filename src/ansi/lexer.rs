@@ -24,7 +24,6 @@ const UTF8_3_BYTE_MIN: u8 = 0xE0;
 const UTF8_4_BYTE_MIN: u8 = 0xF0;
 const UTF8_INVALID_MIN: u8 = 0xF5; // Start of invalid range
 
-
 /// Represents a single token identified by the lexer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnsiToken {
@@ -123,12 +122,12 @@ impl Utf8Decoder {
 
                 // Sequence complete, attempt decode and validation
                 let result = match str::from_utf8(&self.buffer[0..self.len]) {
-                     Ok(s) => match s.chars().next() {
+                    Ok(s) => match s.chars().next() {
                         Some(c) => {
                             let cp = c as u32;
                             // Validate code point range and non-surrogate status
                             if cp <= UNICODE_MAX_CODE_POINT
-                               && !(UNICODE_SURROGATE_START..=UNICODE_SURROGATE_END).contains(&cp)
+                                && !(UNICODE_SURROGATE_START..=UNICODE_SURROGATE_END).contains(&cp)
                             {
                                 Some(c)
                             } else {
@@ -136,8 +135,8 @@ impl Utf8Decoder {
                             }
                         }
                         None => Some(REPLACEMENT_CHARACTER), // Should not happen
-                     },
-                     Err(_) => Some(REPLACEMENT_CHARACTER), // Invalid UTF-8 sequence bytes
+                    },
+                    Err(_) => Some(REPLACEMENT_CHARACTER), // Invalid UTF-8 sequence bytes
                 };
                 self.reset(); // Reset state after completion or error
                 result // Return the decoded char or replacement
@@ -157,7 +156,6 @@ impl Utf8Decoder {
         self.expected = 0;
     }
 }
-
 
 /// The ANSI lexer. Converts a byte stream into `AnsiToken`s.
 ///
@@ -196,8 +194,8 @@ impl AnsiLexer {
             }
             // Escape character
             0x1B => {
-                 // Interrupt and reset UTF-8 decoding if necessary
-                 if self.utf8_decoder.len > 0 {
+                // Interrupt and reset UTF-8 decoding if necessary
+                if self.utf8_decoder.len > 0 {
                     self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER));
                     self.utf8_decoder.reset();
                 }
@@ -206,7 +204,7 @@ impl AnsiLexer {
             // C1 Control Codes
             0x80..=0x9F => {
                 // Interrupt and reset UTF-8 decoding if necessary
-                 if self.utf8_decoder.len > 0 {
+                if self.utf8_decoder.len > 0 {
                     self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER));
                     self.utf8_decoder.reset();
                 }

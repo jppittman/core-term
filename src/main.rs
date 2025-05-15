@@ -12,16 +12,16 @@
 //! - Handling application shutdown.
 
 // Declare modules
-mod glyph; // Used by TerminalEmulator, Renderer, Driver
-mod term;
-mod backends;
 mod ansi;
-mod renderer; // New renderer module
+mod backends;
+mod glyph; // Used by TerminalEmulator, Renderer, Driver
+mod renderer;
+mod term; // New renderer module
 
 // Crate-level imports
 use crate::{
     ansi::AnsiProcessor,
-    backends::{x11::XDriver, BackendEvent, Driver}, // Assuming XDriver will be refactored
+    backends::{BackendEvent, Driver, x11::XDriver}, // Assuming XDriver will be refactored
     renderer::Renderer,
     term::{EmulatorAction, EmulatorInput, TerminalEmulator, TerminalInterface},
 };
@@ -44,10 +44,21 @@ use std::{
 
 // Libc imports for PTY, epoll, and other low-level operations
 use libc::{
-    self, c_int, c_void, epoll_create1, epoll_ctl, epoll_event, epoll_wait, winsize, EPOLLIN,
-    EPOLL_CTL_ADD, EPOLL_CTL_DEL, O_NONBLOCK, // Added O_NONBLOCK
-    F_GETFL, F_SETFL, // For setting non-blocking mode
+    self,
+    EPOLL_CTL_ADD,
+    EPOLL_CTL_DEL,
+    EPOLLIN,
+    F_GETFL,
+    F_SETFL,    // For setting non-blocking mode
+    O_NONBLOCK, // Added O_NONBLOCK
     TIOCSWINSZ, // For PTY size
+    c_int,
+    c_void,
+    epoll_create1,
+    epoll_ctl,
+    epoll_event,
+    epoll_wait,
+    winsize,
 };
 
 // Logging
@@ -82,7 +93,7 @@ fn create_pty_and_spawn_shell(
     shell_path: &str,
     cols: u16,
     rows: u16,
-    initial_width_px: u16, // Added for TIOCSWINSZ
+    initial_width_px: u16,  // Added for TIOCSWINSZ
     initial_height_px: u16, // Added for TIOCSWINSZ
 ) -> Result<(File, RawFd, i32)> {
     info!(
@@ -92,7 +103,8 @@ fn create_pty_and_spawn_shell(
     // Open PTY master
     let master_fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
     if master_fd < 0 {
-        return Err(std::io::Error::last_os_error()).context("Failed to open PTY master (posix_openpt)");
+        return Err(std::io::Error::last_os_error())
+            .context("Failed to open PTY master (posix_openpt)");
     }
 
     // Grant access to PTY slave
@@ -168,7 +180,11 @@ fn create_pty_and_spawn_shell(
             if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSWINSZ, &winsz) < 0 {
                 // Non-fatal in child, but log to its stderr (which is the PTY)
                 let msg = b"myterm child: Warning: ioctl(TIOCSWINSZ) failed in pre_exec\n";
-                libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const libc::c_void, msg.len());
+                libc::write(
+                    libc::STDERR_FILENO,
+                    msg.as_ptr() as *const libc::c_void,
+                    msg.len(),
+                );
             }
             Ok(())
         });
@@ -190,14 +206,15 @@ fn create_pty_and_spawn_shell(
     // Safety: FFI call
     let current_flags = unsafe { libc::fcntl(master_fd, F_GETFL, 0) };
     if current_flags < 0 {
-        return Err(std::io::Error::last_os_error()).context("Failed to get PTY master flags (fcntl F_GETFL)");
+        return Err(std::io::Error::last_os_error())
+            .context("Failed to get PTY master flags (fcntl F_GETFL)");
     }
     // Safety: FFI call
     if unsafe { libc::fcntl(master_fd, F_SETFL, current_flags | O_NONBLOCK) } < 0 {
-        return Err(std::io::Error::last_os_error()).context("Failed to set PTY master to non-blocking (fcntl F_SETFL)");
+        return Err(std::io::Error::last_os_error())
+            .context("Failed to set PTY master to non-blocking (fcntl F_SETFL)");
     }
     debug!("PTY master fd {} set to non-blocking", master_fd);
-
 
     Ok((pty_master_file, master_fd, child_pid))
 }
@@ -299,7 +316,9 @@ fn handle_backend_event(
             );
             let (font_w, font_h) = driver.get_font_dimensions();
             if font_w == 0 || font_h == 0 {
-                warn!("Driver returned zero font dimensions, cannot resize terminal character grid.");
+                warn!(
+                    "Driver returned zero font dimensions, cannot resize terminal character grid."
+                );
                 return Ok(());
             }
 
@@ -360,11 +379,19 @@ fn run_terminal_orchestrator() -> Result<()> {
     // 2. Get initial dimensions from Driver
     let (font_width, font_height) = driver.get_font_dimensions();
     if font_width == 0 || font_height == 0 {
-        anyhow::bail!("Driver returned invalid font dimensions (width: {}, height: {}). Cannot proceed.", font_width, font_height);
+        anyhow::bail!(
+            "Driver returned invalid font dimensions (width: {}, height: {}). Cannot proceed.",
+            font_width,
+            font_height
+        );
     }
     let (display_width_px, display_height_px) = driver.get_display_dimensions_pixels();
     if display_width_px == 0 || display_height_px == 0 {
-        anyhow::bail!("Driver returned invalid display pixel dimensions (width: {}, height: {}). Cannot proceed.", display_width_px, display_height_px);
+        anyhow::bail!(
+            "Driver returned invalid display pixel dimensions (width: {}, height: {}). Cannot proceed.",
+            display_width_px,
+            display_height_px
+        );
     }
 
     let initial_cols = (display_width_px as usize / font_width).max(1);
@@ -385,7 +412,6 @@ fn run_terminal_orchestrator() -> Result<()> {
     )
     .context("Failed to set up PTY and spawn shell")?;
     debug!("PTY master fd: {}", pty_fd);
-
 
     // 4. Initialize other core components
     let mut term_emulator =
@@ -409,7 +435,9 @@ fn run_terminal_orchestrator() -> Result<()> {
     // Safety: FFI call
     if unsafe { epoll_ctl(epoll_fd, EPOLL_CTL_ADD, pty_fd, &mut pty_ep_event) } < 0 {
         let err = std::io::Error::last_os_error();
-        unsafe { libc::close(epoll_fd); }
+        unsafe {
+            libc::close(epoll_fd);
+        }
         return Err(err).context(format!("Failed to add PTY fd {} to epoll", pty_fd));
     }
     debug!("Added PTY fd {} to epoll", pty_fd);
@@ -422,14 +450,29 @@ fn run_terminal_orchestrator() -> Result<()> {
             u64: DRIVER_FD_EVENT_ID, // User data
         };
         // Safety: FFI call
-        if unsafe { epoll_ctl(epoll_fd, EPOLL_CTL_ADD, driver_event_fd, &mut driver_ep_event) } < 0 {
+        if unsafe {
+            epoll_ctl(
+                epoll_fd,
+                EPOLL_CTL_ADD,
+                driver_event_fd,
+                &mut driver_ep_event,
+            )
+        } < 0
+        {
             let err = std::io::Error::last_os_error();
-            unsafe { libc::close(epoll_fd); } // Also remove PTY fd from epoll if robust
-            return Err(err).context(format!("Failed to add Driver event fd {} to epoll", driver_event_fd));
+            unsafe {
+                libc::close(epoll_fd);
+            } // Also remove PTY fd from epoll if robust
+            return Err(err).context(format!(
+                "Failed to add Driver event fd {} to epoll",
+                driver_event_fd
+            ));
         }
         debug!("Added Driver event fd {} to epoll", driver_event_fd);
     } else {
-        info!("Driver does not provide an event fd; events might be polled or handled differently.");
+        info!(
+            "Driver does not provide an event fd; events might be polled or handled differently."
+        );
         // TODO: If no driver FD, the loop might need a timeout for driver.process_events()
         // or the driver handles its events on a separate thread.
         // For now, this example assumes drivers that integrate with epoll are preferred.
@@ -445,7 +488,14 @@ fn run_terminal_orchestrator() -> Result<()> {
     info!("Starting main event loop...");
     while !needs_exit {
         // Safety: FFI call to epoll_wait
-        let num_events = unsafe { epoll_wait(epoll_fd, ep_events.as_mut_ptr(), MAX_EPOLL_EVENTS as c_int, EPOLL_TIMEOUT_MS) };
+        let num_events = unsafe {
+            epoll_wait(
+                epoll_fd,
+                ep_events.as_mut_ptr(),
+                MAX_EPOLL_EVENTS as c_int,
+                EPOLL_TIMEOUT_MS,
+            )
+        };
 
         if num_events < 0 {
             let err = std::io::Error::last_os_error();
@@ -454,7 +504,9 @@ fn run_terminal_orchestrator() -> Result<()> {
                 continue; // EINTR
             }
             // Close FDs before returning
-            unsafe { libc::close(epoll_fd); }
+            unsafe {
+                libc::close(epoll_fd);
+            }
             return Err(err).context("epoll_wait failed");
         }
 
@@ -474,11 +526,15 @@ fn run_terminal_orchestrator() -> Result<()> {
                             for cmd in commands {
                                 let input = EmulatorInput::Ansi(cmd);
                                 if let Some(action) = term_emulator.interpret_input(input) {
-
                                     if matches!(&action, EmulatorAction::RequestRedraw) {
-                                         needs_render = true;
+                                        needs_render = true;
                                     }
-                                    handle_emulator_action(action, pty_fd, &mut *driver, &mut term_emulator)?;
+                                    handle_emulator_action(
+                                        action,
+                                        pty_fd,
+                                        &mut *driver,
+                                        &mut term_emulator,
+                                    )?;
                                 }
                             }
                             // If any ANSI commands were processed, assume a redraw is needed.
@@ -488,7 +544,6 @@ fn run_terminal_orchestrator() -> Result<()> {
                             } else {
                                 needs_render = true;
                             }
-
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             trace!("PTY read would block (EWOULDBLOCK/EAGAIN).");
@@ -503,38 +558,61 @@ fn run_terminal_orchestrator() -> Result<()> {
                 }
                 DRIVER_FD_EVENT_ID => {
                     trace!("Activity on Driver event fd.");
-                    let backend_events = driver.process_events()
+                    let backend_events = driver
+                        .process_events()
                         .context("Driver failed to process events")?;
                     for be_event in backend_events {
-                        handle_backend_event(be_event, &mut term_emulator, &mut *driver, pty_fd, &mut needs_exit, &mut needs_render)?;
-                        if needs_exit { break; }
+                        handle_backend_event(
+                            be_event,
+                            &mut term_emulator,
+                            &mut *driver,
+                            pty_fd,
+                            &mut needs_exit,
+                            &mut needs_render,
+                        )?;
+                        if needs_exit {
+                            break;
+                        }
                     }
                 }
                 _ => {
                     warn!("epoll_wait returned unknown event id: {}", event_id);
                 }
             }
-            if needs_exit { break; }
+            if needs_exit {
+                break;
+            }
         }
-        if needs_exit { break; }
-
+        if needs_exit {
+            break;
+        }
 
         // If driver doesn't have an event FD, we might need to poll it periodically.
         // This is a simplified example; a real implementation might use a timeout in epoll_wait
         // and call process_events if driver.get_event_fd().is_none() and timeout occurs.
         if driver.get_event_fd().is_none() {
-             let backend_events = driver.process_events()
-                 .context("Driver failed to process events (polling)")?;
-             for be_event in backend_events {
-                 handle_backend_event(be_event, &mut term_emulator, &mut *driver, pty_fd, &mut needs_exit, &mut needs_render)?;
-                 if needs_exit { break; }
-             }
+            let backend_events = driver
+                .process_events()
+                .context("Driver failed to process events (polling)")?;
+            for be_event in backend_events {
+                handle_backend_event(
+                    be_event,
+                    &mut term_emulator,
+                    &mut *driver,
+                    pty_fd,
+                    &mut needs_exit,
+                    &mut needs_render,
+                )?;
+                if needs_exit {
+                    break;
+                }
+            }
         }
-
 
         if needs_render {
             trace!("Calling renderer.draw()");
-            renderer.draw(&mut term_emulator, &mut *driver)
+            renderer
+                .draw(&mut term_emulator, &mut *driver)
                 .context("Renderer failed to draw")?;
             needs_render = false;
         }
@@ -547,13 +625,17 @@ fn run_terminal_orchestrator() -> Result<()> {
     // Safety: FFI call
     unsafe {
         if driver.get_event_fd().is_some() {
-            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, driver.get_event_fd().unwrap(), std::ptr::null_mut());
+            epoll_ctl(
+                epoll_fd,
+                EPOLL_CTL_DEL,
+                driver.get_event_fd().unwrap(),
+                std::ptr::null_mut(),
+            );
         }
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, pty_fd, std::ptr::null_mut());
         libc::close(epoll_fd);
         debug!("Epoll instance closed.");
     }
-
 
     // Explicitly call driver cleanup, which can return Result
     driver.cleanup().context("Driver cleanup failed")?;
@@ -567,19 +649,28 @@ fn run_terminal_orchestrator() -> Result<()> {
     let mut status: c_int = 0;
     // Safety: FFI call
     if unsafe { libc::waitpid(child_pid, &mut status, 0) } < 0 {
-        warn!("waitpid failed for child PID {}: {}", child_pid, std::io::Error::last_os_error());
+        warn!(
+            "waitpid failed for child PID {}: {}",
+            child_pid,
+            std::io::Error::last_os_error()
+        );
     } else {
         if libc::WIFEXITED(status) {
-            info!("Child shell exited with status: {}", libc::WEXITSTATUS(status));
+            info!(
+                "Child shell exited with status: {}",
+                libc::WEXITSTATUS(status)
+            );
         } else if libc::WIFSIGNALED(status) {
-            info!("Child shell terminated by signal: {}", libc::WTERMSIG(status));
+            info!(
+                "Child shell terminated by signal: {}",
+                libc::WTERMSIG(status)
+            );
         }
     }
 
     info!("myterm orchestrator finished.");
     Ok(())
 }
-
 
 fn main() {
     // Initialize logger (e.g., env_logger)
@@ -599,4 +690,3 @@ fn main() {
         std::process::exit(1);
     }
 }
-

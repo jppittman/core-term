@@ -50,4 +50,3 @@ impl AnsiProcessor {
 // Include tests module if defined in this file
 #[cfg(test)]
 mod tests; // Assuming tests are in ansi/tests.rs
-
