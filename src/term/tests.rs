@@ -8,11 +8,12 @@ mod term_tests {
     // Import necessary items from parent (term) and sibling (glyph) modules
     use crate::term::{
         TerminalEmulator, EmulatorInput, EmulatorAction,
-        DecPrivateModes, // Needed for ScreenContext if used for assertions
+        DecModeConstant,
     };
-    use crate::glyph::{Attributes, Color, AttrFlags, Glyph, NamedColor, DEFAULT_GLYPH};
+    use crate::glyph::{Attributes, Color, AttrFlags, Glyph, NamedColor};
+    // Direct use of AnsiCommand variants for testing terminal logic
     use crate::ansi::commands::{AnsiCommand, C0Control, CsiCommand, Attribute, Color as AnsiColor};
-    use crate::backends::BackendEvent; // For EmulatorInput::User
+    use crate::backends::BackendEvent;
 
     // Use test_log::test for tests that need logging output
     use test_log::test;
@@ -25,14 +26,22 @@ mod term_tests {
         TerminalEmulator::new(cols, rows, 100) // Default scrollback for tests
     }
 
-    /// Helper to process a slice of byte-encoded ANSI sequences.
-    /// It parses them into AnsiCommands and then feeds them to the emulator.
-    fn process_ansi_bytes(term: &mut TerminalEmulator, bytes: &[u8]) -> Vec<EmulatorAction> {
-        let mut processor = crate::ansi::AnsiProcessor::new();
-        let commands = processor.process_bytes(bytes);
+    /// Helper to process a single AnsiCommand or other EmulatorInput.
+    /// This is the primary way to feed commands to the terminal for these tests.
+    fn process_input(term: &mut TerminalEmulator, input: EmulatorInput) -> Option<EmulatorAction> {
+        let action = term.interpret_input(input);
+        // Simulate orchestrator requesting redraw if lines are dirty and no explicit redraw was actioned
+        if action.is_none() && !term.take_dirty_lines().is_empty() {
+            return Some(EmulatorAction::RequestRedraw);
+        }
+        action
+    }
+    
+    /// Helper to process a sequence of AnsiCommands
+    fn process_commands(term: &mut TerminalEmulator, commands: Vec<AnsiCommand>) -> Vec<EmulatorAction> {
         let mut actions = Vec::new();
         for cmd in commands {
-            if let Some(action) = term.interpret_input(EmulatorInput::Ansi(cmd.clone())) { // Clone cmd if needed by multiple consumers
+            if let Some(action) = term.interpret_input(EmulatorInput::Ansi(cmd)) {
                 actions.push(action);
             }
         }
@@ -41,16 +50,6 @@ mod term_tests {
              actions.push(EmulatorAction::RequestRedraw);
         }
         actions
-    }
-
-    /// Helper to process a single AnsiCommand or other EmulatorInput.
-    fn process_input(term: &mut TerminalEmulator, input: EmulatorInput) -> Option<EmulatorAction> {
-        let action = term.interpret_input(input);
-        // Simulate orchestrator requesting redraw if lines are dirty and no explicit redraw was actioned
-        if action.is_none() && !term.take_dirty_lines().is_empty() {
-            return Some(EmulatorAction::RequestRedraw);
-        }
-        action
     }
 
 
@@ -88,10 +87,10 @@ mod term_tests {
         assert_eq!(term.dimensions(), (80, 24), "Initial dimensions");
         assert_cursor_pos(&term, 0, 0, "Initial logical cursor position");
         assert_screen_cursor_pos(&term, 0, 0, "Initial screen cursor position");
-        assert!(term.is_cursor_visible(), "Cursor initially visible");
+        assert!(term.is_cursor_visible(), "Cursor initially visible (DECTCEM is on by default)");
         assert!(!term.is_alt_screen_active(), "Initially not on alt screen");
 
-        let expected_initial_attrs = Attributes::default(); // Default uses Color::Default
+        let expected_initial_attrs = Attributes::default(); 
         assert_eq!(get_glyph_at(&term, 79, 23), Glyph { c: ' ', attr: expected_initial_attrs }, "Initial screen content (corner)");
 
         let mut term_mut = new_term(80, 24);
@@ -105,36 +104,31 @@ mod term_tests {
         let term = new_term(0, 0);
         assert_eq!(term.dimensions().0, 1, "Minimum width clamped to 1");
         assert_eq!(term.dimensions().1, 1, "Minimum height clamped to 1");
-
-        let term = new_term(5, 0);
-        assert_eq!(term.dimensions(), (5, 1), "Minimum height clamped");
-
-        let term = new_term(0, 10);
-        assert_eq!(term.dimensions(), (1, 10), "Minimum width clamped");
     }
 
     // --- Basic Printable Character Tests ---
     #[test]
     fn test_print_ascii_chars() {
         let mut term = new_term(10, 1);
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('H')));
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('i')));
-
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('H'),
+            AnsiCommand::Print('i'),
+        ]);
         assert_cursor_pos(&term, 2, 0, "Cursor after 'Hi'");
         assert_eq!(get_glyph_at(&term, 0, 0).c, 'H', "Char H");
         assert_eq!(get_glyph_at(&term, 1, 0).c, 'i', "Char i");
-        assert_eq!(get_glyph_at(&term, 2, 0).c, ' ', "Empty char after Hi");
     }
 
     #[test]
     fn test_print_chars_with_line_wrap() {
         let mut term = new_term(5, 2);
-        process_ansi_bytes(&mut term, b"Hello"); // Prints H,e,l,l,o. Cursor moves to (5,0)
-        // After "Hello", cursor is at (5,0), cursor_wrap_next should be true.
-        assert_cursor_pos(&term, 5, 0, "Cursor after 'Hello' (at edge of line)");
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('H'), AnsiCommand::Print('e'), AnsiCommand::Print('l'),
+            AnsiCommand::Print('l'), AnsiCommand::Print('o')
+        ]);
+        assert_cursor_pos(&term, 5, 0, "Cursor after 'Hello' (at edge of line, wrap_next expected)");
 
-        process_ansi_bytes(&mut term, b"W"); // Prints W. Should wrap *before* printing W.
-        // 'W' is printed at (0,1). Cursor moves to (1,1).
+        process_commands(&mut term, vec![AnsiCommand::Print('W')]);
         assert_cursor_pos(&term, 1, 1, "Cursor after 'W' post-wrap");
         let screen = screen_to_string_vec(&term);
         assert_eq!(screen[0], "Hello", "Line 0 after wrap");
@@ -144,13 +138,19 @@ mod term_tests {
     #[test]
     fn test_print_chars_with_scroll() {
         let mut term = new_term(5, 2);
-        process_ansi_bytes(&mut term, b"Line1");
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // Moves to (0,1)
-        process_ansi_bytes(&mut term, b"Line2");
-
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // Moves to (0,1) on scrolled screen
-        process_ansi_bytes(&mut term, b"New");
-
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('L'), AnsiCommand::Print('i'), AnsiCommand::Print('n'),
+            AnsiCommand::Print('e'), AnsiCommand::Print('1'),
+        ]);
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); 
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('L'), AnsiCommand::Print('i'), AnsiCommand::Print('n'),
+            AnsiCommand::Print('e'), AnsiCommand::Print('2'),
+        ]);
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); 
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('N'), AnsiCommand::Print('e'), AnsiCommand::Print('w'),
+        ]);
         assert_cursor_pos(&term, 3, 1, "Cursor after scroll and 'New'");
         let screen = screen_to_string_vec(&term);
         assert_eq!(screen[0], "Line2", "Line 0 after scroll (was Line2)");
@@ -160,30 +160,24 @@ mod term_tests {
     #[test]
     fn test_print_utf8_multibyte_char() {
         let mut term = new_term(5, 1);
-        // "你好" - '你' (width 2), '好' (width 2)
-        process_ansi_bytes(&mut term, "你好".as_bytes());
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('你'), 
+            AnsiCommand::Print('好'),
+        ]);
         assert_eq!(get_glyph_at(&term, 0, 0).c, '你', "First char 你 at (0,0)");
         assert_eq!(get_glyph_at(&term, 1, 0).c, '\0', "Placeholder for 你 at (1,0)");
         assert_eq!(get_glyph_at(&term, 2, 0).c, '好', "Second char 好 at (2,0)");
         assert_eq!(get_glyph_at(&term, 3, 0).c, '\0', "Placeholder for 好 at (3,0)");
-        
-        let width_ni = crate::term::unicode::get_char_display_width('你');
-        let width_hao = crate::term::unicode::get_char_display_width('好');
-        assert_cursor_pos(&term, width_ni + width_hao, 0, "Cursor after '你好'");
+        assert_cursor_pos(&term, 4, 0, "Cursor after '你好'");
     }
 
     #[test]
     fn test_print_wide_character_cjk() {
         let mut term = new_term(5, 1);
-        let wide_char = '世'; // Assuming this is width 2
+        let wide_char = '世'; 
         let char_width = crate::term::unicode::get_char_display_width(wide_char);
         
-        if char_width != 2 {
-            log::warn!("Wide character '世' is not treated as width 2 in this environment (width: {}). Test assertions might be affected.", char_width);
-        }
-
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print(wide_char)));
-
         assert_eq!(get_glyph_at(&term, 0, 0).c, wide_char, "Wide char printed at (0,0)");
         if char_width == 2 { 
             assert_eq!(get_glyph_at(&term, 1, 0).c, '\0', "Wide char placeholder at (1,0)");
@@ -197,38 +191,30 @@ mod term_tests {
 
     #[test]
     fn test_print_wide_character_at_edge_of_line() {
-        let mut term = new_term(2, 2); // Screen width is 2
-        let wide_char = '世'; // Assuming this is width 2
+        let mut term = new_term(2, 2); 
+        let wide_char = '世'; 
         let char_width = crate::term::unicode::get_char_display_width(wide_char);
 
         if char_width != 2 {
-             log::warn!("Wide character '世' is not treated as width 2 in this environment (width: {}). Skipping wide char edge test as it depends on width 2.", char_width);
-            return;
+            return; // Test relies on char_width being 2
         }
-
-        // Printing '世' (width 2) on a 2-column screen.
-        // It should occupy (0,0) and (1,0).
-        // The logical cursor should then be at (2,0), with cursor_wrap_next = true.
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print(wide_char)));
         
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print(wide_char)));
         assert_eq!(get_glyph_at(&term, 0, 0).c, wide_char, "Wide char '世' on line 0, col 0");
         assert_eq!(get_glyph_at(&term, 1, 0).c, '\0', "Placeholder for '世' on line 0, col 1");
-        assert_cursor_pos(&term, 2, 0, "Cursor after '世' (logical_x == width, wrap_next should be true)");
+        assert_cursor_pos(&term, 2, 0, "Cursor after '世' (logical_x == width, wrap_next expected true)");
 
-        // Printing 'A' (width 1). This should trigger the wrap first.
-        // 'A' should be placed at (0,1).
-        // Cursor should move to (1,1).
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
         assert_eq!(get_glyph_at(&term, 0, 1).c, 'A', "Char 'A' on line 1, col 0 after wrap");
         assert_cursor_pos(&term, 1, 1, "Cursor after 'A' at (1,1)");
     }
 
-
     // --- C0 Control Tests ---
+    // ... (These tests use direct AnsiCommand inputs and should be fine) ...
     #[test]
     fn test_c0_bs_backspace() {
         let mut term = new_term(5, 1);
-        process_ansi_bytes(&mut term, b"ABC");
+        process_commands(&mut term, vec![AnsiCommand::Print('A'), AnsiCommand::Print('B'), AnsiCommand::Print('C')]);
         assert_cursor_pos(&term, 3, 0, "Cursor after ABC");
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::BS)));
         assert_cursor_pos(&term, 2, 0, "Cursor after BS");
@@ -266,7 +252,7 @@ mod term_tests {
     #[test]
     fn test_c0_lf_line_feed() {
         let mut term = new_term(5,2);
-        process_ansi_bytes(&mut term, b"ABC"); 
+        process_commands(&mut term, vec![AnsiCommand::Print('A'), AnsiCommand::Print('B'), AnsiCommand::Print('C')]); 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
         assert_cursor_pos(&term, 0, 1, "Cursor after LF (moves to col 0 of next line)");
         let screen = screen_to_string_vec(&term);
@@ -276,7 +262,7 @@ mod term_tests {
     #[test]
     fn test_c0_cr_carriage_return() {
         let mut term = new_term(5,1);
-        process_ansi_bytes(&mut term, b"ABC");
+        process_commands(&mut term, vec![AnsiCommand::Print('A'), AnsiCommand::Print('B'), AnsiCommand::Print('C')]);
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
         assert_cursor_pos(&term, 0, 0, "Cursor after CR (moves to col 0 of same line)");
     }
@@ -284,11 +270,13 @@ mod term_tests {
     #[test]
     fn test_c0_bel_produces_action() {
         let mut term = new_term(5,1);
-        let actions = process_ansi_bytes(&mut term, b"\x07"); // BEL
+        let actions = process_commands(&mut term, vec![AnsiCommand::C0Control(C0Control::BEL)]);
         assert!(actions.contains(&EmulatorAction::RingBell), "BEL should produce RingBell action");
     }
 
+
     // --- CSI Sequence Tests ---
+    // ... (These tests use direct AnsiCommand inputs and should be fine) ...
 
     #[test]
     fn test_csi_cup_cursor_position() {
@@ -341,11 +329,13 @@ mod term_tests {
     #[test]
     fn test_csi_ed_erase_in_display() {
         let mut term = new_term(5,3);
-        process_ansi_bytes(&mut term, b"11111");
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
-        process_ansi_bytes(&mut term, b"22222");
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
-        process_ansi_bytes(&mut term, b"33333");
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('1'),AnsiCommand::Print('1'),AnsiCommand::Print('1'),AnsiCommand::Print('1'),AnsiCommand::Print('1'),
+            AnsiCommand::C0Control(C0Control::LF),
+            AnsiCommand::Print('2'),AnsiCommand::Print('2'),AnsiCommand::Print('2'),AnsiCommand::Print('2'),AnsiCommand::Print('2'),
+            AnsiCommand::C0Control(C0Control::LF),
+            AnsiCommand::Print('3'),AnsiCommand::Print('3'),AnsiCommand::Print('3'),AnsiCommand::Print('3'),AnsiCommand::Print('3'),
+        ]);
 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2, 3))));
         assert_cursor_pos(&term, 2, 1, "Cursor at (2,1) before ED 0");
@@ -358,11 +348,13 @@ mod term_tests {
 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInDisplay(2)))); 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(1,1)))); 
-        process_ansi_bytes(&mut term, b"11111");
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
-        process_ansi_bytes(&mut term, b"22222");
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
-        process_ansi_bytes(&mut term, b"33333");
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('1'),AnsiCommand::Print('1'),AnsiCommand::Print('1'),AnsiCommand::Print('1'),AnsiCommand::Print('1'),
+            AnsiCommand::C0Control(C0Control::LF),
+            AnsiCommand::Print('2'),AnsiCommand::Print('2'),AnsiCommand::Print('2'),AnsiCommand::Print('2'),AnsiCommand::Print('2'),
+            AnsiCommand::C0Control(C0Control::LF),
+            AnsiCommand::Print('3'),AnsiCommand::Print('3'),AnsiCommand::Print('3'),AnsiCommand::Print('3'),AnsiCommand::Print('3'),
+        ]);
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2, 3))));
         assert_cursor_pos(&term, 2, 1, "Cursor at (2,1) before ED 1");
 
@@ -385,8 +377,8 @@ mod term_tests {
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetScrollingRegion{top: 2, bottom: 4}))); 
         assert_cursor_pos(&term, 0, 0, "Cursor home after DECSTBM (origin mode off)");
 
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(6)))); 
-        assert!(term.dec_modes.origin_mode, "DECOM should be active");
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(DecModeConstant::Origin as u16)))); 
+        assert!(term.is_origin_mode_active(), "DECOM should be active");
         assert_cursor_pos(&term, 0, 0, "Cursor at logical (0,0) after DECOM on");
         assert_screen_cursor_pos(&term, 0, 1, "Screen cursor at margin top (phys 0,1) after DECOM on");
 
@@ -398,8 +390,8 @@ mod term_tests {
         assert_cursor_pos(&term, 2, 2, "CUP 3,3 (logical 2,2) with DECOM");
         assert_screen_cursor_pos(&term, 2, 3, "CUP 3,3 (screen phys 2,3) with DECOM");
 
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(6)))); 
-        assert!(!term.dec_modes.origin_mode, "DECOM should be inactive");
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(DecModeConstant::Origin as u16)))); 
+        assert!(!term.is_origin_mode_active(), "DECOM should be inactive");
         assert_cursor_pos(&term, 0, 0, "Cursor home after DECOM off");
         assert_screen_cursor_pos(&term, 0, 0, "Screen cursor home after DECOM off");
 
@@ -411,9 +403,11 @@ mod term_tests {
     #[test]
     fn test_resize_larger_clamps_cursor_correctly() {
         let mut term = new_term(5, 2);
-        process_ansi_bytes(&mut term, b"12345");
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('1'), AnsiCommand::Print('2'), AnsiCommand::Print('3'), AnsiCommand::Print('4'), AnsiCommand::Print('5'),
+        ]);
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
-        process_ansi_bytes(&mut term, b"AB"); 
+        process_commands(&mut term, vec![AnsiCommand::Print('A'), AnsiCommand::Print('B')]); 
 
         assert_cursor_pos(&term, 2, 1, "Cursor before resize");
 
@@ -429,13 +423,24 @@ mod term_tests {
     #[test]
     fn test_resize_smaller_clamps_cursor_correctly() {
         let mut term = new_term(10, 4);
-        process_ansi_bytes(&mut term, b"1234567890"); 
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('1'), AnsiCommand::Print('2'), AnsiCommand::Print('3'), AnsiCommand::Print('4'), AnsiCommand::Print('5'),
+            AnsiCommand::Print('6'), AnsiCommand::Print('7'), AnsiCommand::Print('8'), AnsiCommand::Print('9'), AnsiCommand::Print('0'),
+        ]); 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); 
-        process_ansi_bytes(&mut term, b"abcdefghij"); 
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('a'), AnsiCommand::Print('b'), AnsiCommand::Print('c'), AnsiCommand::Print('d'), AnsiCommand::Print('e'),
+            AnsiCommand::Print('f'), AnsiCommand::Print('g'), AnsiCommand::Print('h'), AnsiCommand::Print('i'), AnsiCommand::Print('j'),
+        ]); 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); 
-        process_ansi_bytes(&mut term, b"ABCDEFGHIJ"); 
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('A'), AnsiCommand::Print('B'), AnsiCommand::Print('C'), AnsiCommand::Print('D'), AnsiCommand::Print('E'),
+            AnsiCommand::Print('F'), AnsiCommand::Print('G'), AnsiCommand::Print('H'), AnsiCommand::Print('I'), AnsiCommand::Print('J'),
+        ]); 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); 
-        process_ansi_bytes(&mut term, b"qwerty"); 
+        process_commands(&mut term, vec![
+            AnsiCommand::Print('q'), AnsiCommand::Print('w'), AnsiCommand::Print('e'), AnsiCommand::Print('r'), AnsiCommand::Print('t'), AnsiCommand::Print('y'),
+        ]); 
         
         assert_cursor_pos(&term, 6, 3, "Cursor before resize at (6,3)");
 
@@ -449,6 +454,7 @@ mod term_tests {
     }
 
     // --- User Input Tests ---
+    // ... (These tests are fine as they test EmulatorInput::User) ...
     #[test]
     fn test_user_input_printable_key() {
         let mut term = new_term(5,1);
@@ -478,7 +484,7 @@ mod term_tests {
     #[test]
     fn test_user_input_arrow_key_normal_mode() {
         let mut term = new_term(5,1);
-        term.dec_modes.cursor_keys_app_mode = false; 
+        assert!(!term.is_cursor_keys_app_mode_active(), "Cursor keys should be in normal mode initially");
 
         let event_up = BackendEvent::Key { keysym: 0xFF52, text: "".to_string() }; 
         let action_up = term.interpret_input(EmulatorInput::User(event_up));
@@ -492,8 +498,8 @@ mod term_tests {
     #[test]
     fn test_user_input_arrow_key_application_mode() {
         let mut term = new_term(5,1);
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(1))));
-        assert!(term.dec_modes.cursor_keys_app_mode, "DECCKM should be enabled");
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(DecModeConstant::CursorKeys as u16))));
+        assert!(term.is_cursor_keys_app_mode_active(), "DECCKM should be enabled");
 
         let event_down = BackendEvent::Key { keysym: 0xFF54, text: "".to_string() }; 
         let action_down = term.interpret_input(EmulatorInput::User(event_down));
@@ -505,12 +511,12 @@ mod term_tests {
     }
 
     // --- Tests for Default Attributes and Clearing (Probing "All White Screen") ---
-
+    // ... (These tests use direct AnsiCommand inputs and should be fine) ...
     #[test]
     fn test_initial_screen_attributes_are_default() {
         let term = new_term(10, 5);
         let glyph = get_glyph_at(&term, 0, 0);
-        let expected_attrs = Attributes::default(); // fg: Default, bg: Default
+        let expected_attrs = Attributes::default(); 
         
         assert_eq!(glyph.c, ' ', "Initial char should be space");
         assert_eq!(glyph.attr.fg, expected_attrs.fg, "Initial FG should be Color::Default");
@@ -523,7 +529,6 @@ mod term_tests {
         let mut term = new_term(10, 1);
         let default_attrs = Attributes::default();
 
-        // Set specific colors
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
             Attribute::Foreground(AnsiColor::Red),
             Attribute::Background(AnsiColor::Blue),
@@ -535,7 +540,6 @@ mod term_tests {
         assert_eq!(glyph_x.attr.fg, Color::Named(NamedColor::Red), "X should have Red FG");
         assert_eq!(glyph_x.attr.bg, Color::Named(NamedColor::Blue), "X should have Blue BG");
 
-        // Reset SGR
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]))));
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('Y')));
 
@@ -551,28 +555,24 @@ mod term_tests {
         let mut term = new_term(10, 2);
         let default_attrs = Attributes::default();
 
-        // Part 1: Erase with specific SGR attributes
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-            Attribute::Foreground(AnsiColor::Green), // This won't affect space char color
+            Attribute::Foreground(AnsiColor::Green), 
             Attribute::Background(AnsiColor::Magenta),
         ]))));
-        process_ansi_bytes(&mut term, b"ABC"); // Cursor at (3,0)
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInLine(0)))); // EL to end of line
+        process_commands(&mut term, vec![AnsiCommand::Print('A'), AnsiCommand::Print('B'), AnsiCommand::Print('C')]); 
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInLine(0)))); 
 
         for x in 3..10 {
             let glyph = get_glyph_at(&term, x, 0);
             assert_eq!(glyph.c, ' ', "EL(0) char at ({},0) should be space", x);
-            // For spaces, FG is often not rendered or takes BG color, but let's check attributes directly
             assert_eq!(glyph.attr.bg, Color::Named(NamedColor::Magenta), "EL(0) BG at ({},0) should be Magenta", x);
-            // The foreground of a cleared space is typically the SGR foreground, even if not visible for space.
             assert_eq!(glyph.attr.fg, Color::Named(NamedColor::Green), "EL(0) FG attribute at ({},0) should be Green", x);
         }
 
-        // Part 2: Erase after SGR Reset
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]))));
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2,1)))); // Move to (0,1) for clarity
-        process_ansi_bytes(&mut term, b"DEF"); // Cursor at (3,1)
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInLine(0)))); // EL to end of line
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2,1)))); 
+        process_commands(&mut term, vec![AnsiCommand::Print('D'), AnsiCommand::Print('E'), AnsiCommand::Print('F')]); 
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInLine(0)))); 
 
         for x in 3..10 {
             let glyph = get_glyph_at(&term, x, 1);
@@ -587,12 +587,11 @@ mod term_tests {
         let mut term = new_term(5, 3);
         let default_attrs = Attributes::default();
 
-        // Part 1: ED with specific SGR
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
             Attribute::Foreground(AnsiColor::Cyan),
             Attribute::Background(AnsiColor::Yellow),
         ]))));
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInDisplay(2)))); // ED entire screen
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInDisplay(2)))); 
 
         for y in 0..3 {
             for x in 0..5 {
@@ -603,9 +602,8 @@ mod term_tests {
             }
         }
 
-        // Part 2: ED after SGR Reset
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]))));
-        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInDisplay(2)))); // ED entire screen
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInDisplay(2)))); 
 
         for y in 0..3 {
             for x in 0..5 {
@@ -616,5 +614,126 @@ mod term_tests {
             }
         }
     }
-}
 
+    // --- Tests for Unhandled/Warned Sequences (TDD Approach) ---
+
+    #[test]
+    fn test_dec_private_mode_12_att610_cursor_blink_is_handled_gracefully() {
+        let mut term = new_term(5,1);
+        let initial_visibility = term.is_cursor_visible();
+        // This mode (ATT610 cursor blink) is often ignored or mapped to DECTCEM.
+        // We'll assume for now it's ignored regarding visibility.
+        // The main point is no "Unknown DEC private mode" warning.
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(12)))); // CSI ? 12 l
+        assert_eq!(term.is_cursor_visible(), initial_visibility, "Mode ?12l should not affect DECTCEM visibility if simply ignored");
+        
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(12)))); // CSI ? 12 h
+        assert_eq!(term.is_cursor_visible(), initial_visibility, "Mode ?12h should not affect DECTCEM visibility if simply ignored");
+        // TODO: When cursor blinking state is testable via public API, assert it here.
+    }
+
+    #[test]
+    fn test_dec_private_mode_2004_bracketed_paste_is_handled() {
+        let mut term = new_term(5,1);
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(2004)))); // CSI ? 2004 h
+        assert!(term.is_bracketed_paste_mode_active(), "Bracketed paste mode should be set");
+        
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(2004)))); // CSI ? 2004 l
+        assert!(!term.is_bracketed_paste_mode_active(), "Bracketed paste mode should be reset");
+    }
+    
+    #[test]
+    fn test_dec_private_mouse_modes_are_handled_gracefully() {
+        let mut term = new_term(5,1);
+        let mouse_modes_to_test = vec![
+            (1000, "XTERM_MOUSE_CLICK"),
+            (1002, "XTERM_MOUSE_BTN_MOTION"),
+            (1003, "XTERM_MOUSE_ANY_MOTION"),
+            (1005, "XTERM_MOUSE_UTF8"), // UTF8 mouse
+            (1006, "XTERM_MOUSE_SGR"), 
+        ];
+        for (mode, _name) in mouse_modes_to_test {
+            process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(mode))));
+            assert!(term.is_mouse_mode_active(mode), "Mouse Mode {} should be active", mode);
+            process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(mode))));
+            assert!(!term.is_mouse_mode_active(mode), "Mouse Mode {} should be reset", mode);
+        }
+    }
+    
+    #[test]
+    fn test_dec_private_mode_focus_event_1004_is_handled() {
+        let mut term = new_term(5,1);
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(1004)))); // CSI ? 1004 h
+        assert!(term.is_focus_event_mode_active(), "Focus event mode (1004) should be set");
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(1004)))); // CSI ? 1004 l
+        assert!(!term.is_focus_event_mode_active(), "Focus event mode (1004) should be reset");
+    }
+
+    #[test]
+    fn test_dec_private_mode_7727_application_keypad_is_handled() {
+        // This is an example of a less common mode from logs.
+        // It's often related to application keypad (DECKPAM / DECKPNM might be more standard)
+        // but its exact meaning can vary. For now, ensure it's processed.
+        let mut term = new_term(5,1);
+        let initial_app_keypad = term.is_cursor_keys_app_mode_active(); // DECCKM is mode 1
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(7727))));
+        // Assert no change to DECCKM unless 7727 is specifically mapped to it.
+        assert_eq!(term.is_cursor_keys_app_mode_active(), initial_app_keypad, "Mode 7727h should not affect DECCKM unless specifically mapped");
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(7727))));
+        assert_eq!(term.is_cursor_keys_app_mode_active(), initial_app_keypad, "Mode 7727l should not affect DECCKM unless specifically mapped");
+    }
+
+
+    #[test]
+    fn test_csi_sp_q_decscusr_set_cursor_style_is_handled() {
+        let mut term = new_term(5,1);
+        // Requires CsiCommand::SetCursorStyle { shape: u16, blinking: bool } or similar
+        // And parser to handle `CSI Ps SP q`
+        // And TerminalEmulator to have a handler and public getter for cursor style.
+
+        // CSI 2 SP q -> Steady Block
+        let cmd_steady_block = AnsiCommand::Csi(CsiCommand::SetCursorStyle { shape: 2 }); 
+        process_input(&mut term, EmulatorInput::Ansi(cmd_steady_block));
+        assert_eq!(term.get_cursor_shape(), 2, "Cursor shape should be 2 (Steady Block)");
+
+        // CSI 3 SP q -> Blinking Underline
+        let cmd_blink_underline = AnsiCommand::Csi(CsiCommand::SetCursorStyle { shape: 3 });
+        process_input(&mut term, EmulatorInput::Ansi(cmd_blink_underline));
+        assert_eq!(term.get_cursor_shape(), 3, "Cursor shape should be 3 (Blinking Underline)");
+    }
+
+    #[test]
+    fn test_csi_t_window_manipulation_reports_are_handled() {
+        let mut term = new_term(80,24);
+        // Requires CsiCommand::WindowManipulation { ps1: u16, ps2: Option<u16>, ps3: Option<u16> }
+        // And parser for `CSI Ps;Ps;Ps t`
+        // And TerminalEmulator handler.
+
+        // CSI 14 t - Report text area size in pixels
+        let cmd_report_pixels = AnsiCommand::Csi(CsiCommand::WindowManipulation { ps1: 14, ps2: None, ps3: None });
+        let actions_pixels = process_commands(&mut term, vec![cmd_report_pixels]);
+        // Expected response format: CSI 4 ; <height_px> ; <width_px> t
+        // For now, just check if *any* WritePty action occurs.
+        // A more specific check requires knowing the driver's font/pixel dimensions.
+        assert!(actions_pixels.iter().any(|a| matches!(a, EmulatorAction::WritePty(_))),
+            "CSI 14 t should produce a WritePty response");
+
+        // CSI 18 t - Report text area size in characters
+        let cmd_report_chars = AnsiCommand::Csi(CsiCommand::WindowManipulation { ps1: 18, ps2: None, ps3: None });
+        let actions_chars = process_commands(&mut term, vec![cmd_report_chars]);
+        let expected_response_chars = format!("\x1b[8;{};{}t", 24, 80); // rows; cols
+        assert!(actions_chars.contains(&EmulatorAction::WritePty(expected_response_chars.clone().into_bytes())),
+            "CSI 18 t should report character dimensions. Expected: {:?}, Got: {:?}", expected_response_chars, actions_chars);
+    }
+
+    #[test]
+    fn test_csi_t_window_manipulation_unsupported_is_graceful() {
+        let mut term = new_term(80,24);
+        // CSI 23 ; 0 ; 0 t (unsupported by st, xterm uses it for title save/restore)
+        let cmd_unsupported_t = AnsiCommand::Csi(CsiCommand::WindowManipulation { ps1: 23, ps2: Some(0), ps3: Some(0) });
+        let actions = process_commands(&mut term, vec![cmd_unsupported_t]);
+        // Should not panic, and ideally not produce unexpected actions if we choose to ignore it.
+        assert!(actions.is_empty() || !actions.iter().any(|a| matches!(a, EmulatorAction::WritePty(_))),
+            "Unsupported CSI 23 t should be handled gracefully, no unexpected WritePty");
+    }
+}

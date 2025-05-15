@@ -8,28 +8,127 @@ use std::iter::Peekable;
 use std::slice::Iter;
 use log::warn;
 
+// --- SGR Parameter Constants ---
+// These constants represent the numeric parameters used in Select Graphic Rendition (SGR) sequences.
+// Using constants improves readability and maintainability over magic numbers.
+
+// Basic Attributes
+pub const SGR_RESET: u16 = 0;
+pub const SGR_BOLD: u16 = 1;
+pub const SGR_FAINT: u16 = 2; // Also known as dim
+pub const SGR_ITALIC: u16 = 3;
+pub const SGR_UNDERLINE: u16 = 4;
+pub const SGR_BLINK_SLOW: u16 = 5;
+pub const SGR_BLINK_RAPID: u16 = 6; // Often treated same as slow blink
+pub const SGR_REVERSE: u16 = 7; // Inverse video
+pub const SGR_CONCEAL: u16 = 8; // Hidden
+pub const SGR_STRIKETHROUGH: u16 = 9; // Crossed-out
+
+// Reset Specific Attributes
+pub const SGR_NORMAL_INTENSITY: u16 = 22; // Neither bold nor faint
+pub const SGR_NO_ITALIC: u16 = 23;
+pub const SGR_NO_UNDERLINE: u16 = 24; // Turns off single and double underline
+pub const SGR_NO_BLINK: u16 = 25;
+pub const SGR_NO_REVERSE: u16 = 27;
+pub const SGR_NO_CONCEAL: u16 = 28;
+pub const SGR_NO_STRIKETHROUGH: u16 = 29;
+
+// Foreground Colors (30-37)
+pub const SGR_FG_BLACK: u16 = 30;
+pub const SGR_FG_RED: u16 = 31;
+pub const SGR_FG_GREEN: u16 = 32;
+pub const SGR_FG_YELLOW: u16 = 33;
+pub const SGR_FG_BLUE: u16 = 34;
+pub const SGR_FG_MAGENTA: u16 = 35;
+pub const SGR_FG_CYAN: u16 = 36;
+pub const SGR_FG_WHITE: u16 = 37;
+pub const SGR_FG_DEFAULT: u16 = 39;
+
+// Background Colors (40-47)
+pub const SGR_BG_BLACK: u16 = 40;
+pub const SGR_BG_RED: u16 = 41;
+pub const SGR_BG_GREEN: u16 = 42;
+pub const SGR_BG_YELLOW: u16 = 43;
+pub const SGR_BG_BLUE: u16 = 44;
+pub const SGR_BG_MAGENTA: u16 = 45;
+pub const SGR_BG_CYAN: u16 = 46;
+pub const SGR_BG_WHITE: u16 = 47;
+pub const SGR_BG_DEFAULT: u16 = 49;
+
+// Bright Foreground Colors (90-97)
+pub const SGR_FG_BRIGHT_BLACK: u16 = 90;
+pub const SGR_FG_BRIGHT_RED: u16 = 91;
+pub const SGR_FG_BRIGHT_GREEN: u16 = 92;
+pub const SGR_FG_BRIGHT_YELLOW: u16 = 93;
+pub const SGR_FG_BRIGHT_BLUE: u16 = 94;
+pub const SGR_FG_BRIGHT_MAGENTA: u16 = 95;
+pub const SGR_FG_BRIGHT_CYAN: u16 = 96;
+pub const SGR_FG_BRIGHT_WHITE: u16 = 97;
+
+// Bright Background Colors (100-107)
+pub const SGR_BG_BRIGHT_BLACK: u16 = 100;
+pub const SGR_BG_BRIGHT_RED: u16 = 101;
+pub const SGR_BG_BRIGHT_GREEN: u16 = 102;
+pub const SGR_BG_BRIGHT_YELLOW: u16 = 103;
+pub const SGR_BG_BRIGHT_BLUE: u16 = 104;
+pub const SGR_BG_BRIGHT_MAGENTA: u16 = 105;
+pub const SGR_BG_BRIGHT_CYAN: u16 = 106;
+pub const SGR_BG_BRIGHT_WHITE: u16 = 107;
+
+// Extended Colors (introduced by '38' for FG, '48' for BG)
+pub const SGR_EXTENDED_COLOR_FG: u16 = 38;
+pub const SGR_EXTENDED_COLOR_BG: u16 = 48;
+/// SGR sub-parameter: Indicates the next parameter is a 256-color palette index.
+pub const SGR_EXT_MODE_256_INDEX: u16 = 5;
+/// SGR sub-parameter: Indicates the next three parameters are R, G, B true color values.
+pub const SGR_EXT_MODE_RGB_TRUECOLOR: u16 = 2;
+
+// Other SGR attributes
+pub const SGR_UNDERLINE_DOUBLE: u16 = 21;
+pub const SGR_OVERLINED: u16 = 53;
+/// SGR parameter to turn off overline (according to ECMA-48).
+pub const SGR_NO_OVERLINED: u16 = 55;
+
+pub const SGR_UNDERLINE_COLOR_SET: u16 = 58; // Followed by extended color params
+pub const SGR_UNDERLINE_COLOR_DEFAULT: u16 = 59;
+
+
 // --- Color Definitions ---
+/// Represents a color that can be set for foreground or background.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Color { // Made pub
+pub enum Color {
     Black, Red, Green, Yellow, Blue, Magenta, Cyan, White,
     BrightBlack, BrightRed, BrightGreen, BrightYellow, BrightBlue, BrightMagenta, BrightCyan, BrightWhite,
-    Indexed(u8),
-    Rgb(u8, u8, u8),
-    Default,
+    Indexed(u8), // For 256-color palette (index 0-255)
+    Rgb(u8, u8, u8), // For true color
+    Default, // Represents the terminal's default foreground or background
+}
+
+/// Represents the intensity of a basic ANSI color (normal or bright).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorIntensity {
+    Normal,
+    Bright,
 }
 
 // --- SGR Attributes ---
+/// Represents a single Select Graphic Rendition (SGR) attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Attribute { // Made pub
+pub enum Attribute {
     Reset, Bold, Faint, Italic, Underline, BlinkSlow, BlinkRapid, Reverse, Conceal, Strikethrough,
-    UnderlineDouble, NoBold, NoItalic, NoUnderline, NoBlink, NoReverse, NoConceal, NoStrikethrough,
-    Foreground(Color), Background(Color), Overlined, UnderlineColor(Color),
+    UnderlineDouble,
+    NoBold, NoItalic, NoUnderline, NoBlink, NoReverse, NoConceal, NoStrikethrough,
+    Foreground(Color), Background(Color),
+    Overlined,
+    NoOverlined, // Added to represent SGR 55 explicitly
+    UnderlineColor(Color),
 }
 
 // --- C0 Control Enum ---
+/// Represents C0 control characters (0x00-0x1F and 0x7F).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum C0Control { // Made pub
+pub enum C0Control {
     NUL = 0x00, SOH = 0x01, STX = 0x02, ETX = 0x03, EOT = 0x04, ENQ = 0x05, ACK = 0x06, BEL = 0x07,
     BS  = 0x08, HT  = 0x09, LF  = 0x0A, VT  = 0x0B, FF  = 0x0C, CR  = 0x0D, SO  = 0x0E, SI  = 0x0F,
     DLE = 0x10, DC1 = 0x11, DC2 = 0x12, DC3 = 0x13, DC4 = 0x14, NAK = 0x15, SYN = 0x16, ETB = 0x17,
@@ -38,8 +137,9 @@ pub enum C0Control { // Made pub
 }
 
 impl C0Control {
+    /// Creates a `C0Control` from a byte if it's a valid C0 code.
     pub fn from_byte(byte: u8) -> Option<Self> {
-        if byte <= 0x1F || byte == 0x7F {
+        if (byte <= 0x1F && byte != 0x1B /* ESC is handled separately by parser state */) || byte == 0x7F {
             Some(unsafe { std::mem::transmute(byte) })
         } else {
             None
@@ -48,65 +148,74 @@ impl C0Control {
 }
 
 // --- CSI Command Enum ---
+/// Represents Control Sequence Introducer (CSI) commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CsiCommand { // Made pub
+pub enum CsiCommand {
     CursorUp(u16), CursorDown(u16), CursorForward(u16), CursorBackward(u16),
     CursorNextLine(u16), CursorPrevLine(u16), CursorCharacterAbsolute(u16),
-    CursorPosition(u16, u16),
+    CursorPosition(u16, u16), // Parameters are 1-based: (row, col)
     EraseInDisplay(u16), EraseInLine(u16), EraseCharacter(u16),
     InsertCharacter(u16), InsertLine(u16), DeleteCharacter(u16), DeleteLine(u16),
     ScrollUp(u16), ScrollDown(u16),
-    SetTabStop, // Added missing command variant if needed by parser
-    ClearTabStops(u16),
-    SetGraphicsRendition(Vec<Attribute>),
-    SetMode(u16), ResetMode(u16), SetModePrivate(u16), ResetModePrivate(u16),
-    DeviceStatusReport(u16),
-    SaveCursorAnsi, RestoreCursorAnsi, SaveCursor, RestoreCursor, // Kept both SCO and DEC variants if parser distinguishes
-    Reset, // Added missing command variant if needed by parser
-    SetScrollingRegion { top: u16, bottom: u16 }, // Added for DECSTBM (CSI r)
-    Unsupported(Vec<u8>, Option<u8>), // Kept for debugging/completeness
+    SetTabStop, 
+    ClearTabStops(u16), 
+    SetGraphicsRendition(Vec<Attribute>), 
+    SetMode(u16), ResetMode(u16), 
+    SetModePrivate(u16), ResetModePrivate(u16), 
+    DeviceStatusReport(u16), 
+    SaveCursorAnsi, RestoreCursorAnsi, 
+    SaveCursor, RestoreCursor,       
+    Reset, 
+    SetScrollingRegion { top: u16, bottom: u16 }, 
+    
+    SetCursorStyle { shape: u16 }, 
+    WindowManipulation { ps1: u16, ps2: Option<u16>, ps3: Option<u16> },
+
+    Unsupported(Vec<u8>, Option<u8>), 
 }
 
 // --- ESC Command Enum ---
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EscCommand { // Made pub
+pub enum EscCommand { 
     SetTabStop, Index, NextLine, ReverseIndex, SaveCursor, RestoreCursor,
     ResetToInitialState,
-    SelectCharacterSet(char, char),
+    SelectCharacterSet(char, char), 
     SingleShift2, SingleShift3,
 }
 
 // --- Main AnsiCommand Enum ---
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AnsiCommand { // Made pub
+pub enum AnsiCommand { 
     Print(char),
     C0Control(C0Control),
-    C1Control(u8),
+    C1Control(u8), 
     Csi(CsiCommand),
     Esc(EscCommand),
-    Osc(Vec<u8>), Dcs(Vec<u8>), Pm(Vec<u8>), Apc(Vec<u8>),
-    StringTerminator,
-    Ignore(u8), Error(u8),
+    Osc(Vec<u8>), 
+    Dcs(Vec<u8>), 
+    Pm(Vec<u8>),  
+    Apc(Vec<u8>), 
+    StringTerminator, 
+    Ignore(u8),   
+    Error(u8),    
 }
 
-// --- Implementation details (kept private unless needed elsewhere) ---
 
 impl AnsiCommand {
-    // These helpers can remain private if only used within this module's logic
     pub(crate) fn from_c0(byte: u8) -> Option<Self> {
         C0Control::from_byte(byte).map(AnsiCommand::C0Control)
     }
 
     pub(crate) fn from_c1(byte: u8) -> Option<Self> {
          match byte {
-             0x84 => Some(AnsiCommand::Esc(EscCommand::Index)),
-             0x85 => Some(AnsiCommand::Esc(EscCommand::NextLine)),
-             0x88 => Some(AnsiCommand::Esc(EscCommand::SetTabStop)),
-             0x8D => Some(AnsiCommand::Esc(EscCommand::ReverseIndex)),
-             0x8E => Some(AnsiCommand::Esc(EscCommand::SingleShift2)),
-             0x8F => Some(AnsiCommand::Esc(EscCommand::SingleShift3)),
-             0x90 | 0x9B | 0x9C | 0x9D | 0x9E | 0x9F => None, // Handled by parser state transitions
-             _ => Some(AnsiCommand::C1Control(byte)), // Treat others as generic C1
+             0x84 => Some(AnsiCommand::Esc(EscCommand::Index)),        
+             0x85 => Some(AnsiCommand::Esc(EscCommand::NextLine)),     
+             0x88 => Some(AnsiCommand::Esc(EscCommand::SetTabStop)),   
+             0x8D => Some(AnsiCommand::Esc(EscCommand::ReverseIndex)), 
+             0x8E => Some(AnsiCommand::Esc(EscCommand::SingleShift2)), 
+             0x8F => Some(AnsiCommand::Esc(EscCommand::SingleShift3)), 
+             0x90 | 0x9B | 0x9C | 0x9D | 0x9E | 0x9F => None, 
+             _ => Some(AnsiCommand::C1Control(byte)), 
          }
     }
 
@@ -116,120 +225,151 @@ impl AnsiCommand {
             'E' => Some(AnsiCommand::Esc(EscCommand::NextLine)),
             'H' => Some(AnsiCommand::Esc(EscCommand::SetTabStop)),
             'M' => Some(AnsiCommand::Esc(EscCommand::ReverseIndex)),
-            '7' => Some(AnsiCommand::Esc(EscCommand::SaveCursor)),
+            '7' => Some(AnsiCommand::Esc(EscCommand::SaveCursor)),   
             '8' => Some(AnsiCommand::Esc(EscCommand::RestoreCursor)),
-            'c' => Some(AnsiCommand::Esc(EscCommand::ResetToInitialState)),
+            'c' => Some(AnsiCommand::Esc(EscCommand::ResetToInitialState)), 
             'N' => Some(AnsiCommand::Esc(EscCommand::SingleShift2)),
             'O' => Some(AnsiCommand::Esc(EscCommand::SingleShift3)),
             _ => None,
         }
     }
-
+    
      pub(crate) fn from_esc_intermediate(intermediate: char, final_char: char) -> Option<Self> {
          if ['(', ')', '*', '+'].contains(&intermediate) {
              if final_char.is_ascii_uppercase() || final_char.is_ascii_digit() {
                  Some(AnsiCommand::Esc(EscCommand::SelectCharacterSet(intermediate, final_char)))
-             } else { None }
+             } else { 
+                warn!("Unsupported final char '{}' for ESC {} sequence", final_char, intermediate);
+                None 
+            }
          } else { None }
      }
 
     fn parse_sgr(params: Vec<u16>) -> Vec<Attribute> {
         let mut attrs = Vec::new();
-        if params.is_empty() {
-            // Treat CSI m as CSI 0 m (Reset)
+        if params.is_empty() { 
             attrs.push(Attribute::Reset);
             return attrs;
         }
         let mut iter = params.iter().peekable();
         while let Some(&param) = iter.next() {
             match param {
-                0 => attrs.push(Attribute::Reset), 1 => attrs.push(Attribute::Bold),
-                2 => attrs.push(Attribute::Faint), 3 => attrs.push(Attribute::Italic),
-                4 => attrs.push(Attribute::Underline), 5 => attrs.push(Attribute::BlinkSlow),
-                6 => attrs.push(Attribute::BlinkRapid), 7 => attrs.push(Attribute::Reverse),
-                8 => attrs.push(Attribute::Conceal), 9 => attrs.push(Attribute::Strikethrough),
-                21 => attrs.push(Attribute::UnderlineDouble),
-                22 => attrs.push(Attribute::NoBold), // Also turns off Faint
-                23 => attrs.push(Attribute::NoItalic), 24 => attrs.push(Attribute::NoUnderline),
-                25 => attrs.push(Attribute::NoBlink), 27 => attrs.push(Attribute::NoReverse),
-                28 => attrs.push(Attribute::NoConceal), 29 => attrs.push(Attribute::NoStrikethrough),
-                30..=37 => attrs.push(Attribute::Foreground(Self::map_basic_color(param - 30, false))),
-                39 => attrs.push(Attribute::Foreground(Color::Default)),
-                40..=47 => attrs.push(Attribute::Background(Self::map_basic_color(param - 40, false))),
-                49 => attrs.push(Attribute::Background(Color::Default)),
-                53 => attrs.push(Attribute::Overlined),
-                55 => attrs.push(Attribute::NoUnderline), // Standard says NoOverlined, but often treated as NoUnderline? Check behavior. Let's assume NoUnderline for now.
-                58 => { if let Some(color) = Self::parse_extended_color(&mut iter) { attrs.push(Attribute::UnderlineColor(color)); } }
-                59 => attrs.push(Attribute::UnderlineColor(Color::Default)),
-                90..=97 => attrs.push(Attribute::Foreground(Self::map_basic_color(param - 90, true))),
-                100..=107 => attrs.push(Attribute::Background(Self::map_basic_color(param - 100, true))),
-                38 => { if let Some(color) = Self::parse_extended_color(&mut iter) { attrs.push(Attribute::Foreground(color)); } }
-                48 => { if let Some(color) = Self::parse_extended_color(&mut iter) { attrs.push(Attribute::Background(color)); } }
-                _ => { /* Ignore unknown SGR codes */ }
+                SGR_RESET => attrs.push(Attribute::Reset),
+                SGR_BOLD => attrs.push(Attribute::Bold),
+                SGR_FAINT => attrs.push(Attribute::Faint),
+                SGR_ITALIC => attrs.push(Attribute::Italic),
+                SGR_UNDERLINE => attrs.push(Attribute::Underline),
+                SGR_BLINK_SLOW => attrs.push(Attribute::BlinkSlow),
+                SGR_BLINK_RAPID => attrs.push(Attribute::BlinkRapid),
+                SGR_REVERSE => attrs.push(Attribute::Reverse),
+                SGR_CONCEAL => attrs.push(Attribute::Conceal),
+                SGR_STRIKETHROUGH => attrs.push(Attribute::Strikethrough),
+                SGR_UNDERLINE_DOUBLE => attrs.push(Attribute::UnderlineDouble),
+                SGR_NORMAL_INTENSITY => attrs.push(Attribute::NoBold), 
+                SGR_NO_ITALIC => attrs.push(Attribute::NoItalic),
+                SGR_NO_UNDERLINE => attrs.push(Attribute::NoUnderline),
+                SGR_NO_BLINK => attrs.push(Attribute::NoBlink),
+                SGR_NO_REVERSE => attrs.push(Attribute::NoReverse),
+                SGR_NO_CONCEAL => attrs.push(Attribute::NoConceal),
+                SGR_NO_STRIKETHROUGH => attrs.push(Attribute::NoStrikethrough),
+                SGR_FG_BLACK..=SGR_FG_WHITE => attrs.push(Attribute::Foreground(Self::map_basic_color(param - SGR_FG_BLACK, ColorIntensity::Normal))),
+                SGR_FG_DEFAULT => attrs.push(Attribute::Foreground(Color::Default)),
+                SGR_BG_BLACK..=SGR_BG_WHITE => attrs.push(Attribute::Background(Self::map_basic_color(param - SGR_BG_BLACK, ColorIntensity::Normal))),
+                SGR_BG_DEFAULT => attrs.push(Attribute::Background(Color::Default)),
+                SGR_OVERLINED => attrs.push(Attribute::Overlined),
+                SGR_NO_OVERLINED => {
+                    // SGR 55 (NoOverlined) is often treated as NoUnderline or ignored.
+                    // Here, we represent it explicitly if Attribute::NoOverlined exists,
+                    // otherwise map to NoUnderline as a common interpretation.
+                    // For now, let's add Attribute::NoOverlined and use it.
+                    // The terminal emulator can then decide how to interpret NoOverlined.
+                    attrs.push(Attribute::NoOverlined);
+                }
+                SGR_UNDERLINE_COLOR_SET => { if let Some(color) = Self::parse_extended_color(&mut iter) { attrs.push(Attribute::UnderlineColor(color)); } }
+                SGR_UNDERLINE_COLOR_DEFAULT => attrs.push(Attribute::UnderlineColor(Color::Default)),
+                SGR_FG_BRIGHT_BLACK..=SGR_FG_BRIGHT_WHITE => attrs.push(Attribute::Foreground(Self::map_basic_color(param - SGR_FG_BRIGHT_BLACK, ColorIntensity::Bright))),
+                SGR_BG_BRIGHT_BLACK..=SGR_BG_BRIGHT_WHITE => attrs.push(Attribute::Background(Self::map_basic_color(param - SGR_BG_BRIGHT_BLACK, ColorIntensity::Bright))),
+                SGR_EXTENDED_COLOR_FG => { if let Some(color) = Self::parse_extended_color(&mut iter) { attrs.push(Attribute::Foreground(color)); } }
+                SGR_EXTENDED_COLOR_BG => { if let Some(color) = Self::parse_extended_color(&mut iter) { attrs.push(Attribute::Background(color)); } }
+                _ => { warn!("Unknown SGR parameter: {}", param); }
             }
         }
-        // If only Reset was provided, return just that.
-        if attrs.len() > 1 && attrs[0] == Attribute::Reset {
-            attrs.remove(0);
-        }
-        // If the list ended up empty after processing (e.g., CSI;m), treat as Reset.
-        if attrs.is_empty() {
-             attrs.push(Attribute::Reset);
+        if attrs.is_empty() || (attrs.len() > 1 && attrs[0] == Attribute::Reset && attrs.iter().skip(1).all(|&a| a == Attribute::Reset)) {
+            attrs.clear();
+            attrs.push(Attribute::Reset);
         }
         attrs
     }
 
-    fn map_basic_color(code: u16, bright: bool) -> Color {
-        match (bright, code) {
-            (false, 0) => Color::Black, (false, 1) => Color::Red, (false, 2) => Color::Green, (false, 3) => Color::Yellow,
-            (false, 4) => Color::Blue, (false, 5) => Color::Magenta, (false, 6) => Color::Cyan, (false, 7) => Color::White,
-            (true, 0) => Color::BrightBlack, (true, 1) => Color::BrightRed, (true, 2) => Color::BrightGreen, (true, 3) => Color::BrightYellow,
-            (true, 4) => Color::BrightBlue, (true, 5) => Color::BrightMagenta, (true, 6) => Color::BrightCyan, (true, 7) => Color::BrightWhite,
-            _ => Color::Default, // Should not happen with valid code range
+    fn map_basic_color(code: u16, intensity: ColorIntensity) -> Color {
+        match (intensity, code) {
+            (ColorIntensity::Normal, 0) => Color::Black,
+            (ColorIntensity::Normal, 1) => Color::Red,
+            (ColorIntensity::Normal, 2) => Color::Green,
+            (ColorIntensity::Normal, 3) => Color::Yellow,
+            (ColorIntensity::Normal, 4) => Color::Blue,
+            (ColorIntensity::Normal, 5) => Color::Magenta,
+            (ColorIntensity::Normal, 6) => Color::Cyan,
+            (ColorIntensity::Normal, 7) => Color::White,
+            (ColorIntensity::Bright, 0) => Color::BrightBlack,
+            (ColorIntensity::Bright, 1) => Color::BrightRed,
+            (ColorIntensity::Bright, 2) => Color::BrightGreen,
+            (ColorIntensity::Bright, 3) => Color::BrightYellow,
+            (ColorIntensity::Bright, 4) => Color::BrightBlue,
+            (ColorIntensity::Bright, 5) => Color::BrightMagenta,
+            (ColorIntensity::Bright, 6) => Color::BrightCyan,
+            (ColorIntensity::Bright, 7) => Color::BrightWhite,
+            _ => { warn!("Invalid basic color code: {}, intensity: {:?}", code, intensity); Color::Default }
         }
     }
 
     fn parse_extended_color(iter: &mut Peekable<Iter<u16>>) -> Option<Color> {
-        match iter.next() {
-            Some(&5) => { // 256-color mode
-                iter.next().and_then(|&idx| {
-                    if idx <= 255 { Some(Color::Indexed(idx as u8)) } else { None }
+        match iter.next() { 
+            Some(&SGR_EXT_MODE_256_INDEX) => { 
+                iter.next().and_then(|&idx_param| {
+                    if idx_param <= u8::MAX as u16 { 
+                        Some(Color::Indexed(idx_param as u8)) 
+                    } else { 
+                        warn!("Invalid 256-color index: {}", idx_param); 
+                        None 
+                    }
                 })
             }
-            Some(&2) => { // RGB mode
-                let r = iter.next().map(|&v| v as u8);
-                let g = iter.next().map(|&v| v as u8);
-                let b = iter.next().map(|&v| v as u8);
+            Some(&SGR_EXT_MODE_RGB_TRUECOLOR) => { 
+                let r = iter.next().map(|&v| v as u8); 
+                let g = iter.next().map(|&v| v as u8); 
+                let b = iter.next().map(|&v| v as u8); 
                 match (r, g, b) {
                     (Some(r_val), Some(g_val), Some(b_val)) => Some(Color::Rgb(r_val, g_val, b_val)),
-                    _ => None, // Not enough parameters for RGB
+                    _ => { warn!("Incomplete RGB color sequence"); None }
                 }
             }
-            _ => None, // Invalid or unsupported color mode specifier
+            Some(other) => { warn!("Unsupported extended color mode specifier: {}", other); None }
+            None => { warn!("Missing parameters for extended color mode"); None }
         }
     }
 
     pub(crate) fn from_csi(
         params: Vec<u16>,
         intermediates: Vec<u8>,
-        is_private: bool, // Flag set by parser if '?' etc. is seen
+        is_private: bool, 
         final_byte: u8,
     ) -> Option<Self> {
         let param_or = |idx: usize, default: u16| params.get(idx).copied().unwrap_or(default);
-        // Helper for parameters defaulting to 1 (like cursor movements, counts)
         let param_or_1 = |idx: usize| param_or(idx, 1).max(1);
 
-        // Check for private marker intermediate explicitly if needed
-        let has_private_intermediate = intermediates.contains(&b'?') || intermediates.contains(&b'>') || intermediates.contains(&b'!'); // Add others if relevant
-
-        match (is_private || has_private_intermediate, intermediates.as_slice(), final_byte) {
-            // Mode Setting - Check private flag OR intermediate marker
+        match (is_private, intermediates.as_slice(), final_byte) {
+            (false, b" ", b'q') => Some(AnsiCommand::Csi(CsiCommand::SetCursorStyle { shape: param_or(0,1) })), 
+            (_, _, b't') => { 
+                let ps1 = param_or(0,0); 
+                let ps2 = params.get(1).copied();
+                let ps3 = params.get(2).copied();
+                Some(AnsiCommand::Csi(CsiCommand::WindowManipulation { ps1, ps2, ps3 }))
+            }
             (true, _, b'h') => Some(AnsiCommand::Csi(CsiCommand::SetModePrivate(param_or(0, 0)))),
-            (false, b"", b'h') => Some(AnsiCommand::Csi(CsiCommand::SetMode(param_or(0, 0)))), // Standard mode set
+            (false, b"", b'h') => Some(AnsiCommand::Csi(CsiCommand::SetMode(param_or(0, 0)))),
             (true, _, b'l') => Some(AnsiCommand::Csi(CsiCommand::ResetModePrivate(param_or(0, 0)))),
-            (false, b"", b'l') => Some(AnsiCommand::Csi(CsiCommand::ResetMode(param_or(0, 0)))), // Standard mode reset
-
-            // Cursor Movement (Should not be private)
+            (false, b"", b'l') => Some(AnsiCommand::Csi(CsiCommand::ResetMode(param_or(0, 0)))),
             (false, b"", b'A') => Some(AnsiCommand::Csi(CsiCommand::CursorUp(param_or_1(0)))),
             (false, b"", b'B') => Some(AnsiCommand::Csi(CsiCommand::CursorDown(param_or_1(0)))),
             (false, b"", b'C') => Some(AnsiCommand::Csi(CsiCommand::CursorForward(param_or_1(0)))),
@@ -237,50 +377,39 @@ impl AnsiCommand {
             (false, b"", b'E') => Some(AnsiCommand::Csi(CsiCommand::CursorNextLine(param_or_1(0)))),
             (false, b"", b'F') => Some(AnsiCommand::Csi(CsiCommand::CursorPrevLine(param_or_1(0)))),
             (false, b"", b'G') => Some(AnsiCommand::Csi(CsiCommand::CursorCharacterAbsolute(param_or_1(0)))),
-            (false, b"", b'H') | (false, b"", b'f') => { // CUP / HVP
+            (false, b"", b'H') | (false, b"", b'f') => { 
                  let row = param_or_1(0); let col = param_or_1(1);
                  Some(AnsiCommand::Csi(CsiCommand::CursorPosition(row, col)))
             }
-            (false, b"", b'd') => Some(AnsiCommand::Csi(CsiCommand::CursorPosition(param_or_1(0), 1))), // VPA - row only, col 1
-
-             // Erasing
-            (false, b"", b'J') => Some(AnsiCommand::Csi(CsiCommand::EraseInDisplay(param_or(0, 0)))), // ED - param 0 is default
-            (false, b"", b'K') => Some(AnsiCommand::Csi(CsiCommand::EraseInLine(param_or(0, 0)))), // EL - param 0 is default
-            (false, b"", b'X') => Some(AnsiCommand::Csi(CsiCommand::EraseCharacter(param_or_1(0)))), // ECH - defaults to 1
-            // Inserting/Deleting Chars/Lines
-            (false, b"", b'@') => Some(AnsiCommand::Csi(CsiCommand::InsertCharacter(param_or_1(0)))), // ICH
-            (false, b"", b'L') => Some(AnsiCommand::Csi(CsiCommand::InsertLine(param_or_1(0)))), // IL
-            (false, b"", b'P') => Some(AnsiCommand::Csi(CsiCommand::DeleteCharacter(param_or_1(0)))), // DCH
-            (false, b"", b'M') => Some(AnsiCommand::Csi(CsiCommand::DeleteLine(param_or_1(0)))), // DL
-             // Scrolling
-            (false, b"", b'S') => Some(AnsiCommand::Csi(CsiCommand::ScrollUp(param_or_1(0)))), // SU
-            (false, b"", b'T') => Some(AnsiCommand::Csi(CsiCommand::ScrollDown(param_or_1(0)))), // SD
-             // Tabulation
-            (false, b"", b'g') => Some(AnsiCommand::Csi(CsiCommand::ClearTabStops(param_or(0, 0)))), // TBC - param 0 default
-             // Graphics Rendition
-            (false, b"", b'm') => Some(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(Self::parse_sgr(params)))), // SGR
-             // Status Reports
-            (false, b"", b'n') => Some(AnsiCommand::Csi(CsiCommand::DeviceStatusReport(param_or(0, 0)))), // DSR - param 0 default
-             // Cursor Saving/Restoring (SCO variants)
-            (false, b"", b's') => Some(AnsiCommand::Csi(CsiCommand::SaveCursor)),
-            (false, b"", b'u') => Some(AnsiCommand::Csi(CsiCommand::RestoreCursor)),
-            // DECSTBM - Set Scrolling Region
+            (false, b"", b'd') => Some(AnsiCommand::Csi(CsiCommand::CursorPosition(param_or_1(0), 1))),
+            (false, b"", b'J') => Some(AnsiCommand::Csi(CsiCommand::EraseInDisplay(param_or(0, 0)))),
+            (false, b"", b'K') => Some(AnsiCommand::Csi(CsiCommand::EraseInLine(param_or(0, 0)))),
+            (false, b"", b'X') => Some(AnsiCommand::Csi(CsiCommand::EraseCharacter(param_or_1(0)))),
+            (false, b"", b'@') => Some(AnsiCommand::Csi(CsiCommand::InsertCharacter(param_or_1(0)))),
+            (false, b"", b'L') => Some(AnsiCommand::Csi(CsiCommand::InsertLine(param_or_1(0)))),
+            (false, b"", b'P') => Some(AnsiCommand::Csi(CsiCommand::DeleteCharacter(param_or_1(0)))),
+            (false, b"", b'M') => Some(AnsiCommand::Csi(CsiCommand::DeleteLine(param_or_1(0)))),
+            (false, b"", b'S') => Some(AnsiCommand::Csi(CsiCommand::ScrollUp(param_or_1(0)))),
+            (false, b"", b'T') if intermediates.is_empty() => Some(AnsiCommand::Csi(CsiCommand::ScrollDown(param_or_1(0)))),
+            (false, b"", b'g') => Some(AnsiCommand::Csi(CsiCommand::ClearTabStops(param_or(0, 0)))),
+            (false, b"", b'm') => Some(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(Self::parse_sgr(params)))),
+            (false, b"", b'n') => Some(AnsiCommand::Csi(CsiCommand::DeviceStatusReport(param_or(0, 0)))),
+            (false, b"", b's') => Some(AnsiCommand::Csi(CsiCommand::SaveCursor)), 
+            (false, b"", b'u') => Some(AnsiCommand::Csi(CsiCommand::RestoreCursor)), 
             (false, b"", b'r') => {
-                let top = param_or(0, 1); // Default top is 1
-                let bottom = param_or(1, 0); // Default bottom is 0 (often means last line of screen)
+                let top = param_or(0, 1); 
+                let bottom = param_or(1, 0); 
                 Some(AnsiCommand::Csi(CsiCommand::SetScrollingRegion { top, bottom }))
             }
-            // Default: Unsupported or Error
             _ => {
-                // Log the unsupported sequence details before returning None
                  warn!(
-                     "Unsupported CSI sequence: Private={}, Intermediates={:?}, Final={}({}) Params={:?}",
-                     is_private || has_private_intermediate,
+                     "Unsupported or unhandled CSI sequence in from_csi: Private={}, Intermediates={:?}, Final={}({}) Params={:?}",
+                     is_private, 
                      intermediates,
                      final_byte as char, final_byte,
                      params
                  );
-                 None
+                 Some(AnsiCommand::Csi(CsiCommand::Unsupported(intermediates, Some(final_byte))))
             }
         }
     }
@@ -288,7 +417,24 @@ impl AnsiCommand {
 
 impl fmt::Display for C0Control {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            C0Control::NUL => write!(f, "NUL"), C0Control::SOH => write!(f, "SOH"),
+            C0Control::STX => write!(f, "STX"), C0Control::ETX => write!(f, "ETX"),
+            C0Control::EOT => write!(f, "EOT"), C0Control::ENQ => write!(f, "ENQ"),
+            C0Control::ACK => write!(f, "ACK"), C0Control::BEL => write!(f, "BEL"),
+            C0Control::BS  => write!(f, "BS"),  C0Control::HT  => write!(f, "HT"),
+            C0Control::LF  => write!(f, "LF"),  C0Control::VT  => write!(f, "VT"),
+            C0Control::FF  => write!(f, "FF"),  C0Control::CR  => write!(f, "CR"),
+            C0Control::SO  => write!(f, "SO"),  C0Control::SI  => write!(f, "SI"),
+            C0Control::DLE => write!(f, "DLE"), C0Control::DC1 => write!(f, "DC1"),
+            C0Control::DC2 => write!(f, "DC2"), C0Control::DC3 => write!(f, "DC3"),
+            C0Control::DC4 => write!(f, "DC4"), C0Control::NAK => write!(f, "NAK"),
+            C0Control::SYN => write!(f, "SYN"), C0Control::ETB => write!(f, "ETB"),
+            C0Control::CAN => write!(f, "CAN"), C0Control::EM  => write!(f, "EM"),
+            C0Control::SUB => write!(f, "SUB"), C0Control::ESC => write!(f, "ESC"),
+            C0Control::FS  => write!(f, "FS"),  C0Control::GS  => write!(f, "GS"),
+            C0Control::RS  => write!(f, "RS"),  C0Control::US  => write!(f, "US"),
+            C0Control::DEL => write!(f, "DEL"),
+        }
     }
 }
-
