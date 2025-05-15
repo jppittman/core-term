@@ -626,4 +626,3 @@ impl Screen {
 /// This determines how much larger the capacity can be than the limit
 /// before `shrink_to_fit` is called. This should be tuned or made configurable.
 const SOME_REASONABLE_SLACK: usize = 20; // Example value
-
