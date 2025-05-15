@@ -574,9 +574,7 @@ impl AnsiCommand {
                     "Unsupported or unhandled CSI sequence in from_csi: Private={}, Intermediates={:?}, Final={}({}) Params={:?}",
                     is_private, intermediates, final_byte as char, final_byte, params
                 );
-                Some(AnsiCommand::Error(
-                    final_byte,
-                ))
+                Some(AnsiCommand::Error(final_byte))
             }
         }
     }
