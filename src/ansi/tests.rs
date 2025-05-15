@@ -13,8 +13,7 @@ use super::{
 // Helper function to process bytes and get commands
 fn process_bytes(bytes: &[u8]) -> Vec<AnsiCommand> {
     let mut processor = AnsiProcessor::new();
-    processor.process_bytes(bytes);
-    processor.parser.take_commands()
+    processor.process_bytes(bytes)
 }
 
 // Helper function to process multiple byte slices sequentially
