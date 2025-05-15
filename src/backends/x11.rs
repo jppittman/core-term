@@ -730,7 +730,7 @@ impl XDriver {
     /// Uses pre-allocated ANSI/default colors or the RGB cache. Allocates if not found in cache.
     fn resolve_xft_color(&mut self, color: Color) -> Result<xft::XftColor> {
         match color {
-            Color::Default => Ok(self.xft_colors[DEFAULT_FG_COLOR_IDX]), // Assuming default means default FG
+            Color::Default => Ok(self.xft_colors[DEFAULT_BG_COLOR_IDX]), // Assuming default means default FG
             Color::Named(named_color) => {
                 // Direct lookup for pre-allocated ANSI colors (indices 0-15)
                 Ok(self.xft_colors[named_color as u8 as usize])
