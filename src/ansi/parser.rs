@@ -153,10 +153,10 @@ impl AnsiParser {
         {
             self.commands.push(command);
         } else {
-            warn!(
-                "Invalid or unsupported CSI sequence: Final Byte {}",
-                final_byte
-            );
+            //warn!(
+                ////"Invalid or unsupported CSI sequence: Final Byte {}",
+                //final_byte
+            //);
             self.commands.push(AnsiCommand::Error(final_byte));
         }
         self.clear_csi_state();

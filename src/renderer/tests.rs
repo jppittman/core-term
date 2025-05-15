@@ -199,7 +199,7 @@ mod render_tests {
 
     #[test]
     fn test_draw_empty_terminal() {
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(0, 0);
         let mut mock_driver = MockDriver::new();
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
@@ -211,7 +211,7 @@ mod render_tests {
 
     #[test]
     fn test_initial_draw_clears_all_with_default_bg() {
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(2, 1); // All lines initially dirty in mock
         let mut mock_driver = MockDriver::new();
 
@@ -304,7 +304,7 @@ mod render_tests {
     #[test]
     fn test_draw_single_default_char_no_clearall() {
         // Renamed to reflect the "no ClearAll" expectation
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(1, 1);
         mock_term.clear_all_dirty_lines(); // Start with a clean slate
         let mut mock_driver = MockDriver::new();
@@ -331,7 +331,7 @@ mod render_tests {
             mock_driver.calls
         );
 
-        let expected_text_run_A = MockDriverCall::DrawTextRun {
+        let expected_text_run_a = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: "A".to_string(),
             style: TextRunStyle {
@@ -357,12 +357,12 @@ mod render_tests {
         });
         assert_eq!(
             first_draw_text_run,
-            Some(expected_text_run_A),
+            Some(expected_text_run_a),
             "Expected text run for 'A' with default style not found or not first. Calls: {:?}",
             mock_driver.calls
         );
 
-        let expected_cursor_draw_over_A = MockDriverCall::DrawTextRun {
+        let expected_cursor_draw_over_a = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: "A".to_string(),
             style: TextRunStyle {
@@ -394,7 +394,7 @@ mod render_tests {
             .nth(0); // Get the first match for cursor draw
         assert_eq!(
             second_draw_text_run,
-            Some(expected_cursor_draw_over_A),
+            Some(expected_cursor_draw_over_a),
             "Expected cursor draw for 'A' not found or not second. Calls: {:?}",
             mock_driver.calls
         );
@@ -408,7 +408,7 @@ mod render_tests {
 
     #[test]
     fn test_draw_char_with_specific_colors() {
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(1, 1);
         mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
@@ -476,7 +476,7 @@ mod render_tests {
 
     #[test]
     fn test_draw_char_with_reverse_video() {
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(1, 1);
         mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
@@ -544,7 +544,7 @@ mod render_tests {
 
     #[test]
     fn test_draw_only_dirty_lines_and_cursor_line() {
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(2, 2);
         mock_term.clear_all_dirty_lines(); // Start clean
         let mut mock_driver = MockDriver::new();
@@ -593,11 +593,9 @@ mod render_tests {
                         // Cursor over 'A'
                         cursor_drawn_on_line_0 = true;
                     }
-                } else if coords.y == 1 {
-                    if text == "B" && style.fg == RENDERER_DEFAULT_FG {
+                } else if coords.y == 1 && text == "B" && style.fg == RENDERER_DEFAULT_FG{
                         // Content of 'B'
                         drawn_content_on_line_1 = true;
-                    }
                 }
             }
         }
@@ -623,7 +621,7 @@ mod render_tests {
     #[test]
     fn test_draw_wide_char_and_placeholder_correctly() {
         // Renamed
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(3, 1);
         mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
@@ -664,7 +662,7 @@ mod render_tests {
 
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
 
-        let expected_wide_char_text_call = MockDriverCall::DrawTextRun {
+        let _expected_wide_char_text_call = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: wide_char.to_string(),
             style: TextRunStyle {
@@ -674,7 +672,7 @@ mod render_tests {
             },
         };
         // Cursor will be drawn over the wide char.
-        let expected_wide_char_cursor_call = MockDriverCall::DrawTextRun {
+        let _expected_wide_char_cursor_call = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: wide_char.to_string(),
             style: TextRunStyle {
@@ -684,7 +682,7 @@ mod render_tests {
             },
         };
 
-        let expected_placeholder_fill = MockDriverCall::FillRect {
+        let _expected_placeholder_fill = MockDriverCall::FillRect {
             rect: CellRect {
                 x: 1,
                 y: 0,
@@ -695,7 +693,7 @@ mod render_tests {
             color: RENDERER_DEFAULT_BG,
         };
 
-        let expected_normal_char_call = MockDriverCall::DrawTextRun {
+        let _expected_normal_char_call = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 2, y: 0 },
             text: "N".to_string(),
             style: TextRunStyle {
@@ -769,7 +767,7 @@ mod render_tests {
     #[test]
     fn test_draw_line_of_spaces_optimised() {
         // Renamed
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(3, 1);
         mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
@@ -849,7 +847,7 @@ mod render_tests {
 
     #[test]
     fn test_cursor_movement_redraws_old_and_new_cell_correctly() {
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(2, 1);
         mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
@@ -895,7 +893,7 @@ mod render_tests {
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
 
         // Verify old cell (0,0) 'A' is redrawn with its original style
-        let expected_redraw_A = MockDriverCall::DrawTextRun {
+        let expected_redraw_a = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: "A".to_string(),
             style: TextRunStyle {
@@ -905,13 +903,13 @@ mod render_tests {
             },
         };
         assert!(
-            mock_driver.calls.contains(&expected_redraw_A),
+            mock_driver.calls.contains(&expected_redraw_a),
             "Old cursor cell 'A' not redrawn correctly. Calls: {:?}",
             mock_driver.calls
         );
 
         // Verify new cell (1,0) 'B' is drawn (as part of line redraw)
-        let expected_draw_B_content = MockDriverCall::DrawTextRun {
+        let expected_draw_b_content = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 1, y: 0 },
             text: "B".to_string(),
             style: TextRunStyle {
@@ -921,13 +919,13 @@ mod render_tests {
             },
         };
         assert!(
-            mock_driver.calls.contains(&expected_draw_B_content),
+            mock_driver.calls.contains(&expected_draw_b_content),
             "New cursor cell 'B' content not drawn. Calls: {:?}",
             mock_driver.calls
         );
 
         // Verify cursor is drawn at new position (1,0) over 'B'
-        let expected_cursor_on_B = MockDriverCall::DrawTextRun {
+        let expected_cursor_on_b = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 1, y: 0 },
             text: "B".to_string(),
             style: TextRunStyle {
@@ -937,7 +935,7 @@ mod render_tests {
             },
         };
         assert!(
-            mock_driver.calls.contains(&expected_cursor_on_B),
+            mock_driver.calls.contains(&expected_cursor_on_b),
             "Cursor not drawn correctly at new position over 'B'. Calls: {:?}",
             mock_driver.calls
         );
@@ -949,7 +947,7 @@ mod render_tests {
 
     #[test]
     fn test_visual_bug_cursor_leaves_white_tile_then_text_reappears() {
-        let renderer = Renderer::new();
+        let mut renderer = Renderer::new();
         let mut mock_term = MockTerminal::new(2, 1); // A 2-cell wide, 1-row high terminal
         let mut mock_driver = MockDriver::new();
 
@@ -990,7 +988,7 @@ mod render_tests {
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
 
         // Verify cursor was drawn inverted over 'T'
-        let expected_cursor_on_T_step1 = MockDriverCall::DrawTextRun {
+        let expected_cursor_on_t_step1 = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: "T".to_string(),
             style: TextRunStyle {
@@ -1000,7 +998,7 @@ mod render_tests {
             },
         };
         assert!(
-            mock_driver.calls.contains(&expected_cursor_on_T_step1),
+            mock_driver.calls.contains(&expected_cursor_on_t_step1),
             "Step 1 FAILURE: Cursor on 'T' was not drawn inverted. Calls: {:?}",
             mock_driver.calls
         );
@@ -1017,7 +1015,7 @@ mod render_tests {
 
         // Verify 'T' at (0,0) is redrawn with its original, non-inverted style.
         // This asserts that the "white wake" is painted over.
-        let expected_redraw_T_original_style_step2 = MockDriverCall::DrawTextRun {
+        let expected_redraw_t_original_style_step2 = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: "T".to_string(),
             style: TextRunStyle {
@@ -1029,7 +1027,7 @@ mod render_tests {
         assert!(
             mock_driver
                 .calls
-                .contains(&expected_redraw_T_original_style_step2),
+                .contains(&expected_redraw_t_original_style_step2),
             "Step 2 FAILURE: Original 'T' at (0,0) not redrawn with its correct style (White on Black) after cursor moved away. This indicates the 'white wake' bug. Calls: {:?}",
             mock_driver.calls
         );
