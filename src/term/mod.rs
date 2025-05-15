@@ -1,415 +1,742 @@
-// src/term/mod.rs
+//! This module defines the core terminal emulator logic.
+//! It acts as a state machine processing inputs and producing actions.
 
-//! Defines the core `Term` struct, representing the terminal emulator's state,
-//! and handles the overall processing of input bytes by dispatching parsed ANSI commands.
+// Standard library imports
+use std::cmp::min;
 
-// Declare screen submodule
-mod screen;
-
-// Use necessary items from other modules
+// Crate-level imports
 use crate::{
-    ansi::{
-        commands::{AnsiCommand, Attribute, C0Control, CsiCommand, EscCommand}, // Import command types
-        AnsiProcessor, // Import the new processor
+    ansi::{ // Import constants directly from the ansi module root
+        self,
+        commands::{
+            AnsiCommand, C0Control, CsiCommand, EscCommand, Attribute,
+            Color as AnsiColor, // Alias Ansi's Color to avoid clash with glyph::Color
+            Mode, CharacterSet, // These should be in ansi::commands
+        },
+        ERASE_MODE_TO_END, ERASE_MODE_TO_START, ERASE_MODE_ALL, ERASE_MODE_SCROLLBACK,
+        DECTCEM_MODE, DECOM_MODE, DECCKM_MODE, ALT_SCREEN_BUF_1047_MODE,
+        CURSOR_SAVE_RESTORE_1048_MODE, ALT_SCREEN_SAVE_RESTORE_1049_MODE,
     },
-    glyph::{Attributes, Glyph, REPLACEMENT_CHARACTER}, // Keep Glyph related imports
+    backends::{self, BackendEvent, KeyEvent}, // Import KeyEvent
+    glyph::{self, Glyph, Attributes, AttrFlags, Color as GlyphColor, NamedColor},
+    // Use `super::screen` if screen.rs is in the same directory as this mod.rs
+    // and this mod.rs is for the `term` module.
+    // Or `crate::term::screen` if `term` is a top-level module and `screen` is a submodule.
+    // Assuming `mod screen;` is declared in this file (or this is `term/lib.rs` and screen is `term/screen.rs`)
+    screen::{Screen, Cursor},
 };
-use log::{debug, trace, warn}; // Keep logging imports
-use std::cmp::{max, min}; // Keep cmp imports
 
-// --- Constants ---
-/// Default tab stop interval.
-pub(super) const DEFAULT_TAB_INTERVAL: usize = 8;
-// Removed parser-specific constants (MAX_CSI_PARAMS, etc.) as they are handled by ansi crate
+// External Crate
+// NOTE: Add `unicode-width = "0.1.x"` (e.g., "0.1.11") to your Cargo.toml dependencies
+use unicode_width::UnicodeWidthChar;
 
-// --- Helper Structs/Enums ---
-// Removed Utf8Decoder struct
+// Logging
+use log::{debug, trace, warn};
 
-/// Represents the cursor position (0-based).
+/// Default tab interval.
+pub const DEFAULT_TAB_INTERVAL: u8 = 8;
+
+/// Actions that the terminal emulator signals to the orchestrator.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EmulatorAction {
+    WritePty(Vec<u8>),
+    SetTitle(String),
+    RingBell,
+    RequestRedraw,
+    SetCursorVisibility(bool),
+}
+
+/// Inputs that the terminal emulator processes.
+#[derive(Debug, Clone)]
+pub enum EmulatorInput {
+    Ansi(AnsiCommand),
+    User(BackendEvent),
+    RawChar(char),
+}
+
+/// Represents the terminal's private modes (DECSET/DECRST).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Cursor {
-    pub x: usize,
-    pub y: usize,
+pub struct DecPrivateModes {
+    pub origin_mode: bool,
+    pub cursor_visible: bool,
+    pub cursor_keys_app_mode: bool,
+    pub using_alt_screen: bool,
 }
 
-/// Holds DEC Private Mode settings.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct DecModes {
-    /// DECCKM state (false = normal, true = application cursor keys)
-    cursor_keys_app_mode: bool,
-    /// DECOM state (false = absolute coords, true = relative to scroll region)
-    origin_mode: bool,
-    // Add other modes as needed (e.g., autowrap, reverse video, cursor visibility)
-    // autowrap: bool, // Example: managed by MODE_WRAP in Term::mode now? Check consistency.
-    // reverse_video: bool, // Example: managed by MODE_REVERSE in Term::mode now? Check consistency.
-    cursor_visible: bool, // DECTCEM
+/// The core terminal emulator.
+pub struct TerminalEmulator {
+    screen: Screen,
+    cursor: Cursor, 
+    current_attributes: Attributes,
+    saved_cursor_state: Option<Cursor>, 
+    saved_attributes_state: Option<Attributes>,
+    dec_modes: DecPrivateModes,
+    active_charsets: [CharacterSet; 2], 
+    active_charset_g_level: usize, 
+    dirty_lines: Vec<usize>, 
+    last_char_was_wide: bool,
 }
 
-// --- Main Term Struct Definition ---
-/// Represents the state of the terminal emulator.
-pub struct Term {
-    /// Terminal width in columns.
-    pub(super) width: usize,
-    /// Terminal height in rows.
-    pub(super) height: usize,
-    /// Flag indicating if the cursor is currently wrapped to the next line logically.
-    /// Set when a character is written in the last column. Reset by explicit cursor movement.
-    pub(super) wrap_next: bool,
-    /// Current cursor position.
-    pub(super) cursor: Cursor,
-    /// Primary screen buffer.
-    pub(super) screen: Vec<Vec<Glyph>>,
-    /// Alternate screen buffer.
-    pub(super) alt_screen: Vec<Vec<Glyph>>,
-    /// Flag indicating if the alternate screen buffer is currently active.
-    pub(super) using_alt_screen: bool,
-    /// Saved cursor position for the primary screen (used by DECSC/DECRC, SCOSC/SCORC).
-    pub(super) saved_cursor: Cursor,
-    /// Saved attributes for the primary screen.
-    #[allow(dead_code)] // Potentially useful later, silence warning for now
-    pub(super) saved_attributes: Attributes,
-    /// Saved cursor position for the alternate screen.
-    pub(super) saved_cursor_alt: Cursor,
-    /// Saved attributes for the alternate screen.
-    #[allow(dead_code)] // Potentially useful later, silence warning for now
-    pub(super) saved_attributes_alt: Attributes,
-    /// Current character attributes (bold, colors, etc.) to apply to new glyphs.
-    pub(super) current_attributes: Attributes,
-    /// Default character attributes (used for clearing, reset).
-    pub(super) default_attributes: Attributes,
-    /// DEC private mode settings.
-    pub(super) dec_modes: DecModes,
-    /// Tab stop positions (true if a tab stop exists at the index).
-    pub(super) tabs: Vec<bool>,
-    /// Top line of the scrolling region (0-based, inclusive).
-    pub(super) scroll_top: usize,
-    /// Bottom line of the scrolling region (0-based, inclusive).
-    pub(super) scroll_bot: usize,
-    /// Tracks which lines need redrawing (implementation detail, may change).
-    #[allow(dead_code)] // Potentially useful later, silence warning for now
-    pub(super) dirty: Vec<u8>,
-
-    // --- New field for ANSI processing ---
-    /// Processes byte stream into ANSI commands.
-    ansi_processor: AnsiProcessor,
-
-    // --- Removed fields ---
-    // parser_state: ParserState, // Replaced by ansi_processor internal state
-    // csi_params: Vec<u16>, // Handled by ansi_processor
-    // csi_intermediates: Vec<char>, // Handled by ansi_processor
-    // osc_string: String, // Handled by ansi_processor
-    // utf8_decoder: Utf8Decoder, // Handled by ansi_processor's lexer
-}
-
-// --- Public API Implementation ---
-impl Term {
-    /// Creates a new terminal state with given dimensions.
-    /// Minimum dimensions are 1x1.
-    pub fn new(width: usize, height: usize) -> Self {
+impl TerminalEmulator {
+    pub fn new(width: usize, height: usize, scrollback_limit: usize) -> Self {
         let default_attributes = Attributes::default();
-        let default_glyph = Glyph {
-            c: ' ',
-            attr: default_attributes,
-        };
-        let width = max(1, width);
-        let height = max(1, height);
+        // scrollback_limit is now correctly passed to Screen::new
+        let screen = Screen::new(width, height, scrollback_limit);
+        let cursor = Cursor { x: 0, y: 0, attributes: default_attributes };
 
-        let screen = vec![vec![default_glyph; width]; height];
-        let alt_screen = vec![vec![default_glyph; width]; height];
-        let tabs = (0..width).map(|i| i % DEFAULT_TAB_INTERVAL == 0).collect();
-        let dirty = vec![1u8; height];
-
-        Term {
-            width,
-            height,
+        TerminalEmulator {
             screen,
-            alt_screen,
-            using_alt_screen: false,
-            cursor: Cursor::default(),
-            wrap_next: false,
-            saved_cursor: Cursor::default(),
-            saved_attributes: default_attributes,
-            saved_cursor_alt: Cursor::default(),
-            saved_attributes_alt: default_attributes,
+            cursor,
             current_attributes: default_attributes,
-            default_attributes,
-            dec_modes: DecModes {
-                cursor_keys_app_mode: false, // Default state
-                origin_mode: false,          // Default state
-                cursor_visible: true,        // Default state (visible)
-            },
-            tabs,
-            scroll_top: 0,
-            scroll_bot: height.saturating_sub(1),
-            dirty,
-            ansi_processor: AnsiProcessor::new(), // Initialize the processor
+            saved_cursor_state: None,
+            saved_attributes_state: None,
+            dec_modes: DecPrivateModes::default(),
+            active_charsets: [CharacterSet::Ascii, CharacterSet::Ascii],
+            active_charset_g_level: 0,
+            dirty_lines: (0..height).collect(),
+            last_char_was_wide: false,
         }
     }
 
-    /// Gets the glyph at the specified coordinates (0-based).
-    /// Returns `None` if coordinates are out of bounds.
-    pub fn get_glyph(&self, x: usize, y: usize) -> Option<&Glyph> {
-        let current_screen = if self.using_alt_screen {
-            &self.alt_screen
-        } else {
-            &self.screen
+    pub fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
+        let mut action = match input {
+            EmulatorInput::Ansi(command) => self.handle_ansi_command(command),
+            EmulatorInput::User(event) => self.handle_backend_event(event),
+            EmulatorInput::RawChar(ch) => {
+                self.print_char(ch);
+                None 
+            }
         };
-        current_screen.get(y).and_then(|row| row.get(x))
+        
+        self.sync_screen_cursor();
+
+        if action.is_none() && !self.dirty_lines.is_empty() {
+            action = Some(EmulatorAction::RequestRedraw);
+        }
+        action
     }
 
-    /// Gets the current cursor position (0-based column, 0-based row).
-    pub fn get_cursor(&self) -> (usize, usize) {
+    fn handle_ansi_command(&mut self, command: AnsiCommand) -> Option<EmulatorAction> {
+        self.sync_cursor_to_screen_for_processing();
+
+        let action = match command {
+            AnsiCommand::C0Control(c0) => match c0 { // Corrected from AnsiCommand::Control
+                C0Control::BS => { self.backspace(); None }
+                C0Control::HT => { self.horizontal_tab(); None }
+                C0Control::LF | C0Control::VT | C0Control::FF => { self.newline(true); None }
+                C0Control::CR => { self.carriage_return(); None }
+                C0Control::SO => { self.set_g_level(1); None }
+                C0Control::SI => { self.set_g_level(0); None }
+                C0Control::BEL => Some(EmulatorAction::RingBell),
+                _ => { debug!("Unhandled C0 control: {:?}", c0); None }
+            },
+            AnsiCommand::Esc(esc) => match esc {
+                EscCommand::SetTabStop => { self.screen.set_tabstop(self.cursor.x); None }
+                EscCommand::Index => { self.index(); None }
+                EscCommand::NextLine => { self.newline(true); None }
+                EscCommand::ReverseIndex => { self.reverse_index(); None }
+                EscCommand::SaveCursor => { self.save_cursor_dec(); None }
+                EscCommand::RestoreCursor => { self.restore_cursor_dec(); None }
+                // Assuming EscCommand::CharSet is (designator_byte: u8, charset_char: char)
+                // This needs to align with your actual EscCommand::CharSet variant definition
+                EscCommand::DesignateCharset(g_set_byte_as_u8, charset_char_code) => {
+                    let g_idx = match g_set_byte_as_u8 { // This was g_set_byte in previous version, ensure type
+                        b'(' => 0, 
+                        b')' => 1, 
+                        b'*' => 2, 
+                        b'+' => 3, 
+                        _ => { warn!("Unsupported G-set designator byte: {}", g_set_byte_as_u8); 0 }
+                    };
+                    let charset = CharacterSet::from_char(charset_char_code);
+                    self.designate_character_set(g_idx, charset);
+                    None
+                }
+                _ => { debug!("Unhandled Esc command: {:?}", esc); None }
+            },
+            AnsiCommand::Csi(csi) => match csi {
+                // Ensure these variant names match your ansi::commands::CsiCommand
+                CsiCommand::CursorUp(n) => { self.cursor_up(n.max(1) as usize); None }
+                CsiCommand::CursorDown(n) => { self.cursor_down(n.max(1) as usize); None }
+                CsiCommand::CursorForward(n) => { self.cursor_forward(n.max(1) as usize); None }
+                CsiCommand::CursorBackward(n) => { self.cursor_backward(n.max(1) as usize); None }
+                CsiCommand::CursorNextLine(n) => { self.cursor_down(n.max(1) as usize); self.carriage_return(); None }
+                CsiCommand::CursorPrevLine(n) => { self.cursor_up(n.max(1) as usize); self.carriage_return(); None }
+                CsiCommand::CursorCharacterAbsolute(n) => { self.cursor_to_column(n.saturating_sub(1) as usize); None } // Corrected
+                CsiCommand::CursorPosition(r, c) => { self.cursor_to_pos(r.saturating_sub(1) as usize, c.saturating_sub(1) as usize); None }
+                CsiCommand::EraseInDisplay(mode) => { self.erase_in_display(mode); None } // Corrected
+                CsiCommand::EraseInLine(mode) => { self.erase_in_line(mode); None } // Corrected
+                CsiCommand::InsertChars(n) => { self.insert_blank_chars(n.max(1) as usize); None } // Corrected
+                CsiCommand::DeleteChars(n) => { self.delete_chars(n.max(1) as usize); None } // Corrected
+                CsiCommand::InsertLine(n) => { self.insert_lines(n.max(1) as usize); None } // Corrected (was InsertLines)
+                CsiCommand::DeleteLine(n) => { self.delete_lines(n.max(1) as usize); None } // Corrected (was DeleteLines)
+                CsiCommand::SetGraphicsRendition(attrs) => { self.handle_sgr_attributes(attrs); None } // Corrected
+                CsiCommand::SetMode(mode_cmd) => self.handle_set_mode(mode_cmd, true),
+                CsiCommand::ResetMode(mode_cmd) => self.handle_set_mode(mode_cmd, false),
+                CsiCommand::SetTopBottomMargin { top, bottom } => { // Assuming this is the variant for DECSTBM
+                    self.screen.set_scrolling_region(top as usize, bottom as usize); None
+                }
+                CsiCommand::DeviceAttributes => { Some(EmulatorAction::WritePty(b"\x1B[?6c".to_vec())) }
+                CsiCommand::EraseCharacter(n) => { self.erase_chars(n.max(1) as usize); None } // Corrected
+                CsiCommand::ScrollUp(n) => { self.scroll_up(n.max(1) as usize); None }
+                CsiCommand::ScrollDown(n) => { self.scroll_down(n.max(1) as usize); None }
+                _ => { debug!("Unhandled CSI command: {:?}", csi); None }
+            },
+            AnsiCommand::Osc(data) => self.handle_osc(data),
+            AnsiCommand::Print(ch) => { self.print_char(ch); None }
+        };
+        action
+    }
+
+    fn handle_backend_event(&mut self, event: BackendEvent) -> Option<EmulatorAction> {
+        match event {
+            // Assuming KeyEvent has `text: Option<String>` or similar, and `keysym` for non-text keys
+            BackendEvent::Key(key_event) => {
+                // This is highly dependent on KeyEvent's structure.
+                // For now, let's assume key_event.text gives us a char if it's simple.
+                if let Some(text) = &key_event.text { // Assuming text is Option<String>
+                    if !text.is_empty() {
+                        // This simplified logic only handles single char text.
+                        // Proper handling needs to consider control keys, modifiers, etc.
+                        let ch = text.chars().next().unwrap_or_default(); // Example
+                        let mut bytes_to_send = vec![0; 4];
+                        let len = ch.encode_utf8(&mut bytes_to_send).len();
+                        bytes_to_send.truncate(len);
+                        return Some(EmulatorAction::WritePty(bytes_to_send));
+                    }
+                }
+                // TODO: Handle key_event.keysym for arrow keys, function keys, etc.
+                // considering self.dec_modes.cursor_keys_app_mode
+            }
+            BackendEvent::Resize { cols, rows, .. } => {
+                self.resize(cols as usize, rows as usize);
+                return Some(EmulatorAction::RequestRedraw);
+            }
+            BackendEvent::FocusGained => { // Assuming FocusGained and FocusLost
+                debug!("Focus gained");
+            }
+            BackendEvent::FocusLost => {
+                debug!("Focus lost");
+            }
+            BackendEvent::Closed => {
+                debug!("Backend signaled close/quit.");
+            }
+             _ => { debug!("Unhandled backend event: {:?}", event); }
+        }
+        None
+    }
+
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let current_scrollback_limit = self.screen.scrollback_limit();
+        self.screen.resize(cols, rows, current_scrollback_limit);
+        self.cursor.x = min(self.cursor.x, cols.saturating_sub(1));
+        self.cursor.y = min(self.cursor.y, rows.saturating_sub(1));
+        self.mark_all_lines_dirty();
+    }
+
+    fn mark_all_lines_dirty(&mut self) {
+        self.dirty_lines = (0..self.screen.height).collect();
+    }
+
+    fn mark_line_dirty(&mut self, y: usize) {
+        if y < self.screen.height && !self.dirty_lines.contains(&y) {
+            self.dirty_lines.push(y);
+        }
+        self.screen.mark_line_dirty(y);
+    }
+
+    pub fn take_dirty_lines(&mut self) -> Vec<usize> {
+        let mut all_dirty_indices: std::collections::HashSet<usize> = self.dirty_lines.drain(..).collect();
+        for (idx, &is_dirty_flag) in self.screen.dirty.iter().enumerate() {
+            if is_dirty_flag != 0 {
+                all_dirty_indices.insert(idx);
+            }
+        }
+        self.screen.clear_dirty_flags();
+        all_dirty_indices.into_iter().collect()
+    }
+
+    pub fn get_glyph(&self, x: usize, y: usize) -> Glyph {
+        self.screen.get_glyph(x, y)
+    }
+
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.screen.width, self.screen.height)
+    }
+    
+    pub fn cursor_pos(&self) -> (usize, usize) {
         (self.cursor.x, self.cursor.y)
     }
-
-    /// Gets the terminal dimensions (width, height) in cells.
-    pub fn get_dimensions(&self) -> (usize, usize) {
-        (self.width, self.height)
+    
+    pub fn is_alt_screen_active(&self) -> bool {
+        self.screen.alt_screen_active
     }
 
-    /// Processes a slice of bytes received from the PTY or input source.
-    /// Uses the internal `AnsiProcessor` to parse bytes into commands and then dispatches them.
-    pub fn process_bytes(&mut self, bytes: &[u8]) {
-        // Log input if debug level is enabled
-        if log::log_enabled!(log::Level::Debug) {
-            let printable_bytes: String = bytes
-                .iter()
-                .map(|&b| {
-                    if b.is_ascii_graphic() || b == b' ' {
-                        b as char
-                    } else if b == 0x1B {
-                        '␛' // Represent ESC clearly
-                    } else if b < 0x20 || b == 0x7F {
-                        '.' // Represent C0/DEL as '.'
-                    } else {
-                        '?' // Represent other non-printable as '?'
-                    }
-                })
-                .collect();
-            debug!(
-                "Processing {} bytes from PTY: '{}'",
-                bytes.len(),
-                printable_bytes
-            );
+    fn sync_cursor_to_screen_for_processing(&mut self) {
+        self.screen.cursor.x = self.cursor.x;
+        if self.dec_modes.origin_mode {
+            let scroll_top = self.screen.scroll_top();
+            let logical_y_clamped = self.cursor.y.max(scroll_top).min(self.screen.scroll_bot());
+            self.screen.cursor.y = logical_y_clamped - scroll_top;
+        } else {
+            self.screen.cursor.y = self.cursor.y;
+        }
+        self.screen.cursor.attributes = self.current_attributes;
+        self.screen.origin_mode = self.dec_modes.origin_mode;
+    }
+
+    fn sync_screen_cursor(&mut self) {
+        self.cursor.x = self.screen.cursor.x;
+        if self.dec_modes.origin_mode {
+            self.cursor.y = self.screen.scroll_top() + self.screen.cursor.y;
+        } else {
+            self.cursor.y = self.screen.cursor.y;
+        }
+    }
+
+    fn default_fill_glyph(&self) -> Glyph {
+        Glyph { c: ' ', attr: self.current_attributes }
+    }
+
+    fn print_char(&mut self, ch: char) {
+        let ch_to_print = self.map_char_to_active_charset(ch);
+        let char_width = UnicodeWidthChar::width(ch_to_print).unwrap_or(1);
+
+        if self.last_char_was_wide && self.cursor.x == self.screen.width.saturating_sub(1) {
+             self.cursor.x = 0;
+             self.newline(false); 
+        } else if char_width == 2 && self.cursor.x >= self.screen.width.saturating_sub(1) {
+            self.cursor.x = 0;
+            self.newline(false);
+        }
+        
+        let target_x = self.cursor.x;
+        let target_y_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+
+        self.screen.set_glyph(target_x, target_y_abs, Glyph { c: ch_to_print, attr: self.current_attributes });
+        self.mark_line_dirty(target_y_abs);
+
+        self.last_char_was_wide = char_width == 2;
+
+        self.cursor.x += char_width;
+        if self.cursor.x >= self.screen.width {
+            self.cursor.x = 0;
+            self.newline(false); 
+        }
+    }
+    
+    fn map_char_to_active_charset(&self, ch: char) -> char {
+        let current_set = self.active_charsets[self.active_charset_g_level];
+        match current_set {
+            CharacterSet::Ascii => ch,
+            CharacterSet::UkNational => if ch == '#' { '£' } else { ch },
+            CharacterSet::DecLineDrawing => map_to_dec_line_drawing(ch),
+            _ => ch,
+        }
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor.x > 0 { self.cursor.x -= 1; }
+        self.last_char_was_wide = false;
+    }
+
+    fn horizontal_tab(&mut self) {
+        let next_stop = self.screen.get_next_tabstop(self.cursor.x)
+            .unwrap_or(self.screen.width.saturating_sub(1));
+        self.cursor.x = min(next_stop, self.screen.width.saturating_sub(1));
+        self.last_char_was_wide = false;
+    }
+
+    fn newline(&mut self, is_line_feed: bool) {
+        let effective_y_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+        let scroll_bot_abs = self.screen.scroll_bot();
+
+        if effective_y_abs == scroll_bot_abs {
+            self.screen.scroll_up_serial(1, self.default_fill_glyph());
+        } else {
+            let max_logical_y = if self.dec_modes.origin_mode {
+                self.screen.scroll_bot() - self.screen.scroll_top()
+            } else {
+                self.screen.height.saturating_sub(1)
+            };
+            if self.cursor.y < max_logical_y {
+                self.cursor.y += 1;
+            }
         }
 
-        // Feed bytes into the ANSI processor's lexer
-        self.ansi_processor.process_bytes(bytes);
+        if is_line_feed { self.cursor.x = 0; }
+        self.last_char_was_wide = false;
+        self.mark_line_dirty(effective_y_abs);
+        let new_effective_y_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+        if effective_y_abs != new_effective_y_abs { self.mark_line_dirty(new_effective_y_abs); }
+    }
 
-        // Retrieve and process the parsed commands
-        let commands = self.ansi_processor.parser.take_commands();
-        for command in commands {
-            trace!("Dispatching command: {:?}", command);
-            match command {
-                AnsiCommand::Print(c) => {
-                    // The ANSI processor handles UTF-8 decoding.
-                    // Handle printable chars, including replacement chars for errors.
-                    if c == REPLACEMENT_CHARACTER {
-                        warn!("ANSI processor emitted REPLACEMENT_CHARACTER");
-                    }
-                    screen::handle_printable(self, c);
+    fn carriage_return(&mut self) {
+        self.cursor.x = 0;
+        self.last_char_was_wide = false;
+    }
+    
+    fn set_g_level(&mut self, g_level: usize) {
+        if g_level < self.active_charsets.len() {
+            self.active_charset_g_level = g_level;
+        } else { warn!("Attempted to set invalid G-level: {}", g_level); }
+    }
+
+    fn designate_character_set(&mut self, g_set_index: usize, charset: CharacterSet) {
+        if g_set_index < self.active_charsets.len() {
+            self.active_charsets[g_set_index] = charset;
+            trace!("Designated G{} to {:?}", g_set_index, charset);
+        } else { warn!("Invalid G-set index for designate charset: {}", g_set_index); }
+    }
+
+    fn index(&mut self) {
+        let current_logical_y = self.cursor.y;
+        let effective_y_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + current_logical_y } else { current_logical_y };
+
+        if effective_y_abs == self.screen.scroll_bot() {
+            self.screen.scroll_up_serial(1, self.default_fill_glyph());
+        } else {
+            let max_logical_y = if self.dec_modes.origin_mode { self.screen.scroll_bot() - self.screen.scroll_top() } else { self.screen.height.saturating_sub(1) };
+            if self.cursor.y < max_logical_y { self.cursor.y += 1; }
+        }
+        self.last_char_was_wide = false;
+        self.mark_line_dirty(effective_y_abs);
+        let new_effective_y_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+        if effective_y_abs != new_effective_y_abs { self.mark_line_dirty(new_effective_y_abs); }
+    }
+
+    fn reverse_index(&mut self) {
+        let current_logical_y = self.cursor.y;
+        let effective_y_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + current_logical_y } else { current_logical_y };
+
+        if effective_y_abs == self.screen.scroll_top() {
+            self.screen.scroll_down_serial(1, self.default_fill_glyph());
+        } else if self.cursor.y > 0 {
+            self.cursor.y -= 1;
+        }
+        self.last_char_was_wide = false;
+        self.mark_line_dirty(effective_y_abs);
+        let new_effective_y_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+        if effective_y_abs != new_effective_y_abs { self.mark_line_dirty(new_effective_y_abs); }
+    }
+
+    fn save_cursor_dec(&mut self) {
+        self.saved_cursor_state = Some(self.cursor);
+        self.saved_attributes_state = Some(self.current_attributes);
+        trace!("DECSC: Saved cursor {:?} and attributes {:?}", self.cursor, self.current_attributes);
+    }
+
+    fn restore_cursor_dec(&mut self) {
+        if let Some(saved_cursor) = self.saved_cursor_state {
+            self.cursor = saved_cursor;
+            if let Some(saved_attrs) = self.saved_attributes_state {
+                self.current_attributes = saved_attrs;
+            }
+            trace!("DECRC: Restored cursor {:?} and attributes {:?}", self.cursor, self.current_attributes);
+        } else {
+            self.cursor = Cursor { x: 0, y: 0, attributes: Attributes::default() };
+            self.current_attributes = Attributes::default();
+            warn!("DECRC: No cursor state saved, restored to default.");
+        }
+        self.last_char_was_wide = false;
+    }
+
+    fn cursor_up(&mut self, n: usize) {
+        self.cursor.y = self.cursor.y.saturating_sub(n);
+        // Clamping to 0 for relative y is fine. Absolute position is handled by effective_y.
+        self.last_char_was_wide = false;
+    }
+
+    fn cursor_down(&mut self, n: usize) {
+        let max_y_logical = if self.dec_modes.origin_mode {
+            self.screen.scroll_bot() - self.screen.scroll_top()
+        } else {
+            self.screen.height.saturating_sub(1)
+        };
+        self.cursor.y = min(self.cursor.y.saturating_add(n), max_y_logical);
+        self.last_char_was_wide = false;
+    }
+
+    fn cursor_forward(&mut self, n: usize) {
+        self.cursor.x = min(self.cursor.x.saturating_add(n), self.screen.width.saturating_sub(1));
+        self.last_char_was_wide = false;
+    }
+
+    fn cursor_backward(&mut self, n: usize) {
+        self.cursor.x = self.cursor.x.saturating_sub(n);
+        self.last_char_was_wide = false;
+    }
+
+    fn cursor_to_column(&mut self, col: usize) {
+        self.cursor.x = min(col, self.screen.width.saturating_sub(1));
+        self.last_char_was_wide = false;
+    }
+
+    fn cursor_to_pos(&mut self, row_abs_or_rel: usize, col: usize) {
+        if self.dec_modes.origin_mode {
+            // row_abs_or_rel is relative to margins (0-based from scroll_top)
+            let max_rel_y = self.screen.scroll_bot() - self.screen.scroll_top();
+            self.cursor.y = min(row_abs_or_rel, max_rel_y);
+        } else {
+            // row_abs_or_rel is absolute screen row (0-based)
+            self.cursor.y = min(row_abs_or_rel, self.screen.height.saturating_sub(1));
+        }
+        self.cursor.x = min(col, self.screen.width.saturating_sub(1));
+        self.last_char_was_wide = false;
+    }
+
+    fn erase_in_display(&mut self, mode: u16) {
+        let fill_glyph = self.default_fill_glyph();
+        let (cx_abs, cy_abs) = (self.cursor.x, if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y });
+
+        match mode {
+            ERASE_MODE_TO_END => {
+                self.screen.fill_region(cy_abs, cx_abs, self.screen.width, fill_glyph.clone());
+                for y in (cy_abs + 1)..self.screen.height {
+                    self.screen.fill_region(y, 0, self.screen.width, fill_glyph.clone());
                 }
-                AnsiCommand::C0Control(ctrl) => {
-                    // Handle C0 controls based on the enum variant
-                    match ctrl {
-                        C0Control::BS => screen::backspace(self),
-                        C0Control::HT => screen::tab(self),
-                        C0Control::LF | C0Control::VT | C0Control::FF => screen::newline(self), // Treat VT/FF as LF
-                        C0Control::CR => screen::carriage_return(self),
-                        C0Control::BEL => {
-                            debug!("BEL received (bell not implemented via backend yet)");
-                            // TODO: Call backend's bell function if available
-                        }
-                        C0Control::ESC => {
-                            // This indicates an ESC *outside* a sequence, which is unusual
-                            // but the parser handles state transitions correctly.
-                            trace!("Standalone ESC processed (parser state handled)");
-                        }
-                        C0Control::SO | C0Control::SI => {
-                            trace!("Ignoring C0 charset shift SO/SI ({:?})", ctrl);
-                        }
-                        C0Control::NUL => { /* Ignore NUL */ }
-                        C0Control::DEL => { /* Ignore DEL */ }
-                        // TODO: Handle other C0s like ENQ, ACK, NAK if needed
-                        _ => {
-                            trace!("Ignoring unhandled C0 control: {:?}", ctrl);
-                        }
-                    }
+            }
+            ERASE_MODE_TO_START => {
+                for y in 0..cy_abs {
+                    self.screen.fill_region(y, 0, self.screen.width, fill_glyph.clone());
                 }
-                AnsiCommand::Csi(csi_cmd) => {
-                    // Handle CSI commands based on the CsiCommand enum variant
-                    match csi_cmd {
-                        CsiCommand::CursorUp(n) => screen::move_cursor(self, 0, -(n as isize)),
-                        CsiCommand::CursorDown(n) => screen::move_cursor(self, 0, n as isize),
-                        CsiCommand::CursorForward(n) => screen::move_cursor(self, n as isize, 0),
-                        CsiCommand::CursorBackward(n) => screen::move_cursor(self, -(n as isize), 0),
-                        CsiCommand::CursorNextLine(n) => {
-                            // Move down n lines, then to column 0
-                            screen::move_cursor(self, 0, n as isize);
-                            self.cursor.x = 0;
-                            self.wrap_next = false;
-                        }
-                        CsiCommand::CursorPrevLine(n) => {
-                            // Move up n lines, then to column 0
-                            screen::move_cursor(self, 0, -(n as isize));
-                            self.cursor.x = 0;
-                            self.wrap_next = false;
-                        }
-                        CsiCommand::CursorCharacterAbsolute(n) => {
-                            let target_x = n.saturating_sub(1) as usize; // 1-based to 0-based
-                            self.cursor.x = min(target_x, self.width.saturating_sub(1));
-                            self.wrap_next = false; // Explicit positioning resets wrap
-                        }
-                        CsiCommand::CursorPosition(row, col) => {
-                            // Params are 1-based
-                            screen::set_cursor_pos(self, col, row);
-                        }
-                        CsiCommand::EraseInDisplay(mode) => {
-                            screen::handle_erase_in_display(self, mode)
-                        }
-                        CsiCommand::EraseInLine(mode) => screen::handle_erase_in_line(self, mode),
-                        CsiCommand::InsertLine(n) => screen::insert_blank_lines(self, n as usize),
-                        CsiCommand::DeleteLine(n) => screen::delete_lines(self, n as usize),
-                        CsiCommand::DeleteCharacter(n) => screen::delete_chars(self, n as usize),
-                        CsiCommand::InsertCharacter(n) => {
-                            screen::insert_blank_chars(self, n as usize)
-                        }
-                        CsiCommand::ScrollUp(n) => screen::scroll_up(self, n as usize),
-                        CsiCommand::ScrollDown(n) => screen::scroll_down(self, n as usize),
-                        CsiCommand::SetGraphicsRendition(attrs) => {
-                            screen::handle_sgr(self, &attrs)
-                        }
-                        CsiCommand::SetModePrivate(mode) => {
-                            screen::handle_dec_mode_set(self, mode, true)
-                        }
-                        CsiCommand::ResetModePrivate(mode) => {
-                            screen::handle_dec_mode_set(self, mode, false)
-                        }
-                        CsiCommand::SetMode(mode) => {
-                            warn!("Ignoring standard Set Mode (SM): CSI {} h", mode);
-                        }
-                        CsiCommand::ResetMode(mode) => {
-                            warn!("Ignoring standard Reset Mode (RM): CSI {} l", mode);
-                        }
-                        CsiCommand::SaveCursor => screen::save_cursor(self), // SCOSC
-                        CsiCommand::RestoreCursor => screen::restore_cursor(self), // SCORC
-                        CsiCommand::DeviceStatusReport(mode) => {
-                            screen::handle_device_status_report(self, mode)
-                        }
-                        CsiCommand::ClearTabStops(mode) => screen::handle_clear_tab_stops(self, mode),
-                        // Add cases for other handled CSI commands
-                        _ => {
-                            warn!("Unhandled parsed CSI command: {:?}", csi_cmd);
-                        }
-                    }
+                self.screen.fill_region(cy_abs, 0, cx_abs + 1, fill_glyph.clone());
+            }
+            ERASE_MODE_ALL => {
+                for y in 0..self.screen.height {
+                    self.screen.fill_region(y, 0, self.screen.width, fill_glyph.clone());
                 }
-                AnsiCommand::Esc(esc_cmd) => {
-                    // Handle simple ESC sequences parsed by the ansi crate
-                    match esc_cmd {
-                        EscCommand::Index => screen::index(self),
-                        EscCommand::NextLine => screen::newline(self),
-                        EscCommand::SetTabStop => screen::set_horizontal_tabstop(self),
-                        EscCommand::ReverseIndex => screen::reverse_index(self),
-                        EscCommand::SaveCursor => screen::save_cursor(self), // DECSC
-                        EscCommand::RestoreCursor => screen::restore_cursor(self), // DECRC
-                        EscCommand::ResetToInitialState => screen::reset(self),
-                        EscCommand::SelectCharacterSet(inter, final_char) => {
-                            screen::handle_select_character_set(self, inter, final_char)
-                        }
-                        // Handle other ESC commands if needed
-                        _ => {
-                            warn!("Unhandled parsed ESC command: {:?}", esc_cmd);
-                        }
-                    }
+            }
+            ERASE_MODE_SCROLLBACK => {
+                self.screen.scrollback.clear();
+                debug!("ED 3 (Erase Scrollback) requested.");
+            }
+            _ => warn!("Unknown ED mode: {}", mode),
+        }
+        self.mark_all_lines_dirty();
+    }
+
+    fn erase_in_line(&mut self, mode: u16) {
+        let fill_glyph = self.default_fill_glyph();
+        let (cx_abs, cy_abs) = (self.cursor.x, if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y });
+
+        match mode {
+            ERASE_MODE_TO_END => self.screen.fill_region(cy_abs, cx_abs, self.screen.width, fill_glyph),
+            ERASE_MODE_TO_START => self.screen.fill_region(cy_abs, 0, cx_abs + 1, fill_glyph),
+            ERASE_MODE_ALL => self.screen.fill_region(cy_abs, 0, self.screen.width, fill_glyph),
+            _ => warn!("Unknown EL mode: {}", mode),
+        }
+        self.mark_line_dirty(cy_abs);
+    }
+    
+    fn erase_chars(&mut self, n: usize) {
+        let fill_glyph = self.default_fill_glyph();
+        let (cx_abs, cy_abs) = (self.cursor.x, if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y });
+        let end_x = min(cx_abs + n, self.screen.width);
+        self.screen.fill_region(cy_abs, cx_abs, end_x, fill_glyph);
+        self.mark_line_dirty(cy_abs);
+    }
+
+    fn insert_blank_chars(&mut self, n: usize) {
+        let cy_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+        self.screen.insert_blank_chars_in_line(cy_abs, self.cursor.x, n, self.default_fill_glyph());
+        self.mark_line_dirty(cy_abs);
+    }
+
+    fn delete_chars(&mut self, n: usize) {
+        let cy_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+        self.screen.delete_chars_in_line(cy_abs, self.cursor.x, n, self.default_fill_glyph());
+        self.mark_line_dirty(cy_abs);
+    }
+
+    fn insert_lines(&mut self, n: usize) {
+        let cy_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+        if cy_abs >= self.screen.scroll_top() && cy_abs <= self.screen.scroll_bot() {
+            let original_scroll_top = self.screen.scroll_top();
+            let original_scroll_bottom = self.screen.scroll_bot();
+            self.screen.set_scrolling_region(cy_abs + 1, original_scroll_bottom + 1);
+            self.screen.scroll_down_serial(n, self.default_fill_glyph());
+            self.screen.set_scrolling_region(original_scroll_top + 1, original_scroll_bottom + 1);
+            self.mark_all_lines_dirty();
+        }
+    }
+
+    fn delete_lines(&mut self, n: usize) {
+        let cy_abs = if self.dec_modes.origin_mode { self.screen.scroll_top() + self.cursor.y } else { self.cursor.y };
+        if cy_abs >= self.screen.scroll_top() && cy_abs <= self.screen.scroll_bot() {
+            let original_scroll_top = self.screen.scroll_top();
+            let original_scroll_bottom = self.screen.scroll_bot();
+            self.screen.set_scrolling_region(cy_abs + 1, original_scroll_bottom + 1);
+            self.screen.scroll_up_serial(n, self.default_fill_glyph());
+            self.screen.set_scrolling_region(original_scroll_top + 1, original_scroll_bottom + 1);
+            self.mark_all_lines_dirty();
+        }
+    }
+    
+    fn scroll_up(&mut self, n: usize) {
+        self.screen.scroll_up_serial(n, self.default_fill_glyph());
+        self.mark_all_lines_dirty();
+    }
+
+    fn scroll_down(&mut self, n: usize) {
+        self.screen.scroll_down_serial(n, self.default_fill_glyph());
+        self.mark_all_lines_dirty();
+    }
+
+    fn handle_sgr_attributes(&mut self, attributes_vec: Vec<Attribute>) {
+        for attr_cmd in attributes_vec {
+            match attr_cmd {
+                Attribute::Reset => self.current_attributes = Attributes::default(),
+                Attribute::Bold => self.current_attributes.flags.insert(AttrFlags::BOLD),
+                Attribute::Faint => self.current_attributes.flags.insert(AttrFlags::FAINT),
+                Attribute::Italic => self.current_attributes.flags.insert(AttrFlags::ITALIC),
+                Attribute::Underline => self.current_attributes.flags.insert(AttrFlags::UNDERLINE),
+                Attribute::SlowBlink | Attribute::RapidBlink => self.current_attributes.flags.insert(AttrFlags::BLINK),
+                Attribute::Reverse => self.current_attributes.flags.insert(AttrFlags::REVERSE), // Corrected
+                Attribute::Hidden => self.current_attributes.flags.insert(AttrFlags::HIDDEN),  // Corrected
+                Attribute::Strike => self.current_attributes.flags.insert(AttrFlags::STRIKETHROUGH), // Corrected
+                Attribute::Font(_font_num) => { /* TODO: Font selection */ }
+                Attribute::DefaultForeground => self.current_attributes.fg = GlyphColor::Default,
+                Attribute::DefaultBackground => self.current_attributes.bg = GlyphColor::Default,
+                Attribute::Foreground(color) => self.current_attributes.fg = map_ansi_color_to_glyph_color(color),
+                Attribute::Background(color) => self.current_attributes.bg = map_ansi_color_to_glyph_color(color),
+                Attribute::CancelBoldFaint => {
+                    self.current_attributes.flags.remove(AttrFlags::BOLD);
+                    self.current_attributes.flags.remove(AttrFlags::FAINT);
                 }
-                AnsiCommand::Osc(data) => screen::handle_osc(self, &data),
-                AnsiCommand::Dcs(data) => {
-                    warn!("Unhandled DCS sequence, data len: {}", data.len());
-                    // screen::handle_dcs(self, &data) // Define if needed
-                }
-                AnsiCommand::Pm(data) => {
-                    warn!("Unhandled PM sequence, data len: {}", data.len());
-                    // screen::handle_pm(self, &data) // Define if needed
-                }
-                AnsiCommand::Apc(data) => {
-                    warn!("Unhandled APC sequence, data len: {}", data.len());
-                    // screen::handle_apc(self, &data) // Define if needed
-                }
-                AnsiCommand::StringTerminator => { /* Usually no action needed here */ }
-                AnsiCommand::C1Control(byte) => {
-                    // Most C1 are handled via ESC or specific command types now.
-                    // Handle any remaining C1 codes if necessary.
-                    warn!("Unhandled C1 control byte: 0x{:02X}", byte);
-                }
-                AnsiCommand::Ignore(byte) => {
-                    trace!("ANSI processor ignored byte: 0x{:02X}", byte);
-                }
-                AnsiCommand::Error(byte) => {
-                    warn!("ANSI processor reported error at byte: 0x{:02X}", byte);
-                }
+                Attribute::CancelItalic => self.current_attributes.flags.remove(AttrFlags::ITALIC),
+                Attribute::CancelUnderline => self.current_attributes.flags.remove(AttrFlags::UNDERLINE),
+                Attribute::CancelBlink => self.current_attributes.flags.remove(AttrFlags::BLINK),
+                Attribute::CancelReverse => self.current_attributes.flags.remove(AttrFlags::REVERSE),
+                Attribute::CancelHidden => self.current_attributes.flags.remove(AttrFlags::HIDDEN),
+                Attribute::CancelStrike => self.current_attributes.flags.remove(AttrFlags::STRIKETHROUGH),
+            }
+        }
+    }
+    
+    fn handle_set_mode(&mut self, mode_cmd: Mode, enable: bool) -> Option<EmulatorAction> {
+        match mode_cmd {
+            Mode::DecPrivate(mode_num) => self.set_dec_private_mode(mode_num, enable),
+            Mode::Standard(_mode_num) => {
+                warn!("Standard mode set/reset not fully implemented yet: {:?}", mode_cmd);
+                None
             }
         }
     }
 
-    // Removed process_byte_in_parser as it's handled by AnsiProcessor now
-
-    /// Resizes the terminal emulator state, including screen buffers and cursor position.
-    /// Resets the scrolling region to the full screen size.
-    pub fn resize(&mut self, new_width: usize, new_height: usize) {
-        let old_height = self.height;
-        let old_width = self.width;
-        // Ensure minimum dimensions of 1x1.
-        let new_height = max(1, new_height);
-        let new_width = max(1, new_width);
-
-        // Reset scroll region *before* calling screen::resize, as screen::resize
-        // might clamp cursor positions based on the old region if called first.
-        self.scroll_top = 0;
-        self.scroll_bot = new_height.saturating_sub(1);
-
-        if old_height == new_height && old_width == new_width {
-            debug!(
-                "Resize called with same dimensions ({}, {}), only reset scroll region.",
-                new_width, new_height
-            );
-            return;
+    fn set_dec_private_mode(&mut self, mode: u16, enable: bool) -> Option<EmulatorAction> {
+        let mut action = None;
+        match mode {
+            DECCKM_MODE => self.dec_modes.cursor_keys_app_mode = enable,
+            DECOM_MODE => {
+                self.dec_modes.origin_mode = enable;
+                self.screen.origin_mode = enable;
+                if enable { self.cursor.x = 0; self.cursor.y = 0; } 
+                else { self.cursor.x = 0; self.cursor.y = 0; }
+            }
+            DECTCEM_MODE => {
+                self.dec_modes.cursor_visible = enable;
+                action = Some(EmulatorAction::SetCursorVisibility(enable));
+            }
+            ALT_SCREEN_BUF_1047_MODE => {
+                if enable {
+                    if !self.dec_modes.using_alt_screen {
+                        self.screen.enter_alt_screen(true);
+                        self.dec_modes.using_alt_screen = true;
+                        action = Some(EmulatorAction::RequestRedraw);
+                    }
+                } else {
+                    if self.dec_modes.using_alt_screen {
+                        self.screen.exit_alt_screen();
+                        self.dec_modes.using_alt_screen = false;
+                        action = Some(EmulatorAction::RequestRedraw);
+                    }
+                }
+            }
+            ALT_SCREEN_SAVE_RESTORE_1049_MODE => {
+                 if enable {
+                    if !self.dec_modes.using_alt_screen {
+                        self.save_cursor_dec(); 
+                        self.screen.enter_alt_screen(true); 
+                        self.dec_modes.using_alt_screen = true;
+                        action = Some(EmulatorAction::RequestRedraw);
+                    }
+                } else {
+                    if self.dec_modes.using_alt_screen {
+                        self.screen.exit_alt_screen(); 
+                        self.restore_cursor_dec(); 
+                        self.dec_modes.using_alt_screen = false;
+                        action = Some(EmulatorAction::RequestRedraw);
+                    }
+                }
+            }
+            CURSOR_SAVE_RESTORE_1048_MODE => {
+                if enable { self.save_cursor_dec(); }
+                else { self.restore_cursor_dec(); }
+            }
+            _ => warn!("Unknown DEC private mode {} to set/reset: {}", mode, enable),
         }
-        debug!(
-            "Resizing terminal from {}x{} to {}x{}",
-            old_width, old_height, new_width, new_height
-        );
+        action
+    }
 
-        // Call the screen submodule's resize logic to handle buffer adjustments.
-        screen::resize(self, new_width, new_height);
-
-        // Update the main Term struct's dimensions *after* screen::resize.
-        self.width = new_width;
-        self.height = new_height;
-
-        // Mark all lines dirty after resize
-        self.dirty.resize(new_height, 1);
-        self.dirty.fill(1);
+    fn handle_osc(&mut self, data: Vec<u8>) -> Option<EmulatorAction> {
+        let osc_str = String::from_utf8_lossy(&data);
+        let parts: Vec<&str> = osc_str.splitn(2, ';').collect();
+        if parts.len() == 2 {
+            let ps = parts[0].parse::<u32>().unwrap_or(u32::MAX);
+            let pt = parts[1].to_string();
+            match ps {
+                0 | 2 => return Some(EmulatorAction::SetTitle(pt)),
+                _ => debug!("Unhandled OSC command: Ps={}, Pt='{}'", ps, pt),
+            }
+        } else { warn!("Malformed OSC sequence: {}", osc_str); }
+        None
     }
 }
 
-// --- Private Helper Functions (Moved to screen module or removed) ---
-// Removed clear_csi_params, clear_osc_string, push_csi_param, next_csi_param,
-// get_csi_param, get_csi_param_or_0 as these are handled by AnsiProcessor/commands.
+fn map_ansi_color_to_glyph_color(ansi_color: AnsiColor) -> GlyphColor {
+    match ansi_color {
+        AnsiColor::Default => GlyphColor::Default,
+        AnsiColor::Black => GlyphColor::Named(NamedColor::Black),
+        AnsiColor::Red => GlyphColor::Named(NamedColor::Red),
+        AnsiColor::Green => GlyphColor::Named(NamedColor::Green),
+        AnsiColor::Yellow => GlyphColor::Named(NamedColor::Yellow),
+        AnsiColor::Blue => GlyphColor::Named(NamedColor::Blue),
+        AnsiColor::Magenta => GlyphColor::Named(NamedColor::Magenta),
+        AnsiColor::Cyan => GlyphColor::Named(NamedColor::Cyan),
+        AnsiColor::White => GlyphColor::Named(NamedColor::White),
+        AnsiColor::BrightBlack => GlyphColor::Named(NamedColor::BrightBlack),
+        AnsiColor::BrightRed => GlyphColor::Named(NamedColor::BrightRed),
+        AnsiColor::BrightGreen => GlyphColor::Named(NamedColor::BrightGreen),
+        AnsiColor::BrightYellow => GlyphColor::Named(NamedColor::BrightYellow),
+        AnsiColor::BrightBlue => GlyphColor::Named(NamedColor::BrightBlue),
+        AnsiColor::BrightMagenta => GlyphColor::Named(NamedColor::BrightMagenta),
+        AnsiColor::BrightCyan => GlyphColor::Named(NamedColor::BrightCyan),
+        AnsiColor::BrightWhite => GlyphColor::Named(NamedColor::BrightWhite),
+        AnsiColor::Indexed(idx) => {
+            if idx < 16 {
+                GlyphColor::Named(NamedColor::from_index(idx))
+            } else {
+                GlyphColor::Indexed(idx) // Use the new Indexed variant for 16-255
+            }
+        }
+        AnsiColor::Rgb(r, g, b) => GlyphColor::Rgb(r, g, b),
+    }
+}
 
-// --- State Transition Handlers (Removed) ---
-// Removed handle_ground_control_or_esc, handle_escape_byte, handle_csi_entry_byte,
-// handle_csi_param_byte, handle_csi_intermediate_byte, handle_csi_ignore_byte,
-// handle_osc_string_byte as these are replaced by the AnsiProcessor logic.
+fn map_to_dec_line_drawing(ch: char) -> char {
+    match ch {
+        '`' => '◆', 'a' => '▒', 'b' => '\u{2409}', 'c' => '\u{240C}', 'd' => '\u{240D}',
+        'e' => '\u{240A}', 'f' => '°', 'g' => '±', 'h' => '\u{2424}', 'i' => '\u{240B}',
+        'j' => '┘', 'k' => '┐', 'l' => '┌', 'm' => '└', 'n' => '┼',
+        'o' => '─', 'p' => '─', 'q' => '─', 'r' => '─', 's' => '─',
+        't' => '├', 'u' => '┤', 'v' => '┴', 'w' => '┬', 'x' => '│',
+        'y' => '≤', 'z' => '≥', '{' => 'π', '|' => '≠', '}' => '£', '~' => '·',
+        _ => ch,
+    }
+}
 
-// --- Dispatch Functions (Removed) ---
-// Removed csi_dispatch, handle_osc_dispatch, handle_sgr, handle_dec_mode_enable,
-// handle_dec_mode_disable, apply_dec_mode_actions. Logic moved to screen module
-// or handled directly in process_bytes match statement.
-
-// Keep tests module declaration
-#[cfg(test)]
-mod tests;
-
-// Remove parser submodule declaration if the file is removed
-// mod parser;
+// Placeholder - needs proper implementation based on backends::KeyEvent
+fn key_event_to_char(_event: &KeyEvent) -> Option<char> {
+    None
+}
 

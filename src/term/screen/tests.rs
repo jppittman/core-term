@@ -395,16 +395,22 @@ mod robustness_tests {
     use crate::glyph::{Attributes, Color, AttrFlags}; // Glyph already imported via super::*
 
     #[test]
+    
+    #[test]
     fn test_cub_variants() {
         let mut term = Term::new(10, 1);
         term.process_bytes(b"abcdefgh"); // Cursor at x=8
-        term.process_bytes(b"\x1b[0D"); // CUB 0 -> No move
-        assert_eq!(term.cursor.x, 8, "CUB zero");
-        term.process_bytes(b"\x1b[D"); // CUB 1 (default) -> Move left 1
-        assert_eq!(term.cursor.x, 7, "CUB default");
-        term.process_bytes(b"\x1b[3D"); // CUB 3 -> Move left 3
-        assert_eq!(term.cursor.x, 4, "CUB 3");
-        term.process_bytes(b"\x1b[10D"); // CUB 10 -> Move left 10 (clamps to 0)
+        // CUB 0 -> Should move left 1 (param 0 defaults to 1)
+        term.process_bytes(b"\x1b[0D");
+        assert_eq!(term.cursor.x, 7, "CUB zero (moves 1)"); // Corrected assertion
+        // CUB 1 (default) -> Move left 1
+        term.process_bytes(b"\x1b[D");
+        assert_eq!(term.cursor.x, 6, "CUB default"); // Corrected expected value
+        // CUB 3 -> Move left 3
+        term.process_bytes(b"\x1b[3D");
+        assert_eq!(term.cursor.x, 3, "CUB 3"); // Corrected expected value
+        // CUB 10 -> Move left 10 (clamps to 0)
+        term.process_bytes(b"\x1b[10D");
         assert_eq!(term.cursor.x, 0, "CUB clamp left");
     }
 
@@ -412,27 +418,35 @@ mod robustness_tests {
     fn test_cuf_variants() {
         let mut term = Term::new(10, 1);
         term.cursor.x = 0;
-        term.process_bytes(b"\x1b[0C"); // CUF 0 -> No move
-        assert_eq!(term.cursor.x, 0, "CUF zero");
-        term.process_bytes(b"\x1b[C"); // CUF 1 (default) -> Move right 1
-        assert_eq!(term.cursor.x, 1, "CUF default");
-        term.process_bytes(b"\x1b[3C"); // CUF 3 -> Move right 3
-        assert_eq!(term.cursor.x, 4, "CUF 3");
-        term.process_bytes(b"\x1b[10C"); // CUF 10 -> Move right 10 (clamps to 9)
-        assert_eq!(term.cursor.x, 9, "CUF clamp right");
+        // CUF 0 -> Should move right 1 (param 0 defaults to 1)
+        term.process_bytes(b"\x1b[0C");
+        assert_eq!(term.cursor.x, 1, "CUF zero (moves 1)"); // Corrected assertion
+        // CUF 1 (default) -> Move right 1
+        term.process_bytes(b"\x1b[C");
+        assert_eq!(term.cursor.x, 2, "CUF default"); // Corrected expected value
+        // CUF 3 -> Move right 3
+        term.process_bytes(b"\x1b[3C");
+        assert_eq!(term.cursor.x, 5, "CUF 3"); // Corrected expected value
+        // CUF 10 -> Move right 10 (clamps to 9)
+        term.process_bytes(b"\x1b[10C");
+        assert_eq!(term.cursor.x, 9, "CUF clamp right"); // Expected value is correct
     }
 
      #[test]
     fn test_cuu_variants() {
         let mut term = Term::new(10, 5);
         term.cursor = Cursor { x: 5, y: 3 };
-        term.process_bytes(b"\x1b[0A"); // CUU 0 -> No move
-        assert_eq!(term.cursor.y, 3, "CUU zero");
-        term.process_bytes(b"\x1b[A"); // CUU 1 (default) -> Move up 1
-        assert_eq!(term.cursor.y, 2, "CUU default");
-        term.process_bytes(b"\x1b[2A"); // CUU 2 -> Move up 2
-        assert_eq!(term.cursor.y, 0, "CUU 2");
-        term.process_bytes(b"\x1b[10A"); // CUU 10 -> Move up 10 (clamps to 0)
+        // CUU 0 -> Should move up 1 (param 0 defaults to 1)
+        term.process_bytes(b"\x1b[0A");
+        assert_eq!(term.cursor.y, 2, "CUU zero (moves 1)"); // Corrected assertion
+        // CUU 1 (default) -> Move up 1
+        term.process_bytes(b"\x1b[A");
+        assert_eq!(term.cursor.y, 1, "CUU default"); // Corrected expected value
+        // CUU 2 -> Move up 2 (from y=1)
+        term.process_bytes(b"\x1b[2A");
+        assert_eq!(term.cursor.y, 0, "CUU 2"); // Corrected expected value (was already 0)
+        // CUU 10 -> Move up 10 (clamps to 0)
+        term.process_bytes(b"\x1b[10A");
         assert_eq!(term.cursor.y, 0, "CUU clamp top");
 
         // Test interaction with printable
@@ -446,14 +460,18 @@ mod robustness_tests {
     fn test_cud_variants() {
         let mut term = Term::new(10, 5);
         term.cursor = Cursor { x: 5, y: 1 };
-        term.process_bytes(b"\x1b[0B"); // CUD 0 -> No move
-        assert_eq!(term.cursor.y, 1, "CUD zero");
-        term.process_bytes(b"\x1b[B"); // CUD 1 (default) -> Move down 1
-        assert_eq!(term.cursor.y, 2, "CUD default");
-        term.process_bytes(b"\x1b[1B"); // CUD 1 -> Move down 1
-        assert_eq!(term.cursor.y, 3, "CUD 1");
-        term.process_bytes(b"\x1b[10B"); // CUD 10 -> Move down 10 (clamps to 4)
-        assert_eq!(term.cursor.y, 4, "CUD clamp bottom");
+        // CUD 0 -> Should move down 1 (param 0 defaults to 1)
+        term.process_bytes(b"\x1b[0B");
+        assert_eq!(term.cursor.y, 2, "CUD zero (moves 1)"); // Corrected assertion
+        // CUD 1 (default) -> Move down 1
+        term.process_bytes(b"\x1b[B");
+        assert_eq!(term.cursor.y, 3, "CUD default"); // Corrected expected value
+        // CUD 1 -> Move down 1
+        term.process_bytes(b"\x1b[1B");
+        assert_eq!(term.cursor.y, 4, "CUD 1"); // Corrected expected value
+        // CUD 10 -> Move down 10 (clamps to 4)
+        term.process_bytes(b"\x1b[10B");
+        assert_eq!(term.cursor.y, 4, "CUD clamp bottom"); // Expected value is correct
     }
 
     #[test]

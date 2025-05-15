@@ -595,6 +595,26 @@ fn test_process_fragmented_string_with_print() {
     assert_eq!(results[2], expected2);
 }
 
+// --- UTF-8 Fragmentation Regression Test ---
+#[test]
+fn test_process_fragmented_utf8() {
+    // Test the character '你' (U+4F60), which is e4 bd a0 in UTF-8
+    let fragments = [
+        b"A".as_slice(),
+        b"\xE4".as_slice(), // Start of '你'
+        b"\xBD".as_slice(), // Middle of '你'
+        b"\xA0".as_slice(), // End of '你'
+        b"B".as_slice(),
+    ];
+    let results = process_bytes_fragments(&fragments);
+
+    assert_eq!(results[0], vec![AnsiCommand::Print('A')], "Frag 0");
+    assert_eq!(results[1], vec![], "Frag 1 (incomplete)");
+    assert_eq!(results[2], vec![], "Frag 2 (incomplete)");
+    assert_eq!(results[3], vec![AnsiCommand::Print('你')], "Frag 3 (complete)");
+    assert_eq!(results[4], vec![AnsiCommand::Print('B')], "Frag 4");
+}
+
 
 // --- String Sequence Tests ---
 
