@@ -19,7 +19,6 @@ pub mod x11;
 pub const DEFAULT_WINDOW_WIDTH_CHARS: usize = 80;
 pub const DEFAULT_WINDOW_HEIGHT_CHARS: usize = 24;
 
-
 /// Represents events originating from the backend (platform-specific UI/input).
 /// These events are processed by the Orchestrator, which may then update the
 /// TerminalEmulator or perform other actions.
@@ -73,7 +72,6 @@ pub struct CellRect {
     pub height: usize,
 }
 
-
 /// Defines the interface for a rendering and platform interaction driver.
 ///
 /// A `Driver` is responsible for:
@@ -124,12 +122,7 @@ pub trait Driver {
     /// * `text` - The string of characters to draw. Assumed to be single-width by default,
     ///            but driver should handle based on font metrics if possible.
     /// * `style` - The `TextRunStyle` (fg, bg, flags) for the text.
-    fn draw_text_run(
-        &mut self,
-        coords: CellCoords,
-        text: &str,
-        style: TextRunStyle,
-    ) -> Result<()>;
+    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()>;
 
     /// Fills a rectangular area of cells with a specified color.
     /// This is typically used for clearing parts of lines or drawing backgrounds.
@@ -137,11 +130,7 @@ pub trait Driver {
     /// # Arguments
     /// * `rect` - The `CellRect` defining the area to fill.
     /// * `color` - The `Color` to fill the rectangle with.
-    fn fill_rect(
-        &mut self,
-        rect: CellRect,
-        color: Color,
-    ) -> Result<()>;
+    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()>;
 
     /// Presents the composed frame to the display.
     /// For double-buffered systems, this would swap buffers. For others, it might flush an output stream.
@@ -152,4 +141,3 @@ pub trait Driver {
     /// restoring terminal modes). This method should be idempotent.
     fn cleanup(&mut self) -> Result<()>;
 }
-

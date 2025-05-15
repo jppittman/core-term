@@ -48,7 +48,7 @@ pub enum DecModeConstant {
     Origin = 6,
     /// Text Cursor Enable Mode (DECTCEM). Controls visibility of the text cursor.
     TextCursorEnable = 25,
-    
+
     // Mouse modes
     /// X10 Mouse Reporting (Compatibility). Sends basic click information.
     MouseX10 = 9,
@@ -78,7 +78,7 @@ pub enum DecModeConstant {
     SaveRestoreCursor = 1048,
     /// Use Alternate Screen Buffer, save/restore cursor, and clear buffer on switch (like xterm's 1049).
     AltScreenBufferSaveRestore = 1049,
-    
+
     /// Bracketed Paste Mode. Pasted text is bracketed by special sequences.
     BracketedPaste = 2004,
 
@@ -92,7 +92,8 @@ pub enum DecModeConstant {
 impl DecModeConstant {
     /// Converts a `u16` value to an `Option<DecModeConstant>`.
     /// Returns `None` if the value does not correspond to a known constant.
-    pub fn from_u16(value: u16) -> Option<Self> { // Made pub as it's useful for the calling module
+    pub fn from_u16(value: u16) -> Option<Self> {
+        // Made pub as it's useful for the calling module
         match value {
             1 => Some(DecModeConstant::CursorKeys),
             6 => Some(DecModeConstant::Origin),
@@ -130,7 +131,6 @@ pub struct DecPrivateModes {
     /// Indicates if the alternate screen buffer is currently active (due to modes like 1047 or 1049).
     pub using_alt_screen: bool,
     // Note: Cursor visibility (DECTCEM - ?25) is managed by `CursorController` but influenced by these modes.
-    
     /// Bracketed Paste Mode (`?2004h`/`?2004l`).
     /// If true, pasted text is enclosed in `\x1b[200~` and `\x1b[201~`.
     pub bracketed_paste_mode: bool,

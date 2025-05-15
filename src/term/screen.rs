@@ -13,7 +13,7 @@
 use std::cmp::min;
 use std::collections::VecDeque;
 
-use crate::glyph::{Glyph, Attributes, DEFAULT_GLYPH};
+use crate::glyph::{Attributes, DEFAULT_GLYPH, Glyph};
 use crate::term::DEFAULT_TAB_INTERVAL;
 use log::{trace, warn};
 
@@ -45,7 +45,6 @@ impl From<u16> for TabClearMode {
         }
     }
 }
-
 
 /// Represents the state of the terminal screen.
 ///
@@ -88,7 +87,6 @@ pub struct Screen {
     pub origin_mode: bool,
 }
 
-
 impl Screen {
     /// Creates a new `Screen` with the given dimensions and scrollback limit.
     ///
@@ -105,9 +103,15 @@ impl Screen {
         // Initialize default_attributes from a global constant or a sensible default.
         // TerminalEmulator will be responsible for updating this as SGR commands are processed.
         let default_attributes = DEFAULT_GLYPH.attr;
-        let default_fill_char = Glyph { c: ' ', attr: default_attributes };
+        let default_fill_char = Glyph {
+            c: ' ',
+            attr: default_attributes,
+        };
 
-        trace!("Creating new Screen: {}x{}, scrollback: {}", w, h, scrollback_limit);
+        trace!(
+            "Creating new Screen: {}x{}, scrollback: {}",
+            w, h, scrollback_limit
+        );
 
         let grid = vec![vec![default_fill_char.clone(); w]; h];
         let alt_grid = vec![vec![default_fill_char.clone(); w]; h];
@@ -154,7 +158,7 @@ impl Screen {
             &self.grid
         }
     }
-    
+
     /// Returns the 0-based top row of the scrolling region.
     pub fn scroll_top(&self) -> usize {
         self.scroll_top
@@ -164,7 +168,7 @@ impl Screen {
     pub fn scroll_bot(&self) -> usize {
         self.scroll_bot
     }
-    
+
     /// Returns the current scrollback limit.
     pub fn scrollback_limit(&self) -> usize {
         self.scrollback_limit
@@ -173,7 +177,10 @@ impl Screen {
     /// Helper to get the glyph used for filling cleared areas.
     /// It uses a space character with the screen's `default_attributes`.
     fn get_default_fill_glyph(&self) -> Glyph {
-        Glyph { c: ' ', attr: self.default_attributes }
+        Glyph {
+            c: ' ',
+            attr: self.default_attributes,
+        }
     }
 
     /// Fills a rectangular region of a single line `y` from `x_start` (inclusive)
@@ -187,9 +194,18 @@ impl Screen {
     /// * `x_start` - The starting column index (inclusive).
     /// * `x_end` - The ending column index (exclusive).
     /// * `fill_glyph` - The `Glyph` to fill the region with.
-    pub fn fill_region_with_glyph(&mut self, y: usize, x_start: usize, x_end: usize, fill_glyph: Glyph) {
+    pub fn fill_region_with_glyph(
+        &mut self,
+        y: usize,
+        x_start: usize,
+        x_end: usize,
+        fill_glyph: Glyph,
+    ) {
         if y >= self.height {
-            warn!("fill_region_with_glyph: y coordinate {} is out of bounds (height {})", y, self.height);
+            warn!(
+                "fill_region_with_glyph: y coordinate {} is out of bounds (height {})",
+                y, self.height
+            );
             return;
         }
         let width = self.width;
@@ -198,7 +214,10 @@ impl Screen {
         let row = match self.active_grid_mut().get_mut(y) {
             Some(r) => r,
             None => {
-                warn!("fill_region_with_glyph: Failed to get row {} despite bounds check (height {}). Internal inconsistency.", y, height);
+                warn!(
+                    "fill_region_with_glyph: Failed to get row {} despite bounds check (height {}). Internal inconsistency.",
+                    y, height
+                );
                 return;
             }
         };
@@ -214,7 +233,6 @@ impl Screen {
         self.mark_line_dirty(y);
     }
 
-
     /// Scrolls the content of the defined scrolling region up by `n` lines.
     /// New lines appearing at the bottom are filled using `self.default_attributes`.
     ///
@@ -224,12 +242,20 @@ impl Screen {
         let fill_glyph = self.get_default_fill_glyph();
         // --- Rest of the logic is the same as before, but uses the locally obtained fill_glyph ---
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
-            warn!("scroll_up_serial: Invalid scroll region top={}, bot={}, height={}", self.scroll_top, self.scroll_bot, self.height);
+            warn!(
+                "scroll_up_serial: Invalid scroll region top={}, bot={}, height={}",
+                self.scroll_top, self.scroll_bot, self.height
+            );
             return;
         }
         let n_val = n.min(self.scroll_bot.saturating_sub(self.scroll_top) + 1);
-        if n_val == 0 { return; }
-        trace!("Scrolling up by {} lines in region ({}, {}) with default fill", n_val, self.scroll_top, self.scroll_bot);
+        if n_val == 0 {
+            return;
+        }
+        trace!(
+            "Scrolling up by {} lines in region ({}, {}) with default fill",
+            n_val, self.scroll_top, self.scroll_bot
+        );
 
         let top = self.scroll_top;
         let bot = self.scroll_bot;
@@ -240,11 +266,11 @@ impl Screen {
                     self.scrollback.pop_front();
                 }
                 if self.scrollback_limit > 0 && i < self.grid.len() {
-                        self.scrollback.push_back(self.grid[i].clone());
+                    self.scrollback.push_back(self.grid[i].clone());
                 }
             }
         }
-        
+
         let active_grid = self.active_grid_mut();
         active_grid[top..=bot].rotate_left(n_val);
 
@@ -268,16 +294,24 @@ impl Screen {
         let fill_glyph = self.get_default_fill_glyph();
         // --- Rest of the logic is the same as before ---
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
-             warn!("scroll_down_serial: Invalid scroll region top={}, bot={}, height={}", self.scroll_top, self.scroll_bot, self.height);
+            warn!(
+                "scroll_down_serial: Invalid scroll region top={}, bot={}, height={}",
+                self.scroll_top, self.scroll_bot, self.height
+            );
             return;
         }
         let n_val = n.min(self.scroll_bot.saturating_sub(self.scroll_top) + 1);
-        if n_val == 0 { return; }
-        trace!("Scrolling down by {} lines in region ({}, {}) with default fill", n_val, self.scroll_top, self.scroll_bot);
+        if n_val == 0 {
+            return;
+        }
+        trace!(
+            "Scrolling down by {} lines in region ({}, {}) with default fill",
+            n_val, self.scroll_top, self.scroll_bot
+        );
 
         let top = self.scroll_top;
         let bot = self.scroll_bot;
-        
+
         let active_grid = self.active_grid_mut();
         active_grid[top..=bot].rotate_right(n_val);
 
@@ -302,7 +336,10 @@ impl Screen {
         let fill_glyph = self.get_default_fill_glyph();
         // --- Rest of the logic is the same as before ---
         if y >= self.height {
-            warn!("insert_blank_chars_in_line: y coordinate {} out of bounds (height {}).", y, self.height);
+            warn!(
+                "insert_blank_chars_in_line: y coordinate {} out of bounds (height {}).",
+                y, self.height
+            );
             return;
         }
         let width = self.width;
@@ -313,7 +350,13 @@ impl Screen {
 
         let row = match self.active_grid_mut().get_mut(y) {
             Some(r) => r,
-            None => { warn!("insert_blank_chars_in_line: Failed to get row {} for insertion.", y); return; }
+            None => {
+                warn!(
+                    "insert_blank_chars_in_line: Failed to get row {} for insertion.",
+                    y
+                );
+                return;
+            }
         };
 
         let count = n.min(width.saturating_sub(x));
@@ -341,7 +384,10 @@ impl Screen {
         let fill_glyph = self.get_default_fill_glyph();
         // --- Rest of the logic is the same as before ---
         if y >= self.height {
-            warn!("delete_chars_in_line: y coordinate {} out of bounds (height {}).", y, self.height);
+            warn!(
+                "delete_chars_in_line: y coordinate {} out of bounds (height {}).",
+                y, self.height
+            );
             return;
         }
 
@@ -352,7 +398,13 @@ impl Screen {
 
         let row = match self.active_grid_mut().get_mut(y) {
             Some(r) => r,
-            None => { warn!("delete_chars_in_line: Failed to get row {} for deletion.", y); return; }
+            None => {
+                warn!(
+                    "delete_chars_in_line: Failed to get row {} for deletion.",
+                    y
+                );
+                return;
+            }
         };
 
         let count = n.min(width.saturating_sub(x));
@@ -374,9 +426,10 @@ impl Screen {
     pub fn resize(&mut self, new_width: usize, new_height: usize, new_scrollback_limit: usize) {
         let nw = new_width.max(1);
         let nh = new_height.max(1);
-        warn!("Screen resize from {}x{} (scrollback: {}) to {}x{} (scrollback: {})",
-              self.width, self.height, self.scrollback_limit,
-              nw, nh, new_scrollback_limit);
+        warn!(
+            "Screen resize from {}x{} (scrollback: {}) to {}x{} (scrollback: {})",
+            self.width, self.height, self.scrollback_limit, nw, nh, new_scrollback_limit
+        );
 
         let old_width = self.width;
         self.width = nw;
@@ -392,11 +445,12 @@ impl Screen {
         for row_ref in self.grid.iter_mut() {
             row_ref.resize(nw, fill_glyph.clone());
         }
-        self.alt_grid.resize_with(nh, || vec![fill_glyph.clone(); nw]);
+        self.alt_grid
+            .resize_with(nh, || vec![fill_glyph.clone(); nw]);
         for row_ref in self.alt_grid.iter_mut() {
             row_ref.resize(nw, fill_glyph.clone());
         }
-        
+
         if old_width != nw {
             for row_ref in self.scrollback.iter_mut() {
                 row_ref.resize(nw, fill_glyph.clone());
@@ -414,11 +468,16 @@ impl Screen {
 
         self.tabs = vec![false; nw];
         for i in (DEFAULT_TAB_INTERVAL as usize..nw).step_by(DEFAULT_TAB_INTERVAL as usize) {
-            if i < self.tabs.len() { self.tabs[i] = true; }
+            if i < self.tabs.len() {
+                self.tabs[i] = true;
+            }
         }
-        
+
         self.dirty = vec![1; nh];
-        trace!("Screen resized. New dimensions: {}x{}. All lines marked dirty.", nw, nh);
+        trace!(
+            "Screen resized. New dimensions: {}x{}. All lines marked dirty.",
+            nw, nh
+        );
     }
 
     /// Marks all lines on the screen as dirty.
@@ -431,7 +490,12 @@ impl Screen {
         if y < self.dirty.len() {
             self.dirty[y] = 1;
         } else {
-            warn!("mark_line_dirty: y coordinate {} is out of bounds for dirty flags (len {}), screen height is {}", y, self.dirty.len(), self.height);
+            warn!(
+                "mark_line_dirty: y coordinate {} is out of bounds for dirty flags (len {}), screen height is {}",
+                y,
+                self.dirty.len(),
+                self.height
+            );
         }
     }
 
@@ -446,7 +510,9 @@ impl Screen {
     /// # Arguments
     /// * `clear_alt_screen` - If true, the alternate screen is cleared.
     pub fn enter_alt_screen(&mut self, clear_alt_screen: bool) {
-        if self.alt_screen_active { return; }
+        if self.alt_screen_active {
+            return;
+        }
         self.alt_screen_active = true;
 
         if clear_alt_screen {
@@ -462,7 +528,9 @@ impl Screen {
 
     /// Switches back to the primary screen buffer.
     pub fn exit_alt_screen(&mut self) {
-        if !self.alt_screen_active { return; }
+        if !self.alt_screen_active {
+            return;
+        }
         self.alt_screen_active = false;
         self.mark_all_dirty();
         trace!("Exited alt screen. All lines marked dirty.");
@@ -479,10 +547,15 @@ impl Screen {
         } else {
             self.scroll_top = 0;
             self.scroll_bot = self.height.saturating_sub(1);
-            warn!("Invalid scrolling region ({}, {}), defaulting to full screen (0-based: {}, {}). Screen height: {}",
-                  top_1_based, bottom_1_based, self.scroll_top, self.scroll_bot, self.height);
+            warn!(
+                "Invalid scrolling region ({}, {}), defaulting to full screen (0-based: {}, {}). Screen height: {}",
+                top_1_based, bottom_1_based, self.scroll_top, self.scroll_bot, self.height
+            );
         }
-        trace!("Scrolling region set to (0-based: {}, {}).", self.scroll_top, self.scroll_bot);
+        trace!(
+            "Scrolling region set to (0-based: {}, {}).",
+            self.scroll_top, self.scroll_bot
+        );
     }
 
     /// Gets a clone of the glyph at the specified `(x, y)` coordinates.
@@ -491,14 +564,20 @@ impl Screen {
         if y < grid_to_use.len() && x < grid_to_use.get(y).map_or(0, |row| row.len()) {
             grid_to_use[y][x].clone()
         } else {
-            Glyph { c: ' ', attr: self.default_attributes }
+            Glyph {
+                c: ' ',
+                attr: self.default_attributes,
+            }
         }
     }
 
     /// Sets the glyph at the specified `(x, y)` coordinates.
     pub fn set_glyph(&mut self, x: usize, y: usize, glyph: Glyph) {
         if y >= self.height || x >= self.width {
-            warn!("set_glyph: coordinates ({},{}) out of screen bounds ({}x{})", x, y, self.width, self.height);
+            warn!(
+                "set_glyph: coordinates ({},{}) out of screen bounds ({}x{})",
+                x, y, self.width, self.height
+            );
             return;
         }
         let width = self.width;
@@ -509,8 +588,15 @@ impl Screen {
             grid_to_use[y][x] = glyph;
             self.mark_line_dirty(y);
         } else {
-            warn!("set_glyph: coordinates ({},{}) out of grid internal bounds. Screen: {}x{}, Grid row {} len: {:?}",
-                  x, y, width, height, y, grid_to_use.get(y).map(|r| r.len()));
+            warn!(
+                "set_glyph: coordinates ({},{}) out of grid internal bounds. Screen: {}x{}, Grid row {} len: {:?}",
+                x,
+                y,
+                width,
+                height,
+                y,
+                grid_to_use.get(y).map(|r| r.len())
+            );
         }
     }
 
@@ -535,7 +621,11 @@ impl Screen {
         if x < self.tabs.len() {
             self.tabs[x] = true;
         } else {
-            warn!("set_tabstop: column {} is out of bounds for tabs (width {})", x, self.tabs.len());
+            warn!(
+                "set_tabstop: column {} is out of bounds for tabs (width {})",
+                x,
+                self.tabs.len()
+            );
         }
     }
 
@@ -546,25 +636,31 @@ impl Screen {
                 if current_cursor_x < self.tabs.len() {
                     self.tabs[current_cursor_x] = false;
                 } else {
-                    warn!("clear_tabstops (CurrentColumn): cursor_x {} out of bounds for tabs (width {})", current_cursor_x, self.tabs.len());
+                    warn!(
+                        "clear_tabstops (CurrentColumn): cursor_x {} out of bounds for tabs (width {})",
+                        current_cursor_x,
+                        self.tabs.len()
+                    );
                 }
             }
             TabClearMode::All => {
                 self.tabs.fill(false);
             }
             TabClearMode::Unsupported => {
-                 warn!("Unsupported tab clear mode used.");
+                warn!("Unsupported tab clear mode used.");
             }
         }
     }
 
     /// Finds the next tab stop column at or after the given column `x`.
     pub fn get_next_tabstop(&self, x: usize) -> Option<usize> {
-        self.tabs.iter().skip(x.saturating_add(1)).position(|&is_set| is_set)
+        self.tabs
+            .iter()
+            .skip(x.saturating_add(1))
+            .position(|&is_set| is_set)
             .map(|pos_after_skip| x.saturating_add(1) + pos_after_skip)
     }
 }
 
 /// A placeholder constant for the scrollback shrink logic in `resize`.
 const SOME_REASONABLE_SLACK: usize = 20;
-

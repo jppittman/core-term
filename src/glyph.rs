@@ -31,7 +31,6 @@ pub const DEFAULT_GLYPH: Glyph = Glyph {
 //     attr: Attributes { /* default attributes */ },
 // };
 
-
 bitflags! {
     /// Represents text attributes like bold, underline, etc.
     /// Matches definitions in st.h for compatibility where possible.
@@ -71,7 +70,7 @@ pub enum NamedColor {
     Blue = 4,
     Magenta = 5,
     Cyan = 6,
-    White = 7, // Also known as Grey
+    White = 7,       // Also known as Grey
     BrightBlack = 8, // Also known as Dark Grey
     BrightRed = 9,
     BrightGreen = 10,
@@ -137,4 +136,3 @@ impl fmt::Display for Glyph {
         write!(f, "{}", self.c)
     }
 }
-

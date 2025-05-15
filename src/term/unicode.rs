@@ -2,10 +2,10 @@
 //! function via FFI, and locale initialization via a lazily initialized static controller
 //! using `std::sync::OnceLock`.
 
+use log::{debug, trace, warn};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint}; // For FFI types
-use std::sync::OnceLock; // Standard library for one-time initialization
-use log::{debug, warn, trace}; // Logging macros
+use std::sync::OnceLock; // Standard library for one-time initialization // Logging macros
 
 // --- FFI Declarations ---
 unsafe extern "C" {
@@ -29,14 +29,19 @@ impl LocaleInitializer {
     fn new() -> Self {
         // SAFETY: Calling C's setlocale function.
         unsafe {
-            let empty_locale_c_str = CString::new("").expect("CString::new for empty locale should not fail.");
+            let empty_locale_c_str =
+                CString::new("").expect("CString::new for empty locale should not fail.");
             if setlocale(LC_CTYPE, empty_locale_c_str.as_ptr()).is_null() {
-                warn!("Failed to set LC_CTYPE locale from environment. Character width calculations might be incorrect or use a default \"C\"/\"POSIX\" locale behavior.");
+                warn!(
+                    "Failed to set LC_CTYPE locale from environment. Character width calculations might be incorrect or use a default \"C\"/\"POSIX\" locale behavior."
+                );
             } else {
                 debug!("LC_CTYPE locale set successfully from environment settings for wcwidth.");
             }
         }
-        LocaleInitializer { _locale_is_set_guard: () }
+        LocaleInitializer {
+            _locale_is_set_guard: (),
+        }
     }
 
     /// Internal method to calculate character display width.
@@ -48,10 +53,16 @@ impl LocaleInitializer {
         match width_from_c {
             -1 => {
                 if c.is_control() {
-                    trace!("wcwidth returned -1 for control char '{}' (U+{:X}), width is 0.", c, wc);
+                    trace!(
+                        "wcwidth returned -1 for control char '{}' (U+{:X}), width is 0.",
+                        c, wc
+                    );
                     0
                 } else {
-                    trace!("wcwidth returned -1 for char '{}' (U+{:X}), defaulting to width 1.", c, wc);
+                    trace!(
+                        "wcwidth returned -1 for char '{}' (U+{:X}), defaulting to width 1.",
+                        c, wc
+                    );
                     1
                 }
             }
@@ -95,4 +106,3 @@ pub fn get_char_display_width(c: char) -> usize {
     let controller = GLOBAL_LOCALE_INITIALIZER.get_or_init(LocaleInitializer::new);
     controller.char_display_width_internal(c)
 }
-

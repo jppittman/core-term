@@ -84,7 +84,6 @@ impl AnsiParser {
         self.esc_intermediate = None;
     }
 
-
     fn add_param(&mut self, param: u16) {
         if self.params.len() < MAX_PARAMS {
             self.params.push(param);
@@ -178,7 +177,7 @@ impl AnsiParser {
         trace!("Dispatching DCS: Data length {}", data.len());
         self.commands.push(AnsiCommand::Dcs(data));
         self.clear_string_buffer();
-         if !consume_st { /* ST handled separately */ }
+        if !consume_st { /* ST handled separately */ }
         self.state = State::Ground;
     }
 
@@ -187,7 +186,7 @@ impl AnsiParser {
         trace!("Dispatching PM: Data length {}", data.len());
         self.commands.push(AnsiCommand::Pm(data));
         self.clear_string_buffer();
-         if !consume_st { /* ST handled separately */ }
+        if !consume_st { /* ST handled separately */ }
         self.state = State::Ground;
     }
 
@@ -196,7 +195,7 @@ impl AnsiParser {
         trace!("Dispatching APC: Data length {}", data.len());
         self.commands.push(AnsiCommand::Apc(data));
         self.clear_string_buffer();
-         if !consume_st { /* ST handled separately */ }
+        if !consume_st { /* ST handled separately */ }
         self.state = State::Ground;
     }
 
@@ -207,7 +206,6 @@ impl AnsiParser {
         self.clear_esc_state();
         self.state = State::Ground;
     }
-
 
     fn dispatch_ignore(&mut self, byte: u8) {
         trace!("Dispatching Ignore: {}", byte);
@@ -237,23 +235,35 @@ impl AnsiParser {
         match self.state {
             State::Ground => match token {
                 AnsiToken::Print(c) => self.dispatch_print(c),
-                AnsiToken::C0Control(0x1B) => { self.clear_esc_state(); self.state = State::Escape; },
+                AnsiToken::C0Control(0x1B) => {
+                    self.clear_esc_state();
+                    self.state = State::Escape;
+                }
                 AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
-                AnsiToken::C1Control(0x9B) => { self.clear_csi_state(); self.state = State::CsiEntry; }
+                AnsiToken::C1Control(0x9B) => {
+                    self.clear_csi_state();
+                    self.state = State::CsiEntry;
+                }
                 AnsiToken::C1Control(0x9D) => self.enter_string_state(State::OscString),
                 AnsiToken::C1Control(0x90) => self.enter_string_state(State::DcsEntry),
                 AnsiToken::C1Control(0x9E) => self.enter_string_state(State::PmString),
                 AnsiToken::C1Control(0x9F) => self.enter_string_state(State::ApcString),
                 AnsiToken::C1Control(0x9C) => self.dispatch_st_standalone(),
                 AnsiToken::C1Control(byte) => {
-                    if let Some(command) = AnsiCommand::from_c1(byte) { self.commands.push(command); }
-                    else { self.dispatch_ignore(byte); }
+                    if let Some(command) = AnsiCommand::from_c1(byte) {
+                        self.commands.push(command);
+                    } else {
+                        self.dispatch_ignore(byte);
+                    }
                     self.state = State::Ground;
                 }
             },
             State::Escape => match token {
                 AnsiToken::C0Control(0x1B) => self.state = State::Escape,
-                AnsiToken::Print('[') => { self.clear_csi_state(); self.state = State::CsiEntry; }
+                AnsiToken::Print('[') => {
+                    self.clear_csi_state();
+                    self.state = State::CsiEntry;
+                }
                 AnsiToken::Print(']') => self.enter_string_state(State::OscString),
                 AnsiToken::Print('P') => self.enter_string_state(State::DcsEntry),
                 AnsiToken::Print('^') => self.enter_string_state(State::PmString),
@@ -264,110 +274,211 @@ impl AnsiParser {
                     self.state = State::EscIntermediate;
                 }
                 AnsiToken::Print(c) => {
-                    if let Some(command) = AnsiCommand::from_esc(c) { self.commands.push(command); }
-                    else { self.dispatch_ignore(c as u8); }
+                    if let Some(command) = AnsiCommand::from_esc(c) {
+                        self.commands.push(command);
+                    } else {
+                        self.dispatch_ignore(c as u8);
+                    }
                     self.state = State::Ground;
                 }
                 AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
                 AnsiToken::C1Control(byte) => {
-                    if let Some(command) = AnsiCommand::from_c1(byte) { self.commands.push(command); }
-                    else { self.dispatch_ignore(byte); }
+                    if let Some(command) = AnsiCommand::from_c1(byte) {
+                        self.commands.push(command);
+                    } else {
+                        self.dispatch_ignore(byte);
+                    }
                     self.state = State::Ground;
                 }
             },
             State::EscIntermediate => {
-                 if let Some(inter) = self.esc_intermediate {
-                     match token {
-                         AnsiToken::Print(final_char) => {
-                             // Use the specific helper for ESC intermediate sequences
-                             if let Some(command) = AnsiCommand::from_esc_intermediate(inter, final_char) {
-                                 self.commands.push(command);
-                             } else {
-                                 self.dispatch_ignore(inter as u8);
-                                 self.dispatch_ignore(final_char as u8);
-                             }
-                         }
-                         AnsiToken::C0Control(byte) => {
-                             self.dispatch_ignore(inter as u8);
-                             self.dispatch_c0(byte);
-                         }
-                         AnsiToken::C1Control(byte) => {
-                              self.dispatch_ignore(inter as u8);
-                              if let Some(command) = AnsiCommand::from_c1(byte) { self.commands.push(command); }
-                              else { self.dispatch_ignore(byte); }
-                         }
-                     }
-                 } else {
-                     error!("Invalid EscIntermediate state");
-                     self.dispatch_error(token.to_byte_lossy());
-                 }
-                 self.clear_esc_state();
-                 self.state = State::Ground;
+                if let Some(inter) = self.esc_intermediate {
+                    match token {
+                        AnsiToken::Print(final_char) => {
+                            // Use the specific helper for ESC intermediate sequences
+                            if let Some(command) =
+                                AnsiCommand::from_esc_intermediate(inter, final_char)
+                            {
+                                self.commands.push(command);
+                            } else {
+                                self.dispatch_ignore(inter as u8);
+                                self.dispatch_ignore(final_char as u8);
+                            }
+                        }
+                        AnsiToken::C0Control(byte) => {
+                            self.dispatch_ignore(inter as u8);
+                            self.dispatch_c0(byte);
+                        }
+                        AnsiToken::C1Control(byte) => {
+                            self.dispatch_ignore(inter as u8);
+                            if let Some(command) = AnsiCommand::from_c1(byte) {
+                                self.commands.push(command);
+                            } else {
+                                self.dispatch_ignore(byte);
+                            }
+                        }
+                    }
+                } else {
+                    error!("Invalid EscIntermediate state");
+                    self.dispatch_error(token.to_byte_lossy());
+                }
+                self.clear_esc_state();
+                self.state = State::Ground;
             }
 
             State::CsiEntry => match token {
-                AnsiToken::C0Control(0x1B) => { self.clear_csi_state(); self.clear_esc_state(); self.state = State::Escape; }
-                AnsiToken::C0Control(byte) => { self.dispatch_c0(byte); self.clear_csi_state(); }
-                AnsiToken::Print(c @ '0'..='9') => { self.current_param_value = (c as u16) - ('0' as u16); self.is_param_empty = false; self.state = State::CsiParam; }
-                AnsiToken::Print(';') => { self.add_param(0); self.is_param_empty = true; self.state = State::CsiParam; }
-                AnsiToken::Print(p @ ('?' | '>' | '!' | '$' | '\'')) => { self.is_private_csi = true; self.add_intermediate(p as u8); self.state = State::CsiParam; }
-                AnsiToken::Print(i @ ' '..='/') => { self.add_intermediate(i as u8); self.state = State::CsiIntermediate; }
+                AnsiToken::C0Control(0x1B) => {
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                    self.state = State::Escape;
+                }
+                AnsiToken::C0Control(byte) => {
+                    self.dispatch_c0(byte);
+                    self.clear_csi_state();
+                }
+                AnsiToken::Print(c @ '0'..='9') => {
+                    self.current_param_value = (c as u16) - ('0' as u16);
+                    self.is_param_empty = false;
+                    self.state = State::CsiParam;
+                }
+                AnsiToken::Print(';') => {
+                    self.add_param(0);
+                    self.is_param_empty = true;
+                    self.state = State::CsiParam;
+                }
+                AnsiToken::Print(p @ ('?' | '>' | '!' | '$' | '\'')) => {
+                    self.is_private_csi = true;
+                    self.add_intermediate(p as u8);
+                    self.state = State::CsiParam;
+                }
+                AnsiToken::Print(i @ ' '..='/') => {
+                    self.add_intermediate(i as u8);
+                    self.state = State::CsiIntermediate;
+                }
                 AnsiToken::Print(f @ '@'..='~') => self.dispatch_csi(f as u8),
-                AnsiToken::C1Control(_) => { self.clear_csi_state(); self.clear_esc_state(); self.state = State::Ground; }
-                AnsiToken::Print(c) => { warn!("Unexpected char '{}' in CsiEntry", c); self.dispatch_error(c as u8); self.clear_csi_state(); }
+                AnsiToken::C1Control(_) => {
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                    self.state = State::Ground;
+                }
+                AnsiToken::Print(c) => {
+                    warn!("Unexpected char '{}' in CsiEntry", c);
+                    self.dispatch_error(c as u8);
+                    self.clear_csi_state();
+                }
             },
             State::CsiParam => match token {
-                 AnsiToken::C0Control(0x1B) => { self.clear_csi_state(); self.clear_esc_state(); self.state = State::Escape; }
-                 AnsiToken::C0Control(byte) => { self.dispatch_c0(byte); self.clear_csi_state(); }
-                 AnsiToken::Print(c @ '0'..='9') => {
+                AnsiToken::C0Control(0x1B) => {
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                    self.state = State::Escape;
+                }
+                AnsiToken::C0Control(byte) => {
+                    self.dispatch_c0(byte);
+                    self.clear_csi_state();
+                }
+                AnsiToken::Print(c @ '0'..='9') => {
                     if let Some(next_val) = self.current_param_value.checked_mul(10) {
-                        if let Some(final_val) = next_val.checked_add((c as u16) - ('0' as u16)) { self.current_param_value = final_val; }
-                        else { warn!("CSI param overflow"); self.current_param_value = u16::MAX; }
-                    } else { warn!("CSI param overflow"); self.current_param_value = u16::MAX; }
+                        if let Some(final_val) = next_val.checked_add((c as u16) - ('0' as u16)) {
+                            self.current_param_value = final_val;
+                        } else {
+                            warn!("CSI param overflow");
+                            self.current_param_value = u16::MAX;
+                        }
+                    } else {
+                        warn!("CSI param overflow");
+                        self.current_param_value = u16::MAX;
+                    }
                     self.is_param_empty = false;
-                 }
-                 AnsiToken::Print(';') => self.finalize_param(),
-                 AnsiToken::Print(i @ ' '..='/') => { self.finalize_param(); self.add_intermediate(i as u8); self.state = State::CsiIntermediate; }
-                 AnsiToken::Print(f @ '@'..='~') => { self.finalize_param(); self.dispatch_csi(f as u8); }
-                 AnsiToken::C1Control(_) => { self.clear_csi_state(); self.clear_esc_state(); self.state = State::Ground; }
-                 AnsiToken::Print(c) => { warn!("Unexpected char '{}' in CsiParam", c); self.dispatch_error(c as u8); self.clear_csi_state(); }
+                }
+                AnsiToken::Print(';') => self.finalize_param(),
+                AnsiToken::Print(i @ ' '..='/') => {
+                    self.finalize_param();
+                    self.add_intermediate(i as u8);
+                    self.state = State::CsiIntermediate;
+                }
+                AnsiToken::Print(f @ '@'..='~') => {
+                    self.finalize_param();
+                    self.dispatch_csi(f as u8);
+                }
+                AnsiToken::C1Control(_) => {
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                    self.state = State::Ground;
+                }
+                AnsiToken::Print(c) => {
+                    warn!("Unexpected char '{}' in CsiParam", c);
+                    self.dispatch_error(c as u8);
+                    self.clear_csi_state();
+                }
             },
             State::CsiIntermediate => match token {
-                AnsiToken::C0Control(0x1B) => { self.clear_csi_state(); self.clear_esc_state(); self.state = State::Escape; }
-                AnsiToken::C0Control(byte) => { self.dispatch_c0(byte); self.clear_csi_state(); }
+                AnsiToken::C0Control(0x1B) => {
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                    self.state = State::Escape;
+                }
+                AnsiToken::C0Control(byte) => {
+                    self.dispatch_c0(byte);
+                    self.clear_csi_state();
+                }
                 AnsiToken::Print(i @ ' '..='/') => self.add_intermediate(i as u8),
                 AnsiToken::Print(f @ '@'..='~') => self.dispatch_csi(f as u8),
-                AnsiToken::C1Control(_) => { self.clear_csi_state(); self.clear_esc_state(); self.state = State::Ground; }
-                AnsiToken::Print(c) => { warn!("Unexpected char '{}' in CsiIntermediate", c); self.dispatch_error(c as u8); self.clear_csi_state(); }
-            },
-            State::OscString | State::DcsEntry | State::PmString | State::ApcString => match token {
-                AnsiToken::C0Control(0x1B) => self.enter_esc_in_string_state(),
-                AnsiToken::C0Control(0x07) if self.state == State::OscString => self.dispatch_osc(false),
-                AnsiToken::C0Control(0x18) | AnsiToken::C0Control(0x1A) => { self.clear_string_buffer(); self.state = State::Ground; }
-                AnsiToken::C0Control(byte) => self.add_string_byte(byte),
-                AnsiToken::C1Control(0x9C) => {
-                    match self.state {
-                        State::OscString => self.dispatch_osc(true), State::DcsEntry => self.dispatch_dcs(true),
-                        State::PmString => self.dispatch_pm(true), State::ApcString => self.dispatch_apc(true),
-                        _ => {}
-                    }
+                AnsiToken::C1Control(_) => {
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                    self.state = State::Ground;
                 }
-                AnsiToken::C1Control(byte) => self.dispatch_ignore(byte),
                 AnsiToken::Print(c) => {
-                    let mut buf = [0; 4];
-                    c.encode_utf8(&mut buf).as_bytes().iter().for_each(|&b| self.add_string_byte(b));
+                    warn!("Unexpected char '{}' in CsiIntermediate", c);
+                    self.dispatch_error(c as u8);
+                    self.clear_csi_state();
                 }
             },
-            State::EscInString => match token {
-                AnsiToken::Print('\\') => {
-                     match self.string_state_origin {
-                        Some(State::OscString) => self.dispatch_osc(true), Some(State::DcsEntry) => self.dispatch_dcs(true),
-                        Some(State::PmString) => self.dispatch_pm(true), Some(State::ApcString) => self.dispatch_apc(true),
-                        _ => { error!("EscInString state missing origin!"); self.dispatch_st_standalone(); }
+            State::OscString | State::DcsEntry | State::PmString | State::ApcString => {
+                match token {
+                    AnsiToken::C0Control(0x1B) => self.enter_esc_in_string_state(),
+                    AnsiToken::C0Control(0x07) if self.state == State::OscString => {
+                        self.dispatch_osc(false)
+                    }
+                    AnsiToken::C0Control(0x18) | AnsiToken::C0Control(0x1A) => {
+                        self.clear_string_buffer();
+                        self.state = State::Ground;
+                    }
+                    AnsiToken::C0Control(byte) => self.add_string_byte(byte),
+                    AnsiToken::C1Control(0x9C) => match self.state {
+                        State::OscString => self.dispatch_osc(true),
+                        State::DcsEntry => self.dispatch_dcs(true),
+                        State::PmString => self.dispatch_pm(true),
+                        State::ApcString => self.dispatch_apc(true),
+                        _ => {}
+                    },
+                    AnsiToken::C1Control(byte) => self.dispatch_ignore(byte),
+                    AnsiToken::Print(c) => {
+                        let mut buf = [0; 4];
+                        c.encode_utf8(&mut buf)
+                            .as_bytes()
+                            .iter()
+                            .for_each(|&b| self.add_string_byte(b));
                     }
                 }
+            }
+            State::EscInString => match token {
+                AnsiToken::Print('\\') => match self.string_state_origin {
+                    Some(State::OscString) => self.dispatch_osc(true),
+                    Some(State::DcsEntry) => self.dispatch_dcs(true),
+                    Some(State::PmString) => self.dispatch_pm(true),
+                    Some(State::ApcString) => self.dispatch_apc(true),
+                    _ => {
+                        error!("EscInString state missing origin!");
+                        self.dispatch_st_standalone();
+                    }
+                },
                 _ => {
-                    trace!("ESC followed by {:?} inside string - aborting string, processing ESC sequence", token);
+                    trace!(
+                        "ESC followed by {:?} inside string - aborting string, processing ESC sequence",
+                        token
+                    );
                     self.clear_string_buffer();
                     self.commands.push(AnsiCommand::C0Control(C0Control::ESC));
                     self.state = State::Ground;
@@ -375,12 +486,23 @@ impl AnsiParser {
                 }
             },
             State::CsiIgnore => match token {
-                 AnsiToken::C0Control(0x1B) => { self.clear_csi_state(); self.clear_esc_state(); self.state = State::Escape; }
-                 AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
-                 AnsiToken::Print(_f @ '@'..='~') => { self.state = State::Ground; self.clear_csi_state(); }
-                 AnsiToken::C1Control(_) => { self.state = State::Ground; self.clear_csi_state(); self.clear_esc_state(); }
-                 _ => { /* Ignore other bytes */ }
-             },
+                AnsiToken::C0Control(0x1B) => {
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                    self.state = State::Escape;
+                }
+                AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
+                AnsiToken::Print(_f @ '@'..='~') => {
+                    self.state = State::Ground;
+                    self.clear_csi_state();
+                }
+                AnsiToken::C1Control(_) => {
+                    self.state = State::Ground;
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                }
+                _ => { /* Ignore other bytes */ }
+            },
         }
     }
 }
@@ -407,4 +529,3 @@ impl AnsiTokenByte for AnsiToken {
 }
 
 // Removed duplicate definition of from_esc_intermediate
-

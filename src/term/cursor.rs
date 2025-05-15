@@ -7,8 +7,8 @@
 //! from the main terminal emulation logic.
 
 use crate::glyph::{Attributes, DEFAULT_GLYPH}; // Using default attributes from DEFAULT_GLYPH
-use std::cmp::min; // For clamping positions
-use log::trace; // For trace logging
+use log::trace;
+use std::cmp::min; // For clamping positions // For trace logging
 
 // --- Structs ---
 
@@ -92,7 +92,10 @@ impl CursorController {
     /// # Arguments
     /// * `initial_attributes` - The initial SGR attributes for the cursor.
     pub fn new(initial_attributes: Attributes) -> Self {
-        trace!("Creating new CursorController with initial attributes: {:?}", initial_attributes);
+        trace!(
+            "Creating new CursorController with initial attributes: {:?}",
+            initial_attributes
+        );
         Self {
             cursor: Cursor {
                 attributes: initial_attributes,
@@ -188,7 +191,10 @@ impl CursorController {
 
         self.cursor.logical_x = min(new_x, max_x_for_positioning);
         self.cursor.logical_y = min(new_y, max_y_logical);
-        trace!("Cursor moved (positioned) logically to ({}, {}). Context: {:?}", self.cursor.logical_x, self.cursor.logical_y, context);
+        trace!(
+            "Cursor moved (positioned) logically to ({}, {}). Context: {:?}",
+            self.cursor.logical_x, self.cursor.logical_y, context
+        );
     }
 
     /// Moves the cursor up by `n` logical rows.
@@ -197,7 +203,10 @@ impl CursorController {
     /// logical screen (or the top of the scrolling region if origin mode is active).
     pub fn move_up(&mut self, n: usize) {
         self.cursor.logical_y = self.cursor.logical_y.saturating_sub(n);
-        trace!("Cursor moved up by {} to logical_y: {}", n, self.cursor.logical_y);
+        trace!(
+            "Cursor moved up by {} to logical_y: {}",
+            n, self.cursor.logical_y
+        );
     }
 
     /// Moves the cursor down by `n` logical rows.
@@ -215,7 +224,10 @@ impl CursorController {
             context.height.saturating_sub(1)
         };
         self.cursor.logical_y = min(self.cursor.logical_y.saturating_add(n), max_y_logical);
-        trace!("Cursor moved down by {} to logical_y: {}. Context: {:?}", n, self.cursor.logical_y, context);
+        trace!(
+            "Cursor moved down by {} to logical_y: {}. Context: {:?}",
+            n, self.cursor.logical_y, context
+        );
     }
 
     /// Moves the cursor left by `n` columns.
@@ -223,7 +235,10 @@ impl CursorController {
     /// This movement is purely logical and respects the left boundary (column 0).
     pub fn move_left(&mut self, n: usize) {
         self.cursor.logical_x = self.cursor.logical_x.saturating_sub(n);
-        trace!("Cursor moved left by {} to logical_x: {}", n, self.cursor.logical_x);
+        trace!(
+            "Cursor moved left by {} to logical_x: {}",
+            n, self.cursor.logical_x
+        );
     }
 
     /// Moves the cursor right by `n` columns, advancing its logical position.
@@ -239,7 +254,10 @@ impl CursorController {
         // Allow logical_x to reach context.width for wrap signaling.
         let max_x_for_advancing = context.width;
         self.cursor.logical_x = min(self.cursor.logical_x.saturating_add(n), max_x_for_advancing);
-        trace!("Cursor moved right (advanced) by {} to logical_x: {}. Context: {:?}", n, self.cursor.logical_x, context);
+        trace!(
+            "Cursor moved right (advanced) by {} to logical_x: {}. Context: {:?}",
+            n, self.cursor.logical_x, context
+        );
     }
 
     /// Moves the cursor to a specific logical column `new_x`.
@@ -254,7 +272,10 @@ impl CursorController {
     pub fn move_to_logical_col(&mut self, new_x: usize, context: &ScreenContext) {
         let max_x_for_positioning = context.width.saturating_sub(1);
         self.cursor.logical_x = min(new_x, max_x_for_positioning);
-        trace!("Cursor moved to logical_col: {}. Context: {:?}", self.cursor.logical_x, context);
+        trace!(
+            "Cursor moved to logical_col: {}. Context: {:?}",
+            self.cursor.logical_x, context
+        );
     }
 
     /// Moves the cursor to the start of the current logical line (column 0).
@@ -307,6 +328,9 @@ impl CursorController {
         };
         self.cursor.logical_x = min(self.cursor.logical_x, max_x_for_positioning);
         self.cursor.logical_y = min(self.cursor.logical_y, max_y_logical);
-        trace!("Cursor state restored to: {:?}. Context: {:?}", self.cursor, context);
+        trace!(
+            "Cursor state restored to: {:?}. Context: {:?}",
+            self.cursor, context
+        );
     }
 }
