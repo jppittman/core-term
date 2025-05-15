@@ -18,8 +18,8 @@ pub const DEFAULT_GLYPH: Glyph = Glyph {
     // Default attributes will use NamedColor::DefaultFore/Background if defined,
     // or specific colors like White/Black. Let's use specific common defaults.
     attr: Attributes {
-        fg: Color::Named(NamedColor::White), // Or Default
-        bg: Color::Named(NamedColor::Black), // Or Default
+        fg: Color::Default,
+        bg: Color::Default,
         flags: AttrFlags::empty(),
     },
 };

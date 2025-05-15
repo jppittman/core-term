@@ -19,7 +19,7 @@ use log::trace; // For trace logging
 /// at the cursor, and its visibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
-    /// Logical column (0-based).
+    /// Logical column (0-based). Can be == width to indicate next char causes wrap.
     pub logical_x: usize,
     /// Logical row (0-based).
     /// If origin mode is active, this is relative to the top of the scrolling region.
@@ -109,31 +109,33 @@ impl CursorController {
     /// If origin mode is active (as indicated by the `ScreenContext` passed to
     /// movement methods), `row` is relative to the top of the scrolling region.
     /// Otherwise, `row` is relative to the physical top of the screen.
+    /// `column` can be equal to `context.width` if the cursor is positioned
+    /// after the last character of a line (indicating a wrap on next print).
     pub fn logical_pos(&self) -> (usize, usize) {
         (self.cursor.logical_x, self.cursor.logical_y)
     }
 
-    /// Calculates and returns the absolute physical screen position `(column, row)` of the cursor.
-    /// This translation considers the current logical position and the provided `ScreenContext`
-    /// (including origin mode and scrolling region).
+    /// Calculates and returns the absolute physical screen position `(column, row)` of the cursor
+    /// for rendering or placing a glyph.
+    /// This translation considers the current logical position and the provided `ScreenContext`.
     /// The returned coordinates are always absolute to the physical screen grid and are clamped
-    /// to be within the screen's dimensions.
+    /// to be within the screen's dimensions (i.e., `0 <= column < width`).
     ///
     /// # Arguments
     /// * `context`: A reference to the current `ScreenContext`.
     pub fn physical_screen_pos(&self, context: &ScreenContext) -> (usize, usize) {
         let physical_y = if context.origin_mode_active {
-            // When origin mode is active, logical_y is relative to scroll_top.
-            // Clamp logical_y to be within the height of the scrolling region.
             let max_relative_y = context.scroll_bot.saturating_sub(context.scroll_top);
             let relative_y_clamped = min(self.cursor.logical_y, max_relative_y);
             context.scroll_top + relative_y_clamped
         } else {
-            // When origin mode is off, logical_y is already absolute.
             self.cursor.logical_y
         };
 
-        // Clamp the calculated physical coordinates to the screen boundaries.
+        // For physical positioning (e.g., drawing a glyph or cursor),
+        // logical_x == width should be treated as being at the start of the next line (conceptually)
+        // or at the last valid cell if we're just getting the cell under the cursor.
+        // The actual cell index must be < width.
         let final_x = min(self.cursor.logical_x, context.width.saturating_sub(1));
         let final_y = min(physical_y, context.height.saturating_sub(1));
 
@@ -167,33 +169,32 @@ impl CursorController {
 
     /// Moves the cursor to a new logical position `(new_x, new_y)`.
     ///
-    /// The `new_y` coordinate is interpreted relative to the current origin
-    /// (either physical screen top or scrolling region top if origin mode is active).
+    /// The `new_y` coordinate is interpreted relative to the current origin.
     /// The position is clamped to the valid logical area defined by the `ScreenContext`.
+    /// For direct positioning like CUP, `new_x` is clamped to `width - 1`.
     ///
     /// # Arguments
-    /// * `new_x`: The target logical column.
+    /// * `new_x`: The target logical column. Clamped to `0 <= new_x < width`.
     /// * `new_y`: The target logical row.
     /// * `context`: A reference to the current `ScreenContext` for boundary checking.
     pub fn move_to_logical(&mut self, new_x: usize, new_y: usize, context: &ScreenContext) {
-        // Determine the maximum valid logical x and y coordinates.
-        let max_x = context.width.saturating_sub(1);
+        // For direct positioning (e.g., CUP), logical_x should be within the cell grid (0 to width-1).
+        let max_x_for_positioning = context.width.saturating_sub(1);
         let max_y_logical = if context.origin_mode_active {
             context.scroll_bot.saturating_sub(context.scroll_top)
         } else {
             context.height.saturating_sub(1)
         };
 
-        self.cursor.logical_x = min(new_x, max_x);
+        self.cursor.logical_x = min(new_x, max_x_for_positioning);
         self.cursor.logical_y = min(new_y, max_y_logical);
-        trace!("Cursor moved logically to ({}, {}). Context: {:?}", self.cursor.logical_x, self.cursor.logical_y, context);
+        trace!("Cursor moved (positioned) logically to ({}, {}). Context: {:?}", self.cursor.logical_x, self.cursor.logical_y, context);
     }
 
     /// Moves the cursor up by `n` logical rows.
     ///
     /// This movement is purely logical and respects the top boundary of the current
     /// logical screen (or the top of the scrolling region if origin mode is active).
-    /// It does not require `ScreenContext` as it operates on `logical_y` directly.
     pub fn move_up(&mut self, n: usize) {
         self.cursor.logical_y = self.cursor.logical_y.saturating_sub(n);
         trace!("Cursor moved up by {} to logical_y: {}", n, self.cursor.logical_y);
@@ -220,36 +221,39 @@ impl CursorController {
     /// Moves the cursor left by `n` columns.
     ///
     /// This movement is purely logical and respects the left boundary (column 0).
-    /// It does not require `ScreenContext`.
     pub fn move_left(&mut self, n: usize) {
         self.cursor.logical_x = self.cursor.logical_x.saturating_sub(n);
         trace!("Cursor moved left by {} to logical_x: {}", n, self.cursor.logical_x);
     }
 
-    /// Moves the cursor right by `n` columns.
+    /// Moves the cursor right by `n` columns, advancing its logical position.
     ///
     /// This movement respects the right boundary of the screen as defined by `context.width`.
+    /// `logical_x` can be set to `context.width` to indicate the position *after* the last cell,
+    /// signaling that the next character print should wrap.
     ///
     /// # Arguments
     /// * `n`: Number of columns to move right.
     /// * `context`: A reference to the current `ScreenContext`.
     pub fn move_right(&mut self, n: usize, context: &ScreenContext) {
-        let max_x = context.width.saturating_sub(1);
-        self.cursor.logical_x = min(self.cursor.logical_x.saturating_add(n), max_x);
-        trace!("Cursor moved right by {} to logical_x: {}. Context: {:?}", n, self.cursor.logical_x, context);
+        // Allow logical_x to reach context.width for wrap signaling.
+        let max_x_for_advancing = context.width;
+        self.cursor.logical_x = min(self.cursor.logical_x.saturating_add(n), max_x_for_advancing);
+        trace!("Cursor moved right (advanced) by {} to logical_x: {}. Context: {:?}", n, self.cursor.logical_x, context);
     }
 
     /// Moves the cursor to a specific logical column `new_x`.
     ///
     /// This movement respects the right boundary of the screen as defined by `context.width`.
+    /// `new_x` is clamped to `width - 1` for direct positioning.
     /// The logical row remains unchanged.
     ///
     /// # Arguments
-    /// * `new_x`: The target logical column.
+    /// * `new_x`: The target logical column. Clamped to `0 <= new_x < width`.
     /// * `context`: A reference to the current `ScreenContext`.
     pub fn move_to_logical_col(&mut self, new_x: usize, context: &ScreenContext) {
-        let max_x = context.width.saturating_sub(1);
-        self.cursor.logical_x = min(new_x, max_x);
+        let max_x_for_positioning = context.width.saturating_sub(1);
+        self.cursor.logical_x = min(new_x, max_x_for_positioning);
         trace!("Cursor moved to logical_col: {}. Context: {:?}", self.cursor.logical_x, context);
     }
 
@@ -275,7 +279,7 @@ impl CursorController {
     /// If no state was previously saved, the cursor is reset to a default state:
     /// logical position (0,0), `default_attributes`, and visible.
     /// The restored logical position is clamped to the current valid boundaries
-    /// defined by the `ScreenContext`.
+    /// defined by the `ScreenContext` (logical_x clamped to `width - 1`).
     ///
     /// # Arguments
     /// * `context`: A reference to the current `ScreenContext` for boundary clamping.
@@ -294,13 +298,14 @@ impl CursorController {
         self.cursor = state_to_restore;
 
         // Re-clamp the restored logical position to current boundaries.
-        let max_x = context.width.saturating_sub(1);
+        // For direct positioning, logical_x should be within the cell grid (0 to width-1).
+        let max_x_for_positioning = context.width.saturating_sub(1);
         let max_y_logical = if context.origin_mode_active {
             context.scroll_bot.saturating_sub(context.scroll_top)
         } else {
             context.height.saturating_sub(1)
         };
-        self.cursor.logical_x = min(self.cursor.logical_x, max_x);
+        self.cursor.logical_x = min(self.cursor.logical_x, max_x_for_positioning);
         self.cursor.logical_y = min(self.cursor.logical_y, max_y_logical);
         trace!("Cursor state restored to: {:?}. Context: {:?}", self.cursor, context);
     }
