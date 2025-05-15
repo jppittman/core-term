@@ -120,7 +120,7 @@ impl DecModeConstant {
 }
 
 /// Represents the state of various DEC private modes toggled by sequences like DECSET/DECRST.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecPrivateModes {
     /// Origin Mode (DECOM - `?6h`/`?6l`).
     /// If true, cursor addressing is relative to the scrolling region's top-left.
@@ -128,6 +128,7 @@ pub struct DecPrivateModes {
     /// Application Cursor Keys Mode (DECCKM - `?1h`/`?1l`).
     /// If true, cursor keys send application-specific sequences.
     pub cursor_keys_app_mode: bool,
+    pub allow_alt_screen: bool,
     /// Indicates if the alternate screen buffer is currently active (due to modes like 1047 or 1049).
     pub using_alt_screen: bool,
     // Note: Cursor visibility (DECTCEM - ?25) is managed by `CursorController` but influenced by these modes.
@@ -155,6 +156,34 @@ pub struct DecPrivateModes {
     pub mouse_sgr_mode: bool,
     // Note: mouse_urxvt_mode (?1015) and mouse_pixel_position_mode (?1016) would be added here
     // if they were being fully implemented with state flags.
+    pub insert_mode: bool,
+    pub linefeed_newline_mode: bool,
+    pub text_cursor_enable_mode: bool,
+    pub cursor_blink_mode: bool,
+}
+
+impl Default for DecPrivateModes {
+    fn default() -> Self {
+        DecPrivateModes {
+            origin_mode: false,
+            cursor_keys_app_mode: false,
+            using_alt_screen: false,
+            bracketed_paste_mode: false,
+            focus_event_mode: false,
+            mouse_x10_mode: false,
+            mouse_vt200_mode: false,
+            mouse_vt200_highlight_mode: false,
+            mouse_button_event_mode: false,
+            mouse_any_event_mode: false,
+            mouse_utf8_mode: false,
+            mouse_sgr_mode: false,
+            text_cursor_enable_mode: true, // Default: cursor visible
+            allow_alt_screen: true,        // Default: allow alt screen
+            cursor_blink_mode: true,       // Default: blinking enabled (visuals TBD)
+            insert_mode: false,            // Default: replace mode
+            linefeed_newline_mode: false,  // Default: LF is just LF
+        }
+    }
 }
 
 /// Represents the type of mode being set or reset by SM/RM sequences.
