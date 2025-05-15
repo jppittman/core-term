@@ -1,1040 +1,627 @@
-// src/term/screen.rs
+use std::cmp::min;
+use std::collections::VecDeque;
 
-//! Handles screen manipulation, drawing, and scrolling logic.
+use crate::glyph::{Glyph, Attributes}; // DEFAULT_GLYPH used via fully qualified path
+use crate::term::DEFAULT_TAB_INTERVAL;
+use log::{trace, warn};
 
-// Add imports for command types needed in helper functions
-use crate::ansi::commands::{Attribute, Color as AnsiColor}; // Rename Color to avoid conflict
-use super::{Cursor, DecModes, Glyph, Term, DEFAULT_TAB_INTERVAL};
-use crate::glyph::{AttrFlags, Color}; // Keep original Color import for Glyph
-use log::{debug, trace, warn};
-use std::cmp::{max, min};
+// Define a type alias for a single row in the grid
+pub type Row = Vec<Glyph>;
+// Define a type alias for the grid itself (for primary and alternate screens)
+pub type Grid = Vec<Row>;
 
-// --- Constants ---
-/// Default count parameter value (e.g., for cursor movement, erase).
-const DEFAULT_COUNT: u16 = 1;
-/// Erase from cursor to end of line/display.
-const ERASE_MODE_TO_END: u16 = 0;
-/// Erase from start to cursor (inclusive).
-const ERASE_MODE_TO_START: u16 = 1;
-/// Erase entire line/display.
-const ERASE_MODE_ALL: u16 = 2;
-/// Erase scrollback buffer (ED only).
-const ERASE_MODE_SCROLLBACK: u16 = 3;
-
-// DEC Private Mode constants used in handle_dec_mode_set
-const DECCKM: u16 = 1; // Cursor Keys Mode
-const DECOM: u16 = 6; // Origin Mode
-const DECTCEM: u16 = 25; // Text Cursor Enable Mode
-const ALT_SCREEN_BUF_47: u16 = 47; // Legacy alternate screen buffer
-const ALT_SCREEN_BUF_1047: u16 = 1047; // Alternate screen buffer
-const CURSOR_SAVE_RESTORE_1048: u16 = 1048; // Save/restore cursor with alt screen switch
-const ALT_SCREEN_SAVE_RESTORE_1049: u16 = 1049; // Save/restore cursor and switch alt screen
-
-// --- Helper Functions ---
-
-/// Gets the effective top boundary for cursor movement and scrolling (respects origin mode).
-/// Returns 0-based row index.
-pub(super) fn effective_top(term: &Term) -> usize {
-    if term.dec_modes.origin_mode {
-        return term.scroll_top;
-    }
-    0
+/// Defines the modes for clearing tab stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabClearMode {
+    /// Clear tab stop at the current cursor column.
+    CurrentColumn,
+    /// Clear all tab stops.
+    All,
+    /// Represents an unsupported or unknown mode.
+    Unsupported,
 }
 
-/// Gets the effective bottom boundary for cursor movement and scrolling (respects origin mode).
-/// Returns 0-based row index.
-pub(super) fn effective_bottom(term: &Term) -> usize {
-    if term.dec_modes.origin_mode {
-        return term.scroll_bot;
-    }
-    term.height.saturating_sub(1)
-}
-
-/// Fills a range of cells in a given row with spaces using default attributes
-/// and the current background color. Used for erase operations.
-/// `x_end` is exclusive.
-pub(super) fn fill_range(term: &mut Term, y: usize, x_start: usize, x_end: usize) {
-    let current_screen = if term.using_alt_screen {
-        &mut term.alt_screen
-    } else {
-        &mut term.screen
-    };
-    if let Some(row) = current_screen.get_mut(y) {
-        // Use default attributes but keep the current background color for erase
-        let fill_attr = crate::glyph::Attributes {
-            fg: term.default_attributes.fg,
-            bg: term.current_attributes.bg, // Use current BG for erase
-            flags: term.default_attributes.flags,
-        };
-        let fill_glyph = Glyph {
-            c: ' ',
-            attr: fill_attr,
-        };
-
-        let start = min(x_start, term.width);
-        let end = min(x_end, term.width);
-
-        if start < end {
-            row[start..end].fill(fill_glyph);
-            term.dirty[y] = 1; // Mark line dirty
+impl From<u16> for TabClearMode {
+    fn from(value: u16) -> Self {
+        match value {
+            0 => TabClearMode::CurrentColumn,
+            2 | 5 => TabClearMode::All, // Mode 5 is often treated as "All"
+            _ => TabClearMode::Unsupported,
         }
     }
 }
 
-// --- Cursor Movement ---
 
-/// Moves the cursor relative to its current position, clamping to boundaries.
-/// Respects origin mode via effective_top/effective_bottom. Resets wrap_next.
-pub(super) fn move_cursor(term: &mut Term, dx: isize, dy: isize) {
-    let top = effective_top(term);
-    let bot = effective_bottom(term);
-    let max_x = term.width.saturating_sub(1);
-
-    // Calculate target Y first, clamping within the effective region
-    let target_y = if dy >= 0 {
-        term.cursor.y.saturating_add(dy as usize)
-    } else {
-        term.cursor.y.saturating_sub((-dy) as usize)
-    };
-    let final_y = target_y.clamp(top, bot);
-
-    // Calculate target X, clamping within screen width
-    let target_x = if dx >= 0 {
-        term.cursor.x.saturating_add(dx as usize)
-    } else {
-        term.cursor.x.saturating_sub((-dx) as usize)
-    };
-    let final_x = min(target_x, max_x);
-
-    term.cursor.x = final_x;
-    term.cursor.y = final_y;
-    term.wrap_next = false; // Explicit movement resets wrap
-
-    trace!(
-        "move_cursor: dx={}, dy={}, new_pos=({}, {})",
-        dx,
-        dy,
-        term.cursor.x,
-        term.cursor.y
-    );
+/// Represents the state of the terminal screen, including display grids,
+/// cursor, scrollback, and styling attributes.
+///
+/// This struct is responsible for managing the visual state of the terminal.
+/// It handles operations like character insertion, deletion, scrolling, and resizing,
+/// while tracking which lines have changed (`dirty` flags) to optimize rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Screen {
+    /// The primary screen grid.
+    pub grid: Grid,
+    /// The alternate screen grid, used by full-screen applications.
+    pub alt_grid: Grid,
+    /// Scrollback buffer; lines that have scrolled off the primary screen.
+    pub scrollback: VecDeque<Row>,
+    /// Maximum number of lines to store in the scrollback buffer.
+    scrollback_limit: usize,
+    /// True if the alternate screen (`alt_grid`) is currently active.
+    pub alt_screen_active: bool,
+    /// Current cursor state (position and attributes) for the screen.
+    /// This cursor's position is always absolute to the current grid.
+    /// If `origin_mode` is active, logical cursor operations are translated
+    /// relative to scroll margins before updating this screen cursor.
+    pub cursor: Cursor,
+    /// Saved cursor state for the primary screen (used when switching to/from alt screen).
+    saved_cursor_primary: Cursor,
+    /// Saved cursor state for the alternate screen.
+    saved_cursor_alternate: Cursor,
+    /// Screen width in columns.
+    pub width: usize,
+    /// Screen height in rows.
+    pub height: usize,
+    /// Top margin of the scrolling region (0-based, inclusive).
+    scroll_top: usize,
+    /// Bottom margin of the scrolling region (0-based, inclusive).
+    scroll_bot: usize,
+    /// Tab stops; `tabs[i]` is true if column `i` is a tab stop.
+    tabs: Vec<bool>,
+    /// Dirty flags for each line; `dirty[y] = 1` means line `y` needs redraw.
+    pub dirty: Vec<u8>,
+    /// Default attributes for new or cleared glyphs.
+    default_attributes: Attributes,
+    /// Origin Mode (DECOM); affects how cursor positions are interpreted
+    /// relative to the scrolling margins by the `TerminalEmulator`.
+    /// `Screen` itself uses absolute coordinates for its `cursor` field,
+    /// but this flag informs the `TerminalEmulator`'s coordinate translation.
+    pub origin_mode: bool,
 }
 
-/// Sets the cursor position absolutely (using 1-based coordinates from sequence).
-/// Respects origin mode via effective_top/effective_bottom. Resets wrap_next.
-pub(super) fn set_cursor_pos(term: &mut Term, col_req: u16, row_req: u16) {
-    let top = effective_top(term);
-    let bot = effective_bottom(term);
-    let max_x = term.width.saturating_sub(1);
-
-    // Convert 1-based request to 0-based target, defaulting to 0 if request is 0
-    let target_row_0based = row_req.saturating_sub(1) as usize;
-    let target_col_0based = col_req.saturating_sub(1) as usize;
-
-    // Apply origin mode offset if active
-    let final_y = if term.dec_modes.origin_mode {
-        top + target_row_0based
-    } else {
-        target_row_0based
-    };
-
-    // Clamp final position
-    term.cursor.x = min(target_col_0based, max_x);
-    term.cursor.y = final_y.clamp(top, bot);
-    term.wrap_next = false; // Explicit positioning resets wrap
-
-    trace!(
-        "set_cursor_pos: req=(col={}, row={}), target_0based=(col={}, row={}), final=({}, {})",
-        col_req,
-        row_req,
-        target_col_0based,
-        target_row_0based,
-        term.cursor.x,
-        term.cursor.y
-    );
+/// Represents the cursor's state, including position and rendering attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    /// Horizontal position (column, 0-based).
+    pub x: usize,
+    /// Vertical position (row, 0-based).
+    /// For `Screen::cursor`, this `y` is always absolute to the grid.
+    /// The logical `TerminalEmulator::cursor`'s `y` might be relative to `scroll_top`
+    /// if `origin_mode` is active, and then translated to this absolute `y`.
+    pub y: usize,
+    /// Attributes for new glyphs to be written at the cursor position.
+    pub attributes: Attributes,
 }
 
-/// Saves the current cursor position and attributes (DECSC / SCOSC).
-pub(super) fn save_cursor(term: &mut Term) {
-    trace!("Saving cursor: ({}, {})", term.cursor.x, term.cursor.y);
-    let cursor_to_save = term.cursor;
-    let attributes_to_save = term.current_attributes;
+impl Screen {
+    /// Creates a new `Screen` with the given dimensions and scrollback limit.
+    ///
+    /// Initializes primary and alternate grids, the scrollback buffer, cursor,
+    /// tab stops, and default attributes. All lines are initially marked dirty.
+    ///
+    /// # Arguments
+    /// * `width` - The width of the screen in columns.
+    /// * `height` - The height of the screen in rows.
+    /// * `scrollback_limit` - The maximum number of lines to keep in the scrollback buffer.
+    pub fn new(width: usize, height: usize, scrollback_limit: usize) -> Self {
+        let default_attributes = Attributes::default();
+        let default_glyph = Glyph { c: ' ', attr: default_attributes };
 
-    if term.using_alt_screen {
-        term.saved_cursor_alt = cursor_to_save;
-        term.saved_attributes_alt = attributes_to_save;
-    } else {
-        term.saved_cursor = cursor_to_save;
-        term.saved_attributes = attributes_to_save;
-    }
-}
+        let grid = vec![vec![default_glyph.clone(); width]; height];
+        let alt_grid = vec![vec![default_glyph.clone(); width]; height];
+        let scrollback = VecDeque::with_capacity(scrollback_limit);
 
-/// Restores the saved cursor position and attributes (DECRC / SCORC).
-/// Resets wrap_next.
-pub(super) fn restore_cursor(term: &mut Term) {
-    let (cursor_to_restore, attributes_to_restore) = if term.using_alt_screen {
-        (term.saved_cursor_alt, term.saved_attributes_alt)
-    } else {
-        (term.saved_cursor, term.saved_attributes)
-    };
-
-    term.cursor = cursor_to_restore;
-    term.current_attributes = attributes_to_restore;
-
-    // Clamp restored cursor position to current screen dimensions
-    let max_x = term.width.saturating_sub(1);
-    let max_y = term.height.saturating_sub(1);
-    term.cursor.x = min(term.cursor.x, max_x);
-    term.cursor.y = min(term.cursor.y, max_y);
-    term.wrap_next = false; // Restore resets wrap
-    trace!("Restored cursor: ({}, {})", term.cursor.x, term.cursor.y);
-}
-
-// --- Screen Content Manipulation ---
-
-/// Handles a printable character: inserts it at cursor, advances cursor (with wrapping).
-pub(super) fn handle_printable(term: &mut Term, c: char) {
-    trace!(
-        "handle_printable: char='{}', cursor=({}, {}), wrap_next={}",
-        c,
-        term.cursor.x,
-        term.cursor.y,
-        term.wrap_next
-    );
-    // TODO(#1): Implement proper character width calculation.
-    // let char_width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-    let char_width = 1; // Assume width 1 for now
-
-    let mut target_x = term.cursor.x;
-    let mut target_y = term.cursor.y;
-
-    // Handle wrap_next *before* calculating position if it was set by the previous character
-    if term.wrap_next {
-        target_x = 0;
-        // Call index to potentially scroll and move cursor down
-        index(term);
-        target_y = term.cursor.y; // Update target_y after index()
-        term.wrap_next = false; // Consume the wrap_next flag
-        trace!("  -> Applied wrap_next, new target=({}, {})", target_x, target_y);
-    }
-
-    // Place the character
-    let current_screen = if term.using_alt_screen {
-        &mut term.alt_screen
-    } else {
-        &mut term.screen
-    };
-    if let Some(row) = current_screen.get_mut(target_y) {
-        if let Some(cell) = row.get_mut(target_x) {
-            cell.c = c;
-            cell.attr = term.current_attributes;
-            // Clear wide/dummy flags if we overwrite part of a wide char
-            cell.attr.flags &= !(AttrFlags::WIDE | AttrFlags::WIDE_DUMMY);
-            term.dirty[target_y] = 1; // Mark line dirty
-            trace!("  -> Placed char '{}' at ({}, {})", c, target_x, target_y);
-        }
-        // TODO(#1): Handle wide characters properly (setting WIDE and WIDE_DUMMY flags)
-        // if char_width > 1 { ... }
-    }
-
-    // Update cursor position and potentially set wrap_next for the *next* character
-    let next_cursor_x = target_x.saturating_add(char_width);
-    if next_cursor_x >= term.width {
-        // We reached or went past the last column
-        term.cursor.x = term.width.saturating_sub(1); // Position cursor *at* the end for wrap_next logic
-        term.wrap_next = true;
-        trace!("  -> Set wrap_next=true, cursor.x={}", term.cursor.x);
-    } else {
-        term.cursor.x = next_cursor_x;
-        term.wrap_next = false; // Not at the end, so no wrap needed next time
-        trace!("  -> Moved cursor to ({}, {})", term.cursor.x, term.cursor.y);
-    }
-}
-
-/// Moves cursor down one line, scrolling if necessary (IND - Index).
-pub(super) fn index(term: &mut Term) {
-    trace!("index: cursor=({}, {})", term.cursor.x, term.cursor.y);
-    // Scrolling for IND/NEL happens when cursor is at the defined bottom margin,
-    // regardless of origin mode. Compare with scroll_bot, not effective_bottom.
-    if term.cursor.y == term.scroll_bot {
-        scroll_up(term, 1);
-    } else {
-        // Move down, clamped to screen height (not scroll region)
-        term.cursor.y = term.cursor.y.saturating_add(1);
-        term.cursor.y = min(term.cursor.y, term.height.saturating_sub(1));
-    }
-    // Index does NOT reset wrap_next (unlike explicit cursor moves)
-}
-
-/// Moves cursor up one line, scrolling if necessary (RI - Reverse Index).
-pub(super) fn reverse_index(term: &mut Term) {
-    trace!("reverse_index: cursor=({}, {})", term.cursor.x, term.cursor.y);
-    // Scrolling for RI happens when cursor is at the defined top margin,
-    // regardless of origin mode. Compare with scroll_top, not effective_top.
-    if term.cursor.y == term.scroll_top {
-        scroll_down(term, 1);
-    } else {
-        // Move up (cannot go below 0)
-        term.cursor.y = term.cursor.y.saturating_sub(1);
-    }
-    // Reverse Index does NOT reset wrap_next
-}
-
-/// Moves cursor to start of next line (like CR + LF) (NEL - Next Line).
-pub(super) fn newline(term: &mut Term) {
-    trace!("newline: cursor=({}, {})", term.cursor.x, term.cursor.y);
-    index(term);
-    carriage_return(term); // carriage_return resets wrap_next
-}
-
-/// Moves cursor to column 0 (CR - Carriage Return). Resets wrap_next.
-pub(super) fn carriage_return(term: &mut Term) {
-    trace!("carriage_return: cursor=({}, {})", term.cursor.x, term.cursor.y);
-    term.cursor.x = 0;
-    term.wrap_next = false; // CR resets wrap
-}
-
-/// Moves cursor left one column, stopping at column 0 (BS - Backspace). Resets wrap_next.
-pub(super) fn backspace(term: &mut Term) {
-    trace!("backspace: cursor=({}, {})", term.cursor.x, term.cursor.y);
-    term.cursor.x = term.cursor.x.saturating_sub(1);
-    term.wrap_next = false; // BS resets wrap
-}
-
-/// Moves cursor to the next tab stop (HT - Horizontal Tabulation). Resets wrap_next.
-pub(super) fn tab(term: &mut Term) {
-    trace!("tab: cursor=({}, {})", term.cursor.x, term.cursor.y);
-    let next_tab_stop = term
-        .tabs
-        .iter()
-        .enumerate()
-        .find(|&(i, is_set)| i > term.cursor.x && *is_set);
-
-    if let Some((next_x, _)) = next_tab_stop {
-        term.cursor.x = min(next_x, term.width.saturating_sub(1));
-    } else {
-        // If no more tab stops, move to the last column
-        term.cursor.x = term.width.saturating_sub(1);
-    }
-    term.wrap_next = false; // Tab resets wrap
-}
-
-// --- Erasing Functions ---
-
-/// Erases from cursor to end of line (inclusive) (EL 0).
-pub(super) fn erase_line_to_end(term: &mut Term) {
-    trace!("erase_line_to_end: cursor=({}, {})", term.cursor.x, term.cursor.y);
-    fill_range(term, term.cursor.y, term.cursor.x, term.width);
-}
-
-/// Erases from start of line to cursor (inclusive) (EL 1).
-pub(super) fn erase_line_to_start(term: &mut Term) {
-    trace!(
-        "erase_line_to_start: cursor=({}, {})",
-        term.cursor.x,
-        term.cursor.y
-    );
-    fill_range(term, term.cursor.y, 0, term.cursor.x.saturating_add(1));
-}
-
-/// Erases the entire current line (EL 2).
-pub(super) fn erase_whole_line(term: &mut Term) {
-    trace!(
-        "erase_whole_line: cursor=({}, {})",
-        term.cursor.x,
-        term.cursor.y
-    );
-    fill_range(term, term.cursor.y, 0, term.width);
-}
-
-/// Erases from cursor to end of screen (inclusive) (ED 0).
-pub(super) fn erase_display_to_end(term: &mut Term) {
-    trace!(
-        "erase_display_to_end: cursor=({}, {})",
-        term.cursor.x,
-        term.cursor.y
-    );
-    erase_line_to_end(term); // Erase rest of current line
-    for y in (term.cursor.y + 1)..term.height {
-        fill_range(term, y, 0, term.width); // Erase lines below
-    }
-}
-
-/// Erases from start of screen to cursor (inclusive) (ED 1).
-pub(super) fn erase_display_to_start(term: &mut Term) {
-    trace!(
-        "erase_display_to_start: cursor=({}, {})",
-        term.cursor.x,
-        term.cursor.y
-    );
-    for y in 0..term.cursor.y {
-        fill_range(term, y, 0, term.width); // Erase lines above
-    }
-    erase_line_to_start(term); // Erase start of current line
-}
-
-/// Erases the entire screen (ED 2).
-pub(super) fn erase_whole_display(term: &mut Term) {
-    trace!("erase_whole_display");
-    for y in 0..term.height {
-        fill_range(term, y, 0, term.width);
-    }
-}
-
-/// Handles ED (Erase in Display) sequences.
-pub(super) fn handle_erase_in_display(term: &mut Term, mode: u16) {
-    match mode {
-        ERASE_MODE_TO_END => erase_display_to_end(term),
-        ERASE_MODE_TO_START => erase_display_to_start(term),
-        ERASE_MODE_ALL => erase_whole_display(term),
-        ERASE_MODE_SCROLLBACK => {
-            debug!("ED 3 (Erase Scrollback) requested - Not Implemented");
-            // TODO: Implement scrollback buffer clearing if scrollback is added
-        }
-        _ => warn!("Unknown ED parameter: {}", mode),
-    }
-}
-
-/// Handles EL (Erase in Line) sequences.
-pub(super) fn handle_erase_in_line(term: &mut Term, mode: u16) {
-    match mode {
-        ERASE_MODE_TO_END => erase_line_to_end(term),
-        ERASE_MODE_TO_START => erase_line_to_start(term),
-        ERASE_MODE_ALL => erase_whole_line(term),
-        _ => warn!("Unknown EL parameter: {}", mode),
-    }
-}
-
-// --- Scrolling ---
-
-/// Scrolls the content within the defined scrolling region up by `n` lines.
-/// New lines at the bottom are filled with blanks. (SU)
-pub(super) fn scroll_up(term: &mut Term, n: usize) {
-    trace!(
-        "scroll_up: n={}, region=({}-{})",
-        n,
-        term.scroll_top,
-        term.scroll_bot
-    );
-    let region_height = term.scroll_bot + 1 - term.scroll_top;
-    let n = min(n, region_height);
-    if n == 0 {
-        return;
-    }
-
-    let current_screen = if term.using_alt_screen {
-        &mut term.alt_screen
-    } else {
-        &mut term.screen
-    };
-    let top = term.scroll_top;
-    let bot = term.scroll_bot;
-
-    // Rotate lines within the scroll region
-    current_screen[top..=bot].rotate_left(n);
-
-    // Fill the new blank lines at the bottom
-    // Use default attributes but current background color
-    let fill_attr = crate::glyph::Attributes {
-        fg: term.default_attributes.fg,
-        bg: term.current_attributes.bg,
-        flags: term.default_attributes.flags,
-    };
-    let fill_glyph = Glyph {
-        c: ' ',
-        attr: fill_attr,
-    };
-    let fill_start = bot + 1 - n;
-    for y in fill_start..=bot {
-        if let Some(row) = current_screen.get_mut(y) {
-            row.fill(fill_glyph);
-            term.dirty[y] = 1; // Mark line dirty
-        }
-    }
-
-    // Mark scrolled lines dirty as well
-    for y in top..fill_start {
-        term.dirty[y] = 1;
-    }
-}
-
-/// Scrolls the content within the defined scrolling region down by `n` lines.
-/// New lines at the top are filled with blanks. (SD)
-pub(super) fn scroll_down(term: &mut Term, n: usize) {
-    trace!(
-        "scroll_down: n={}, region=({}-{})",
-        n,
-        term.scroll_top,
-        term.scroll_bot
-    );
-    let region_height = term.scroll_bot + 1 - term.scroll_top;
-    let n = min(n, region_height);
-    if n == 0 {
-        return;
-    }
-
-    let current_screen = if term.using_alt_screen {
-        &mut term.alt_screen
-    } else {
-        &mut term.screen
-    };
-    let top = term.scroll_top;
-    let bot = term.scroll_bot;
-
-    // Rotate lines within the scroll region
-    current_screen[top..=bot].rotate_right(n);
-
-    // Fill the new blank lines at the top
-    // Use default attributes but current background color
-    let fill_attr = crate::glyph::Attributes {
-        fg: term.default_attributes.fg,
-        bg: term.current_attributes.bg,
-        flags: term.default_attributes.flags,
-    };
-    let fill_glyph = Glyph {
-        c: ' ',
-        attr: fill_attr,
-    };
-    let fill_end = top + n;
-    for y in top..fill_end {
-        if let Some(row) = current_screen.get_mut(y) {
-            row.fill(fill_glyph);
-            term.dirty[y] = 1; // Mark line dirty
-        }
-    }
-
-    // Mark scrolled lines dirty as well
-    for y in fill_end..=bot {
-        term.dirty[y] = 1;
-    }
-}
-
-// --- Insertion/Deletion ---
-
-/// Inserts `n` blank lines at the cursor's row, within the scroll region. (IL)
-pub(super) fn insert_blank_lines(term: &mut Term, n: usize) {
-    trace!(
-        "insert_blank_lines: n={}, cursor=({}, {})",
-        n,
-        term.cursor.x,
-        term.cursor.y
-    );
-    // Check if cursor is within scroll region
-    if term.cursor.y < term.scroll_top || term.cursor.y > term.scroll_bot {
-        return;
-    }
-    let n = min(n, term.scroll_bot + 1 - term.cursor.y);
-    if n == 0 {
-        return;
-    }
-
-    scroll_down(term, n); // Use scroll_down for the shift and fill
-
-    // Move cursor to start of line after IL, consistent with some terminals.
-    term.cursor.x = 0;
-    term.wrap_next = false; // Explicit cursor move resets wrap
-}
-
-/// Deletes `n` lines starting at the cursor's row, within the scroll region. (DL)
-pub(super) fn delete_lines(term: &mut Term, n: usize) {
-    trace!(
-        "delete_lines: n={}, cursor=({}, {})",
-        n,
-        term.cursor.x,
-        term.cursor.y
-    );
-    // Check if cursor is within scroll region
-    if term.cursor.y < term.scroll_top || term.cursor.y > term.scroll_bot {
-        return;
-    }
-    let n = min(n, term.scroll_bot + 1 - term.cursor.y);
-    if n == 0 {
-        return;
-    }
-
-    scroll_up(term, n); // Use scroll_up for the shift and fill
-
-    // Move cursor to start of line after DL, consistent with some terminals.
-    term.cursor.x = 0;
-    term.wrap_next = false; // Explicit cursor move resets wrap
-}
-
-/// Inserts `n` blank characters at the cursor position. (ICH)
-pub(super) fn insert_blank_chars(term: &mut Term, n: usize) {
-    trace!(
-        "insert_blank_chars: n={}, cursor=({}, {})",
-        n,
-        term.cursor.x,
-        term.cursor.y
-    );
-    let n = min(n, term.width.saturating_sub(term.cursor.x));
-    if n == 0 {
-        return;
-    }
-
-    let current_screen = if term.using_alt_screen {
-        &mut term.alt_screen
-    } else {
-        &mut term.screen
-    };
-    if let Some(row) = current_screen.get_mut(term.cursor.y) {
-        row[term.cursor.x..].rotate_right(n);
-
-        // Use default attributes but current background color
-        let fill_attr = crate::glyph::Attributes {
-            fg: term.default_attributes.fg,
-            bg: term.current_attributes.bg,
-            flags: term.default_attributes.flags,
-        };
-        let fill_glyph = Glyph {
-            c: ' ',
-            attr: fill_attr,
-        };
-        for x in term.cursor.x..(term.cursor.x + n) {
-            if let Some(cell) = row.get_mut(x) {
-                *cell = fill_glyph;
+        let mut tabs = vec![false; width];
+        // Initialize tab stops at regular intervals.
+        for i in (DEFAULT_TAB_INTERVAL..width).step_by(DEFAULT_TAB_INTERVAL as usize) {
+            if i < tabs.len() { // Defensively check bounds.
+                tabs[i] = true;
             }
         }
-        term.dirty[term.cursor.y] = 1; // Mark line dirty
-    }
-    // Inserting chars does not affect wrap_next state
-}
 
-/// Deletes `n` characters starting at the cursor position. (DCH)
-pub(super) fn delete_chars(term: &mut Term, n: usize) {
-    trace!(
-        "delete_chars: n={}, cursor=({}, {})",
-        n,
-        term.cursor.x,
-        term.cursor.y
-    );
-    let n = min(n, term.width.saturating_sub(term.cursor.x));
-    if n == 0 {
-        return;
-    }
-
-    let current_screen = if term.using_alt_screen {
-        &mut term.alt_screen
-    } else {
-        &mut term.screen
-    };
-    if let Some(row) = current_screen.get_mut(term.cursor.y) {
-        row[term.cursor.x..].rotate_left(n);
-
-        // Use default attributes but current background color
-        let fill_attr = crate::glyph::Attributes {
-            fg: term.default_attributes.fg,
-            bg: term.current_attributes.bg,
-            flags: term.default_attributes.flags,
-        };
-        let fill_glyph = Glyph {
-            c: ' ',
-            attr: fill_attr,
-        };
-        let fill_start = term.width.saturating_sub(n);
-        for x in fill_start..term.width {
-            if let Some(cell) = row.get_mut(x) {
-                *cell = fill_glyph;
-            }
-        }
-        term.dirty[term.cursor.y] = 1; // Mark line dirty
-    }
-    // Deleting chars does not affect wrap_next state
-}
-
-// --- Mode Setting ---
-
-/// Sets the scrolling region (DECSTBM). Input is 1-based, stored 0-based.
-pub(super) fn set_scrolling_region(term: &mut Term, top_req: usize, bot_req: usize) {
-    let top = top_req.saturating_sub(1);
-    let bot = bot_req.saturating_sub(1);
-
-    // Use max(top, bot) for the upper bound check against height
-    if top < bot && max(top, bot) < term.height {
-        term.scroll_top = top;
-        term.scroll_bot = bot;
-        trace!("Set scrolling region: {}-{}", term.scroll_top, term.scroll_bot);
-    } else {
-        // If invalid region (top >= bot or bot >= height), reset to full height
-        term.scroll_top = 0;
-        term.scroll_bot = term.height.saturating_sub(1);
-        trace!(
-            "Invalid scrolling region ({}-{}), reset to full screen",
-            top_req,
-            bot_req
-        );
-    }
-    // Move cursor to home position (absolute or relative based on origin mode)
-    set_cursor_pos(term, 1, 1);
-}
-
-/// Enables origin mode (DECOM). Cursor moves to top-left of scroll region.
-pub(super) fn enable_origin_mode(term: &mut Term) {
-    term.dec_modes.origin_mode = true;
-    // Move cursor to home position (which is now relative to scroll region)
-    set_cursor_pos(term, 1, 1); // set_cursor_pos handles clamping and wrap_next
-    trace!("Enabled origin mode");
-}
-
-/// Disables origin mode (DECOM). Cursor moves to absolute (0,0).
-pub(super) fn disable_origin_mode(term: &mut Term) {
-    term.dec_modes.origin_mode = false;
-    // Move cursor to absolute home (0,0)
-    term.cursor = Cursor::default();
-    term.wrap_next = false; // Reset wrap on mode change
-    trace!("Disabled origin mode");
-}
-
-/// Switches to the alternate screen buffer.
-pub(super) fn enter_alt_screen(term: &mut Term) {
-    if term.using_alt_screen {
-        return;
-    }
-
-    trace!("Entering alt screen");
-    term.using_alt_screen = true;
-    // Erase the *alternate* screen upon entry (common behavior)
-    // Use fill_range directly to avoid cursor side effects of erase_whole_display
-    let fill_attr = term.default_attributes;
-    let fill_glyph = Glyph { c: ' ', attr: fill_attr };
-    for y in 0..term.height {
-        if let Some(row) = term.alt_screen.get_mut(y) {
-            row.fill(fill_glyph);
-        }
-        term.dirty[y] = 1; // Mark lines dirty
-    }
-    // Move cursor to home on alt screen
-    term.cursor = Cursor::default();
-    term.wrap_next = false;
-}
-
-/// Switches back to the main screen buffer.
-pub(super) fn exit_alt_screen(term: &mut Term) {
-    if !term.using_alt_screen {
-        return;
-    }
-
-    trace!("Exiting alt screen");
-    term.using_alt_screen = false;
-    // Cursor position is implicitly restored by switching back to the main screen's state,
-    // unless DECSC/DECRC (1048/1049) was used, which is handled in handle_dec_mode_set.
-    // Mark all lines dirty on the main screen to ensure it's fully redrawn.
-    term.dirty.fill(1);
-}
-
-/// Resets the terminal state to defaults. (RIS)
-pub(super) fn reset(term: &mut Term) {
-    debug!("Resetting terminal state (RIS)");
-    let default_attrs = term.default_attributes;
-    let fill_glyph = Glyph {
-        c: ' ',
-        attr: default_attrs,
-    };
-
-    term.cursor = Cursor::default();
-    term.wrap_next = false;
-    term.current_attributes = default_attrs;
-    // term.parser_state = ParserState::Ground; // Handled by AnsiProcessor
-    // term.csi_params.clear(); // Handled by AnsiProcessor
-    // term.csi_intermediates.clear(); // Handled by AnsiProcessor
-    // term.osc_string.clear(); // Handled by AnsiProcessor
-    // term.utf8_decoder.reset(); // Handled by AnsiProcessor
-    term.dec_modes = DecModes::default();
-    term.scroll_top = 0;
-    term.scroll_bot = term.height.saturating_sub(1);
-    term.using_alt_screen = false; // Ensure we are on the main screen
-
-    term.tabs.fill(false);
-    for i in (0..term.width).step_by(DEFAULT_TAB_INTERVAL) {
-        if let Some(tab) = term.tabs.get_mut(i) {
-            *tab = true;
+        Screen {
+            grid,
+            alt_grid,
+            scrollback,
+            scrollback_limit,
+            alt_screen_active: false,
+            cursor: Cursor { x: 0, y: 0, attributes: default_attributes },
+            saved_cursor_primary: Cursor { x: 0, y: 0, attributes: default_attributes },
+            saved_cursor_alternate: Cursor { x: 0, y: 0, attributes: default_attributes },
+            width,
+            height,
+            scroll_top: 0,
+            scroll_bot: height.saturating_sub(1), // Default scroll region is full screen.
+            tabs,
+            dirty: vec![1; height], // Mark all lines dirty initially.
+            default_attributes,
+            origin_mode: false,
         }
     }
 
-    // Clear the *main* screen
-    for row in term.screen.iter_mut() {
-        row.fill(fill_glyph);
-    }
-    term.dirty.fill(1); // Mark all lines dirty
-}
-
-// --- Backend Interaction Placeholders ---
-
-/// Placeholder for setting terminal modes via backend.
-#[allow(unused_variables)]
-pub(super) fn xsetmode(set: bool, mode: u16) {
-    trace!("xsetmode called: set={}, mode={}", set, mode);
-    // TODO: Implement backend interaction if needed for modes like cursor visibility
-}
-
-// --- Screen Resizing ---
-
-/// Resizes the terminal screen buffers and associated state. Called by Term::resize.
-pub(super) fn resize(term: &mut Term, new_width: usize, new_height: usize) {
-    trace!("Screen resize logic: new_size={}x{}", new_width, new_height);
-    let default_glyph = Glyph {
-        c: ' ',
-        attr: term.default_attributes,
-    };
-
-    // Resize screen buffers
-    term.screen
-        .resize_with(new_height, || vec![default_glyph; new_width]);
-    for row in term.screen.iter_mut() {
-        row.resize(new_width, default_glyph);
-    }
-    term.alt_screen
-        .resize_with(new_height, || vec![default_glyph; new_width]);
-    for row in term.alt_screen.iter_mut() {
-        row.resize(new_width, default_glyph);
-    }
-
-    // Resize tabs
-    term.tabs.resize(new_width, false);
-    // Ensure existing tabs remain, reset tabs in the new area
-    for i in 0..new_width {
-        if i >= term.width || i % DEFAULT_TAB_INTERVAL == 0 {
-            term.tabs[i] = i % DEFAULT_TAB_INTERVAL == 0;
-        }
-        // Keep existing custom tabs if i < term.width
-    }
-
-    // Resize dirty flags
-    term.dirty.resize(new_height, 1); // New lines are dirty
-
-    // Clamp cursor and saved positions
-    let max_x = new_width.saturating_sub(1);
-    let max_y = new_height.saturating_sub(1);
-    term.cursor.x = min(term.cursor.x, max_x);
-    term.cursor.y = min(term.cursor.y, max_y);
-    term.saved_cursor.x = min(term.saved_cursor.x, max_x);
-    term.saved_cursor.y = min(term.saved_cursor.y, max_y);
-    term.saved_cursor_alt.x = min(term.saved_cursor_alt.x, max_x);
-    term.saved_cursor_alt.y = min(term.saved_cursor_alt.y, max_y);
-
-    // Scroll region is reset in Term::resize *before* calling this
-}
-
-// --- New Helper Functions for Command Dispatch ---
-
-/// Handles SGR (Select Graphic Rendition) commands.
-pub(super) fn handle_sgr(term: &mut Term, attrs: &[Attribute]) {
-    if attrs.is_empty() {
-        // Equivalent to CSI m -> Reset
-        term.current_attributes = term.default_attributes;
-        return;
-    }
-    for attr in attrs {
-        match attr {
-            Attribute::Reset => term.current_attributes = term.default_attributes,
-            Attribute::Bold => term.current_attributes.flags |= AttrFlags::BOLD,
-            Attribute::Faint => term.current_attributes.flags |= AttrFlags::FAINT,
-            Attribute::Italic => term.current_attributes.flags |= AttrFlags::ITALIC,
-            Attribute::Underline => term.current_attributes.flags |= AttrFlags::UNDERLINE,
-            Attribute::BlinkSlow | Attribute::BlinkRapid => {
-                term.current_attributes.flags |= AttrFlags::BLINK
-            }
-            Attribute::Reverse => term.current_attributes.flags |= AttrFlags::REVERSE,
-            Attribute::Conceal => term.current_attributes.flags |= AttrFlags::HIDDEN,
-            Attribute::Strikethrough => term.current_attributes.flags |= AttrFlags::STRIKETHROUGH,
-            Attribute::NoBold => term.current_attributes.flags &= !(AttrFlags::BOLD | AttrFlags::FAINT), // Turn off Bold and Faint
-            Attribute::NoItalic => term.current_attributes.flags &= !AttrFlags::ITALIC,
-            Attribute::NoUnderline => term.current_attributes.flags &= !AttrFlags::UNDERLINE,
-            Attribute::NoBlink => term.current_attributes.flags &= !AttrFlags::BLINK,
-            Attribute::NoReverse => term.current_attributes.flags &= !AttrFlags::REVERSE,
-            Attribute::NoConceal => term.current_attributes.flags &= !AttrFlags::HIDDEN,
-            Attribute::NoStrikethrough => term.current_attributes.flags &= !AttrFlags::STRIKETHROUGH,
-            Attribute::Foreground(c) => term.current_attributes.fg = map_ansi_color_to_glyph_color(*c),
-            Attribute::Background(c) => term.current_attributes.bg = map_ansi_color_to_glyph_color(*c),
-            // TODO: Implement Overlined, UnderlineColor, UnderlineDouble if needed
-            _ => warn!("Unhandled SGR attribute: {:?}", attr),
-        }
-    }
-}
-
-/// Maps `ansi::commands::Color` to `glyph::Color`.
-fn map_ansi_color_to_glyph_color(ansi_color: AnsiColor) -> Color {
-    match ansi_color {
-        AnsiColor::Black => Color::Idx(0),
-        AnsiColor::Red => Color::Idx(1),
-        AnsiColor::Green => Color::Idx(2),
-        AnsiColor::Yellow => Color::Idx(3),
-        AnsiColor::Blue => Color::Idx(4),
-        AnsiColor::Magenta => Color::Idx(5),
-        AnsiColor::Cyan => Color::Idx(6),
-        AnsiColor::White => Color::Idx(7),
-        AnsiColor::BrightBlack => Color::Idx(8),
-        AnsiColor::BrightRed => Color::Idx(9),
-        AnsiColor::BrightGreen => Color::Idx(10),
-        AnsiColor::BrightYellow => Color::Idx(11),
-        AnsiColor::BrightBlue => Color::Idx(12),
-        AnsiColor::BrightMagenta => Color::Idx(13),
-        AnsiColor::BrightCyan => Color::Idx(14),
-        AnsiColor::BrightWhite => Color::Idx(15),
-        AnsiColor::Indexed(idx) => Color::Idx(idx),
-        AnsiColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
-        AnsiColor::Default => Color::Default,
-    }
-}
-
-/// Handles OSC (Operating System Command) sequences.
-pub(super) fn handle_osc(term: &mut Term, data: &[u8]) {
-    // Data includes the parameters separated by ';'. e.g., b"0;Title Text"
-    if let Some(separator_pos) = data.iter().position(|&b| b == b';') {
-        let code_bytes = &data[..separator_pos];
-        let arg_bytes = &data[separator_pos + 1..];
-
-        // Attempt to parse the code as a number
-        if let Ok(code_str) = std::str::from_utf8(code_bytes) {
-            if let Ok(code) = code_str.parse::<u16>() {
-                match code {
-                    0 | 2 => { // Set window title
-                        let title = String::from_utf8_lossy(arg_bytes);
-                        debug!("OSC 0/2: Set Title to '{}' (Backend Action Needed)", title);
-                        // TODO: Notify backend to set title
-                    }
-                    1 => { // Set icon name (often same as title)
-                        let title = String::from_utf8_lossy(arg_bytes);
-                        debug!("OSC 1: Set Icon Name to '{}' (Backend Action Needed)", title);
-                         // TODO: Notify backend to set icon name
-                    }
-                     // Add cases for other OSC codes like 4 (set color palette), 10/11/12 (get colors), 52 (clipboard)
-                    _ => warn!("Unhandled OSC code: {}, arg: {:?}", code, String::from_utf8_lossy(arg_bytes)),
-                }
-            } else {
-                warn!("Failed to parse OSC code as number: {:?}", code_str);
-            }
+    /// Returns a mutable reference to the currently active grid (primary or alternate).
+    /// This is an internal helper.
+    fn active_grid_mut(&mut self) -> &mut Grid {
+        if self.alt_screen_active {
+            &mut self.alt_grid
         } else {
-            warn!("OSC code is not valid UTF-8: {:?}", code_bytes);
+            &mut self.grid
         }
-    } else {
-        // Handle OSC sequences without a ';', if any are relevant (e.g., legacy 'k')
-        warn!("Unhandled OSC sequence without ';': {:?}", String::from_utf8_lossy(data));
     }
-}
 
-/// Handles setting or resetting DEC Private Modes.
-pub(super) fn handle_dec_mode_set(term: &mut Term, mode: u16, enable: bool) {
-    trace!(
-        "DEC Mode action: {} mode {}",
-        if enable { "Set" } else { "Reset" },
-        mode
-    );
-    match mode {
-        DECCKM => term.dec_modes.cursor_keys_app_mode = enable,
-        DECOM => {
-            if enable {
-                enable_origin_mode(term);
-            } else {
-                disable_origin_mode(term);
-            }
+    /// Returns an immutable reference to the currently active grid.
+    pub fn active_grid(&self) -> &Grid {
+        if self.alt_screen_active {
+            &self.alt_grid
+        } else {
+            &self.grid
         }
-        DECTCEM => {
-            term.dec_modes.cursor_visible = enable;
-            debug!(
-                "DECTCEM Action: Visible={} (Backend Action Needed)",
-                enable
-            );
-            // TODO: Notify backend about cursor visibility change
-        }
-        ALT_SCREEN_BUF_47 | ALT_SCREEN_BUF_1047 => {
-            // TODO: Check allowaltscreen config setting
-            if enable {
-                enter_alt_screen(term);
-            } else {
-                exit_alt_screen(term);
-            }
-        }
-        CURSOR_SAVE_RESTORE_1048 => {
-            if enable {
-                save_cursor(term);
-            } else {
-                restore_cursor(term);
-            }
-        }
-        ALT_SCREEN_SAVE_RESTORE_1049 => {
-            // TODO: Check allowaltscreen config setting
-            if enable {
-                save_cursor(term); // Save before switching
-                enter_alt_screen(term);
-            } else {
-                exit_alt_screen(term);
-                restore_cursor(term); // Restore after switching back
-            }
-        }
-        // Add other DEC modes as needed
-        _ => warn!("Unhandled DEC Private Mode parameter: {}", mode),
     }
-}
-
-/// Handles DSR (Device Status Report) requests.
-pub(super) fn handle_device_status_report(term: &Term, mode: u16) {
-    match mode {
-        5 => {
-            debug!("DSR 5 (Status Report) received - sending OK");
-            // TODO: Need a way to write back to PTY from Term/Backend
-            // Example: backend.write_to_pty(b"\x1b[0n")?;
-        }
-        6 => {
-            // CPR - Cursor Position Report
-            let report = format!(
-                "\x1b[{};{}R",
-                term.cursor.y.saturating_add(1), // 1-based row
-                term.cursor.x.saturating_add(1) // 1-based col
-            );
-            debug!("DSR 6 (CPR) received - sending {}", report);
-            // TODO: Need a way to write back to PTY from Term/Backend
-            // Example: backend.write_to_pty(report.as_bytes())?;
-        }
-        _ => warn!("Unknown DSR parameter: {}", mode),
+    
+    /// Returns the 0-based top row of the scrolling region.
+    pub fn scroll_top(&self) -> usize {
+        self.scroll_top
     }
-}
 
-/// Handles HTS (Horizontal Tabulation Set).
-pub(super) fn set_horizontal_tabstop(term: &mut Term) {
-     if term.cursor.x < term.width {
-         term.tabs[term.cursor.x] = true;
-         trace!("Set tab stop at column {}", term.cursor.x);
-     }
-}
+    /// Returns the 0-based bottom row of the scrolling region.
+    pub fn scroll_bot(&self) -> usize {
+        self.scroll_bot
+    }
+    
+    /// Returns the current scrollback limit.
+    pub fn scrollback_limit(&self) -> usize {
+        self.scrollback_limit
+    }
 
-/// Handles TBC (Tabulation Clear).
-pub(super) fn handle_clear_tab_stops(term: &mut Term, mode: u16) {
-     match mode {
-         0 => { // Clear tab stop at current column
-             if term.cursor.x < term.width {
-                 term.tabs[term.cursor.x] = false;
-                 trace!("Cleared tab stop at column {}", term.cursor.x);
-             }
-         }
-         3 => { // Clear all tab stops
-             term.tabs.fill(false);
-             trace!("Cleared all tab stops");
-         }
-         _ => warn!("Unknown TBC parameter: {}", mode),
-     }
-}
 
-/// Handles SCS (Select Character Set).
-pub(super) fn handle_select_character_set(term: &mut Term, intermediate: char, final_char: char) {
-    // Map ESC ( G, ESC ) G etc. to G0, G1, G2, G3 designation
-    let g_set = match intermediate {
-        '(' => 0, // G0
-        ')' => 1, // G1
-        '*' => 2, // G2
-        '+' => 3, // G3
-        _ => {
-            warn!("Invalid SCS intermediate: {}", intermediate);
+    /// Fills a rectangular region of a single line `y` from `x_start` (inclusive)
+    /// to `x_end` (exclusive) with the provided `fill_glyph`.
+    /// Marks the line `y` as dirty. Coordinates are clamped to screen dimensions.
+    pub fn fill_region(&mut self, y: usize, x_start: usize, x_end: usize, fill_glyph: Glyph) {
+        let current_width = self.width; // Cache to avoid borrow issues.
+        let current_height = self.height;
+
+        if y >= current_height {
+            warn!("fill_region: y coordinate {} is out of bounds (height {})", y, current_height);
             return;
         }
-    };
-    // Map final_char to charset enum if needed
-    // For now, just log it
-    debug!("SCS: Designate G{} = '{}'", g_set, final_char);
-    // TODO: Implement actual charset mapping/translation if needed
+
+        let row = match self.active_grid_mut().get_mut(y) {
+            Some(r) => r,
+            None => {
+                // This case implies an inconsistency if y < current_height.
+                warn!("fill_region: Failed to get row {} despite bounds check.", y);
+                return;
+            }
+        };
+
+        let start = min(x_start, current_width);
+        let end = min(x_end, current_width);
+
+        if start < end { // Ensure there's a valid region to fill.
+            row[start..end].fill(fill_glyph);
+        }
+
+        // It's crucial to mark the line dirty after modification.
+        if y < self.dirty.len() { // Should always be true if y < current_height.
+            self.dirty[y] = 1;
+        }
+    }
+
+    /// Scrolls the content of the defined scrolling region up by `n` lines.
+    /// New lines appearing at the bottom of the region are filled with `fill_glyph`.
+    /// All lines within the affected region are marked dirty.
+    pub fn scroll_up_serial(&mut self, n: usize, fill_glyph: Glyph) {
+        if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
+            warn!("scroll_up_serial: Invalid scroll region top={}, bot={}, height={}", self.scroll_top, self.scroll_bot, self.height);
+            return;
+        }
+        let n_val = n.min(self.scroll_bot - self.scroll_top + 1); // Cannot scroll more than the region's height.
+        if n_val == 0 { return; } // No lines to scroll.
+        trace!("Scrolling up by {} lines in region ({}, {})", n_val, self.scroll_top, self.scroll_bot);
+
+        let top = self.scroll_top; // Cache for use after mutable borrow.
+        let bot = self.scroll_bot;
+
+        self.active_grid_mut()[top..=bot].rotate_left(n_val);
+
+        // Fill the new blank lines at the bottom of the scrolling region.
+        for y_idx in (bot.saturating_sub(n_val) + 1)..=bot {
+            if let Some(row_to_fill) = self.active_grid_mut().get_mut(y_idx) {
+                row_to_fill.fill(fill_glyph.clone()); // Must clone fill_glyph for each row.
+            }
+        }
+
+        // Mark all lines in the scrolled region as dirty.
+        for y_idx in top..=bot {
+            if y_idx < self.dirty.len() { // Defensive check.
+                 self.dirty[y_idx] = 1;
+            }
+        }
+    }
+
+    /// Scrolls the content of the defined scrolling region down by `n` lines.
+    /// New lines appearing at the top of the region are filled with `fill_glyph`.
+    /// All lines within the affected region are marked dirty.
+    pub fn scroll_down_serial(&mut self, n: usize, fill_glyph: Glyph) {
+        if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
+             warn!("scroll_down_serial: Invalid scroll region top={}, bot={}, height={}", self.scroll_top, self.scroll_bot, self.height);
+            return;
+        }
+        let n_val = n.min(self.scroll_bot - self.scroll_top + 1);
+        if n_val == 0 { return; }
+        trace!("Scrolling down by {} lines in region ({}, {})", n_val, self.scroll_top, self.scroll_bot);
+
+        let top = self.scroll_top;
+        let bot = self.scroll_bot;
+
+        self.active_grid_mut()[top..=bot].rotate_right(n_val);
+
+        // Fill the new blank lines at the top of the scrolling region.
+        for y_idx in top..(top + n_val) {
+            if let Some(row_to_fill) = self.active_grid_mut().get_mut(y_idx) {
+                row_to_fill.fill(fill_glyph.clone());
+            }
+        }
+
+        for y_idx in top..=bot {
+            if y_idx < self.dirty.len() {
+                self.dirty[y_idx] = 1;
+            }
+        }
+    }
+
+    /// Inserts `n` blank characters (using `fill_glyph`) in line `y` at column `x`.
+    /// Existing characters from `x` onwards are shifted right; characters shifted off are lost.
+    /// The line `y` is marked dirty.
+    pub fn insert_blank_chars_in_line(&mut self, y: usize, x: usize, n: usize, fill_glyph: Glyph) {
+        if y >= self.height {
+            warn!("insert_blank_chars_in_line: y coordinate {} out of bounds.", y);
+            return;
+        }
+        // Mark line dirty early, as it will likely be modified.
+        if y < self.dirty.len() { self.dirty[y] = 1; }
+
+
+        if x >= self.width || n == 0 { // No-op if inserting at/beyond width or inserting zero chars.
+            return;
+        }
+
+        let current_width = self.width; // Cache for use after mutable borrow.
+        let row = match self.active_grid_mut().get_mut(y) {
+            Some(r) => r,
+            None => { warn!("insert_blank_chars_in_line: Failed to get row {} for insertion.", y); return; }
+        };
+
+        // Number of blanks to insert, capped by how many chars can be shifted right.
+        let count = n.min(current_width - x);
+        if count == 0 { // Should be caught by x >= current_width, but defensive.
+            return;
+        }
+
+        row[x..].rotate_right(count);
+        // Fill the newly created blank spaces.
+        for fill_x_idx in x..(x + count) {
+            // fill_x_idx is guaranteed to be < current_width due to 'count' calculation.
+            if let Some(cell) = row.get_mut(fill_x_idx) {
+                *cell = fill_glyph.clone();
+            }
+        }
+    }
+
+    /// Deletes `n` characters in line `y` starting at column `x`.
+    /// Characters to the right are shifted left. Space freed at the end is filled with `fill_glyph`.
+    /// The line `y` is marked dirty.
+    pub fn delete_chars_in_line(&mut self, y: usize, x: usize, n: usize, fill_glyph: Glyph) {
+        if y >= self.height {
+            warn!("delete_chars_in_line: y coordinate {} out of bounds.", y);
+            return;
+        }
+        if y < self.dirty.len() { self.dirty[y] = 1; } // Mark line dirty early.
+
+        if x >= self.width || n == 0 { // No-op if deleting at/beyond width or deleting zero chars.
+            return;
+        }
+
+        let current_width = self.width; // Cache.
+        let row = match self.active_grid_mut().get_mut(y) {
+            Some(r) => r,
+            None => { warn!("delete_chars_in_line: Failed to get row {} for deletion.", y); return; }
+        };
+
+        let row_len = current_width; // Assuming row.len() == self.width.
+        // Number of chars to delete, capped by remaining chars in line from x.
+        let count = n.min(row_len - x);
+        if count == 0 { // Should be caught by x >= row_len, but defensive.
+            return;
+        }
+
+        row[x..].rotate_left(count);
+        // Fill the end of the line with blank glyphs.
+        let fill_start_idx = row_len.saturating_sub(count);
+        for fill_x_idx in fill_start_idx..row_len {
+            if let Some(cell) = row.get_mut(fill_x_idx) {
+                *cell = fill_glyph.clone();
+            }
+        }
+    }
+
+    /// Resizes the screen to `new_width` and `new_height`, and updates the scrollback limit.
+    ///
+    /// This operation recreates the main and alternate display grids.
+    /// Existing content in the scrollback buffer has its lines resized to `new_width`;
+    /// the scrollback buffer is also truncated if its length exceeds `new_scrollback_limit`.
+    /// Cursor positions are clamped to the new dimensions. All lines are marked dirty.
+    ///
+    /// **Note:** This currently does not attempt to reflow content from the old grid to the new one.
+    pub fn resize(&mut self, new_width: usize, new_height: usize, new_scrollback_limit: usize) {
+        warn!("Screen resize from {}x{} (scrollback: {}) to {}x{} (scrollback: {})",
+              self.width, self.height, self.scrollback_limit,
+              new_width, new_height, new_scrollback_limit);
+
+        let old_width = self.width;
+        self.width = new_width;
+        self.height = new_height;
+        self.scrollback_limit = new_scrollback_limit;
+
+        let default_glyph = Glyph { c: ' ', attr: self.default_attributes };
+
+        self.grid = vec![vec![default_glyph.clone(); new_width]; new_height];
+        self.alt_grid = vec![vec![default_glyph.clone(); new_width]; new_height];
+
+        // Adjust scrollback content if width changed.
+        if old_width != new_width {
+            for row_ref in self.scrollback.iter_mut() {
+                row_ref.resize(new_width, default_glyph.clone());
+            }
+        }
+        // Enforce new scrollback line limit.
+        while self.scrollback.len() > self.scrollback_limit {
+            self.scrollback.pop_front(); // Remove oldest lines.
+        }
+        // Optionally shrink capacity if much larger than limit.
+        if self.scrollback.capacity() > self.scrollback_limit + SOME_REASONABLE_SLACK {
+            self.scrollback.shrink_to_fit();
+        }
+
+        // Reset scroll region to full new height.
+        self.scroll_top = 0;
+        self.scroll_bot = new_height.saturating_sub(1);
+
+        // Clamp cursor positions to new bounds.
+        self.cursor.x = min(self.cursor.x, new_width.saturating_sub(1));
+        self.cursor.y = min(self.cursor.y, new_height.saturating_sub(1));
+        self.saved_cursor_primary.x = min(self.saved_cursor_primary.x, new_width.saturating_sub(1));
+        self.saved_cursor_primary.y = min(self.saved_cursor_primary.y, new_height.saturating_sub(1));
+        self.saved_cursor_alternate.x = min(self.saved_cursor_alternate.x, new_width.saturating_sub(1));
+        self.saved_cursor_alternate.y = min(self.saved_cursor_alternate.y, new_height.saturating_sub(1));
+
+        // Reinitialize tab stops for the new width.
+        self.tabs = vec![false; new_width];
+        for i in (DEFAULT_TAB_INTERVAL..new_width).step_by(DEFAULT_TAB_INTERVAL as usize) {
+            if i < self.tabs.len() { self.tabs[i] = true; }
+        }
+        // Resize dirty flags and mark all new lines dirty.
+        self.dirty = vec![1; new_height];
+        trace!("Screen resized. New dimensions: {}x{}. All lines marked dirty.", new_width, new_height);
+    }
+
+    /// Marks all lines on the screen as dirty, typically forcing a full redraw.
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty.fill(1);
+    }
+
+    /// Marks a single line `y` as dirty.
+    /// Warns if `y` is out of bounds for the dirty flags vector.
+    pub fn mark_line_dirty(&mut self, y: usize) {
+        if y < self.dirty.len() {
+            self.dirty[y] = 1;
+        } else {
+            // This implies y >= self.height, which should ideally be caught by callers.
+            warn!("mark_line_dirty: y coordinate {} is out of bounds for dirty flags (len {})", y, self.dirty.len());
+        }
+    }
+
+    /// Clears all dirty flags. Typically called after the screen has been rendered.
+    pub fn clear_dirty_flags(&mut self) {
+        self.dirty.fill(0);
+    }
+
+    /// Switches to the alternate screen buffer.
+    ///
+    /// If not already active, it saves the primary cursor's state, switches to the
+    /// alternate grid, and optionally clears the alternate screen. The alternate
+    /// cursor's state is then restored. All lines are marked dirty to trigger a redraw.
+    ///
+    /// # Arguments
+    /// * `clear_alt_screen` - If true, the alternate screen is filled with default glyphs.
+    pub fn enter_alt_screen(&mut self, clear_alt_screen: bool) {
+        if self.alt_screen_active { return; } // Already in alt screen.
+        self.alt_screen_active = true;
+        self.saved_cursor_primary = self.cursor; // Save primary screen's cursor state.
+
+        if clear_alt_screen {
+            let fill_glyph = Glyph { c: ' ', attr: self.default_attributes };
+            for y_idx in 0..self.height {
+                // Use fill_region to ensure dirty flags are set correctly for each line.
+                self.fill_region(y_idx, 0, self.width, fill_glyph.clone());
+            }
+        }
+        // Restore or reset alternate screen's cursor state.
+        self.cursor = self.saved_cursor_alternate;
+        self.cursor.x = min(self.cursor.x, self.width.saturating_sub(1));
+        self.cursor.y = min(self.cursor.y, self.height.saturating_sub(1));
+
+        self.mark_all_dirty(); // Alt screen content is now active and needs redraw.
+        trace!("Entered alt screen. All lines marked dirty.");
+    }
+
+    /// Switches back to the primary screen buffer from the alternate screen.
+    ///
+    /// If active, it saves the alternate cursor's state, switches to the primary grid,
+    /// and restores the primary cursor's state. All lines are marked dirty.
+    pub fn exit_alt_screen(&mut self) {
+        if !self.alt_screen_active { return; } // Already in primary screen.
+        self.saved_cursor_alternate = self.cursor; // Save alt screen's cursor state.
+        self.alt_screen_active = false;
+        self.cursor = self.saved_cursor_primary; // Restore primary screen's cursor state.
+        self.cursor.x = min(self.cursor.x, self.width.saturating_sub(1));
+        self.cursor.y = min(self.cursor.y, self.height.saturating_sub(1));
+
+        self.mark_all_dirty(); // Primary screen content is now active and needs redraw.
+        trace!("Exited alt screen. All lines marked dirty.");
+    }
+
+    /// Sets the scrolling region (DECSTBM).
+    /// `top` and `bottom` are 1-based inclusive row numbers from the terminal's perspective.
+    /// The cursor is moved to the home position (0,0) after setting the region.
+    /// If `origin_mode` is active, this home position is relative to the new margins;
+    /// otherwise, it's absolute (0,0) of the screen.
+    pub fn set_scrolling_region(&mut self, top: usize, bottom: usize) {
+        // Convert 1-based input to 0-based internal representation.
+        let t = top.saturating_sub(1);
+        let b = bottom.saturating_sub(1);
+
+        if t < b && b < self.height { // Validate region: top < bottom and bottom within screen.
+            self.scroll_top = t;
+            self.scroll_bot = b;
+        } else {
+            // Invalid region parameters, default to full screen scrolling.
+            self.scroll_top = 0;
+            self.scroll_bot = self.height.saturating_sub(1);
+            warn!("Invalid scrolling region ({}, {}), defaulting to full screen.", top, bottom);
+        }
+
+        // Per xterm behavior, DECSTBM moves the cursor to (0,0) of the new effective screen.
+        // If origin mode is on, (0,0) is relative to the margins (i.e., self.scroll_top).
+        // If origin mode is off, (0,0) is absolute.
+        // The `Screen`'s cursor.y is always absolute. The `TerminalEmulator` translates
+        // logical cursor y based on origin_mode. Here, we set the screen's cursor.
+        // The `TerminalEmulator` will later sync its logical cursor from this.
+        self.cursor.x = 0;
+        if self.origin_mode {
+            self.cursor.y = self.scroll_top; // Top of the margin.
+        } else {
+            self.cursor.y = 0; // Top of the screen.
+        }
+        trace!("Scrolling region set to ({}, {}) (0-based). Cursor moved to ({}, {}).",
+               self.scroll_top, self.scroll_bot, self.cursor.x, self.cursor.y);
+    }
+
+    /// Gets a clone of the glyph at the specified `(x, y)` coordinates from the active screen.
+    /// Returns a default glyph (space with default attributes) if coordinates are out of bounds.
+    pub fn get_glyph(&self, x: usize, y: usize) -> Glyph {
+        let grid_to_use = self.active_grid();
+        if y < grid_to_use.len() && x < grid_to_use[y].len() {
+            grid_to_use[y][x].clone()
+        } else {
+            // Use fully qualified path for DEFAULT_GLYPH as it's not imported directly.
+            crate::glyph::DEFAULT_GLYPH.clone()
+        }
+    }
+
+    /// Sets the glyph at the specified `(x, y)` coordinates on the active screen.
+    /// Marks the line `y` as dirty. Warns if coordinates are out of bounds.
+    pub fn set_glyph(&mut self, x: usize, y: usize, glyph: Glyph) {
+        if y >= self.height || x >= self.width {
+            warn!("set_glyph: coordinates ({},{}) out of screen bounds ({}x{})", x, y, self.width, self.height);
+            return;
+        }
+
+        let grid_to_use = self.active_grid_mut();
+        // This check should ideally be redundant if the above y < self.height and x < self.width pass
+        // and grids are always sized correctly to self.width/self.height.
+        if y < grid_to_use.len() && x < grid_to_use[y].len() {
+            grid_to_use[y][x] = glyph;
+            self.mark_line_dirty(y);
+        } else {
+            // This implies an inconsistency between self.width/height and actual grid dimensions.
+            warn!("set_glyph: coordinates ({},{}) out of grid internal bounds. This indicates a bug.", x, y);
+        }
+    }
+
+    /// Gets the effective absolute y-coordinate of the screen's cursor,
+    /// considering the screen's current `origin_mode` and scroll margins.
+    /// This is primarily for the `TerminalEmulator` to query.
+    pub fn get_effective_cursor_y(&self) -> usize {
+        if self.origin_mode {
+            // If origin_mode is on, screen.cursor.y is already absolute but should be
+            // interpreted as being within the scroll_top to scroll_bot range.
+            // This function helps confirm that.
+            self.cursor.y.clamp(self.scroll_top, self.scroll_bot)
+        } else {
+            self.cursor.y // Already absolute and within 0..height.
+        }
+    }
+
+    /// Sets the screen's cursor y-coordinate.
+    /// If `origin_mode` is active, `new_y_logical` is treated as relative to the
+    /// scroll margins and converted to an absolute screen coordinate.
+    /// Otherwise, `new_y_logical` is treated as an absolute coordinate.
+    /// The resulting cursor `y` is clamped to the valid range.
+    pub fn set_effective_cursor_y(&mut self, new_y_logical: usize) {
+        if self.origin_mode {
+            // new_y_logical is relative to scroll_top. Convert to absolute.
+            let abs_y = self.scroll_top + new_y_logical;
+            self.cursor.y = abs_y.clamp(self.scroll_top, self.scroll_bot);
+        } else {
+            self.cursor.y = new_y_logical.clamp(0, self.height.saturating_sub(1));
+        }
+    }
+
+    /// Clears a segment of line `y` from `x_start` to `x_end` (exclusive)
+    /// by filling it with space characters using the screen's default attributes.
+    /// Marks the line `y` as dirty.
+    pub fn clear_line_segment(&mut self, y: usize, x_start: usize, x_end: usize) {
+        let fill_glyph = Glyph { c: ' ', attr: self.default_attributes };
+        self.fill_region(y, x_start, x_end, fill_glyph);
+    }
+
+    // --- Tab stop methods ---
+
+    /// Sets a tab stop at the given column `x`.
+    pub fn set_tabstop(&mut self, x: usize) {
+        if x < self.tabs.len() {
+            self.tabs[x] = true;
+        } else {
+            warn!("set_tabstop: column {} is out of bounds for tabs (width {})", x, self.tabs.len());
+        }
+    }
+
+    /// Clears tab stops based on the `mode`.
+    ///
+    /// # Arguments
+    /// * `current_cursor_x` - The current horizontal cursor position (0-based),
+    ///   used when `mode` is `TabClearMode::CurrentColumn`.
+    /// * `mode` - The `TabClearMode` specifying which tab stops to clear.
+    pub fn clear_tabstops(&mut self, current_cursor_x: usize, mode: TabClearMode) {
+        match mode {
+            TabClearMode::CurrentColumn => {
+                if current_cursor_x < self.tabs.len() {
+                    self.tabs[current_cursor_x] = false;
+                }
+            }
+            TabClearMode::All => {
+                self.tabs.fill(false);
+            }
+            TabClearMode::Unsupported => {
+                 warn!("Unsupported tab clear mode used.");
+            }
+        }
+    }
+
+    /// Finds the next tab stop column at or after the given column `x`.
+    /// Returns `None` if no further tab stops are set on the line.
+    pub fn get_next_tabstop(&self, x: usize) -> Option<usize> {
+        // Search for the next `true` value in self.tabs, starting from x + 1.
+        self.tabs.iter().skip(x.saturating_add(1)).position(|&is_set| is_set)
+            .map(|pos_after_skip| x.saturating_add(1) + pos_after_skip)
+    }
 }
 
-
-// Add the module declaration for the tests file
-#[cfg(test)]
-mod tests;
+/// A placeholder constant for the scrollback shrink logic in `resize`.
+/// This determines how much larger the capacity can be than the limit
+/// before `shrink_to_fit` is called. This should be tuned or made configurable.
+const SOME_REASONABLE_SLACK: usize = 20; // Example value
 
