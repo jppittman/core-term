@@ -29,14 +29,15 @@ use crate::{
         AnsiCommand,
         Attribute,
         C0Control,
-        Color as AnsiColor, // Keep EscCommand if used by AnsiCommand::from_c1 or from_esc
+        Color as AnsiColor, 
         CsiCommand,
+        EscCommand, // Added EscCommand
     },
     backends::BackendEvent,
-    glyph::{AttrFlags, Attributes, Color as GlyphColor, Glyph, NamedColor}, // Added DEFAULT_GLYPH
-    term::cursor::{CursorController, ScreenContext}, // cursor is an existing submodule
-    term::screen::Screen,                            // screen is an existing submodule
-    term::unicode::get_char_display_width,           // unicode is an existing submodule
+    glyph::{AttrFlags, Attributes, Color as GlyphColor, Glyph, NamedColor, DEFAULT_GLYPH},
+    term::cursor::{CursorController, ScreenContext}, 
+    term::screen::Screen,                            
+    term::unicode::get_char_display_width,           
 };
 
 // Logging
@@ -44,6 +45,9 @@ use log::{debug, trace, warn};
 
 /// Default tab interval.
 pub const DEFAULT_TAB_INTERVAL: u8 = 8;
+/// Default cursor shape (e.g., 2 for block).
+const DEFAULT_CURSOR_SHAPE: u16 = 2;
+
 
 // --- TerminalInterface Trait ---
 // Moved here from renderer_test_harness
@@ -64,7 +68,7 @@ pub struct TerminalEmulator {
     dec_modes: DecPrivateModes,
     active_charsets: [CharacterSet; 4],
     active_charset_g_level: usize,
-    dirty_lines: Vec<usize>, // This is now managed by screen.dirty and take_dirty_lines
+    dirty_lines: Vec<usize>, 
     cursor_wrap_next: bool,
     current_cursor_shape: u16,
 }
@@ -74,9 +78,6 @@ impl TerminalEmulator {
     pub fn new(width: usize, height: usize, scrollback_limit: usize) -> Self {
         let initial_attributes = Attributes::default();
         let mut screen = Screen::new(width, height, scrollback_limit);
-        // Ensure the screen's default_attributes are initialized correctly.
-        // The Renderer will use its own defaults for Color::Default, but Screen
-        // uses its default_attributes for clearing operations within its own logic.
         screen.default_attributes = initial_attributes;
 
         TerminalEmulator {
@@ -90,9 +91,9 @@ impl TerminalEmulator {
                 CharacterSet::Ascii,
             ],
             active_charset_g_level: 0,
-            dirty_lines: (0..height.max(1)).collect(), // Still useful for initial full draw
+            dirty_lines: (0..height.max(1)).collect(), 
             cursor_wrap_next: false,
-            current_cursor_shape: 2,
+            current_cursor_shape: DEFAULT_CURSOR_SHAPE,
         }
     }
 
@@ -164,10 +165,6 @@ impl TerminalEmulator {
             }
         };
 
-        // If no explicit action requested a redraw, but the screen module has dirty lines,
-        // signal a redraw request.
-        // The `self.dirty_lines` vec is primarily for the *initial* full draw or after a resize.
-        // Subsequent dirty tracking is mainly via `self.screen.dirty`.
         if action.is_none() && !self.screen.dirty.iter().all(|&d| d == 0) {
             action = Some(EmulatorAction::RequestRedraw);
         }
@@ -213,33 +210,33 @@ impl TerminalEmulator {
                 }
             },
             AnsiCommand::Esc(esc_cmd) => match esc_cmd {
-                crate::ansi::commands::EscCommand::SetTabStop => {
+                EscCommand::SetTabStop => {
                     let (cursor_x, _) = self.cursor_controller.logical_pos();
                     self.screen.set_tabstop(cursor_x);
                     None
                 }
-                crate::ansi::commands::EscCommand::Index => {
+                EscCommand::Index => {
                     self.index();
                     None
                 }
-                crate::ansi::commands::EscCommand::NextLine => {
+                EscCommand::NextLine => {
                     self.newline(true);
                     self.carriage_return();
                     None
                 }
-                crate::ansi::commands::EscCommand::ReverseIndex => {
+                EscCommand::ReverseIndex => {
                     self.reverse_index();
                     None
                 }
-                crate::ansi::commands::EscCommand::SaveCursor => {
+                EscCommand::SaveCursor => {
                     self.save_cursor_dec();
                     None
                 }
-                crate::ansi::commands::EscCommand::RestoreCursor => {
+                EscCommand::RestoreCursor => {
                     self.restore_cursor_dec();
                     None
                 }
-                crate::ansi::commands::EscCommand::SelectCharacterSet(
+                EscCommand::SelectCharacterSet(
                     intermediate_char,
                     final_char,
                 ) => {
@@ -253,11 +250,64 @@ impl TerminalEmulator {
                                 "Unsupported G-set designator intermediate: {}",
                                 intermediate_char
                             );
-                            0
+                            0 // Default to G0 if intermediate is unknown
                         }
                     };
                     self.designate_character_set(g_idx, CharacterSet::from_char(final_char));
                     None
+                }
+                EscCommand::ResetToInitialState => {
+                    trace!("Processing ESC c (ResetToInitialState)");
+
+                    // 1. Ensure on primary screen
+                    if self.screen.alt_screen_active {
+                        self.screen.exit_alt_screen(); // This marks lines dirty
+                        // dec_modes.using_alt_screen will be reset by DecPrivateModes::default() later
+                    }
+
+                    // 2. Reset attributes for clearing and cursor
+                    let default_attrs = Attributes::default();
+                    self.cursor_controller.set_attributes(default_attrs);
+                    self.screen.default_attributes = default_attrs;
+
+                    // 3. Clear screen content (uses self.screen.default_attributes)
+                    self.erase_in_display(EraseMode::All); // This marks all lines dirty
+
+                    // 4. Home cursor (attributes are already default)
+                    self.cursor_controller.move_to_logical(0, 0, &self.current_screen_context());
+                    
+                    // 5. Reset DEC Private Modes (also resets origin_mode, cursor visibility via DECTCEM default)
+                    self.dec_modes = DecPrivateModes::default();
+                    self.screen.origin_mode = self.dec_modes.origin_mode; // Sync screen's copy
+
+                    // 6. Reset scrolling region to full screen
+                    let (_, h) = self.dimensions(); // Get current height
+                    self.screen.set_scrolling_region(1, h); // 1-based params
+
+                    // 7. Reset character sets
+                    self.active_charsets = [CharacterSet::Ascii; 4];
+                    self.active_charset_g_level = 0;
+
+                    // 8. Reset tab stops
+                    self.screen.clear_tabstops(0, screen::TabClearMode::All);
+                    let (w, _) = self.dimensions();
+                    for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize) {
+                        self.screen.set_tabstop(i);
+                    }
+                    
+                    // 9. Reset miscellaneous state
+                    self.cursor_wrap_next = false;
+                    self.current_cursor_shape = DEFAULT_CURSOR_SHAPE;
+                    self.cursor_controller.set_visible(true); // RIS makes cursor visible
+
+                    // 10. Mark all lines dirty (already done by erase_in_display and exit_alt_screen)
+                    // self.mark_all_lines_dirty(); // Can be called again, it's idempotent.
+
+                    // 11. Signal actions
+                    // RequestRedraw is implicit. SetCursorVisibility is important.
+                    // SetTitle could also be added here.
+                    // For now, only SetCursorVisibility to match st's behavior of making cursor visible.
+                    Some(EmulatorAction::SetCursorVisibility(true))
                 }
                 _ => {
                     debug!("Unhandled Esc command: {:?}", esc_cmd);
@@ -340,13 +390,13 @@ impl TerminalEmulator {
                     self.handle_set_mode(Mode::DecPrivate(mode_num), false)
                 }
                 CsiCommand::DeviceStatusReport(dsr_param) => {
-                    if dsr_param == 0 || dsr_param == 6 {
+                    if dsr_param == 0 || dsr_param == 6 { // DSR 6 is cursor position report
                         let screen_ctx = self.current_screen_context();
                         let (abs_x, abs_y) =
                             self.cursor_controller.physical_screen_pos(&screen_ctx);
                         let response = format!("\x1B[{};{}R", abs_y + 1, abs_x + 1);
                         Some(EmulatorAction::WritePty(response.into_bytes()))
-                    } else if dsr_param == 5 {
+                    } else if dsr_param == 5 { // DSR 5 is status report (OK)
                         Some(EmulatorAction::WritePty(b"\x1B[0n".to_vec()))
                     } else {
                         warn!("Unhandled DSR parameter: {}", dsr_param);
@@ -365,11 +415,11 @@ impl TerminalEmulator {
                     self.scroll_down(n.max(1) as usize);
                     None
                 }
-                CsiCommand::SaveCursor => {
+                CsiCommand::SaveCursor => { // This is DECSC, typically. ANSI s/u are less common.
                     self.save_cursor_dec();
                     None
                 }
-                CsiCommand::RestoreCursor => {
+                CsiCommand::RestoreCursor => { // This is DECRC.
                     self.restore_cursor_dec();
                     None
                 }
@@ -382,6 +432,10 @@ impl TerminalEmulator {
                 CsiCommand::SetScrollingRegion { top, bottom } => {
                     self.screen
                         .set_scrolling_region(top as usize, bottom as usize);
+                    // After setting scrolling region, cursor moves to home within that region if DECOM is on,
+                    // or to absolute (0,0) if DECOM is off.
+                    // st.c moves to (0,0) of the new margin (if DECOM) or physical (0,0).
+                    // Our CursorController.move_to_logical already handles DECOM.
                     self.cursor_controller
                         .move_to_logical(0, 0, &self.current_screen_context());
                     None
@@ -389,6 +443,7 @@ impl TerminalEmulator {
                 CsiCommand::SetCursorStyle { shape } => {
                     self.current_cursor_shape = shape;
                     debug!("Set cursor style to shape: {}", shape);
+                    // Note: This might need an EmulatorAction if the driver needs to change cursor visuals.
                     None
                 }
                 CsiCommand::WindowManipulation { ps1, ps2, ps3 } => {
@@ -396,13 +451,14 @@ impl TerminalEmulator {
                 }
                 CsiCommand::Unsupported(intermediates, final_byte_opt) => {
                     warn!(
-                        "TerminalEmulator received CsiCommand::Unsupported: intermediates={:?}, final={:?}",
+                        "TerminalEmulator received CsiCommand::Unsupported: intermediates={:?}, final={:?}. This is usually an error from the parser.",
                         intermediates, final_byte_opt
                     );
                     None
                 }
+                 // Catch-all for CsiCommand variants not explicitly handled above
                 _ => {
-                    debug!("Unhandled CsiCommand variant: {:?}", csi);
+                    debug!("Unhandled CsiCommand variant in TerminalEmulator: {:?}", csi);
                     None
                 }
             },
@@ -411,8 +467,9 @@ impl TerminalEmulator {
                 self.print_char(ch);
                 None
             }
+            // Catch-all for AnsiCommand variants not explicitly handled
             _ => {
-                debug!("Unhandled ANSI command type: {:?}", command);
+                debug!("Unhandled ANSI command type in TerminalEmulator: {:?}", command);
                 None
             }
         }
@@ -421,89 +478,64 @@ impl TerminalEmulator {
     /// Handles a `BackendEvent`.
     fn handle_backend_event(&mut self, event: BackendEvent) -> Option<EmulatorAction> {
         self.cursor_wrap_next = false;
-        const KEY_RETURN: u32 = 0xFF0D;
-        const KEY_BACKSPACE: u32 = 0xFF08;
-        const KEY_TAB: u32 = 0xFF09;
-        const KEY_ISO_LEFT_TAB: u32 = 0xFE20;
-        const KEY_ESCAPE: u32 = 0xFF1B;
-        const KEY_UP_ARROW: u32 = 0xFF52;
-        const KEY_DOWN_ARROW: u32 = 0xFF54;
-        const KEY_RIGHT_ARROW: u32 = 0xFF53;
+        // Key constants for common keys. Values might need adjustment based on X11 KeySyms or other backend specifics.
+        const KEY_RETURN: u32 = 0xFF0D;       // Enter/Return
+        const KEY_BACKSPACE: u32 = 0xFF08;    // Backspace
+        const KEY_TAB: u32 = 0xFF09;          // Tab
+        const KEY_ISO_LEFT_TAB: u32 = 0xFE20; // Shift+Tab often produces this
+        const KEY_ESCAPE: u32 = 0xFF1B;       // Escape
+
+        // Arrow keys (common X11 KeySym values)
         const KEY_LEFT_ARROW: u32 = 0xFF51;
+        const KEY_UP_ARROW: u32 = 0xFF52;
+        const KEY_RIGHT_ARROW: u32 = 0xFF53;
+        const KEY_DOWN_ARROW: u32 = 0xFF54;
+        
+        // TODO: Add more key constants (Home, End, PgUp, PgDn, F-keys, etc.)
 
         match event {
             BackendEvent::Key { keysym, text } => {
                 let mut bytes_to_send: Vec<u8> = Vec::new();
-                if !text.is_empty()
-                    && text.chars().all(|c| !c.is_control())
-                    && !(keysym == KEY_RETURN
-                        || keysym == KEY_BACKSPACE
-                        || keysym == KEY_TAB
-                        || keysym == KEY_ISO_LEFT_TAB
-                        || keysym == KEY_ESCAPE
-                        || (keysym >= KEY_LEFT_ARROW && keysym <= KEY_UP_ARROW))
-                {
-                    bytes_to_send.extend(text.as_bytes());
-                } else {
-                    match keysym {
-                        KEY_RETURN => bytes_to_send.push(b'\r'),
-                        KEY_BACKSPACE => bytes_to_send.push(0x08),
-                        KEY_TAB => bytes_to_send.push(b'\t'),
-                        KEY_ISO_LEFT_TAB => bytes_to_send.extend_from_slice(b"\x1b[Z"),
-                        KEY_ESCAPE => bytes_to_send.push(0x1B),
-                        KEY_UP_ARROW => bytes_to_send.extend_from_slice(
-                            if self.dec_modes.cursor_keys_app_mode {
-                                b"\x1bOA"
-                            } else {
-                                b"\x1b[A"
-                            },
-                        ),
-                        KEY_DOWN_ARROW => bytes_to_send.extend_from_slice(
-                            if self.dec_modes.cursor_keys_app_mode {
-                                b"\x1bOB"
-                            } else {
-                                b"\x1b[B"
-                            },
-                        ),
-                        KEY_RIGHT_ARROW => bytes_to_send.extend_from_slice(
-                            if self.dec_modes.cursor_keys_app_mode {
-                                b"\x1bOC"
-                            } else {
-                                b"\x1b[C"
-                            },
-                        ),
-                        KEY_LEFT_ARROW => bytes_to_send.extend_from_slice(
-                            if self.dec_modes.cursor_keys_app_mode {
-                                b"\x1bOD"
-                            } else {
-                                b"\x1b[D"
-                            },
-                        ),
-                        _ => {
-                            if text.chars().count() == 1
-                                && text.chars().next().map_or(false, |c| !c.is_control())
-                            {
-                                bytes_to_send.extend(text.as_bytes());
-                            } else if !text.is_empty()
-                                && text.chars().all(|c| {
-                                    c.is_control()
-                                        || c.is_ascii_alphanumeric()
-                                        || c.is_ascii_punctuation()
-                                })
-                            {
-                                bytes_to_send.extend(text.as_bytes());
-                            } else {
-                                trace!("Unhandled keysym: {} (text: '{}')", keysym, text);
-                            }
+                // Prioritize keysym for control/special keys, then text for printable chars.
+                match keysym {
+                    KEY_RETURN => bytes_to_send.push(b'\r'), // Or b'\n' depending on desired behavior / LNM mode
+                    KEY_BACKSPACE => bytes_to_send.push(0x08), // BS
+                    KEY_TAB => bytes_to_send.push(b'\t'),     // HT
+                    KEY_ISO_LEFT_TAB => bytes_to_send.extend_from_slice(b"\x1b[Z"), // CSI Z (Shift Tab)
+                    KEY_ESCAPE => bytes_to_send.push(0x1B),   // ESC
+
+                    KEY_UP_ARROW => bytes_to_send.extend_from_slice(
+                        if self.dec_modes.cursor_keys_app_mode { b"\x1bOA" } else { b"\x1b[A" }
+                    ),
+                    KEY_DOWN_ARROW => bytes_to_send.extend_from_slice(
+                        if self.dec_modes.cursor_keys_app_mode { b"\x1bOB" } else { b"\x1b[B" }
+                    ),
+                    KEY_RIGHT_ARROW => bytes_to_send.extend_from_slice(
+                        if self.dec_modes.cursor_keys_app_mode { b"\x1bOC" } else { b"\x1b[C" }
+                    ),
+                    KEY_LEFT_ARROW => bytes_to_send.extend_from_slice(
+                        if self.dec_modes.cursor_keys_app_mode { b"\x1bOD" } else { b"\x1b[D" }
+                    ),
+                    // Add more special keys here (Home, End, F-keys, etc.)
+
+                    _ => { // Fallback to text if keysym is not a special handled one
+                        if !text.is_empty() {
+                            bytes_to_send.extend(text.as_bytes());
+                        } else {
+                            trace!("Unhandled keysym: {:#X} with empty text", keysym);
                         }
                     }
                 }
+                
                 if !bytes_to_send.is_empty() {
                     return Some(EmulatorAction::WritePty(bytes_to_send));
                 }
             }
+            // Orchestrator handles Resize, CloseRequested, FocusGained, FocusLost directly.
+            // They are not typically fed back into interpret_input as EmulatorInput::User.
+            // If they were, the match would need to handle them here.
             _ => debug!(
-                "BackendEvent {:?} passed to TerminalEmulator, typically handled by Orchestrator.",
+                "BackendEvent {:?} passed to TerminalEmulator's handle_backend_event, usually handled by Orchestrator.",
                 event
             ),
         }
@@ -514,13 +546,11 @@ impl TerminalEmulator {
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.cursor_wrap_next = false;
         let current_scrollback_limit = self.screen.scrollback_limit();
-        // Pass current cursor attributes to screen.resize for new cells
         self.screen.resize(cols, rows, current_scrollback_limit);
         let (log_x, log_y) = self.cursor_controller.logical_pos();
         self.cursor_controller
             .move_to_logical(log_x, log_y, &self.current_screen_context());
-        // self.screen.default_attributes is already updated by screen.resize if needed
-        self.mark_all_lines_dirty(); // Mark all lines dirty for orchestrator/renderer
+        self.mark_all_lines_dirty(); 
         debug!(
             "Terminal resized to {}x{}. Cursor re-clamped. All lines marked dirty.",
             cols, rows
@@ -528,33 +558,22 @@ impl TerminalEmulator {
     }
 
     fn mark_all_lines_dirty(&mut self) {
-        // This Vec is for initial full draw or after resize.
-        // The screen module's internal dirty flags are the primary mechanism.
-        self.dirty_lines = (0..self.screen.height).collect();
-        self.screen.mark_all_dirty();
+        self.dirty_lines = (0..self.screen.height).collect(); // Legacy, for initial full draw
+        self.screen.mark_all_dirty(); // Primary mechanism
     }
 
+    #[allow(dead_code)] // Potentially useful later, but screen.mark_line_dirty is primary
     fn mark_line_dirty(&mut self, y_abs: usize) {
-        // self.dirty_lines Vec is less important now, screen.mark_line_dirty is key
         if y_abs < self.screen.height && !self.dirty_lines.contains(&y_abs) {
-            // self.dirty_lines.push(y_abs); // Can remove if screen.dirty is sole source
+            // self.dirty_lines.push(y_abs); 
         }
         self.screen.mark_line_dirty(y_abs);
     }
 
-    // `take_dirty_lines` is now part of TerminalInterface impl below.
-
-    // `get_glyph` is now part of TerminalInterface impl below.
-
-    // `dimensions` is now part of TerminalInterface impl below.
 
     pub fn cursor_pos(&self) -> (usize, usize) {
         self.cursor_controller.logical_pos()
     }
-
-    // `get_screen_cursor_pos` is now part of TerminalInterface impl below.
-
-    // `is_cursor_visible` is now part of TerminalInterface impl below.
 
     pub fn is_alt_screen_active(&self) -> bool {
         self.screen.alt_screen_active
@@ -564,40 +583,58 @@ impl TerminalEmulator {
         let ch_to_print = self.map_char_to_active_charset(ch);
         let char_width = get_char_display_width(ch_to_print);
 
-        if char_width == 0 {
-            return;
+        if char_width == 0 { // True zero-width character (e.g. combining mark not precomposed)
+            // Behavior for standalone ZWCs is complex.
+            // Option 1: Overstrike the previous character (difficult to manage generically).
+            // Option 2: Advance cursor by 0, effectively ignoring it for layout if not combined.
+            // Option 3: If at line start, or after space, might be treated as width 1 (like some terminals).
+            // For now, if it's a ZWC and we don't have a preceding char to combine with,
+            // we might just ignore it or let it overstrike (which means not advancing cursor).
+            // The current `get_char_display_width` should handle this.
+            // If it returns 0, we simply don't advance the cursor below.
+            // The character might still be stored in the grid if needed for rendering complex scripts.
+            // For simplicity, if width is 0, we might just return.
+            trace!("print_char: Encountered zero-width char '{}'. Behavior might be minimal.", ch_to_print);
+            // If we want to place it without advancing:
+            // let (physical_x, physical_y) = self.cursor_controller.physical_screen_pos(&self.current_screen_context());
+            // self.screen.set_glyph(physical_x, physical_y, Glyph { c: ch_to_print, attr: self.cursor_controller.attributes() });
+            return; // Or handle by overstriking/combining if supported
         }
 
         let mut screen_ctx = self.current_screen_context();
 
         if self.cursor_wrap_next {
-            self.newline(true);
-            screen_ctx = self.current_screen_context();
+            self.newline(true); // This also does carriage_return
+            screen_ctx = self.current_screen_context(); // Update context after newline
             self.cursor_wrap_next = false;
         }
 
         let (mut physical_x, mut physical_y) =
             self.cursor_controller.physical_screen_pos(&screen_ctx);
 
+        // Line wrapping for wide characters needs careful handling.
+        // If a wide char (width 2) is at the second to last column, it should print.
+        // If it's at the last column, it should wrap then print.
         if physical_x + char_width > screen_ctx.width {
+             // If a single char (even narrow) doesn't fit, wrap.
+             // Or if a wide char would be split.
             if char_width == 2 && physical_x == screen_ctx.width.saturating_sub(1) {
-                // Screen's default_attributes should be current SGR attributes
-                let fill_glyph = Glyph {
-                    c: ' ',
-                    attr: self.cursor_controller.attributes(),
-                };
-                if physical_y < self.screen.height {
+                // Special case: Wide char at the very last column.
+                // Some terminals might place a space, then wrap. Others just wrap.
+                // st.c behavior: if wide char at last col, it wraps.
+                // Let's fill the last cell with a space (using current attributes) before wrapping.
+                let fill_glyph = Glyph { c: ' ', attr: self.cursor_controller.attributes() };
+                if physical_y < self.screen.height { // Check bounds before setting glyph
                     self.screen.set_glyph(physical_x, physical_y, fill_glyph);
-                    // mark_line_dirty is called by screen.set_glyph
                 }
             }
-            self.newline(true);
-            screen_ctx = self.current_screen_context();
+            self.newline(true); // Wrap to next line, cursor to col 0
+            screen_ctx = self.current_screen_context(); // Update context
             (physical_x, physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
         }
 
         let glyph_attrs = self.cursor_controller.attributes();
-        if physical_y < self.screen.height {
+        if physical_y < self.screen.height { // Ensure physical_y is within bounds
             self.screen.set_glyph(
                 physical_x,
                 physical_y,
@@ -606,23 +643,25 @@ impl TerminalEmulator {
                     attr: glyph_attrs,
                 },
             );
-            // mark_line_dirty is called by screen.set_glyph
 
             if char_width == 2 {
+                // Place placeholder for the second half of the wide character
                 if physical_x + 1 < screen_ctx.width {
-                    // Use same attributes for the placeholder
                     self.screen.set_glyph(
                         physical_x + 1,
                         physical_y,
                         Glyph {
-                            c: '\0',
-                            attr: glyph_attrs,
+                            c: '\0', // Placeholder character
+                            attr: glyph_attrs, // Inherit attributes
                         },
                     );
                 } else {
+                    // This case (wide char perfectly fitting then needing wrap for placeholder)
+                    // should have been handled by the wrap logic above.
+                    // If it occurs, it implies a logic error or an extremely narrow terminal.
                     warn!(
-                        "Wide char placeholder for '{}' at ({},{}) could not be placed due to edge of screen.",
-                        ch_to_print, physical_x, physical_y
+                        "Wide char placeholder for '{}' at ({},{}) could not be placed due to edge of screen (width {}). This might indicate a wrap logic issue.",
+                        ch_to_print, physical_x, physical_y, screen_ctx.width
                     );
                 }
             }
@@ -635,9 +674,9 @@ impl TerminalEmulator {
 
         self.cursor_controller.move_right(char_width, &screen_ctx);
 
+        // Check for wrap-next condition *after* moving right
         let (final_logical_x, _) = self.cursor_controller.logical_pos();
-        if final_logical_x == screen_ctx.width {
-            // Note: screen_ctx.width, not screen.width
+        if final_logical_x >= screen_ctx.width { // Use >= because logical_x can be == width
             self.cursor_wrap_next = true;
         } else {
             self.cursor_wrap_next = false;
@@ -671,7 +710,7 @@ impl TerminalEmulator {
         let next_stop = self
             .screen
             .get_next_tabstop(current_x)
-            .unwrap_or(screen_ctx.width.saturating_sub(1));
+            .unwrap_or(screen_ctx.width.saturating_sub(1).max(current_x)); // Ensure forward or stay
         self.cursor_controller
             .move_to_logical_col(next_stop, &screen_ctx);
     }
@@ -680,36 +719,32 @@ impl TerminalEmulator {
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
         let (_, current_logical_y) = self.cursor_controller.logical_pos();
-        let (current_physical_x, current_physical_y) =
-            self.cursor_controller.physical_screen_pos(&screen_ctx);
+        let (_, current_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
 
-        let max_logical_y = if screen_ctx.origin_mode_active {
+        let max_logical_y_in_region = if screen_ctx.origin_mode_active {
             screen_ctx.scroll_bot.saturating_sub(screen_ctx.scroll_top)
         } else {
             screen_ctx.height.saturating_sub(1)
         };
+        
+        let physical_scroll_bot = screen_ctx.scroll_bot;
 
-        if current_logical_y == max_logical_y {
-            // At the bottom of the logical screen/region
-            // Scroll only the defined scrolling region
-            self.screen.scroll_up_serial(1);
-            // Screen.scroll_up_serial marks its lines dirty
-        } else if current_logical_y < max_logical_y {
-            // Not at the bottom, just move cursor
+        if current_physical_y == physical_scroll_bot { // At the bottom of the scrolling region
+            self.screen.scroll_up_serial(1); 
+        } else if current_logical_y < max_logical_y_in_region { // Within region but not at bottom
+             self.cursor_controller.move_down(1, &screen_ctx);
+        } else if !screen_ctx.origin_mode_active && current_physical_y < screen_ctx.height.saturating_sub(1) {
+            // Outside scrolling region (if DECOM off) but not at physical bottom of screen
             self.cursor_controller.move_down(1, &screen_ctx);
         }
-        // Else: cursor is outside scroll region if origin mode is off and cursor is below scroll_bot.
-        // In this case, standard cursor movement applies without scrolling.
+        // Else: At physical bottom and not in scroll region, or already scrolled.
 
-        if is_line_feed {
+        if is_line_feed { // LF, VT, FF
             self.cursor_controller.carriage_return();
         }
 
-        // Mark current and new cursor lines dirty (physical lines)
         self.screen.mark_line_dirty(current_physical_y);
-        let (_, new_physical_y) = self
-            .cursor_controller
-            .physical_screen_pos(&self.current_screen_context());
+        let (_, new_physical_y) = self.cursor_controller.physical_screen_pos(&self.current_screen_context());
         if current_physical_y != new_physical_y {
             self.screen.mark_line_dirty(new_physical_y);
         }
@@ -736,60 +771,48 @@ impl TerminalEmulator {
         }
     }
 
-    fn index(&mut self) {
+    fn index(&mut self) { // Equivalent to LF without CR part
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
-        let (_, current_logical_y) = self.cursor_controller.logical_pos();
         let (_, current_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
-        let max_logical_y = if screen_ctx.origin_mode_active {
-            screen_ctx.scroll_bot.saturating_sub(screen_ctx.scroll_top)
-        } else {
-            screen_ctx.height.saturating_sub(1)
-        };
-
-        if current_logical_y == max_logical_y {
-            // At bottom of logical screen/region
-            self.screen.scroll_up_serial(1); // screen.scroll_up_serial marks lines dirty
-        } else if current_logical_y < max_logical_y {
+        
+        if current_physical_y == screen_ctx.scroll_bot { // At bottom of scroll region
+            self.screen.scroll_up_serial(1); 
+        } else if current_physical_y < screen_ctx.height.saturating_sub(1) { // Not at physical bottom
             self.cursor_controller.move_down(1, &screen_ctx);
         }
+
         self.screen.mark_line_dirty(current_physical_y);
-        let (_, new_physical_y) = self
-            .cursor_controller
-            .physical_screen_pos(&self.current_screen_context());
+        let (_, new_physical_y) = self.cursor_controller.physical_screen_pos(&self.current_screen_context());
         if current_physical_y != new_physical_y {
             self.screen.mark_line_dirty(new_physical_y);
         }
     }
-    fn reverse_index(&mut self) {
+    fn reverse_index(&mut self) { // Mapped to ESC M
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
-        let (_, current_logical_y) = self.cursor_controller.logical_pos();
         let (_, current_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
 
-        if current_logical_y == 0 {
-            // At top of logical screen/region
-            self.screen.scroll_down_serial(1); // screen.scroll_down_serial marks lines dirty
-        } else {
+        if current_physical_y == screen_ctx.scroll_top { // At top of scroll region
+            self.screen.scroll_down_serial(1); 
+        } else if current_physical_y > 0 { // Not at physical top
             self.cursor_controller.move_up(1);
         }
+        
         self.screen.mark_line_dirty(current_physical_y);
-        let (_, new_physical_y) = self
-            .cursor_controller
-            .physical_screen_pos(&self.current_screen_context());
+        let (_, new_physical_y) = self.cursor_controller.physical_screen_pos(&self.current_screen_context());
         if current_physical_y != new_physical_y {
             self.screen.mark_line_dirty(new_physical_y);
         }
     }
-    fn save_cursor_dec(&mut self) {
+    fn save_cursor_dec(&mut self) { // DECSC
         self.cursor_controller.save_state();
     }
-    fn restore_cursor_dec(&mut self) {
+    fn restore_cursor_dec(&mut self) { // DECRC
         self.cursor_wrap_next = false;
-        let default_attrs = Attributes::default(); // Or perhaps self.screen.default_attributes?
-        self.cursor_controller
-            .restore_state(&self.current_screen_context(), default_attrs);
-        // After restoring, the screen's default attributes should match the new cursor attributes
+        // Attributes are restored by CursorController.restore_state
+        self.cursor_controller.restore_state(&self.current_screen_context(), Attributes::default());
+        // Ensure screen's default_attributes matches the potentially restored cursor attributes
         self.screen.default_attributes = self.cursor_controller.attributes();
     }
 
@@ -811,170 +834,152 @@ impl TerminalEmulator {
         self.cursor_wrap_next = false;
         self.cursor_controller.move_left(n);
     }
-    fn cursor_to_column(&mut self, col: usize) {
+    fn cursor_to_column(&mut self, col: usize) { // CHA
         self.cursor_wrap_next = false;
         self.cursor_controller
             .move_to_logical_col(col, &self.current_screen_context());
     }
-    fn cursor_to_pos(&mut self, row_param: usize, col_param: usize) {
+    fn cursor_to_pos(&mut self, row_param: usize, col_param: usize) { // CUP, HVP
         self.cursor_wrap_next = false;
         self.cursor_controller.move_to_logical(
-            col_param,
-            row_param,
+            col_param, // col is first in st.c for tmoveato, but second in CUP sequence
+            row_param, // row is second in st.c for tmoveato, but first in CUP sequence
             &self.current_screen_context(),
         );
     }
 
-    fn erase_in_display(&mut self, mode: EraseMode) {
+    fn erase_in_display(&mut self, mode: EraseMode) { // ED
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
         let (cx_phys, cy_phys) = self.cursor_controller.physical_screen_pos(&screen_ctx);
-        // Screen's default_attributes must be up-to-date with current SGR
-        self.screen.default_attributes = self.cursor_controller.attributes();
+        // Ensure screen uses current SGR attributes for clearing, as per standard behavior
+        self.screen.default_attributes = self.cursor_controller.attributes(); 
+        
         match mode {
-            EraseMode::ToEnd => {
-                self.screen
-                    .clear_line_segment(cy_phys, cx_phys, screen_ctx.width);
+            EraseMode::ToEnd => { // 0
+                self.screen.clear_line_segment(cy_phys, cx_phys, screen_ctx.width);
                 for y in (cy_phys + 1)..screen_ctx.height {
                     self.screen.clear_line_segment(y, 0, screen_ctx.width);
                 }
             }
-            EraseMode::ToStart => {
+            EraseMode::ToStart => { // 1
                 for y in 0..cy_phys {
                     self.screen.clear_line_segment(y, 0, screen_ctx.width);
                 }
-                self.screen.clear_line_segment(cy_phys, 0, cx_phys + 1);
+                self.screen.clear_line_segment(cy_phys, 0, cx_phys + 1); // Inclusive of cursor pos
             }
-            EraseMode::All => {
+            EraseMode::All => { // 2
                 for y in 0..screen_ctx.height {
                     self.screen.clear_line_segment(y, 0, screen_ctx.width);
                 }
             }
-            EraseMode::Scrollback => {
+            EraseMode::Scrollback => { // 3 (xterm extension)
                 self.screen.scrollback.clear();
-                return;
-            } // No screen dirtying
+                return; // No screen dirtying for scrollback clear
+            } 
             EraseMode::Unknown => warn!("Unknown ED mode used."),
         }
-        // screen.clear_line_segment already marks lines dirty.
-        // For modes that affect multiple lines, ensure all are marked.
-        // For simplicity, if not scrollback, mark all potentially affected.
+        // screen.clear_line_segment marks lines dirty. For multi-line ED, ensure all affected are.
+        // For simplicity, if not scrollback, mark_all_dirty is safe, though could be optimized.
         if mode != EraseMode::Scrollback {
-            self.screen.mark_all_dirty(); // Over-marks but safe
+            self.screen.mark_all_dirty(); // Over-marks for ToEnd/ToStart but ensures correctness
         }
     }
-    fn erase_in_line(&mut self, mode: EraseMode) {
+    fn erase_in_line(&mut self, mode: EraseMode) { // EL
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
         let (cx_phys, cy_phys) = self.cursor_controller.physical_screen_pos(&screen_ctx);
-        // Screen's default_attributes must be up-to-date with current SGR
         self.screen.default_attributes = self.cursor_controller.attributes();
+
         match mode {
-            EraseMode::ToEnd => self
-                .screen
-                .clear_line_segment(cy_phys, cx_phys, screen_ctx.width),
-            EraseMode::ToStart => self.screen.clear_line_segment(cy_phys, 0, cx_phys + 1),
+            EraseMode::ToEnd => self.screen.clear_line_segment(cy_phys, cx_phys, screen_ctx.width),
+            EraseMode::ToStart => self.screen.clear_line_segment(cy_phys, 0, cx_phys + 1), // Inclusive
             EraseMode::All => self.screen.clear_line_segment(cy_phys, 0, screen_ctx.width),
-            EraseMode::Scrollback => {
-                warn!("EraseMode::Scrollback is not applicable to EraseInLine (EL).")
-            }
+            EraseMode::Scrollback => warn!("EraseMode::Scrollback is not applicable to EraseInLine (EL)."),
             EraseMode::Unknown => warn!("Unknown EL mode used."),
         }
-        // screen.clear_line_segment already marks the line dirty.
     }
-    fn erase_chars(&mut self, n: usize) {
+    fn erase_chars(&mut self, n: usize) { // ECH
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
         let (cx_phys, cy_phys) = self.cursor_controller.physical_screen_pos(&screen_ctx);
-        let end_x = min(cx_phys + n, screen_ctx.width);
-        // Screen's default_attributes must be up-to-date with current SGR
+        let end_x = min(cx_phys + n, screen_ctx.width); // Erase n chars, or up to line end
         self.screen.default_attributes = self.cursor_controller.attributes();
         self.screen.clear_line_segment(cy_phys, cx_phys, end_x);
-        // screen.clear_line_segment already marks the line dirty.
     }
 
-    fn insert_blank_chars(&mut self, n: usize) {
+    fn insert_blank_chars(&mut self, n: usize) { // ICH
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
-        let (cx_log, _) = self.cursor_controller.logical_pos(); // Use logical for insertion point relative to line start
+        let (cx_log, _) = self.cursor_controller.logical_pos(); 
         let (_, cy_phys) = self.cursor_controller.physical_screen_pos(&screen_ctx);
-        // Screen's default_attributes must be up-to-date with current SGR
         self.screen.default_attributes = self.cursor_controller.attributes();
         self.screen.insert_blank_chars_in_line(cy_phys, cx_log, n);
-        // screen.insert_blank_chars_in_line marks line dirty
     }
-    fn delete_chars(&mut self, n: usize) {
+    fn delete_chars(&mut self, n: usize) { // DCH
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
-        let (cx_log, _) = self.cursor_controller.logical_pos(); // Use logical for deletion point
+        let (cx_log, _) = self.cursor_controller.logical_pos(); 
         let (_, cy_phys) = self.cursor_controller.physical_screen_pos(&screen_ctx);
-        // Screen's default_attributes must be up-to-date with current SGR
         self.screen.default_attributes = self.cursor_controller.attributes();
         self.screen.delete_chars_in_line(cy_phys, cx_log, n);
-        // screen.delete_chars_in_line marks line dirty
     }
-    fn insert_lines(&mut self, n: usize) {
+    fn insert_lines(&mut self, n: usize) { // IL
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
         let (_, cy_phys) = self.cursor_controller.physical_screen_pos(&screen_ctx);
-        // Screen's default_attributes must be up-to-date with current SGR
         self.screen.default_attributes = self.cursor_controller.attributes();
+        
         if cy_phys >= screen_ctx.scroll_top && cy_phys <= screen_ctx.scroll_bot {
-            // Temporarily adjust scroll region for the operation as per VT100
+            // IL operates within the scrolling margins.
+            // Lines from cy_phys to scroll_bot scroll down.
             let original_scroll_top = self.screen.scroll_top();
             let original_scroll_bottom = self.screen.scroll_bot();
+            
+            // Temporarily set scroll region from current line to bottom of original region
+            // to make scroll_down_serial operate correctly on the affected part.
+            // Add 1 because set_scrolling_region takes 1-based params.
+            self.screen.set_scrolling_region(cy_phys + 1, original_scroll_bottom + 1);
+            self.screen.scroll_down_serial(n); 
 
-            // Set scroll region from current line to bottom of original region
-            self.screen
-                .set_scrolling_region(cy_phys + 1, original_scroll_bottom + 1); // 1-based for set_scrolling_region
-            self.screen.scroll_down_serial(n); // This will mark lines in the temp region dirty
-
-            // Restore original scroll region
-            self.screen
-                .set_scrolling_region(original_scroll_top + 1, original_scroll_bottom + 1);
-
-            // Mark all lines in the original scroll region as dirty because content shifted.
-            for y_dirty in original_scroll_top..=original_scroll_bottom {
-                self.screen.mark_line_dirty(y_dirty);
+            self.screen.set_scrolling_region(original_scroll_top + 1, original_scroll_bottom + 1);
+            
+            // Ensure all lines in the original scroll region that were affected are marked dirty.
+            // scroll_down_serial marks dirty lines within its *current* (temporary) scroll region.
+            // We need to ensure lines from original_scroll_top to original_scroll_bottom are considered.
+            for y_dirty in cy_phys..=original_scroll_bottom {
+                 self.screen.mark_line_dirty(y_dirty);
             }
         }
     }
-    fn delete_lines(&mut self, n: usize) {
+    fn delete_lines(&mut self, n: usize) { // DL
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
         let (_, cy_phys) = self.cursor_controller.physical_screen_pos(&screen_ctx);
-        // Screen's default_attributes must be up-to-date with current SGR
         self.screen.default_attributes = self.cursor_controller.attributes();
+
         if cy_phys >= screen_ctx.scroll_top && cy_phys <= screen_ctx.scroll_bot {
             let original_scroll_top = self.screen.scroll_top();
             let original_scroll_bottom = self.screen.scroll_bot();
 
-            self.screen
-                .set_scrolling_region(cy_phys + 1, original_scroll_bottom + 1);
+            self.screen.set_scrolling_region(cy_phys + 1, original_scroll_bottom + 1);
             self.screen.scroll_up_serial(n);
 
-            self.screen
-                .set_scrolling_region(original_scroll_top + 1, original_scroll_bottom + 1);
-            for y_dirty in original_scroll_top..=original_scroll_bottom {
-                self.screen.mark_line_dirty(y_dirty);
+            self.screen.set_scrolling_region(original_scroll_top + 1, original_scroll_bottom + 1);
+            for y_dirty in cy_phys..=original_scroll_bottom {
+                 self.screen.mark_line_dirty(y_dirty);
             }
         }
     }
-    fn scroll_up(&mut self, n: usize) {
-        // SU - Scroll Up (content moves up, new lines at bottom)
+    fn scroll_up(&mut self, n: usize) { // SU
         self.cursor_wrap_next = false;
-        // Screen's default_attributes must be up-to-date with current SGR
         self.screen.default_attributes = self.cursor_controller.attributes();
         self.screen.scroll_up_serial(n);
-        // screen.scroll_up_serial marks lines in scroll region dirty
     }
-    fn scroll_down(&mut self, n: usize) {
-        // SD - Scroll Down (content moves down, new lines at top)
+    fn scroll_down(&mut self, n: usize) { // SD
         self.cursor_wrap_next = false;
-        // Screen's default_attributes must be up-to-date with current SGR
         self.screen.default_attributes = self.cursor_controller.attributes();
         self.screen.scroll_down_serial(n);
-        // screen.scroll_down_serial marks lines in scroll region dirty
     }
 
     fn handle_sgr_attributes(&mut self, attributes_vec: Vec<Attribute>) {
@@ -992,7 +997,7 @@ impl TerminalEmulator {
                 Attribute::Reverse => current_attrs.flags.insert(AttrFlags::REVERSE),
                 Attribute::Conceal => current_attrs.flags.insert(AttrFlags::HIDDEN),
                 Attribute::Strikethrough => current_attrs.flags.insert(AttrFlags::STRIKETHROUGH),
-                Attribute::UnderlineDouble => current_attrs.flags.insert(AttrFlags::UNDERLINE),
+                Attribute::UnderlineDouble => current_attrs.flags.insert(AttrFlags::UNDERLINE), // Treat as single for now
                 Attribute::NoBold => {
                     current_attrs.flags.remove(AttrFlags::BOLD);
                     current_attrs.flags.remove(AttrFlags::FAINT);
@@ -1013,17 +1018,19 @@ impl TerminalEmulator {
                 Attribute::NoOverlined => warn!("SGR NoOverlined not yet visually supported."),
                 Attribute::UnderlineColor(color) => {
                     warn!("SGR UnderlineColor not yet fully supported: {:?}", color)
+                    // TODO: Store underline color in Attributes struct if desired
                 }
             }
         }
         self.cursor_controller.set_attributes(current_attrs);
-        // Important: Update screen's default attributes for subsequent clearing operations
+        // Update screen's default_attributes for subsequent clearing operations *if SGR changes it*.
+        // This is a key point: SGR changes the *current* attributes for printing AND for clearing.
         self.screen.default_attributes = current_attrs;
     }
 
     fn handle_set_mode(&mut self, mode_type: Mode, enable: bool) -> Option<EmulatorAction> {
         self.cursor_wrap_next = false;
-        let mut action = None;
+        let mut action_to_return = None;
         match mode_type {
             Mode::DecPrivate(mode_num) => {
                 trace!("Setting DEC Private Mode {} to {}", mode_num, enable);
@@ -1033,88 +1040,57 @@ impl TerminalEmulator {
                     }
                     Some(DecModeConstant::Origin) => {
                         self.dec_modes.origin_mode = enable;
-                        self.screen.origin_mode = enable; // Keep screen aware for context
-                        self.cursor_controller.move_to_logical(
-                            0,
-                            0,
-                            &self.current_screen_context(),
-                        );
+                        self.screen.origin_mode = enable; 
+                        self.cursor_controller.move_to_logical(0,0, &self.current_screen_context());
                     }
-                    Some(DecModeConstant::TextCursorEnable) => {
+                    Some(DecModeConstant::TextCursorEnable) => { // ?25
+                        self.dec_modes.text_cursor_enable_mode = enable; // Update mode state
                         self.cursor_controller.set_visible(enable);
-                        action = Some(EmulatorAction::SetCursorVisibility(enable));
+                        action_to_return = Some(EmulatorAction::SetCursorVisibility(enable));
                     }
-                    Some(DecModeConstant::AltScreenBufferClear) => {
-                        if enable {
+                    Some(DecModeConstant::AltScreenBufferClear) | Some(DecModeConstant::AltScreenBufferSaveRestore) => { // 1047, 1049
+                        if !self.dec_modes.allow_alt_screen { // Check global allowaltscreen equivalent
+                             warn!("Alternate screen disabled by configuration, ignoring mode {}.", mode_num);
+                             return None;
+                        }
+                        let clear_on_entry = mode_num == DecModeConstant::AltScreenBufferClear as u16 || 
+                                             mode_num == DecModeConstant::AltScreenBufferSaveRestore as u16;
+                        
+                        if enable { // Enter alt screen
                             if !self.dec_modes.using_alt_screen {
-                                // Screen's default_attributes must be up-to-date for clearing alt screen
-                                self.screen.default_attributes =
-                                    self.cursor_controller.attributes();
-                                self.screen.enter_alt_screen(true);
+                                if mode_num == DecModeConstant::AltScreenBufferSaveRestore as u16 {
+                                    self.save_cursor_dec(); // Save cursor state (DECSC-like)
+                                }
+                                self.screen.default_attributes = self.cursor_controller.attributes(); // Use current for clearing alt
+                                self.screen.enter_alt_screen(clear_on_entry);
                                 self.dec_modes.using_alt_screen = true;
-                                self.cursor_controller.move_to_logical(
-                                    0,
-                                    0,
-                                    &self.current_screen_context(),
-                                );
-                                self.mark_all_lines_dirty(); // Mark all dirty for renderer
-                                action = Some(EmulatorAction::RequestRedraw);
+                                self.cursor_controller.move_to_logical(0,0, &self.current_screen_context());
+                                self.mark_all_lines_dirty(); 
+                                action_to_return = Some(EmulatorAction::RequestRedraw);
                             }
-                        } else {
+                        } else { // Exit alt screen
                             if self.dec_modes.using_alt_screen {
                                 self.screen.exit_alt_screen();
                                 self.dec_modes.using_alt_screen = false;
-                                self.cursor_controller.move_to_logical(
-                                    0,
-                                    0,
-                                    &self.current_screen_context(),
-                                );
-                                self.mark_all_lines_dirty(); // Mark all dirty for renderer
-                                action = Some(EmulatorAction::RequestRedraw);
+                                if mode_num == DecModeConstant::AltScreenBufferSaveRestore as u16 {
+                                     self.restore_cursor_dec(); // Restore cursor state (DECRC-like)
+                                } else {
+                                    // For 1047, cursor typically goes to home of primary screen
+                                    self.cursor_controller.move_to_logical(0,0, &self.current_screen_context());
+                                }
+                                self.screen.default_attributes = self.cursor_controller.attributes(); // Sync after potential restore
+                                self.mark_all_lines_dirty();
+                                action_to_return = Some(EmulatorAction::RequestRedraw);
                             }
                         }
                     }
-                    Some(DecModeConstant::AltScreenBufferSaveRestore) => {
-                        if enable {
-                            if !self.dec_modes.using_alt_screen {
-                                self.cursor_controller.save_state();
-                                self.screen.default_attributes =
-                                    self.cursor_controller.attributes();
-                                self.screen.enter_alt_screen(true); // Clear alt screen
-                                self.dec_modes.using_alt_screen = true;
-                                self.cursor_controller.move_to_logical(
-                                    0,
-                                    0,
-                                    &self.current_screen_context(),
-                                );
-                                self.mark_all_lines_dirty();
-                                action = Some(EmulatorAction::RequestRedraw);
-                            }
-                        } else {
-                            if self.dec_modes.using_alt_screen {
-                                self.screen.exit_alt_screen();
-                                self.dec_modes.using_alt_screen = false;
-                                self.cursor_controller.restore_state(
-                                    &self.current_screen_context(),
-                                    Attributes::default(),
-                                );
-                                self.screen.default_attributes =
-                                    self.cursor_controller.attributes();
-                                self.mark_all_lines_dirty();
-                                action = Some(EmulatorAction::RequestRedraw);
-                            }
-                        }
-                    }
-                    Some(DecModeConstant::SaveRestoreCursor) => {
-                        if enable {
-                            self.cursor_controller.save_state();
-                        } else {
-                            self.cursor_controller.restore_state(
-                                &self.current_screen_context(),
-                                Attributes::default(),
-                            );
-                        }
-                        self.screen.default_attributes = self.cursor_controller.attributes();
+                    Some(DecModeConstant::SaveRestoreCursor) => { // 1048 (often used with 1049)
+                        // This mode itself doesn't directly switch screens in st.c,
+                        // it enables the DECSC/DECRC behavior for 1049.
+                        // For now, we can treat it as a separate save/restore if needed,
+                        // but its main utility is in conjunction with 1049.
+                        // Let's assume it's for the current screen.
+                        if enable { self.save_cursor_dec(); } else { self.restore_cursor_dec(); }
                     }
                     Some(DecModeConstant::BracketedPaste) => {
                         self.dec_modes.bracketed_paste_mode = enable
@@ -1134,74 +1110,66 @@ impl TerminalEmulator {
                     Some(DecModeConstant::MouseUtf8) => self.dec_modes.mouse_utf8_mode = enable,
                     Some(DecModeConstant::MouseSgr) => self.dec_modes.mouse_sgr_mode = enable,
                     Some(DecModeConstant::MouseUrxvt) => {
-                        warn!(
-                            "DEC Private Mode {} (MouseUrxvt) set to {} - not fully implemented.",
-                            mode_num, enable
-                        );
+                        warn!("DEC Private Mode {} (MouseUrxvt) set to {} - not fully implemented.", mode_num, enable);
                     }
                     Some(DecModeConstant::MousePixelPosition) => {
-                        warn!(
-                            "DEC Private Mode {} (MousePixelPosition) set to {} - not fully implemented.",
-                            mode_num, enable
-                        );
+                        warn!("DEC Private Mode {} (MousePixelPosition) set to {} - not fully implemented.", mode_num, enable);
                     }
-                    Some(DecModeConstant::Att610CursorBlink) => {
-                        warn!(
-                            "DEC Private Mode 12 (ATT610 Cursor Blink) set to {} - blink animation not implemented.",
-                            enable
-                        );
+                    Some(DecModeConstant::Att610CursorBlink) => { // ?12
+                        self.dec_modes.cursor_blink_mode = enable;
+                        // TODO: This might need an EmulatorAction to signal blink state change to renderer/driver
+                        warn!("DEC Private Mode 12 (ATT610 Cursor Blink) set to {}. Visual blink not implemented.", enable);
                     }
                     Some(DecModeConstant::Unknown7727) => {
-                        warn!(
-                            "DEC Private Mode 7727 set to {} - behavior undefined.",
-                            enable
-                        );
+                        warn!("DEC Private Mode 7727 set to {} - behavior undefined.", enable);
                     }
                     None => {
-                        warn!(
-                            "Unknown DEC private mode {} to set/reset: {}",
-                            mode_num, enable
-                        );
+                        warn!("Unknown DEC private mode {} to set/reset: {}", mode_num, enable);
                     }
                 }
             }
-            Mode::Standard(mode_num) => {
-                warn!(
-                    "Standard mode set/reset not fully implemented yet: {} (enable: {})",
-                    mode_num, enable
-                );
+            Mode::Standard(mode_num) => { // Standard modes (SM/RM)
+                match mode_num {
+                    4 => { // IRM - Insert/Replace Mode
+                        self.dec_modes.insert_mode = enable;
+                    }
+                    20 => { // LNM - Linefeed/Newline Mode
+                        self.dec_modes.linefeed_newline_mode = enable;
+                        // If LNM is set (true), LF, FF, VT should also perform CR.
+                        // If LNM is reset (false), they act as line feeds only.
+                        // This is handled in newline() method.
+                    }
+                    _ => {
+                        warn!("Standard mode {} set/reset to {} - not fully implemented yet.", mode_num, enable);
+                    }
+                }
             }
         }
-        action
+        action_to_return
     }
 
     fn handle_window_manipulation(
         &mut self,
         ps1: u16,
-        _ps2: Option<u16>,
-        _ps3: Option<u16>,
+        _ps2: Option<u16>, // placeholder for ps2
+        _ps3: Option<u16>, // placeholder for ps3
     ) -> Option<EmulatorAction> {
         match ps1 {
-            14 => {
-                warn!(
-                    "WindowManipulation: Report text area size in pixels (14) requested, but not fully implemented to report actual pixels."
-                );
+            14 => { // Report text area size in pixels (not implemented)
+                warn!("WindowManipulation: Report text area size in pixels (14) requested, but not implemented.");
                 None
             }
-            18 => {
+            18 => { // Report text area size in characters
                 let (cols, rows) = self.dimensions();
                 let response = format!("\x1b[8;{};{}t", rows, cols);
                 Some(EmulatorAction::WritePty(response.into_bytes()))
             }
-            22 | 23 => {
+            22 | 23 => { // Save/Restore window title (not implemented)
                 warn!("WindowManipulation: Save/Restore window title (22/23) not implemented.");
                 None
             }
             _ => {
-                warn!(
-                    "Unhandled WindowManipulation: ps1={}, ps2={:?}, ps3={:?}",
-                    ps1, _ps2, _ps3
-                );
+                warn!("Unhandled WindowManipulation: ps1={}, ps2={:?}, ps3={:?}", ps1, _ps2, _ps3);
                 None
             }
         }
@@ -1211,14 +1179,17 @@ impl TerminalEmulator {
         let osc_str = String::from_utf8_lossy(&data);
         let parts: Vec<&str> = osc_str.splitn(2, ';').collect();
         if parts.len() == 2 {
-            let ps = parts[0].parse::<u32>().unwrap_or(u32::MAX);
+            let ps = parts[0].parse::<u32>().unwrap_or(u32::MAX); // Use u32::MAX for unparsable
             let pt = parts[1].to_string();
             match ps {
-                0 | 2 => return Some(EmulatorAction::SetTitle(pt)),
+                0 | 2 => { // Set icon name and window title (0), Set window title (2)
+                    return Some(EmulatorAction::SetTitle(pt));
+                }
+                // TODO: Handle other OSC commands like color setting (4, 10, 11, 12, etc.)
                 _ => debug!("Unhandled OSC command: Ps={}, Pt='{}'", ps, pt),
             }
         } else {
-            warn!("Malformed OSC sequence: {}", osc_str);
+            warn!("Malformed OSC sequence (expected Ptext;Pstring): {}", osc_str);
         }
         None
     }
@@ -1235,7 +1206,9 @@ impl TerminalInterface for TerminalEmulator {
     }
 
     fn is_cursor_visible(&self) -> bool {
-        self.cursor_controller.is_visible()
+        // Visibility is determined by DECTCEM mode AND potentially blink state
+        // For now, just the DECTCEM mode state.
+        self.dec_modes.text_cursor_enable_mode 
     }
 
     fn get_screen_cursor_pos(&self) -> (usize, usize) {
@@ -1244,18 +1217,15 @@ impl TerminalInterface for TerminalEmulator {
     }
 
     fn take_dirty_lines(&mut self) -> Vec<usize> {
-        // Consolidate dirty lines from the initial Vec and the screen's internal flags
         let mut all_dirty_indices: std::collections::HashSet<usize> =
-            self.dirty_lines.drain(..).collect();
+            self.dirty_lines.drain(..).collect(); // Drains the legacy vec
 
-        // Add lines marked dirty in the screen module
         for (idx, &is_dirty_flag) in self.screen.dirty.iter().enumerate() {
-            if is_dirty_flag != 0 {
-                // Assuming 0 means not dirty, non-zero means dirty
+            if is_dirty_flag != 0 { 
                 all_dirty_indices.insert(idx);
             }
         }
-        self.screen.clear_dirty_flags(); // Clear screen's internal flags
+        self.screen.clear_dirty_flags(); 
 
         let mut sorted_dirty_lines: Vec<usize> = all_dirty_indices.into_iter().collect();
         sorted_dirty_lines.sort_unstable();
@@ -1283,6 +1253,8 @@ fn map_ansi_color_to_glyph_color(ansi_color: AnsiColor) -> GlyphColor {
         AnsiColor::BrightCyan => GlyphColor::Named(NamedColor::BrightCyan),
         AnsiColor::BrightWhite => GlyphColor::Named(NamedColor::BrightWhite),
         AnsiColor::Indexed(idx) => {
+            // GlyphColor::Named already covers 0-15, but AnsiColor::Indexed can be 0-255.
+            // If we want to strictly use NamedColor for 0-15 via GlyphColor::Named:
             if idx < 16 {
                 GlyphColor::Named(NamedColor::from_index(idx))
             } else {
@@ -1295,3 +1267,4 @@ fn map_ansi_color_to_glyph_color(ansi_color: AnsiColor) -> GlyphColor {
 
 #[cfg(test)]
 mod tests;
+

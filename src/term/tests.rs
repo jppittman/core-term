@@ -867,4 +867,106 @@ mod term_tests {
         assert_eq!(get_glyph_at(&term, 0, 1).c, 'A');
         assert_cursor_pos(&term, 1, 1, "Cursor should be at (1,1) after 'A' wrapped");
     }
+       #[test]
+    fn test_esc_c_reset_to_initial_state_clears_and_homes_with_default_attrs() {
+        let mut term = new_term(10, 3); // Create a 10x3 terminal
+
+        // 1. Setup: Establish a non-default state
+        // Set SGR to Red Foreground, Blue Background
+        process_input(
+            &mut term,
+            EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Foreground(AnsiColor::Red),
+                Attribute::Background(AnsiColor::Blue),
+            ]))),
+        );
+
+        // Print some text 'XY' at (0,0) and (1,0). These will have Red/Blue attributes.
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('X')));
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('Y')));
+
+        // Move cursor away from home to (1,1) (logical)
+        process_input(
+            &mut term,
+            EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2, 2))), // 1-based for CUP
+        );
+        assert_cursor_pos(&term, 1, 1, "Cursor position before RIS");
+
+        // Verify the initial state of a cell
+        let glyph_before_ris = get_glyph_at(&term, 0, 0);
+        assert_eq!(glyph_before_ris.c, 'X', "Cell (0,0) char before RIS");
+        assert_eq!(
+            glyph_before_ris.attr.fg,
+            Color::Named(NamedColor::Red),
+            "Cell (0,0) fg before RIS"
+        );
+        assert_eq!(
+            glyph_before_ris.attr.bg,
+            Color::Named(NamedColor::Blue),
+            "Cell (0,0) bg before RIS"
+        );
+
+        // Clear dirty lines from setup to isolate RIS's dirtying behavior
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        // 2. Action: Send ESC c (Reset to Initial State) command
+        process_input(
+            &mut term,
+            EmulatorInput::Ansi(AnsiCommand::Esc(
+                crate::ansi::commands::EscCommand::ResetToInitialState,
+            )),
+        );
+
+        // 3. Verification
+        // 3.1. Cursor is at home position (0,0)
+        assert_cursor_pos(&term, 0, 0, "Cursor position after RIS should be (0,0)");
+
+        // 3.2. Screen is cleared, and all cells have true default attributes
+        let expected_cleared_attr = Attributes::default(); // Expected: Color::Default, Color::Default, no flags
+        let (term_width, term_height) = TerminalInterface::dimensions(&term);
+
+        for y_idx in 0..term_height {
+            for x_idx in 0..term_width {
+                let glyph_after_ris = get_glyph_at(&term, x_idx, y_idx);
+                assert_eq!(
+                    glyph_after_ris.c, ' ',
+                    "Cell ({},{}) char after RIS should be a space",
+                    x_idx, y_idx
+                );
+                assert_eq!(
+                    glyph_after_ris.attr, expected_cleared_attr,
+                    "Cell ({},{}) attributes after RIS should be default. Got: {:?}",
+                    x_idx, y_idx, glyph_after_ris.attr
+                );
+            }
+        }
+
+        // 3.3. Cursor's pending attributes are reset to default.
+        // Test this by printing a character 'Z' and checking its attributes.
+        // 'Z' should appear at the new cursor position (0,0).
+        process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('Z')));
+        let glyph_z = get_glyph_at(&term, 0, 0); // 'Z' is now at (0,0)
+        assert_eq!(glyph_z.c, 'Z', "Char 'Z' printed after RIS");
+        assert_eq!(
+            glyph_z.attr, expected_cleared_attr, // Should use the true default attributes
+            "Attributes of 'Z' printed after RIS should be default. Got: {:?}",
+            glyph_z.attr
+        );
+
+        // 3.4. All lines are marked as dirty.
+        let dirty_lines_after_ris = TerminalInterface::take_dirty_lines(&mut term);
+        assert_eq!(
+            dirty_lines_after_ris.len(),
+            term_height,
+            "Number of dirty lines after RIS should match terminal height. Got: {:?}",
+            dirty_lines_after_ris
+        );
+        let expected_dirty_lines: Vec<usize> = (0..term_height).collect();
+        assert_eq!(
+            dirty_lines_after_ris, expected_dirty_lines,
+            "All lines (0 to {}) should be dirty after RIS. Got: {:?}",
+            term_height - 1, dirty_lines_after_ris
+        );
+    }
+
 }
