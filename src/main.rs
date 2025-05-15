@@ -23,7 +23,7 @@ use crate::{
     ansi::AnsiProcessor,
     backends::{x11::XDriver, BackendEvent, Driver}, // Assuming XDriver will be refactored
     renderer::Renderer,
-    term::{EmulatorAction, EmulatorInput, TerminalEmulator},
+    term::{EmulatorAction, EmulatorInput, TerminalEmulator, TerminalInterface},
 };
 
 use log::trace;

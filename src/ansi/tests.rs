@@ -6,7 +6,7 @@
 // Corrected imports using commands submodule path
 use super::{
     AnsiProcessor,
-    commands::{AnsiCommand, C0Control, CsiCommand, EscCommand, Attribute, Color}
+    commands::{AnsiCommand, C0Control, CsiCommand, Attribute, Color}
 };
 
 

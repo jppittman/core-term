@@ -50,14 +50,14 @@ pub enum BackendEvent {
 }
 
 /// Defines coordinates for a single character cell (0-based).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellCoords {
     pub x: usize,
     pub y: usize,
 }
 
 /// Defines the visual style for a run of text.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextRunStyle {
     pub fg: Color,
     pub bg: Color,
@@ -65,7 +65,7 @@ pub struct TextRunStyle {
 }
 
 /// Defines a rectangular area of cells (0-based coordinates, width/height in cells).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellRect {
     pub x: usize,
     pub y: usize,
