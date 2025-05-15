@@ -114,7 +114,8 @@ impl Screen {
 
         let mut tabs = vec![false; width];
         // Initialize tab stops at regular intervals.
-        for i in (DEFAULT_TAB_INTERVAL..width).step_by(DEFAULT_TAB_INTERVAL as usize) {
+        // Ensure loop variable `i` is `usize` for correct comparison and indexing.
+        for i in (DEFAULT_TAB_INTERVAL as usize..width).step_by(DEFAULT_TAB_INTERVAL as usize) {
             if i < tabs.len() { // Defensively check bounds.
                 tabs[i] = true;
             }
@@ -398,8 +399,9 @@ impl Screen {
         self.saved_cursor_alternate.y = min(self.saved_cursor_alternate.y, new_height.saturating_sub(1));
 
         // Reinitialize tab stops for the new width.
+        // Ensure loop variable `i` is `usize` for correct comparison and indexing.
         self.tabs = vec![false; new_width];
-        for i in (DEFAULT_TAB_INTERVAL..new_width).step_by(DEFAULT_TAB_INTERVAL as usize) {
+        for i in (DEFAULT_TAB_INTERVAL as usize..new_width).step_by(DEFAULT_TAB_INTERVAL as usize) {
             if i < self.tabs.len() { self.tabs[i] = true; }
         }
         // Resize dirty flags and mark all new lines dirty.

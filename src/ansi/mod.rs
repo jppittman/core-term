@@ -19,8 +19,7 @@ use parser::AnsiParser;
 #[derive(Debug, Default)]
 pub struct AnsiProcessor {
     lexer: AnsiLexer,
-    // Make parser public if tests need direct access to take_commands
-    pub parser: AnsiParser,
+    parser: AnsiParser,
 }
 
 impl AnsiProcessor {
@@ -36,7 +35,7 @@ impl AnsiProcessor {
     ///
     /// Bytes are lexed into tokens, and tokens are processed by the parser.
     /// Call `take_commands` on the `parser` field to retrieve results.
-    pub fn process_bytes(&mut self, bytes: &[u8]) {
+    pub fn process_bytes(&mut self, bytes: &[u8]) -> Vec<AnsiCommand> {
         for byte in bytes {
             self.lexer.process_byte(*byte);
         }
@@ -44,6 +43,7 @@ impl AnsiProcessor {
         for token in tokens {
             self.parser.process_token(token);
         }
+        self.parser.take_commands()
     }
 }
 

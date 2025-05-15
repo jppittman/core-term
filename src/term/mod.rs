@@ -1,26 +1,22 @@
 //! This module defines the core terminal emulator logic.
 //! It acts as a state machine processing inputs and producing actions.
 
-// Declare screen and unicode submodules
 mod screen;
-mod unicode; // Added unicode module
+pub mod unicode;
 
 // Standard library imports
 use std::cmp::min;
-// Removed FFI related imports, they are now in unicode.rs
 
 // Crate-level imports
 use crate::{
-    ansi::{
-        commands::{
+    ansi::commands::{
             AnsiCommand, C0Control, CsiCommand, EscCommand, Attribute,
             Color as AnsiColor,
-        },
     },
+    term::unicode::get_char_display_width,
     backends::BackendEvent,
     glyph::{Glyph, Attributes, AttrFlags, Color as GlyphColor, NamedColor},
-    self::screen::{Screen, Cursor},
-    self::unicode::char_display_width, // Use the new helper
+    term::screen::{Screen, Cursor},
 };
 
 // Logging
@@ -396,7 +392,7 @@ impl TerminalEmulator {
     fn print_char(&mut self, ch: char) {
         let ch_to_print = self.map_char_to_active_charset(ch);
         // Use the new char_display_width function from the unicode module
-        let char_width = char_display_width(ch_to_print);
+        let char_width = get_char_display_width(ch_to_print);
         let current_screen_width = self.screen.width;
 
         if self.last_char_was_wide && self.cursor.x == 0 {
