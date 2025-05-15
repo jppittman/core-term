@@ -1,17 +1,25 @@
 // src/backends/console.rs
 
-use crate::glyph::{Color, AttrFlags, NamedColor};
+// Added use for log::error and removed unused NamedColor
+use crate::glyph::{Color, AttrFlags};
 // Updated to use new structs from backends::mod_rs
-use crate::backends::{Driver, BackendEvent, CellCoords, TextRunStyle, CellRect};
+// Also importing the default char dimension constants from the parent module
+use crate::backends::{
+    Driver, BackendEvent, CellCoords, TextRunStyle, CellRect,
+    DEFAULT_WINDOW_WIDTH_CHARS, DEFAULT_WINDOW_HEIGHT_CHARS
+};
+
 
 use anyhow::{Context, Result};
 use std::io::{self, Write, Read, stdout, stdin};
 use std::os::unix::io::RawFd;
-use termios::{Termios, TCSANOW, ECHO, ICANON, ISIG, VMIN, VTIME, tcsetattr, tcgetattr};
+// Removed unused tcgetattr
+use termios::{Termios, TCSANOW, ECHO, ICANON, ISIG, VMIN, VTIME, tcsetattr};
 use libc::{winsize, TIOCGWINSZ, STDIN_FILENO}; // Removed TIOCSWINSZ as PTY resizing is orchestrator's job
 use std::mem;
 
-use log::{debug, info, warn, trace};
+// Import the error macro from the log crate
+use log::{debug, info, warn, trace, error};
 
 
 // --- ANSI Escape Code Constants ---
@@ -72,13 +80,13 @@ impl Driver for ConsoleDriver {
 
         // Hide cursor
         // Note: print! and stdout().flush() can error.
-        print!("{}", CURSOR_HIDE); 
+        print!("{}", CURSOR_HIDE);
         stdout().flush().context("ConsoleDriver: Failed to flush stdout for CURSOR_HIDE")?;
 
         let (initial_width, initial_height) = get_terminal_size_cells(STDIN_FILENO)
             .context("ConsoleDriver: Failed to get initial terminal size")?;
         info!("ConsoleDriver: Initial terminal size: {}x{} cells.", initial_width, initial_height);
-        
+
         Ok(ConsoleDriver {
             original_termios,
             last_known_width_cells: initial_width,
@@ -109,7 +117,7 @@ impl Driver for ConsoleDriver {
                     );
                     self.last_known_width_cells = current_width_cells;
                     self.last_known_height_cells = current_height_cells;
-                    
+
                     // Calculate "pixel" dimensions for the BackendEvent::Resize
                     let width_px = current_width_cells.saturating_mul(self.font_width_px);
                     let height_px = current_height_cells.saturating_mul(self.font_height_px);
@@ -196,7 +204,7 @@ impl Driver for ConsoleDriver {
                 // A more robust way is to fill with spaces after setting BG.
             }
         }
-        
+
         print!("{}", cmd);
         // No immediate flush here; `present()` will handle flushing.
         trace!("ConsoleDriver: clear_all command prepared: {:?}", cmd);
@@ -223,15 +231,15 @@ impl Driver for ConsoleDriver {
         // Always reset to ensure clean state before applying new attributes,
         // unless no attributes are being set and current state is already default.
         // For simplicity in driver primitive, always reset then apply.
-        sgr_codes.push(SGR_RESET_ALL); 
+        sgr_codes.push(SGR_RESET_ALL);
         Self::sgr_append_attributes(&mut sgr_codes, style.fg, style.bg, style.flags);
-        
+
         if !sgr_codes.is_empty() {
             cmd.push_str(SGR_PREFIX);
             cmd.push_str(&sgr_codes.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(&SGR_SEPARATOR.to_string()));
             cmd.push(SGR_SUFFIX);
         }
-        
+
         // 3. Append the text.
         cmd.push_str(text);
 
@@ -277,7 +285,7 @@ impl Driver for ConsoleDriver {
             // Print spaces with the set background color.
             cmd.push_str(&spaces);
         }
-        
+
         // Optional: Reset SGR after filling.
         // cmd.push_str(SGR_PREFIX);
         // cmd.push_str(&SGR_RESET_ALL.to_string());
@@ -331,7 +339,7 @@ impl ConsoleDriver {
         // Background color
         Self::sgr_append_bg_color(codes, bg);
     }
-    
+
     /// Appends SGR codes for foreground color.
     fn sgr_append_fg_color(codes: &mut Vec<u16>, fg: Color) {
         match fg {
@@ -383,6 +391,7 @@ fn get_terminal_size_cells(fd: RawFd) -> Result<(u16, u16)> {
                 .context("ConsoleDriver: Failed to get terminal size via ioctl(TIOCGWINSZ)"));
         }
         // Provide default values if ioctl returns 0 for cols/rows (can happen in some contexts)
+        // Using the constants imported from the parent `backends` module.
         let cols = if winsz.ws_col == 0 { DEFAULT_WINDOW_WIDTH_CHARS as u16 } else { winsz.ws_col };
         let rows = if winsz.ws_row == 0 { DEFAULT_WINDOW_HEIGHT_CHARS as u16 } else { winsz.ws_row };
         Ok((cols, rows))
@@ -394,6 +403,7 @@ impl Drop for ConsoleDriver {
         info!("ConsoleDriver: Dropping instance, attempting cleanup.");
         // Attempt cleanup. Errors are logged within cleanup itself.
         if let Err(e) = self.cleanup() {
+            // Use the error! macro from the log crate.
             error!("ConsoleDriver: Error during cleanup in drop: {}", e);
         }
     }

@@ -12,6 +12,14 @@ pub mod x11;
 // pub use console::ConsoleDriver;
 // pub use x11::XDriver;
 
+// --- Public Constants ---
+// Moved from x11.rs to be accessible by all backends (e.g., console.rs for defaults)
+// These are default character dimensions used if a backend cannot determine them,
+// or for initial setup before full metrics are available.
+pub const DEFAULT_WINDOW_WIDTH_CHARS: usize = 80;
+pub const DEFAULT_WINDOW_HEIGHT_CHARS: usize = 24;
+
+
 /// Represents events originating from the backend (platform-specific UI/input).
 /// These events are processed by the Orchestrator, which may then update the
 /// TerminalEmulator or perform other actions.

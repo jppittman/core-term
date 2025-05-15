@@ -63,6 +63,7 @@ pub enum CsiCommand { // Made pub
     DeviceStatusReport(u16),
     SaveCursorAnsi, RestoreCursorAnsi, SaveCursor, RestoreCursor, // Kept both SCO and DEC variants if parser distinguishes
     Reset, // Added missing command variant if needed by parser
+    SetScrollingRegion { top: u16, bottom: u16 }, // Added for DECSTBM (CSI r)
     Unsupported(Vec<u8>, Option<u8>), // Kept for debugging/completeness
 }
 
@@ -263,6 +264,12 @@ impl AnsiCommand {
              // Cursor Saving/Restoring (SCO variants)
             (false, b"", b's') => Some(AnsiCommand::Csi(CsiCommand::SaveCursor)),
             (false, b"", b'u') => Some(AnsiCommand::Csi(CsiCommand::RestoreCursor)),
+            // DECSTBM - Set Scrolling Region
+            (false, b"", b'r') => {
+                let top = param_or(0, 1); // Default top is 1
+                let bottom = param_or(1, 0); // Default bottom is 0 (often means last line of screen)
+                Some(AnsiCommand::Csi(CsiCommand::SetScrollingRegion { top, bottom }))
+            }
             // Default: Unsupported or Error
             _ => {
                 // Log the unsupported sequence details before returning None

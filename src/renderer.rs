@@ -9,7 +9,8 @@
 //! or direct ANSI escape sequence generation). Instead, it relies on the `Driver`
 //! trait to provide the necessary drawing primitives.
 
-use crate::backends::Driver;
+// Updated to use new structs from backends::mod_rs
+use crate::backends::{Driver, CellCoords, TextRunStyle, CellRect};
 use crate::term::TerminalEmulator;
 use crate::glyph::{Color, AttrFlags, Glyph};
 use crate::term::unicode::get_char_display_width;
@@ -63,6 +64,7 @@ impl Renderer {
         let (term_width, term_height) = term.dimensions();
 
         if term_width == 0 || term_height == 0 {
+            // Nothing to draw if terminal dimensions are zero.
             return Ok(());
         }
 
@@ -80,9 +82,11 @@ impl Renderer {
             self.draw_dirty_line(y_abs, term_width, term, driver)?;
         }
 
-        if term.dec_modes.cursor_visible {
+        // Assumes TerminalEmulator will have a method `is_cursor_visible()`
+        // This replaces direct access to `term.dec_modes.cursor_visible`
+        if term.is_cursor_visible() {
             self.draw_cursor(term, driver, term_width, term_height)?;
-            something_was_drawn = true;
+            something_was_drawn = true; // Cursor drawing also counts as drawing.
         }
 
         if something_was_drawn {
@@ -115,6 +119,13 @@ impl Renderer {
         while current_col < term_width {
             let cols_drawn =
                 self.draw_run_or_fallback_char(y_abs, current_col, term_width, term, driver)?;
+            if cols_drawn == 0 {
+                // Defensive break to prevent infinite loops if no columns are consumed.
+                // This might happen with zero-width characters if not handled correctly,
+                // or if get_char_display_width returns 0 incorrectly.
+                warn!("Renderer: draw_run_or_fallback_char consumed 0 columns at ({}, {}). Breaking line draw to prevent loop.", current_col, y_abs);
+                break;
+            }
             current_col += cols_drawn;
         }
         Ok(())
@@ -158,7 +169,9 @@ impl Renderer {
                 start_glyph.attr.bg,
                 start_glyph.attr.flags,
             );
-            driver.fill_rect(current_col, y_abs, 1, 1, eff_bg)?;
+            // Updated fill_rect call
+            let rect = CellRect { x: current_col, y: y_abs, width: 1, height: 1 };
+            driver.fill_rect(rect, eff_bg)?;
             return Ok(1); // Consumed one column.
         }
 
@@ -178,12 +191,29 @@ impl Renderer {
             let glyph_at_scan = term.get_glyph(scan_col, y_abs);
 
             if glyph_at_scan.c == '\0' { // WIDE_CHAR_PLACEHOLDER
-                if run_text.is_empty() {
-                    warn!("Renderer: Encountered unexpected isolated '\\0' at ({}, {}) during run scan.", scan_col, y_abs);
-                    break; // Should be handled by the initial check, but break defensively.
+                if run_text.is_empty() && scan_col == current_col {
+                    // This is the case where the loop started on a placeholder,
+                    // which should have been caught by the initial check.
+                    // If it happens here, it's an unexpected state.
+                     warn!("Renderer: Encountered unexpected isolated '\\0' at ({}, {}) during run scan start.", scan_col, y_abs);
+                     // Fill this single cell and advance.
+                     let rect = CellRect { x: scan_col, y: y_abs, width: 1, height: 1 };
+                     let (_, placeholder_bg, _) = self.get_effective_colors_and_flags(
+                         glyph_at_scan.attr.fg, glyph_at_scan.attr.bg, glyph_at_scan.attr.flags
+                     );
+                     driver.fill_rect(rect, placeholder_bg)?;
+                     return Ok(1);
+                } else if !run_text.is_empty() && scan_col == (run_start_col + run_width_in_cells) {
+                    // This is the placeholder for the *last* char added to run_text,
+                    // which must have been wide. We've already accounted for its width.
+                    // So, we just advance past it.
+                    scan_col += 1;
+                    continue;
+                } else {
+                    // Placeholder encountered mid-run or not belonging to the current char.
+                    // This implies the run should end *before* this placeholder.
+                    break;
                 }
-                scan_col += 1; // Advance past the placeholder.
-                continue;
             }
 
             let (current_glyph_eff_fg, current_glyph_eff_bg, current_glyph_run_flags) =
@@ -198,42 +228,40 @@ impl Renderer {
                 && current_glyph_run_flags == run_flags
             {
                 let char_display_width = get_char_display_width(glyph_at_scan.c);
+                if char_display_width == 0 { // Non-spacing character, skip or handle if needed
+                    scan_col +=1; // Advance past it, effectively ignoring it for run building.
+                    continue;
+                }
                 if run_start_col + run_width_in_cells + char_display_width > term_width {
                     break; // Character would overflow; end run.
                 }
                 run_text.push(glyph_at_scan.c);
                 run_width_in_cells += char_display_width;
-                scan_col += char_display_width;
+                scan_col += char_display_width; // Advance by actual display width
             } else {
                 break; // Attribute mismatch; end of run.
             }
         }
 
         if !run_text.is_empty() {
-            driver.draw_text_run(
-                run_start_col,
-                y_abs,
-                &run_text,
-                eff_fg,
-                eff_bg,
-                run_flags,
-            )?;
+            // Updated draw_text_run call
+            let coords = CellCoords { x: run_start_col, y: y_abs };
+            let style = TextRunStyle { fg: eff_fg, bg: eff_bg, flags: run_flags };
+            driver.draw_text_run(coords, &run_text, style)?;
             Ok(run_width_in_cells) // Consumed columns equal to the run's width.
         } else {
             // No run formed; handle single character.
             // `get_char_display_width` returns 0 for some control chars, use .max(1) to ensure progress.
             let char_display_width = get_char_display_width(start_glyph.c).max(1);
             if start_glyph.c == ' ' {
-                driver.fill_rect(current_col, y_abs, char_display_width, 1, eff_bg)?;
+                // Updated fill_rect call
+                let rect = CellRect { x: current_col, y: y_abs, width: char_display_width, height: 1 };
+                driver.fill_rect(rect, eff_bg)?;
             } else {
-                driver.draw_text_run(
-                    current_col,
-                    y_abs,
-                    &start_glyph.c.to_string(),
-                    eff_fg,
-                    eff_bg,
-                    run_flags,
-                )?;
+                // Updated draw_text_run call
+                let coords = CellCoords { x: current_col, y: y_abs };
+                let style = TextRunStyle { fg: eff_fg, bg: eff_bg, flags: run_flags };
+                driver.draw_text_run(coords, &start_glyph.c.to_string(), style)?;
             }
             Ok(char_display_width) // Consumed columns for the single character.
         }
@@ -256,8 +284,9 @@ impl Renderer {
         term_width: usize,
         term_height: usize,
     ) -> Result<()> {
-        let cursor_abs_x = term.screen.cursor.x;
-        let cursor_abs_y = term.screen.cursor.y;
+        // Assumes TerminalEmulator will have a method `get_screen_cursor_pos()`
+        // This replaces direct access to `term.screen.cursor.x` and `term.screen.cursor.y`
+        let (cursor_abs_x, cursor_abs_y) = term.get_screen_cursor_pos();
 
         // Guard clause: If cursor is out of bounds, warn and do nothing further.
         if !(cursor_abs_x < term_width && cursor_abs_y < term_height) {
@@ -270,21 +299,32 @@ impl Renderer {
 
         // Cursor is within bounds, proceed with drawing.
         let glyph_under_cursor: Glyph = term.get_glyph(cursor_abs_x, cursor_abs_y);
-        let char_to_draw_at_cursor: char = glyph_under_cursor.c;
-        let original_attrs = glyph_under_cursor.attr;
+        
+        // If the character under the cursor is a wide char placeholder, draw on the *actual* character
+        // which is one cell to the left.
+        let (char_to_draw_at_cursor, physical_cursor_x) = if glyph_under_cursor.c == '\0' && cursor_abs_x > 0 {
+            // This is the second half of a wide char. Get the first half.
+            (term.get_glyph(cursor_abs_x - 1, cursor_abs_y).c, cursor_abs_x -1)
+        } else {
+            (glyph_under_cursor.c, cursor_abs_x)
+        };
+        
+        let original_attrs = term.get_glyph(physical_cursor_x, cursor_abs_y).attr;
 
-        let cursor_char_fg = original_attrs.bg;
-        let cursor_cell_bg = original_attrs.fg;
+
+        // For block cursor, swap FG and BG.
+        // Use the original glyph's FG as new BG, and original BG as new FG.
+        let cursor_char_fg = original_attrs.bg; // Swapped
+        let cursor_cell_bg = original_attrs.fg; // Swapped
+        
+        // Ensure REVERSE is not applied again by the driver if it was part of original_attrs.
+        // The swap above effectively handles REVERSE for the cursor block.
         let cursor_display_flags = original_attrs.flags.difference(AttrFlags::REVERSE);
 
-        driver.draw_text_run(
-            cursor_abs_x,
-            cursor_abs_y,
-            &char_to_draw_at_cursor.to_string(),
-            cursor_char_fg,
-            cursor_cell_bg,
-            cursor_display_flags,
-        )?;
+        // Updated draw_text_run call
+        let coords = CellCoords { x: physical_cursor_x, y: cursor_abs_y };
+        let style = TextRunStyle { fg: cursor_char_fg, bg: cursor_cell_bg, flags: cursor_display_flags };
+        driver.draw_text_run(coords, &char_to_draw_at_cursor.to_string(), style)?;
 
         Ok(())
     }
