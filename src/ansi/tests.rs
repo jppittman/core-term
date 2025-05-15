@@ -16,18 +16,6 @@ fn process_bytes(bytes: &[u8]) -> Vec<AnsiCommand> {
     processor.process_bytes(bytes)
 }
 
-// Helper function to process multiple byte slices sequentially
-fn process_bytes_fragments(fragments: &[&[u8]]) -> Vec<Vec<AnsiCommand>> {
-    let mut processor = AnsiProcessor::new();
-    let mut results = Vec::new();
-    for frag in fragments {
-        processor.process_bytes(frag);
-        results.push(processor.parser.take_commands());
-    }
-    results
-}
-
-
 #[test]
 fn test_process_simple_string() {
     let bytes = b"Hello, world!";
@@ -542,78 +530,172 @@ fn test_process_csi_ris() {
 
 
 // --- Fragmentation Tests ---
-
 #[test]
 fn test_process_fragmented_csi_split_params() {
-    let fragments = [b"\x1B[1".as_slice(), b";2H".as_slice()];
-    let results = process_bytes_fragments(&fragments);
-    assert_eq!(results[0], vec![]);
-    assert_eq!(results[1], vec![AnsiCommand::Csi(CsiCommand::CursorPosition(1, 2))]);
+    let mut processor = AnsiProcessor::new();
+
+    // Fragment 1: "\x1B[1" (ESC [ 1) - Incomplete CSI
+    let commands_frag1 = processor.process_bytes(b"\x1B[1");
+    assert_eq!(commands_frag1, vec![], "After fragment 1 (ESC [ 1)");
+
+    // Fragment 2: ";2H" - Completes to CUP(1,2)
+    let commands_frag2 = processor.process_bytes(b";2H");
+    assert_eq!(
+        commands_frag2,
+        vec![AnsiCommand::Csi(CsiCommand::CursorPosition(1, 2))],
+        "After fragment 2 (;2H)"
+    );
 }
 
 #[test]
 fn test_process_fragmented_csi_split_intermediate() {
-     let fragments = [b"\x1B[?".as_slice(), b"25h".as_slice()];
-     let results = process_bytes_fragments(&fragments);
-     assert_eq!(results[0], vec![]);
-     // Should now correctly parse SetModePrivate
-     assert_eq!(results[1], vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(25))]);
+    let mut processor = AnsiProcessor::new();
+
+    // Fragment 1: "\x1B[?" (ESC [ ?) - Incomplete private CSI
+    let commands_frag1 = processor.process_bytes(b"\x1B[?");
+    assert_eq!(commands_frag1, vec![], "After fragment 1 (ESC [ ?)");
+
+    // Fragment 2: "25h" - Completes to SetModePrivate(25)
+    let commands_frag2 = processor.process_bytes(b"25h");
+    assert_eq!(
+        commands_frag2,
+        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(25))],
+        "After fragment 2 (25h)"
+    );
 }
 
 #[test]
 fn test_process_fragmented_csi_split_esc() {
-     let fragments = [b"\x1B".as_slice(), b"[1A".as_slice()];
-     let results = process_bytes_fragments(&fragments);
-     assert_eq!(results[0], vec![]);
-     assert_eq!(results[1], vec![AnsiCommand::Csi(CsiCommand::CursorUp(1))]);
-}
+    let mut processor = AnsiProcessor::new();
 
+    // Fragment 1: "\x1B" (ESC) - Parser enters Escape state
+    let commands_frag1 = processor.process_bytes(b"\x1B");
+    assert_eq!(commands_frag1, vec![], "After fragment 1 (ESC)");
+
+    // Fragment 2: "[1A" - Completes to CUU(1)
+    let commands_frag2 = processor.process_bytes(b"[1A");
+    assert_eq!(
+        commands_frag2,
+        vec![AnsiCommand::Csi(CsiCommand::CursorUp(1))],
+        "After fragment 2 ([1A)"
+    );
+}
 
 #[test]
 fn test_process_fragmented_string_with_print() {
-    let fragments = [
-        b"Hello ".as_slice(),
-        b"\x1B[31".as_slice(),
-        b"m World".as_slice(),
-    ];
-    let results = process_bytes_fragments(&fragments);
+    let mut processor = AnsiProcessor::new();
 
-    let expected0 = vec![
-        AnsiCommand::Print('H'), AnsiCommand::Print('e'), AnsiCommand::Print('l'),
-        AnsiCommand::Print('l'), AnsiCommand::Print('o'), AnsiCommand::Print(' '),
-    ];
-    let expected1 = vec![];
-    let expected2 = vec![
-        AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Red)])),
-        AnsiCommand::Print(' '), AnsiCommand::Print('W'), AnsiCommand::Print('o'),
-        AnsiCommand::Print('r'), AnsiCommand::Print('l'), AnsiCommand::Print('d'),
-    ];
+    // Fragment 1: "Hello "
+    let commands_frag1 = processor.process_bytes(b"Hello ");
+    assert_eq!(
+        commands_frag1,
+        vec![
+            AnsiCommand::Print('H'), AnsiCommand::Print('e'), AnsiCommand::Print('l'),
+            AnsiCommand::Print('l'), AnsiCommand::Print('o'), AnsiCommand::Print(' '),
+        ],
+        "After fragment 1 (Hello )"
+    );
 
-    assert_eq!(results[0], expected0);
-    assert_eq!(results[1], expected1);
-    assert_eq!(results[2], expected2);
+    // Fragment 2: "\x1B[31" - Incomplete SGR red
+    let commands_frag2 = processor.process_bytes(b"\x1B[31");
+    assert_eq!(commands_frag2, vec![], "After fragment 2 (ESC [ 31)");
+
+    // Fragment 3: "m World" - Completes SGR, then prints " World"
+    let commands_frag3 = processor.process_bytes(b"m World");
+    assert_eq!(
+        commands_frag3,
+        vec![
+            AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Red)])),
+            AnsiCommand::Print(' '), AnsiCommand::Print('W'), AnsiCommand::Print('o'),
+            AnsiCommand::Print('r'), AnsiCommand::Print('l'), AnsiCommand::Print('d'),
+        ],
+        "After fragment 3 (m World)"
+    );
 }
 
-// --- UTF-8 Fragmentation Regression Test ---
 #[test]
 fn test_process_fragmented_utf8() {
-    // Test the character '你' (U+4F60), which is e4 bd a0 in UTF-8
-    let fragments = [
-        b"A".as_slice(),
-        b"\xE4".as_slice(), // Start of '你'
-        b"\xBD".as_slice(), // Middle of '你'
-        b"\xA0".as_slice(), // End of '你'
-        b"B".as_slice(),
-    ];
-    let results = process_bytes_fragments(&fragments);
+    let mut processor = AnsiProcessor::new();
 
-    assert_eq!(results[0], vec![AnsiCommand::Print('A')], "Frag 0");
-    assert_eq!(results[1], vec![], "Frag 1 (incomplete)");
-    assert_eq!(results[2], vec![], "Frag 2 (incomplete)");
-    assert_eq!(results[3], vec![AnsiCommand::Print('你')], "Frag 3 (complete)");
-    assert_eq!(results[4], vec![AnsiCommand::Print('B')], "Frag 4");
+    // Fragment 1: "A"
+    let commands_frag1 = processor.process_bytes(b"A");
+    assert_eq!(commands_frag1, vec![AnsiCommand::Print('A')], "Frag 0: 'A'");
+
+    // Fragment 2: "\xE4" (Start of '你')
+    let commands_frag2 = processor.process_bytes(b"\xE4");
+    assert_eq!(commands_frag2, vec![], "Frag 1: Start of '你' (incomplete)");
+
+    // Fragment 3: "\xBD" (Middle of '你')
+    let commands_frag3 = processor.process_bytes(b"\xBD");
+    assert_eq!(commands_frag3, vec![], "Frag 2: Middle of '你' (incomplete)");
+
+    // Fragment 4: "\xA0" (End of '你')
+    let commands_frag4 = processor.process_bytes(b"\xA0");
+    assert_eq!(commands_frag4, vec![AnsiCommand::Print('你')], "Frag 3: End of '你' (complete)");
+
+    // Fragment 5: "B"
+    let commands_frag5 = processor.process_bytes(b"B");
+    assert_eq!(commands_frag5, vec![AnsiCommand::Print('B')], "Frag 4: 'B'");
 }
 
+#[test]
+fn test_process_incomplete_csi_with_more_input() {
+    let mut processor = AnsiProcessor::new();
+
+    // Fragment 1: "\x1B[31" (Incomplete CSI, e.g. for SGR red or CUU 31)
+    let commands_frag1 = processor.process_bytes(b"\x1B[31");
+    assert_eq!(commands_frag1, vec![], "After fragment 1 (ESC [ 31)");
+
+    // Fragment 2: "A" (Completes previous to CUU 31)
+    let commands_frag2 = processor.process_bytes(b"A");
+    assert_eq!(
+        commands_frag2,
+        vec![AnsiCommand::Csi(CsiCommand::CursorUp(31))],
+        "After fragment 2 (A)"
+    );
+
+    // Fragment 3: "BC" (Prints "BC")
+    let commands_frag3 = processor.process_bytes(b"BC");
+    assert_eq!(
+        commands_frag3,
+        vec![AnsiCommand::Print('B'), AnsiCommand::Print('C')],
+        "After fragment 3 (BC)"
+    );
+}
+
+#[test]
+fn test_process_incomplete_osc_with_more_input() {
+    let mut processor = AnsiProcessor::new();
+
+    // Fragment 1: "\x1B]0;Ti" (Incomplete OSC title set)
+    let commands_frag1 = processor.process_bytes(b"\x1B]0;Ti");
+    assert_eq!(commands_frag1, vec![], "After fragment 1 (ESC ] 0 ; Ti)");
+
+    // Fragment 2: "tle\x07" (Completes OSC title set with BEL terminator)
+    let commands_frag2 = processor.process_bytes(b"tle\x07");
+    assert_eq!(
+        commands_frag2,
+        vec![AnsiCommand::Osc(b"0;Title".to_vec())],
+        "After fragment 2 (tle BEL)"
+    );
+}
+
+#[test]
+fn test_process_incomplete_dcs_with_more_input() {
+    let mut processor = AnsiProcessor::new();
+
+    // Fragment 1: "\x1BPSt" (Incomplete DCS)
+    let commands_frag1 = processor.process_bytes(b"\x1BPSt");
+    assert_eq!(commands_frag1, vec![], "After fragment 1 (ESC P St)");
+
+    // Fragment 2: "uff\x1B\\" (Completes DCS with ST terminator ESC \)
+    let commands_frag2 = processor.process_bytes(b"uff\x1B\\");
+    assert_eq!(
+        commands_frag2,
+        vec![AnsiCommand::Dcs(b"Stuff".to_vec())],
+        "After fragment 2 (uff ESC \\)"
+    );
+}
 
 // --- String Sequence Tests ---
 
@@ -670,16 +752,6 @@ fn test_process_incomplete_csi() {
 }
 
 #[test]
-fn test_process_incomplete_csi_with_more_input() {
-    let fragments = [b"\x1B[31".as_slice(), b"A".as_slice(), b"BC".as_slice()];
-    let results = process_bytes_fragments(&fragments);
-    assert_eq!(results[0], vec![]);
-    assert_eq!(results[1], vec![AnsiCommand::Csi(CsiCommand::CursorUp(31))]);
-    assert_eq!(results[2], vec![AnsiCommand::Print('B'), AnsiCommand::Print('C')]);
-}
-
-
-#[test]
 fn test_process_csi_invalid_final_byte() {
     let bytes = b"\x1B[31a";
     let commands = process_bytes(bytes);
@@ -694,28 +766,11 @@ fn test_process_incomplete_osc() {
 }
 
 #[test]
-fn test_process_incomplete_osc_with_more_input() {
-     let fragments = [b"\x1B]0;Ti".as_slice(), b"tle\x07".as_slice()];
-     let results = process_bytes_fragments(&fragments);
-     assert_eq!(results[0], vec![]);
-     assert_eq!(results[1], vec![AnsiCommand::Osc(b"0;Title".to_vec())]);
-}
-
-#[test]
 fn test_process_incomplete_dcs() {
     let bytes = b"\x1BPStuff";
     let commands = process_bytes(bytes);
     assert!(commands.is_empty());
 }
-
-#[test]
-fn test_process_incomplete_dcs_with_more_input() {
-     let fragments = [b"\x1BPSt".as_slice(), b"uff\x1B\\".as_slice()];
-     let results = process_bytes_fragments(&fragments);
-     assert_eq!(results[0], vec![]);
-     assert_eq!(results[1], vec![AnsiCommand::Dcs(b"Stuff".to_vec())]);
-}
-
 
 #[test]
 fn test_process_c0_in_osc() {
