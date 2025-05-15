@@ -417,7 +417,7 @@ fn run_terminal_orchestrator() -> Result<()> {
     let mut term_emulator =
         TerminalEmulator::new(initial_cols, initial_rows, DEFAULT_SCROLLBACK_LIMIT);
     let mut ansi_processor = AnsiProcessor::new();
-    let renderer = Renderer::new(); // Renderer is stateless for now
+    let mut renderer = Renderer::new(); // Renderer is stateless for now
 
     // 5. Setup epoll for event handling
     // Safety: FFI call
