@@ -6,14 +6,13 @@
 //! abstracting away direct OS calls and backend specifics.
 
 use crate::{
-    ansi::AnsiParser,
+    ansi::{AnsiParser, AnsiProcessor},
     backends::{BackendEvent, Driver},
     os::pty::{PtyChannel, PtyError}, 
     renderer::*,     // Using the Renderer abstraction.
     term::{EmulatorAction, EmulatorInput, TerminalInterface}, // Using the Terminal abstraction.
 };
 use std::io::ErrorKind as IoErrorKind; // For checking PTY read WouldBlock.
-use std::time::Duration;               // For potential timeouts in event loops.
 
 // STYLE GUIDE: Define Constants for magic numbers or common literals.
 const PTY_READ_BUFFER_SIZE: usize = 4096; // Default buffer size for PTY reads.
@@ -42,7 +41,7 @@ pub struct AppOrchestrator<'a> {
     // and to facilitate testing with mocks that might also need mutable access.
     pty_channel: &'a mut dyn PtyChannel,
     term: &'a mut dyn TerminalInterface,
-    parser: AnsiParser, // AnsiParser is often a concrete type passed in.
+    parser: &'a mut dyn AnsiParser,
     pub renderer: Renderer,
     pub driver: &'a mut dyn Driver,
 
@@ -66,8 +65,8 @@ impl<'a> AppOrchestrator<'a> {
     pub fn new(
         pty_channel: &'a mut dyn PtyChannel,
         term: &'a mut dyn TerminalInterface,
-        parser: AnsiParser,
-        renderer: &'a mut dyn RendererInterface,
+        parser: &'a mut dyn AnsiParser,
+        renderer: Renderer,
         driver: &'a mut dyn Driver,
     ) -> Self {
         AppOrchestrator {
@@ -123,11 +122,11 @@ impl<'a> AppOrchestrator<'a> {
     fn interpret_pty_bytes(&mut self, pty_data_slice: &[u8]) {
         // Assuming AnsiParser is stateful and its `advance` method consumes bytes
         // and makes `next_command` yield new commands.
-        self.parser.advance(pty_data_slice, pty_data_slice.len());
+        let commands = self.parser.process_bytes(pty_data_slice).into_iter()
+            .map(| cmd | EmulatorInput::Ansi(cmd));
 
-        while let Some(command) = self.parser.next_command() {
-            log::trace!("Orchestrator: Interpreting ANSI command: {:?}", command);
-            if let Some(action) = self.term.interpret_input(EmulatorInput::Ansi(command)) {
+        for command in commands {
+            if let Some(action) = self.term.interpret_input(command) {
                 self.handle_emulator_action(action);
             }
         }

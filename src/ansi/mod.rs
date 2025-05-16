@@ -8,18 +8,22 @@ pub mod lexer;
 pub mod parser;
 
 // Re-export necessary items for public API
-pub use commands::AnsiCommand; // Keep AnsiCommand public
+pub use commands::AnsiCommand;
 
 // Keep internal components private to this module unless needed outside
 use lexer::AnsiLexer;
-use parser::AnsiParser;
+use parser::AnsiParser as ParserImpl;
+
+pub trait AnsiParser {
+    fn process_bytes(&mut self, bytes: &[u8]) -> Vec<AnsiCommand>;
+}
 
 /// The main processor that combines the lexer and parser.
 /// It takes byte slices as input and provides parsed commands.
 #[derive(Debug, Default)]
 pub struct AnsiProcessor {
-    lexer: AnsiLexer,
-    parser: AnsiParser,
+    pub(super) lexer: AnsiLexer,
+    pub(super) parser: ParserImpl,
 }
 
 impl AnsiProcessor {
@@ -27,15 +31,18 @@ impl AnsiProcessor {
     pub fn new() -> Self {
         AnsiProcessor {
             lexer: AnsiLexer::new(),
-            parser: AnsiParser::new(),
+            parser: ParserImpl::new(),
         }
     }
 
+}
+
+impl AnsiParser for AnsiProcessor {
     /// Processes a slice of bytes.
     ///
     /// Bytes are lexed into tokens, and tokens are processed by the parser.
     /// Call `take_commands` on the `parser` field to retrieve results.
-    pub fn process_bytes(&mut self, bytes: &[u8]) -> Vec<AnsiCommand> {
+    fn process_bytes(&mut self, bytes: &[u8]) -> Vec<AnsiCommand> {
         for byte in bytes {
             self.lexer.process_byte(*byte);
         }
