@@ -69,6 +69,7 @@ impl Renderer {
         term: &mut impl TerminalInterface,
         driver: &mut dyn Driver,
     ) -> Result<()> {
+        // In main.rs, before any call to renderer.draw()
         let (term_width, term_height) = term.dimensions();
 
         if term_width == 0 || term_height == 0 {

@@ -1,35 +1,39 @@
-// In src/main.rs (or lib.rs)
+// In src/main.rs
 
 // Declare modules
 pub mod ansi;
 pub mod backends;
+pub mod color;
 pub mod glyph;
-pub mod os; // Contains `pub mod pty;` in src/os/mod.rs
-pub mod orchestrator; // Our new orchestrator
+pub mod os; // Contains `pub mod pty;` and now `pub mod epoll;`
+pub mod orchestrator;
 pub mod renderer;
 pub mod term;
 
 // Use statements for items needed in main.rs
 use crate::{
-    backends::{console::ConsoleDriver, x11::XDriver, BackendEvent, Driver}, // Example drivers
+    backends::{console::ConsoleDriver, x11::XDriver, Driver},
     orchestrator::{AppOrchestrator, OrchestratorStatus},
-    os::pty::{NixPty, PtyChannel, PtyConfig, PtyError}, // Use concrete NixPty for setup
-    renderer::{Renderer, RendererInterface}, // Assuming Renderer implements RendererInterface
-    term::{TerminalEmulator, TerminalInterface}, // Use concrete TerminalEmulator for setup
-    ansi::AnsiParser,
+    os::{
+        epoll::{EpollFlags, EventMonitor}, // Use EventMonitor, EpollEvent is used via the slice
+        pty::{NixPty, PtyConfig, PtyChannel},      // PtyChannel is not directly used here now
+    },
+    renderer::Renderer,
+    term::{AnsiProcessor, TerminalEmulator}, // TerminalInterface is not directly used here now, AnsiProcessor imported
 };
-use std::os::unix::io::{AsRawFd, RawFd}; // For FD handling with epoll
+use std::os::unix::io::AsRawFd; // For FD handling
 
 // Logging
 use log::{debug, error, info, trace, warn};
 
-// For epoll (if used)
-use nix::sys::epoll::{self, EpollEvent, EpollFlags, EpollOp}; // Example with nix epoll
-
-// Constants for epoll tokens (example)
+// Constants for epoll tokens.
+// These values are arbitrary but must be unique for each FD monitored.
 const PTY_EPOLL_TOKEN: u64 = 1;
 const DRIVER_EPOLL_TOKEN: u64 = 2;
 
+// Timeout for epoll_wait in milliseconds. -1 means block indefinitely.
+const EPOLL_TIMEOUT_INDEFINITE: isize = -1;
+// const EPOLL_TIMEOUT_SHORT_MS: isize = 16; // Example for a ~60Hz polling if driver needs it
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -39,162 +43,180 @@ fn main() -> anyhow::Result<()> {
     info!("Starting myterm orchestrator...");
 
     // --- Configuration ---
-    // TODO: Load from config file or command line arguments
     let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let shell_args: Vec<String> = Vec::new(); // e.g., parse from config or fixed like ["-l"]
+    let shell_args: Vec<String> = Vec::new();
     let shell_args_str: Vec<&str> = shell_args.iter().map(AsRef::as_ref).collect();
 
-    // Initial dimensions (these might be updated by driver after window creation)
     let mut initial_cols = backends::DEFAULT_WINDOW_WIDTH_CHARS as u16;
     let mut initial_rows = backends::DEFAULT_WINDOW_HEIGHT_CHARS as u16;
 
-
     // --- Setup PTY ---
-    // STYLE GUIDE: Idempotency - NixPty::spawn_with_config is not idempotent.
-    // STYLE GUIDE: Error handling - unwrap_or_else for critical setup.
     let pty_config = PtyConfig {
         command_executable: &shell_path,
-        args: &shell_args_str, // Ensure args[0] is command_executable if needed by your exec logic
+        args: &shell_args_str,
         initial_cols,
         initial_rows,
     };
     let mut pty_channel = NixPty::spawn_with_config(&pty_config).unwrap_or_else(|e| {
         eprintln!("Fatal: Failed to spawn PTY: {}", e);
-        std::process::exit(1);
+        std::process::exit(1); // Adhering to style guide for critical setup failure
     });
     let pty_fd = pty_channel.as_raw_fd();
     log::info!("PTY spawned with master fd: {}", pty_fd);
 
-
-    // --- Setup Driver (e.g., X11 or Console) ---
-    // STYLE GUIDE: Idempotency - Driver::new() might not be idempotent.
-    // TODO: Select driver based on config or environment
+    // --- Setup Driver ---
     let mut driver: Box<dyn Driver> = match XDriver::new() {
         Ok(d) => Box::new(d),
         Err(e) => {
-            warn!("Failed to initialize X11 driver: {}. Falling back to ConsoleDriver.", e);
+            warn!(
+                "Failed to initialize X11 driver: {}. Falling back to ConsoleDriver.",
+                e
+            );
             Box::new(ConsoleDriver::new().unwrap_or_else(|ce| {
                 eprintln!("Fatal: Failed to initialize ConsoleDriver: {}", ce);
-                std::process::exit(1);
+                std.process::exit(1);
             }))
         }
     };
     info!("Driver initialized.");
 
-    // Update initial dimensions from driver if possible
+    // Update initial dimensions from driver
     let (display_width_px, display_height_px) = driver.get_display_dimensions_pixels();
     let (char_width_px, char_height_px) = driver.get_font_dimensions();
     if char_width_px > 0 && char_height_px > 0 {
-        initial_cols = (display_width_px / char_width_px as u16).max(1);
-        initial_rows = (display_height_px / char_height_px as u16).max(1);
+        initial_cols = (display_width_px as usize / char_width_px).max(1) as u16;
+        initial_rows = (display_height_px as usize / char_height_px).max(1) as u16;
         if let Err(e) = pty_channel.resize(initial_cols, initial_rows) {
-            warn!("Failed to resize PTY to initial driver dimensions: {}", e);
+            warn!(
+                "Failed to resize PTY to initial driver dimensions: {}x{} cells. Error: {}",
+                initial_cols, initial_rows, e
+            );
         }
     }
-    info!("Initial terminal dimensions set to: {}x{} cells", initial_cols, initial_rows);
-
+    info!(
+        "Initial terminal dimensions set to: {}x{} cells",
+        initial_cols, initial_rows
+    );
 
     // --- Setup Terminal Emulator, Parser, Renderer ---
-    // STYLE GUIDE: Idempotency - new() methods are not usually idempotent.
     let mut term_emulator = TerminalEmulator::new(
         initial_cols as usize,
         initial_rows as usize,
-        1000, // Scrollback limit
+        1000, // Scrollback limit (though North Star says no scrollback, this is a common param)
     );
-    let ansi_parser = AnsiParser::new(); // Assuming a simple constructor
-    let mut renderer = Renderer::new(); // Assuming Renderer implements RendererInterface
-
+    let mut ansi_parser = AnsiProcessor::new();
+    let mut renderer = Renderer::new();
 
     // --- Create AppOrchestrator ---
     let mut orchestrator = AppOrchestrator::new(
         &mut pty_channel,
         &mut term_emulator,
-        ansi_parser,
-        &mut renderer,
-        &mut *driver, // Deref Box to get &mut dyn Driver
+        &mut ansi_parser, // Pass mut ref to AnsiProcessor
+        renderer,
+        &mut *driver,
     );
     info!("AppOrchestrator created.");
 
+    // --- Setup EventMonitor (formerly epoll directly) ---
+    let mut event_monitor = EventMonitor::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create event monitor: {}", e))?;
 
-    // --- Event Loop (using epoll as an example) ---
-    let epoll_fd = epoll::epoll_create1(epoll::EpollCreateFlags::EPOLL_CLOEXEC)
-        .map_err(|e| anyhow::anyhow!("Failed to create epoll instance: {}", e))?;
-    
-    let mut pty_epoll_event = EpollEvent::new(EpollFlags::EPOLLIN, PTY_EPOLL_TOKEN);
-    epoll::epoll_ctl(epoll_fd, EpollOp::EpollCtlAdd, pty_fd, &mut pty_epoll_event)
-        .map_err(|e| anyhow::anyhow!("Failed to add PTY FD to epoll: {}", e))?;
-    log::trace!("PTY FD {} added to epoll for read events.", pty_fd);
+    event_monitor
+        .add(pty_fd, PTY_EPOLL_TOKEN, EpollFlags::EPOLLIN)
+        .map_err(|e| anyhow::anyhow!("Failed to add PTY FD {} to event monitor: {}", pty_fd, e))?;
+    log::trace!(
+        "PTY FD {} added to event monitor for read events.",
+        pty_fd
+    );
 
     if let Some(driver_event_fd) = orchestrator.driver.get_event_fd() {
-        let mut driver_epoll_event = EpollEvent::new(EpollFlags::EPOLLIN, DRIVER_EPOLL_TOKEN);
-        epoll::epoll_ctl(epoll_fd, EpollOp::EpollCtlAdd, driver_event_fd, &mut driver_epoll_event)
-            .map_err(|e| anyhow::anyhow!("Failed to add Driver FD to epoll: {}", e))?;
-        log::trace!("Driver FD {} added to epoll for read events.", driver_event_fd);
+        event_monitor
+            .add(
+                driver_event_fd,
+                DRIVER_EPOLL_TOKEN,
+                EpollFlags::EPOLLIN,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to add Driver FD {} to event monitor: {}",
+                    driver_event_fd,
+                    e
+                )
+            })?;
+        log::trace!(
+            "Driver FD {} added to event monitor for read events.",
+            driver_event_fd
+        );
     } else {
-        log::info!("Driver does not provide an event FD. Main loop will need to poll driver manually if it doesn't use other means.");
-        // This would require a different event loop structure if driver needs polling.
+        log::info!("Driver does not provide an event FD. Main loop will not poll it via epoll.");
     }
-    
-    let mut events = [EpollEvent::empty(); 2]; // Buffer for epoll_wait
-    info!("Starting main event loop...");
 
+    info!("Starting main event loop...");
     'main_loop: loop {
-        // STYLE GUIDE: Avoid magic numbers for timeout. -1 blocks indefinitely.
-        // A timeout (e.g., 16ms for ~60Hz) can be used for periodic tasks or if driver needs polling.
-        let num_events = match epoll::epoll_wait(epoll_fd, &mut events, -1) {
-            Ok(n) => n,
-            Err(e) if e == nix::errno::Errno::EINTR => {
-                log::trace!("epoll_wait interrupted, continuing.");
-                continue; // Interrupted by signal, retry.
+        // The event_monitor.events() call now handles the epoll_wait internally
+        // and returns a slice of events that occurred.
+        match event_monitor.events(EPOLL_TIMEOUT_INDEFINITE) {
+            Ok(events_slice) => {
+                log::trace!("Event monitor returned {} events.", events_slice.len());
+                if events_slice.is_empty() {
+                    // This case typically happens if epoll_wait times out with 0 events.
+                    // If timeout is indefinite (-1), this should ideally not happen unless interrupted.
+                    // If a timeout is used (e.g., for periodic tasks), this is normal.
+                    log::trace!("Event monitor timed out or returned no events, continuing loop.");
+                    // Add any periodic tasks here if needed when using a timeout.
+                    // continue 'main_loop; // Explicitly continue if no events and using a timeout
+                }
+
+                for event in events_slice {
+                    let event_token = event.data();
+                    match event_token {
+                        PTY_EPOLL_TOKEN => {
+                            log::trace!("Event on PTY FD (token {}).", PTY_EPOLL_TOKEN);
+                            match orchestrator.process_pty_events() {
+                                Ok(OrchestratorStatus::Running) => {}
+                                Ok(OrchestratorStatus::Shutdown) => {
+                                    info!("PTY indicated shutdown. Exiting main loop.");
+                                    break 'main_loop;
+                                }
+                                Err(e) => {
+                                    error!("Error processing PTY events: {}. Exiting.", e);
+                                    break 'main_loop;
+                                }
+                            }
+                        }
+                        DRIVER_EPOLL_TOKEN => {
+                            log::trace!("Event on Driver FD (token {}).", DRIVER_EPOLL_TOKEN);
+                            match orchestrator.process_driver_events() {
+                                Ok(OrchestratorStatus::Running) => {}
+                                Ok(OrchestratorStatus::Shutdown) => {
+                                    info!("Driver indicated shutdown. Exiting main loop.");
+                                    break 'main_loop;
+                                }
+                                Err(msg) => {
+                                    error!("Error processing driver events: {}. Exiting.", msg);
+                                    break 'main_loop;
+                                }
+                            }
+                        }
+                        _ => {
+                            warn!("Unknown epoll token: {}", event_token);
+                        }
+                    }
+                }
             }
             Err(e) => {
-                error!("epoll_wait failed: {}", e);
+                // Check if the error is EINTR (interrupted system call)
+                if let Some(nix_err) = e.root_cause().downcast_ref::<nix::Error>() {
+                    if nix_err.as_errno() == Some(nix::errno::Errno::EINTR) {
+                        log::trace!("Event monitor wait interrupted by signal, continuing.");
+                        continue 'main_loop; // Interrupted by signal, retry.
+                    }
+                }
+                error!("Event monitor wait failed: {}. Root cause: {:?}", e, e.root_cause());
                 break 'main_loop; // Exit on unrecoverable epoll error.
-            }
-        };
-
-        log::trace!("epoll_wait returned {} events.", num_events);
-
-        for i in 0..num_events {
-            let event_token = events[i].data();
-            match event_token {
-                PTY_EPOLL_TOKEN => {
-                    log::trace!("Event on PTY FD.");
-                    match orchestrator.process_pty_events() {
-                        Ok(OrchestratorStatus::Running) => {}
-                        Ok(OrchestratorStatus::Shutdown) => {
-                            info!("PTY indicated shutdown. Exiting main loop.");
-                            break 'main_loop;
-                        }
-                        Err(e) => {
-                            error!("Error processing PTY events: {}. Exiting.", e);
-                            break 'main_loop;
-                        }
-                    }
-                }
-                DRIVER_EPOLL_TOKEN => {
-                    log::trace!("Event on Driver FD.");
-                    // The driver is responsible for reading from its own FD.
-                    // process_driver_events will call driver.process_events().
-                    match orchestrator.process_driver_events() {
-                        Ok(OrchestratorStatus::Running) => {}
-                        Ok(OrchestratorStatus::Shutdown) => {
-                            info!("Driver indicated shutdown. Exiting main loop.");
-                            break 'main_loop;
-                        }
-                        Err(msg) => { // process_driver_events returns Result<Status, String>
-                            error!("Error processing driver events: {}. Exiting.", msg);
-                            break 'main_loop;
-                        }
-                    }
-                }
-                _ => {
-                    warn!("Unknown epoll token: {}", event_token);
-                }
             }
         }
 
-        // Perform rendering once per loop iteration if anything flagged it.
         if let Err(e) = orchestrator.render_if_needed() {
             error!("Rendering failed: {}. Exiting.", e);
             break 'main_loop;
@@ -202,9 +224,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     info!("Exiting myterm orchestrator. Cleaning up...");
-    // NixPty's Drop will handle closing master_fd and attempting to terminate child.
-    // Driver's Drop (or an explicit cleanup method if needed) should handle its resources.
-    orchestrator.driver.cleanup()?; // Explicit cleanup for driver
+    orchestrator.driver.cleanup()?;
     info!("Cleanup complete.");
     Ok(())
 }

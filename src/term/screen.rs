@@ -53,7 +53,7 @@ impl From<u16> for TabClearMode {
 /// It does NOT manage the cursor's position or attributes directly;
 /// that is handled by the `CursorController` in the parent `term` module.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Screen {
+pub(super) struct Screen {
     /// The primary screen grid.
     pub grid: Grid,
     /// The alternate screen grid, used by full-screen applications.
