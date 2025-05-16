@@ -187,7 +187,7 @@ impl TerminalEmulator {
                     None
                 }
                 C0Control::LF | C0Control::VT | C0Control::FF => {
-                    self.newline(true);
+                    self.perform_line_feed();
                     None
                 }
                 C0Control::CR => {
@@ -219,7 +219,7 @@ impl TerminalEmulator {
                     None
                 }
                 EscCommand::NextLine => {
-                    self.newline(true);
+                    self.perform_line_feed();
                     self.carriage_return();
                     None
                 }
@@ -632,7 +632,7 @@ impl TerminalEmulator {
         let mut screen_ctx = self.current_screen_context();
 
         if self.cursor_wrap_next {
-            self.newline(true); // This also does carriage_return
+            self.perform_line_feed(); // This also does carriage_return
             screen_ctx = self.current_screen_context(); // Update context after newline
             self.cursor_wrap_next = false;
         }
@@ -660,7 +660,7 @@ impl TerminalEmulator {
                     self.screen.set_glyph(physical_x, physical_y, fill_glyph);
                 }
             }
-            self.newline(true); // Wrap to next line, cursor to col 0
+            self.perform_line_feed(); // Wrap to next line, cursor to col 0
             screen_ctx = self.current_screen_context(); // Update context
             (physical_x, physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
         }
@@ -749,11 +749,12 @@ impl TerminalEmulator {
             .move_to_logical_col(next_stop, &screen_ctx);
     }
 
-    fn newline(&mut self, is_line_feed: bool) {
-        self.cursor_wrap_next = false;
+    fn move_down_one_line_and_dirty(&mut self) {
+        self.cursor_wrap_next = false; // Reset wrap flag on any newline-like operation
         let screen_ctx = self.current_screen_context();
         let (_, current_logical_y) = self.cursor_controller.logical_pos();
-        let (_, current_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
+        let (_current_physical_x, current_physical_y) = // Store current physical X too
+        self.cursor_controller.physical_screen_pos(&screen_ctx);
 
         let max_logical_y_in_region = if screen_ctx.origin_mode_active {
             screen_ctx.scroll_bot.saturating_sub(screen_ctx.scroll_top)
@@ -764,32 +765,95 @@ impl TerminalEmulator {
         let physical_scroll_bot = screen_ctx.scroll_bot;
 
         if current_physical_y == physical_scroll_bot {
-            // At the bottom of the scrolling region
+            // At the bottom of the scrolling region, scroll
+            log::trace!(
+                "move_down_one_line: Scrolling up. Cursor at physical_y: {}, scroll_bot: {}",
+                current_physical_y,
+                physical_scroll_bot
+            );
             self.screen.scroll_up_serial(1);
         } else if current_logical_y < max_logical_y_in_region {
-            // Within region but not at bottom
+            // Within scroll region (or full screen if no region) but not at the bottom edge of it
+            log::trace!(
+                "move_down_one_line: Moving cursor down. logical_y: {}, max_logical_y_in_region: {}",
+                current_logical_y,
+                max_logical_y_in_region
+            );
             self.cursor_controller.move_down(1, &screen_ctx);
         } else if !screen_ctx.origin_mode_active
             && current_physical_y < screen_ctx.height.saturating_sub(1)
         {
-            // Outside scrolling region (if DECOM off) but not at physical bottom of screen
+            // This case handles cursor movement below a scroll region when origin mode is off.
+            log::trace!(
+                "move_down_one_line: Moving cursor down (below scroll region, origin mode off). physical_y: {}, screen_height: {}",
+                current_physical_y,
+                screen_ctx.height
+            );
             self.cursor_controller.move_down(1, &screen_ctx);
+        } else {
+            log::trace!(
+                "move_down_one_line: Cursor at bottom, no scroll or move_down. physical_y: {}, logical_y: {}, max_logical_y: {}",
+                current_physical_y,
+                current_logical_y,
+                max_logical_y_in_region
+            );
+            // Cursor might be at the very last line of the screen, outside any scroll region,
+            // or already scrolled. No further downward movement.
         }
-        // Else: At physical bottom and not in scroll region, or already scrolled.
 
-        if is_line_feed {
-            // LF, VT, FF
-            self.cursor_controller.carriage_return();
-        }
-
+        // Mark lines dirty
+        // current_physical_y is the line the cursor was on *before* any potential move_down or scroll.
+        log::trace!(
+            "move_down_one_line: Marking old line dirty. current_physical_y: {}, screen_height: {}",
+            current_physical_y,
+            self.screen.height
+        );
         self.screen.mark_line_dirty(current_physical_y);
+        // This gets the cursor position *after* move_down or scroll might have occurred.
         let (_, new_physical_y) = self
             .cursor_controller
-            .physical_screen_pos(&self.current_screen_context());
+            .physical_screen_pos(&self.current_screen_context()); // Crucial: use updated context if screen might have changed
+
         if current_physical_y != new_physical_y {
+            log::trace!(
+                "move_down_one_line: Marking new line dirty. new_physical_y: {}, screen_height: {}",
+                new_physical_y,
+                self.screen.height
+            );
             self.screen.mark_line_dirty(new_physical_y);
+        } else {
+            // If the physical line didn't change (e.g., couldn't move down further, and no scroll happened),
+            // current_physical_y was already marked. If it scrolled, new_physical_y will be different if
+            // cursor effectively stays on the same line number but content shifted.
+            // If it just moved down, new_physical_y is different.
+            // If it was at the bottom and couldn't move and didn't scroll, physical_y is the same.
+            log::trace!(
+                "move_down_one_line: New physical y ({}) is same as current ({}), not marking new line again.",
+                new_physical_y,
+                current_physical_y
+            );
         }
     }
+
+    /// Performs a line feed operation: moves cursor down one line,
+    /// performing a scroll if at the bottom of the scrolling region.
+    /// Also performs a carriage return.
+    /// Corresponds to `LF`, `VT`, `FF` control codes, or `NEL` if LNM is not a factor.
+    fn perform_line_feed(&mut self) {
+        log::trace!("perform_line_feed called");
+        self.move_down_one_line_and_dirty();
+        self.carriage_return(); // LF, VT, FF typically include CR
+    }
+
+    /// Performs an index operation: moves cursor down one line,
+    /// performing a scroll if at the bottom of the scrolling region.
+    /// Does NOT perform a carriage return.
+    /// Corresponds to `IND` (ESC D).
+    fn perform_index(&mut self) {
+        log::trace!("perform_index called");
+        self.move_down_one_line_and_dirty();
+    }
+
     fn carriage_return(&mut self) {
         self.cursor_wrap_next = false;
         self.cursor_controller.carriage_return();
@@ -874,11 +938,17 @@ impl TerminalEmulator {
         self.cursor_wrap_next = false;
         self.cursor_controller.move_up(n);
     }
+
+    // Ensure cursor_down calls perform_index
     fn cursor_down(&mut self, n: usize) {
         self.cursor_wrap_next = false;
-        self.cursor_controller
-            .move_down(n, &self.current_screen_context());
+        log::trace!("cursor_down: n = {}", n);
+        for i in 0..n {
+            log::trace!("cursor_down: iteration {} calling perform_index", i);
+            self.perform_index();
+        }
     }
+
     fn cursor_forward(&mut self, n: usize) {
         self.cursor_wrap_next = false;
         self.cursor_controller
@@ -1263,7 +1333,6 @@ impl TerminalEmulator {
                         self.dec_modes.linefeed_newline_mode = enable;
                         // If LNM is set (true), LF, FF, VT should also perform CR.
                         // If LNM is reset (false), they act as line feeds only.
-                        // This is handled in newline() method.
                     }
                     _ => {
                         warn!(

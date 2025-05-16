@@ -972,3 +972,807 @@ mod term_tests {
         );
     }
 }
+
+// This code is a corrected version of the tests previously generated,
+// intended to be placed in a test module (e.g., src/term/tests.rs or a submodule).
+
+#[cfg(test)]
+mod extensive_term_emulator_tests {
+    use crate::ansi::commands::{
+        AnsiCommand, Attribute as SgrAttribute, C0Control, Color as AnsiSgrColor, CsiCommand,
+    };
+    use crate::glyph::{AttrFlags, Attributes, Color, DEFAULT_GLYPH, Glyph, NamedColor}; // Keep Attributes for now
+    use crate::term::{EmulatorInput, TerminalEmulator, TerminalInterface};
+    use std::collections::HashSet;
+
+    // CSI Erase Parameter Constants
+    const ERASE_TO_END: u16 = 0;
+    // const ERASE_TO_START: u16 = 1; // Not used in current failing tests, but keep for completeness if needed
+    const ERASE_ALL: u16 = 2;
+
+    fn create_term(cols: usize, rows: usize) -> TerminalEmulator {
+        TerminalEmulator::new(cols, rows, 100)
+    }
+
+    fn get_char_at(term: &TerminalEmulator, row: usize, col: usize) -> char {
+        TerminalInterface::get_glyph(term, col, row).c
+    }
+
+    fn get_glyph_at(term: &TerminalEmulator, row: usize, col: usize) -> Glyph {
+        TerminalInterface::get_glyph(term, col, row)
+    }
+
+    fn get_line_as_string(term: &TerminalEmulator, row: usize) -> String {
+        let (cols, _) = TerminalInterface::dimensions(term);
+        let mut s = String::new();
+        for col_idx in 0..cols {
+            s.push(get_char_at(term, row, col_idx));
+        }
+        s.trim_end().to_string()
+    }
+
+    fn process_commands(term: &mut TerminalEmulator, commands: Vec<AnsiCommand>) {
+        for cmd in commands {
+            term.interpret_input(EmulatorInput::Ansi(cmd.clone()));
+        }
+    }
+
+    fn process_command(term: &mut TerminalEmulator, command: AnsiCommand) {
+        term.interpret_input(EmulatorInput::Ansi(command));
+    }
+
+    fn assert_and_clear_dirty_lines(
+        term: &mut TerminalEmulator,
+        expected_dirty_lines: &[usize],
+        message: &str,
+    ) {
+        let dirty_lines_vec = TerminalInterface::take_dirty_lines(term);
+        let dirty_lines_set: HashSet<usize> = dirty_lines_vec.into_iter().collect();
+        let expected_set: HashSet<usize> = expected_dirty_lines.iter().cloned().collect();
+
+        assert_eq!(
+            dirty_lines_set, expected_set,
+            "{} - Dirty lines mismatch. Got: {:?}, Expected: {:?}",
+            message, dirty_lines_set, expected_set
+        );
+
+        let subsequent_dirty_lines = TerminalInterface::take_dirty_lines(term);
+        assert!(
+            subsequent_dirty_lines.is_empty(),
+            "{} - Subsequent take_dirty_lines was not empty. Got: {:?}",
+            message,
+            subsequent_dirty_lines
+        );
+    }
+
+    // --- Test Categories ---
+
+    #[test]
+    fn test_print_single_char_marks_line_dirty() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_command(&mut term, AnsiCommand::Print('A'));
+
+        assert_eq!(
+            get_char_at(&term, 0, 0),
+            'A',
+            "Character not printed correctly"
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "Single char print");
+    }
+
+    #[test]
+    fn test_print_multiple_chars_on_same_line_marks_dirty() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('A'),
+                AnsiCommand::Print('B'),
+                AnsiCommand::Print('C'),
+            ],
+        );
+
+        assert_eq!(
+            get_line_as_string(&term, 0),
+            "ABC",
+            "String not printed correctly"
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "Multiple chars print");
+    }
+
+    // This test is FAILING: Expected [0,1] from CUD, Got {}
+    #[test]
+    fn test_print_char_at_cursor_updates_glyph_and_dirty() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Csi(CsiCommand::CursorDown(1)),
+                AnsiCommand::Csi(CsiCommand::CursorForward(1)),
+            ],
+        );
+        // This assertion is failing. CUD(1) should make lines 0 and 1 dirty.
+        assert_and_clear_dirty_lines(&mut term, &[0, 1], "Cursor movement for setup");
+
+        process_command(&mut term, AnsiCommand::Print('X'));
+        assert_eq!(
+            get_char_at(&term, 1, 1),
+            'X',
+            "Character not printed at new cursor pos"
+        );
+        assert_and_clear_dirty_lines(&mut term, &[1], "Print at (1,1)");
+    }
+
+    #[test]
+    fn test_take_dirty_lines_clears_dirty_status() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_command(&mut term, AnsiCommand::Print('A'));
+
+        let dirty_lines1 = TerminalInterface::take_dirty_lines(&mut term);
+        assert_eq!(
+            dirty_lines1,
+            vec![0],
+            "Initial print should make line 0 dirty"
+        );
+
+        let dirty_lines2 = TerminalInterface::take_dirty_lines(&mut term);
+        assert!(
+            dirty_lines2.is_empty(),
+            "Second call to take_dirty_lines should return empty"
+        );
+    }
+
+    #[test]
+    fn test_initial_state_all_lines_dirty() {
+        let mut term = create_term(10, 3);
+        let (_, rows) = TerminalInterface::dimensions(&term);
+        let expected_all_lines: Vec<usize> = (0..rows).collect();
+        assert_and_clear_dirty_lines(&mut term, &expected_all_lines, "Initial state");
+    }
+
+    #[test]
+    fn test_lf_moves_cursor_marks_old_and_new_lines_dirty() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_command(&mut term, AnsiCommand::Print('A'));
+        assert_and_clear_dirty_lines(&mut term, &[0], "Setup print on line 0");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+
+        // C0 LF calls newline(), which should mark old line (0) and new line (1) dirty.
+        assert_and_clear_dirty_lines(&mut term, &[0, 1], "After LF");
+        let (cursor_x, cursor_y) = term.cursor_pos();
+        assert_eq!((cursor_x, cursor_y), (0, 1), "Cursor not at (0,1) after LF");
+    }
+
+    #[test]
+    fn test_cr_moves_cursor_to_col0_does_not_mark_dirty_if_no_glyph_change() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('A'),
+                AnsiCommand::Print('B'),
+                AnsiCommand::Print('C'),
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "Setup print ABC on line 0");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::CR));
+        assert_and_clear_dirty_lines(&mut term, &[], "After CR (no glyph change)");
+        let (cursor_x, cursor_y) = term.cursor_pos();
+        assert_eq!((cursor_x, cursor_y), (0, 0), "Cursor not at (0,0) after CR");
+    }
+
+    #[test]
+    fn test_crlf_sequence_marks_lines_dirty_correctly() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_command(&mut term, AnsiCommand::Print('H'));
+        assert_and_clear_dirty_lines(&mut term, &[0], "Setup print 'H'");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::CR));
+        assert_and_clear_dirty_lines(&mut term, &[], "After CR in CRLF (no glyph change)");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        assert_and_clear_dirty_lines(&mut term, &[0, 1], "After LF in CRLF");
+        assert_eq!(
+            get_char_at(&term, 0, 0),
+            'H',
+            "Char on line 0 incorrect after CRLF"
+        );
+        let (cursor_x, cursor_y) = term.cursor_pos();
+        assert_eq!(
+            (cursor_x, cursor_y),
+            (0, 1),
+            "Cursor pos incorrect after CRLF"
+        );
+    }
+
+    #[test]
+    fn test_lf_at_bottom_of_screen_scrolls_and_marks_all_lines_dirty() {
+        let mut term = create_term(5, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_command(&mut term, AnsiCommand::Print('A'));
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        process_command(&mut term, AnsiCommand::Print('B'));
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        process_command(&mut term, AnsiCommand::Print('C'));
+        assert_and_clear_dirty_lines(&mut term, &[0, 1, 2], "Screen fill");
+
+        assert_eq!(get_line_as_string(&term, 0), "A", "L0 before scroll");
+        assert_eq!(get_line_as_string(&term, 1), "B", "L1 before scroll");
+        assert_eq!(get_line_as_string(&term, 2), "C", "L2 before scroll");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        // scroll_up_serial marks all visible lines dirty within the scroll region,
+        // and clear_line_segment for the new bottom line also marks it dirty.
+        // So all lines [0,1,2] should be dirty.
+        assert_and_clear_dirty_lines(&mut term, &[0, 1, 2], "After LF scroll");
+        assert_eq!(get_line_as_string(&term, 0), "B", "L0 after scroll");
+        assert_eq!(get_line_as_string(&term, 1), "C", "L1 after scroll");
+        assert_eq!(
+            get_line_as_string(&term, 2),
+            "",
+            "L2 after scroll (new blank line)"
+        );
+        let (cursor_x, cursor_y) = term.cursor_pos();
+        assert_eq!((cursor_x, cursor_y), (0, 2), "Cursor pos after scroll");
+    }
+
+    #[test]
+    fn test_command_output_scenario_single_line_output_step_by_step_dirty_check() {
+        let mut term = create_term(20, 5);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_commands(
+            &mut term,
+            vec![AnsiCommand::Print('p'), AnsiCommand::Print('>')],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "Initial prompt");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::CR));
+        assert_and_clear_dirty_lines(&mut term, &[], "CR before output");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        // This should make lines 0 and 1 dirty. If newline() is fixed, this should pass.
+        assert_and_clear_dirty_lines(&mut term, &[0, 1], "LF before output");
+
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('o'),
+                AnsiCommand::Print('u'),
+                AnsiCommand::Print('t'),
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[1], "Printing 'out' on line 1");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::CR));
+        assert_and_clear_dirty_lines(&mut term, &[], "CR after 'out'");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        // This should make lines 1 and 2 dirty.
+        assert_and_clear_dirty_lines(&mut term, &[1, 2], "LF before new prompt");
+
+        process_commands(
+            &mut term,
+            vec![AnsiCommand::Print('p'), AnsiCommand::Print('>')],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[2], "Printing new prompt on line 2");
+
+        assert_eq!(
+            get_line_as_string(&term, 0),
+            "p>",
+            "Line 0 (old prompt) content"
+        );
+        assert_eq!(
+            get_line_as_string(&term, 1),
+            "out",
+            "Line 1 (output) content"
+        );
+        assert_eq!(
+            get_line_as_string(&term, 2),
+            "p>",
+            "Line 2 (new prompt) content"
+        );
+        let (cursor_x, cursor_y) = term.cursor_pos();
+        assert_eq!((cursor_x, cursor_y), (2, 2), "Final cursor position");
+    }
+
+    // This test is FAILING: Content assertion failure, and likely related to newline() issues affecting dirty lines too.
+    #[test]
+    fn test_full_pty_output_simulation_dirty_lines_coalesced() {
+        let mut term = create_term(20, 5);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('p'),
+                AnsiCommand::Print('r'),
+                AnsiCommand::Print('o'),
+                AnsiCommand::Print('m'),
+                AnsiCommand::Print('p'),
+                AnsiCommand::Print('t'),
+                AnsiCommand::Print('>'),
+                AnsiCommand::Print(' '), // Explicit space
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "Dirty lines after initial prompt");
+
+        let pty_output_commands = vec![
+            AnsiCommand::C0Control(C0Control::CR),
+            AnsiCommand::C0Control(C0Control::LF), // Should dirty [0,1] if newline works
+            AnsiCommand::Print('o'),
+            AnsiCommand::Print('1'), // Should dirty [1]
+            AnsiCommand::C0Control(C0Control::CR),
+            AnsiCommand::C0Control(C0Control::LF), // Should dirty [1,2] if newline works
+            AnsiCommand::Print('o'),
+            AnsiCommand::Print('2'), // Should dirty [2]
+            AnsiCommand::C0Control(C0Control::CR),
+            AnsiCommand::C0Control(C0Control::LF), // Should dirty [2,3] if newline works
+            AnsiCommand::Print('p'),
+            AnsiCommand::Print('>'), // Should dirty [3]
+        ];
+
+        for cmd in pty_output_commands {
+            term.interpret_input(EmulatorInput::Ansi(cmd));
+        }
+
+        // If newline() works correctly, this should assert that lines 0, 1, 2, and 3 are dirty.
+        assert_and_clear_dirty_lines(&mut term, &[0, 1, 2, 3], "After full PTY output block");
+
+        // The failing content assertion. Check char by char to bypass trim_end() for this specific check.
+        assert_eq!(get_char_at(&term, 0, 0), 'p', "Line 0 Col 0");
+        assert_eq!(get_char_at(&term, 0, 1), 'r', "Line 0 Col 1");
+        assert_eq!(get_char_at(&term, 0, 2), 'o', "Line 0 Col 2");
+        assert_eq!(get_char_at(&term, 0, 3), 'm', "Line 0 Col 3");
+        assert_eq!(get_char_at(&term, 0, 4), 'p', "Line 0 Col 4");
+        assert_eq!(get_char_at(&term, 0, 5), 't', "Line 0 Col 5");
+        assert_eq!(get_char_at(&term, 0, 6), '>', "Line 0 Col 6");
+        assert_eq!(
+            get_char_at(&term, 0, 7),
+            ' ',
+            "Line 0 Col 7 (the explicit space)"
+        );
+
+        assert_eq!(get_line_as_string(&term, 1), "o1", "Line 1 content");
+        assert_eq!(get_line_as_string(&term, 2), "o2", "Line 2 content");
+        assert_eq!(get_line_as_string(&term, 3), "p>", "Line 3 content");
+        let (cursor_x, cursor_y) = term.cursor_pos();
+        assert_eq!((cursor_x, cursor_y), (2, 3), "Final cursor position");
+    }
+
+    #[test]
+    fn test_erase_in_display_all_marks_all_lines_dirty() {
+        let mut term = create_term(5, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('A'),
+                AnsiCommand::C0Control(C0Control::LF),
+                AnsiCommand::Print('B'),
+                AnsiCommand::C0Control(C0Control::LF),
+                AnsiCommand::Print('C'),
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0, 1, 2], "Screen fill before ED All");
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::EraseInDisplay(ERASE_ALL)),
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0, 1, 2], "After ED All");
+        // ... content assertions
+        for r in 0..3 {
+            for c_idx in 0..5 {
+                assert_eq!(
+                    get_glyph_at(&term, r, c_idx),
+                    DEFAULT_GLYPH,
+                    "Cell ({},{}) not default after ED All",
+                    r,
+                    c_idx
+                );
+            }
+        }
+    }
+
+    // This test now PASSED with the previous adjustment.
+    #[test]
+    fn test_erase_in_display_from_cursor_marks_affected_lines_dirty() {
+        let mut term = create_term(5, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('L'),
+                AnsiCommand::Print('0'),
+                AnsiCommand::C0Control(C0Control::LF),
+                AnsiCommand::Print('L'),
+                AnsiCommand::Print('1'),
+                AnsiCommand::C0Control(C0Control::LF),
+                AnsiCommand::Print('L'),
+                AnsiCommand::Print('2'),
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0, 1, 2], "Screen fill before ED FromCursor");
+
+        process_commands(
+            &mut term,
+            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(2, 2))],
+        );
+        assert_and_clear_dirty_lines(
+            &mut term,
+            &[],
+            "Cursor move to (1,1) for ED FromCursor (CUP alone shouldn't dirty screen content)",
+        );
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::EraseInDisplay(ERASE_TO_END)),
+        );
+
+        let (_cols, rows) = TerminalInterface::dimensions(&term);
+        let all_expected_lines: Vec<usize> = (0..rows).collect();
+        assert_and_clear_dirty_lines(
+            &mut term,
+            &all_expected_lines,
+            "After ED FromCursor (ToEnd) - expecting all lines due to mark_all_dirty in erase_in_display",
+        );
+        assert_eq!(
+            get_line_as_string(&term, 0),
+            "L0",
+            "Line 0 after ED FromCursor"
+        );
+        assert_eq!(
+            get_char_at(&term, 1, 0),
+            'L',
+            "Line 1, Col 0 after ED FromCursor"
+        );
+        assert_eq!(
+            get_char_at(&term, 1, 1),
+            ' ',
+            "Line 1, Col 1 (cursor pos) after ED FromCursor"
+        );
+        assert_eq!(
+            get_line_as_string(&term, 2),
+            "",
+            "Line 2 after ED FromCursor"
+        );
+    }
+
+    #[test]
+    fn test_erase_in_line_all_marks_current_line_dirty() {
+        let mut term = create_term(5, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('A'),
+                AnsiCommand::C0Control(C0Control::LF),
+                AnsiCommand::Print('B'),
+                AnsiCommand::Print('B'),
+                AnsiCommand::Print('B'),
+                AnsiCommand::C0Control(C0Control::LF),
+                AnsiCommand::Print('C'),
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0, 1, 2], "Screen fill before EL All");
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::CursorPosition(2, 1)),
+        );
+        assert_and_clear_dirty_lines(
+            &mut term,
+            &[],
+            "Cursor move for EL All (CUP alone shouldn't dirty screen content)",
+        );
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::EraseInLine(ERASE_ALL)),
+        );
+        assert_and_clear_dirty_lines(&mut term, &[1], "After EL All on line 1");
+        // ... content assertions
+        assert_eq!(get_line_as_string(&term, 0), "A", "Line 0 after EL All");
+        assert_eq!(get_line_as_string(&term, 1), "", "Line 1 after EL All");
+        assert_eq!(get_line_as_string(&term, 2), "C", "Line 2 after EL All");
+    }
+
+    #[test]
+    fn test_erase_character_marks_line_dirty() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('A'),
+                AnsiCommand::Print('B'),
+                AnsiCommand::Print('C'),
+                AnsiCommand::Print('D'),
+                AnsiCommand::Print('E'),
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "Setup for ECH");
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::CursorCharacterAbsolute(1)),
+        );
+        assert_and_clear_dirty_lines(
+            &mut term,
+            &[],
+            "Cursor move for ECH (CHA alone shouldn't dirty screen content)",
+        );
+
+        process_command(&mut term, AnsiCommand::Csi(CsiCommand::EraseCharacter(3)));
+        assert_and_clear_dirty_lines(&mut term, &[0], "After ECH");
+        assert_eq!(
+            get_line_as_string(&term, 0),
+            "   DE",
+            "Line content after ECH"
+        );
+    }
+
+    #[test]
+    fn test_sgr_change_attributes_does_not_mark_line_dirty_if_no_print() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![SgrAttribute::Bold])),
+        );
+        assert_and_clear_dirty_lines(&mut term, &[], "After SGR Bold, no print");
+    }
+
+    #[test]
+    fn test_print_char_with_new_attributes_marks_line_dirty() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![SgrAttribute::Bold])),
+        );
+        assert_and_clear_dirty_lines(&mut term, &[], "SGR Bold applied");
+
+        process_command(&mut term, AnsiCommand::Print('A'));
+        assert_and_clear_dirty_lines(&mut term, &[0], "Print 'A' with new attribute");
+        // ... content assertions
+        let glyph = get_glyph_at(&term, 0, 0);
+        assert_eq!(glyph.c, 'A');
+        assert!(
+            glyph.attr.flags.contains(AttrFlags::BOLD),
+            "Glyph should be bold"
+        );
+    }
+
+    // This test is FAILING: Expected [0,1] from CUD, Got {}
+    #[test]
+    fn test_erase_with_current_attributes() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                SgrAttribute::Background(AnsiSgrColor::Red),
+            ])),
+        );
+        assert_and_clear_dirty_lines(&mut term, &[], "SGR BG Red applied");
+
+        process_command(&mut term, AnsiCommand::Csi(CsiCommand::CursorDown(1)));
+        // This assertion is failing. CUD(1) should make lines 0 and 1 dirty.
+        assert_and_clear_dirty_lines(&mut term, &[0, 1], "Cursor moved to line 1");
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::EraseInLine(ERASE_ALL)),
+        );
+        assert_and_clear_dirty_lines(&mut term, &[1], "EL All on line 1 with BG Red");
+        // ... content assertions
+        let (cols, _) = TerminalInterface::dimensions(&term);
+        for c_idx in 0..cols {
+            let glyph = get_glyph_at(&term, 1, c_idx);
+            assert_eq!(glyph.c, ' ', "Erased char should be space on line 1");
+            assert_eq!(
+                glyph.attr.bg,
+                Color::Named(NamedColor::Red),
+                "Background should be red on line 1, col {}",
+                c_idx
+            );
+        }
+        let glyph_other_line = get_glyph_at(&term, 0, 0);
+        assert_eq!(
+            glyph_other_line.attr.bg,
+            Color::Default,
+            "Background on line 0 should be default, not red. Got: {:?}",
+            glyph_other_line.attr.bg
+        );
+    }
+
+    #[test]
+    fn test_resize_marks_all_lines_dirty() {
+        let mut term = create_term(10, 3);
+        assert_and_clear_dirty_lines(&mut term, &[0, 1, 2], "Initial state before resize");
+
+        term.resize(15, 5);
+        let expected_dirty: Vec<usize> = (0..5).collect();
+        assert_and_clear_dirty_lines(&mut term, &expected_dirty, "After resize to 15x5");
+        // ... content assertions
+        let (cols, rows) = TerminalInterface::dimensions(&term);
+        assert_eq!(cols, 15, "Cols not updated after resize");
+        assert_eq!(rows, 5, "Rows not updated after resize");
+    }
+
+    #[test]
+    fn test_consecutive_lfs_scroll_correctly_and_mark_dirty() {
+        let mut term = create_term(5, 2);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_command(&mut term, AnsiCommand::Print('A'));
+        assert_and_clear_dirty_lines(&mut term, &[0], "Print A");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        assert_and_clear_dirty_lines(&mut term, &[0, 1], "LF1: A on L0, cursor on L1");
+        // ... content assertions
+        assert_eq!(get_line_as_string(&term, 0), "A");
+        assert_eq!(get_line_as_string(&term, 1), "");
+
+        process_command(&mut term, AnsiCommand::Print('B'));
+        assert_and_clear_dirty_lines(&mut term, &[1], "Print B on L1");
+        // ... content assertions
+        assert_eq!(get_line_as_string(&term, 0), "A");
+        assert_eq!(get_line_as_string(&term, 1), "B");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        assert_and_clear_dirty_lines(&mut term, &[0, 1], "LF2: Scrolled, B on L0, cursor on L1");
+        // ... content assertions
+        assert_eq!(get_line_as_string(&term, 0), "B", "L0 after scroll");
+        assert_eq!(
+            get_line_as_string(&term, 1),
+            "",
+            "L1 after scroll (new blank line)"
+        );
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
+        assert_and_clear_dirty_lines(
+            &mut term,
+            &[0, 1],
+            "LF3: Scrolled, blank on L0, cursor on L1",
+        );
+        // ... content assertions
+        assert_eq!(get_line_as_string(&term, 0), "", "L0 after second scroll");
+        assert_eq!(
+            get_line_as_string(&term, 1),
+            "",
+            "L1 after second scroll (new blank line)"
+        );
+    }
+
+    #[test]
+    fn test_print_then_cr_then_overwrite_marks_dirty() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('1'),
+                AnsiCommand::Print('2'),
+                AnsiCommand::Print('3'),
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "Print 123");
+        // ... content assertions
+        assert_eq!(get_line_as_string(&term, 0), "123");
+
+        process_command(&mut term, AnsiCommand::C0Control(C0Control::CR));
+        assert_and_clear_dirty_lines(&mut term, &[], "CR, no glyph change");
+
+        process_command(&mut term, AnsiCommand::Print('X'));
+        assert_and_clear_dirty_lines(&mut term, &[0], "Overwrite with X");
+        assert_eq!(get_line_as_string(&term, 0), "X23");
+    }
+
+    #[test]
+    fn test_line_wrapping_marks_lines_dirty() {
+        let mut term = create_term(3, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_command(&mut term, AnsiCommand::Print('A'));
+        process_command(&mut term, AnsiCommand::Print('B'));
+        process_command(&mut term, AnsiCommand::Print('C'));
+        assert_and_clear_dirty_lines(&mut term, &[0], "Print ABC on line 0");
+        // ... content assertions
+        assert_eq!(get_line_as_string(&term, 0), "ABC");
+
+        process_command(&mut term, AnsiCommand::Print('D'));
+        assert_and_clear_dirty_lines(&mut term, &[0, 1], "Print D, causes wrap to line 1");
+        // ... content assertions
+        assert_eq!(get_line_as_string(&term, 0), "ABC", "Line 0 after wrap");
+        assert_eq!(get_line_as_string(&term, 1), "D", "Line 1 after wrap");
+        let (cursor_x, cursor_y) = term.cursor_pos();
+        assert_eq!(
+            (cursor_x, cursor_y),
+            (1, 1),
+            "Cursor pos after wrap and print D"
+        );
+    }
+
+    #[test]
+    fn test_erase_in_line_to_end_with_attributes() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        process_commands(
+            &mut term,
+            vec![
+                AnsiCommand::Print('A'),
+                AnsiCommand::Print('B'),
+                AnsiCommand::Print('C'),
+                AnsiCommand::Print('D'),
+            ],
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "Print ABCD");
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                SgrAttribute::Background(AnsiSgrColor::Blue),
+            ])),
+        );
+        assert_and_clear_dirty_lines(&mut term, &[], "SGR BG Blue");
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::CursorCharacterAbsolute(2)),
+        );
+        assert_and_clear_dirty_lines(
+            &mut term,
+            &[],
+            "Cursor to col 1 (CHA alone shouldn't dirty)",
+        );
+
+        process_command(
+            &mut term,
+            AnsiCommand::Csi(CsiCommand::EraseInLine(ERASE_TO_END)),
+        );
+        assert_and_clear_dirty_lines(&mut term, &[0], "EL ToEnd with BG Blue");
+        // ... content assertions
+        assert_eq!(get_char_at(&term, 0, 0), 'A', "Char at (0,0) should be A");
+        assert_eq!(
+            get_glyph_at(&term, 0, 0).attr.bg,
+            Color::Default,
+            "BG at (0,0) should be default"
+        );
+
+        for c_idx in 1..10 {
+            let glyph = get_glyph_at(&term, 0, c_idx);
+            assert_eq!(
+                glyph.c, ' ',
+                "Erased char at ({},{}) should be space",
+                0, c_idx
+            );
+            assert_eq!(
+                glyph.attr.bg,
+                Color::Named(NamedColor::Blue),
+                "BG at ({},{}) should be Blue",
+                0,
+                c_idx
+            );
+        }
+    }
+}
