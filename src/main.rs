@@ -217,8 +217,11 @@ fn main() -> anyhow::Result<()> {
             }
             Err(e) => {
                 // Handle errors from epoll_wait, specifically EINTR (interrupted system call).
-                if let Some(_err) = e.root_cause().downcast_ref::<nix::Error>() {
-                    todo!("handle EINTR");
+                if let Some(nix_err) = e.root_cause().downcast_ref::<nix::Error>() {
+                    if *nix_err == nix::Error::EINTR {
+                        trace!("Event monitor wait interrupted by EINTR, continuing.");
+                        continue 'main_loop;
+                    }
                 }
                 // For other epoll errors, log and exit.
                 error!(
@@ -242,3 +245,4 @@ fn main() -> anyhow::Result<()> {
     info!("Cleanup complete.");
     Ok(())
 }
+
