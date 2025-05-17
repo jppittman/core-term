@@ -401,17 +401,6 @@ impl Driver for ConsoleDriver {
         trace!("ConsoleDriver: Rang bell.");
     }
 
-    /// Sets cursor visibility using ANSI codes.
-    fn set_cursor_visibility(&mut self, visible: bool) {
-        if visible {
-            print!("{}", CURSOR_SHOW);
-        } else {
-            print!("{}", CURSOR_HIDE);
-        }
-        // No flush here.
-        trace!("ConsoleDriver: Set cursor visibility to {}.", visible);
-    }
-
     /// Informs the driver about focus changes.
     /// For a console driver, this is typically a no-op as focus is managed
     /// by the terminal emulator application itself or the OS, not via ANSI codes

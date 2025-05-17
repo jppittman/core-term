@@ -11,7 +11,8 @@ mod term_tests {
         AnsiCommand, Attribute, C0Control, Color as AnsiColor, CsiCommand,
     };
     use crate::backends::BackendEvent;
-    use crate::glyph::{AttrFlags, Attributes, Color, DEFAULT_GLYPH, Glyph, NamedColor};
+    use crate::color::{Color, NamedColor};
+    use crate::glyph::{AttrFlags, Attributes, DEFAULT_GLYPH, Glyph};
     use crate::term::{
         DecModeConstant,
         EmulatorAction,
@@ -981,7 +982,8 @@ mod extensive_term_emulator_tests {
     use crate::ansi::commands::{
         AnsiCommand, Attribute as SgrAttribute, C0Control, Color as AnsiSgrColor, CsiCommand,
     };
-    use crate::glyph::{AttrFlags, Attributes, Color, DEFAULT_GLYPH, Glyph, NamedColor}; // Keep Attributes for now
+    use crate::color::{Color, NamedColor};
+    use crate::glyph::{AttrFlags, DEFAULT_GLYPH, Glyph};
     use crate::term::{EmulatorInput, TerminalEmulator, TerminalInterface};
     use std::collections::HashSet;
 
