@@ -248,6 +248,7 @@ impl TerminalEmulator {
 
                     // 10. Mark all lines dirty (already done by erase_in_display and exit_alt_screen)
                     self.mark_all_lines_dirty();
+                    None
                 }
                 _ => {
                     debug!("Unhandled Esc command: {:?}", esc_cmd);
