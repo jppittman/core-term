@@ -34,7 +34,6 @@ impl AnsiProcessor {
             parser: ParserImpl::new(),
         }
     }
-
 }
 
 impl AnsiParser for AnsiProcessor {

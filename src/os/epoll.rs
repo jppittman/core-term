@@ -4,11 +4,11 @@
 //! and polling file descriptors for I/O events.
 
 use anyhow::{Context, Result};
+use log::{debug, trace, warn};
 use nix::sys::epoll::{
-    epoll_create1, epoll_ctl, epoll_wait, EpollCreateFlags, EpollEvent, EpollFlags, EpollOp,
+    EpollCreateFlags, EpollEvent, EpollFlags, EpollOp, epoll_create1, epoll_ctl, epoll_wait,
 };
 use std::os::unix::io::{AsRawFd, RawFd};
-use log::{debug, trace, warn};
 
 // The maximum number of events to retrieve in a single call to epoll_wait.
 // This value can be tuned based on expected workload and desired responsiveness.
@@ -57,7 +57,10 @@ impl EventMonitor {
         let mut event = EpollEvent::new(flags, token);
         epoll_ctl(self.epoll_fd, EpollOp::EpollCtlAdd, fd, &mut event)
             .with_context(|| format!("Failed to add fd {} to epoll (token: {})", fd, token))?;
-        trace!("Added fd {} to epoll_fd {} with token {} and flags {:?}", fd, self.epoll_fd, token, flags);
+        trace!(
+            "Added fd {} to epoll_fd {} with token {} and flags {:?}",
+            fd, self.epoll_fd, token, flags
+        );
         Ok(())
     }
 
@@ -74,7 +77,10 @@ impl EventMonitor {
         let mut event = EpollEvent::new(flags, token);
         epoll_ctl(self.epoll_fd, EpollOp::EpollCtlMod, fd, &mut event)
             .with_context(|| format!("Failed to modify fd {} in epoll (token: {})", fd, token))?;
-        trace!("Modified fd {} in epoll_fd {} to token {} and flags {:?}", fd, self.epoll_fd, token, flags);
+        trace!(
+            "Modified fd {} in epoll_fd {} to token {} and flags {:?}",
+            fd, self.epoll_fd, token, flags
+        );
         Ok(())
     }
 
@@ -111,12 +117,18 @@ impl EventMonitor {
     ///   Returns an empty slice if the timeout expires before any events.
     ///   Returns an error if `epoll_wait` itself fails.
     pub fn events(&mut self, timeout_ms: isize) -> Result<&[EpollEvent]> {
-        trace!("EventMonitor: polling for events with timeout {}ms on epoll_fd {}", timeout_ms, self.epoll_fd);
+        trace!(
+            "EventMonitor: polling for events with timeout {}ms on epoll_fd {}",
+            timeout_ms, self.epoll_fd
+        );
 
         let num_events = epoll_wait(self.epoll_fd, &mut self.event_buffer, timeout_ms)
             .context("epoll_wait failed in EventMonitor")?;
 
-        trace!("EventMonitor: epoll_wait on fd {} returned {} events", self.epoll_fd, num_events);
+        trace!(
+            "EventMonitor: epoll_wait on fd {} returned {} events",
+            self.epoll_fd, num_events
+        );
         // The slice `&self.event_buffer[0..num_events]` is safe because epoll_wait guarantees
         // that it has initialized `num_events` elements of the buffer.
         Ok(&self.event_buffer[0..num_events])
@@ -132,7 +144,10 @@ impl Drop for EventMonitor {
         // The epoll_fd is a system resource that should be closed.
         // nix::unistd::close handles negative fd values appropriately (returns EBADF).
         if let Err(e) = nix::unistd::close(self.epoll_fd) {
-            warn!("Failed to close epoll_fd {} in EventMonitor::drop: {}", self.epoll_fd, e);
+            warn!(
+                "Failed to close epoll_fd {} in EventMonitor::drop: {}",
+                self.epoll_fd, e
+            );
         } else {
             debug!("Closed epoll_fd {} in EventMonitor::drop", self.epoll_fd);
         }

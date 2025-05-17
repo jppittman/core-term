@@ -8,15 +8,15 @@
 use crate::{
     ansi::{AnsiParser, AnsiProcessor},
     backends::{BackendEvent, Driver},
-    os::pty::{PtyChannel, PtyError}, 
-    renderer::*,     // Using the Renderer abstraction.
+    os::pty::{PtyChannel, PtyError},
+    renderer::*, // Using the Renderer abstraction.
     term::{EmulatorAction, EmulatorInput, TerminalInterface}, // Using the Terminal abstraction.
 };
 use std::io::ErrorKind as IoErrorKind; // For checking PTY read WouldBlock.
 
 // STYLE GUIDE: Define Constants for magic numbers or common literals.
 const PTY_READ_BUFFER_SIZE: usize = 4096; // Default buffer size for PTY reads.
-                                         // Consider making this configurable if needed.
+// Consider making this configurable if needed.
 
 /// Represents the status of the orchestrator after processing an event or an iteration of its loop.
 // STYLE GUIDE: Return Values: Use dedicated enums for clarity, especially for status/control flow.
@@ -122,8 +122,11 @@ impl<'a> AppOrchestrator<'a> {
     fn interpret_pty_bytes(&mut self, pty_data_slice: &[u8]) {
         // Assuming AnsiParser is stateful and its `advance` method consumes bytes
         // and makes `next_command` yield new commands.
-        let commands = self.parser.process_bytes(pty_data_slice).into_iter()
-            .map(| cmd | EmulatorInput::Ansi(cmd));
+        let commands = self
+            .parser
+            .process_bytes(pty_data_slice)
+            .into_iter()
+            .map(|cmd| EmulatorInput::Ansi(cmd));
 
         for command in commands {
             if let Some(action) = self.term.interpret_input(command) {
@@ -182,7 +185,10 @@ impl<'a> AppOrchestrator<'a> {
                     self.handle_emulator_action(action);
                 }
             }
-            BackendEvent::Resize { width_px, height_px } => {
+            BackendEvent::Resize {
+                width_px,
+                height_px,
+            } => {
                 self.handle_resize_event(width_px, height_px);
             }
             BackendEvent::FocusGained => {
@@ -200,7 +206,9 @@ impl<'a> AppOrchestrator<'a> {
             BackendEvent::CloseRequested => {
                 // This case should be handled by the caller (process_driver_events)
                 // to immediately signal shutdown. Log if it reaches here.
-                log::warn!("Orchestrator: CloseRequested event unexpectedly reached handle_specific_driver_event.");
+                log::warn!(
+                    "Orchestrator: CloseRequested event unexpectedly reached handle_specific_driver_event."
+                );
             }
         }
     }
@@ -213,7 +221,8 @@ impl<'a> AppOrchestrator<'a> {
         if char_width == 0 || char_height == 0 {
             log::warn!(
                 "Orchestrator: Received resize but driver reported zero char dimensions ({}, {}). Ignoring resize.",
-                char_width, char_height
+                char_width,
+                char_height
             );
             return;
         }
@@ -221,17 +230,21 @@ impl<'a> AppOrchestrator<'a> {
         // Ensure dimensions are at least 1x1.
         let new_cols = (width_px as usize / char_width.max(1)).max(1);
         let new_rows = (height_px as usize / char_height.max(1)).max(1);
-        
+
         log::info!(
             "Orchestrator: Resizing terminal to {}x{} cells ({}x{} px, char_size: {}x{})",
-            new_cols, new_rows, width_px, height_px, char_width, char_height
+            new_cols,
+            new_rows,
+            width_px,
+            height_px,
+            char_width,
+            char_height
         );
 
-        self.term.resize(new_cols, new_rows);     // TerminalInterface::resize
+        self.term.resize(new_cols, new_rows); // TerminalInterface::resize
         self.renderer.resize(new_cols, new_rows); // RendererInterface::resize
         self.needs_render = true; // Resize always requires a full redraw.
     }
-
 
     /// Handles actions signaled by the `TerminalInterface` implementation.
     // STYLE GUIDE: Function argument count - OK.
@@ -245,7 +258,11 @@ impl<'a> AppOrchestrator<'a> {
                 // STYLE GUIDE: Early return/clear error handling for I/O.
                 // `write_all` attempts to write the entire buffer.
                 if let Err(e) = self.pty_channel.write_all(&data) {
-                    log::error!("Orchestrator: Failed to write_all {} bytes to PTY: {}", data.len(), e);
+                    log::error!(
+                        "Orchestrator: Failed to write_all {} bytes to PTY: {}",
+                        data.len(),
+                        e
+                    );
                     // TODO: Critical PTY write failure. Consider signaling error to main loop for shutdown.
                 } else {
                     log::trace!("Orchestrator: Wrote {} bytes to PTY.", data.len());
@@ -303,12 +320,12 @@ impl<'a> AppOrchestrator<'a> {
         self.needs_render = false;
         needed
     }
-    
+
     #[cfg(test)]
     pub(crate) fn term_for_test(&mut self) -> &mut (dyn TerminalInterface + 'a) {
         self.term
     }
-     #[cfg(test)]
+    #[cfg(test)]
     pub(crate) fn pty_for_test(&mut self) -> &mut (dyn PtyChannel + 'a) {
         self.pty_channel
     }

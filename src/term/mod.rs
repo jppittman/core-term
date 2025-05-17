@@ -4,21 +4,20 @@
 //! It acts as a state machine processing inputs and producing actions.
 
 // Sub-modules - existing and new
-pub mod cursor; // Existing
-pub mod screen; // Existing
-pub mod unicode; // Existing
+pub mod cursor;
+pub mod screen;
+pub mod unicode;
 
-pub mod action; // New
-pub mod charset; // New
-pub mod input; // New
-pub mod modes; // New
+pub mod action;
+pub mod charset;
 mod emulator;
+pub mod modes;
 
 // Re-export items for easier use by other modules and within this module
 pub use action::EmulatorAction;
 pub use charset::{CharacterSet, map_to_dec_line_drawing};
-pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 pub use emulator::TerminalEmulator;
+pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 
 // Crate-level imports (adjust paths based on where items are moved)
 use crate::{
@@ -78,13 +77,12 @@ pub trait TerminalInterface {
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction>;
 }
 
-
 // --- Implement TerminalInterface for TerminalEmulator ---
 impl TerminalInterface for TerminalEmulator {
     fn dimensions(&self) -> (usize, usize) {
         (self.screen.width, self.screen.height)
     }
-    
+
     /// Interprets an `EmulatorInput` and updates the terminal state.
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
         let mut action = match input {
