@@ -1,46 +1,14 @@
 # Clippy configuration for core-term
 #
-# Baseline transcribed from STYLE.MD and direct user feedback,
-# now with additions based on the ethos of STYLE.MD.
-#
-# Assumes the baseline command:
+# Based on the style guidelines from STYLE.md
+# Configuration for use with:
 # `cargo clippy --all-targets --all-features -- -D warnings`
 
-# ---- Baseline from STYLE.MD Directives ----
-unwrap_used = "deny"
-expect_used = "deny"
+# ---- Function & Module Design ----
+# "Functions should generally take fewer than 4 arguments"
+# "+1 for self"
+too-many-arguments-threshold = 5
 
-missing-docs-in-private-items = "allow"
-
-cyclomatic_complexity_threshold = 20
-too_many_lines_threshold = 350
-too_many_arguments_threshold = 4
-
-module_name_repetitions = "allow"
-
-print_stdout = "allow"
-print_stderr = "allow"
-
-# ---- Additions Based on STYLE.MD Ethos (Clarity, Simplicity, Robustness) ----
-# These are typically "allow" by default lints that we now "deny".
-
-# --- Enhancing Clarity and Simplicity ---
-# STYLE.MD: "Code should be easy to understand." "Prioritize readability."
-# STYLE.MD: "Avoid overly complex expressions"
-# STYLE.MD: "Prefer `match` over `else if`"
-
-# Make boolean logic clearer with if/else instead of matching on true/false.
-match_bool = "deny" # Was allow by default (style group)
-
-# Disallow wildcard imports to maintain clarity of what is in scope.
-wildcard_imports = "deny" # Was allow by default (style group)
-
-# --- Enhancing Robustness and Deliberate Design ---
-# STYLE.MD: "Error Handling", "Magic Numbers", "unsafe Code"
-
-# Pedantic lints that improve safety related to numeric casts,
-# aligning with avoiding hidden complexities or implicit behaviors.
-cast_possible_truncation = "deny" # Was allow by default (pedantic group)
-cast_possible_wrap = "deny"       # Was allow by default (pedantic group)
-cast_precision_loss = "deny"      # Was allow by default (pedantic group)
-cast_sign_loss = "deny"           # Was allow by default (pedantic group)
+# Keep functions and modules reasonably sized
+cognitive-complexity-threshold = 20
+too-many-lines-threshold = 350
