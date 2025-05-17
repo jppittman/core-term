@@ -6,9 +6,10 @@
 use log::{debug, error, info, trace, warn};
 
 // Crate-level imports
-use crate::glyph::{AttrFlags, Color, NamedColor};
-// Updated to use new structs from backends::mod_rs
+use crate::glyph::AttrFlags;
+// Use the renamed convert_to_rgb_color
 use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
+use crate::color::{Color, NamedColor, convert_to_rgb_color};
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -36,17 +37,14 @@ const TOTAL_PREALLOC_COLORS: usize = ANSI_COLOR_COUNT;
 const DEFAULT_WINDOW_WIDTH_CHARS: usize = 80;
 const DEFAULT_WINDOW_HEIGHT_CHARS: usize = 24;
 
-/// Alpha value for fully opaque XRenderColor.
 const XRENDER_ALPHA_OPAQUE: u16 = 0xffff;
 
-/// Helper struct to group 16-bit RGB color components for XRenderColor.
 struct Rgb16Components {
     r: u16,
     g: u16,
     b: u16,
 }
 
-/// X11 driver implementation for the terminal using Xft for font rendering.
 pub struct XDriver {
     display: *mut xlib::Display,
     screen: c_int,
@@ -55,17 +53,13 @@ pub struct XDriver {
     visual: *mut xlib::Visual,
     xft_font: *mut xft::XftFont,
     xft_draw: *mut xft::XftDraw,
-
     xft_ansi_colors: Vec<xft::XftColor>,
     xft_color_cache_rgb: HashMap<(u8, u8, u8), xft::XftColor>,
-
     font_width: u32,
     font_height: u32,
     font_ascent: u32,
-
     current_pixel_width: u16,
     current_pixel_height: u16,
-
     wm_delete_window: xlib::Atom,
     protocols_atom: xlib::Atom,
     clear_gc: xlib::GC,
@@ -108,16 +102,13 @@ impl Driver for XDriver {
 
         if let Err(e) = (|| {
             driver.load_font().context("Failed to load font")?;
-
             driver.current_pixel_width =
                 (DEFAULT_WINDOW_WIDTH_CHARS * driver.font_width as usize) as u16;
             driver.current_pixel_height =
                 (DEFAULT_WINDOW_HEIGHT_CHARS * driver.font_height as usize) as u16;
-
             driver
                 .init_xft_ansi_colors()
                 .context("Failed to initialize Xft ANSI colors")?;
-
             let initial_bg_pixel = if !driver.xft_ansi_colors.is_empty() {
                 driver.xft_ansi_colors[NamedColor::Black as usize].pixel
             } else {
@@ -126,7 +117,6 @@ impl Driver for XDriver {
                 );
                 0
             };
-
             driver
                 .create_window(
                     driver.current_pixel_width,
@@ -137,7 +127,6 @@ impl Driver for XDriver {
             driver
                 .create_gc()
                 .context("Failed to create graphics context for clearing")?;
-
             driver.xft_draw = unsafe {
                 xft::XftDrawCreate(
                     driver.display,
@@ -150,9 +139,7 @@ impl Driver for XDriver {
                 return Err(anyhow::anyhow!("Failed to create XftDraw object"));
             }
             debug!("XftDraw object created.");
-
             driver.setup_wm_protocols_and_hints();
-
             unsafe {
                 xlib::XMapWindow(driver.display, driver.window);
                 xlib::XFlush(driver.display);
@@ -161,10 +148,14 @@ impl Driver for XDriver {
             Ok(())
         })() {
             error!("Error during XDriver setup: {:?}", e);
-            let _ = driver.cleanup();
+            if let Err(cleanup_err) = driver.cleanup() {
+                error!(
+                    "Error during cleanup after setup failure: {:?}",
+                    cleanup_err
+                );
+            }
             return Err(e);
         }
-
         info!("XDriver initialization complete.");
         Ok(driver)
     }
@@ -236,7 +227,8 @@ impl Driver for XDriver {
                 xlib::ClientMessage => {
                     let xclient = unsafe { xevent.client_message };
                     if xclient.message_type == self.protocols_atom
-                        && xclient.data.get_long(0) as xlib::Atom == self.wm_delete_window
+                        && unsafe { xclient.data.get_long(0) } as xlib::Atom
+                            == self.wm_delete_window
                     {
                         info!("XEvent: WM_DELETE_WINDOW received from window manager.");
                         backend_events.push(BackendEvent::CloseRequested);
@@ -275,7 +267,7 @@ impl Driver for XDriver {
         if matches!(bg, Color::Default) {
             error!("XDriver::clear_all received Color::Default. This is a bug in the Renderer.");
             let xft_bg_color = self
-                .cached_rgb_to_xft_color(0, 0, 0) // Fallback to black
+                .cached_rgb_to_xft_color(0, 0, 0)
                 .context("Failed to resolve fallback black color for clear_all")?;
             unsafe {
                 xlib::XSetForeground(self.display, self.clear_gc, xft_bg_color.pixel);
@@ -289,7 +281,6 @@ impl Driver for XDriver {
                     self.current_pixel_height as u32,
                 );
             }
-            // It's better to panic or return error to highlight the logic issue upstream
             return Err(anyhow::anyhow!(
                 "XDriver::clear_all received Color::Default. Renderer should resolve defaults."
             ));
@@ -545,36 +536,30 @@ impl XDriver {
             .resize_with(ANSI_COLOR_COUNT, || unsafe { mem::zeroed() });
 
         for i in 0..ANSI_COLOR_COUNT {
-            let named_color = NamedColor::from_index(i as u8);
-            let (r_u8, g_u8, b_u8) = match named_color {
-                NamedColor::Black => (0x00, 0x00, 0x00),
-                NamedColor::Red => (0xCD, 0x00, 0x00),
-                NamedColor::Green => (0x00, 0xCD, 0x00),
-                NamedColor::Yellow => (0xCD, 0xCD, 0x00),
-                NamedColor::Blue => (0x00, 0x00, 0xEE),
-                NamedColor::Magenta => (0xCD, 0x00, 0xCD),
-                NamedColor::Cyan => (0x00, 0xCD, 0xCD),
-                NamedColor::White => (0xE5, 0xE5, 0xE5),
-                NamedColor::BrightBlack => (0x7F, 0x7F, 0x7F),
-                NamedColor::BrightRed => (0xFF, 0x00, 0x00),
-                NamedColor::BrightGreen => (0x00, 0xFF, 0x00),
-                NamedColor::BrightYellow => (0xFF, 0xFF, 0x00),
-                NamedColor::BrightBlue => (0x5C, 0x5C, 0xFF),
-                NamedColor::BrightMagenta => (0xFF, 0x00, 0xFF),
-                NamedColor::BrightCyan => (0x00, 0xFF, 0xFF),
-                NamedColor::BrightWhite => (0xFF, 0xFF, 0xFF),
+            let named_color_enum = NamedColor::from_index(i as u8);
+            // Get Color::Rgb from NamedColor
+            let rgb_color = named_color_enum.to_rgb_color();
+            let (r_u8, g_u8, b_u8) = match rgb_color {
+                Color::Rgb(r, g, b) => (r, g, b),
+                _ => {
+                    // This should not happen as to_rgb_color always returns Color::Rgb
+                    warn!(
+                        "NamedColor::to_rgb_color did not return Color::Rgb for {:?}. Defaulting to black.",
+                        named_color_enum
+                    );
+                    (0, 0, 0)
+                }
             };
+
             let color_components = Rgb16Components {
                 r: ((r_u8 as u16) << 8) | (r_u8 as u16),
                 g: ((g_u8 as u16) << 8) | (g_u8 as u16),
                 b: ((b_u8 as u16) << 8) | (b_u8 as u16),
             };
-            // Call the corrected method signature
-            XDriver::alloc_specific_xft_color_into_slice(
-                self,
+            self.alloc_specific_xft_color_into_slice(
                 i,
                 color_components,
-                &format!("ANSI {} ({:?})", i, named_color),
+                &format!("ANSI {} ({:?})", i, named_color_enum),
             )?;
         }
 
@@ -582,10 +567,8 @@ impl XDriver {
         Ok(())
     }
 
-    /// Helper to allocate a specific XftColor into the provided slice at `index`.
-    /// Changed to take `&self` instead of `&mut self`.
     fn alloc_specific_xft_color_into_slice(
-        &mut self, // Changed from &mut self
+        &mut self,
         index: usize,
         color_comps: Rgb16Components,
         name_for_log: &str,
@@ -596,7 +579,6 @@ impl XDriver {
             blue: color_comps.b,
             alpha: XRENDER_ALPHA_OPAQUE,
         };
-        // self.display, self.visual, self.colormap are accessed via &self
         if unsafe {
             xft::XftColorAllocValue(
                 self.display,
@@ -704,7 +686,9 @@ impl XDriver {
                 );
                 debug!("WM_PROTOCOLS (WM_DELETE_WINDOW) registered.");
             } else {
-                warn!("Failed to get WM_DELETE_WINDOW or WM_PROTOCOLS atom.");
+                warn!(
+                    "Failed to get WM_DELETE_WINDOW or WM_PROTOCOLS atom. Window close button might not work as expected."
+                );
             }
 
             let title_cstr = CString::new("myterm").expect("CString::new for 'myterm' failed.");
@@ -737,7 +721,9 @@ impl XDriver {
                 );
                 debug!("Window title set via XStoreName and _NET_WM_NAME.");
             } else {
-                debug!("Window title set via XStoreName only.");
+                debug!(
+                    "Window title set via XStoreName only (_NET_WM_NAME or UTF8_STRING atom not found)."
+                );
             }
 
             let mut size_hints: xlib::XSizeHints = mem::zeroed();
@@ -755,23 +741,27 @@ impl XDriver {
         match color {
             Color::Default => {
                 error!(
-                    "XDriver::resolve_concrete_xft_color received Color::Default. This is a bug in the Renderer."
+                    "XDriver::resolve_concrete_xft_color received Color::Default. This is a bug."
                 );
-                panic!(
-                    "XDriver received Color::Default. Renderer should resolve all defaults before passing to driver."
-                );
+                panic!("XDriver received Color::Default. Renderer should resolve all defaults.");
             }
             Color::Named(named_color) => Ok(self.xft_ansi_colors[named_color as u8 as usize]),
             Color::Indexed(idx) => {
-                if (idx as usize) < ANSI_COLOR_COUNT {
-                    Ok(self.xft_ansi_colors[idx as usize])
-                } else {
-                    let (r, g, b) = convert_indexed_to_rgb_approximation(idx);
+                // convert_to_rgb_color now returns Color::Rgb or Color::Named (which becomes Rgb)
+                let rgb_equivalent = crate::color::convert_to_rgb_color(Color::Indexed(idx));
+                if let Color::Rgb(r, g, b) = rgb_equivalent {
                     warn!(
-                        "XDriver: Approximating Indexed({}) to RGB({},{},{})",
+                        "XDriver: Approximating Indexed({}) to RGB({},{},{}) for XftColor.",
                         idx, r, g, b
                     );
                     self.cached_rgb_to_xft_color(r, g, b)
+                } else {
+                    // Should not happen if convert_to_rgb_color works as expected
+                    error!(
+                        "Failed to convert Indexed({}) to RGB. Defaulting to black.",
+                        idx
+                    );
+                    self.cached_rgb_to_xft_color(0, 0, 0)
                 }
             }
             Color::Rgb(r, g, b) => self.cached_rgb_to_xft_color(r, g, b),
@@ -818,44 +808,6 @@ impl XDriver {
                 .insert((r_u8, g_u8, b_u8), new_xft_color);
             Ok(new_xft_color)
         }
-    }
-}
-
-fn convert_indexed_to_rgb_approximation(idx: u8) -> (u8, u8, u8) {
-    if idx < 16 {
-        let named = NamedColor::from_index(idx);
-        match named {
-            NamedColor::Black => (0, 0, 0),
-            NamedColor::Red => (205, 0, 0),
-            NamedColor::Green => (0, 205, 0),
-            NamedColor::Yellow => (205, 205, 0),
-            NamedColor::Blue => (0, 0, 238),
-            NamedColor::Magenta => (205, 0, 205),
-            NamedColor::Cyan => (0, 205, 205),
-            NamedColor::White => (229, 229, 229),
-            NamedColor::BrightBlack => (127, 127, 127),
-            NamedColor::BrightRed => (255, 0, 0),
-            NamedColor::BrightGreen => (0, 255, 0),
-            NamedColor::BrightYellow => (255, 255, 0),
-            NamedColor::BrightBlue => (92, 92, 255),
-            NamedColor::BrightMagenta => (255, 0, 255),
-            NamedColor::BrightCyan => (0, 255, 255),
-            NamedColor::BrightWhite => (255, 255, 255),
-        }
-    } else if idx >= 232 {
-        let level = (idx - 232) * 10 + 8;
-        (level, level, level)
-    } else if idx >= 16 {
-        let i = idx - 16;
-        let r_idx = (i / 36) % 6;
-        let g_idx = (i / 6) % 6;
-        let b_idx = i % 6;
-        let r_val = if r_idx == 0 { 0 } else { r_idx * 40 + 55 };
-        let g_val = if g_idx == 0 { 0 } else { g_idx * 40 + 55 };
-        let b_val = if b_idx == 0 { 0 } else { b_idx * 40 + 55 };
-        (r_val, g_val, b_val)
-    } else {
-        (0, 0, 0)
     }
 }
 

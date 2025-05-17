@@ -1,8 +1,8 @@
 // Re-export items for easier use by other modules and within this module
-use action::EmulatorAction;
-use charset::{CharacterSet, map_to_dec_line_drawing};
 use super::modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 use super::*;
+use action::EmulatorAction;
+use charset::{CharacterSet, map_to_dec_line_drawing};
 
 // Standard library imports
 use std::cmp::min;
