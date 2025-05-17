@@ -50,7 +50,7 @@ pub enum ControlEvent {
 /// This enum encapsulates the different kinds of data or events
 /// that the `TerminalEmulator` can receive and act upon. It serves as the
 /// primary "instruction set" for the terminal's internal state machine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EmulatorInput {
     /// An ANSI command or sequence parsed from the output of the
     /// program running in the PTY (Pseudo-Terminal).

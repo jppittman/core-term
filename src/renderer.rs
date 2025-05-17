@@ -30,6 +30,7 @@ pub const RENDERER_DEFAULT_BG: Color = Color::Named(NamedColor::Black);
 ///
 /// It optimizes drawing by only processing lines marked as dirty by the terminal
 /// and by coalescing character runs with identical attributes.
+#[derive(Clone)]
 pub struct Renderer {
     /// Tracks if this is the very first draw call.
     /// If `true`, a full screen clear and redraw is typically performed.
