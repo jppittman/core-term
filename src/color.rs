@@ -2,11 +2,12 @@
 
 //! Defines color-related enums (`NamedColor`, `Color`) and conversion functions.
 
-use log::warn; // For logging warnings if needed (e.g., invalid index)
+use log::warn;
+use serde::{Deserialize, Serialize}; // For logging warnings if needed (e.g., invalid index)
 
 /// Standard ANSI named colors (indices 0-15).
 /// These are the 8 normal and 8 bright colors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum NamedColor {
     Black = 0,
@@ -68,7 +69,7 @@ impl NamedColor {
 /// Represents a color value used in the terminal.
 /// Can be a default placeholder, a standard named ANSI color,
 /// an indexed color from the 256-color palette, or an RGB true color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Color {
     /// Default foreground or background color, to be resolved by the renderer
     /// or backend based on its own defaults.

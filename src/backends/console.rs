@@ -10,7 +10,7 @@ use crate::backends::{
     Driver, TextRunStyle,
 };
 use crate::color::Color;
-use crate::glyph::{AttrFlags, NamedColor}; // NamedColor is still useful here for panic messages
+use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 
 use anyhow::{Context, Result};
 use libc::{STDIN_FILENO, TIOCGWINSZ, winsize}; // For terminal size and raw mode
