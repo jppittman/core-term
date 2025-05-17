@@ -23,4 +23,7 @@ pub enum EmulatorAction {
     /// Signal that some part of the terminal display has changed and a redraw
     /// by the renderer is likely needed.
     RequestRedraw,
+
+    /// Request to set the visibility of the (potentially native) cursor by the driver.
+    SetCursorVisibility(bool),
 }

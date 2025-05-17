@@ -3,6 +3,8 @@
 //! Defines the `AnsiCommand` enum representing parsed ANSI escape sequences
 //! and related helper enums/structs.
 
+// Import the canonical Color and NamedColor from the crate's color module
+use crate::color::{Color, NamedColor};
 use log::warn;
 use std::fmt;
 use std::iter::Peekable;
@@ -93,29 +95,7 @@ pub const SGR_UNDERLINE_COLOR_SET: u16 = 58; // Followed by extended color param
 pub const SGR_UNDERLINE_COLOR_DEFAULT: u16 = 59;
 
 // --- Color Definitions ---
-/// Represents a color that can be set for foreground or background.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Color {
-    Black,
-    Red,
-    Green,
-    Yellow,
-    Blue,
-    Magenta,
-    Cyan,
-    White,
-    BrightBlack,
-    BrightRed,
-    BrightGreen,
-    BrightYellow,
-    BrightBlue,
-    BrightMagenta,
-    BrightCyan,
-    BrightWhite,
-    Indexed(u8),     // For 256-color palette (index 0-255)
-    Rgb(u8, u8, u8), // For true color
-    Default,         // Represents the terminal's default foreground or background
-}
+// The local `Color` enum has been removed. We now use `crate::color::Color`.
 
 /// Represents the intensity of a basic ANSI color (normal or bright).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +106,7 @@ enum ColorIntensity {
 
 // --- SGR Attributes ---
 /// Represents a single Select Graphic Rendition (SGR) attribute.
+/// Now uses `crate::color::Color` for its color fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attribute {
     Reset,
@@ -146,11 +127,11 @@ pub enum Attribute {
     NoReverse,
     NoConceal,
     NoStrikethrough,
-    Foreground(Color),
-    Background(Color),
+    Foreground(Color), // Uses crate::color::Color
+    Background(Color), // Uses crate::color::Color
     Overlined,
-    NoOverlined, // Added to represent SGR 55 explicitly
-    UnderlineColor(Color),
+    NoOverlined,
+    UnderlineColor(Color), // Uses crate::color::Color
 }
 
 // --- C0 Control Enum ---
@@ -302,7 +283,7 @@ impl AnsiCommand {
             0x8D => Some(AnsiCommand::Esc(EscCommand::ReverseIndex)),
             0x8E => Some(AnsiCommand::Esc(EscCommand::SingleShift2)),
             0x8F => Some(AnsiCommand::Esc(EscCommand::SingleShift3)),
-            0x90 | 0x9B | 0x9C | 0x9D | 0x9E | 0x9F => None,
+            0x90 | 0x9B | 0x9C | 0x9D | 0x9E | 0x9F => None, // These are handled by parser state transitions
             _ => Some(AnsiCommand::C1Control(byte)),
         }
     }
@@ -324,7 +305,9 @@ impl AnsiCommand {
 
     pub(crate) fn from_esc_intermediate(intermediate: char, final_char: char) -> Option<Self> {
         if ['(', ')', '*', '+'].contains(&intermediate) {
-            if final_char.is_ascii_uppercase() || final_char.is_ascii_digit() {
+            // TODO: Validate final_char more strictly if needed (e.g., specific ranges for charsets)
+            if final_char.is_ascii_alphanumeric() || final_char == '%' || final_char == '@' {
+                // Common charset designators
                 Some(AnsiCommand::Esc(EscCommand::SelectCharacterSet(
                     intermediate,
                     final_char,
@@ -341,6 +324,7 @@ impl AnsiCommand {
         }
     }
 
+    /// Parses SGR parameters into a list of `Attribute`s.
     fn parse_sgr(params: Vec<u16>) -> Vec<Attribute> {
         let mut attrs = Vec::new();
         if params.is_empty() {
@@ -369,22 +353,15 @@ impl AnsiCommand {
                 SGR_NO_CONCEAL => attrs.push(Attribute::NoConceal),
                 SGR_NO_STRIKETHROUGH => attrs.push(Attribute::NoStrikethrough),
                 SGR_FG_BLACK..=SGR_FG_WHITE => attrs.push(Attribute::Foreground(
-                    Self::map_basic_color(param - SGR_FG_BLACK, ColorIntensity::Normal),
+                    Self::map_basic_code_to_color(param - SGR_FG_BLACK, ColorIntensity::Normal),
                 )),
                 SGR_FG_DEFAULT => attrs.push(Attribute::Foreground(Color::Default)),
                 SGR_BG_BLACK..=SGR_BG_WHITE => attrs.push(Attribute::Background(
-                    Self::map_basic_color(param - SGR_BG_BLACK, ColorIntensity::Normal),
+                    Self::map_basic_code_to_color(param - SGR_BG_BLACK, ColorIntensity::Normal),
                 )),
                 SGR_BG_DEFAULT => attrs.push(Attribute::Background(Color::Default)),
                 SGR_OVERLINED => attrs.push(Attribute::Overlined),
-                SGR_NO_OVERLINED => {
-                    // SGR 55 (NoOverlined) is often treated as NoUnderline or ignored.
-                    // Here, we represent it explicitly if Attribute::NoOverlined exists,
-                    // otherwise map to NoUnderline as a common interpretation.
-                    // For now, let's add Attribute::NoOverlined and use it.
-                    // The terminal emulator can then decide how to interpret NoOverlined.
-                    attrs.push(Attribute::NoOverlined);
-                }
+                SGR_NO_OVERLINED => attrs.push(Attribute::NoOverlined),
                 SGR_UNDERLINE_COLOR_SET => {
                     if let Some(color) = Self::parse_extended_color(&mut iter) {
                         attrs.push(Attribute::UnderlineColor(color));
@@ -393,12 +370,18 @@ impl AnsiCommand {
                 SGR_UNDERLINE_COLOR_DEFAULT => {
                     attrs.push(Attribute::UnderlineColor(Color::Default))
                 }
-                SGR_FG_BRIGHT_BLACK..=SGR_FG_BRIGHT_WHITE => attrs.push(Attribute::Foreground(
-                    Self::map_basic_color(param - SGR_FG_BRIGHT_BLACK, ColorIntensity::Bright),
-                )),
-                SGR_BG_BRIGHT_BLACK..=SGR_BG_BRIGHT_WHITE => attrs.push(Attribute::Background(
-                    Self::map_basic_color(param - SGR_BG_BRIGHT_BLACK, ColorIntensity::Bright),
-                )),
+                SGR_FG_BRIGHT_BLACK..=SGR_FG_BRIGHT_WHITE => {
+                    attrs.push(Attribute::Foreground(Self::map_basic_code_to_color(
+                        param - SGR_FG_BRIGHT_BLACK,
+                        ColorIntensity::Bright,
+                    )))
+                }
+                SGR_BG_BRIGHT_BLACK..=SGR_BG_BRIGHT_WHITE => {
+                    attrs.push(Attribute::Background(Self::map_basic_code_to_color(
+                        param - SGR_BG_BRIGHT_BLACK,
+                        ColorIntensity::Bright,
+                    )))
+                }
                 SGR_EXTENDED_COLOR_FG => {
                     if let Some(color) = Self::parse_extended_color(&mut iter) {
                         attrs.push(Attribute::Foreground(color));
@@ -414,45 +397,49 @@ impl AnsiCommand {
                 }
             }
         }
-        if attrs.is_empty()
-            || (attrs.len() > 1
-                && attrs[0] == Attribute::Reset
-                && attrs.iter().skip(1).all(|&a| a == Attribute::Reset))
-        {
+        // Consolidate multiple Resets or Reset followed by nothing else into a single Reset.
+        if attrs.is_empty() || (attrs.len() == 1 && attrs[0] == Attribute::Reset) {
+            attrs.clear(); // Ensure it's clean if it was just a single reset
+            attrs.push(Attribute::Reset);
+        } else if attrs.iter().all(|&a| a == Attribute::Reset) && attrs.len() > 1 {
             attrs.clear();
             attrs.push(Attribute::Reset);
         }
         attrs
     }
 
-    fn map_basic_color(code: u16, intensity: ColorIntensity) -> Color {
-        match (intensity, code) {
-            (ColorIntensity::Normal, 0) => Color::Black,
-            (ColorIntensity::Normal, 1) => Color::Red,
-            (ColorIntensity::Normal, 2) => Color::Green,
-            (ColorIntensity::Normal, 3) => Color::Yellow,
-            (ColorIntensity::Normal, 4) => Color::Blue,
-            (ColorIntensity::Normal, 5) => Color::Magenta,
-            (ColorIntensity::Normal, 6) => Color::Cyan,
-            (ColorIntensity::Normal, 7) => Color::White,
-            (ColorIntensity::Bright, 0) => Color::BrightBlack,
-            (ColorIntensity::Bright, 1) => Color::BrightRed,
-            (ColorIntensity::Bright, 2) => Color::BrightGreen,
-            (ColorIntensity::Bright, 3) => Color::BrightYellow,
-            (ColorIntensity::Bright, 4) => Color::BrightBlue,
-            (ColorIntensity::Bright, 5) => Color::BrightMagenta,
-            (ColorIntensity::Bright, 6) => Color::BrightCyan,
-            (ColorIntensity::Bright, 7) => Color::BrightWhite,
+    /// Maps a basic color code (0-7) and intensity to `crate::color::Color`.
+    fn map_basic_code_to_color(code: u16, intensity: ColorIntensity) -> Color {
+        let named_color = match (intensity, code) {
+            (ColorIntensity::Normal, 0) => NamedColor::Black,
+            (ColorIntensity::Normal, 1) => NamedColor::Red,
+            (ColorIntensity::Normal, 2) => NamedColor::Green,
+            (ColorIntensity::Normal, 3) => NamedColor::Yellow,
+            (ColorIntensity::Normal, 4) => NamedColor::Blue,
+            (ColorIntensity::Normal, 5) => NamedColor::Magenta,
+            (ColorIntensity::Normal, 6) => NamedColor::Cyan,
+            (ColorIntensity::Normal, 7) => NamedColor::White,
+            (ColorIntensity::Bright, 0) => NamedColor::BrightBlack,
+            (ColorIntensity::Bright, 1) => NamedColor::BrightRed,
+            (ColorIntensity::Bright, 2) => NamedColor::BrightGreen,
+            (ColorIntensity::Bright, 3) => NamedColor::BrightYellow,
+            (ColorIntensity::Bright, 4) => NamedColor::BrightBlue,
+            (ColorIntensity::Bright, 5) => NamedColor::BrightMagenta,
+            (ColorIntensity::Bright, 6) => NamedColor::BrightCyan,
+            (ColorIntensity::Bright, 7) => NamedColor::BrightWhite,
             _ => {
                 warn!(
                     "Invalid basic color code: {}, intensity: {:?}",
                     code, intensity
                 );
-                Color::Default
+                return Color::Default; // Fallback
             }
-        }
+        };
+        Color::Named(named_color)
     }
 
+    /// Parses an extended color sequence (256-color or RGB) from SGR parameters.
+    /// Returns `Option<crate::color::Color>`.
     fn parse_extended_color(iter: &mut Peekable<Iter<u16>>) -> Option<Color> {
         match iter.next() {
             Some(&SGR_EXT_MODE_256_INDEX) => iter.next().and_then(|&idx_param| {
@@ -499,9 +486,12 @@ impl AnsiCommand {
 
         match (is_private, intermediates.as_slice(), final_byte) {
             (false, b" ", b'q') => Some(AnsiCommand::Csi(CsiCommand::SetCursorStyle {
-                shape: param_or(0, 1),
+                // DECSCUSR
+                shape: param_or(0, 1), // Default shape 1 (blinking block) or 0 (default)
             })),
-            (_, _, b't') => {
+            // Handle 't' for WindowManipulation, checking intermediates for safety
+            (_, _, b't') if intermediates.is_empty() || intermediates == b" " => {
+                // Ensure 't' is not part of a more complex sequence like DECSTUI
                 let ps1 = param_or(0, 0);
                 let ps2 = params.get(1).copied();
                 let ps3 = params.get(2).copied();
@@ -532,8 +522,9 @@ impl AnsiCommand {
                 Some(AnsiCommand::Csi(CsiCommand::CursorPosition(row, col)))
             }
             (false, b"", b'd') => Some(AnsiCommand::Csi(CsiCommand::CursorPosition(
-                param_or_1(0),
-                1,
+                // VPA
+                param_or_1(0), // Row
+                1,             // Column is implicitly 1
             ))),
             (false, b"", b'J') => {
                 Some(AnsiCommand::Csi(CsiCommand::EraseInDisplay(param_or(0, 0))))
@@ -549,9 +540,8 @@ impl AnsiCommand {
             }
             (false, b"", b'M') => Some(AnsiCommand::Csi(CsiCommand::DeleteLine(param_or_1(0)))),
             (false, b"", b'S') => Some(AnsiCommand::Csi(CsiCommand::ScrollUp(param_or_1(0)))),
-            (false, b"", b'T') if intermediates.is_empty() => {
-                Some(AnsiCommand::Csi(CsiCommand::ScrollDown(param_or_1(0))))
-            }
+            // Ensure 'T' for ScrollDown is only matched if no intermediates, to avoid conflict with other 'T' sequences
+            (false, b"", b'T') => Some(AnsiCommand::Csi(CsiCommand::ScrollDown(param_or_1(0)))),
             (false, b"", b'g') => Some(AnsiCommand::Csi(CsiCommand::ClearTabStops(param_or(0, 0)))),
             (false, b"", b'm') => Some(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(
                 Self::parse_sgr(params),
@@ -559,11 +549,12 @@ impl AnsiCommand {
             (false, b"", b'n') => Some(AnsiCommand::Csi(CsiCommand::DeviceStatusReport(param_or(
                 0, 0,
             )))),
-            (false, b"", b's') => Some(AnsiCommand::Csi(CsiCommand::SaveCursor)),
-            (false, b"", b'u') => Some(AnsiCommand::Csi(CsiCommand::RestoreCursor)),
+            (false, b"", b's') => Some(AnsiCommand::Csi(CsiCommand::SaveCursor)), // Typically DECSC
+            (false, b"", b'u') => Some(AnsiCommand::Csi(CsiCommand::RestoreCursor)), // Typically DECRC
             (false, b"", b'r') => {
-                let top = param_or(0, 1);
-                let bottom = param_or(1, 0);
+                // DECSTBM
+                let top = param_or(0, 1); // Default top is 1
+                let bottom = param_or(1, 0); // Default bottom is 0 (often means last line)
                 Some(AnsiCommand::Csi(CsiCommand::SetScrollingRegion {
                     top,
                     bottom,
@@ -574,7 +565,11 @@ impl AnsiCommand {
                     "Unsupported or unhandled CSI sequence in from_csi: Private={}, Intermediates={:?}, Final={}({}) Params={:?}",
                     is_private, intermediates, final_byte as char, final_byte, params
                 );
-                Some(AnsiCommand::Error(final_byte))
+                // Return an error/unsupported command representation
+                Some(AnsiCommand::Csi(CsiCommand::Unsupported(
+                    intermediates,
+                    Some(final_byte),
+                )))
             }
         }
     }

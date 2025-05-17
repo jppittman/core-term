@@ -4,6 +4,7 @@
 pub mod ansi;
 pub mod backends;
 pub mod color;
+pub mod config;
 pub mod glyph;
 pub mod orchestrator;
 pub mod os; // Contains `pub mod pty;` and `pub mod epoll;`

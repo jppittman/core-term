@@ -23,19 +23,26 @@ pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 use crate::{
     ansi::commands::{
         AnsiCommand,
-        Attribute,
+        // Attribute, // Attribute is used by TerminalEmulator, but not directly by this mod's public API after color refactor
         C0Control,
-        Color as AnsiColor,
+        // Color as AnsiColor, // This specific alias is no longer needed as AnsiCommand uses crate::color::Color
         CsiCommand,
-        EscCommand, // Added EscCommand
+        EscCommand,
     },
     backends::BackendEvent,
-    color::{NamedColor, Color},
-    glyph::{AttrFlags, Attributes, Glyph},
+    // Use crate::color::Color directly where needed, or via glyph::Color
+    glyph::{
+        AttrFlags, Attributes,
+        /* Color as GlyphColor, -- This was an alias to crate::color::Color via glyph */
+        Glyph,
+    },
     term::cursor::{CursorController, ScreenContext},
     term::screen::Screen,
     term::unicode::get_char_display_width,
 };
+// Explicitly import Color and NamedColor if they are used directly in this module's functions,
+// though they are mostly encapsulated within other types like Attributes.
+use crate::color::{Color, NamedColor};
 
 // Logging
 use log::{debug, trace, warn};
@@ -43,7 +50,14 @@ use log::{debug, trace, warn};
 /// Default tab interval.
 pub const DEFAULT_TAB_INTERVAL: u8 = 8;
 /// Default cursor shape (e.g., 2 for block).
-const DEFAULT_CURSOR_SHAPE: u16 = 2;
+pub(crate) const DEFAULT_CURSOR_SHAPE: u16 = 2;
+
+/// Internal control events for the TerminalEmulator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlEvent {
+    FrameRendered,                       // Signifies that a frame has been rendered.
+    Resize { cols: usize, rows: usize }, // Signals a resize to new cell dimensions.
+}
 
 /// Inputs that the terminal emulator processes.
 ///
@@ -60,6 +74,8 @@ pub enum EmulatorInput {
     /// backend system (e.g., window resize, focus change), as reported
     /// by the `Driver`.
     User(BackendEvent),
+    /// An internal control event, such as a resize notification from the orchestrator.
+    Control(ControlEvent),
 
     /// A single raw character. This variant might be used for scenarios
     /// where direct character printing is intended without full ANSI
@@ -74,7 +90,7 @@ pub trait TerminalInterface {
     fn get_glyph(&self, x: usize, y: usize) -> Glyph;
     fn is_cursor_visible(&self) -> bool;
     fn get_screen_cursor_pos(&self) -> (usize, usize);
-    fn take_dirty_lines(&mut self) -> Vec<usize>; // Needs &mut self
+    fn take_dirty_lines(&mut self) -> Vec<usize>;
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction>;
 }
 
@@ -88,6 +104,7 @@ impl TerminalInterface for TerminalEmulator {
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
         let mut action = match input {
             EmulatorInput::Ansi(command) => self.handle_ansi_command(command),
+            EmulatorInput::Control(event) => self.handle_control_event(event),
             EmulatorInput::User(event) => self.handle_backend_event(event),
             EmulatorInput::RawChar(ch) => {
                 self.print_char(ch);
@@ -95,8 +112,14 @@ impl TerminalInterface for TerminalEmulator {
             }
         };
 
+        // If no explicit action was returned but the screen became dirty,
+        // signal a redraw request. This is a general catch-all.
+        // Specific operations that dirty the screen might also return RequestRedraw directly.
         if action.is_none() && !self.screen.dirty.iter().all(|&d| d == 0) {
-            action = Some(EmulatorAction::RequestRedraw);
+            // Check if RequestRedraw is already the action to avoid duplication
+            if !matches!(action, Some(EmulatorAction::RequestRedraw)) {
+                action = Some(EmulatorAction::RequestRedraw);
+            }
         }
         action
     }
@@ -132,6 +155,9 @@ impl TerminalInterface for TerminalEmulator {
         sorted_dirty_lines
     }
 }
+
+// The map_ansi_color_to_glyph_color function is removed as AnsiCommand::Attribute
+// will now directly use crate::color::Color.
 
 #[cfg(test)]
 mod tests;
