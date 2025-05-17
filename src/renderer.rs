@@ -617,3 +617,6 @@ impl Default for Renderer {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests;

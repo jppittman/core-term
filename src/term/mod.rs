@@ -142,8 +142,5 @@ impl TerminalInterface for TerminalEmulator {
     }
 }
 
-// The map_ansi_color_to_glyph_color function is removed as AnsiCommand::Attribute
-// will now directly use crate::color::Color.
-
 #[cfg(test)]
 mod tests;

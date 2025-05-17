@@ -242,3 +242,6 @@ impl<'a> AppOrchestrator<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
