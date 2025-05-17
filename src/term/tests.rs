@@ -8,7 +8,7 @@
 #[cfg(test)]
 mod term_tests {
     use crate::ansi::commands::{
-        AnsiCommand, Attribute, C0Control, Color as AnsiColor, CsiCommand,
+        AnsiCommand, Attribute, C0Control, CsiCommand,
     };
     use crate::backends::BackendEvent;
     use crate::color::{Color, NamedColor};
@@ -168,8 +168,8 @@ mod term_tests {
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                Attribute::Foreground(AnsiColor::Red),
-                Attribute::Background(AnsiColor::Blue),
+                Attribute::Foreground(Color::Named(NamedColor::Red)),
+                Attribute::Background(Color::Named(NamedColor::Blue)),
                 Attribute::Bold,
             ]))),
         );
@@ -261,8 +261,8 @@ mod term_tests {
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                Attribute::Foreground(AnsiColor::Red),
-                Attribute::Background(AnsiColor::Blue),
+                Attribute::Foreground(Color::Named(NamedColor::Red)),
+                Attribute::Background(Color::Named(NamedColor::Blue)),
             ]))),
         );
         process_input(
@@ -299,8 +299,8 @@ mod term_tests {
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                Attribute::Foreground(AnsiColor::Red),
-                Attribute::Background(AnsiColor::Blue),
+                Attribute::Foreground(Color::Named(NamedColor::Red)),
+                Attribute::Background(Color::Named(NamedColor::Blue)),
             ]))),
         );
 
@@ -340,8 +340,8 @@ mod term_tests {
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                Attribute::Foreground(AnsiColor::Green),
-                Attribute::Background(AnsiColor::Magenta),
+                Attribute::Foreground(Color::Named(NamedColor::Green)),
+                Attribute::Background(Color::Named(NamedColor::Magenta)),
             ]))),
         );
         process_commands(
@@ -407,8 +407,8 @@ mod term_tests {
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                Attribute::Foreground(AnsiColor::Cyan),
-                Attribute::Background(AnsiColor::Yellow),
+                Attribute::Foreground(Color::Named(NamedColor::Cyan)),
+                Attribute::Background(Color::Named(NamedColor::Yellow)),
             ]))),
         );
         process_input(
@@ -877,8 +877,8 @@ mod term_tests {
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                Attribute::Foreground(AnsiColor::Red),
-                Attribute::Background(AnsiColor::Blue),
+                Attribute::Foreground(Color::Named(NamedColor::Red)),
+                Attribute::Background(Color::Named(NamedColor::Blue)),
             ]))),
         );
 
@@ -980,7 +980,7 @@ mod term_tests {
 #[cfg(test)]
 mod extensive_term_emulator_tests {
     use crate::ansi::commands::{
-        AnsiCommand, Attribute as SgrAttribute, C0Control, Color as AnsiSgrColor, CsiCommand,
+        AnsiCommand, Attribute as SgrAttribute, C0Control, CsiCommand,
     };
     use crate::color::{Color, NamedColor};
     use crate::glyph::{AttrFlags, DEFAULT_GLYPH, Glyph};
@@ -1572,7 +1572,7 @@ mod extensive_term_emulator_tests {
         process_command(
             &mut term,
             AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                SgrAttribute::Background(AnsiSgrColor::Red),
+                SgrAttribute::Background(Color::Named(NamedColor::Red)),
             ])),
         );
         assert_and_clear_dirty_lines(&mut term, &[], "SGR BG Red applied");
@@ -1733,7 +1733,7 @@ mod extensive_term_emulator_tests {
         process_command(
             &mut term,
             AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                SgrAttribute::Background(AnsiSgrColor::Blue),
+                SgrAttribute::Background(Color::Named(NamedColor::Blue)),
             ])),
         );
         assert_and_clear_dirty_lines(&mut term, &[], "SGR BG Blue");
