@@ -56,6 +56,8 @@ pub struct ConsoleDriver {
     font_height_px: u16,
     /// Buffer for reading input from stdin.
     input_buffer: [u8; 128], // Small buffer for typical key press sequences
+    /// Tracks if the cursor is intended to be visible.
+    is_cursor_logically_visible: bool,
 }
 
 impl Driver for ConsoleDriver {
@@ -64,7 +66,7 @@ impl Driver for ConsoleDriver {
     /// This attempts to:
     /// 1. Get the current terminal attributes.
     /// 2. Set the terminal to raw mode (disabling echo, canonical mode, signals).
-    /// 3. Hide the console's native cursor.
+    /// 3. Hide the console's native cursor initially (it's managed by `set_cursor_visibility`).
     /// 4. Get the initial terminal size in character cells.
     ///
     /// If setting raw mode fails, it logs a warning and proceeds, which might
@@ -109,11 +111,12 @@ impl Driver for ConsoleDriver {
             }
         }
 
-        // Hide the console's native cursor.
+        // Hide the console's native cursor by default.
+        // The orchestrator will call set_cursor_visibility based on terminal state.
         print!("{}", CURSOR_HIDE);
         stdout()
             .flush()
-            .context("ConsoleDriver: Failed to flush stdout for CURSOR_HIDE")?;
+            .context("ConsoleDriver: Failed to flush stdout for initial CURSOR_HIDE")?;
 
         let (initial_width, initial_height) = get_terminal_size_cells(STDIN_FILENO)
             .context("ConsoleDriver: Failed to get initial terminal size")?;
@@ -128,7 +131,8 @@ impl Driver for ConsoleDriver {
             last_known_height_cells: initial_height,
             font_width_px: DEFAULT_CONSOLE_FONT_WIDTH_PX,
             font_height_px: DEFAULT_CONSOLE_FONT_HEIGHT_PX,
-            input_buffer: [0u8; 128], // Initialize buffer
+            input_buffer: [0u8; 128],           // Initialize buffer
+            is_cursor_logically_visible: false, // Start hidden, orchestrator will set.
         })
     }
 
@@ -399,6 +403,21 @@ impl Driver for ConsoleDriver {
         print!("\x07");
         // No flush here.
         trace!("ConsoleDriver: Rang bell.");
+    }
+
+    /// Sets the visibility of the console's native cursor using ANSI codes.
+    fn set_cursor_visibility(&mut self, visible: bool) {
+        trace!(
+            "ConsoleDriver: Setting native cursor visibility to: {}",
+            visible
+        );
+        if visible {
+            print!("{}", CURSOR_SHOW);
+        } else {
+            print!("{}", CURSOR_HIDE);
+        }
+        // No flush here, assume present() will be called.
+        self.is_cursor_logically_visible = visible;
     }
 
     /// Informs the driver about focus changes.

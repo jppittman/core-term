@@ -7,9 +7,9 @@ use log::{debug, error, info, trace, warn};
 
 // Crate-level imports
 use crate::glyph::AttrFlags;
-// Use the renamed convert_to_rgb_color
+// Removed unused import: `use crate::color::convert_to_rgb_color;`
 use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
-use crate::color::{Color, NamedColor, convert_to_rgb_color};
+use crate::color::{Color, NamedColor}; // Keep NamedColor for direct use if needed
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -24,27 +24,31 @@ use libc::{c_char, c_int, c_uint};
 // X11 library imports
 use x11::xft;
 use x11::xlib;
-use x11::xrender::{XGlyphInfo, XRenderColor};
+use x11::xrender::{XGlyphInfo, XRenderColor}; // XRenderColor is used for XftColorAllocValue
 
 // --- Constants ---
-const DEFAULT_FONT_NAME: &str = "Liberation Mono:size=10";
-const MIN_FONT_WIDTH: u32 = 1;
-const MIN_FONT_HEIGHT: u32 = 1;
+const DEFAULT_FONT_NAME: &str = "Liberation Mono:size=10"; // Example font
+const MIN_FONT_WIDTH: u32 = 1; // Minimum reasonable font width
+const MIN_FONT_HEIGHT: u32 = 1; // Minimum reasonable font height
 
-const ANSI_COLOR_COUNT: usize = 16;
-const TOTAL_PREALLOC_COLORS: usize = ANSI_COLOR_COUNT;
+const ANSI_COLOR_COUNT: usize = 16; // For the 16 named ANSI colors
+const TOTAL_PREALLOC_COLORS: usize = ANSI_COLOR_COUNT; // Currently, only ANSI colors are preallocated
 
 const DEFAULT_WINDOW_WIDTH_CHARS: usize = 80;
 const DEFAULT_WINDOW_HEIGHT_CHARS: usize = 24;
 
-const XRENDER_ALPHA_OPAQUE: u16 = 0xffff;
+const XRENDER_ALPHA_OPAQUE: u16 = 0xffff; // Fully opaque for XRenderColor
 
+/// Helper struct for RGB components as u16 (for XRenderColor).
 struct Rgb16Components {
     r: u16,
     g: u16,
     b: u16,
 }
 
+/// `Driver` implementation for the X11 windowing system.
+///
+/// Manages an X11 window, handles X events, and uses Xft for font rendering.
 pub struct XDriver {
     display: *mut xlib::Display,
     screen: c_int,
@@ -53,19 +57,41 @@ pub struct XDriver {
     visual: *mut xlib::Visual,
     xft_font: *mut xft::XftFont,
     xft_draw: *mut xft::XftDraw,
+    /// Pre-allocated XftColors for the 16 standard ANSI colors.
     xft_ansi_colors: Vec<xft::XftColor>,
+    /// Cache for dynamically allocated XftColors from RGB values.
     xft_color_cache_rgb: HashMap<(u8, u8, u8), xft::XftColor>,
-    font_width: u32,
-    font_height: u32,
-    font_ascent: u32,
+    font_width: u32,  // Width of a single character cell in pixels.
+    font_height: u32, // Height of a single character cell in pixels.
+    font_ascent: u32, // Font ascent in pixels.
     current_pixel_width: u16,
     current_pixel_height: u16,
     wm_delete_window: xlib::Atom,
     protocols_atom: xlib::Atom,
+    /// Graphics Context for simple operations like clearing the background.
     clear_gc: xlib::GC,
+    /// Tracks if the window currently has focus (for cursor style, etc.).
+    has_focus: bool,
+    /// Tracks if the X11 native cursor (mouse pointer) should be visible over the window.
+    /// Note: This is distinct from the terminal's text cursor.
+    is_native_cursor_visible: bool,
 }
 
 impl Driver for XDriver {
+    /// Creates and initializes a new `XDriver`.
+    ///
+    /// This involves:
+    /// - Connecting to the X server.
+    /// - Loading the specified font using Xft.
+    /// - Calculating initial font metrics (cell width, height).
+    /// - Pre-allocating XftColor structures for standard ANSI colors.
+    /// - Creating the X11 window with initial dimensions.
+    /// - Creating a Graphics Context (GC) for basic drawing operations.
+    /// - Setting up WM protocols (like WM_DELETE_WINDOW) and window hints.
+    /// - Mapping the window to make it visible.
+    ///
+    /// # Returns
+    /// * `Result<Self>`: The initialized `XDriver` or an error if any setup step fails.
     fn new() -> Result<Self> {
         info!("Creating new XDriver");
         let display = unsafe { xlib::XOpenDisplay(ptr::null()) };
@@ -80,28 +106,33 @@ impl Driver for XDriver {
         let colormap = unsafe { xlib::XDefaultColormap(display, screen) };
         let visual = unsafe { xlib::XDefaultVisual(display, screen) };
 
+        // Initialize with placeholder or default values before fallible operations.
         let mut driver = XDriver {
             display,
             screen,
-            window: 0,
+            window: 0, // Will be set by create_window
             colormap,
             visual,
-            xft_font: ptr::null_mut(),
-            xft_draw: ptr::null_mut(),
+            xft_font: ptr::null_mut(), // Will be set by load_font
+            xft_draw: ptr::null_mut(), // Will be set after window creation
             xft_ansi_colors: Vec::with_capacity(TOTAL_PREALLOC_COLORS),
             xft_color_cache_rgb: HashMap::new(),
-            font_width: 0,
-            font_height: 0,
-            font_ascent: 0,
+            font_width: 0,  // Will be set by load_font
+            font_height: 0, // Will be set by load_font
+            font_ascent: 0, // Will be set by load_font
             current_pixel_width: 0,
             current_pixel_height: 0,
-            wm_delete_window: 0,
-            protocols_atom: 0,
-            clear_gc: ptr::null_mut(),
+            wm_delete_window: 0,            // Will be set by setup_wm_protocols
+            protocols_atom: 0,              // Will be set by setup_wm_protocols
+            clear_gc: ptr::null_mut(),      // Will be set by create_gc
+            has_focus: true, // Assume focused initially until an event says otherwise
+            is_native_cursor_visible: true, // Native X cursor visible by default
         };
 
+        // Perform fallible setup steps in a closure to handle errors and cleanup.
         if let Err(e) = (|| {
             driver.load_font().context("Failed to load font")?;
+            // Calculate initial pixel dimensions based on default char cells and loaded font.
             driver.current_pixel_width =
                 (DEFAULT_WINDOW_WIDTH_CHARS * driver.font_width as usize) as u16;
             driver.current_pixel_height =
@@ -109,13 +140,16 @@ impl Driver for XDriver {
             driver
                 .init_xft_ansi_colors()
                 .context("Failed to initialize Xft ANSI colors")?;
+            // Determine initial background pixel value for window creation.
             let initial_bg_pixel = if !driver.xft_ansi_colors.is_empty() {
+                // Use the pixel value of the pre-allocated Black color.
                 driver.xft_ansi_colors[NamedColor::Black as usize].pixel
             } else {
+                // Fallback if ANSI colors somehow weren't initialized (should not happen).
                 warn!(
                     "ANSI colors not yet initialized for initial window background, using 0 (black)."
                 );
-                0
+                0 // XBlackPixel(display, screen) could also be used but requires `unsafe`
             };
             driver
                 .create_window(
@@ -127,10 +161,11 @@ impl Driver for XDriver {
             driver
                 .create_gc()
                 .context("Failed to create graphics context for clearing")?;
+            // Create XftDraw object associated with the window's drawable.
             driver.xft_draw = unsafe {
                 xft::XftDrawCreate(
                     driver.display,
-                    driver.window,
+                    driver.window, // Draw onto the main window
                     driver.visual,
                     driver.colormap,
                 )
@@ -140,6 +175,7 @@ impl Driver for XDriver {
             }
             debug!("XftDraw object created.");
             driver.setup_wm_protocols_and_hints();
+            // Map the window to make it visible and flush X server requests.
             unsafe {
                 xlib::XMapWindow(driver.display, driver.window);
                 xlib::XFlush(driver.display);
@@ -147,41 +183,55 @@ impl Driver for XDriver {
             debug!("Window mapped and flushed.");
             Ok(())
         })() {
+            // If any setup step failed, log the error and ensure cleanup is attempted.
             error!("Error during XDriver setup: {:?}", e);
+            // Attempt cleanup, logging any further errors during cleanup.
             if let Err(cleanup_err) = driver.cleanup() {
                 error!(
                     "Error during cleanup after setup failure: {:?}",
                     cleanup_err
                 );
             }
-            return Err(e);
+            return Err(e); // Return the original setup error.
         }
         info!("XDriver initialization complete.");
         Ok(driver)
     }
 
     fn get_event_fd(&self) -> Option<RawFd> {
+        // The X11 connection file descriptor can be used for event polling.
         Some(unsafe { xlib::XConnectionNumber(self.display) })
     }
 
+    /// Processes pending X11 events and translates them into `BackendEvent`s.
     fn process_events(&mut self) -> Result<Vec<BackendEvent>> {
         let mut backend_events = Vec::new();
+        // Loop while there are events pending on the X display connection.
         while unsafe { xlib::XPending(self.display) } > 0 {
             let mut xevent: xlib::XEvent = unsafe { mem::zeroed() };
             unsafe { xlib::XNextEvent(self.display, &mut xevent) };
 
+            // Extract the event type.
             let event_type = unsafe { xevent.type_ };
+
             match event_type {
                 xlib::Expose => {
+                    // An Expose event means a part of the window needs to be redrawn.
+                    // The renderer handles the actual redrawing based on dirty flags.
+                    // We log it here for debugging.
                     let xexpose = unsafe { xevent.expose };
                     if xexpose.count == 0 {
+                        // Only process the last Expose event in a series.
                         debug!(
                             "XEvent: Expose (x:{}, y:{}, w:{}, h:{}) - redraw will be handled by renderer",
                             xexpose.x, xexpose.y, xexpose.width, xexpose.height
                         );
+                        // Note: The orchestrator will call renderer.draw() which handles dirty lines.
+                        // No specific BackendEvent is usually emitted for Expose itself, as it's a redraw trigger.
                     }
                 }
                 xlib::ConfigureNotify => {
+                    // Window was resized, moved, or restacked. We only care about resize.
                     let xconfigure = unsafe { xevent.configure };
                     if self.current_pixel_width != xconfigure.width as u16
                         || self.current_pixel_height != xconfigure.height as u16
@@ -195,6 +245,15 @@ impl Driver for XDriver {
                         );
                         self.current_pixel_width = xconfigure.width as u16;
                         self.current_pixel_height = xconfigure.height as u16;
+                        // Create an XftDraw for the new size if it's a pixmap based approach
+                        // If drawing directly to window, XftDraw might not need recreation,
+                        // but internal buffers for pixmap might. Here, assuming direct or Xft handles it.
+                        // If using a pixmap (self.drawable is a Pixmap), it needs recreation:
+                        // unsafe {
+                        //     if !self.xft_draw.is_null() { xft::XftDrawDestroy(self.xft_draw); }
+                        //     // Recreate self.drawable (Pixmap)
+                        //     // self.xft_draw = xft::XftDrawCreate(self.display, self.drawable, ...);
+                        // }
                         backend_events.push(BackendEvent::Resize {
                             width_px: self.current_pixel_width,
                             height_px: self.current_pixel_height,
@@ -202,29 +261,33 @@ impl Driver for XDriver {
                     }
                 }
                 xlib::KeyPress => {
+                    // A key was pressed. Translate to keysym and text.
                     let mut keysym: xlib::KeySym = 0;
-                    let mut key_text_buffer: [u8; 32] = [0; 32];
+                    let mut key_text_buffer: [u8; 32] = [0; 32]; // Buffer for XLookupString
                     let count = unsafe {
                         xlib::XLookupString(
-                            &mut xevent.key,
+                            &mut xevent.key, // Pass as mutable pointer
                             key_text_buffer.as_mut_ptr() as *mut c_char,
                             key_text_buffer.len() as c_int,
-                            &mut keysym,
-                            ptr::null_mut(),
+                            &mut keysym,     // Pass as mutable pointer
+                            ptr::null_mut(), // No XComposeStatus needed
                         )
                     };
                     let text = if count > 0 {
+                        // Convert the bytes from XLookupString (usually Latin-1 or UTF-8 based on locale)
+                        // to a Rust String. String::from_utf8_lossy is a safe way.
                         String::from_utf8_lossy(&key_text_buffer[0..count as usize]).to_string()
                     } else {
-                        String::new()
+                        String::new() // No text generated (e.g., modifier key)
                     };
                     debug!("XEvent: KeyPress (keysym: {:#X}, text: '{}')", keysym, text);
                     backend_events.push(BackendEvent::Key {
-                        keysym: keysym as u32,
+                        keysym: keysym as u32, // Cast KeySym (ulong) to u32
                         text,
                     });
                 }
                 xlib::ClientMessage => {
+                    // A client message, often from the window manager.
                     let xclient = unsafe { xevent.client_message };
                     if xclient.message_type == self.protocols_atom
                         && unsafe { xclient.data.get_long(0) } as xlib::Atom
@@ -241,13 +304,17 @@ impl Driver for XDriver {
                 }
                 xlib::FocusIn => {
                     debug!("XEvent: FocusIn received.");
+                    self.has_focus = true;
                     backend_events.push(BackendEvent::FocusGained);
                 }
                 xlib::FocusOut => {
                     debug!("XEvent: FocusOut received.");
+                    self.has_focus = false;
                     backend_events.push(BackendEvent::FocusLost);
                 }
+                // Add other event types as needed (e.g., ButtonPress, ButtonRelease, MotionNotify for mouse)
                 _ => {
+                    // Log unhandled event types for debugging.
                     trace!("XEvent: Ignored (type: {})", event_type);
                 }
             }
@@ -264,8 +331,10 @@ impl Driver for XDriver {
     }
 
     fn clear_all(&mut self, bg: Color) -> Result<()> {
+        // Renderer ensures `bg` is not Color::Default.
         if matches!(bg, Color::Default) {
             error!("XDriver::clear_all received Color::Default. This is a bug in the Renderer.");
+            // Use a fallback color (e.g., black) for safety, but this indicates a logic error upstream.
             let xft_bg_color = self
                 .cached_rgb_to_xft_color(0, 0, 0)
                 .context("Failed to resolve fallback black color for clear_all")?;
@@ -273,7 +342,7 @@ impl Driver for XDriver {
                 xlib::XSetForeground(self.display, self.clear_gc, xft_bg_color.pixel);
                 xlib::XFillRectangle(
                     self.display,
-                    self.window,
+                    self.window, // Draw directly to the window for clear_all
                     self.clear_gc,
                     0,
                     0,
@@ -286,16 +355,17 @@ impl Driver for XDriver {
             ));
         }
 
+        // Resolve the concrete Color to an XftColor.
         let xft_bg_color = self
             .resolve_concrete_xft_color(bg)
             .context("Failed to resolve background color for clear_all")?;
 
+        // Use the XftDraw object to fill the entire drawable area (window).
+        // XftDrawRect is generally preferred with Xft for consistency, even for solid fills.
         unsafe {
-            xlib::XSetForeground(self.display, self.clear_gc, xft_bg_color.pixel);
-            xlib::XFillRectangle(
-                self.display,
-                self.window,
-                self.clear_gc,
+            xft::XftDrawRect(
+                self.xft_draw,
+                &xft_bg_color,
                 0,
                 0,
                 self.current_pixel_width as u32,
@@ -311,6 +381,7 @@ impl Driver for XDriver {
             return Ok(());
         }
 
+        // Contract: Renderer ensures colors are concrete.
         if matches!(style.fg, Color::Default) || matches!(style.bg, Color::Default) {
             error!(
                 "XDriver::draw_text_run received Color::Default in style. This is a bug in the Renderer."
@@ -320,10 +391,13 @@ impl Driver for XDriver {
             ));
         }
 
+        // Calculate pixel coordinates for the text run.
         let x_pixel = (coords.x * self.font_width as usize) as c_int;
         let y_pixel = (coords.y * self.font_height as usize) as c_int;
+        // Calculate width of the background rectangle for the text run.
         let run_pixel_width = text.chars().count() * self.font_width as usize;
 
+        // Resolve foreground and background colors to XftColor.
         let xft_fg = self
             .resolve_concrete_xft_color(style.fg)
             .context("Failed to resolve foreground color for text run")?;
@@ -331,54 +405,62 @@ impl Driver for XDriver {
             .resolve_concrete_xft_color(style.bg)
             .context("Failed to resolve background color for text run")?;
 
+        // Draw the background rectangle for the text run.
         unsafe {
             xft::XftDrawRect(
                 self.xft_draw,
-                &xft_bg,
+                &xft_bg, // Use the resolved background color
                 x_pixel,
                 y_pixel,
-                run_pixel_width as u32,
-                self.font_height,
+                run_pixel_width as u32, // Width of the text run
+                self.font_height,       // Height of a single line
             );
         }
 
+        // Convert the Rust string to a C-compatible string for Xft.
         let c_text = CString::new(text).context("Failed to convert text to CString for Xft")?;
+        // Calculate the baseline Y coordinate for XftDrawStringUtf8.
         let baseline_y_pixel = y_pixel + self.font_ascent as c_int;
+
+        // Draw the text string.
         unsafe {
             xft::XftDrawStringUtf8(
                 self.xft_draw,
-                &xft_fg,
-                self.xft_font,
-                x_pixel,
-                baseline_y_pixel,
-                c_text.as_ptr() as *const u8,
-                c_text.as_bytes().len() as c_int,
+                &xft_fg,                          // Use the resolved foreground color
+                self.xft_font,                    // The loaded Xft font
+                x_pixel,                          // X position in pixels
+                baseline_y_pixel,                 // Y position of the baseline in pixels
+                c_text.as_ptr() as *const u8,     // Text as C string
+                c_text.as_bytes().len() as c_int, // Length of the text in bytes
             );
         }
 
+        // Handle underline and strikethrough attributes if present.
         if style.flags.contains(AttrFlags::UNDERLINE) {
-            let underline_y = y_pixel + self.font_height as c_int - 2;
+            // Simple underline: 1 pixel high, a couple of pixels below the baseline.
+            let underline_y = y_pixel + self.font_height as c_int - 2; // Adjust position as needed
             unsafe {
                 xft::XftDrawRect(
                     self.xft_draw,
-                    &xft_fg,
+                    &xft_fg, // Use foreground color for underline
                     x_pixel,
                     underline_y,
                     run_pixel_width as u32,
-                    1,
+                    1, // Thickness of underline
                 );
             }
         }
         if style.flags.contains(AttrFlags::STRIKETHROUGH) {
-            let strikethrough_y = y_pixel + (self.font_ascent / 2) as c_int;
+            // Simple strikethrough: 1 pixel high, roughly in the middle of the text.
+            let strikethrough_y = y_pixel + (self.font_ascent / 2) as c_int; // Adjust position
             unsafe {
                 xft::XftDrawRect(
                     self.xft_draw,
-                    &xft_fg,
+                    &xft_fg, // Use foreground color for strikethrough
                     x_pixel,
                     strikethrough_y,
                     run_pixel_width as u32,
-                    1,
+                    1, // Thickness of strikethrough
                 );
             }
         }
@@ -387,8 +469,9 @@ impl Driver for XDriver {
 
     fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
         if rect.width == 0 || rect.height == 0 {
-            return Ok(());
+            return Ok(()); // Nothing to fill.
         }
+        // Contract: Renderer ensures color is concrete.
         if matches!(color, Color::Default) {
             error!("XDriver::fill_rect received Color::Default. This is a bug in the Renderer.");
             return Err(anyhow::anyhow!(
@@ -396,15 +479,18 @@ impl Driver for XDriver {
             ));
         }
 
+        // Calculate pixel dimensions for the rectangle.
         let x_pixel = (rect.x * self.font_width as usize) as c_int;
         let y_pixel = (rect.y * self.font_height as usize) as c_int;
         let rect_pixel_width = (rect.width * self.font_width as usize) as u32;
         let rect_pixel_height = (rect.height * self.font_height as usize) as u32;
 
+        // Resolve the concrete Color to an XftColor.
         let xft_fill_color = self
             .resolve_concrete_xft_color(color)
             .context("Failed to resolve color for fill_rect")?;
 
+        // Use XftDrawRect to fill the area.
         unsafe {
             xft::XftDrawRect(
                 self.xft_draw,
@@ -419,6 +505,8 @@ impl Driver for XDriver {
     }
 
     fn present(&mut self) -> Result<()> {
+        // For X11, drawing commands are typically sent to the server as they are made.
+        // XFlush ensures that all buffered commands are sent to the X server for processing.
         unsafe {
             xlib::XFlush(self.display);
         }
@@ -426,6 +514,130 @@ impl Driver for XDriver {
         Ok(())
     }
 
+    /// Sets the window title using X11 functions.
+    fn set_title(&mut self, title: &str) {
+        trace!("XDriver: Setting window title to '{}'", title);
+        if self.window == 0 || self.display.is_null() {
+            warn!("XDriver::set_title called on uninitialized or closed window/display.");
+            return;
+        }
+        unsafe {
+            // Standard window title property
+            if let Ok(title_c_str) = CString::new(title) {
+                xlib::XStoreName(self.display, self.window, title_c_str.as_ptr() as *mut _);
+
+                // Also set _NET_WM_NAME for modern window managers (UTF-8)
+                let net_wm_name_atom = xlib::XInternAtom(
+                    self.display,
+                    b"_NET_WM_NAME\0".as_ptr() as *mut _,
+                    xlib::False,
+                );
+                let utf8_string_atom = xlib::XInternAtom(
+                    self.display,
+                    b"UTF8_STRING\0".as_ptr() as *mut _,
+                    xlib::False,
+                );
+
+                if net_wm_name_atom != 0 && utf8_string_atom != 0 {
+                    xlib::XChangeProperty(
+                        self.display,
+                        self.window,
+                        net_wm_name_atom,
+                        utf8_string_atom,
+                        8, // format is 8-bit for UTF8_STRING
+                        xlib::PropModeReplace,
+                        title_c_str.as_ptr() as *const u8,
+                        title_c_str.as_bytes().len() as c_int,
+                    );
+                }
+            } else {
+                error!("Failed to create CString for title: {}", title);
+            }
+            // Ensure changes are sent to the X server.
+            xlib::XFlush(self.display);
+        }
+    }
+
+    /// Rings the X11 bell.
+    fn bell(&mut self) {
+        trace!("XDriver: Ringing bell.");
+        if self.display.is_null() {
+            warn!("XDriver::bell called on closed display.");
+            return;
+        }
+        unsafe {
+            // XkbBell is generally preferred if available and XKB extension is used.
+            // XBell is simpler if XKB is not explicitly managed.
+            // Using XBell for simplicity here. Volume is a percentage from -100 to 100.
+            xlib::XBell(self.display, 0); // 0 for default volume
+            xlib::XFlush(self.display);
+        }
+    }
+
+    /// Sets the visibility of the *native X11 mouse pointer* when it's over the terminal window.
+    /// This does NOT control the visibility of the terminal's text cursor, which is
+    /// drawn by the renderer.
+    fn set_cursor_visibility(&mut self, visible: bool) {
+        trace!(
+            "XDriver: Setting native X11 cursor (mouse pointer) visibility to: {}",
+            visible
+        );
+        if self.window == 0 || self.display.is_null() {
+            warn!(
+                "XDriver::set_cursor_visibility called on uninitialized or closed window/display."
+            );
+            return;
+        }
+        self.is_native_cursor_visible = visible;
+        unsafe {
+            if visible {
+                // Restore the default cursor (or whatever was set previously).
+                // For simplicity, re-creating the default X cursor.
+                let cursor = xlib::XCreateFontCursor(self.display, xft::XC_xterm as u32); // XC_xterm is a common default
+                xlib::XDefineCursor(self.display, self.window, cursor);
+                // XFreeCursor(self.display, cursor); // DefineCursor copies it, so free the one we created.
+            } else {
+                // Create an invisible cursor.
+                // A common way is to create a 1x1 pixmap with all bits 0 and use that.
+                let mut color = xlib::XColor {
+                    pixel: 0,
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    flags: 0,
+                    pad: 0,
+                };
+                let pixmap = xlib::XCreatePixmap(self.display, self.window, 1, 1, 1); // 1x1, 1-bit depth
+                let cursor = xlib::XCreatePixmapCursor(
+                    self.display,
+                    pixmap,
+                    pixmap,
+                    &mut color,
+                    &mut color,
+                    0,
+                    0,
+                );
+                xlib::XDefineCursor(self.display, self.window, cursor);
+                xlib::XFreeCursor(self.display, cursor); // DefineCursor copies it.
+                xlib::XFreePixmap(self.display, pixmap);
+            }
+            xlib::XFlush(self.display);
+        }
+    }
+
+    /// Updates the driver's internal focus state.
+    /// This is called by the orchestrator based on `FocusIn`/`FocusOut` events.
+    /// The driver can use this state, for example, to alter the appearance of the
+    /// (application-drawn) text cursor if desired (e.g., block vs. hollow).
+    fn set_focus(&mut self, focused: bool) {
+        trace!("XDriver: Setting focus state to: {}", focused);
+        self.has_focus = focused;
+        // The actual visual change for the text cursor based on focus
+        // would be handled by the Renderer when it gets the cursor state.
+        // This driver method just records the state.
+    }
+
+    /// Cleans up X11 resources (display connection, window, GC, Xft objects).
     fn cleanup(&mut self) -> Result<()> {
         info!("Cleaning up XDriver resources...");
         unsafe {
@@ -445,7 +657,15 @@ impl Driver for XDriver {
                 self.xft_ansi_colors.len()
             );
             for color_ptr in self.xft_ansi_colors.iter_mut() {
-                xft::XftColorFree(self.display, self.visual, self.colormap, color_ptr);
+                // Check if pixel is non-zero before freeing to avoid issues with unallocated colors
+                // (though init_xft_ansi_colors should ensure they are allocated).
+                if color_ptr.pixel != 0
+                    || color_ptr.color.red != 0
+                    || color_ptr.color.green != 0
+                    || color_ptr.color.blue != 0
+                {
+                    xft::XftColorFree(self.display, self.visual, self.colormap, color_ptr);
+                }
             }
             self.xft_ansi_colors.clear();
 
@@ -478,12 +698,15 @@ impl Driver for XDriver {
     }
 }
 
+// --- XDriver Private Helper Methods ---
 impl XDriver {
+    /// Loads the primary font using Xft and calculates basic font metrics.
     fn load_font(&mut self) -> Result<()> {
         debug!("Loading font: {}", DEFAULT_FONT_NAME);
         let font_name_cstr =
             CString::new(DEFAULT_FONT_NAME).context("Failed to create CString for font name")?;
 
+        // Open the font using Xft.
         self.xft_font =
             unsafe { xft::XftFontOpenName(self.display, self.screen, font_name_cstr.as_ptr()) };
         if self.xft_font.is_null() {
@@ -494,23 +717,28 @@ impl XDriver {
         }
         debug!("Font '{}' loaded successfully.", DEFAULT_FONT_NAME);
 
-        let font_info_ptr = self.xft_font;
+        // Get font metrics from the loaded XftFont.
+        // The ascent and descent are part of the XftFont struct.
+        let font_info_ptr = self.xft_font; // Borrow for struct field access
         self.font_height = unsafe { ((*font_info_ptr).ascent + (*font_info_ptr).descent) as u32 };
         self.font_ascent = unsafe { (*font_info_ptr).ascent as u32 };
 
+        // To get the average character width, we can measure a sample string.
+        // 'M' is often used, or a string of common characters.
         let mut extents: XGlyphInfo = unsafe { mem::zeroed() };
         let sample_char_cstr = CString::new("M").expect("CString::new for 'M' failed.");
         unsafe {
             xft::XftTextExtentsUtf8(
                 self.display,
                 self.xft_font,
-                sample_char_cstr.as_ptr() as *const u8,
+                sample_char_cstr.as_ptr() as *const u8, // Correct type for XftTextExtentsUtf8
                 sample_char_cstr.as_bytes().len() as c_int,
-                &mut extents,
+                &mut extents, // Pass as mutable pointer
             );
         }
-        self.font_width = extents.xOff as u32;
+        self.font_width = extents.xOff as u32; // xOff is the advance width
 
+        // Basic validation of font metrics.
         if self.font_width < MIN_FONT_WIDTH || self.font_height < MIN_FONT_HEIGHT {
             return Err(anyhow::anyhow!(
                 "Font dimensions (W:{}, H:{}) below minimum (W:{}, H:{}).",
@@ -527,18 +755,20 @@ impl XDriver {
         Ok(())
     }
 
+    /// Initializes the `xft_ansi_colors` vector by allocating XftColor structures
+    /// for the 16 standard ANSI colors.
     fn init_xft_ansi_colors(&mut self) -> Result<()> {
         debug!(
             "Initializing {} preallocated ANSI Xft colors.",
             ANSI_COLOR_COUNT
         );
         self.xft_ansi_colors
-            .resize_with(ANSI_COLOR_COUNT, || unsafe { mem::zeroed() });
+            .resize_with(ANSI_COLOR_COUNT, || unsafe { mem::zeroed() }); // Initialize with zeroed XftColor
 
         for i in 0..ANSI_COLOR_COUNT {
             let named_color_enum = NamedColor::from_index(i as u8);
             // Get Color::Rgb from NamedColor
-            let rgb_color = named_color_enum.to_rgb_color();
+            let rgb_color = named_color_enum.to_rgb_color(); // This is now crate::color::Color
             let (r_u8, g_u8, b_u8) = match rgb_color {
                 Color::Rgb(r, g, b) => (r, g, b),
                 _ => {
@@ -551,6 +781,7 @@ impl XDriver {
                 }
             };
 
+            // Convert 8-bit RGB to 16-bit for XRenderColor
             let color_components = Rgb16Components {
                 r: ((r_u8 as u16) << 8) | (r_u8 as u16),
                 g: ((g_u8 as u16) << 8) | (g_u8 as u16),
@@ -567,6 +798,7 @@ impl XDriver {
         Ok(())
     }
 
+    /// Allocates a specific XftColor and stores it in the `xft_ansi_colors` slice.
     fn alloc_specific_xft_color_into_slice(
         &mut self,
         index: usize,
@@ -577,18 +809,20 @@ impl XDriver {
             red: color_comps.r,
             green: color_comps.g,
             blue: color_comps.b,
-            alpha: XRENDER_ALPHA_OPAQUE,
+            alpha: XRENDER_ALPHA_OPAQUE, // Fully opaque
         };
+        // SAFETY: FFI call to Xft.
         if unsafe {
             xft::XftColorAllocValue(
                 self.display,
                 self.visual,
                 self.colormap,
-                &render_color,
-                &mut self.xft_ansi_colors[index],
+                &render_color,                    // Pass as const pointer
+                &mut self.xft_ansi_colors[index], // Pass as mutable pointer
             )
         } == 0
         {
+            // XftColorAllocValue returns 0 on failure.
             return Err(anyhow::anyhow!(
                 "XftColorAllocValue failed for {}",
                 name_for_log
@@ -601,38 +835,41 @@ impl XDriver {
         Ok(())
     }
 
+    /// Creates the main X11 window.
     fn create_window(
         &mut self,
         pixel_width: u16,
         pixel_height: u16,
-        bg_pixel_val: xlib::Atom,
+        bg_pixel_val: xlib::Atom, // Use Atom for pixel values as XID
     ) -> Result<()> {
         unsafe {
             let root_window = xlib::XRootWindow(self.display, self.screen);
-            let border_width = 0;
+            let border_width = 0; // No border managed by this window itself
 
             let mut attributes: xlib::XSetWindowAttributes = mem::zeroed();
             attributes.colormap = self.colormap;
-            attributes.background_pixel = bg_pixel_val;
-            attributes.border_pixel = bg_pixel_val;
-            attributes.event_mask = xlib::ExposureMask
-                | xlib::KeyPressMask
-                | xlib::StructureNotifyMask
-                | xlib::FocusChangeMask;
+            attributes.background_pixel = bg_pixel_val; // Background color
+            attributes.border_pixel = bg_pixel_val; // Border color (though width is 0)
+            attributes.event_mask = xlib::ExposureMask // Redraw events
+                | xlib::KeyPressMask       // Keyboard input
+                // | xlib::KeyReleaseMask    // If needed
+                | xlib::StructureNotifyMask  // Resize/move events (ConfigureNotify)
+                | xlib::FocusChangeMask; // FocusIn/FocusOut events
+            // Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse
 
             self.window = xlib::XCreateWindow(
                 self.display,
                 root_window,
-                0,
-                0,
-                pixel_width as c_uint,
-                pixel_height as c_uint,
-                border_width,
-                xlib::XDefaultDepth(self.display, self.screen),
-                xlib::InputOutput as c_uint,
-                self.visual,
-                xlib::CWColormap | xlib::CWBackPixel | xlib::CWBorderPixel | xlib::CWEventMask,
-                &mut attributes,
+                0,                                              // x position
+                0,                                              // y position
+                pixel_width as c_uint,                          // width
+                pixel_height as c_uint,                         // height
+                border_width,                                   // border width
+                xlib::XDefaultDepth(self.display, self.screen), // depth
+                xlib::InputOutput as c_uint,                    // class
+                self.visual,                                    // visual
+                xlib::CWColormap | xlib::CWBackPixel | xlib::CWBorderPixel | xlib::CWEventMask, // value mask
+                &mut attributes, // attributes
             );
         }
         if self.window == 0 {
@@ -647,14 +884,15 @@ impl XDriver {
         Ok(())
     }
 
+    /// Creates a Graphics Context (GC) for basic drawing operations like clearing.
     fn create_gc(&mut self) -> Result<()> {
-        let gc_values: xlib::XGCValues = unsafe { mem::zeroed() };
+        let gc_values: xlib::XGCValues = unsafe { mem::zeroed() }; // Initialize with defaults
         self.clear_gc = unsafe {
             xlib::XCreateGC(
                 self.display,
-                self.window,
-                0,
-                &gc_values as *const _ as *mut _,
+                self.window,                      // GC is for this window
+                0,                                // valuemask (0 for default GC)
+                &gc_values as *const _ as *mut _, // values (null for default)
             )
         };
         if self.clear_gc.is_null() {
@@ -664,13 +902,16 @@ impl XDriver {
         Ok(())
     }
 
+    /// Sets up WM protocols (like WM_DELETE_WINDOW) and window hints.
     fn setup_wm_protocols_and_hints(&mut self) {
         unsafe {
+            // Atom for WM_DELETE_WINDOW protocol
             self.wm_delete_window = xlib::XInternAtom(
                 self.display,
-                b"WM_DELETE_WINDOW\0".as_ptr() as *mut _,
-                xlib::False,
+                b"WM_DELETE_WINDOW\0".as_ptr() as *mut _, // C-string
+                xlib::False,                              // Don't create if it doesn't exist
             );
+            // Atom for WM_PROTOCOLS property
             self.protocols_atom = xlib::XInternAtom(
                 self.display,
                 b"WM_PROTOCOLS\0".as_ptr() as *mut _,
@@ -678,11 +919,12 @@ impl XDriver {
             );
 
             if self.wm_delete_window != 0 && self.protocols_atom != 0 {
+                // Tell the WM that we understand the WM_DELETE_WINDOW protocol.
                 xlib::XSetWMProtocols(
                     self.display,
                     self.window,
-                    [self.wm_delete_window].as_mut_ptr(),
-                    1,
+                    [self.wm_delete_window].as_mut_ptr(), // Array of atoms
+                    1,                                    // Count of atoms
                 );
                 debug!("WM_PROTOCOLS (WM_DELETE_WINDOW) registered.");
             } else {
@@ -691,13 +933,15 @@ impl XDriver {
                 );
             }
 
-            let title_cstr = CString::new("myterm").expect("CString::new for 'myterm' failed.");
+            // Set window title (simple version, _NET_WM_NAME is preferred for UTF-8)
+            let title_cstr = CString::new("core-term").expect("CString::new for title failed.");
             xlib::XStoreName(
                 self.display,
                 self.window,
                 title_cstr.as_ptr() as *mut c_char,
             );
 
+            // Set _NET_WM_NAME for UTF-8 titles (modern WMs)
             let net_wm_name_atom = xlib::XInternAtom(
                 self.display,
                 b"_NET_WM_NAME\0".as_ptr() as *mut _,
@@ -714,7 +958,7 @@ impl XDriver {
                     self.window,
                     net_wm_name_atom,
                     utf8_string_atom,
-                    8,
+                    8, // format is 8-bit for UTF8_STRING
                     xlib::PropModeReplace,
                     title_cstr.as_ptr() as *const u8,
                     title_cstr.as_bytes().len() as c_int,
@@ -726,37 +970,51 @@ impl XDriver {
                 );
             }
 
+            // Set size hints for the window manager.
             let mut size_hints: xlib::XSizeHints = mem::zeroed();
-            size_hints.flags = xlib::PResizeInc | xlib::PMinSize;
-            size_hints.width_inc = self.font_width as c_int;
-            size_hints.height_inc = self.font_height as c_int;
-            size_hints.min_width = self.font_width as c_int;
-            size_hints.min_height = self.font_height as c_int;
+            size_hints.flags = xlib::PResizeInc | xlib::PMinSize; // We provide resize increments and min size.
+            size_hints.width_inc = self.font_width as c_int; // Resize step width
+            size_hints.height_inc = self.font_height as c_int; // Resize step height
+            size_hints.min_width = self.font_width as c_int; // Minimum window width (1 cell)
+            size_hints.min_height = self.font_height as c_int; // Minimum window height (1 cell)
+            // PBaseSize could also be set if borderpx were non-zero.
             xlib::XSetWMNormalHints(self.display, self.window, &mut size_hints);
             debug!("WM size hints set.");
         }
     }
 
+    /// Resolves a `crate::color::Color` to a concrete `xft::XftColor`.
+    /// This function handles named, indexed (approximated to RGB), and direct RGB colors.
+    /// It panics if `Color::Default` is passed, as the Renderer should resolve defaults.
     fn resolve_concrete_xft_color(&mut self, color: Color) -> Result<xft::XftColor> {
         match color {
             Color::Default => {
+                // This should ideally be caught by the Renderer.
                 error!(
                     "XDriver::resolve_concrete_xft_color received Color::Default. This is a bug."
                 );
-                panic!("XDriver received Color::Default. Renderer should resolve all defaults.");
+                // Fallback to black, but this indicates an issue in the calling code (Renderer).
+                // Consider panicking in debug builds or returning a specific error.
+                self.cached_rgb_to_xft_color(0, 0, 0)
+                    .context("Fallback to black failed after Color::Default error")
             }
-            Color::Named(named_color) => Ok(self.xft_ansi_colors[named_color as u8 as usize]),
+            Color::Named(named_color) => {
+                // Use the pre-allocated XftColor for standard ANSI colors.
+                // The index directly corresponds to NamedColor's u8 representation.
+                Ok(self.xft_ansi_colors[named_color as u8 as usize])
+            }
             Color::Indexed(idx) => {
-                // convert_to_rgb_color now returns Color::Rgb or Color::Named (which becomes Rgb)
+                // Convert indexed color to RGB, then get/cache the XftColor.
+                // crate::color::convert_to_rgb_color returns a Color::Rgb.
                 let rgb_equivalent = crate::color::convert_to_rgb_color(Color::Indexed(idx));
                 if let Color::Rgb(r, g, b) = rgb_equivalent {
-                    warn!(
+                    trace!(
                         "XDriver: Approximating Indexed({}) to RGB({},{},{}) for XftColor.",
                         idx, r, g, b
                     );
                     self.cached_rgb_to_xft_color(r, g, b)
                 } else {
-                    // Should not happen if convert_to_rgb_color works as expected
+                    // This path should ideally not be reached if convert_to_rgb_color is correct.
                     error!(
                         "Failed to convert Indexed({}) to RGB. Defaulting to black.",
                         idx
@@ -764,15 +1022,21 @@ impl XDriver {
                     self.cached_rgb_to_xft_color(0, 0, 0)
                 }
             }
-            Color::Rgb(r, g, b) => self.cached_rgb_to_xft_color(r, g, b),
+            Color::Rgb(r, g, b) => {
+                // Get/cache XftColor for direct RGB values.
+                self.cached_rgb_to_xft_color(r, g, b)
+            }
         }
     }
 
+    /// Retrieves an `XftColor` for an RGB value, using a cache to avoid redundant allocations.
     fn cached_rgb_to_xft_color(&mut self, r_u8: u8, g_u8: u8, b_u8: u8) -> Result<xft::XftColor> {
+        // Check cache first.
         if let Some(cached_color) = self.xft_color_cache_rgb.get(&(r_u8, g_u8, b_u8)) {
-            return Ok(*cached_color);
+            return Ok(*cached_color); // Return a copy of the cached XftColor.
         }
 
+        // Convert 8-bit RGB to 16-bit for XRenderColor (format 0xRRGGBB -> 0xRRRRGGGGBBBB).
         let color_components = Rgb16Components {
             r: ((r_u8 as u16) << 8) | (r_u8 as u16),
             g: ((g_u8 as u16) << 8) | (g_u8 as u16),
@@ -783,20 +1047,22 @@ impl XDriver {
             red: color_components.r,
             green: color_components.g,
             blue: color_components.b,
-            alpha: XRENDER_ALPHA_OPAQUE,
+            alpha: XRENDER_ALPHA_OPAQUE, // Fully opaque
         };
         let mut new_xft_color: xft::XftColor = unsafe { mem::zeroed() };
 
+        // SAFETY: FFI call to Xft.
         if unsafe {
             xft::XftColorAllocValue(
                 self.display,
                 self.visual,
                 self.colormap,
-                &render_color,
-                &mut new_xft_color,
+                &render_color,      // Pass as const pointer
+                &mut new_xft_color, // Pass as mutable pointer
             )
         } == 0
         {
+            // XftColorAllocValue returns 0 on failure.
             Err(anyhow::anyhow!(
                 "XftColorAllocValue failed for RGB({},{},{})",
                 r_u8,
@@ -804,6 +1070,7 @@ impl XDriver {
                 b_u8
             ))
         } else {
+            // Store the newly allocated color in the cache.
             self.xft_color_cache_rgb
                 .insert((r_u8, g_u8, b_u8), new_xft_color);
             Ok(new_xft_color)
@@ -811,10 +1078,12 @@ impl XDriver {
     }
 }
 
+/// Ensures X11 resources are cleaned up when the `XDriver` instance is dropped.
 impl Drop for XDriver {
     fn drop(&mut self) {
         info!("Dropping XDriver instance, performing cleanup.");
         if let Err(e) = self.cleanup() {
+            // Log error, but avoid panicking in drop.
             error!("Error during XDriver cleanup in drop: {}", e);
         }
     }
