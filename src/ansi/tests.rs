@@ -5,7 +5,7 @@
 // Use the AnsiProcessor, which combines lexer and parser
 // Corrected imports using commands submodule path
 use super::{
-    AnsiProcessor,
+    AnsiParser, AnsiProcessor,
     commands::{AnsiCommand, Attribute, C0Control, Color, CsiCommand},
 };
 

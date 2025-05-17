@@ -112,8 +112,9 @@ pub fn convert_to_rgb_color(color_input: Color) -> Color {
         Color::Indexed(idx) => {
             if idx < ANSI_NAMED_COLOR_COUNT {
                 // Standard and bright ANSI colors (0-15)
-                NamedColor::from_index(idx).to_rgb_color()
-            } else if idx < GRAYSCALE_OFFSET {
+                return NamedColor::from_index(idx).to_rgb_color();
+            }
+            if idx < GRAYSCALE_OFFSET {
                 // 6x6x6 Color Cube (indices 16-231)
                 let cube_idx = idx - COLOR_CUBE_OFFSET;
                 let r_comp = (cube_idx / (COLOR_CUBE_SIZE * COLOR_CUBE_SIZE)) % COLOR_CUBE_SIZE;
@@ -122,19 +123,12 @@ pub fn convert_to_rgb_color(color_input: Color) -> Color {
                 let r_val = if r_comp == 0 { 0 } else { r_comp * 40 + 55 };
                 let g_val = if g_comp == 0 { 0 } else { g_comp * 40 + 55 };
                 let b_val = if b_comp == 0 { 0 } else { b_comp * 40 + 55 };
-                Color::Rgb(r_val, g_val, b_val)
-            } else if idx < GRAYSCALE_OFFSET + GRAYSCALE_LEVELS {
-                // Grayscale ramp (indices 232-255)
-                let gray_idx = idx - GRAYSCALE_OFFSET;
-                let level = gray_idx * 10 + 8;
-                Color::Rgb(level, level, level)
-            } else {
-                warn!(
-                    "convert_to_rgb_color: Indexed color {} is out of 0-255 range. Returning black.",
-                    idx
-                );
-                Color::Rgb(0, 0, 0) // Fallback for out-of-range index
+                return Color::Rgb(r_val, g_val, b_val);
             }
+            // Grayscale ramp (indices 232-255)
+            let gray_idx = idx - GRAYSCALE_OFFSET;
+            let level = gray_idx * 10 + 8;
+            Color::Rgb(level, level, level)
         }
         Color::Named(named_color) => {
             // Convert named color to its RGB representation

@@ -247,13 +247,7 @@ impl TerminalEmulator {
                     self.cursor_controller.set_visible(true); // RIS makes cursor visible
 
                     // 10. Mark all lines dirty (already done by erase_in_display and exit_alt_screen)
-                    // self.mark_all_lines_dirty(); // Can be called again, it's idempotent.
-
-                    // 11. Signal actions
-                    // RequestRedraw is implicit. SetCursorVisibility is important.
-                    // SetTitle could also be added here.
-                    // For now, only SetCursorVisibility to match st's behavior of making cursor visible.
-                    Some(EmulatorAction::SetCursorVisibility(true))
+                    self.mark_all_lines_dirty();
                 }
                 _ => {
                     debug!("Unhandled Esc command: {:?}", esc_cmd);
@@ -1146,7 +1140,6 @@ impl TerminalEmulator {
                         // ?25
                         self.dec_modes.text_cursor_enable_mode = enable; // Update mode state
                         self.cursor_controller.set_visible(enable);
-                        action_to_return = Some(EmulatorAction::SetCursorVisibility(enable));
                     }
                     Some(DecModeConstant::AltScreenBufferClear)
                     | Some(DecModeConstant::AltScreenBufferSaveRestore) => {

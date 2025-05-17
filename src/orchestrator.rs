@@ -274,10 +274,6 @@ impl<'a> AppOrchestrator<'a> {
             EmulatorAction::RingBell => {
                 self.driver.bell();
             }
-            EmulatorAction::SetCursorVisibility(visible) => {
-                self.driver.set_cursor_visibility(visible);
-                self.needs_render = true; // Cursor visibility change requires redraw.
-            }
         }
     }
 
