@@ -21,31 +21,17 @@ pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 
 // Crate-level imports (adjust paths based on where items are moved)
 use crate::{
-    ansi::commands::{
-        AnsiCommand,
-        // Attribute, // Attribute is used by TerminalEmulator, but not directly by this mod's public API after color refactor
-        C0Control,
-        // Color as AnsiColor, // This specific alias is no longer needed as AnsiCommand uses crate::color::Color
-        CsiCommand,
-        EscCommand,
-    },
+    ansi::commands::AnsiCommand,
     backends::BackendEvent,
     // Use crate::color::Color directly where needed, or via glyph::Color
-    glyph::{
-        AttrFlags, Attributes,
-        /* Color as GlyphColor, -- This was an alias to crate::color::Color via glyph */
-        Glyph,
-    },
+    glyph::Glyph,
     term::cursor::{CursorController, ScreenContext},
     term::screen::Screen,
-    term::unicode::get_char_display_width,
 };
 // Explicitly import Color and NamedColor if they are used directly in this module's functions,
 // though they are mostly encapsulated within other types like Attributes.
-use crate::color::{Color, NamedColor};
 
 // Logging
-use log::{debug, trace, warn};
 
 /// Default tab interval.
 pub const DEFAULT_TAB_INTERVAL: u8 = 8;

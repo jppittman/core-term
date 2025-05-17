@@ -241,13 +241,4 @@ impl<'a> AppOrchestrator<'a> {
         self.renderer.draw(&mut *self.term, &mut *self.driver)?;
         Ok(())
     }
-
-    #[cfg(test)]
-    pub(crate) fn term_for_test(&mut self) -> &mut (dyn TerminalInterface + 'a) {
-        self.term
-    }
-    #[cfg(test)]
-    pub(crate) fn pty_for_test(&mut self) -> &mut (dyn PtyChannel + 'a) {
-        self.pty_channel
-    }
 }

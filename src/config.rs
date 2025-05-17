@@ -15,7 +15,6 @@
 // The `Serialize` trait is also derived for convenience, allowing the current
 // configuration to be exported if needed.
 use serde::{Deserialize, Serialize};
-use serde_json as json;
 use std::path::PathBuf; // For paths, like shell path.
 
 // Import color definitions from the main color module.
@@ -29,7 +28,7 @@ use crate::color::{Color, NamedColor};
 /// This struct is the root of the configuration and is intended to be
 /// deserialized from a configuration file. It groups settings into logical
 /// categories like appearance, behavior, and keybindings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)] // Apply default values for the entire struct if a field is missing.
 pub struct Config {
     /// Appearance-related settings.
@@ -46,19 +45,6 @@ pub struct Config {
     pub mouse: MouseConfig,
     // TODO: Add KeybindingsConfig when keybinding system is designed.
     // pub keybindings: KeybindingsConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            appearance: AppearanceConfig::default(),
-            behavior: BehaviorConfig::default(),
-            performance: PerformanceConfig::default(),
-            colors: ColorScheme::default(),
-            shell: ShellConfig::default(),
-            mouse: MouseConfig::default(),
-        }
-    }
 }
 
 // --- Appearance Configuration ---
@@ -281,7 +267,7 @@ impl Default for ColorScheme {
 // --- Shell Configuration ---
 
 /// Defines settings related to the shell and its execution environment.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ShellConfig {
     /// Path to the shell executable (e.g., "/bin/bash").
@@ -291,16 +277,6 @@ pub struct ShellConfig {
     pub args: Vec<String>,
     /// Optional working directory for the shell. If `None`, defaults to user's home or current dir.
     pub working_directory: Option<PathBuf>,
-}
-
-impl Default for ShellConfig {
-    fn default() -> Self {
-        ShellConfig {
-            program: None, // Let the system decide default shell
-            args: Vec::new(),
-            working_directory: None,
-        }
-    }
 }
 
 // --- Mouse Configuration ---

@@ -6,9 +6,9 @@
 use log::{debug, error, info, trace, warn};
 
 // Crate-level imports
-use crate::glyph::AttrFlags;
 use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
 use crate::color::{Color, NamedColor};
+use crate::glyph::AttrFlags;
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -115,8 +115,8 @@ impl Driver for XDriver {
             window: 0, // Will be set by create_window
             colormap,
             visual,
-            xft_font: ptr::null_mut(),    // Will be set by load_font
-            xft_draw: ptr::null_mut(),    // Will be set after window creation
+            xft_font: ptr::null_mut(), // Will be set by load_font
+            xft_draw: ptr::null_mut(), // Will be set after window creation
             xft_ansi_colors: Vec::with_capacity(TOTAL_PREALLOC_COLORS),
             xft_color_cache_rgb: HashMap::new(),
             font_width: 0,  // Will be set by load_font
@@ -124,9 +124,9 @@ impl Driver for XDriver {
             font_ascent: 0, // Will be set by load_font
             current_pixel_width: 0,
             current_pixel_height: 0,
-            wm_delete_window: 0, // Will be set by setup_wm_protocols
-            protocols_atom: 0,   // Will be set by setup_wm_protocols
-            clear_gc: ptr::null_mut(), // Will be set by create_gc
+            wm_delete_window: 0,            // Will be set by setup_wm_protocols
+            protocols_atom: 0,              // Will be set by setup_wm_protocols
+            clear_gc: ptr::null_mut(),      // Will be set by create_gc
             has_focus: true, // Assume focused initially until an event says otherwise
             is_native_cursor_visible: true, // Native X cursor visible by default
         };
@@ -271,7 +271,7 @@ impl Driver for XDriver {
                             &mut xevent.key, // Pass as mutable pointer
                             key_text_buffer.as_mut_ptr() as *mut c_char,
                             key_text_buffer.len() as c_int,
-                            &mut keysym,      // Pass as mutable pointer
+                            &mut keysym,     // Pass as mutable pointer
                             ptr::null_mut(), // No XComposeStatus needed
                         )
                     };
@@ -292,8 +292,7 @@ impl Driver for XDriver {
                     // A client message, often from the window manager.
                     let xclient = unsafe { xevent.client_message };
                     if xclient.message_type == self.protocols_atom
-                        && xclient.data.as_longs()[0] as xlib::Atom
-                            == self.wm_delete_window
+                        && xclient.data.as_longs()[0] as xlib::Atom == self.wm_delete_window
                     {
                         info!("XEvent: WM_DELETE_WINDOW received from window manager.");
                         backend_events.push(BackendEvent::CloseRequested);
@@ -426,11 +425,11 @@ impl Driver for XDriver {
         unsafe {
             xft::XftDrawStringUtf8(
                 self.xft_draw,
-                &xft_fg,          // Use the resolved foreground color
-                self.xft_font,    // The loaded Xft font
-                x_pixel,          // X position in pixels
-                baseline_y_pixel, // Y position of the baseline in pixels
-                c_text.as_ptr() as *const u8, // Text as C string
+                &xft_fg,                          // Use the resolved foreground color
+                self.xft_font,                    // The loaded Xft font
+                x_pixel,                          // X position in pixels
+                baseline_y_pixel,                 // Y position of the baseline in pixels
+                c_text.as_ptr() as *const u8,     // Text as C string
                 c_text.as_bytes().len() as c_int, // Length of the text in bytes
             );
         }
@@ -529,14 +528,11 @@ impl Driver for XDriver {
                 // Also set _NET_WM_NAME for modern window managers (UTF-8)
                 let net_wm_name_atom = xlib::XInternAtom(
                     self.display,
-                    b"_NET_WM_NAME\0".as_ptr() as *mut _,
+                    c"_NET_WM_NAME".as_ptr() as *mut _,
                     xlib::False,
                 );
-                let utf8_string_atom = xlib::XInternAtom(
-                    self.display,
-                    b"UTF8_STRING\0".as_ptr() as *mut _,
-                    xlib::False,
-                );
+                let utf8_string_atom =
+                    xlib::XInternAtom(self.display, c"UTF8_STRING".as_ptr() as *mut _, xlib::False);
 
                 if net_wm_name_atom != 0 && utf8_string_atom != 0 {
                     xlib::XChangeProperty(
@@ -583,7 +579,9 @@ impl Driver for XDriver {
             visible
         );
         if self.window == 0 || self.display.is_null() {
-            warn!("XDriver::set_cursor_visibility called on uninitialized or closed window/display.");
+            warn!(
+                "XDriver::set_cursor_visibility called on uninitialized or closed window/display."
+            );
             return;
         }
         self.is_native_cursor_visible = visible;
@@ -594,22 +592,37 @@ impl Driver for XDriver {
                 xlib::XDefineCursor(self.display, self.window, cursor);
                 // If XDefineCursor is successful, X server has a copy.
                 // We should free the cursor we created if we don't store it.
-                if cursor != 0 { // Check if cursor creation was successful
+                if cursor != 0 {
+                    // Check if cursor creation was successful
                     xlib::XFreeCursor(self.display, cursor);
                 }
             } else {
                 // Create an invisible cursor.
-                let mut color = xlib::XColor { // `color` needs to be mutable for XCreatePixmapCursor
-                    pixel: 0, red: 0, green: 0, blue: 0, flags: 0, pad: 0,
+                let mut color = xlib::XColor {
+                    // `color` needs to be mutable for XCreatePixmapCursor
+                    pixel: 0,
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    flags: 0,
+                    pad: 0,
                 };
                 let pixmap = xlib::XCreatePixmap(self.display, self.window, 1, 1, 1); // 1x1, 1-bit depth
                 if pixmap == 0 {
                     warn!("Failed to create 1x1 pixmap for invisible cursor.");
                     return;
                 }
-                let cursor =
-                    xlib::XCreatePixmapCursor(self.display, pixmap, pixmap, &mut color, &mut color, 0, 0);
-                if cursor != 0 { // Check if cursor creation was successful
+                let cursor = xlib::XCreatePixmapCursor(
+                    self.display,
+                    pixmap,
+                    pixmap,
+                    &mut color,
+                    &mut color,
+                    0,
+                    0,
+                );
+                if cursor != 0 {
+                    // Check if cursor creation was successful
                     xlib::XDefineCursor(self.display, self.window, cursor);
                     xlib::XFreeCursor(self.display, cursor);
                 } else {
@@ -655,7 +668,11 @@ impl Driver for XDriver {
             for color_ptr in self.xft_ansi_colors.iter_mut() {
                 // Check if pixel is non-zero before freeing to avoid issues with unallocated colors
                 // (though init_xft_ansi_colors should ensure they are allocated).
-                if color_ptr.pixel != 0 || color_ptr.color.red != 0 || color_ptr.color.green != 0 || color_ptr.color.blue != 0 {
+                if color_ptr.pixel != 0
+                    || color_ptr.color.red != 0
+                    || color_ptr.color.green != 0
+                    || color_ptr.color.blue != 0
+                {
                     xft::XftColorFree(self.display, self.visual, self.colormap, color_ptr);
                 }
             }
@@ -809,7 +826,7 @@ impl XDriver {
                 self.display,
                 self.visual,
                 self.colormap,
-                &render_color, // Pass as const pointer
+                &render_color,                    // Pass as const pointer
                 &mut self.xft_ansi_colors[index], // Pass as mutable pointer
             )
         } == 0
@@ -847,19 +864,19 @@ impl XDriver {
                 // | xlib::KeyReleaseMask    // If needed
                 | xlib::StructureNotifyMask  // Resize/move events (ConfigureNotify)
                 | xlib::FocusChangeMask; // FocusIn/FocusOut events
-                                         // Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse
+            // Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse
 
             self.window = xlib::XCreateWindow(
                 self.display,
                 root_window,
-                0,                                 // x position
-                0,                                 // y position
-                pixel_width as c_uint,             // width
-                pixel_height as c_uint,            // height
-                border_width,                      // border width
+                0,                                              // x position
+                0,                                              // y position
+                pixel_width as c_uint,                          // width
+                pixel_height as c_uint,                         // height
+                border_width,                                   // border width
                 xlib::XDefaultDepth(self.display, self.screen), // depth
-                xlib::InputOutput as c_uint,       // class
-                self.visual,                       // visual
+                xlib::InputOutput as c_uint,                    // class
+                self.visual,                                    // visual
                 xlib::CWColormap | xlib::CWBackPixel | xlib::CWBorderPixel | xlib::CWEventMask, // value mask
                 &mut attributes, // attributes
             );
@@ -882,8 +899,8 @@ impl XDriver {
         self.clear_gc = unsafe {
             xlib::XCreateGC(
                 self.display,
-                self.window, // GC is for this window
-                0,            // valuemask (0 for default GC)
+                self.window,                      // GC is for this window
+                0,                                // valuemask (0 for default GC)
                 &gc_values as *const _ as *mut _, // values (null for default)
             )
         };
@@ -900,13 +917,13 @@ impl XDriver {
             // Atom for WM_DELETE_WINDOW protocol
             self.wm_delete_window = xlib::XInternAtom(
                 self.display,
-                b"WM_DELETE_WINDOW\0".as_ptr() as *mut _, // C-string
-                xlib::False,                              // Don't create if it doesn't exist
+                c"WM_DELETE_WINDOW".as_ptr() as *mut _, // C-string
+                xlib::False,                            // Don't create if it doesn't exist
             );
             // Atom for WM_PROTOCOLS property
             self.protocols_atom = xlib::XInternAtom(
                 self.display,
-                b"WM_PROTOCOLS\0".as_ptr() as *mut _,
+                c"WM_PROTOCOLS".as_ptr() as *mut _,
                 xlib::False,
             );
 
@@ -936,14 +953,11 @@ impl XDriver {
             // Set _NET_WM_NAME for UTF-8 titles (modern WMs)
             let net_wm_name_atom = xlib::XInternAtom(
                 self.display,
-                b"_NET_WM_NAME\0".as_ptr() as *mut _,
+                c"_NET_WM_NAME".as_ptr() as *mut _,
                 xlib::False,
             );
-            let utf8_string_atom = xlib::XInternAtom(
-                self.display,
-                b"UTF8_STRING\0".as_ptr() as *mut _,
-                xlib::False,
-            );
+            let utf8_string_atom =
+                xlib::XInternAtom(self.display, c"UTF8_STRING".as_ptr() as *mut _, xlib::False);
             if net_wm_name_atom != 0 && utf8_string_atom != 0 {
                 xlib::XChangeProperty(
                     self.display,
@@ -969,7 +983,7 @@ impl XDriver {
             size_hints.height_inc = self.font_height as c_int; // Resize step height
             size_hints.min_width = self.font_width as c_int; // Minimum window width (1 cell)
             size_hints.min_height = self.font_height as c_int; // Minimum window height (1 cell)
-                                                              // PBaseSize could also be set if borderpx were non-zero.
+            // PBaseSize could also be set if borderpx were non-zero.
             xlib::XSetWMNormalHints(self.display, self.window, &mut size_hints);
             debug!("WM size hints set.");
         }
@@ -987,7 +1001,8 @@ impl XDriver {
                 );
                 // Fallback to black, but this indicates an issue in the calling code (Renderer).
                 // Consider panicking in debug builds or returning a specific error.
-                self.cached_rgb_to_xft_color(0, 0, 0).context("Fallback to black failed after Color::Default error")
+                self.cached_rgb_to_xft_color(0, 0, 0)
+                    .context("Fallback to black failed after Color::Default error")
             }
             Color::Named(named_color) => {
                 // Use the pre-allocated XftColor for standard ANSI colors.
@@ -1079,4 +1094,3 @@ impl Drop for XDriver {
         }
     }
 }
-

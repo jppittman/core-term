@@ -1,6 +1,6 @@
 // src/os/pty.rs
 
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use std::io::{Read, Result as IoResult, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
 
@@ -55,7 +55,7 @@ impl NixPty {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        unsafe { tcsetwinsize(fd, &winsize) }.map_err(Error::from)?;
+        unsafe { tcsetwinsize(fd, &winsize)? };
         log::trace!("NixPty: Set PTY fd {} size to {}x{}", fd, cols, rows);
         Ok(())
     }
@@ -120,7 +120,6 @@ impl PtyChannel for NixPty {
         // NixPty::set_pty_size_internal returns Result<(), PtyError>
         // Convert PtyError to AnyhowError
         Self::set_pty_size_internal(self.master_fd, cols, rows)
-            .map_err(Error::from) // This converts PtyError into AnyhowError
             .with_context(|| format!("NixPty failed to resize PTY to {}x{}", cols, rows))
     }
 
