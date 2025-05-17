@@ -1,6 +1,6 @@
-# myterm Style Guide
+# core Terminal Style Guide
 
-This document outlines the coding style conventions for the `myterm` project. Consistency helps maintain readability and ease of collaboration.
+This document outlines the coding style conventions for the `core` project. Consistency helps maintain readability and ease of collaboration.
 
 ## Comments
 
