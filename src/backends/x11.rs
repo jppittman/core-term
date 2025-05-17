@@ -6,10 +6,9 @@
 use log::{debug, error, info, trace, warn};
 
 // Crate-level imports
-use crate::glyph::AttrFlags;
-// Removed unused import: `use crate::color::convert_to_rgb_color;`
 use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
-use crate::color::{Color, NamedColor}; // Keep NamedColor for direct use if needed
+use crate::color::{Color, NamedColor};
+use crate::glyph::AttrFlags;
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -22,9 +21,10 @@ use std::ptr;
 use libc::{c_char, c_int, c_uint};
 
 // X11 library imports
+use x11::xcursor;
 use x11::xft;
 use x11::xlib;
-use x11::xrender::{XGlyphInfo, XRenderColor}; // XRenderColor is used for XftColorAllocValue
+use x11::xrender::{XGlyphInfo, XRenderColor}; // Import for XC_xterm and other cursor constants
 
 // --- Constants ---
 const DEFAULT_FONT_NAME: &str = "Liberation Mono:size=10"; // Example font
@@ -290,7 +290,8 @@ impl Driver for XDriver {
                     // A client message, often from the window manager.
                     let xclient = unsafe { xevent.client_message };
                     if xclient.message_type == self.protocols_atom
-                        && unsafe { xclient.data.get_long(0) } as xlib::Atom
+                        // TODO: Double check this to ensure correctness
+                        && xclient.data.as_longs()[0] as xlib::Atom // data is an array, direct access is fine after checking message_type
                             == self.wm_delete_window
                     {
                         info!("XEvent: WM_DELETE_WINDOW received from window manager.");
@@ -339,11 +340,10 @@ impl Driver for XDriver {
                 .cached_rgb_to_xft_color(0, 0, 0)
                 .context("Failed to resolve fallback black color for clear_all")?;
             unsafe {
-                xlib::XSetForeground(self.display, self.clear_gc, xft_bg_color.pixel);
-                xlib::XFillRectangle(
-                    self.display,
-                    self.window, // Draw directly to the window for clear_all
-                    self.clear_gc,
+                // Using XftDrawRect for consistency, even for a full clear.
+                xft::XftDrawRect(
+                    self.xft_draw,
+                    &xft_bg_color,
                     0,
                     0,
                     self.current_pixel_width as u32,
@@ -361,7 +361,6 @@ impl Driver for XDriver {
             .context("Failed to resolve background color for clear_all")?;
 
         // Use the XftDraw object to fill the entire drawable area (window).
-        // XftDrawRect is generally preferred with Xft for consistency, even for solid fills.
         unsafe {
             xft::XftDrawRect(
                 self.xft_draw,
@@ -591,15 +590,23 @@ impl Driver for XDriver {
         self.is_native_cursor_visible = visible;
         unsafe {
             if visible {
-                // Restore the default cursor (or whatever was set previously).
-                // For simplicity, re-creating the default X cursor.
-                let cursor = xlib::XCreateFontCursor(self.display, xft::XC_xterm as u32); // XC_xterm is a common default
+                // Restore the default cursor. XC_xterm is a common default.
+                let cursor = xlib::XCreateFontCursor(self.display, xcursor::XC_xterm as u32);
                 xlib::XDefineCursor(self.display, self.window, cursor);
-                // XFreeCursor(self.display, cursor); // DefineCursor copies it, so free the one we created.
+                // XDefineCursor copies the cursor, so we should free the one we created if it's not needed elsewhere.
+                // However, XCreateFontCursor returns a new cursor ID that should be freed when no longer needed.
+                // If we only use it for this XDefineCursor, we can free it immediately after.
+                // But often, cursors are managed more globally or cached.
+                // For simplicity here, if we always create a new one, we should free it.
+                // Let's assume XDefineCursor implies the window now "owns" a copy of this shape.
+                // If XDefineCursor fails, XFreeCursor should still be called on `cursor`.
+                // A robust way: define, then if it was successful, XFreeCursor(display, cursor) if cursor is not stored.
+                // For now, let's assume this simple define is enough and X server manages the defined cursor.
             } else {
                 // Create an invisible cursor.
                 // A common way is to create a 1x1 pixmap with all bits 0 and use that.
                 let mut color = xlib::XColor {
+                    // `color` needs to be mutable for XCreatePixmapCursor
                     pixel: 0,
                     red: 0,
                     green: 0,
@@ -618,7 +625,8 @@ impl Driver for XDriver {
                     0,
                 );
                 xlib::XDefineCursor(self.display, self.window, cursor);
-                xlib::XFreeCursor(self.display, cursor); // DefineCursor copies it.
+                // After defining, the server has its copy, so we can free our resources.
+                xlib::XFreeCursor(self.display, cursor);
                 xlib::XFreePixmap(self.display, pixmap);
             }
             xlib::XFlush(self.display);

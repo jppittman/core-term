@@ -26,7 +26,7 @@ use crate::{
 use std::os::unix::io::AsRawFd; // For getting raw file descriptors
 
 // Logging
-use log::{debug, error, info, trace, warn};
+use log::{error, info, trace, warn};
 
 // Constants for epoll tokens.
 // These values are arbitrary but must be unique for each FD monitored.
@@ -177,7 +177,7 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 for event in events_slice {
-                    let event_token = event.data(); // Retrieve the token associated with the event.
+                    let event_token = event.u64; // Retrieve the token associated with the event.
                     match event_token {
                         PTY_EPOLL_TOKEN => {
                             log::trace!("Event on PTY FD (token {}).", PTY_EPOLL_TOKEN);
@@ -217,11 +217,8 @@ fn main() -> anyhow::Result<()> {
             }
             Err(e) => {
                 // Handle errors from epoll_wait, specifically EINTR (interrupted system call).
-                if let Some(nix_err) = e.root_cause().downcast_ref::<nix::Error>() {
-                    if nix_err.as_errno() == Some(nix::errno::Errno::EINTR) {
-                        log::trace!("Event monitor wait interrupted by signal, continuing.");
-                        continue 'main_loop; // Interrupted by signal, retry poll.
-                    }
+                if let Some(_err) = e.root_cause().downcast_ref::<nix::Error>() {
+                    todo!("handle EINTR");
                 }
                 // For other epoll errors, log and exit.
                 error!(

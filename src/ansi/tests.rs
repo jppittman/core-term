@@ -6,8 +6,9 @@
 // Corrected imports using commands submodule path
 use super::{
     AnsiParser, AnsiProcessor,
-    commands::{AnsiCommand, Attribute, C0Control, Color, CsiCommand},
+    commands::{AnsiCommand, Attribute, C0Control, CsiCommand},
 };
+use crate::color::{Color, NamedColor};
 
 // Helper function to process bytes and get commands
 fn process_bytes(bytes: &[u8]) -> Vec<AnsiCommand> {
@@ -77,7 +78,7 @@ fn test_process_csi_sgr_foreground() {
     assert_eq!(
         commands,
         vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-            Attribute::Foreground(Color::Blue)
+            Attribute::Foreground(Color::Named(NamedColor::Blue))
         ]))]
     );
 }
@@ -352,7 +353,7 @@ fn test_process_fragmented_string_with_print() {
         commands_frag3,
         vec![
             AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
-                Attribute::Foreground(Color::Red)
+                Attribute::Foreground(Color::Named(NamedColor::Red))
             ])),
             AnsiCommand::Print(' '),
             AnsiCommand::Print('W'),
