@@ -30,7 +30,8 @@ use crate::{
         EscCommand, // Added EscCommand
     },
     backends::BackendEvent,
-    glyph::{AttrFlags, Attributes, Color as GlyphColor, Glyph, NamedColor},
+    color::{NamedColor, Color},
+    glyph::{AttrFlags, Attributes, Glyph},
     term::cursor::{CursorController, ScreenContext},
     term::screen::Screen,
     term::unicode::get_char_display_width,
@@ -129,38 +130,6 @@ impl TerminalInterface for TerminalEmulator {
         let mut sorted_dirty_lines: Vec<usize> = all_dirty_indices.into_iter().collect();
         sorted_dirty_lines.sort_unstable();
         sorted_dirty_lines
-    }
-}
-
-fn map_ansi_color_to_glyph_color(ansi_color: AnsiColor) -> GlyphColor {
-    match ansi_color {
-        AnsiColor::Default => GlyphColor::Default,
-        AnsiColor::Black => GlyphColor::Named(NamedColor::Black),
-        AnsiColor::Red => GlyphColor::Named(NamedColor::Red),
-        AnsiColor::Green => GlyphColor::Named(NamedColor::Green),
-        AnsiColor::Yellow => GlyphColor::Named(NamedColor::Yellow),
-        AnsiColor::Blue => GlyphColor::Named(NamedColor::Blue),
-        AnsiColor::Magenta => GlyphColor::Named(NamedColor::Magenta),
-        AnsiColor::Cyan => GlyphColor::Named(NamedColor::Cyan),
-        AnsiColor::White => GlyphColor::Named(NamedColor::White),
-        AnsiColor::BrightBlack => GlyphColor::Named(NamedColor::BrightBlack),
-        AnsiColor::BrightRed => GlyphColor::Named(NamedColor::BrightRed),
-        AnsiColor::BrightGreen => GlyphColor::Named(NamedColor::BrightGreen),
-        AnsiColor::BrightYellow => GlyphColor::Named(NamedColor::BrightYellow),
-        AnsiColor::BrightBlue => GlyphColor::Named(NamedColor::BrightBlue),
-        AnsiColor::BrightMagenta => GlyphColor::Named(NamedColor::BrightMagenta),
-        AnsiColor::BrightCyan => GlyphColor::Named(NamedColor::BrightCyan),
-        AnsiColor::BrightWhite => GlyphColor::Named(NamedColor::BrightWhite),
-        AnsiColor::Indexed(idx) => {
-            // GlyphColor::Named already covers 0-15, but AnsiColor::Indexed can be 0-255.
-            // If we want to strictly use NamedColor for 0-15 via GlyphColor::Named:
-            if idx < 16 {
-                GlyphColor::Named(NamedColor::from_index(idx))
-            } else {
-                GlyphColor::Indexed(idx)
-            }
-        }
-        AnsiColor::Rgb(r, g, b) => GlyphColor::Rgb(r, g, b),
     }
 }
 
