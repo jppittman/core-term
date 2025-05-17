@@ -245,4 +245,3 @@ fn main() -> anyhow::Result<()> {
     info!("Cleanup complete.");
     Ok(())
 }
-

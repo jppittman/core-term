@@ -7,9 +7,7 @@
 // Module for tests related to the Term struct itself
 #[cfg(test)]
 mod term_tests {
-    use crate::ansi::commands::{
-        AnsiCommand, Attribute, C0Control, CsiCommand,
-    };
+    use crate::ansi::commands::{AnsiCommand, Attribute, C0Control, CsiCommand};
     use crate::backends::BackendEvent;
     use crate::color::{Color, NamedColor};
     use crate::glyph::{AttrFlags, Attributes, DEFAULT_GLYPH, Glyph};
@@ -979,9 +977,7 @@ mod term_tests {
 
 #[cfg(test)]
 mod extensive_term_emulator_tests {
-    use crate::ansi::commands::{
-        AnsiCommand, Attribute as SgrAttribute, C0Control, CsiCommand,
-    };
+    use crate::ansi::commands::{AnsiCommand, Attribute as SgrAttribute, C0Control, CsiCommand};
     use crate::color::{Color, NamedColor};
     use crate::glyph::{AttrFlags, DEFAULT_GLYPH, Glyph};
     use crate::term::{EmulatorInput, TerminalEmulator, TerminalInterface};
