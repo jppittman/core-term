@@ -615,10 +615,7 @@ impl TerminalEmulator {
             // Ensure y is within bounds before writing
             let glyph_to_set = Glyph {
                 c: ch_to_print,
-                attr: Attributes {
-                    flags: AttrFlags::empty(),
-                    ..glyph_attrs
-                }, // Start with empty flags
+                attr: glyph_attrs, // Use the full attributes from the cursor
             };
 
             self.screen.set_glyph(
@@ -631,20 +628,22 @@ impl TerminalEmulator {
             // If it's a wide character, place a placeholder and set flags.
             if char_width == 2 {
                 // Mark the primary part of the wide character.
-                let mut primary_glyph = self.screen.get_glyph(physical_x, physical_y);
-                primary_glyph
-                    .attr
-                    .flags
-                    .insert(AttrFlags::WIDE_CHAR_PRIMARY);
+                let mut primary_glyph_attrs = glyph_attrs; // Start with cursor attributes
+                primary_glyph_attrs.flags.insert(AttrFlags::WIDE_CHAR_PRIMARY);
+                primary_glyph_attrs.flags.remove(AttrFlags::WIDE_CHAR_SPACER); // Ensure spacer flag is not present
+                let primary_glyph = Glyph {
+                    c: ch_to_print,
+                    attr: primary_glyph_attrs,
+                };
                 self.screen.set_glyph(physical_x, physical_y, primary_glyph);
 
                 if physical_x + 1 < screen_ctx.width {
+                    let mut spacer_attrs = glyph_attrs; // Start with cursor attributes
+                    spacer_attrs.flags.remove(AttrFlags::WIDE_CHAR_PRIMARY); // Ensure primary flag is not on spacer
+                    spacer_attrs.flags.insert(AttrFlags::WIDE_CHAR_SPACER);
                     let placeholder_glyph = Glyph {
-                        c: WIDE_CHAR_PLACEHOLDER,
-                        attr: Attributes {
-                            flags: AttrFlags::WIDE_CHAR_SPACER,
-                            ..glyph_attrs
-                        },
+                        c: WIDE_CHAR_PLACEHOLDER, // Defined in glyph.rs
+                        attr: spacer_attrs,
                     };
                     self.screen
                         .set_glyph(physical_x + 1, physical_y, placeholder_glyph);
@@ -718,9 +717,7 @@ impl TerminalEmulator {
         log::trace!("perform_line_feed called");
         // self.cursor_wrap_next should be managed by the caller or by move_down_one_line_and_dirty
         self.move_down_one_line_and_dirty();
-        if self.dec_modes.linefeed_newline_mode {
-            self.carriage_return();
-        }
+    self.carriage_return(); // Always perform carriage return
     }
 
     /// Helper for LF, IND, NEL: moves cursor down one line, scrolling if necessary.
