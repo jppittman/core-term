@@ -364,7 +364,7 @@ impl Driver for ConsoleDriver {
         }
 
         // Create a string of spaces with the required width.
-        let spaces: String = std::iter::repeat_n(' ', rect.width).collect();
+        let spaces: String = vec![' '; rect.width].into_iter().collect();
         // Iterate over each row in the rectangle.
         for y_offset in 0..rect.height {
             let current_y = rect.y + y_offset;
