@@ -609,7 +609,7 @@ impl TerminalEmulator {
         // Place the character glyph on the screen.
         let glyph_attrs = self.cursor_controller.attributes();
         if physical_y < self.screen.height { // Ensure y is within bounds before writing
-            let mut glyph_to_set = Glyph {
+            let glyph_to_set = Glyph {
                 c: ch_to_print,
                 attr: Attributes { flags: AttrFlags::empty(), ..glyph_attrs }, // Start with empty flags
             };
