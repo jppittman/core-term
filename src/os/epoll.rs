@@ -5,7 +5,7 @@
 //! It defines type-safe enums and bitflags for epoll operations and events.
 
 use anyhow::{Context, Result};
-use bitflags::bitflags; 
+use bitflags::bitflags;
 use log::{debug, trace, warn};
 use std::io;
 use std::os::unix::io::RawFd;
@@ -13,7 +13,7 @@ use std::os::unix::io::RawFd;
 const EPOLL_CREATE_CLOEXEC: libc::c_int = libc::O_CLOEXEC;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i32)] 
+#[repr(i32)]
 pub enum EpollCtlOp {
     Add = libc::EPOLL_CTL_ADD,
     Mod = libc::EPOLL_CTL_MOD,
@@ -36,18 +36,18 @@ bitflags! {
 
 fn new_libc_epoll_event(flags: EpollFlags, token: u64) -> libc::epoll_event {
     libc::epoll_event {
-        events: flags.bits(), 
-        u64: token,           
+        events: flags.bits(),
+        u64: token,
     }
 }
 
-#[allow(dead_code)] 
+#[allow(dead_code)]
 pub fn epoll_event_token(event: &libc::epoll_event) -> u64 {
     // Removed unnecessary unsafe block as field access to Copy types in a union is safe.
-    event.u64 
+    event.u64
 }
 
-#[allow(dead_code)] 
+#[allow(dead_code)]
 pub fn epoll_event_flags(event: &libc::epoll_event) -> EpollFlags {
     EpollFlags::from_bits_truncate(event.events)
 }
@@ -118,7 +118,7 @@ impl EventMonitor {
     }
 
     pub fn delete(&self, fd: RawFd) -> Result<()> {
-        let mut event: libc::epoll_event = unsafe { std::mem::zeroed() }; 
+        let mut event: libc::epoll_event = unsafe { std::mem::zeroed() };
         if unsafe {
             libc::epoll_ctl(
                 self.epoll_fd,
@@ -144,7 +144,7 @@ impl EventMonitor {
         let num_events = unsafe {
             libc::epoll_wait(
                 self.epoll_fd,
-                self.event_buffer.as_mut_ptr(), 
+                self.event_buffer.as_mut_ptr(),
                 MAX_EVENTS_BUFFER_SIZE as libc::c_int,
                 timeout_ms as libc::c_int,
             )
@@ -183,4 +183,3 @@ impl Drop for EventMonitor {
 
 unsafe impl Send for EventMonitor {}
 unsafe impl Sync for EventMonitor {}
-
