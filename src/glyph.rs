@@ -9,9 +9,7 @@
 
 use bitflags::bitflags; // For creating flag enums like AttrFlags
 use std::fmt;
-// Removed: `use super::color::Color;` - This was a private re-export causing issues.
-// Other modules should now import `Color` directly from `crate::color`.
-use crate::color::Color; // Import Color directly for use in Attributes and DEFAULT_GLYPH
+use crate::color::Color; // Import Color directly for use in Attributes
 
 /// Represents a single character cell on the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,16 +21,8 @@ pub struct Glyph {
     pub attr: Attributes,
 }
 
-/// Default glyph: a space character with default SGR attributes.
-/// This is used for initializing new cells or clearing existing ones.
-pub const DEFAULT_GLYPH: Glyph = Glyph {
-    c: ' ', // Default character is a space
-    attr: Attributes {
-        fg: Color::Default,        // Default foreground color
-        bg: Color::Default,        // Default background color
-        flags: AttrFlags::empty(), // No special attribute flags by default
-    },
-};
+/// Placeholder character for the second cell of a double-width character.
+pub const WIDE_CHAR_PLACEHOLDER: char = '\0';
 
 bitflags! {
     /// Represents text attribute flags like bold, underline, reverse video, etc.
@@ -51,9 +41,13 @@ bitflags! {
         const HIDDEN        = 1 << 6; // Makes text invisible (aka Conceal).
         const STRIKETHROUGH = 1 << 7; // Puts a line through the text.
 
+        // Flags for wide character handling
+        const WIDE_CHAR_PRIMARY = 1 << 14; // Indicates the first cell of a double-width character.
+        const WIDE_CHAR_SPACER  = 1 << 15; // Indicates the second cell of a double-width character (placeholder).
+
+
         // Placeholder for future or less common attributes, if needed.
         // const WRAP          = 1 << 8; // Example: Line wrap indicator (if stored per-glyph).
-        // const WIDE          = 1 << 9; // Example: Indicates a wide character occupying two cells.
         // const UNDERLINE_DOUBLE = 1 << 10; // Example: Double underline.
         // const UNDERLINE_CURLY  = 1 << 11; // Example: Curly underline.
     }
@@ -78,3 +72,21 @@ impl fmt::Display for Glyph {
         write!(f, "{}", self.c)
     }
 }
+
+// Implementation for creating a default Glyph, typically using colors from config.
+// This replaces the old `DEFAULT_GLYPH` constant.
+impl Glyph {
+    /// Creates a new glyph with default attributes, typically used for empty cells.
+    /// It's recommended to pass default foreground and background colors from configuration.
+    pub fn new_default(default_fg: Color, default_bg: Color) -> Self {
+        Glyph {
+            c: ' ', // Default character is a space
+            attr: Attributes {
+                fg: default_fg,
+                bg: default_bg,
+                flags: AttrFlags::empty(), // No special attribute flags by default
+            },
+        }
+    }
+}
+
