@@ -17,16 +17,26 @@ Its vision is to provide a robust and simple core terminal experience, drawing i
 *   **VT100/VT220/XTerm Compatibility (Target):** Aiming for comprehensive support for common terminal control sequences and behaviors.
 *   **CPU-Based Rendering:** Prioritizes stability and simplicity by using well-established, CPU-based rendering techniques, avoiding complex GPU driver dependencies.
 *   **Modular and Testable Design:** Built with a clear separation of concerns, making components independently testable and the overall system easier to maintain and understand.
+*   **Internally Modifiable and "Hackable":** Designed with highly modular internal source code, encouraging developers to understand, modify, and extend existing components. Rust's safety features and comprehensive testing support this "hacking" in a stable manner.
 
-## Extendibility: The "Core" Difference
+## Extensibility: The "Core" Difference
 
-A key differentiator for `core-term` is its emphasis on extendibility. Unlike `st`, which typically requires direct source modification for customization, `core-term` is architected to be a foundational "core" that can be readily extended.
+A key differentiator for `core-term` is its dual emphasis on extensibility: **architectural** and **internal**.
 
-The primary mechanism for this is the **`Driver` trait**. This interface allows developers to implement new rendering and input backends for different platforms or display systems (e.g., Wayland, a different windowing toolkit, or even a custom embedded environment) without altering the core terminal emulation logic. This makes `core-term` a versatile foundation for a variety of terminal-based applications and environments.
+**1. Architectural Extensibility (External):**
+The primary mechanism for broad platform or backend extension is the **`Driver` trait**. This interface allows developers to implement new rendering and input backends for different platforms or display systems (e.g., Wayland, a different windowing toolkit, or even a custom embedded environment) without altering the core terminal emulation logic. This makes `core-term` a versatile foundation for a variety of terminal-based applications and environments.
+
+**2. Internal Modifiability (Internal "Hacking"):**
+Beyond adding new backends, `core-term` is designed with its internal source code being highly modular, clear, and "hackable." This is a core design goal, making it easier for developers to:
+    *   Understand the inner workings of each component.
+    *   Modify existing functionalities to suit specific needs.
+    *   Extend components with new capabilities.
+
+This internal modifiability is envisioned as an evolution of `st`'s patch-based customization system. Instead of relying on external patches, `core-term` aims to provide a codebase that is inherently easy to fork, modify, and maintain directly. Rust's strong type system, memory safety guarantees, and a project emphasis on comprehensive testing are crucial enablers, allowing for such "hacking" to be performed with greater confidence in stability and safety compared to C codebases. The goal is to offer the spirit of `st`'s direct customization but within a more robust, maintainable, and integrated framework.
+
+This combination of external architectural extensibility and internal source code modifiability defines `core-term`'s approach to being a truly "extensible core terminal."
 
 ## Architecture Overview
-
-`core-term` adopts an **Interpreter/Virtual Machine (VM) model** for its central logic, promoting modularity and clear responsibilities:
 
 *   **`TerminalEmulator` (Interpreter/VM):** The heart of the terminal. It's a self-contained state machine that processes inputs (derived from PTY output and user actions), updates its internal state (grid, cursor, attributes), and signals required external side-effects. It does not perform I/O or rendering directly.
 *   **`AppOrchestrator`:** The central coordinator. It manages the main event loop, PTY I/O, drives the PTY parser, feeds inputs to the `TerminalEmulator`, executes actions signaled by the emulator, and orchestrates the rendering process.
