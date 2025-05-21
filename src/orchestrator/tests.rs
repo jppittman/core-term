@@ -9,7 +9,7 @@
 mod orchestrator_tests {
     use crate::ansi::{AnsiCommand, AnsiParser as AnsiParserTrait};
     use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
-    use crate::color::{Color, NamedColor};
+    use crate::color::Color;
     use crate::glyph::{AttrFlags, Attributes, Glyph};
     use crate::orchestrator::{AppOrchestrator, OrchestratorStatus};
     use crate::os::pty::PtyChannel;
@@ -494,7 +494,7 @@ mod orchestrator_tests {
         let mut mock_pty = MockPtyChannel::new();
         let mut mock_term = MockTerminal::new(2, 1, 0);
         let mut mock_parser = MockAnsiParser::new();
-        let mut renderer_instance = Renderer::new(); // first_draw is true by default
+        let renderer_instance = Renderer::new(); // first_draw is true by default
         let mut mock_driver = MockDriver::new();
         let first_draw_flag_after_render;
 
