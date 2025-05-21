@@ -6,7 +6,7 @@
 //! abstracting away the complexities of different terminal modes like Origin Mode (DECOM)
 //! from the main terminal emulation logic.
 
-use crate::glyph::{Attributes, DEFAULT_GLYPH}; // Using default attributes from DEFAULT_GLYPH
+use crate::glyph::Attributes; // Using default attributes from DEFAULT_GLYPH
 use log::trace;
 use std::cmp::min; // For clamping positions // For trace logging
 
