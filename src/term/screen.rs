@@ -102,7 +102,7 @@ impl Screen {
         let h = height.max(1);
         // Initialize default_attributes from a global constant or a sensible default.
         // TerminalEmulator will be responsible for updating this as SGR commands are processed.
-        let default_attributes = DEFAULT_GLYPH.attr;
+        let default_attributes = Attributes::default();
         let default_fill_char = Glyph {
             c: ' ',
             attr: default_attributes,

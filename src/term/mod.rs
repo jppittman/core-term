@@ -127,7 +127,7 @@ impl TerminalInterface for TerminalEmulator {
 
     fn take_dirty_lines(&mut self) -> Vec<usize> {
         let mut all_dirty_indices: std::collections::HashSet<usize> =
-            self.dirty_lines.drain(..).collect(); // Drains the legacy vec
+            std::collections::HashSet::new();
 
         for (idx, &is_dirty_flag) in self.screen.dirty.iter().enumerate() {
             if is_dirty_flag != 0 {
