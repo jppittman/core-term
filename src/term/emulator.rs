@@ -19,7 +19,7 @@ use crate::{
         EscCommand,
     },
     backends::BackendEvent,
-    glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER, DEFAULT_GLYPH}, // Added WIDE_CHAR_PLACEHOLDER, DEFAULT_GLYPH
+    glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER}, // Added WIDE_CHAR_PLACEHOLDER
     term::ControlEvent,
     term::unicode::get_char_display_width,
 };
@@ -39,8 +39,6 @@ pub struct TerminalEmulator {
     pub(super) dec_modes: DecPrivateModes,
     pub(super) active_charsets: [CharacterSet; 4],
     pub(super) active_charset_g_level: usize,
-    #[deprecated = "Use screen.dirty_lines_bitmap() or screen.take_dirty_lines() instead"]
-    pub(super) dirty_lines: Vec<usize>, // To be deprecated in favor of screen.dirty
     pub(super) cursor_wrap_next: bool,
     pub(super) current_cursor_shape: u16, // Stores the current cursor shape code
 }
@@ -65,7 +63,6 @@ impl TerminalEmulator {
                 CharacterSet::Ascii, // G3
             ],
             active_charset_g_level: 0,                 // Default to G0
-            dirty_lines: (0..height.max(1)).collect(), // Mark all lines dirty initially
             cursor_wrap_next: false,
             current_cursor_shape: DEFAULT_CURSOR_SHAPE, // Use constant for default
         }
@@ -534,11 +531,6 @@ impl TerminalEmulator {
     }
 
     /// Marks all lines on the screen as dirty, forcing a full redraw.
-    #[allow(deprecated)] // For self.dirty_lines
-    fn mark_all_lines_dirty(&mut self) {
-        self.dirty_lines = (0..self.screen.height).collect();
-        self.screen.mark_all_dirty(); 
-    }
     
     /// Returns the current logical cursor position (0-based column, row).
     pub fn cursor_pos(&self) -> (usize, usize) {
@@ -597,8 +589,7 @@ impl TerminalEmulator {
             if char_width == 2 && physical_x == screen_ctx.width.saturating_sub(1) {
                 let fill_glyph = Glyph {
                     c: ' ', // Fill with a space
-                    attr: self.cursor_controller.attributes(),
-                    flags: AttrFlags::empty(), // Ensure flags are clean for the space
+                    attr: Attributes { flags: AttrFlags::empty(), ..self.cursor_controller.attributes() }, // Ensure flags are clean for the space
                 };
                 if physical_y < self.screen.height { // Bounds check
                     self.screen.set_glyph(physical_x, physical_y, fill_glyph);
@@ -620,8 +611,7 @@ impl TerminalEmulator {
         if physical_y < self.screen.height { // Ensure y is within bounds before writing
             let mut glyph_to_set = Glyph {
                 c: ch_to_print,
-                attr: glyph_attrs,
-                flags: AttrFlags::empty(), // Start with empty flags
+                attr: Attributes { flags: AttrFlags::empty(), ..glyph_attrs }, // Start with empty flags
             };
 
             self.screen.set_glyph(
@@ -634,18 +624,15 @@ impl TerminalEmulator {
             // If it's a wide character, place a placeholder and set flags.
             if char_width == 2 {
                 // Mark the primary part of the wide character.
-                if let Some(primary_glyph) = self.screen.get_glyph_mut(physical_x, physical_y) {
-                    primary_glyph.flags.insert(AttrFlags::WIDE_CHAR_PRIMARY);
-                } else {
-                     warn!("Failed to get_glyph_mut for WIDE_CHAR_PRIMARY at ({},{})", physical_x, physical_y);
-                }
+                let mut primary_glyph = self.screen.get_glyph(physical_x, physical_y);
+                primary_glyph.attr.flags.insert(AttrFlags::WIDE_CHAR_PRIMARY);
+                self.screen.set_glyph(physical_x, physical_y, primary_glyph);
 
 
                 if physical_x + 1 < screen_ctx.width {
                     let placeholder_glyph = Glyph {
                         c: WIDE_CHAR_PLACEHOLDER, 
-                        attr: glyph_attrs, 
-                        flags: AttrFlags::WIDE_CHAR_SPACER,
+                        attr: Attributes { flags: AttrFlags::WIDE_CHAR_SPACER, ..glyph_attrs },
                     };
                     self.screen.set_glyph(
                         physical_x + 1,

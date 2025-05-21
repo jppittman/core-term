@@ -38,7 +38,7 @@ impl Default for Cursor {
         Cursor {
             logical_x: 0,
             logical_y: 0,
-            attributes: DEFAULT_GLYPH.attr, // Use attributes from a default glyph configuration.
+            attributes: Attributes::default(), // Use attributes from a default glyph configuration.
             visible: true,
         }
     }

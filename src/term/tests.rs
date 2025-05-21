@@ -10,7 +10,7 @@ mod term_tests {
     use crate::ansi::commands::{AnsiCommand, Attribute, C0Control, CsiCommand};
     use crate::backends::BackendEvent;
     use crate::color::{Color, NamedColor};
-    use crate::glyph::{AttrFlags, Attributes, DEFAULT_GLYPH, Glyph};
+    use crate::glyph::{AttrFlags, Attributes, Glyph};
     use crate::term::{
         DecModeConstant,
         EmulatorAction,
@@ -324,7 +324,7 @@ mod term_tests {
     fn test_initial_screen_attributes_are_default() {
         let term = new_term(10, 5);
         let glyph = get_glyph_at(&term, 0, 0);
-        let expected_attrs = DEFAULT_GLYPH.attr; // Compare with the constant
+        let expected_attrs = Attributes::default(); // Compare with the constant
 
         assert_eq!(glyph.c, ' ');
         assert_eq!(glyph.attr, expected_attrs);
@@ -979,7 +979,7 @@ mod term_tests {
 mod extensive_term_emulator_tests {
     use crate::ansi::commands::{AnsiCommand, Attribute as SgrAttribute, C0Control, CsiCommand};
     use crate::color::{Color, NamedColor};
-    use crate::glyph::{AttrFlags, DEFAULT_GLYPH, Glyph};
+    use crate::glyph::{AttrFlags, Attributes, Glyph};
     use crate::term::{EmulatorInput, TerminalEmulator, TerminalInterface};
     use std::collections::HashSet;
 
@@ -1378,7 +1378,7 @@ mod extensive_term_emulator_tests {
             for c_idx in 0..5 {
                 assert_eq!(
                     get_glyph_at(&term, r, c_idx),
-                    DEFAULT_GLYPH,
+                    Glyph::default(),
                     "Cell ({},{}) not default after ED All",
                     r,
                     c_idx
