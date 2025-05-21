@@ -38,8 +38,6 @@ This combination of external architectural extensibility and internal source cod
 
 ## Architecture Overview
 
-`core-term` adopts an **Interpreter/Virtual Machine (VM) model** for its central logic. This design inherently promotes modularity and clear responsibilities, which is key to its internal modifiability:
-
 *   **`TerminalEmulator` (Interpreter/VM):** The heart of the terminal. It's a self-contained state machine that processes inputs (derived from PTY output and user actions), updates its internal state (grid, cursor, attributes), and signals required external side-effects. It does not perform I/O or rendering directly.
 *   **`AppOrchestrator`:** The central coordinator. It manages the main event loop, PTY I/O, drives the PTY parser, feeds inputs to the `TerminalEmulator`, executes actions signaled by the emulator, and orchestrates the rendering process.
 *   **`Renderer`:** A backend-agnostic component. It requests a snapshot of the terminal state from the `TerminalEmulator` and translates this into a list of abstract `RenderCommand`s, which are platform-agnostic drawing instructions.
