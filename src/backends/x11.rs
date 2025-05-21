@@ -528,11 +528,11 @@ impl Driver for XDriver {
                 // Also set _NET_WM_NAME for modern window managers (UTF-8)
                 let net_wm_name_atom = xlib::XInternAtom(
                     self.display,
-                    c"_NET_WM_NAME".as_ptr() as *mut _,
+                    b"_NET_WM_NAME\0".as_ptr() as *const i8,
                     xlib::False,
                 );
                 let utf8_string_atom =
-                    xlib::XInternAtom(self.display, c"UTF8_STRING".as_ptr() as *mut _, xlib::False);
+                    xlib::XInternAtom(self.display, b"UTF8_STRING\0".as_ptr() as *const i8, xlib::False);
 
                 if net_wm_name_atom != 0 && utf8_string_atom != 0 {
                     xlib::XChangeProperty(
@@ -917,13 +917,13 @@ impl XDriver {
             // Atom for WM_DELETE_WINDOW protocol
             self.wm_delete_window = xlib::XInternAtom(
                 self.display,
-                c"WM_DELETE_WINDOW".as_ptr() as *mut _, // C-string
+                b"WM_DELETE_WINDOW\0".as_ptr() as *const i8, // C-string
                 xlib::False,                            // Don't create if it doesn't exist
             );
             // Atom for WM_PROTOCOLS property
             self.protocols_atom = xlib::XInternAtom(
                 self.display,
-                c"WM_PROTOCOLS".as_ptr() as *mut _,
+                b"WM_PROTOCOLS\0".as_ptr() as *const i8,
                 xlib::False,
             );
 
@@ -953,11 +953,11 @@ impl XDriver {
             // Set _NET_WM_NAME for UTF-8 titles (modern WMs)
             let net_wm_name_atom = xlib::XInternAtom(
                 self.display,
-                c"_NET_WM_NAME".as_ptr() as *mut _,
+                b"_NET_WM_NAME\0".as_ptr() as *const i8,
                 xlib::False,
             );
             let utf8_string_atom =
-                xlib::XInternAtom(self.display, c"UTF8_STRING".as_ptr() as *mut _, xlib::False);
+                xlib::XInternAtom(self.display, b"UTF8_STRING\0".as_ptr() as *const i8, xlib::False);
             if net_wm_name_atom != 0 && utf8_string_atom != 0 {
                 xlib::XChangeProperty(
                     self.display,
