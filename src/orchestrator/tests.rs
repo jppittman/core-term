@@ -222,7 +222,7 @@ mod orchestrator_tests {
             grid.get(y)
                 .and_then(|row| row.get(x))
                 .cloned()
-                .unwrap_or_else(|| Glyph {
+                .unwrap_or(Glyph {
                     c: ' ',
                     attr: self.default_attributes,
                 })
@@ -240,21 +240,18 @@ mod orchestrator_tests {
         }
         fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
             self.inputs_received.lock().unwrap().push(input.clone());
-            match input {
-                EmulatorInput::Control(ControlEvent::Resize{cols, rows}) => {
-                    let mut w = self.width.lock().unwrap();
-                    let mut h = self.height.lock().unwrap();
-                    *w = cols;
-                    *h = rows;
-                    let mut grid_mut = self.grid.lock().unwrap();
-                    *grid_mut = vec![vec![Glyph {c: ' ', attr: self.default_attributes}; cols]; rows];
-                    let mut dirty = self.dirty_lines.lock().unwrap();
-                    dirty.clear();
-                    for i in 0..rows {
-                        dirty.insert(i);
-                    }
+            if let EmulatorInput::Control(ControlEvent::Resize{cols, rows}) = input {
+                let mut w = self.width.lock().unwrap();
+                let mut h = self.height.lock().unwrap();
+                *w = cols;
+                *h = rows;
+                let mut grid_mut = self.grid.lock().unwrap();
+                *grid_mut = vec![vec![Glyph {c: ' ', attr: self.default_attributes}; cols]; rows];
+                let mut dirty = self.dirty_lines.lock().unwrap();
+                dirty.clear();
+                for i in 0..rows {
+                    dirty.insert(i);
                 }
-                _ => {}
             }
             self.actions_to_return_on_next_call.lock().unwrap().pop_front().unwrap_or(None)
         }

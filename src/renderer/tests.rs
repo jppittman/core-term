@@ -654,10 +654,8 @@ mod render_tests {
                         {
                             wide_char_cursor_drawn = true;
                         }
-                    } else if *coords == (CellCoords { x: 2, y: 0 }) && text == "N" {
-                        if style.fg == RENDERER_DEFAULT_FG && style.bg == RENDERER_DEFAULT_BG {
-                            normal_char_drawn = true;
-                        }
+                    } else if *coords == (CellCoords { x: 2, y: 0 }) && text == "N" && style.fg == RENDERER_DEFAULT_FG && style.bg == RENDERER_DEFAULT_BG {
+                        normal_char_drawn = true;
                     }
                 }
                 MockDriverCall::FillRect { rect, color } => {
