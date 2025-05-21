@@ -7,9 +7,9 @@
 //! encapsulating the character itself and all its styling information.
 //! Color definitions (`Color`, `NamedColor`) are found in the `crate::color` module.
 
+use crate::color::Color;
 use bitflags::bitflags; // For creating flag enums like AttrFlags
-use std::fmt;
-use crate::color::Color; // Import Color directly for use in Attributes
+use std::fmt; // Import Color directly for use in Attributes
 
 /// Represents a single character cell on the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,4 +89,3 @@ impl Glyph {
         }
     }
 }
-

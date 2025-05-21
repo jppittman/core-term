@@ -1376,8 +1376,8 @@ mod extensive_term_emulator_tests {
             for c_idx in 0..5 {
                 assert_eq!(
                     get_glyph_at(&term, r, c_idx),
-                    Glyph{
-                        c: ' ', 
+                    Glyph {
+                        c: ' ',
                         attr: Attributes::default(),
                     },
                     "Cell ({},{}) not default after ED All",
