@@ -1,5 +1,3 @@
-// src/term/tests.rs
-
 //! Unit tests for the main TerminalEmulator struct and its core logic.
 //! These tests aim to verify the internal state changes and actions produced
 //! by the TerminalEmulator based on various inputs, adhering to its public API.
@@ -554,7 +552,7 @@ mod term_tests {
         );
         assert_eq!(
             get_glyph_at(&term, 0, 0).attr,
-            DEFAULT_GLYPH.attr,
+            Attributes::default(),
             "Cell (0,0) attributes should be default after ED(2)"
         );
     }
@@ -1378,7 +1376,10 @@ mod extensive_term_emulator_tests {
             for c_idx in 0..5 {
                 assert_eq!(
                     get_glyph_at(&term, r, c_idx),
-                    Glyph::default(),
+                    Glyph{
+                        c: ' ', 
+                        attr: Attributes::default(),
+                    },
                     "Cell ({},{}) not default after ED All",
                     r,
                     c_idx
