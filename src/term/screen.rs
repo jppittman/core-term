@@ -13,7 +13,7 @@
 use std::cmp::min;
 use std::collections::VecDeque;
 
-use crate::glyph::{Attributes, DEFAULT_GLYPH, Glyph};
+use crate::glyph::{Attributes, Glyph};
 use crate::term::DEFAULT_TAB_INTERVAL;
 use log::{trace, warn};
 
