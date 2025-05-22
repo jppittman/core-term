@@ -32,18 +32,6 @@ pub struct NixPty {
     child_pid: Pid,
 }
 
-// PtyDeviceEndGuard might be re-evaluated; OwnedFd handles its own drop.
-#[derive(Debug)]
-struct PtyDeviceEndGuard(_fd: OwnedFd);
-impl PtyDeviceEndGuard {
-    #[allow(dead_code)]
-    fn disarm(&mut self) {
-        // To disarm, one would typically use std::mem::forget or std::mem::take.
-        // This is a placeholder if specific disarm logic is needed.
-    }
-}
-// Drop for PtyDeviceEndGuard is implicitly handled by OwnedFd.
-
 impl NixPty {
     fn set_pty_size_internal<Fd: AsFd>(fd: Fd, cols: u16, rows: u16) -> anyhow::Result<()> {
         use nix::pty::Winsize;
