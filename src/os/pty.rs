@@ -140,7 +140,7 @@ impl NixPty {
                         config
                             .command_executable
                             .split('/')
-                            .last()
+                            .next_back()
                             .unwrap_or(config.command_executable),
                     )
                     .with_context(|| "Child: Failed to create CString for command name (arg0)")?,
@@ -289,7 +289,7 @@ impl Read for NixPty {
                         master_raw_fd,
                         nix_err
                     );
-                    Err(IoError::new(IoErrorKind::Other, nix_err))
+                    Err(IoError::other(nix_err))
                 }
             }
         }
@@ -330,7 +330,7 @@ impl Write for NixPty {
                         master_raw_fd,
                         nix_err
                     );
-                    Err(IoError::new(IoErrorKind::Other, nix_err))
+                    Err(IoError::other(nix_err))
                 }
             }
         }
