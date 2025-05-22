@@ -100,6 +100,7 @@ impl NixPty {
                 let mut termios_attrs = termios::tcgetattr(&slave_fd)
                     .with_context(|| "Child: Failed to get terminal attributes")?;
                 termios::cfmakeraw(&mut termios_attrs);
+                termios_attrs.c_lflag |= termios::LocalFlags::ISIG;
                 termios::tcsetattr(&slave_fd, termios::SetArg::TCSANOW, &termios_attrs)
                     .with_context(|| "Child: Failed to set terminal attributes to raw mode")?;
 
