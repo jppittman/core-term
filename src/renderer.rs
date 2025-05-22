@@ -165,9 +165,7 @@ impl Renderer {
         }
 
         // If there are any lines to draw content for (either from initial dirty set or full clear).
-        if !lines_to_draw_content.is_empty() {
-            something_was_drawn = true;
-        }
+            something_was_drawn = !lines_to_draw_content.is_empty();
 
         let mut sorted_lines_to_draw: Vec<usize> = lines_to_draw_content.into_iter().collect();
         sorted_lines_to_draw.sort_unstable(); // Draw in logical order.

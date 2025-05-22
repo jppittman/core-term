@@ -618,6 +618,7 @@ mod orchestrator_tests {
     fn test_render_if_needed_no_dirty_lines_no_first_draw() {
         let mut mock_pty = MockPtyChannel::new();
         let mut mock_term = MockTerminal::new(1, 1, 0);
+        mock_term.cursor_visible = Arc::new(Mutex::new(false));
         let _ = mock_term.take_dirty_lines(); // Clear initial dirty lines
         let mut mock_parser = MockAnsiParser::new();
         let mut renderer = Renderer::new();
