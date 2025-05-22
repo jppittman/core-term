@@ -283,7 +283,50 @@ impl Renderer {
                 )?
             } else {
                 // Regular text character; attempt to draw a run of text.
-                self.draw_text_segment(current_col, y_abs, term_width, &start_glyph, term, driver)?
+                let cells_consumed_by_text_segment = self.draw_text_segment(
+                    current_col,
+                    y_abs,
+                    term_width,
+                    &start_glyph,
+                    term,
+                    driver,
+                )?;
+
+                // After drawing a text segment, check if it was a wide character.
+                // If so, we need to explicitly fill its placeholder cell.
+                let char_actual_display_width = get_char_display_width(start_glyph.c);
+                if char_actual_display_width == 2 {
+                    if current_col + 1 < term_width {
+                        // The placeholder is within bounds.
+                        let (_, placeholder_eff_bg, _) = self.get_effective_colors_and_flags(
+                            start_glyph.attr.fg,
+                            start_glyph.attr.bg,
+                            start_glyph.attr.flags,
+                        );
+                        let placeholder_rect = CellRect {
+                            x: current_col + 1,
+                            y: y_abs,
+                            width: 1,
+                            height: 1,
+                        };
+                        trace!(
+                            "    Line {}, Col {}: Explicitly filling placeholder for wide char '{}' at col {} with bg={:?}",
+                            y_abs,
+                            current_col + 1, // Log placeholder's column
+                            start_glyph.c,
+                            current_col, // Log wide char's column
+                            placeholder_eff_bg
+                        );
+                        driver.fill_rect(placeholder_rect, placeholder_eff_bg)?;
+                    } else {
+                        // This case should ideally be prevented by draw_text_segment not overflowing.
+                        warn!(
+                            "    Line {}, Col {}: Wide char '{}' at end of line, no space for placeholder fill.",
+                            y_abs, current_col, start_glyph.c
+                        );
+                    }
+                }
+                cells_consumed_by_text_segment // Assign to outer scope's cells_consumed
             };
 
             // Ensure progress is made to avoid infinite loops.
