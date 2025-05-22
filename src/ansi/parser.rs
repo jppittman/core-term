@@ -143,18 +143,35 @@ impl AnsiParser {
     fn dispatch_csi(&mut self, final_byte: u8) {
         trace!(
             "Dispatching CSI: Private={}, Params={:?}, Intermediates={:?}, Final={}({})",
-            self.is_private_csi, self.params, self.intermediates, final_byte as char, final_byte
+            self.is_private_csi,
+            self.params,
+            self.intermediates,
+            final_byte as char,
+            final_byte
         );
         // These are the actual parameters and intermediates collected by the parser state machine
-        let params_vec = mem::take(&mut self.params); 
+        let params_vec = mem::take(&mut self.params);
         let intermediates_vec = mem::take(&mut self.intermediates);
         let is_private_csi_flag = self.is_private_csi;
 
-        if let Some(command) = AnsiCommand::from_csi(params_vec, intermediates_vec, is_private_csi_flag, final_byte) {
+        if let Some(command) = AnsiCommand::from_csi(
+            params_vec,
+            intermediates_vec,
+            is_private_csi_flag,
+            final_byte,
+        ) {
             // Check if the command is the specific Unsupported variant we want to remap
-            if let AnsiCommand::Csi(super::commands::CsiCommand::Unsupported(_, Some(unsupported_final_byte))) = command {
-                trace!("Remapping CsiCommand::Unsupported with final byte {} to AnsiCommand::Error", unsupported_final_byte);
-                self.commands.push(AnsiCommand::Error(unsupported_final_byte));
+            if let AnsiCommand::Csi(super::commands::CsiCommand::Unsupported(
+                _,
+                Some(unsupported_final_byte),
+            )) = command
+            {
+                trace!(
+                    "Remapping CsiCommand::Unsupported with final byte {} to AnsiCommand::Error",
+                    unsupported_final_byte
+                );
+                self.commands
+                    .push(AnsiCommand::Error(unsupported_final_byte));
             } else {
                 // It's a different, valid CSI command
                 self.commands.push(command);
