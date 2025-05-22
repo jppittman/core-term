@@ -122,6 +122,8 @@ impl Renderer {
             return Ok(());
         }
 
+        let mut something_was_drawn = false;
+
         // Retrieve and clear dirty line flags from the terminal.
         let initially_dirty_lines_from_term: HashSet<usize> =
             term.take_dirty_lines().into_iter().collect();
@@ -133,7 +135,6 @@ impl Renderer {
 
         let mut lines_to_draw_content: HashSet<usize> = initially_dirty_lines_from_term;
         let (cursor_abs_x, cursor_abs_y) = term.get_screen_cursor_pos();
-        let mut something_was_drawn = !lines_to_draw_content.is_empty();
 
         // Perform a full clear only on the very first draw operation.
         let perform_clear_all = self.first_draw;
@@ -160,13 +161,9 @@ impl Renderer {
                         cursor_abs_y
                     );
                 }
-                // Ensuring something_was_drawn is true if we are drawing the cursor line.
-                something_was_drawn = true;
+                // No longer setting something_was_drawn here directly.
             }
         }
-
-        // If there are any lines to draw content for (either from initial dirty set or full clear).
-        something_was_drawn = !lines_to_draw_content.is_empty();
 
         let mut sorted_lines_to_draw: Vec<usize> = lines_to_draw_content.into_iter().collect();
         sorted_lines_to_draw.sort_unstable(); // Draw in logical order.
@@ -174,6 +171,10 @@ impl Renderer {
             "Renderer::draw: Final lines to process for content: {:?}",
             sorted_lines_to_draw
         );
+
+        if !sorted_lines_to_draw.is_empty() {
+            something_was_drawn = true;
+        }
 
         for &y_abs in &sorted_lines_to_draw {
             if y_abs >= term_height {
@@ -254,7 +255,22 @@ impl Renderer {
             // Dispatch to appropriate drawing function based on glyph content.
             let cells_consumed = if start_glyph.c == '\0' {
                 // Placeholder for the second half of a wide character.
-                self.draw_placeholder_cell(current_col, y_abs, eff_bg, driver)?
+                if current_col == 0 {
+                    warn!(
+                        "Placeholder found at column 0 on line {}, this is unexpected. Using default background.",
+                        y_abs
+                    );
+                    self.draw_placeholder_cell(current_col, y_abs, RENDERER_DEFAULT_BG, driver)?
+                } else {
+                    // Get the attributes of the wide character cell that precedes this placeholder.
+                    let wide_char_glyph = term.get_glyph(current_col - 1, y_abs);
+                    let (_, placeholder_eff_bg, _) = self.get_effective_colors_and_flags(
+                        wide_char_glyph.attr.fg,
+                        wide_char_glyph.attr.bg,
+                        wide_char_glyph.attr.flags,
+                    );
+                    self.draw_placeholder_cell(current_col, y_abs, placeholder_eff_bg, driver)?
+                }
             } else if start_glyph.c == ' ' {
                 // Space character; attempt to draw a run of spaces for optimization.
                 self.draw_space_run(
