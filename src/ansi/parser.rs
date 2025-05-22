@@ -23,7 +23,6 @@ enum State {
     CsiEntry,
     CsiParam,
     CsiIntermediate,
-    CsiIgnore,
     OscString,
     DcsEntry,
     PmString,
@@ -506,24 +505,6 @@ impl AnsiParser {
                     self.state = State::Ground;
                     self.process_token(token);
                 }
-            },
-            State::CsiIgnore => match token {
-                AnsiToken::C0Control(0x1B) => {
-                    self.clear_csi_state();
-                    self.clear_esc_state();
-                    self.state = State::Escape;
-                }
-                AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
-                AnsiToken::Print(_f @ '@'..='~') => {
-                    self.state = State::Ground;
-                    self.clear_csi_state();
-                }
-                AnsiToken::C1Control(_) => {
-                    self.state = State::Ground;
-                    self.clear_csi_state();
-                    self.clear_esc_state();
-                }
-                _ => { /* Ignore other bytes */ }
             },
         }
     }

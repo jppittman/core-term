@@ -96,7 +96,6 @@ const COLOR_CUBE_OFFSET: u8 = 16;
 const COLOR_CUBE_SIZE: u8 = 6; // 6x6x6 cube
 const COLOR_CUBE_TOTAL_COLORS: u8 = COLOR_CUBE_SIZE * COLOR_CUBE_SIZE * COLOR_CUBE_SIZE; // 216
 const GRAYSCALE_OFFSET: u8 = COLOR_CUBE_OFFSET + COLOR_CUBE_TOTAL_COLORS; // 16 + 216 = 232
-const GRAYSCALE_LEVELS: u8 = 24; // Indices 232-255
 
 /// Converts an input `Color` to its approximate `Color::Rgb` representation if it's indexed.
 /// If the input is already `Color::Rgb` or `Color::Named`, it's converted appropriately or returned.

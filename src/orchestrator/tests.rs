@@ -209,12 +209,6 @@ mod orchestrator_tests {
         fn clear_inputs_received(&self) {
             self.inputs_received.lock().unwrap().clear();
         }
-
-        fn mark_line_dirty(&mut self, y: usize) {
-            if y < *self.height.lock().unwrap() {
-                self.dirty_lines.lock().unwrap().insert(y);
-            }
-        }
     }
 
     impl TerminalInterface for MockTerminal {

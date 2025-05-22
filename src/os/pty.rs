@@ -34,7 +34,7 @@ pub struct NixPty {
 
 // PtyDeviceEndGuard might be re-evaluated; OwnedFd handles its own drop.
 #[derive(Debug)]
-struct PtyDeviceEndGuard(OwnedFd);
+struct PtyDeviceEndGuard(_fd: OwnedFd);
 impl PtyDeviceEndGuard {
     #[allow(dead_code)]
     fn disarm(&mut self) {
