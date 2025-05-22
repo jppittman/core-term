@@ -26,7 +26,7 @@ use x11::xlib;
 use x11::xrender::{XGlyphInfo, XRenderColor};
 
 // --- Constants ---
-const DEFAULT_FONT_NAME: &str = "Liberation Mono:size=10"; // Example font
+const DEFAULT_FONT_NAME: &str = "Inconsolata:size=10"; // Example font
 const MIN_FONT_WIDTH: u32 = 1; // Minimum reasonable font width
 const MIN_FONT_HEIGHT: u32 = 1; // Minimum reasonable font height
 
