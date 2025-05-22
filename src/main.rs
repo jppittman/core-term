@@ -14,7 +14,7 @@ pub mod term;
 // Use statements for items needed in main.rs
 use crate::{
     ansi::AnsiProcessor, // AnsiProcessor is in the ansi module
-    backends::{Driver, console::ConsoleDriver, x11::XDriver},
+    backends::{console::ConsoleDriver, x11::XDriver, Driver},
     orchestrator::{AppOrchestrator, OrchestratorStatus},
     os::{
         epoll::{EpollFlags, EventMonitor}, // Using EventMonitor for epoll management

@@ -13,8 +13,8 @@ use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle};
 use crate::color::{Color, NamedColor};
 // AttrFlags, Attributes, and Glyph are correctly from the glyph module.
 use crate::glyph::{AttrFlags, Attributes, Glyph};
-use crate::term::TerminalInterface;
-use crate::term::unicode::get_char_display_width; // Trait for interacting with the terminal state.
+use crate::term::unicode::get_char_display_width;
+use crate::term::TerminalInterface; // Trait for interacting with the terminal state.
 
 use anyhow::Result; // For error handling.
 use log::{debug, trace, warn}; // For logging.
@@ -116,7 +116,8 @@ impl Renderer {
         if term_width == 0 || term_height == 0 {
             trace!(
                 "Renderer::draw: Terminal dimensions zero ({}x{}), skipping draw.",
-                term_width, term_height
+                term_width,
+                term_height
             );
             return Ok(());
         }
@@ -165,7 +166,7 @@ impl Renderer {
         }
 
         // If there are any lines to draw content for (either from initial dirty set or full clear).
-            something_was_drawn = !lines_to_draw_content.is_empty();
+        something_was_drawn = !lines_to_draw_content.is_empty();
 
         let mut sorted_lines_to_draw: Vec<usize> = lines_to_draw_content.into_iter().collect();
         sorted_lines_to_draw.sort_unstable(); // Draw in logical order.
@@ -303,7 +304,9 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Placeholder. FillRect with bg={:?}",
-            y, x, effective_bg
+            y,
+            x,
+            effective_bg
         );
         driver.fill_rect(rect, effective_bg)?;
         Ok(1) // A placeholder consumes 1 cell.
@@ -374,7 +377,11 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}",
-            y, start_col, space_run_len, start_eff_bg, start_eff_flags
+            y,
+            start_col,
+            space_run_len,
+            start_eff_bg,
+            start_eff_flags
         );
         driver.fill_rect(rect, start_eff_bg)?;
 
@@ -480,7 +487,11 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style={:?}",
-            y, start_col, run_text, run_total_cell_width, style
+            y,
+            start_col,
+            run_text,
+            run_total_cell_width,
+            style
         );
         driver.draw_text_run(coords, &run_text, style)?;
 
@@ -514,7 +525,8 @@ impl Renderer {
     ) -> Result<()> {
         trace!(
             "Renderer::draw_cursor_overlay: Screen cursor pos ({}, {})",
-            cursor_abs_x, cursor_abs_y
+            cursor_abs_x,
+            cursor_abs_y
         );
 
         // Do not draw cursor if it's out of bounds.
@@ -538,7 +550,10 @@ impl Renderer {
         };
         trace!(
             "  Cursor overlay: Glyph at logical cursor pos ({},{}): char='{}', attr={:?}",
-            cursor_abs_x, cursor_abs_y, char_for_log1, glyph_at_logical_cursor.attr
+            cursor_abs_x,
+            cursor_abs_y,
+            char_for_log1,
+            glyph_at_logical_cursor.attr
         );
 
         // If cursor is on the second half of a wide character (placeholder '\0'),
@@ -575,7 +590,9 @@ impl Renderer {
             );
         trace!(
             "    Original cell effective attrs for cursor: fg={:?}, bg={:?}, flags={:?}",
-            resolved_original_fg, resolved_original_bg, resolved_original_flags
+            resolved_original_fg,
+            resolved_original_bg,
+            resolved_original_flags
         );
 
         // For cursor rendering, typically swap effective FG and BG.
@@ -603,7 +620,10 @@ impl Renderer {
         };
         trace!(
             "    Drawing cursor overlay: char='{}' at physical ({},{}) with style: {:?}",
-            final_char_to_draw_for_cursor, physical_cursor_x_for_draw, cursor_abs_y, style
+            final_char_to_draw_for_cursor,
+            physical_cursor_x_for_draw,
+            cursor_abs_y,
+            style
         );
 
         driver.draw_text_run(coords, &final_char_to_draw_for_cursor.to_string(), style)?;

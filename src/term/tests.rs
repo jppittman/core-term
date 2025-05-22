@@ -609,7 +609,7 @@ mod term_tests {
         assert_cursor_pos(&term, 7, 3, "Initial cursor pos (7,3) before resize");
 
         term.resize(5, 2); // New max 0-indexed logical (col=4, row=1)
-        // Expected clamping: x = min(7, 4) = 4; y = min(3, 1) = 1. So, (4,1).
+                           // Expected clamping: x = min(7, 4) = 4; y = min(3, 1) = 1. So, (4,1).
         assert_cursor_pos(
             &term,
             4,

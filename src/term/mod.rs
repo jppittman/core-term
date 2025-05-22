@@ -15,7 +15,7 @@ pub mod modes;
 
 // Re-export items for easier use by other modules and within this module
 pub use action::EmulatorAction;
-pub use charset::{CharacterSet, map_to_dec_line_drawing};
+pub use charset::{map_to_dec_line_drawing, CharacterSet};
 pub use emulator::TerminalEmulator;
 pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 

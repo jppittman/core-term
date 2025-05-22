@@ -4,7 +4,7 @@
 use super::modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 use super::*;
 use action::EmulatorAction;
-use charset::{CharacterSet, map_to_dec_line_drawing};
+use charset::{map_to_dec_line_drawing, CharacterSet};
 
 // Standard library imports
 use std::cmp::min;
@@ -20,8 +20,8 @@ use crate::{
     },
     backends::BackendEvent,
     glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER}, // Added WIDE_CHAR_PLACEHOLDER
-    term::ControlEvent,
     term::unicode::get_char_display_width,
+    term::ControlEvent,
 };
 
 // Logging
@@ -507,7 +507,8 @@ impl TerminalEmulator {
             ControlEvent::Resize { cols, rows } => {
                 trace!(
                     "TerminalEmulator: ControlEvent::Resize to {}x{} received.",
-                    cols, rows
+                    cols,
+                    rows
                 );
                 self.resize(cols, rows);
                 None
@@ -569,9 +570,9 @@ impl TerminalEmulator {
         if self.cursor_wrap_next {
             self.carriage_return(); // Move to column 0 of the current line.
             self.move_down_one_line_and_dirty(); // Move to the next line, handles scrolling.
-            // move_down_one_line_and_dirty also resets self.cursor_wrap_next to false.
+                                                 // move_down_one_line_and_dirty also resets self.cursor_wrap_next to false.
             screen_ctx = self.current_screen_context(); // Update context after potential scroll/cursor move.
-            // self.cursor_wrap_next is now false.
+                                                        // self.cursor_wrap_next is now false.
         }
 
         // Get current physical cursor position for placing the glyph.
@@ -603,9 +604,9 @@ impl TerminalEmulator {
             // Perform wrap: CR then effectively LF.
             self.carriage_return();
             self.move_down_one_line_and_dirty(); // This moves cursor down and handles scrolling.
-            // It also resets self.cursor_wrap_next.
+                                                 // It also resets self.cursor_wrap_next.
             screen_ctx = self.current_screen_context(); // Update context
-            // Get new physical cursor position after this wrap.
+                                                        // Get new physical cursor position after this wrap.
             (physical_x, physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
         }
 
@@ -629,8 +630,12 @@ impl TerminalEmulator {
             if char_width == 2 {
                 // Mark the primary part of the wide character.
                 let mut primary_glyph_attrs = glyph_attrs; // Start with cursor attributes
-                primary_glyph_attrs.flags.insert(AttrFlags::WIDE_CHAR_PRIMARY);
-                primary_glyph_attrs.flags.remove(AttrFlags::WIDE_CHAR_SPACER); // Ensure spacer flag is not present
+                primary_glyph_attrs
+                    .flags
+                    .insert(AttrFlags::WIDE_CHAR_PRIMARY);
+                primary_glyph_attrs
+                    .flags
+                    .remove(AttrFlags::WIDE_CHAR_SPACER); // Ensure spacer flag is not present
                 let primary_glyph = Glyph {
                     c: ch_to_print,
                     attr: primary_glyph_attrs,
@@ -717,7 +722,7 @@ impl TerminalEmulator {
         log::trace!("perform_line_feed called");
         // self.cursor_wrap_next should be managed by the caller or by move_down_one_line_and_dirty
         self.move_down_one_line_and_dirty();
-    self.carriage_return(); // Always perform carriage return
+        self.carriage_return(); // Always perform carriage return
     }
 
     /// Helper for LF, IND, NEL: moves cursor down one line, scrolling if necessary.

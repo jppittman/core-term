@@ -110,7 +110,9 @@ impl Screen {
 
         trace!(
             "Creating new Screen: {}x{}, scrollback: {}",
-            w, h, scrollback_limit
+            w,
+            h,
+            scrollback_limit
         );
 
         let grid = vec![vec![default_fill_char.clone(); w]; h];
@@ -254,7 +256,9 @@ impl Screen {
         }
         trace!(
             "Scrolling up by {} lines in region ({}, {}) with default fill",
-            n_val, self.scroll_top, self.scroll_bot
+            n_val,
+            self.scroll_top,
+            self.scroll_bot
         );
 
         let top = self.scroll_top;
@@ -306,7 +310,9 @@ impl Screen {
         }
         trace!(
             "Scrolling down by {} lines in region ({}, {}) with default fill",
-            n_val, self.scroll_top, self.scroll_bot
+            n_val,
+            self.scroll_top,
+            self.scroll_bot
         );
 
         let top = self.scroll_top;
@@ -476,7 +482,8 @@ impl Screen {
         self.dirty = vec![1; nh];
         trace!(
             "Screen resized. New dimensions: {}x{}. All lines marked dirty.",
-            nw, nh
+            nw,
+            nh
         );
     }
 
@@ -554,7 +561,8 @@ impl Screen {
         }
         trace!(
             "Scrolling region set to (0-based: {}, {}).",
-            self.scroll_top, self.scroll_bot
+            self.scroll_top,
+            self.scroll_bot
         );
     }
 
