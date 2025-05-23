@@ -283,7 +283,8 @@ impl AnsiCommand {
             0x8D => Some(AnsiCommand::Esc(EscCommand::ReverseIndex)),
             0x8E => Some(AnsiCommand::Esc(EscCommand::SingleShift2)),
             0x8F => Some(AnsiCommand::Esc(EscCommand::SingleShift3)),
-            0x90 | 0x9B | 0x9C | 0x9D | 0x9E | 0x9F => None, // These are handled by parser state transitions
+            0x9C => Some(AnsiCommand::StringTerminator),
+            0x90 | 0x9B | 0x9D | 0x9E | 0x9F => None,
             _ => Some(AnsiCommand::C1Control(byte)),
         }
     }
