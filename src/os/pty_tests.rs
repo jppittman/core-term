@@ -361,8 +361,7 @@ fn test_pty_spawn_invalid_command() {
             }
 
             // The child shell (hosting the invalid command) should have exited, leading to EOF or an error (like EIO) on the PTY master.
-            assert!(eof_reached || error_reached, 
-                    "Expected EOF or a read error after attempting to spawn an invalid command, but got {} total bytes read and neither EOF nor specific error.", total_bytes_read);
+            assert!(eof_reached || error_reached, "Expected EOF or a read error after attempting to spawn an invalid command, but got {} total bytes read and neither EOF nor specific error.", total_bytes_read);
         }
         Err(e) => {
             panic!("test_pty_spawn_invalid_command: Expected NixPty::spawn_with_config to return Ok (current behavior), but it returned Err: {:?}", e);
