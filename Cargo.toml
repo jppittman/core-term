@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.98"
-arboard = "3.2.0"
 bitflags = "2.9.0"
 env_logger = "0.11.8"
 libc = "0.2.172"

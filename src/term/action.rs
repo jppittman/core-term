@@ -26,12 +26,4 @@ pub enum EmulatorAction {
 
     /// Request to set the visibility of the (potentially native) cursor by the driver.
     SetCursorVisibility(bool),
-
-    /// Request to copy the given string to the system clipboard.
-    CopyToClipboard(String),
-
-    /// Request to fetch content from the system clipboard.
-    /// The orchestrator should respond with a `UserInputAction::PasteText`
-    /// if content is available.
-    RequestClipboardContent,
 }
