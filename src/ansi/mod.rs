@@ -4,9 +4,8 @@
 
 // Make submodules public so their contents can be used elsewhere
 pub mod commands;
-pub mod lexer;
-pub mod parser;
-
+mod lexer;
+mod parser;
 // Re-export necessary items for public API
 pub use commands::AnsiCommand;
 
