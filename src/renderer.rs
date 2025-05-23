@@ -1,7 +1,6 @@
 // myterm/src/renderer.rs
 
 //! This module defines the `Renderer`.
-use crate::term::SelectionRenderState; // Added for selection
 //!
 //! The `Renderer`'s primary responsibility is to translate the visual state of the
 //! `TerminalEmulator` (obtained via the `TerminalInterface`) into a series of
@@ -106,60 +105,12 @@ impl Renderer {
     ///
     /// # Returns
     /// * `Result<()>`: Ok if drawing and presentation were successful, or an error.
-    fn is_cell_selected(
-        &self,
-        col: usize,
-        row: usize,
-        selection: Option<&SelectionRenderState>,
-        term_width: usize,
-    ) -> bool {
-        if let Some(sel) = selection {
-            // Normalize coordinates: start should be before or at end.
-            let (start_col, start_row, end_col, end_row) = {
-                let (mut s_col, mut s_row) = sel.start_coords;
-                let (mut e_col, mut e_row) = sel.end_coords;
-
-                if s_row > e_row || (s_row == e_row && s_col > e_col) {
-                    std::mem::swap(&mut s_row, &mut e_row);
-                    std::mem::swap(&mut s_col, &mut e_col);
-                }
-                (s_col, s_row, e_col, e_row)
-            };
-
-            match sel.mode {
-                crate::term::SelectionMode::Normal => {
-                    if row < start_row || row > end_row {
-                        return false;
-                    }
-                    if row == start_row && col < start_col {
-                        return false;
-                    }
-                    if row == end_row && col > end_col { // Use > for end_col as selection is inclusive
-                        return false;
-                    }
-                    // Cells between start_row and end_row are fully selected if mode is Normal
-                    // or if it's the start/end row and within column bounds.
-                    true
-                }
-                crate::term::SelectionMode::Block => {
-                    // For block selection, ensure col is within min/max of start_col/end_col
-                    let block_start_col = std::cmp::min(sel.start_coords.0, sel.end_coords.0);
-                    let block_end_col = std::cmp::max(sel.start_coords.0, sel.end_coords.0);
-                     row >= start_row && row <= end_row && col >= block_start_col && col <= block_end_col
-                }
-            }
-        } else {
-            false
-        }
-    }
-
     pub fn draw(
         &mut self,
         term: &mut (impl TerminalInterface + ?Sized), // Added + ?Sized
         driver: &mut dyn Driver,
     ) -> Result<()> {
-        let snapshot = term.get_render_snapshot(); // Get the full snapshot
-        let (term_width, term_height) = snapshot.dimensions;
+        let (term_width, term_height) = term.dimensions();
 
         // Avoid drawing if terminal dimensions are invalid.
         if term_width == 0 || term_height == 0 {
@@ -173,25 +124,17 @@ impl Renderer {
 
         let mut something_was_drawn = false;
 
-        // Use dirty lines from the snapshot for rendering decisions.
-        // The term.take_dirty_lines() is for the emulator's internal state management,
-        // but the snapshot provides the consistent view for this render pass.
-        let mut lines_to_draw_content: HashSet<usize> = snapshot
-            .lines
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, line)| if line.is_dirty { Some(idx) } else { None })
-            .collect();
+        // Retrieve and clear dirty line flags from the terminal.
+        let initially_dirty_lines_from_term: HashSet<usize> =
+            term.take_dirty_lines().into_iter().collect();
 
         trace!(
-            "Renderer::draw: Dirty lines from snapshot: {:?}, term_dims: {}x{}, first_draw: {}",
-            lines_to_draw_content, term_width, term_height, self.first_draw
+            "Renderer::draw: Initially dirty lines from term: {:?}, term_dims: {}x{}, first_draw: {}",
+            initially_dirty_lines_from_term, term_width, term_height, self.first_draw
         );
-        
-        // Cursor position from snapshot
-        let (cursor_abs_x, cursor_abs_y) = snapshot.cursor_state
-            .map_or((0,0), |cs| (cs.col, cs.row)); // Default if no cursor state
-        let is_cursor_visible = snapshot.cursor_state.map_or(false, |cs| cs.is_visible);
+
+        let mut lines_to_draw_content: HashSet<usize> = initially_dirty_lines_from_term;
+        let (cursor_abs_x, cursor_abs_y) = term.get_screen_cursor_pos();
 
         // Perform a full clear only on the very first draw operation.
         let perform_clear_all = self.first_draw;
@@ -211,36 +154,16 @@ impl Renderer {
             // For subsequent draws, only redraw explicitly dirty lines and the cursor line.
             // The cursor line needs to be redrawn to correctly render the cell underneath
             // before overlaying the cursor itself.
-            if is_cursor_visible && cursor_abs_y < term_height {
+            if term.is_cursor_visible() && cursor_abs_y < term_height {
                 if lines_to_draw_content.insert(cursor_abs_y) {
                     trace!(
                         "Renderer::draw: Added cursor line y={} to draw set as it was not initially dirty.",
                         cursor_abs_y
                     );
                 }
+                // No longer setting something_was_drawn here directly.
             }
         }
-        
-        // Add lines affected by selection changes to the draw set, if not already full clear
-        if !perform_clear_all {
-            if let Some(sel_state) = &snapshot.selection_state {
-                let (start_col, start_row, end_col, end_row) = { // Normalized
-                    let (mut s_col, mut s_row) = sel_state.start_coords;
-                    let (mut e_col, mut e_row) = sel_state.end_coords;
-                    if s_row > e_row || (s_row == e_row && s_col > e_col) {
-                        std::mem::swap(&mut s_row, &mut e_row);
-                        std::mem::swap(&mut s_col, &mut e_col);
-                    }
-                    (s_col, s_row, e_col, e_row)
-                };
-                for r in start_row..=end_row {
-                    if r < term_height {
-                        lines_to_draw_content.insert(r);
-                    }
-                }
-            }
-        }
-
 
         let mut sorted_lines_to_draw: Vec<usize> = lines_to_draw_content.into_iter().collect();
         sorted_lines_to_draw.sort_unstable(); // Draw in logical order.
@@ -261,37 +184,22 @@ impl Renderer {
                 );
                 continue;
             }
-            self.draw_line_content(y_abs, term_width, &snapshot, driver)?; // Pass snapshot
+            self.draw_line_content(y_abs, term_width, term, driver)?;
         }
 
         // Overlay the cursor if it's visible.
-        if is_cursor_visible {
+        if term.is_cursor_visible() {
             trace!("Renderer::draw: Cursor is visible, calling draw_cursor_overlay.");
             self.draw_cursor_overlay(
                 cursor_abs_x,
                 cursor_abs_y,
-                &snapshot, // Pass snapshot
+                term,
                 driver,
                 term_width,
                 term_height,
             )?;
             something_was_drawn = true; // Drawing cursor means something was drawn.
         }
-        
-        // After rendering, clear the dirty flags in the actual terminal emulator state
-        // This is crucial because the snapshot's dirty flags are consumed by this render pass.
-        // The emulator needs to know that these lines have been processed for rendering.
-        // This assumes `take_dirty_lines` on the TerminalInterface clears its internal flags.
-        // If `get_render_snapshot` doesn't clear flags, then this step is essential.
-        // Based on typical design, `take_dirty_lines` (if called by emulator before snapshot)
-        // or a similar mechanism should handle this. If snapshot itself is the source of truth
-        // for dirty lines for this render pass, then the emulator's state needs updating.
-        // For now, assuming `term.take_dirty_lines()` was the source and already cleared them.
-        // If not, a `term.confirm_lines_rendered(sorted_lines_to_draw)` might be needed.
-        // The previous code had `term.take_dirty_lines()` at the start, which modifies term state.
-        // Let's ensure this is called to clear the emulator's dirty state.
-        let _ = term.take_dirty_lines(); // Call it to ensure emulator state is updated.
-
 
         // Present the changes to the display if any drawing operations occurred.
         if something_was_drawn {
@@ -318,18 +226,14 @@ impl Renderer {
         &self,
         y_abs: usize,
         term_width: usize,
-        snapshot: &crate::term::RenderSnapshot, // Use RenderSnapshot
+        term: &(impl TerminalInterface + ?Sized), // Added + ?Sized
         driver: &mut dyn Driver,
     ) -> Result<()> {
         trace!("Renderer::draw_line_content: Drawing line y={}", y_abs);
         let mut current_col: usize = 0;
-        let line_glyphs = &snapshot.lines[y_abs].cells;
 
         while current_col < term_width {
-            // let start_glyph = term.get_glyph(current_col, y_abs);
-            let start_glyph = &line_glyphs[current_col];
-            let is_current_cell_selected =
-                self.is_cell_selected(current_col, y_abs, snapshot.selection_state.as_ref(), term_width);
+            let start_glyph = term.get_glyph(current_col, y_abs);
             let (eff_fg, eff_bg, eff_flags) = self.get_effective_colors_and_flags(
                 start_glyph.attr.fg,
                 start_glyph.attr.bg,
@@ -344,29 +248,29 @@ impl Renderer {
             };
             debug!(
                 // Changed to debug for potentially verbose output, trace for finer details.
-                "  Line {}, Col {}: Start glyph='{}' (attr:{:?}), EffectiveStyle(fg:{:?}, bg:{:?}, flags:{:?}), Selected: {}",
-                y_abs, current_col, char_for_log, start_glyph.attr, eff_fg, eff_bg, eff_flags, is_current_cell_selected
+                "  Line {}, Col {}: Start glyph='{}' (attr:{:?}), EffectiveStyle(fg:{:?}, bg:{:?}, flags:{:?})",
+                y_abs, current_col, char_for_log, start_glyph.attr, eff_fg, eff_bg, eff_flags
             );
 
             // Dispatch to appropriate drawing function based on glyph content.
             let cells_consumed = if start_glyph.c == '\0' {
                 // Placeholder for the second half of a wide character.
-                 let bg_color_for_placeholder = if current_col > 0 {
-                    let wide_char_glyph = &line_glyphs[current_col - 1];
+                if current_col == 0 {
+                    warn!(
+                        "Placeholder found at column 0 on line {}, this is unexpected. Using default background.",
+                        y_abs
+                    );
+                    self.draw_placeholder_cell(current_col, y_abs, RENDERER_DEFAULT_BG, driver)?
+                } else {
+                    // Get the attributes of the wide character cell that precedes this placeholder.
+                    let wide_char_glyph = term.get_glyph(current_col - 1, y_abs);
                     let (_, placeholder_eff_bg, _) = self.get_effective_colors_and_flags(
                         wide_char_glyph.attr.fg,
                         wide_char_glyph.attr.bg,
                         wide_char_glyph.attr.flags,
                     );
-                    placeholder_eff_bg
-                } else {
-                     warn!(
-                        "Placeholder found at column 0 on line {}, this is unexpected. Using default background.",
-                        y_abs
-                    );
-                    RENDERER_DEFAULT_BG
-                };
-                self.draw_placeholder_cell(current_col, y_abs, bg_color_for_placeholder, is_current_cell_selected, driver)?
+                    self.draw_placeholder_cell(current_col, y_abs, placeholder_eff_bg, driver)?
+                }
             } else if start_glyph.c == ' ' {
                 // Space character; attempt to draw a run of spaces for optimization.
                 self.draw_space_run(
@@ -374,8 +278,7 @@ impl Renderer {
                     y_abs,
                     term_width,
                     &start_glyph, // Pass the initial space glyph
-                    is_current_cell_selected, // Pass selection state
-                    snapshot, // Pass snapshot
+                    term,
                     driver,
                 )?
             } else {
@@ -385,8 +288,7 @@ impl Renderer {
                     y_abs,
                     term_width,
                     &start_glyph,
-                    is_current_cell_selected, // Pass selection state
-                    snapshot, // Pass snapshot
+                    term,
                     driver,
                 )?;
 
@@ -401,8 +303,6 @@ impl Renderer {
                             start_glyph.attr.bg,
                             start_glyph.attr.flags,
                         );
-                        // Selection status for the placeholder should be same as the primary char
-                        let is_placeholder_selected = is_current_cell_selected; 
                         let placeholder_rect = CellRect {
                             x: current_col + 1,
                             y: y_abs,
@@ -410,15 +310,14 @@ impl Renderer {
                             height: 1,
                         };
                         trace!(
-                            "    Line {}, Col {}: Explicitly filling placeholder for wide char '{}' at col {} with bg={:?}, selected={}",
+                            "    Line {}, Col {}: Explicitly filling placeholder for wide char '{}' at col {} with bg={:?}",
                             y_abs,
                             current_col + 1, // Log placeholder's column
                             start_glyph.c,
                             current_col, // Log wide char's column
-                            placeholder_eff_bg,
-                            is_placeholder_selected
+                            placeholder_eff_bg
                         );
-                        driver.fill_rect(placeholder_rect, placeholder_eff_bg, is_placeholder_selected)?;
+                        driver.fill_rect(placeholder_rect, placeholder_eff_bg)?;
                     } else {
                         // This case should ideally be prevented by draw_text_segment not overflowing.
                         warn!(
@@ -454,7 +353,6 @@ impl Renderer {
         x: usize,
         y: usize,
         effective_bg: Color, // Background color determined by the wide char's attributes.
-        is_selected: bool,   // Is this placeholder cell part of a selection?
         driver: &mut dyn Driver,
     ) -> Result<usize> {
         let rect = CellRect {
@@ -464,18 +362,17 @@ impl Renderer {
             height: 1,
         };
         trace!(
-            "    Line {}, Col {}: Placeholder. FillRect with bg={:?}, selected={}",
+            "    Line {}, Col {}: Placeholder. FillRect with bg={:?}",
             y,
             x,
-            effective_bg,
-            is_selected
+            effective_bg
         );
-        driver.fill_rect(rect, effective_bg, is_selected)?;
+        driver.fill_rect(rect, effective_bg)?;
         Ok(1) // A placeholder consumes 1 cell.
     }
 
     /// Identifies and draws a contiguous run of space characters that share the
-    /// same effective background color, attribute flags, and selection state.
+    /// same effective background color and attribute flags.
     /// This optimizes drawing by using a single `fill_rect` call for the run.
     ///
     /// # Returns
@@ -486,12 +383,11 @@ impl Renderer {
         y: usize,
         term_width: usize,
         start_glyph: &Glyph, // The glyph at start_col, known to be a space.
-        start_is_selected: bool, // Selection state of the start_glyph
-        snapshot: &crate::term::RenderSnapshot, // Use RenderSnapshot
+        term: &(impl TerminalInterface + ?Sized), // Added + ?Sized
         driver: &mut dyn Driver,
     ) -> Result<usize> {
-        let line_glyphs = &snapshot.lines[y].cells;
         // Determine the effective style of the first space in the potential run.
+        // The foreground of a space is usually irrelevant for background filling.
         let (_, start_eff_bg, start_eff_flags) = self.get_effective_colors_and_flags(
             start_glyph.attr.fg,
             start_glyph.attr.bg,
@@ -499,17 +395,10 @@ impl Renderer {
         );
 
         let mut space_run_len = 0;
-        // Scan right from start_col to find contiguous spaces with matching style and selection state.
+        // Scan right from start_col to find contiguous spaces with matching style.
         for x_offset in 0..(term_width - start_col) {
             let current_scan_col = start_col + x_offset;
-            // let glyph_at_scan = term.get_glyph(current_scan_col, y);
-            let glyph_at_scan = &line_glyphs[current_scan_col];
-            let is_current_scan_selected = self.is_cell_selected(
-                current_scan_col,
-                y,
-                snapshot.selection_state.as_ref(),
-                term_width
-            );
+            let glyph_at_scan = term.get_glyph(current_scan_col, y);
 
             let (_, current_scan_eff_bg, current_scan_flags) = self.get_effective_colors_and_flags(
                 glyph_at_scan.attr.fg,
@@ -517,11 +406,11 @@ impl Renderer {
                 glyph_at_scan.attr.flags,
             );
 
-            // Break the run if not a space, style differs, or selection state differs.
+            // Break the run if the character is not a space, or if its effective style differs.
             if glyph_at_scan.c != ' '
                 || current_scan_eff_bg != start_eff_bg
                 || current_scan_flags != start_eff_flags
-                || is_current_scan_selected != start_is_selected
+            // Ensure flags like underline also match if relevant for spaces
             {
                 break;
             }
@@ -529,13 +418,16 @@ impl Renderer {
         }
 
         if space_run_len == 0 {
+            // This should ideally not be reached if called because start_glyph.c was ' '.
+            // If it does, it means the start_glyph itself didn't form a run of 1.
             warn!(
                 "Renderer::draw_space_run: Detected 0-length space run at ({},{}). This might indicate an issue.",
                 start_col, y
             );
-            return Ok(0);
+            return Ok(0); // No cells consumed by this specific call.
         }
 
+        // Draw the identified run of spaces using a single fill_rect.
         let rect = CellRect {
             x: start_col,
             y,
@@ -543,35 +435,33 @@ impl Renderer {
             height: 1,
         };
         trace!(
-            "    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}, selected={}",
+            "    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}",
             y,
             start_col,
             space_run_len,
             start_eff_bg,
-            start_eff_flags,
-            start_is_selected
+            start_eff_flags
         );
-        driver.fill_rect(rect, start_eff_bg, start_is_selected)?;
+        driver.fill_rect(rect, start_eff_bg)?;
 
         Ok(space_run_len)
     }
 
     /// Identifies and draws a contiguous run of non-space, non-placeholder text
-    /// characters that share the same effective style and selection state.
+    /// characters that share the same effective foreground, background, and attribute flags.
     ///
     /// # Returns
-    /// `Ok(usize)`: The total number of cells consumed by this text segment.
+    /// `Ok(usize)`: The total number of cells consumed by this text segment,
+    ///              accounting for wide characters.
     fn draw_text_segment(
         &self,
         start_col: usize,
         y: usize,
         term_width: usize,
-        start_glyph: &Glyph, // The glyph at start_col.
-        start_is_selected: bool, // Selection state of the start_glyph.
-        snapshot: &crate::term::RenderSnapshot, // Use RenderSnapshot
+        start_glyph: &Glyph, // The glyph at start_col, known not to be ' ' or '\0'.
+        term: &(impl TerminalInterface + ?Sized), // Added + ?Sized
         driver: &mut dyn Driver,
     ) -> Result<usize> {
-        let line_glyphs = &snapshot.lines[y].cells;
         let (start_eff_fg, start_eff_bg, start_eff_flags) = self.get_effective_colors_and_flags(
             start_glyph.attr.fg,
             start_glyph.attr.bg,
@@ -579,20 +469,14 @@ impl Renderer {
         );
 
         let mut run_text = String::new();
-        let mut run_total_cell_width = 0;
+        let mut run_total_cell_width = 0; // Accumulates cell width (1 for narrow, 2 for wide).
         let mut current_scan_col = start_col;
 
         while current_scan_col < term_width {
-            // let glyph_at_scan = term.get_glyph(current_scan_col, y);
-            let glyph_at_scan = &line_glyphs[current_scan_col];
-            let is_current_scan_selected = self.is_cell_selected(
-                current_scan_col,
-                y,
-                snapshot.selection_state.as_ref(),
-                term_width
-            );
+            let glyph_at_scan = term.get_glyph(current_scan_col, y);
 
-            if glyph_at_scan.c == ' ' || glyph_at_scan.c == '\0' || is_current_scan_selected != start_is_selected {
+            // Stop conditions: character is a space or placeholder, or attributes change.
+            if glyph_at_scan.c == ' ' || glyph_at_scan.c == '\0' {
                 break;
             }
 
@@ -607,37 +491,53 @@ impl Renderer {
                 && current_glyph_eff_bg == start_eff_bg
                 && current_glyph_flags == start_eff_flags)
             {
-                break;
+                break; // Effective style changed, end of current run.
             }
 
             let char_display_width = get_char_display_width(glyph_at_scan.c);
+
+            // Handle true zero-width characters (e.g., combining marks not precomposed).
+            // These are appended to the string but do not consume additional cell width
+            // or advance the primary scan column for attribute checking.
             if char_display_width == 0 {
+                trace!(
+                    "    Line {}, Col {}: Appending zero-width char '{}' to text run. Scan column remains {}.",
+                    y, current_scan_col, glyph_at_scan.c, current_scan_col
+                );
                 run_text.push(glyph_at_scan.c);
+                // Advance past the ZWC for the *next glyph* in the grid for the *next iteration* of this loop.
                 current_scan_col += 1;
-                continue;
+                continue; // Do not add to run_total_cell_width for ZWCs.
             }
+
+            // Ensure the character (and its potential wide counterpart) fits.
             if start_col + run_total_cell_width + char_display_width > term_width {
-                break;
+                break; // Character would overflow the line width for this run.
             }
+
             run_text.push(glyph_at_scan.c);
             run_total_cell_width += char_display_width;
+            // Advance scan by the number of cells this character occupies.
+            // For a wide char, this jumps past its placeholder cell for the next iteration.
             current_scan_col += char_display_width;
         }
 
         if run_text.is_empty() {
-             let advance_by = get_char_display_width(start_glyph.c).max(1);
-             // If it's just a single char that couldn't form a run due to selection change or style change,
-             // we still need to draw it. This case handles if the loop condition broke immediately.
-             if start_col + advance_by <= term_width {
-                 run_text.push(start_glyph.c);
-                 run_total_cell_width = advance_by;
-             } else {
-                 warn!( /* ... */ );
-                 return Ok(advance_by);
-             }
+            // This might happen if the start_glyph itself was a ZWC or other non-advancing char.
+            // Ensure the outer loop in draw_line_content advances.
+            let advance_by = get_char_display_width(start_glyph.c).max(1);
+            warn!(
+                "    Line {}, Col {}: Single char '{}' (width {}) did not form text run. Advancing by {}.",
+                y,
+                start_col,
+                start_glyph.c,
+                get_char_display_width(start_glyph.c),
+                advance_by
+            );
+            return Ok(advance_by);
         }
 
-
+        // Draw the accumulated text run.
         let coords = CellCoords { x: start_col, y };
         let style = TextRunStyle {
             fg: start_eff_fg,
@@ -645,10 +545,14 @@ impl Renderer {
             flags: start_eff_flags,
         };
         trace!(
-            "    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style={:?}, selected={}",
-            y, start_col, run_text, run_total_cell_width, style, start_is_selected
+            "    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style={:?}",
+            y,
+            start_col,
+            run_text,
+            run_total_cell_width,
+            style
         );
-        driver.draw_text_run(coords, &run_text, style, start_is_selected)?;
+        driver.draw_text_run(coords, &run_text, style)?;
 
         Ok(run_total_cell_width)
     }
@@ -662,7 +566,7 @@ impl Renderer {
     /// # Arguments
     /// * `cursor_abs_x`: Absolute 0-based column of the cursor.
     /// * `cursor_abs_y`: Absolute 0-based row of the cursor.
-    /// * `snapshot`: The `RenderSnapshot` containing terminal state.
+    /// * `term`: A reference to an object implementing `TerminalInterface`.
     /// * `driver`: A mutable reference to a `Driver` implementation.
     /// * `term_width`: The width of the terminal in cells.
     /// * `term_height`: The height of the terminal in cells.
@@ -673,7 +577,7 @@ impl Renderer {
         &self,
         cursor_abs_x: usize,
         cursor_abs_y: usize,
-        snapshot: &crate::term::RenderSnapshot, // Use RenderSnapshot
+        term: &(impl TerminalInterface + ?Sized), // Added + ?Sized
         driver: &mut dyn Driver,
         term_width: usize,
         term_height: usize,
@@ -696,9 +600,8 @@ impl Renderer {
         let physical_cursor_x_for_draw: usize;
         let char_to_draw_at_cursor: char;
         let original_attrs_at_cursor: Attributes;
-        
-        // Get glyph from snapshot
-        let glyph_at_logical_cursor = &snapshot.lines[cursor_abs_y].cells[cursor_abs_x];
+
+        let glyph_at_logical_cursor = term.get_glyph(cursor_abs_x, cursor_abs_y);
         let char_for_log1 = if glyph_at_logical_cursor.c == '\0' {
             ' ' // Log placeholder as space for readability
         } else {
@@ -715,8 +618,7 @@ impl Renderer {
         // If cursor is on the second half of a wide character (placeholder '\0'),
         // adjust to draw the cursor over the first half of that wide character.
         if glyph_at_logical_cursor.c == '\0' && cursor_abs_x > 0 {
-            // Get glyph from snapshot
-            let first_half_glyph = &snapshot.lines[cursor_abs_y].cells[cursor_abs_x - 1];
+            let first_half_glyph = term.get_glyph(cursor_abs_x - 1, cursor_abs_y);
             let char_for_log2 = if first_half_glyph.c == '\0' {
                 '?' // Should not be '\0' if logic is correct
             } else {
@@ -753,34 +655,9 @@ impl Renderer {
         );
 
         // For cursor rendering, typically swap effective FG and BG.
-        // However, if the cell is selected, the selection already did this.
-        // The cursor should "invert" the currently displayed colors.
-        
-        let is_cursor_cell_selected = self.is_cell_selected(
-            physical_cursor_x_for_draw, // Use physical_cursor_x_for_draw as it's the actual cell being drawn
-            cursor_abs_y,
-            snapshot.selection_state.as_ref(),
-            term_width
-        );
-
-        let (cursor_char_fg, cursor_cell_bg) = if is_cursor_cell_selected {
-            // If selected, the driver will handle selection colors.
-            // The cursor should invert the *original* colors, not the selected colors.
-            // So, we pass the original resolved_original_fg/bg, and let driver invert them for cursor
-            // AND apply selection. This might need driver to be smart.
-            // Alternative: Renderer calculates "selected fg/bg" then cursor inverts that.
-            // For now, assume driver's draw_text_run with is_selected=true for cursor will do the right thing.
-            // This means cursor over selected text is "double inverted" back to normal, or distinct.
-            // Let's keep it simple: cursor inverts the current visual state.
-            // If selected, current visual is (inverted_fg, inverted_bg). Cursor inverts this back.
-            // So, if selected, cursor_char_fg = resolved_original_fg, cursor_cell_bg = resolved_original_bg
-            // This is a common behavior: cursor "un-selects" the cell it's on.
-            (resolved_original_fg, resolved_original_bg)
-        } else {
-            // Not selected, simple inversion for cursor
-            (resolved_original_bg, resolved_original_fg)
-        };
-
+        let cursor_char_fg = resolved_original_bg;
+        let cursor_cell_bg = resolved_original_fg;
+        // Flags for cursor rendering should be the effective flags of the underlying cell.
         let cursor_display_flags = resolved_original_flags;
 
         let coords = CellCoords {
@@ -793,26 +670,22 @@ impl Renderer {
             flags: cursor_display_flags,
         };
 
+        // If the character under cursor was a placeholder (e.g., second half of wide char),
+        // draw a space for the cursor block itself. Otherwise, draw the actual character inverted.
         let final_char_to_draw_for_cursor = if char_to_draw_at_cursor == '\0' {
             ' '
         } else {
             char_to_draw_at_cursor
         };
         trace!(
-            "    Drawing cursor overlay: char='{}' at physical ({},{}) with style: {:?}, selected_status_for_cursor_calc={}",
+            "    Drawing cursor overlay: char='{}' at physical ({},{}) with style: {:?}",
             final_char_to_draw_for_cursor,
             physical_cursor_x_for_draw,
             cursor_abs_y,
-            style,
-            is_cursor_cell_selected 
+            style
         );
-        
-        // The `is_selected` flag for draw_text_run when drawing the cursor itself is tricky.
-        // If true, driver might invert again. If false, it won't.
-        // Standard behavior: cursor appearance takes precedence.
-        // Let's pass `false` for `is_selected` for the cursor draw call itself,
-        // as the Renderer has already determined the cursor's specific FG/BG.
-        driver.draw_text_run(coords, &final_char_to_draw_for_cursor.to_string(), style, false)?;
+
+        driver.draw_text_run(coords, &final_char_to_draw_for_cursor.to_string(), style)?;
         Ok(())
     }
 }

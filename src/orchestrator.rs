@@ -6,14 +6,12 @@
 
 use crate::{
     ansi::AnsiParser,
-    backends::{BackendEvent, Driver, Modifiers as BackendModifiers, Keycode}, // Assuming Modifiers is part of BackendEvent or Driver
-    config::{Config, KeySymbol, Modifiers as ConfigModifiers}, // Renamed to avoid conflict
+    backends::{BackendEvent, Driver},
     os::pty::PtyChannel,
     renderer::Renderer,
-    term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction},
+    term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface},
 };
 use anyhow::Error as AnyhowError;
-use arboard; // Import arboard
 use std::io::ErrorKind as IoErrorKind;
 
 const PTY_READ_BUFFER_SIZE: usize = 4096;
@@ -39,7 +37,6 @@ pub struct AppOrchestrator<'a> {
     parser: &'a mut dyn AnsiParser,
     pub renderer: Renderer,
     pub driver: &'a mut dyn Driver,
-    config: &'a Config, // Added config field
     pty_read_buffer: [u8; PTY_READ_BUFFER_SIZE],
 }
 
@@ -51,7 +48,6 @@ impl<'a> AppOrchestrator<'a> {
         parser: &'a mut dyn AnsiParser,
         renderer: Renderer,
         driver: &'a mut dyn Driver,
-        config: &'a Config, // Added config parameter
     ) -> Self {
         AppOrchestrator {
             pty_channel,
@@ -59,97 +55,9 @@ impl<'a> AppOrchestrator<'a> {
             parser,
             renderer,
             driver,
-            config, // Initialize config field
             pty_read_buffer: [0; PTY_READ_BUFFER_SIZE],
         }
     }
-
-    // Helper function to translate backend modifiers to config modifiers
-    fn translate_modifiers(&self, backend_modifiers: BackendModifiers) -> ConfigModifiers {
-        let mut config_mods = ConfigModifiers::empty();
-        if backend_modifiers.contains(BackendModifiers::SHIFT) {
-            config_mods |= ConfigModifiers::SHIFT;
-        }
-        if backend_modifiers.contains(BackendModifiers::CONTROL) {
-            config_mods |= ConfigModifiers::CONTROL;
-        }
-        if backend_modifiers.contains(BackendModifiers::ALT) {
-            config_mods |= ConfigModifiers::ALT;
-        }
-        if backend_modifiers.contains(BackendModifiers::SUPER) {
-            config_mods |= ConfigModifiers::SUPER;
-        }
-        config_mods
-    }
-
-    // Helper function to translate backend keysym to config KeySymbol
-    // This is a simplified version for now.
-    fn translate_keysym(&self, keysym: Keycode, text: &Option<String>) -> KeySymbol {
-        match keysym {
-            // This mapping is highly dependent on the values provided by the specific Driver/BackendEvent
-            // For now, assuming simple character mapping and some common keys.
-            // A more robust solution would involve a comprehensive mapping based on XKB or similar.
-            k if k >= Keycode::A && k <= Keycode::Z => {
-                // Assuming Keycode::A represents 'A'
-                // This needs to be adjusted based on actual Keycode values
-                if let Some(txt) = text {
-                    if !txt.is_empty() {
-                        return KeySymbol::Char(txt.chars().next().unwrap_or('?'));
-                    }
-                }
-                // Fallback if text is None or empty, try to derive from keysym if possible
-                // This is a placeholder for a more complex mapping
-                KeySymbol::Char((k as u8 - Keycode::A as u8 + b'A') as char)
-            }
-            k if k >= Keycode::Key0 && k <= Keycode::Key9 => {
-                 if let Some(txt) = text {
-                    if !txt.is_empty() {
-                        return KeySymbol::Char(txt.chars().next().unwrap_or('?'));
-                    }
-                }
-                KeySymbol::Char((k as u8 - Keycode::Key0 as u8 + b'0') as char)
-            }
-            Keycode::Backspace => KeySymbol::Backspace,
-            Keycode::Tab => KeySymbol::Tab,
-            Keycode::Return => KeySymbol::Return,
-            Keycode::Escape => KeySymbol::Escape,
-            Keycode::Space => KeySymbol::Space,
-            Keycode::PageUp => KeySymbol::PageUp,
-            Keycode::PageDown => KeySymbol::PageDown,
-            Keycode::End => KeySymbol::End,
-            Keycode::Home => KeySymbol::Home,
-            Keycode::Left => KeySymbol::Left,
-            Keycode::Up => KeySymbol::Up,
-            Keycode::Right => KeySymbol::Right,
-            Keycode::Down => KeySymbol::Down,
-            Keycode::Insert => KeySymbol::Insert,
-            Keycode::Delete => KeySymbol::Delete,
-            Keycode::F1 => KeySymbol::F1,
-            Keycode::F2 => KeySymbol::F2,
-            Keycode::F3 => KeySymbol::F3,
-            Keycode::F4 => KeySymbol::F4,
-            Keycode::F5 => KeySymbol::F5,
-            Keycode::F6 => KeySymbol::F6,
-            Keycode::F7 => KeySymbol::F7,
-            Keycode::F8 => KeySymbol::F8,
-            Keycode::F9 => KeySymbol::F9,
-            Keycode::F10 => KeySymbol::F10,
-            Keycode::F11 => KeySymbol::F11,
-            Keycode::F12 => KeySymbol::F12,
-            // Add more mappings as needed
-            _ => {
-                // If text is available and represents a single char, use it.
-                if let Some(txt) = text {
-                    let mut chars = txt.chars();
-                    if let (Some(c), None) = (chars.next(), chars.next()) {
-                        return KeySymbol::Char(c);
-                    }
-                }
-                KeySymbol::Unknown(keysym.0) // Store the raw keysym if unknown
-            }
-        }
-    }
-
 
     pub fn process_pty_events(&mut self) -> Result<OrchestratorStatus, AnyhowError> {
         log::trace!("Orchestrator: Processing available PTY data...");
@@ -216,40 +124,10 @@ impl<'a> AppOrchestrator<'a> {
 
     fn handle_specific_driver_event(&mut self, event: BackendEvent) {
         match event {
-            BackendEvent::Key {
-                keysym,
-                modifiers,
-                text,
-            } => {
-                let translated_symbol = self.translate_keysym(keysym, &text);
-                let translated_modifiers = self.translate_modifiers(modifiers);
-
-                let copy_binding = self.config.keybindings.copy;
-                let paste_binding = self.config.keybindings.paste;
-
-                let mut user_input_action = None;
-
-                if translated_symbol == copy_binding.symbol
-                    && translated_modifiers == copy_binding.modifiers
-                {
-                    user_input_action = Some(UserInputAction::InitiateCopy);
-                } else if translated_symbol == paste_binding.symbol
-                    && translated_modifiers == paste_binding.modifiers
-                {
-                    user_input_action = Some(UserInputAction::InitiatePaste);
-                } else {
-                    // Regular key input
-                    user_input_action = Some(UserInputAction::KeyInput {
-                        symbol: translated_symbol,
-                        modifiers: translated_modifiers,
-                        text, // Pass along the original text from backend for PTY
-                    });
-                }
-
-                if let Some(uia) = user_input_action {
-                    if let Some(action) = self.term.interpret_input(EmulatorInput::User(uia)) {
-                        self.handle_emulator_action(action);
-                    }
+            BackendEvent::Key { keysym, text } => {
+                let user_input = EmulatorInput::User(BackendEvent::Key { keysym, text });
+                if let Some(action) = self.term.interpret_input(user_input) {
+                    self.handle_emulator_action(action);
                 }
             }
             BackendEvent::Resize {
@@ -354,47 +232,6 @@ impl<'a> AppOrchestrator<'a> {
                     visible
                 );
                 self.driver.set_cursor_visibility(visible);
-            }
-            EmulatorAction::CopyToClipboard(text) => {
-                match arboard::Clipboard::new() {
-                    Ok(mut clipboard) => {
-                        if let Err(e) = clipboard.set_text(text) {
-                            log::error!("Orchestrator: Failed to copy to clipboard: {}", e);
-                        } else {
-                            log::info!("Orchestrator: Copied text to clipboard.");
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Orchestrator: Failed to initialize clipboard for copy: {}", e);
-                    }
-                }
-            }
-            EmulatorAction::RequestClipboardContent => {
-                match arboard::Clipboard::new() {
-                    Ok(mut clipboard) => {
-                        match clipboard.get_text() {
-                            Ok(text) => {
-                                log::info!("Orchestrator: Pasting text from clipboard.");
-                                let paste_input =
-                                    EmulatorInput::User(UserInputAction::PasteText(text));
-                                // Recursively call interpret_input -> handle_emulator_action
-                                // This is okay for one level. Deeper recursion could be an issue.
-                                if let Some(action) = self.term.interpret_input(paste_input) {
-                                    self.handle_emulator_action(action);
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("Orchestrator: Failed to get text from clipboard: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "Orchestrator: Failed to initialize clipboard for paste: {}",
-                            e
-                        );
-                    }
-                }
             }
         }
     }
