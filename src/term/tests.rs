@@ -5,16 +5,14 @@
 // Module for tests related to the Term struct itself
 #[cfg(test)]
 mod term_tests {
-    use crate::ansi::commands::{AnsiCommand, Attribute, C0Control, CsiCommand};
-    use crate::backends::BackendEvent;
+    use crate::ansi::commands::{AnsiCommand, Attribute, C0Control, CsiCommand, EscCommand};
+    use crate::backends::{BackendEvent, MouseButton, MouseEventType}; // Added MouseButton, MouseEventType
     use crate::color::{Color, NamedColor};
+    use crate::config::{KeySymbol, Modifiers}; // Added for potential future use if mapping from BackendEvent to UserInputAction is tested here
     use crate::glyph::{AttrFlags, Attributes, Glyph};
     use crate::term::{
-        DecModeConstant,
-        EmulatorAction,
-        EmulatorInput,
-        TerminalEmulator,
-        TerminalInterface, // Import the trait to bring its methods into scope
+        DecModeConstant, EmulatorAction, EmulatorInput, SelectionMode, SelectionState,
+        TerminalEmulator, TerminalInterface, UserInputAction, // Added UserInputAction, SelectionState, SelectionMode
     };
 
     use test_log::test; // Ensure test_log is a dev-dependency
@@ -1773,5 +1771,267 @@ mod extensive_term_emulator_tests {
                 c_idx
             );
         }
+    }
+}
+
+
+// --- Selection and Copy/Paste Tests ---
+#[cfg(test)]
+mod selection_tests {
+    use super::term_tests::{create_term, get_glyph_at, get_line_as_string, process_command, process_commands, assert_and_clear_dirty_lines};
+    use crate::ansi::commands::{AnsiCommand, C0Control, CsiCommand};
+    use crate::backends::{MouseButton, MouseEventType};
+    use crate::term::{
+        EmulatorAction, EmulatorInput, SelectionMode, SelectionState, TerminalEmulator,
+        TerminalInterface, UserInputAction,
+    };
+    use test_log::test;
+
+    fn set_content(term: &mut TerminalEmulator, lines: Vec<&str>) {
+        for (i, line_content) in lines.iter().enumerate() {
+            if i > 0 {
+                process_command(term, AnsiCommand::C0Control(C0Control::LF));
+            }
+            for char_to_print in line_content.chars() {
+                process_command(term, AnsiCommand::Print(char_to_print));
+            }
+        }
+        // Clear initial dirty state from setup
+        let _ = TerminalInterface::take_dirty_lines(term);
+    }
+    
+    #[test]
+    fn test_selection_mouse_press_starts_selection() {
+        let mut term = create_term(10, 3);
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Press,
+            col: 2,
+            row: 1,
+            button: MouseButton::Left,
+            modifiers: crate::backends::Modifiers::empty(),
+        }));
+
+        assert!(term.selection.is_some(), "Selection should be Some after press");
+        if let Some(selection) = &term.selection {
+            assert_eq!(selection.start, (2, 1), "Selection start mismatch");
+            assert_eq!(selection.end, (2, 1), "Selection end mismatch");
+            assert_eq!(selection.mode, SelectionMode::Normal, "Selection mode mismatch");
+        }
+        assert_and_clear_dirty_lines(&mut term, &[1], "Line 1 (selection start) should be dirty");
+    }
+
+    #[test]
+    fn test_selection_mouse_drag_updates_selection_normal_mode() {
+        let mut term = create_term(10, 3);
+        // Initial press
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Press,
+            col: 2,
+            row: 1,
+            button: MouseButton::Left,
+            modifiers: crate::backends::Modifiers::empty(),
+        }));
+        let _ = TerminalInterface::take_dirty_lines(&mut term); // Clear dirty from press
+
+        // Drag
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Move,
+            col: 5,
+            row: 2,
+            button: MouseButton::Left, // Usually not specified for move, but good to be explicit
+            modifiers: crate::backends::Modifiers::empty(),
+        }));
+        
+        assert!(term.selection.is_some(), "Selection should exist after drag");
+        if let Some(selection) = &term.selection {
+            assert_eq!(selection.start, (2, 1), "Selection start should remain the same");
+            assert_eq!(selection.end, (5, 2), "Selection end should update to drag position");
+        }
+        // Old end row (1) and new end row (2) should be dirty.
+        assert_and_clear_dirty_lines(&mut term, &[1, 2], "Lines 1 and 2 (old and new end) should be dirty");
+    }
+
+    #[test]
+    fn test_selection_mouse_release_finalizes_selection() {
+        let mut term = create_term(10, 3);
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Press, col: 2, row: 1, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
+        }));
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Move, col: 5, row: 1, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
+        }));
+        let _ = TerminalInterface::take_dirty_lines(&mut term); 
+
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Release,
+            col: 5, // Release coordinates
+            row: 1,
+            button: MouseButton::Left,
+            modifiers: crate::backends::Modifiers::empty(),
+        }));
+
+        assert!(term.selection.is_some(), "Selection should still exist after release");
+        if let Some(selection) = &term.selection { // Ensure selection is still (2,1) to (5,1)
+            assert_eq!(selection.start, (2,1));
+            assert_eq!(selection.end, (5,1));
+        }
+        assert_and_clear_dirty_lines(&mut term, &[1], "Line 1 (selection) should be dirty on release");
+    }
+    
+    #[test]
+    fn test_selection_cleared_on_initiate_copy() {
+        let mut term = create_term(10, 3);
+        set_content(&mut term, vec!["Hello World"]);
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Press, col: 0, row: 0, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
+        }));
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Move, col: 4, row: 0, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
+        })); // Selects "Hello"
+        assert!(term.selection.is_some());
+        let _ = TerminalInterface::take_dirty_lines(&mut term);
+
+        term.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+        assert!(term.selection.is_none(), "Selection should be None after copy");
+        assert_and_clear_dirty_lines(&mut term, &[0], "Line 0 (former selection) should be dirty after copy");
+    }
+
+    #[test]
+    fn test_selection_cleared_on_resize() {
+        let mut term = create_term(10, 3);
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Press, col: 0, row: 0, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
+        }));
+        assert!(term.selection.is_some());
+        let _ = TerminalInterface::take_dirty_lines(&mut term); // Clear setup dirty
+
+        term.resize(5, 2); // Resize the terminal
+        assert!(term.selection.is_none(), "Selection should be None after resize");
+        // Resize marks all lines dirty by default. We also added specific dirtying for old selection.
+        // The `resize` method itself calls `screen.resize` which marks all new lines dirty.
+        // The test helper `assert_and_clear_dirty_lines` expects exact match.
+        // For simplicity, let's just check that the old selection line was dirtied if it's within new bounds.
+        // Or, more simply, rely on resize marking all lines dirty.
+        let (w,h) = TerminalInterface::dimensions(&term);
+        let all_lines: Vec<usize> = (0..h).collect();
+        assert_and_clear_dirty_lines(&mut term, &all_lines, "All lines should be dirty after resize");
+    }
+
+    // --- get_selected_text() Tests ---
+    #[test]
+    fn test_get_selected_text_no_selection() {
+        let term = create_term(10, 3);
+        assert_eq!(term.get_selected_text(), None);
+    }
+
+    #[test]
+    fn test_get_selected_text_single_line_simple() {
+        let mut term = create_term(20, 3);
+        set_content(&mut term, vec!["Hello World, how are you?"]);
+        term.selection = Some(SelectionState { start: (6,0), end: (10,0), mode: SelectionMode::Normal }); // Select "World"
+        assert_eq!(term.get_selected_text(), Some("World".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_multi_line() {
+        let mut term = create_term(10, 3);
+        set_content(&mut term, vec!["First line", "Second row", "Third one"]);
+        // Select from "line" (0,5) on first line to "Sec" (1,2) on second line
+        term.selection = Some(SelectionState { start: (6,0), end: (2,1), mode: SelectionMode::Normal }); 
+        assert_eq!(term.get_selected_text(), Some("line\nSec".to_string()));
+    }
+    
+    #[test]
+    fn test_get_selected_text_full_line() {
+        let mut term = create_term(10,3);
+        set_content(&mut term, vec!["Full Line!"]);
+        term.selection = Some(SelectionState { start: (0,0), end: (9,0), mode: SelectionMode::Normal});
+        assert_eq!(term.get_selected_text(), Some("Full Line!".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_same_cell() {
+        let mut term = create_term(10,3);
+        set_content(&mut term, vec!["Test"]);
+        term.selection = Some(SelectionState { start: (1,0), end: (1,0), mode: SelectionMode::Normal}); // Select "e"
+        assert_eq!(term.get_selected_text(), Some("e".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_wide_chars() {
+        let mut term = create_term(10, 3);
+        set_content(&mut term, vec!["你好世界"]); // "Hello World" in Chinese
+        // Select "你好" (Ni Hao) which are 2 wide chars, so 4 cells
+        term.selection = Some(SelectionState { start: (0,0), end: (3,0), mode: SelectionMode::Normal });
+        assert_eq!(term.get_selected_text(), Some("你好".to_string()));
+        
+        // Select "世" (Shi) - one wide char
+        term.selection = Some(SelectionState { start: (4,0), end: (5,0), mode: SelectionMode::Normal });
+        assert_eq!(term.get_selected_text(), Some("世".to_string()));
+    }
+    
+    #[test]
+    fn test_get_selected_text_trailing_spaces() {
+        let mut term = create_term(20, 3);
+        set_content(&mut term, vec!["Line with spaces   ", "Next line"]);
+        // Select "Line with spaces" (excluding trailing)
+        term.selection = Some(SelectionState { start: (0,0), end: (15,0), mode: SelectionMode::Normal });
+        assert_eq!(term.get_selected_text(), Some("Line with spaces".to_string()));
+
+        // Select "Line with spaces   " (including some trailing) then part of next line
+        term.selection = Some(SelectionState { start: (0,0), end: (3,1), mode: SelectionMode::Normal });
+        assert_eq!(term.get_selected_text(), Some("Line with spaces\nNext".to_string()), "Trailing spaces should be trimmed on non-final selected line part");
+    }
+
+    #[test]
+    fn test_get_selected_text_reversed_coords() {
+        let mut term = create_term(20, 3);
+        set_content(&mut term, vec!["Hello World"]);
+        term.selection = Some(SelectionState { start: (10,0), end: (6,0), mode: SelectionMode::Normal }); // Select "World" backwards
+        assert_eq!(term.get_selected_text(), Some("World".to_string()));
+    }
+
+    // --- EmulatorAction Generation Tests ---
+    #[test]
+    fn test_action_initiate_copy_with_selection() {
+        let mut term = create_term(10,3);
+        set_content(&mut term, vec!["Copy This"]);
+        term.selection = Some(SelectionState { start: (0,0), end: (8,0), mode: SelectionMode::Normal });
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+        assert_eq!(action, Some(EmulatorAction::CopyToClipboard("Copy This".to_string())));
+    }
+
+    #[test]
+    fn test_action_initiate_copy_no_selection() {
+        let mut term = create_term(10,3);
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn test_action_initiate_paste_generates_request() {
+        let mut term = create_term(10,3);
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiatePaste));
+        assert_eq!(action, Some(EmulatorAction::RequestClipboardContent));
+    }
+
+    // --- UserInputAction::PasteText Handling Tests ---
+    #[test]
+    fn test_paste_text_normal_mode() {
+        let mut term = create_term(10,3);
+        term.dec_modes.bracketed_paste_mode = false;
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::PasteText("Pasted!".to_string())));
+        assert_eq!(action, Some(EmulatorAction::WritePty(b"Pasted!".to_vec())));
+    }
+
+    #[test]
+    fn test_paste_text_bracketed_mode() {
+        let mut term = create_term(10,3);
+        term.dec_modes.bracketed_paste_mode = true;
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::PasteText("Pasted!".to_string())));
+        let expected_bytes = [b"\x1b[200~".to_vec(), b"Pasted!".to_vec(), b"\x1b[201~".to_vec()].concat();
+        assert_eq!(action, Some(EmulatorAction::WritePty(expected_bytes)));
     }
 }
