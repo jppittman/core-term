@@ -181,42 +181,64 @@ impl AnsiLexer {
     /// - C0/C1 control codes interrupt any ongoing UTF-8 decoding and are emitted directly.
     /// - Other bytes are fed to the UTF-8 decoder. If a complete character (or replacement)
     ///   is decoded, a `Print` token is buffered.
-    pub fn process_byte(&mut self, byte: u8) {
+    
+    pub fn process_byte(&mut self, byte: u8) { // byte parameter is not mut, as it's not reassigned
+        let mut reprocess_as_new = false;
+
         if self.utf8_decoder.len > 0 {
-            // A UTF-8 sequence is in progress. This byte MUST be a continuation.
-            // The decoder will handle invalid continuations by returning REPLACEMENT_CHARACTER
-            // and resetting itself.
-            if let Some(c) = self.utf8_decoder.decode(byte) {
-                self.tokens.push(AnsiToken::Print(c));
+            // A UTF-8 sequence is in progress.
+            match self.utf8_decoder.decode(byte) {
+                Some(c) => {
+                    // The decoder processed the byte and produced a character.
+                    self.tokens.push(AnsiToken::Print(c));
+                    if c == REPLACEMENT_CHARACTER {
+                        // `byte` was invalid in the context of the ongoing UTF-8 sequence.
+                        // The Utf8Decoder has reset itself.
+                        // The current `byte` now needs to be re-evaluated as a new, standalone byte.
+                        reprocess_as_new = true;
+                    }
+                    // If `c` was a valid char (not REPLACEMENT_CHARACTER), the byte is fully consumed
+                    // by being part of that valid sequence. No reprocessing needed.
+                    // If `c` was REPLACEMENT_CHARACTER, we've pushed it, and now `reprocess_as_new` is true.
+                }
+                None => {
+                    // UTF-8 sequence still incomplete; byte was valid so far and buffered by the decoder.
+                    // Nothing more to do with this byte in this call.
+                    return;
+                }
             }
-            // If None is returned, the decoder is still waiting for more bytes.
         } else {
-            // No UTF-8 sequence in progress. This byte could be a C0/C1 control,
-            // or the start of a new UTF-8 sequence (including ASCII).
+            // No active UTF-8 sequence, so this byte should be processed as a new potential start.
+            reprocess_as_new = true;
+        }
+
+        if reprocess_as_new {
+            // This block handles:
+            // 1. Bytes arriving when no UTF-8 sequence was active.
+            // 2. Bytes that just caused a REPLACEMENT_CHARACTER to be emitted (and thus the
+            //    Utf8Decoder was reset).
+            // The utf8_decoder is guaranteed to be reset (len == 0) if we are here for reprocessing
+            // an invalid UTF-8 continuation byte because Utf8Decoder.decode() calls reset()
+            // before returning Some(REPLACEMENT_CHARACTER) in such cases.
             match byte {
-                // C0 Control Codes (excluding ESC) & DEL
-                0x00..=0x1A | 0x1C..=0x1F | 0x7F => {
-                    // If utf8_decoder.len was > 0, we wouldn't be in this 'else' branch.
-                    // So, no need to interrupt/reset utf8_decoder here.
+                0x00..=0x1A | 0x1C..=0x1F | 0x7F => { // C0 Controls (excluding ESC) & DEL
                     self.tokens.push(AnsiToken::C0Control(byte));
                 }
-                // Escape character
-                0x1B => {
+                0x1B => { // ESC
                     self.tokens.push(AnsiToken::C0Control(0x1B));
                 }
-                // C1 Control Codes
-                0x80..=0x9F => {
+                0x80..=0x9F => { // C1 Controls
                     self.tokens.push(AnsiToken::C1Control(byte));
                 }
-                // Potentially printable characters (ASCII or start of new UTF-8 sequence)
-                _ => {
-                    // Feed byte to the stateful decoder. It will either decode a
-                    // single-byte char (ASCII, or replacement for invalid start),
-                    // or start a new multi-byte sequence.
-                    if let Some(c) = self.utf8_decoder.decode(byte) {
-                        self.tokens.push(AnsiToken::Print(c));
+                _ => { // Potentially printable char / start of a new UTF-8 sequence
+                      // Since utf8_decoder is reset (either it was never active, or it was reset
+                      // due to the invalid continuation `byte`), this will try to start a new
+                      // sequence or emit ASCII.
+                    if let Some(c_new) = self.utf8_decoder.decode(byte) {
+                        self.tokens.push(AnsiToken::Print(c_new));
                     }
-                    // If None, decoder has started a new sequence and is waiting for more bytes.
+                    // If None is returned, the decoder has started a new multi-byte sequence
+                    // and is waiting for more bytes.
                 }
             }
         }
