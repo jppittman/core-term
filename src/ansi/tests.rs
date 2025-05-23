@@ -597,8 +597,9 @@ fn test_process_esc_in_csi() {
 }
 
 #[cfg(test)]
-mod unicode_wide_tests { // Or your chosen test module
-    use crate::ansi::{AnsiProcessor, AnsiParser as AnsiParserTrait, AnsiCommand};
+mod unicode_wide_tests {
+    // Or your chosen test module
+    use crate::ansi::{AnsiCommand, AnsiParser as AnsiParserTrait, AnsiProcessor};
     use std::char;
 
     // Constants
@@ -671,9 +672,11 @@ mod unicode_wide_tests { // Or your chosen test module
             0xE2,        // Start of '€'
             ESC,         // ESC (interrupts '€')
             CHAR_A_BYTE, // 'A'
-            0xF0, 0x9F,  // Start of '😀'
-            BEL_BYTE,    // BEL (interrupts '😀')
-            0xC2, 0xA2,  // '¢' (complete char)
+            0xF0,
+            0x9F,     // Start of '😀'
+            BEL_BYTE, // BEL (interrupts '😀')
+            0xC2,
+            0xA2,        // '¢' (complete char)
             ESC,         // ESC
             CHAR_C_BYTE, // 'c' (RIS)
         ];
@@ -688,7 +691,7 @@ mod unicode_wide_tests { // Or your chosen test module
         // or the 'A' is consumed by the ESC state without specific command.
         // If your parser *does* print 'A' in this case, this assertion needs AnsiCommand::Print('A').
         if let Some(esc_a_cmd) = AnsiCommand::from_esc('A') {
-             expected_commands.push(esc_a_cmd);
+            expected_commands.push(esc_a_cmd);
         }
         // To be more robust for now, let's assume if from_esc('A') is None,
         // the parser might try to print 'A' as a fallback after consuming ESC.
@@ -699,7 +702,6 @@ mod unicode_wide_tests { // Or your chosen test module
         else {
             expected_commands.push(AnsiCommand::Print('A'));
         }
-
 
         expected_commands.extend(vec![
             AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For interrupted 0xF0, 0x9F
@@ -735,11 +737,14 @@ mod unicode_wide_tests { // Or your chosen test module
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xE2, 0x82, NUL, CHAR_A_BYTE]; // Partial '€', NUL, 'A'
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::from_c0(NUL).expect("NUL C0 cmd failed"),
-            AnsiCommand::Print('A'),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::from_c0(NUL).expect("NUL C0 cmd failed"),
+                AnsiCommand::Print('A'),
+            ]
+        );
     }
 
     #[test]
@@ -748,36 +753,47 @@ mod unicode_wide_tests { // Or your chosen test module
         // Partial '😀', ETX, ESC D (IND)
         let bytes = &[0xF0, 0x9F, ETX, ESC, b'D'];
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::from_c0(ETX).expect("ETX C0 cmd failed"),
-            AnsiCommand::from_esc('D').expect("ESC D (IND) cmd failed"),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::from_c0(ETX).expect("ETX C0 cmd failed"),
+                AnsiCommand::from_esc('D').expect("ESC D (IND) cmd failed"),
+            ]
+        );
     }
 
     // C1 Interruptions (these will likely fail until lexer bug is fixed)
     #[test]
-    fn test_utf8_2byte_interrupted_by_c1_pad() { // 0x80 is C1 PAD
+    fn test_utf8_2byte_interrupted_by_c1_pad() {
+        // 0x80 is C1 PAD
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xC2, C1_PAD_BYTE, CHAR_A_BYTE]; // Partial '¢', C1 PAD, 'A'
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::from_c1(C1_PAD_BYTE).expect("C1 PAD cmd failed"),
-            AnsiCommand::Print('A'),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::from_c1(C1_PAD_BYTE).expect("C1 PAD cmd failed"),
+                AnsiCommand::Print('A'),
+            ]
+        );
     }
 
     #[test]
-    fn test_utf8_4byte_interrupted_by_c1_st_after_2_bytes() { // 0x9C is C1 ST
+    fn test_utf8_4byte_interrupted_by_c1_st_after_2_bytes() {
+        // 0x9C is C1 ST
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xF0, 0x9F, ST_C1_BYTE, CHAR_A_BYTE]; // Partial '😀', C1 ST, 'A'
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::from_c1(ST_C1_BYTE).expect("C1 ST cmd failed"),
-            AnsiCommand::Print('A'),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::from_c1(ST_C1_BYTE).expect("C1 ST cmd failed"),
+                AnsiCommand::Print('A'),
+            ]
+        );
     }
 
     // Interruptions at various UTF-8 sequence points by ESC
@@ -786,10 +802,13 @@ mod unicode_wide_tests { // Or your chosen test module
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xE2, 0x82, ESC, CHAR_C_BYTE]; // Partial '€', ESC c
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::from_esc(RIS_C_CHAR).unwrap(),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::from_esc(RIS_C_CHAR).unwrap(),
+            ]
+        );
     }
 
     #[test]
@@ -797,10 +816,13 @@ mod unicode_wide_tests { // Or your chosen test module
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xF0, ESC, CHAR_C_BYTE]; // Partial '😀', ESC c
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::from_esc(RIS_C_CHAR).unwrap(),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::from_esc(RIS_C_CHAR).unwrap(),
+            ]
+        );
     }
 
     #[test]
@@ -808,10 +830,13 @@ mod unicode_wide_tests { // Or your chosen test module
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xF0, 0x9F, 0x98, ESC, CHAR_C_BYTE]; // Partial '😀', ESC c
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::from_esc(RIS_C_CHAR).unwrap(),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::from_esc(RIS_C_CHAR).unwrap(),
+            ]
+        );
     }
 
     // Double interruption variant
@@ -821,12 +846,15 @@ mod unicode_wide_tests { // Or your chosen test module
         // Partial '€', interrupted by ESC then 'M' (RI). Then partial '😀', interrupted by BEL.
         let bytes = &[0xE2, ESC, b'M', 0xF0, 0x9F, BEL_BYTE];
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For 0xE2
-            AnsiCommand::from_esc('M').expect("ESC M (RI) failed"),
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For 0xF0 0x9F
-            AnsiCommand::from_c0(BEL_BYTE).unwrap(),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For 0xE2
+                AnsiCommand::from_esc('M').expect("ESC M (RI) failed"),
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For 0xF0 0x9F
+                AnsiCommand::from_c0(BEL_BYTE).unwrap(),
+            ]
+        );
     }
 
     // Invalid UTF-8 byte sequences (non-interruption focus, but important for lexer)
@@ -844,24 +872,31 @@ mod unicode_wide_tests { // Or your chosen test module
         //   - Then 0x42 -> Print('B').
         // So expected tokens: [Print(�), Print('A'), Print('B')] if that's how Utf8Decoder handles invalid cont.
         // Or, if Utf8Decoder replaces the whole E2+A attempt with one � and A is next:
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For 0xE2 + 0x41 attempt
-            AnsiCommand::Print('A'),                         // 'A' processed standalone
-            AnsiCommand::Print('B'),                         // 'B' processed standalone
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For 0xE2 + 0x41 attempt
+                AnsiCommand::Print('A'),                         // 'A' processed standalone
+                AnsiCommand::Print('B'),                         // 'B' processed standalone
+            ]
+        );
     }
 
     #[test]
-    fn test_utf8_overlong_c1_af() { // 0xC1 0xAF is overlong for '/' (U+002F)
+    fn test_utf8_overlong_c1_af() {
+        // 0xC1 0xAF is overlong for '/' (U+002F)
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xC1, 0xAF];
         let commands = processor.process_bytes(bytes);
         // Utf8Decoder: 0xC1 is invalid start -> Print(�).
         // Then 0xAF is invalid start/unexpected cont -> Print(�).
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+            ]
+        );
     }
 
     #[test]
@@ -869,20 +904,25 @@ mod unicode_wide_tests { // Or your chosen test module
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xF0, 0x9F, 0x98]; // Incomplete '😀'
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-        ]);
+        assert_eq!(
+            commands,
+            vec![AnsiCommand::Print(char::REPLACEMENT_CHARACTER),]
+        );
     }
 
-     #[test]
-    fn test_utf8_interrupted_by_high_ascii_control_code_like() { // e.g. 0x7F DEL
+    #[test]
+    fn test_utf8_interrupted_by_high_ascii_control_code_like() {
+        // e.g. 0x7F DEL
         let mut processor = AnsiProcessor::new();
         let bytes = &[0xE2, 0x7F, CHAR_A_BYTE]; // Partial '€', DEL, 'A'
         let commands = processor.process_bytes(bytes);
-        assert_eq!(commands, vec![
-            AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-            AnsiCommand::from_c0(0x7F).expect("DEL C0 cmd failed"),
-            AnsiCommand::Print('A'),
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
+                AnsiCommand::from_c0(0x7F).expect("DEL C0 cmd failed"),
+                AnsiCommand::Print('A'),
+            ]
+        );
     }
 }

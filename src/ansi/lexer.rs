@@ -181,8 +181,9 @@ impl AnsiLexer {
     /// - C0/C1 control codes interrupt any ongoing UTF-8 decoding and are emitted directly.
     /// - Other bytes are fed to the UTF-8 decoder. If a complete character (or replacement)
     ///   is decoded, a `Print` token is buffered.
-    
-    pub fn process_byte(&mut self, byte: u8) { // byte parameter is not mut, as it's not reassigned
+
+    pub fn process_byte(&mut self, byte: u8) {
+        // byte parameter is not mut, as it's not reassigned
         let mut reprocess_as_new = false;
 
         if self.utf8_decoder.len > 0 {
@@ -221,19 +222,23 @@ impl AnsiLexer {
             // an invalid UTF-8 continuation byte because Utf8Decoder.decode() calls reset()
             // before returning Some(REPLACEMENT_CHARACTER) in such cases.
             match byte {
-                0x00..=0x1A | 0x1C..=0x1F | 0x7F => { // C0 Controls (excluding ESC) & DEL
+                0x00..=0x1A | 0x1C..=0x1F | 0x7F => {
+                    // C0 Controls (excluding ESC) & DEL
                     self.tokens.push(AnsiToken::C0Control(byte));
                 }
-                0x1B => { // ESC
+                0x1B => {
+                    // ESC
                     self.tokens.push(AnsiToken::C0Control(0x1B));
                 }
-                0x80..=0x9F => { // C1 Controls
+                0x80..=0x9F => {
+                    // C1 Controls
                     self.tokens.push(AnsiToken::C1Control(byte));
                 }
-                _ => { // Potentially printable char / start of a new UTF-8 sequence
-                      // Since utf8_decoder is reset (either it was never active, or it was reset
-                      // due to the invalid continuation `byte`), this will try to start a new
-                      // sequence or emit ASCII.
+                _ => {
+                    // Potentially printable char / start of a new UTF-8 sequence
+                    // Since utf8_decoder is reset (either it was never active, or it was reset
+                    // due to the invalid continuation `byte`), this will try to start a new
+                    // sequence or emit ASCII.
                     if let Some(c_new) = self.utf8_decoder.decode(byte) {
                         self.tokens.push(AnsiToken::Print(c_new));
                     }
