@@ -14,6 +14,7 @@
 // Serde is used for deserializing the configuration from a file.
 // The `Serialize` trait is also derived for convenience, allowing the current
 // configuration to be exported if needed.
+use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf; // For paths, like shell path.
 
@@ -43,8 +44,85 @@ pub struct Config {
     pub shell: ShellConfig,
     /// Mouse behavior settings.
     pub mouse: MouseConfig,
-    // TODO: Add KeybindingsConfig when keybinding system is designed.
-    // pub keybindings: KeybindingsConfig,
+    /// Keybindings configuration.
+    pub keybindings: KeybindingsConfig,
+}
+
+// --- Keybinding Configuration ---
+
+/// Represents a symbolic key, abstracting over specific key codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeySymbol {
+    Backspace,
+    Tab,
+    Return,
+    Escape,
+    Space,
+    PageUp,
+    PageDown,
+    End,
+    Home,
+    Left,
+    Up,
+    Right,
+    Down,
+    Insert,
+    Delete,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    Char(char),
+    Unknown(u32),
+}
+
+bitflags! {
+    /// Represents modifier keys (Shift, Control, Alt, Super).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Modifiers: u32 {
+        const SHIFT   = 1 << 0;
+        const CONTROL = 1 << 1;
+        const ALT     = 1 << 2; // Also known as Meta
+        const SUPER   = 1 << 3; // Also known as Logo or Windows key
+        // None can be represented by Modifiers::empty()
+    }
+}
+
+/// Represents a combination of a key symbol and active modifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyCombination {
+    pub symbol: KeySymbol,
+    pub modifiers: Modifiers,
+}
+
+/// Defines configurable keybindings for common actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeybindingsConfig {
+    pub copy: KeyCombination,
+    pub paste: KeyCombination,
+}
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        KeybindingsConfig {
+            copy: KeyCombination {
+                symbol: KeySymbol::Char('C'),
+                modifiers: Modifiers::CONTROL | Modifiers::SHIFT,
+            },
+            paste: KeyCombination {
+                symbol: KeySymbol::Char('V'),
+                modifiers: Modifiers::CONTROL | Modifiers::SHIFT,
+            },
+        }
+    }
 }
 
 // --- Appearance Configuration ---

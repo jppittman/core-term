@@ -10,6 +10,7 @@ mod orchestrator_tests {
     use crate::ansi::{AnsiCommand, AnsiParser as AnsiParserTrait};
     use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
     use crate::color::Color;
+    use crate::config::{Config, KeySymbol, Modifiers, KeybindingsConfig, KeyCombination}; // Updated config imports
     use crate::glyph::{AttrFlags, Attributes, Glyph};
     use crate::orchestrator::{AppOrchestrator, OrchestratorStatus};
     use crate::os::pty::PtyChannel;
@@ -440,8 +441,14 @@ mod orchestrator_tests {
         parser: &'a mut dyn AnsiParserTrait,
         renderer: Renderer, // Takes ownership, will be moved
         driver: &'a mut dyn Driver,
+        config: &'a Config, // Added config
     ) -> AppOrchestrator<'a> {
-        AppOrchestrator::new(pty, term, parser, renderer, driver)
+        AppOrchestrator::new(pty, term, parser, renderer, driver, config)
+    }
+
+    // Helper to create a default config for tests
+    fn default_test_config() -> Config {
+        Config::default()
     }
 
     #[test]
@@ -463,6 +470,7 @@ mod orchestrator_tests {
         mock_term.expect_action_for_next_call(None);
 
         let status;
+        let config = default_test_config();
         // Scope for orchestrator to release borrows
         {
             let mut orchestrator = create_orchestrator(
@@ -471,6 +479,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer,
                 &mut mock_driver,
+                &config,
             );
             status = orchestrator.process_pty_events().unwrap();
         }
@@ -508,10 +517,12 @@ mod orchestrator_tests {
         let mut mock_parser = MockAnsiParser::new();
         let renderer = Renderer::new();
         let mut mock_driver = MockDriver::new();
+        let config = default_test_config();
 
         let key_event = BackendEvent::Key {
-            keysym: 'X' as u32,
-            text: "X".to_string(),
+            symbol: KeySymbol::Char('X'), // Using translated KeySymbol
+            modifiers: Modifiers::empty(),   // Using translated Modifiers
+            text: Some("X".to_string()),     // Text remains Option<String>
         };
         mock_driver.expect_events_for_next_call(vec![key_event.clone()]);
 
@@ -526,6 +537,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer,
                 &mut mock_driver,
+                &config,
             );
             status = orchestrator.process_driver_events().unwrap();
         }
@@ -567,6 +579,7 @@ mod orchestrator_tests {
         mock_term.expect_action_for_next_call(None);
 
         let status;
+        let config = default_test_config();
         {
             let mut orchestrator = create_orchestrator(
                 &mut mock_pty,
@@ -574,6 +587,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer,
                 &mut mock_driver,
+                &config,
             );
             status = orchestrator.process_driver_events().unwrap();
         }
@@ -616,6 +630,7 @@ mod orchestrator_tests {
         let mut renderer = Renderer::new();
         renderer.first_draw = false;
         let mut mock_driver = MockDriver::new();
+        let config = default_test_config();
 
         {
             let mut orchestrator = create_orchestrator(
@@ -624,6 +639,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer,
                 &mut mock_driver,
+                &config,
             );
             orchestrator.render_if_needed().unwrap();
         }
@@ -642,6 +658,7 @@ mod orchestrator_tests {
         let mut mock_parser = MockAnsiParser::new();
         let renderer_instance = Renderer::new(); // first_draw is true by default
         let mut mock_driver = MockDriver::new();
+        let config = default_test_config();
         let first_draw_flag_after_render;
 
         {
@@ -651,6 +668,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer_instance.clone(),
                 &mut mock_driver,
+                &config,
             );
             orchestrator.render_if_needed().unwrap();
             first_draw_flag_after_render = orchestrator.renderer.first_draw;
@@ -701,6 +719,7 @@ mod orchestrator_tests {
         let mut mock_driver = MockDriver::new();
 
         let status;
+        let config = default_test_config();
         {
             let mut orchestrator = create_orchestrator(
                 &mut mock_pty,
@@ -708,6 +727,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer,
                 &mut mock_driver,
+                &config,
             );
             status = orchestrator.process_pty_events().unwrap();
         }
@@ -725,6 +745,7 @@ mod orchestrator_tests {
         mock_driver.expect_events_for_next_call(vec![BackendEvent::CloseRequested]);
 
         let status;
+        let config = default_test_config();
         {
             let mut orchestrator = create_orchestrator(
                 &mut mock_pty,
@@ -732,6 +753,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer,
                 &mut mock_driver,
+                &config,
             );
             status = orchestrator.process_driver_events().unwrap();
         }
@@ -751,6 +773,7 @@ mod orchestrator_tests {
         mock_term
             .expect_action_for_next_call(Some(EmulatorAction::SetTitle("Exact Title".to_string())));
 
+        let config = default_test_config();
         {
             let mut orchestrator = create_orchestrator(
                 &mut mock_pty,
@@ -758,6 +781,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer,
                 &mut mock_driver,
+                &config,
             );
             orchestrator.process_pty_events().unwrap();
         }
@@ -784,6 +808,7 @@ mod orchestrator_tests {
         )]);
         mock_term.expect_action_for_next_call(Some(EmulatorAction::RingBell));
 
+        let config = default_test_config();
         {
             let mut orchestrator = create_orchestrator(
                 &mut mock_pty,
@@ -791,6 +816,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer,
                 &mut mock_driver,
+                &config,
             );
             orchestrator.process_pty_events().unwrap();
         }
@@ -810,6 +836,7 @@ mod orchestrator_tests {
         mock_driver.expect_events_for_next_call(vec![BackendEvent::FocusGained]);
         mock_term.expect_action_for_next_call(None);
         let status_gain;
+        let config = default_test_config();
         {
             let mut orchestrator = create_orchestrator(
                 &mut mock_pty,
@@ -817,6 +844,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer.clone(),
                 &mut mock_driver,
+                &config,
             );
             status_gain = orchestrator.process_driver_events().unwrap();
         }
@@ -849,6 +877,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer.clone(),
                 &mut mock_driver,
+                &config,
             );
             status_lost = orchestrator.process_driver_events().unwrap();
         }
@@ -873,6 +902,7 @@ mod orchestrator_tests {
         let mut mock_parser = MockAnsiParser::new();
         let mut renderer = Renderer::new(); // Make it mutable to be re-used or cloned
         let mut mock_driver = MockDriver::new();
+        let config = default_test_config();
 
         // --- Phase 1: PTY data ---
         mock_pty.push_bytes_to_read(b"P1");
@@ -887,6 +917,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer.clone(),
                 &mut mock_driver,
+                &config,
             );
             assert_eq!(
                 orchestrator.process_pty_events().unwrap(),
@@ -910,8 +941,9 @@ mod orchestrator_tests {
 
         // --- Phase 2: Driver key event ---
         let key_event = BackendEvent::Key {
-            keysym: 'K' as u32,
-            text: "K".to_string(),
+            symbol: KeySymbol::Char('K'),    // Using translated KeySymbol
+            modifiers: Modifiers::empty(),      // Using translated Modifiers
+            text: Some("K".to_string()),        // Text remains Option<String>
         };
         mock_driver.expect_events_for_next_call(vec![key_event.clone()]);
         mock_term.expect_action_for_next_call(Some(EmulatorAction::WritePty(b"AckK".to_vec())));
@@ -924,6 +956,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer.clone(),
                 &mut mock_driver,
+                &config,
             );
             assert_eq!(
                 orchestrator.process_driver_events().unwrap(),
@@ -956,6 +989,7 @@ mod orchestrator_tests {
                 &mut mock_parser,
                 renderer.clone(),
                 &mut mock_driver,
+                &config,
             );
             assert_eq!(
                 orchestrator.process_pty_events().unwrap(),

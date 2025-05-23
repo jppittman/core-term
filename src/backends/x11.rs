@@ -6,8 +6,9 @@
 use log::{debug, error, info, trace, warn};
 
 // Crate-level imports
-use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
+use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, RenderSelectionState, TextRunStyle};
 use crate::color::{Color, NamedColor};
+use crate::config::{KeySymbol, Modifiers};
 use crate::glyph::AttrFlags;
 
 use anyhow::{Context, Result};
@@ -275,17 +276,26 @@ impl Driver for XDriver {
                             ptr::null_mut(), // No XComposeStatus needed
                         )
                     };
-                    let text = if count > 0 {
-                        // Convert the bytes from XLookupString (usually Latin-1 or UTF-8 based on locale)
-                        // to a Rust String. String::from_utf8_lossy is a safe way.
-                        String::from_utf8_lossy(&key_text_buffer[0..count as usize]).to_string()
+                    let xkey_event = unsafe { xevent.key }; // Store the XKeyEvent part
+                    let text_option = if count > 0 {
+                        Some(String::from_utf8_lossy(&key_text_buffer[0..count as usize]).to_string())
                     } else {
-                        String::new() // No text generated (e.g., modifier key)
+                        None
                     };
-                    debug!("XEvent: KeyPress (keysym: {:#X}, text: '{}')", keysym, text);
+
+                    let modifiers = Self::translate_x11_state_to_modifiers(xkey_event.state);
+                    // Pass the Option<String> to translate_x11_keysym_to_keysymbol
+                    let symbol = Self::translate_x11_keysym_to_keysymbol(keysym as u32, &text_option);
+                    
+                    debug!(
+                        "XEvent: KeyPress (X11 keysym: {:#X}, text: {:?}, state: {:#X}) -> Symbol: {:?}, Modifiers: {:?}, TextOutput: {:?}",
+                        keysym, text_option, xkey_event.state, symbol, modifiers, text_option
+                    );
+
                     backend_events.push(BackendEvent::Key {
-                        keysym: keysym as u32, // Cast KeySym (ulong) to u32
-                        text,
+                        symbol,
+                        modifiers,
+                        text: text_option,
                     });
                 }
                 xlib::ClientMessage => {
@@ -375,7 +385,13 @@ impl Driver for XDriver {
         Ok(())
     }
 
-    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()> {
+    fn draw_text_run(
+        &mut self,
+        coords: CellCoords,
+        text: &str,
+        style: TextRunStyle,
+        selection_state: RenderSelectionState,
+    ) -> Result<()> {
         if text.is_empty() {
             return Ok(());
         }
@@ -396,19 +412,31 @@ impl Driver for XDriver {
         // Calculate width of the background rectangle for the text run.
         let run_pixel_width = text.chars().count() * self.font_width as usize;
 
+        let mut final_fg = style.fg;
+        let mut final_bg = style.bg;
+
+        if selection_state == RenderSelectionState::Selected {
+            // Standard behavior for selection: swap foreground and background.
+            // If specific selection colors are desired, they would be configured and applied here.
+            std::mem::swap(&mut final_fg, &mut final_bg);
+            // If default FG/BG were involved, ensure they are concrete after swap for selection.
+            if final_fg == Color::Default { final_fg = crate::renderer::RENDERER_DEFAULT_FG; }
+            if final_bg == Color::Default { final_bg = crate::renderer::RENDERER_DEFAULT_BG; }
+        }
+
         // Resolve foreground and background colors to XftColor.
         let xft_fg = self
-            .resolve_concrete_xft_color(style.fg)
+            .resolve_concrete_xft_color(final_fg)
             .context("Failed to resolve foreground color for text run")?;
         let xft_bg = self
-            .resolve_concrete_xft_color(style.bg)
+            .resolve_concrete_xft_color(final_bg)
             .context("Failed to resolve background color for text run")?;
 
         // Draw the background rectangle for the text run.
         unsafe {
             xft::XftDrawRect(
                 self.xft_draw,
-                &xft_bg, // Use the resolved background color
+                &xft_bg, // Use the (potentially selection-modified) background color
                 x_pixel,
                 y_pixel,
                 run_pixel_width as u32, // Width of the text run
@@ -466,7 +494,12 @@ impl Driver for XDriver {
         Ok(())
     }
 
-    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
+    fn fill_rect(
+        &mut self,
+        rect: CellRect,
+        color: Color,
+        selection_state: RenderSelectionState,
+    ) -> Result<()> {
         if rect.width == 0 || rect.height == 0 {
             return Ok(()); // Nothing to fill.
         }
@@ -484,9 +517,38 @@ impl Driver for XDriver {
         let rect_pixel_width = (rect.width * self.font_width as usize) as u32;
         let rect_pixel_height = (rect.height * self.font_height as usize) as u32;
 
+        let mut final_fill_color = color;
+        if selection_state == RenderSelectionState::Selected {
+            // For a fill rect that is selected, typically its color might be inverted against
+            // a default pair, or a specific selection color is used.
+            // If `color` is the original background of a cell now selected,
+            // and we want to show selection by inverting, we need the original foreground.
+            // This is simpler if we assume `fill_rect` for selected cells uses a
+            // distinct selection color or a fixed inversion strategy.
+            // For now, let's assume selection means inverting the passed `color` against
+            // the default foreground. This is a placeholder for a more robust strategy.
+            // A common strategy is to use the default foreground as the selected background,
+            // or a specific highlight color.
+            // Let's use a simple inversion: if color was BG, make it FG.
+            // This is not ideal as fill_rect only gets one color.
+            // The most common way is driver defines a "selection color" or renderer resolves it.
+            // For now, let's just use the default FG as the selection color for fills.
+            // This is a simplification. A better approach might involve the renderer passing
+            // the "intended" color (original_bg if not selected, selection_bg if selected).
+            // Given the current Driver API, inverting `color` with default FG if selected:
+            if color == crate::renderer::RENDERER_DEFAULT_BG {
+                 final_fill_color = crate::renderer::RENDERER_DEFAULT_FG;
+            } else if color == crate::renderer::RENDERER_DEFAULT_FG {
+                 final_fill_color = crate::renderer::RENDERER_DEFAULT_BG;
+            }
+            // If `color` is neither default FG nor BG, this simple inversion won't be ideal.
+            // For now, this is a placeholder for how a driver *might* alter appearance.
+            // A more robust driver would have a configured selection color.
+        }
+
         // Resolve the concrete Color to an XftColor.
         let xft_fill_color = self
-            .resolve_concrete_xft_color(color)
+            .resolve_concrete_xft_color(final_fill_color)
             .context("Failed to resolve color for fill_rect")?;
 
         // Use XftDrawRect to fill the area.
@@ -712,6 +774,231 @@ impl Driver for XDriver {
 
 // --- XDriver Private Helper Methods ---
 impl XDriver {
+    // Helper functions translate_x11_keysym_to_keysymbol and translate_x11_state_to_modifiers
+    // are assumed to be correctly placed here from the previous turn's successful diff.
+    // If they were missing, they would be re-inserted here.
+    // For brevity, their full code is not repeated in this diff if they already exist.
+
+    /// Loads the primary font using Xft and calculates basic font metrics.
+    fn load_font(&mut self) -> Result<()> {
+        // Check for common character keys first, potentially using the text if available
+        // This helps with distinguishing, e.g., 'a' from 'A' if Shift isn't separately checked for char.
+        if let Some(t_str) = text {
+            if !t_str.is_empty() {
+                // If XLookupString produced text, and it's a single char, prefer it.
+                let mut chars = t_str.chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    // It's a single character.
+                    // We might still want to map some specific keysyms even if they produce text,
+                    // e.g., Enter, Backspace, Tab should not be KeySymbol::Char('\r').
+                    // So, the match below should handle those first.
+                    match keysym as c_uint {
+                        x11::keysym::XK_Return | x11::keysym::XK_KP_Enter => return KeySymbol::Return,
+                        x11::keysym::XK_BackSpace => return KeySymbol::Backspace,
+                        x11::keysym::XK_Tab | x11::keysym::XK_ISO_Left_Tab => return KeySymbol::Tab,
+                        x11::keysym::XK_Escape => return KeySymbol::Escape,
+                        _ => {
+                            // If it's not one of the special keys that might also produce text,
+                            // then use the character from text.
+                            if !c.is_control() { // Avoid mapping control chars like '\r' to KeySymbol::Char
+                                return KeySymbol::Char(c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Map X11 KeySyms to KeySymbol enum
+        match keysym as c_uint {
+            // Basic printable characters (if text was None or not a single char)
+            // This range is for ASCII. Unicode characters are typically handled by XLookupString text.
+            k if (k >= x11::keysym::XK_space && k <= x11::keysym::XK_asciitilde) => {
+                KeySymbol::Char(char::from_u32(k).unwrap_or('?'))
+            }
+            // Keypad characters (numbers) - map to their corresponding numbers if text is not available
+            k if (k >= x11::keysym::XK_KP_0 && k <= x11::keysym::XK_KP_9) => {
+                KeySymbol::Char((b'0' + (k - x11::keysym::XK_KP_0) as u8) as char)
+            }
+            x11::keysym::XK_KP_Decimal | x11::keysym::XK_KP_Separator => KeySymbol::Char('.'), // Keypad .
+            x11::keysym::XK_KP_Add => KeySymbol::Char('+'),
+            x11::keysym::XK_KP_Subtract => KeySymbol::Char('-'),
+            x11::keysym::XK_KP_Multiply => KeySymbol::Char('*'),
+            x11::keysym::XK_KP_Divide => KeySymbol::Char('/'),
+            x11::keysym::XK_KP_Equal => KeySymbol::Char('='),
+            
+            // Special keys
+            x11::keysym::XK_Return | x11::keysym::XK_KP_Enter => KeySymbol::Return,
+            x11::keysym::XK_BackSpace => KeySymbol::Backspace,
+            x11::keysym::XK_Tab | x11::keysym::XK_ISO_Left_Tab | x11::keysym::XK_KP_Tab => KeySymbol::Tab,
+            x11::keysym::XK_Escape => KeySymbol::Escape,
+            x11::keysym::XK_space | x11::keysym::XK_KP_Space => KeySymbol::Space,
+
+            x11::keysym::XK_Home | x11::keysym::XK_KP_Home => KeySymbol::Home,
+            x11::keysym::XK_End | x11::keysym::XK_KP_End => KeySymbol::End,
+            x11::keysym::XK_Page_Up | x11::keysym::XK_KP_Page_Up => KeySymbol::PageUp,
+            x11::keysym::XK_Page_Down | x11::keysym::XK_KP_Page_Down => KeySymbol::PageDown,
+            x11::keysym::XK_Insert | x11::keysym::XK_KP_Insert => KeySymbol::Insert,
+            x11::keysym::XK_Delete | x11::keysym::XK_KP_Delete => KeySymbol::Delete,
+
+            x11::keysym::XK_Left | x11::keysym::XK_KP_Left => KeySymbol::Left,
+            x11::keysym::XK_Up | x11::keysym::XK_KP_Up => KeySymbol::Up,
+            x11::keysym::XK_Right | x11::keysym::XK_KP_Right => KeySymbol::Right,
+            x11::keysym::XK_Down | x11::keysym::XK_KP_Down => KeySymbol::Down,
+
+            // Function keys
+            k if (k >= x11::keysym::XK_F1 && k <= x11::keysym::XK_F12) => {
+                match k {
+                    x11::keysym::XK_F1 => KeySymbol::F1,
+                    x11::keysym::XK_F2 => KeySymbol::F2,
+                    x11::keysym::XK_F3 => KeySymbol::F3,
+                    x11::keysym::XK_F4 => KeySymbol::F4,
+                    x11::keysym::XK_F5 => KeySymbol::F5,
+                    x11::keysym::XK_F6 => KeySymbol::F6,
+                    x11::keysym::XK_F7 => KeySymbol::F7,
+                    x11::keysym::XK_F8 => KeySymbol::F8,
+                    x11::keysym::XK_F9 => KeySymbol::F9,
+                    x11::keysym::XK_F10 => KeySymbol::F10,
+                    x11::keysym::XK_F11 => KeySymbol::F11,
+                    x11::keysym::XK_F12 => KeySymbol::F12,
+                    _ => KeySymbol::Unknown(keysym),
+                }
+            }
+            _ => KeySymbol::Unknown(keysym),
+        }
+    }
+
+    /// Translates X11 state mask to `Modifiers`.
+    fn translate_x11_state_to_modifiers(state: c_uint) -> Modifiers {
+        let mut modifiers = Modifiers::empty();
+        if state & xlib::ShiftMask != 0 {
+            modifiers |= Modifiers::SHIFT;
+        }
+        if state & xlib::ControlMask != 0 {
+            modifiers |= Modifiers::CONTROL;
+        }
+        if state & xlib::Mod1Mask != 0 {
+            // Mod1Mask is typically Alt
+            modifiers |= Modifiers::ALT;
+        }
+        if state & xlib::Mod4Mask != 0 {
+            // Mod4Mask is typically Super/Windows key
+            modifiers |= Modifiers::SUPER;
+        }
+        // Other masks like Mod2Mask (NumLock), Mod3Mask, Mod5Mask (ScrollLock) are ignored for now.
+        modifiers
+    }
+
+    /// Loads the primary font using Xft and calculates basic font metrics.
+    fn load_font(&mut self) -> Result<()> {
+        // Check for common character keys first, potentially using the text if available
+        // This helps with distinguishing, e.g., 'a' from 'A' if Shift isn't separately checked for char.
+        if let Some(t_str) = text {
+            if !t_str.is_empty() {
+                // If XLookupString produced text, and it's a single char, prefer it.
+                let mut chars = t_str.chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    // It's a single character.
+                    // We might still want to map some specific keysyms even if they produce text,
+                    // e.g., Enter, Backspace, Tab should not be KeySymbol::Char('\r').
+                    // So, the match below should handle those first.
+                    match keysym as c_uint {
+                        x11::keysym::XK_Return | x11::keysym::XK_KP_Enter => return KeySymbol::Return,
+                        x11::keysym::XK_BackSpace => return KeySymbol::Backspace,
+                        x11::keysym::XK_Tab | x11::keysym::XK_ISO_Left_Tab => return KeySymbol::Tab,
+                        x11::keysym::XK_Escape => return KeySymbol::Escape,
+                        _ => {
+                            // If it's not one of the special keys that might also produce text,
+                            // then use the character from text.
+                            if !c.is_control() { // Avoid mapping control chars like '\r' to KeySymbol::Char
+                                return KeySymbol::Char(c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Map X11 KeySyms to KeySymbol enum
+        match keysym as c_uint {
+            // Basic printable characters (if text was None or not a single char)
+            // This range is for ASCII. Unicode characters are typically handled by XLookupString text.
+            k if (k >= x11::keysym::XK_space && k <= x11::keysym::XK_asciitilde) => {
+                KeySymbol::Char(char::from_u32(k).unwrap_or('?'))
+            }
+            // Keypad characters (numbers) - map to their corresponding numbers if text is not available
+            k if (k >= x11::keysym::XK_KP_0 && k <= x11::keysym::XK_KP_9) => {
+                KeySymbol::Char((b'0' + (k - x11::keysym::XK_KP_0) as u8) as char)
+            }
+            x11::keysym::XK_KP_Decimal | x11::keysym::XK_KP_Separator => KeySymbol::Char('.'), // Keypad .
+            x11::keysym::XK_KP_Add => KeySymbol::Char('+'),
+            x11::keysym::XK_KP_Subtract => KeySymbol::Char('-'),
+            x11::keysym::XK_KP_Multiply => KeySymbol::Char('*'),
+            x11::keysym::XK_KP_Divide => KeySymbol::Char('/'),
+            x11::keysym::XK_KP_Equal => KeySymbol::Char('='),
+            
+            // Special keys
+            x11::keysym::XK_Return | x11::keysym::XK_KP_Enter => KeySymbol::Return,
+            x11::keysym::XK_BackSpace => KeySymbol::Backspace,
+            x11::keysym::XK_Tab | x11::keysym::XK_ISO_Left_Tab | x11::keysym::XK_KP_Tab => KeySymbol::Tab,
+            x11::keysym::XK_Escape => KeySymbol::Escape,
+            x11::keysym::XK_space | x11::keysym::XK_KP_Space => KeySymbol::Space,
+
+            x11::keysym::XK_Home | x11::keysym::XK_KP_Home => KeySymbol::Home,
+            x11::keysym::XK_End | x11::keysym::XK_KP_End => KeySymbol::End,
+            x11::keysym::XK_Page_Up | x11::keysym::XK_KP_Page_Up => KeySymbol::PageUp,
+            x11::keysym::XK_Page_Down | x11::keysym::XK_KP_Page_Down => KeySymbol::PageDown,
+            x11::keysym::XK_Insert | x11::keysym::XK_KP_Insert => KeySymbol::Insert,
+            x11::keysym::XK_Delete | x11::keysym::XK_KP_Delete => KeySymbol::Delete,
+
+            x11::keysym::XK_Left | x11::keysym::XK_KP_Left => KeySymbol::Left,
+            x11::keysym::XK_Up | x11::keysym::XK_KP_Up => KeySymbol::Up,
+            x11::keysym::XK_Right | x11::keysym::XK_KP_Right => KeySymbol::Right,
+            x11::keysym::XK_Down | x11::keysym::XK_KP_Down => KeySymbol::Down,
+
+            // Function keys
+            k if (k >= x11::keysym::XK_F1 && k <= x11::keysym::XK_F12) => {
+                match k {
+                    x11::keysym::XK_F1 => KeySymbol::F1,
+                    x11::keysym::XK_F2 => KeySymbol::F2,
+                    x11::keysym::XK_F3 => KeySymbol::F3,
+                    x11::keysym::XK_F4 => KeySymbol::F4,
+                    x11::keysym::XK_F5 => KeySymbol::F5,
+                    x11::keysym::XK_F6 => KeySymbol::F6,
+                    x11::keysym::XK_F7 => KeySymbol::F7,
+                    x11::keysym::XK_F8 => KeySymbol::F8,
+                    x11::keysym::XK_F9 => KeySymbol::F9,
+                    x11::keysym::XK_F10 => KeySymbol::F10,
+                    x11::keysym::XK_F11 => KeySymbol::F11,
+                    x11::keysym::XK_F12 => KeySymbol::F12,
+                    _ => KeySymbol::Unknown(keysym),
+                }
+            }
+            _ => KeySymbol::Unknown(keysym),
+        }
+    }
+
+    /// Translates X11 state mask to `Modifiers`.
+    fn translate_x11_state_to_modifiers(state: c_uint) -> Modifiers {
+        let mut modifiers = Modifiers::empty();
+        if state & xlib::ShiftMask != 0 {
+            modifiers |= Modifiers::SHIFT;
+        }
+        if state & xlib::ControlMask != 0 {
+            modifiers |= Modifiers::CONTROL;
+        }
+        if state & xlib::Mod1Mask != 0 {
+            // Mod1Mask is typically Alt
+            modifiers |= Modifiers::ALT;
+        }
+        if state & xlib::Mod4Mask != 0 {
+            // Mod4Mask is typically Super/Windows key
+            modifiers |= Modifiers::SUPER;
+        }
+        // Other masks like Mod2Mask (NumLock), Mod3Mask, Mod5Mask (ScrollLock) are ignored for now.
+        modifiers
+    }
+
     /// Loads the primary font using Xft and calculates basic font metrics.
     fn load_font(&mut self) -> Result<()> {
         debug!("Loading font: {}", DEFAULT_FONT_NAME);

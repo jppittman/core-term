@@ -6,10 +6,11 @@
 
 // Corrected: Import Color directly from the color module.
 use crate::backends::{
-    BackendEvent, CellCoords, CellRect, Driver, TextRunStyle, DEFAULT_WINDOW_HEIGHT_CHARS,
-    DEFAULT_WINDOW_WIDTH_CHARS,
+    BackendEvent, CellCoords, CellRect, Driver, RenderSelectionState, TextRunStyle, // Added RenderSelectionState
+    DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
 };
 use crate::color::Color;
+use crate::config::{KeySymbol, Modifiers}; // Added KeySymbol and Modifiers
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 
 use anyhow::{Context, Result};
@@ -195,20 +196,26 @@ impl Driver for ConsoleDriver {
             }
             Ok(bytes_read) => {
                 trace!("ConsoleDriver: Read {} bytes from stdin.", bytes_read);
-                // Convert each byte to a Key event. This is a simplification;
-                // proper handling would involve parsing multi-byte sequences (e.g., for arrows).
-                for i in 0..bytes_read {
-                    let byte = self.input_buffer[i];
-                    // For console, keysym is often just the byte value or 0 if it's part of a sequence.
-                    // Text is the byte converted to a char.
-                    let text = String::from_utf8_lossy(&[byte]).to_string();
-                    trace!("ConsoleDriver: Processed byte {} as char '{}'", byte, text);
-                    // Using byte as keysym is a placeholder. A more robust solution would map
-                    // common control chars or escape sequences to more meaningful keysyms.
-                    backend_events.push(BackendEvent::Key {
-                        keysym: byte as u32,
-                        text,
-                    });
+                let read_slice = &self.input_buffer[0..bytes_read];
+                
+                // Attempt to translate the read byte sequence into one or more KeyEvents.
+                // This is a simplified approach; a more robust parser would handle partial sequences.
+                let mut current_pos = 0;
+                while current_pos < bytes_read {
+                    if let Some((event_data, consumed)) = Self::translate_console_input_to_key_data(&read_slice[current_pos..]) {
+                        backend_events.push(BackendEvent::Key {
+                            symbol: event_data.symbol,
+                            modifiers: event_data.modifiers,
+                            text: event_data.text,
+                        });
+                        current_pos += consumed;
+                    } else {
+                        // If a byte or sequence couldn't be translated, log it and skip.
+                        // This prevents getting stuck on unknown sequences.
+                        // For simplicity, we advance by 1 byte here. A real parser might try to find the next valid sequence.
+                        warn!("ConsoleDriver: Unrecognized byte or sequence starting with: {:X}. Skipping.", read_slice[current_pos]);
+                        current_pos += 1;
+                    }
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -286,7 +293,13 @@ impl Driver for ConsoleDriver {
 
     /// Draws a run of text on the console.
     /// `style.fg` and `style.bg` are guaranteed concrete by the Renderer.
-    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()> {
+    fn draw_text_run(
+        &mut self,
+        coords: CellCoords,
+        text: &str,
+        style: TextRunStyle,
+        selection_state: RenderSelectionState,
+    ) -> Result<()> {
         if text.is_empty() {
             return Ok(());
         }
@@ -300,6 +313,17 @@ impl Driver for ConsoleDriver {
             );
         }
 
+        let mut final_fg = style.fg;
+        let mut final_bg = style.bg;
+
+        if selection_state == RenderSelectionState::Selected {
+            // Standard behavior for selection: swap foreground and background.
+            std::mem::swap(&mut final_fg, &mut final_bg);
+            // Ensure colors are concrete after swap if they were defaults (though renderer should prevent this)
+            if final_fg == Color::Default { final_fg = crate::renderer::RENDERER_DEFAULT_FG; }
+            if final_bg == Color::Default { final_bg = crate::renderer::RENDERER_DEFAULT_BG; }
+        }
+        
         let mut cmd = String::new();
         // Move cursor to position (1-based for ANSI CUP).
         cmd.push_str(&Self::format_cursor_position(coords.y + 1, coords.x + 1));
@@ -307,7 +331,7 @@ impl Driver for ConsoleDriver {
         // Build SGR sequence.
         let mut sgr_codes = Vec::new();
         sgr_codes.push(SGR_RESET_ALL); // Reset first for a clean slate.
-        Self::sgr_append_concrete_attributes(&mut sgr_codes, style.fg, style.bg, style.flags);
+        Self::sgr_append_concrete_attributes(&mut sgr_codes, final_fg, final_bg, style.flags);
 
         if !sgr_codes.is_empty() {
             cmd.push_str(SGR_PREFIX);
@@ -335,7 +359,12 @@ impl Driver for ConsoleDriver {
 
     /// Fills a rectangular area of cells with a specified concrete color.
     /// This is done by setting the background color and printing spaces.
-    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
+    fn fill_rect(
+        &mut self,
+        rect: CellRect,
+        color: Color,
+        selection_state: RenderSelectionState,
+    ) -> Result<()> {
         if rect.width == 0 || rect.height == 0 {
             return Ok(());
         }
@@ -348,12 +377,26 @@ impl Driver for ConsoleDriver {
                 "ConsoleDriver::fill_rect received Color::Default. Renderer should resolve defaults."
             );
         }
+        
+        let mut final_fill_color = color;
+        if selection_state == RenderSelectionState::Selected {
+            // Simplistic inversion for console: if it was default bg, use default fg.
+            // This is a placeholder. A better console driver might use specific SGR for inversion if available,
+            // or have configured selection colors.
+            if color == crate::renderer::RENDERER_DEFAULT_BG {
+                 final_fill_color = crate::renderer::RENDERER_DEFAULT_FG;
+            } else if color == crate::renderer::RENDERER_DEFAULT_FG {
+                 final_fill_color = crate::renderer::RENDERER_DEFAULT_BG;
+            }
+            // For other colors, this simple inversion won't look like standard selection.
+            // True inversion (swapping with cell's actual fg) isn't possible here as we only get one color.
+        }
 
         let mut cmd = String::new();
         // Set background color using SGR.
         let mut sgr_codes = Vec::new();
         sgr_codes.push(SGR_RESET_ALL); // Reset for clean application of background.
-        Self::sgr_append_concrete_bg_color(&mut sgr_codes, color);
+        Self::sgr_append_concrete_bg_color(&mut sgr_codes, final_fill_color);
 
         if !sgr_codes.is_empty() {
             cmd.push_str(SGR_PREFIX);
@@ -466,6 +509,91 @@ impl Driver for ConsoleDriver {
 
 // --- ConsoleDriver Private Helper Methods ---
 impl ConsoleDriver {
+    /// Helper struct to temporarily hold translated key data before creating BackendEvent.
+    struct TranslatedKeyData {
+        symbol: KeySymbol,
+        modifiers: Modifiers,
+        text: Option<String>,
+    }
+
+    /// Translates a byte sequence from console input into key event data.
+    /// Returns `Some((TranslatedKeyData, consumed_bytes))` or `None` if no complete key event could be parsed.
+    fn translate_console_input_to_key_data(bytes: &[u8]) -> Option<(TranslatedKeyData, usize)> {
+        if bytes.is_empty() {
+            return None;
+        }
+
+        let byte = bytes[0];
+        // Default modifiers: usually none from basic console input unless parsing complex sequences.
+        let modifiers = Modifiers::empty(); 
+
+        match byte {
+            // Control characters
+            0x08 => Some((TranslatedKeyData { symbol: KeySymbol::Backspace, modifiers, text: None }, 1)), // Backspace (Ctrl-H)
+            0x09 => Some((TranslatedKeyData { symbol: KeySymbol::Tab, modifiers, text: None }, 1)),       // Tab (Ctrl-I)
+            0x0A | 0x0D => Some((TranslatedKeyData { symbol: KeySymbol::Return, modifiers, text: Some("\r".to_string()) }, 1)), // LF or CR -> Return. Text is '\r'.
+            0x1B => { // Escape sequence
+                if bytes.len() > 1 {
+                    match bytes[1] {
+                        b'[' => { // CSI sequence
+                            if bytes.len() > 2 {
+                                match bytes[2] {
+                                    b'A' => Some((TranslatedKeyData { symbol: KeySymbol::Up, modifiers, text: None }, 3)),    // Up Arrow: ^[[A
+                                    b'B' => Some((TranslatedKeyData { symbol: KeySymbol::Down, modifiers, text: None }, 3)),  // Down Arrow: ^[[B
+                                    b'C' => Some((TranslatedKeyData { symbol: KeySymbol::Right, modifiers, text: None }, 3)), // Right Arrow: ^[[C
+                                    b'D' => Some((TranslatedKeyData { symbol: KeySymbol::Left, modifiers, text: None }, 3)),  // Left Arrow: ^[[D
+                                    b'H' => Some((TranslatedKeyData { symbol: KeySymbol::Home, modifiers, text: None }, 3)),  // Home: ^[[H (often)
+                                    b'F' => Some((TranslatedKeyData { symbol: KeySymbol::End, modifiers, text: None }, 3)),   // End: ^[[F (often)
+                                    b'1' | b'7' if bytes.get(3) == Some(&b'~') => Some((TranslatedKeyData { symbol: KeySymbol::Home, modifiers, text: None }, 4)), // Home: ^[[1~ or ^[[7~
+                                    b'4' | b'8' if bytes.get(3) == Some(&b'~') => Some((TranslatedKeyData { symbol: KeySymbol::End, modifiers, text: None }, 4)),   // End: ^[[4~ or ^[[8~
+                                    b'2' if bytes.get(3) == Some(&b'~') => Some((TranslatedKeyData { symbol: KeySymbol::Insert, modifiers, text: None }, 4)), // Insert: ^[[2~
+                                    b'3' if bytes.get(3) == Some(&b'~') => Some((TranslatedKeyData { symbol: KeySymbol::Delete, modifiers, text: None }, 4)), // Delete: ^[[3~
+                                    b'5' if bytes.get(3) == Some(&b'~') => Some((TranslatedKeyData { symbol: KeySymbol::PageUp, modifiers, text: None }, 4)), // PageUp: ^[[5~
+                                    b'6' if bytes.get(3) == Some(&b'~') => Some((TranslatedKeyData { symbol: KeySymbol::PageDown, modifiers, text: None }, 4)),// PageDown: ^[[6~
+                                    // TODO: Add more CSI sequences for F-keys, etc. as needed.
+                                    // Example for F1: ^[[11~ (or ^[OP for some terminals)
+                                    // b'1' if bytes.get(3..5) == Some(&[b'1',b'~']) => Some((TranslatedKeyData { symbol: KeySymbol::F1, modifiers, text: None }, 5)),
+                                    _ => {
+                                        // Unknown CSI sequence, consume the recognized part (ESC [ char)
+                                        warn!("ConsoleDriver: Unknown CSI sequence: {:?}", &bytes[0..3.min(bytes.len())]);
+                                        Some((TranslatedKeyData { symbol: KeySymbol::Unknown(u32::from_le_bytes([bytes[0],bytes[1],bytes[2],0])), modifiers, text: None }, 3.min(bytes.len())))
+                                    }
+                                }
+                            } else { // Incomplete CSI (e.g., just ESC [)
+                                Some((TranslatedKeyData { symbol: KeySymbol::Escape, modifiers, text: None }, 2))
+                            }
+                        }
+                        // TODO: Potentially handle Alt sequences (ESC + char) if terminal sends them.
+                        // b'O' if bytes.len() > 2 => { ... } // SS3 sequences like F1-F4 sometimes
+                        _ => Some((TranslatedKeyData { symbol: KeySymbol::Escape, modifiers, text: None }, 1)), // Just Escape
+                    }
+                } else { // Just Escape key
+                    Some((TranslatedKeyData { symbol: KeySymbol::Escape, modifiers, text: None }, 1))
+                }
+            }
+            // Printable ASCII characters
+            c @ 0x20..=0x7E => {
+                let ch = c as char;
+                Some((TranslatedKeyData { symbol: KeySymbol::Char(ch), modifiers, text: Some(ch.to_string()) }, 1))
+            }
+            // Other control characters (0x00-0x1F, 0x7F) - some are handled above.
+            // For unhandled ones, we might map them to Unknown or ignore.
+            // For now, let's map Ctrl+letter combinations if they weren't special cased.
+            c @ 0x01..=0x1A => { // Ctrl-A to Ctrl-Z
+                let ch = (c + b'A' - 1) as char;
+                let mut ctrl_modifiers = Modifiers::CONTROL;
+                // Note: Shift might implicitly be part of generating the control char, but usually not represented separately here.
+                Some((TranslatedKeyData { symbol: KeySymbol::Char(ch.to_ascii_lowercase()), modifiers: ctrl_modifiers, text: None }, 1))
+            }
+            0x7F => Some((TranslatedKeyData { symbol: KeySymbol::Delete, modifiers, text: None }, 1)), // DEL often treated as Delete
+            _ => {
+                warn!("ConsoleDriver: Unhandled byte: {:X}", byte);
+                None // Unhandled byte
+            }
+        }
+    }
+
+
     /// Appends SGR codes for concrete foreground, background, and attribute flags.
     /// Panics if `fg` or `bg` is `Color::Default`, as these should be resolved by the Renderer.
     fn sgr_append_concrete_attributes(

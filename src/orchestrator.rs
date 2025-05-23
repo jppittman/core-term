@@ -6,12 +6,14 @@
 
 use crate::{
     ansi::AnsiParser,
-    backends::{BackendEvent, Driver},
+    backends::{BackendEvent, Driver}, // Removed BackendModifiers, Keycode
+    config::{Config, KeySymbol, Modifiers as ConfigModifiers},
     os::pty::PtyChannel,
     renderer::Renderer,
-    term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface},
+    term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction},
 };
 use anyhow::Error as AnyhowError;
+use arboard; // Import arboard
 use std::io::ErrorKind as IoErrorKind;
 
 const PTY_READ_BUFFER_SIZE: usize = 4096;
@@ -37,6 +39,7 @@ pub struct AppOrchestrator<'a> {
     parser: &'a mut dyn AnsiParser,
     pub renderer: Renderer,
     pub driver: &'a mut dyn Driver,
+    config: &'a Config, // Added config field
     pty_read_buffer: [u8; PTY_READ_BUFFER_SIZE],
 }
 
@@ -48,6 +51,7 @@ impl<'a> AppOrchestrator<'a> {
         parser: &'a mut dyn AnsiParser,
         renderer: Renderer,
         driver: &'a mut dyn Driver,
+        config: &'a Config, // Added config parameter
     ) -> Self {
         AppOrchestrator {
             pty_channel,
@@ -55,9 +59,12 @@ impl<'a> AppOrchestrator<'a> {
             parser,
             renderer,
             driver,
+            config, // Initialize config field
             pty_read_buffer: [0; PTY_READ_BUFFER_SIZE],
         }
     }
+
+    // Removed translate_modifiers and translate_keysym helper functions
 
     pub fn process_pty_events(&mut self) -> Result<OrchestratorStatus, AnyhowError> {
         log::trace!("Orchestrator: Processing available PTY data...");
@@ -124,10 +131,34 @@ impl<'a> AppOrchestrator<'a> {
 
     fn handle_specific_driver_event(&mut self, event: BackendEvent) {
         match event {
-            BackendEvent::Key { keysym, text } => {
-                let user_input = EmulatorInput::User(BackendEvent::Key { keysym, text });
-                if let Some(action) = self.term.interpret_input(user_input) {
-                    self.handle_emulator_action(action);
+            BackendEvent::Key {
+                symbol, // Directly use the translated symbol from BackendEvent
+                modifiers, // Directly use the translated modifiers from BackendEvent
+                text,
+            } => {
+                let copy_binding = self.config.keybindings.copy;
+                let paste_binding = self.config.keybindings.paste;
+
+                let mut user_input_action = None;
+
+                // Compare directly with config::KeySymbol and config::Modifiers
+                if symbol == copy_binding.symbol && modifiers == copy_binding.modifiers {
+                    user_input_action = Some(UserInputAction::InitiateCopy);
+                } else if symbol == paste_binding.symbol && modifiers == paste_binding.modifiers {
+                    user_input_action = Some(UserInputAction::InitiatePaste);
+                } else {
+                    // Regular key input
+                    user_input_action = Some(UserInputAction::KeyInput {
+                        symbol,    // Use directly
+                        modifiers, // Use directly
+                        text,      // Pass along the text from backend
+                    });
+                }
+
+                if let Some(uia) = user_input_action {
+                    if let Some(action) = self.term.interpret_input(EmulatorInput::User(uia)) {
+                        self.handle_emulator_action(action);
+                    }
                 }
             }
             BackendEvent::Resize {
@@ -232,6 +263,47 @@ impl<'a> AppOrchestrator<'a> {
                     visible
                 );
                 self.driver.set_cursor_visibility(visible);
+            }
+            EmulatorAction::CopyToClipboard(text) => {
+                match arboard::Clipboard::new() {
+                    Ok(mut clipboard) => {
+                        if let Err(e) = clipboard.set_text(text) {
+                            log::error!("Orchestrator: Failed to copy to clipboard: {}", e);
+                        } else {
+                            log::info!("Orchestrator: Copied text to clipboard.");
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Orchestrator: Failed to initialize clipboard for copy: {}", e);
+                    }
+                }
+            }
+            EmulatorAction::RequestClipboardContent => {
+                match arboard::Clipboard::new() {
+                    Ok(mut clipboard) => {
+                        match clipboard.get_text() {
+                            Ok(text) => {
+                                log::info!("Orchestrator: Pasting text from clipboard.");
+                                let paste_input =
+                                    EmulatorInput::User(UserInputAction::PasteText(text));
+                                // Recursively call interpret_input -> handle_emulator_action
+                                // This is okay for one level. Deeper recursion could be an issue.
+                                if let Some(action) = self.term.interpret_input(paste_input) {
+                                    self.handle_emulator_action(action);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Orchestrator: Failed to get text from clipboard: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Orchestrator: Failed to initialize clipboard for paste: {}",
+                            e
+                        );
+                    }
+                }
             }
         }
     }
