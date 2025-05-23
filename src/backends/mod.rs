@@ -172,7 +172,9 @@ pub trait Driver {
     ///           The `Renderer` handles wide characters by drawing the character in the first
     ///           cell and ensuring the second cell (placeholder) is cleared or handled correctly.
     /// * `style`: The `TextRunStyle` (concrete foreground color, concrete background color, attribute flags) for the text.
-    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()>;
+    /// * `is_selected`: A boolean flag indicating if this text run is part of a selection.
+    ///                  The driver should use this to visually indicate selection (e.g., by inverting FG/BG).
+    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle, is_selected: bool) -> Result<()>;
 
     /// Fills a rectangular area of cells with a specified concrete color.
     /// This is typically used for clearing parts of lines or drawing backgrounds for text runs.
@@ -180,7 +182,9 @@ pub trait Driver {
     /// # Arguments
     /// * `rect`: The `CellRect` (top-left x, y, width, height in cells) defining the area to fill.
     /// * `color`: The concrete `Color` to fill the rectangle with.
-    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()>;
+    /// * `is_selected`: A boolean flag indicating if this fill is for a selected region.
+    ///                  The driver should use this to visually indicate selection (e.g., by inverting FG/BG or using a selection color).
+    fn fill_rect(&mut self, rect: CellRect, color: Color, is_selected: bool) -> Result<()>;
 
     /// Presents the composed frame to the display.
     /// For double-buffered systems, this would typically swap the buffers.

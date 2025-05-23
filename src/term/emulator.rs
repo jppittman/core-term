@@ -7,7 +7,7 @@ use action::EmulatorAction;
 use charset::{map_to_dec_line_drawing, CharacterSet};
 
 // Standard library imports
-use std::cmp::min;
+use std::cmp::{max, min}; // Added max
 
 // Crate-level imports (adjust paths based on where items are moved)
 use crate::{
@@ -40,6 +40,7 @@ pub struct TerminalEmulator {
     pub(super) active_charset_g_level: usize,
     pub(super) cursor_wrap_next: bool,
     pub(super) current_cursor_shape: u16, // Stores the current cursor shape code
+    pub(super) selection: Option<SelectionState>, // Added selection field
 }
 
 impl TerminalEmulator {
@@ -64,6 +65,7 @@ impl TerminalEmulator {
             active_charset_g_level: 0, // Default to G0
             cursor_wrap_next: false,
             current_cursor_shape: DEFAULT_CURSOR_SHAPE, // Use constant for default
+            selection: None, // Initialize selection to None
         }
     }
 
@@ -496,6 +498,191 @@ impl TerminalEmulator {
         None
     }
 
+    /// Handles a `UserInputAction`.
+    /// This is a new method to specifically handle translated user inputs.
+    pub(super) fn handle_user_input_action(
+        &mut self,
+        action: UserInputAction,
+    ) -> Option<EmulatorAction> {
+        self.cursor_wrap_next = false; // Reset wrap on any user action
+
+        match action {
+            UserInputAction::KeyInput {
+                symbol,
+                modifiers: _, // Modifiers might be used later for keybindings
+                text,
+            } => {
+                // This largely replicates the old BackendEvent::Key logic.
+                // Consider abstracting key-to-byte mapping if it grows complex.
+                let mut bytes_to_send: Vec<u8> = Vec::new();
+                match symbol {
+                    KeySymbol::Return => bytes_to_send.push(b'\r'),
+                    KeySymbol::Backspace => bytes_to_send.push(0x08),
+                    KeySymbol::Tab => bytes_to_send.push(b'\t'),
+                    // KeySymbol::IsoLeftTab => bytes_to_send.extend_from_slice(b"\x1b[Z"), // TODO: Add IsoLeftTab to KeySymbol
+                    KeySymbol::Escape => bytes_to_send.push(0x1B),
+                    KeySymbol::Up => {
+                        bytes_to_send.extend_from_slice(if self.dec_modes.cursor_keys_app_mode {
+                            b"\x1bOA"
+                        } else {
+                            b"\x1b[A"
+                        })
+                    }
+                    KeySymbol::Down => {
+                        bytes_to_send.extend_from_slice(if self.dec_modes.cursor_keys_app_mode {
+                            b"\x1bOB"
+                        } else {
+                            b"\x1b[B"
+                        })
+                    }
+                    KeySymbol::Right => {
+                        bytes_to_send.extend_from_slice(if self.dec_modes.cursor_keys_app_mode {
+                            b"\x1bOC"
+                        } else {
+                            b"\x1b[C"
+                        })
+                    }
+                    KeySymbol::Left => {
+                        bytes_to_send.extend_from_slice(if self.dec_modes.cursor_keys_app_mode {
+                            b"\x1bOD"
+                        } else {
+                            b"\x1b[D"
+                        })
+                    }
+                    KeySymbol::Char(ch) => {
+                        // Use the provided text if available (e.g., from IME), otherwise char.
+                        if let Some(text_str) = text {
+                            bytes_to_send.extend(text_str.as_bytes());
+                        } else {
+                            bytes_to_send.push(ch as u8); // Simple char to byte conversion
+                        }
+                    }
+                    // TODO: Handle other KeySymbols (F-keys, PageUp/Down, etc.)
+                    _ => {
+                        if let Some(text_str) = text {
+                            bytes_to_send.extend(text_str.as_bytes());
+                        } else {
+                            trace!("Unhandled KeySymbol: {:?} with no text", symbol);
+                        }
+                    }
+                }
+
+                if !bytes_to_send.is_empty() {
+                    return Some(EmulatorAction::WritePty(bytes_to_send));
+                }
+                None
+            }
+            UserInputAction::MouseInput {
+                event_type,
+                col,
+                row,
+                button,
+                modifiers: _, // Modifiers might be used for advanced selection later
+            } => {
+                // TODO: Implement mouse reporting if a mouse mode is active (e.g., X10, SGR).
+                // For now, focus on selection.
+
+                let (clamped_col, clamped_row) = self.screen.clamp_coords(col, row);
+
+                match event_type {
+                    MouseEventType::Press => {
+                        if button == MouseButton::Left {
+                            // Start or restart selection
+                            self.selection = Some(SelectionState {
+                                start: (clamped_col, clamped_row),
+                                end: (clamped_col, clamped_row),
+                                mode: SelectionMode::Normal, // Default to Normal for now
+                            });
+                            // Mark the line of selection start as dirty
+                            if clamped_row < self.screen.height {
+                                self.screen.mark_line_dirty(clamped_row);
+                            }
+                            return Some(EmulatorAction::RequestRedraw); // Request redraw for selection highlight
+                        }
+                        // Handle other mouse buttons if needed in the future
+                    }
+                    MouseEventType::Move => {
+                        if let Some(ref mut selection) = self.selection {
+                            let old_end_row = selection.end.1;
+                            if selection.end != (clamped_col, clamped_row) {
+                                selection.end = (clamped_col, clamped_row);
+
+                                // Mark lines covered by old and new selection end as dirty
+                                if old_end_row < self.screen.height {
+                                    self.screen.mark_line_dirty(old_end_row);
+                                }
+                                if clamped_row < self.screen.height && clamped_row != old_end_row {
+                                    self.screen.mark_line_dirty(clamped_row);
+                                }
+                                // Also mark lines between old_end_row and clamped_row if selection spans multiple lines
+                                // This is a simplified version; more precise dirtying might be needed for block selection
+                                let (min_r, max_r) = if old_end_row < clamped_row {
+                                    (old_end_row, clamped_row)
+                                } else {
+                                    (clamped_row, old_end_row)
+                                };
+                                for r in min_r..=max_r {
+                                    if r < self.screen.height {
+                                        self.screen.mark_line_dirty(r);
+                                    }
+                                }
+                                return Some(EmulatorAction::RequestRedraw);
+                            }
+                        }
+                    }
+                    MouseEventType::Release => {
+                        if button == MouseButton::Left {
+                            // Selection is finalized.
+                            // If selection is very small (e.g. start == end), could clear it here
+                            // to treat it as a click, but current spec is just to finalize.
+                            // For now, no specific action other than redraw if state changed.
+                            if self.selection.is_some() {
+                                // Ensure the last line of selection is marked dirty
+                                let (sel_start, sel_end, _) = self.get_normalized_selection_bounds();
+                                if sel_start.1 < self.screen.height { self.screen.mark_line_dirty(sel_start.1); }
+                                if sel_end.1 < self.screen.height { self.screen.mark_line_dirty(sel_end.1); }
+                                return Some(EmulatorAction::RequestRedraw);
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            UserInputAction::InitiateCopy => {
+                if let Some(text_to_copy) = self.get_selected_text() {
+                    // Clear selection after copying
+                    if let Some(selection_state) = self.selection.take() {
+                         let (start_coords, end_coords, _) = self.normalize_selection_coords(selection_state.start, selection_state.end, selection_state.mode);
+                         self.mark_selection_dirty(Some(start_coords), Some(end_coords));
+                    }
+                    return Some(EmulatorAction::CopyToClipboard(text_to_copy));
+                }
+                None
+            }
+            UserInputAction::InitiatePaste => {
+                // Request content from orchestrator. Orchestrator will send PasteText back.
+                Some(EmulatorAction::RequestClipboardContent)
+            }
+            UserInputAction::PasteText(text) => {
+                // This is how text from clipboard arrives
+                // Bracketed paste mode check
+                let mut bytes_to_send = Vec::new();
+                if self.dec_modes.bracketed_paste_mode {
+                    bytes_to_send.extend_from_slice(b"\x1b[200~");
+                    bytes_to_send.extend_from_slice(text.as_bytes());
+                    bytes_to_send.extend_from_slice(b"\x1b[201~");
+                } else {
+                    bytes_to_send.extend_from_slice(text.as_bytes());
+                }
+                if !bytes_to_send.is_empty() {
+                    return Some(EmulatorAction::WritePty(bytes_to_send));
+                }
+                None
+            }
+        }
+    }
+
+
     /// Handles an internal `ControlEvent`.
     pub(super) fn handle_control_event(&mut self, event: ControlEvent) -> Option<EmulatorAction> {
         self.cursor_wrap_next = false;
@@ -519,6 +706,16 @@ impl TerminalEmulator {
     /// Resizes the terminal display grid.
     pub(super) fn resize(&mut self, cols: usize, rows: usize) {
         self.cursor_wrap_next = false;
+        // When resizing, active selection should probably be cleared or adjusted.
+        // For now, let's clear it to avoid complex coordinate recalculations.
+        if self.selection.is_some() {
+            let old_selection = self.selection.take();
+            if let Some(sel) = old_selection {
+                 let (start_coords, end_coords, _) = self.normalize_selection_coords(sel.start, sel.end, sel.mode);
+                 self.mark_selection_dirty(Some(start_coords), Some(end_coords));
+            }
+        }
+
         let current_scrollback_limit = self.screen.scrollback_limit();
         self.screen.resize(cols, rows, current_scrollback_limit);
         let (log_x, log_y) = self.cursor_controller.logical_pos();
@@ -530,7 +727,28 @@ impl TerminalEmulator {
         );
     }
 
-    /// Marks all lines on the screen as dirty, forcing a full redraw.
+    /// Marks lines covered by the selection (old or new) as dirty.
+    fn mark_selection_dirty(&mut self, old_start: Option<(usize, usize)>, old_end: Option<(usize, usize)>) {
+        let mut dirty_rows: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        if let Some(sel_state) = self.selection {
+            let (current_start, current_end, _) = self.normalize_selection_coords(sel_state.start, sel_state.end, sel_state.mode);
+            for r in current_start.1..=current_end.1 {
+                if r < self.screen.height { dirty_rows.insert(r); }
+            }
+        }
+        if let (Some(start), Some(end)) = (old_start, old_end) {
+             let (norm_start, norm_end, _) = self.normalize_selection_coords(start, end, SelectionMode::Normal); // Mode doesn't matter for row range
+            for r in norm_start.1..=norm_end.1 {
+                if r < self.screen.height { dirty_rows.insert(r); }
+            }
+        }
+
+        for row_idx in dirty_rows {
+            self.screen.mark_line_dirty(row_idx);
+        }
+    }
+
 
     /// Returns the current logical cursor position (0-based column, row).
     pub fn cursor_pos(&self) -> (usize, usize) {
@@ -541,6 +759,99 @@ impl TerminalEmulator {
     pub fn is_alt_screen_active(&self) -> bool {
         self.screen.alt_screen_active
     }
+
+    /// Normalizes selection coordinates so start is before or at end.
+    /// Returns ((start_col, start_row), (end_col, end_row), mode)
+    fn normalize_selection_coords(
+        &self,
+        coord1: (usize, usize),
+        coord2: (usize, usize),
+        mode: SelectionMode,
+    ) -> ((usize, usize), (usize, usize), SelectionMode) {
+        let (r1, c1) = (coord1.1, coord1.0);
+        let (r2, c2) = (coord2.1, coord2.0);
+
+        if r1 < r2 || (r1 == r2 && c1 <= c2) {
+            ((c1, r1), (c2, r2), mode)
+        } else {
+            ((c2, r2), (c1, r1), mode)
+        }
+    }
+    
+    /// Helper to get normalized selection bounds if a selection exists.
+    fn get_normalized_selection_bounds(
+        &self,
+    ) -> ((usize, usize), (usize, usize), SelectionMode) {
+        if let Some(sel_state) = self.selection {
+            self.normalize_selection_coords(sel_state.start, sel_state.end, sel_state.mode)
+        } else {
+            // Default to a non-sensical range if no selection, or handle error
+            ((0,0), (0,0), SelectionMode::Normal) 
+        }
+    }
+
+
+    /// Retrieves the text currently selected.
+    pub(super) fn get_selected_text(&self) -> Option<String> {
+        if let Some(selection_state) = self.selection {
+            let ((start_col, start_row), (end_col, end_row), mode) =
+                self.normalize_selection_coords(selection_state.start, selection_state.end, selection_state.mode);
+
+            if mode == SelectionMode::Normal {
+                let mut selected_text = String::new();
+                for r_idx in start_row..=end_row {
+                    if r_idx >= self.screen.height {
+                        continue;
+                    }
+                    let line = &self.screen.grid[r_idx];
+                    let line_start_col = if r_idx == start_row { start_col } else { 0 };
+                    let line_end_col = if r_idx == end_row {
+                        end_col
+                    } else {
+                        self.screen.width.saturating_sub(1)
+                    };
+
+                    let mut line_text = String::new();
+                    let mut current_col = 0;
+                    while current_col <= line_end_col && current_col < self.screen.width {
+                        if current_col >= line_start_col {
+                            let glyph = &line[current_col];
+                            if !glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_SPACER) {
+                                line_text.push(glyph.c);
+                            }
+                        }
+                        // Check for wide char primary and advance by 2 if so, otherwise 1
+                        if line[current_col].attr.flags.contains(AttrFlags::WIDE_CHAR_PRIMARY) && current_col + 1 < self.screen.width {
+                            current_col += 2;
+                        } else {
+                            current_col += 1;
+                        }
+                    }
+                    
+                    // Trim trailing whitespace from lines that are not the last line of selection,
+                    // or if the selection does not extend to the end of the line.
+                    // This emulates typical terminal copy behavior.
+                    if r_idx < end_row || end_col < self.screen.width.saturating_sub(1) {
+                         selected_text.push_str(line_text.trim_end_matches(' '));
+                    } else {
+                        selected_text.push_str(&line_text);
+                    }
+
+
+                    if r_idx < end_row {
+                        selected_text.push('\n');
+                    }
+                }
+                return Some(selected_text);
+            } else {
+                // TODO: Implement Block selection text extraction
+                warn!("Block selection mode text extraction not yet implemented.");
+                return None;
+            }
+        }
+        None
+    }
+
 
     // --- Character Printing and Low-Level Operations ---
 
@@ -1326,5 +1637,112 @@ impl TerminalEmulator {
             );
         }
         None
+    }
+}
+
+
+// --- Implement TerminalInterface for TerminalEmulator ---
+// This was previously in src/term/mod.rs, moved here as it's specific to TerminalEmulator.
+impl TerminalInterface for TerminalEmulator {
+    fn dimensions(&self) -> (usize, usize) {
+        (self.screen.width, self.screen.height)
+    }
+
+    /// Interprets an `EmulatorInput` and updates the terminal state.
+    fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
+        let mut action = match input {
+            EmulatorInput::Ansi(command) => self.handle_ansi_command(command),
+            EmulatorInput::Control(event) => self.handle_control_event(event),
+            EmulatorInput::User(user_input_action) => { // Changed from BackendEvent
+                self.handle_user_input_action(user_input_action)
+            }
+            EmulatorInput::RawChar(ch) => {
+                self.print_char(ch);
+                None
+            }
+        };
+
+        if action.is_none() && !self.screen.dirty.iter().all(|&d| d == 0) {
+            if !matches!(action, Some(EmulatorAction::RequestRedraw)) {
+                action = Some(EmulatorAction::RequestRedraw);
+            }
+        }
+        action
+    }
+
+    fn get_glyph(&self, x: usize, y: usize) -> Glyph {
+        self.screen.get_glyph(x, y)
+    }
+
+    fn is_cursor_visible(&self) -> bool {
+        self.dec_modes.text_cursor_enable_mode
+    }
+
+    fn get_screen_cursor_pos(&self) -> (usize, usize) {
+        self.cursor_controller
+            .physical_screen_pos(&self.current_screen_context())
+    }
+    
+    fn get_render_snapshot(&self) -> RenderSnapshot {
+        let (width, height) = self.dimensions();
+        let mut lines = Vec::with_capacity(height);
+
+        for r_idx in 0..height {
+            let screen_line = &self.screen.grid[r_idx];
+            // Simple dirty check for now: if the screen's dirty flag for this line is set.
+            // More sophisticated checks could involve comparing with a previous snapshot.
+            let is_line_dirty = self.screen.dirty[r_idx] != 0;
+            
+            lines.push(SnapshotLine {
+                cells: screen_line.clone(), // Clone the glyphs for the snapshot
+                is_dirty: is_line_dirty,
+            });
+        }
+
+        let cursor_state = if self.is_cursor_visible() {
+            let (cursor_col, cursor_row) = self.get_screen_cursor_pos();
+            Some(CursorRenderState {
+                col: cursor_col,
+                row: cursor_row,
+                shape: self.current_cursor_shape, // From config or internal state
+                is_visible: true, // Already checked by self.is_cursor_visible()
+            })
+        } else {
+            None
+        };
+
+        let selection_render_state = self.selection.map(|sel_state| {
+            // Normalize coordinates for rendering if necessary, though renderer might also do this.
+            // For now, directly pass what's stored.
+            SelectionRenderState {
+                start_coords: sel_state.start,
+                end_coords: sel_state.end,
+                mode: sel_state.mode,
+            }
+        });
+
+        RenderSnapshot {
+            dimensions: (width, height),
+            lines,
+            cursor_state,
+            selection_state: selection_render_state,
+        }
+    }
+
+
+    fn take_dirty_lines(&mut self) -> Vec<usize> {
+        let mut all_dirty_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+
+        for (idx, &is_dirty_flag) in self.screen.dirty.iter().enumerate() {
+            if is_dirty_flag != 0 {
+                all_dirty_indices.insert(idx);
+            }
+        }
+        self.screen.clear_dirty_flags();
+
+        let mut sorted_dirty_lines: Vec<usize> = all_dirty_indices.into_iter().collect();
+        sorted_dirty_lines.sort_unstable();
+        sorted_dirty_lines
     }
 }
