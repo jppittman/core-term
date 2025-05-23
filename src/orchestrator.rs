@@ -6,8 +6,13 @@
 
 use crate::{
     ansi::AnsiParser,
+<<<<<<< Updated upstream
     backends::{BackendEvent, Driver, Modifiers as BackendModifiers, Keycode}, // Assuming Modifiers is part of BackendEvent or Driver
     config::{Config, KeySymbol, Modifiers as ConfigModifiers}, // Renamed to avoid conflict
+=======
+    backends::{BackendEvent, Driver}, // Modifiers and Keycode removed
+    config::{Config, KeySymbol, Modifiers}, // Using Modifiers from config directly
+>>>>>>> Stashed changes
     os::pty::PtyChannel,
     renderer::Renderer,
     term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction},
@@ -65,6 +70,7 @@ impl<'a> AppOrchestrator<'a> {
     }
 
     // Helper function to translate backend modifiers to config modifiers
+<<<<<<< Updated upstream
     fn translate_modifiers(&self, backend_modifiers: BackendModifiers) -> ConfigModifiers {
         let mut config_mods = ConfigModifiers::empty();
         if backend_modifiers.contains(BackendModifiers::SHIFT) {
@@ -80,10 +86,28 @@ impl<'a> AppOrchestrator<'a> {
             config_mods |= ConfigModifiers::SUPER;
         }
         config_mods
+=======
+    fn translate_modifiers(&self, backend_modifiers: Modifiers) -> Modifiers {
+        // backend_modifiers is already of type config::Modifiers, so direct assignment or selective mapping.
+        // For now, this function might be redundant if BackendModifiers is already config::Modifiers.
+        // However, if backend_modifiers came from a *different* Modifiers type (e.g. from a specific backend crate),
+        // then this translation would be necessary.
+        // Assuming backend_modifiers is already the correct type config::Modifiers.
+        // If not, the commented-out logic below would be a starting point.
+
+        // let mut config_mods = Modifiers::empty();
+        // if backend_modifiers.contains(MOD_SHIFT_NAME_FROM_OTHER_CRATE) { // Example
+        //     config_mods |= Modifiers::SHIFT;
+        // }
+        // // ... etc.
+        // config_mods
+        backend_modifiers // Assuming it's already the correct type.
+>>>>>>> Stashed changes
     }
 
     // Helper function to translate backend keysym to config KeySymbol
     // This is a simplified version for now.
+<<<<<<< Updated upstream
     fn translate_keysym(&self, keysym: Keycode, text: &Option<String>) -> KeySymbol {
         match keysym {
             // This mapping is highly dependent on the values provided by the specific Driver/BackendEvent
@@ -147,6 +171,91 @@ impl<'a> AppOrchestrator<'a> {
                 }
                 KeySymbol::Unknown(keysym.0) // Store the raw keysym if unknown
             }
+=======
+    // The `keysym: Keycode` parameter will cause an error as Keycode is no longer imported.
+    // This function needs to be refactored to take `keysym_u32: u32`.
+    fn translate_keysym(&self, keysym_u32: u32, text: &Option<String>) -> KeySymbol {
+        // If `text` provides a single character, it's often the most reliable representation,
+        // especially considering IMEs or complex keyboard layouts.
+        if let Some(txt_str) = text {
+            let mut chars = txt_str.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                return KeySymbol::Char(c);
+            }
+            // If `text` is not a single char (e.g., empty for control keys, or multiple chars for dead keys),
+            // then proceed to keysym mapping.
+        }
+
+        // This mapping is highly dependent on the values provided by the specific Driver/BackendEvent.
+        // These are common X11 KeySym values. Other backends might use different values.
+        // A more robust solution would involve the backend providing an abstract KeySymbol directly,
+        // or using a more comprehensive keysym library.
+        // Ref: /usr/include/X11/keysymdef.h
+        const XK_BACKSPACE: u32 = 0xff08;
+        const XK_TAB: u32 = 0xff09;
+        const XK_RETURN: u32 = 0xff0d; // Enter key
+        const XK_ESCAPE: u32 = 0xff1b;
+        const XK_INSERT: u32 = 0xff63;
+        const XK_DELETE: u32 = 0xffff;
+        const XK_HOME: u32 = 0xff50;
+        const XK_END: u32 = 0xff57;
+        const XK_PAGE_UP: u32 = 0xff55;
+        const XK_PAGE_DOWN: u32 = 0xff56;
+        const XK_LEFT: u32 = 0xff51;
+        const XK_UP: u32 = 0xff52;
+        const XK_RIGHT: u32 = 0xff53;
+        const XK_DOWN: u32 = 0xff54;
+        const XK_F1: u32 = 0xffbe;
+        const XK_F2: u32 = 0xffbf;
+        const XK_F3: u32 = 0xffc0;
+        const XK_F4: u32 = 0xffc1;
+        const XK_F5: u32 = 0xffc2;
+        const XK_F6: u32 = 0xffc3;
+        const XK_F7: u32 = 0xffc4;
+        const XK_F8: u32 = 0xffc5;
+        const XK_F9: u32 = 0xffc6;
+        const XK_F10: u32 = 0xffc7;
+        const XK_F11: u32 = 0xffc8;
+        const XK_F12: u32 = 0xffc9;
+        // Space is tricky: X11 keysym is 0x020, but `text` field should have " ".
+        // ASCII space is 32. If text field failed, this might be a fallback.
+        const XK_SPACE: u32 = 0x0020;
+
+
+        match keysym_u32 {
+            XK_BACKSPACE => KeySymbol::Backspace,
+            XK_TAB => KeySymbol::Tab,
+            XK_RETURN => KeySymbol::Return,
+            XK_ESCAPE => KeySymbol::Escape,
+            XK_INSERT => KeySymbol::Insert,
+            XK_DELETE => KeySymbol::Delete,
+            XK_HOME => KeySymbol::Home,
+            XK_END => KeySymbol::End,
+            XK_PAGE_UP => KeySymbol::PageUp,
+            XK_PAGE_DOWN => KeySymbol::PageDown,
+            XK_LEFT => KeySymbol::Left,
+            XK_UP => KeySymbol::Up,
+            XK_RIGHT => KeySymbol::Right,
+            XK_DOWN => KeySymbol::Down,
+            XK_F1 => KeySymbol::F1,
+            XK_F2 => KeySymbol::F2,
+            XK_F3 => KeySymbol::F3,
+            XK_F4 => KeySymbol::F4,
+            XK_F5 => KeySymbol::F5,
+            XK_F6 => KeySymbol::F6,
+            XK_F7 => KeySymbol::F7,
+            XK_F8 => KeySymbol::F8,
+            XK_F9 => KeySymbol::F9,
+            XK_F10 => KeySymbol::F10,
+            XK_F11 => KeySymbol::F11,
+            XK_F12 => KeySymbol::F12,
+            XK_SPACE => KeySymbol::Char(' '), // Prefer text field, but map if text is empty.
+            // Add more non-character keysyms here as needed.
+            // For printable characters, text field is preferred.
+            // If text field was empty but keysym indicates a printable char (e.g. 'a' to 'z'),
+            // that logic could be added here, but it's less common.
+            _ => KeySymbol::Unknown(keysym_u32),
+>>>>>>> Stashed changes
         }
     }
 
@@ -221,7 +330,12 @@ impl<'a> AppOrchestrator<'a> {
                 modifiers,
                 text,
             } => {
+<<<<<<< Updated upstream
                 let translated_symbol = self.translate_keysym(keysym, &text);
+=======
+                let text_option = Some(text.clone()); // Create an Option<String> for translate_keysym
+                let translated_symbol = self.translate_keysym(keysym, &text_option);
+>>>>>>> Stashed changes
                 let translated_modifiers = self.translate_modifiers(modifiers);
 
                 let copy_binding = self.config.keybindings.copy;
@@ -242,7 +356,11 @@ impl<'a> AppOrchestrator<'a> {
                     user_input_action = Some(UserInputAction::KeyInput {
                         symbol: translated_symbol,
                         modifiers: translated_modifiers,
+<<<<<<< Updated upstream
                         text, // Pass along the original text from backend for PTY
+=======
+                        text: Some(text), // Pass along the original text from backend for PTY
+>>>>>>> Stashed changes
                     });
                 }
 
@@ -301,7 +419,7 @@ impl<'a> AppOrchestrator<'a> {
                 self.driver.set_focus(true);
                 if let Some(action) = self
                     .term
-                    .interpret_input(EmulatorInput::User(BackendEvent::FocusGained))
+                    .interpret_input(EmulatorInput::User(UserInputAction::FocusGained))
                 {
                     self.handle_emulator_action(action);
                 }
@@ -311,7 +429,7 @@ impl<'a> AppOrchestrator<'a> {
                 self.driver.set_focus(false);
                 if let Some(action) = self
                     .term
-                    .interpret_input(EmulatorInput::User(BackendEvent::FocusLost))
+                    .interpret_input(EmulatorInput::User(UserInputAction::FocusLost))
                 {
                     self.handle_emulator_action(action);
                 }
@@ -320,6 +438,24 @@ impl<'a> AppOrchestrator<'a> {
                 log::warn!(
                     "Orchestrator: CloseRequested event unexpectedly reached handle_specific_driver_event."
                 );
+            }
+            BackendEvent::Mouse { event_type, button, x, y, modifiers } => {
+                // TODO: Translate BackendEvent::Mouse into UserInputAction::MouseInput
+                //       and then pass it to self.term.interpret_input or a dedicated handler.
+                //       This involves mapping cell coordinates if x,y are pixels,
+                //       and deciding how/if to use button and modifiers here.
+                log::debug!(
+                    "Orchestrator: Received BackendEvent::Mouse: type={:?}, button={:?}, x={}, y={}, mods={:?}",
+                    event_type, button, x, y, modifiers
+                );
+                // Example of how it might be translated and sent to terminal:
+                // let (char_width, char_height) = self.driver.get_font_dimensions();
+                // let cell_x = x / char_width.max(1);
+                // let cell_y = y / char_height.max(1);
+                // let uia = UserInputAction::MouseInput { /* ... */ };
+                // if let Some(action) = self.term.interpret_input(EmulatorInput::User(uia)) {
+                //     self.handle_emulator_action(action);
+                // }
             }
         }
     }
@@ -408,3 +544,4 @@ impl<'a> AppOrchestrator<'a> {
 
 #[cfg(test)]
 mod tests;
+

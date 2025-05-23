@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 // myterm/src/term/mod.rs
 
 //! This module defines the core terminal emulator logic.
@@ -30,9 +31,10 @@ use crate::{
     term::screen::Screen,
 };
 // Explicitly import Color and NamedColor if they are used directly in this module's functions,
+=======
+>>>>>>> Stashed changes
 // though they are mostly encapsulated within other types like Attributes.
 
-// Logging
 
 /// Default tab interval.
 pub const DEFAULT_TAB_INTERVAL: u8 = 8;
@@ -60,7 +62,7 @@ pub enum EmulatorInput {
     /// An event originating from the user (e.g., keyboard input) or the
     /// backend system (e.g., window resize, focus change), as reported
     /// by the `Driver`.
-    User(BackendEvent),
+    User(UserInputAction), // Changed from BackendEvent
     /// An internal control event, such as a resize notification from the orchestrator.
     Control(ControlEvent),
 
@@ -89,6 +91,11 @@ pub enum UserInputAction {
     InitiateCopy,
     InitiatePaste,
     PasteText(String), // Content from clipboard to be pasted
+<<<<<<< Updated upstream
+=======
+    FocusGained,       // Terminal gained focus
+    FocusLost,         // Terminal lost focus
+>>>>>>> Stashed changes
 }
 
 // --- Selection-related Enums and Structs ---
@@ -186,3 +193,4 @@ pub trait TerminalInterface {
 
 #[cfg(test)]
 mod tests;
+

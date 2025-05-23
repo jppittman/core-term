@@ -208,6 +208,7 @@ impl Driver for ConsoleDriver {
                     backend_events.push(BackendEvent::Key {
                         keysym: byte as u32,
                         text,
+                        modifiers: crate::config::Modifiers::empty(), // Console driver doesn't easily get modifiers
                     });
                 }
             }
@@ -286,7 +287,10 @@ impl Driver for ConsoleDriver {
 
     /// Draws a run of text on the console.
     /// `style.fg` and `style.bg` are guaranteed concrete by the Renderer.
-    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()> {
+    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle, is_selected: bool) -> Result<()> {
+        // TODO (style): Consider how `is_selected` should affect console output.
+        //               For now, it's unused, but the trait requires it.
+        //               If selection inverts colors, that logic would go here.
         if text.is_empty() {
             return Ok(());
         }
@@ -335,7 +339,10 @@ impl Driver for ConsoleDriver {
 
     /// Fills a rectangular area of cells with a specified concrete color.
     /// This is done by setting the background color and printing spaces.
-    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
+    fn fill_rect(&mut self, rect: CellRect, color: Color, is_selected: bool) -> Result<()> {
+        // TODO (style): Consider how `is_selected` should affect console output.
+        //               Similar to draw_text_run, if selection inverts the fill,
+        //               that logic would be applied here based on `is_selected`.
         if rect.width == 0 || rect.height == 0 {
             return Ok(());
         }
@@ -602,3 +609,4 @@ impl Drop for ConsoleDriver {
         }
     }
 }
+

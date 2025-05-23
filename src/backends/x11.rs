@@ -25,6 +25,9 @@ use x11::xft;
 use x11::xlib;
 use x11::xrender::{XGlyphInfo, XRenderColor};
 
+// Import config::Modifiers for translating X11 state
+use crate::config::Modifiers;
+
 // --- Constants ---
 const DEFAULT_FONT_NAME: &str = "Inconsolata:size=10"; // Example font
 const MIN_FONT_WIDTH: u32 = 1; // Minimum reasonable font width
@@ -283,9 +286,12 @@ impl Driver for XDriver {
                         String::new() // No text generated (e.g., modifier key)
                     };
                     debug!("XEvent: KeyPress (keysym: {:#X}, text: '{}')", keysym, text);
+                    let x_modifiers_state = unsafe { xevent.key.state };
+                    let translated_modifiers = Self::translate_x_modifiers(x_modifiers_state);
                     backend_events.push(BackendEvent::Key {
                         keysym: keysym as u32, // Cast KeySym (ulong) to u32
                         text,
+                        modifiers: translated_modifiers,
                     });
                 }
                 xlib::ClientMessage => {
@@ -375,7 +381,8 @@ impl Driver for XDriver {
         Ok(())
     }
 
-    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()> {
+    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle, is_selected: bool) -> Result<()> {
+        // TODO: Use is_selected to modify drawing style (e.g., invert colors).
         if text.is_empty() {
             return Ok(());
         }
@@ -466,7 +473,8 @@ impl Driver for XDriver {
         Ok(())
     }
 
-    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
+    fn fill_rect(&mut self, rect: CellRect, color: Color, is_selected: bool) -> Result<()> {
+        // TODO: Use is_selected to modify drawing style (e.g., invert color with cell's original fg/bg).
         if rect.width == 0 || rect.height == 0 {
             return Ok(()); // Nothing to fill.
         }
@@ -712,6 +720,25 @@ impl Driver for XDriver {
 
 // --- XDriver Private Helper Methods ---
 impl XDriver {
+    /// Translates X11 key event state mask to `config::Modifiers`.
+    fn translate_x_modifiers(state: c_uint) -> Modifiers {
+        let mut mods = Modifiers::empty();
+        if state & xlib::ShiftMask != 0 {
+            mods |= Modifiers::SHIFT;
+        }
+        if state & xlib::ControlMask != 0 {
+            mods |= Modifiers::CONTROL;
+        }
+        if state & xlib::Mod1Mask != 0 { // Typically Alt
+            mods |= Modifiers::ALT;
+        }
+        if state & xlib::Mod4Mask != 0 { // Typically Super/Windows key
+            mods |= Modifiers::SUPER;
+        }
+        // Note: LockMask (Caps Lock), Mod2Mask (Num Lock), Mod3Mask, Mod5Mask are not currently mapped.
+        mods
+    }
+
     /// Loads the primary font using Xft and calculates basic font metrics.
     fn load_font(&mut self) -> Result<()> {
         debug!("Loading font: {}", DEFAULT_FONT_NAME);
@@ -1105,3 +1132,4 @@ impl Drop for XDriver {
         }
     }
 }
+

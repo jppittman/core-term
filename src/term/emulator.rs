@@ -431,7 +431,7 @@ impl TerminalEmulator {
         const KEY_DOWN_ARROW: u32 = 0xFF54;
 
         match event {
-            BackendEvent::Key { keysym, text } => {
+            BackendEvent::Key { keysym, text, modifiers: _, .. } => { // Pattern already includes modifiers and ..
                 let mut bytes_to_send: Vec<u8> = Vec::new();
                 match keysym {
                     KEY_RETURN => bytes_to_send.push(b'\r'),
@@ -572,6 +572,21 @@ impl TerminalEmulator {
                 }
                 None
             }
+<<<<<<< Updated upstream
+=======
+            UserInputAction::FocusGained => {
+                if self.dec_modes.focus_event_mode {
+                    return Some(EmulatorAction::WritePty(b"\x1b[I".to_vec()));
+                }
+                None
+            }
+            UserInputAction::FocusLost => {
+                if self.dec_modes.focus_event_mode {
+                    return Some(EmulatorAction::WritePty(b"\x1b[O".to_vec()));
+                }
+                None
+            }
+>>>>>>> Stashed changes
             UserInputAction::MouseInput {
                 event_type,
                 col,
@@ -1746,3 +1761,7 @@ impl TerminalInterface for TerminalEmulator {
         sorted_dirty_lines
     }
 }
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes

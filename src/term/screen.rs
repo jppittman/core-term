@@ -668,7 +668,17 @@ impl Screen {
             .position(|&is_set| is_set)
             .map(|pos_after_skip| x.saturating_add(1) + pos_after_skip)
     }
+
+    /// Clamps the given column and row to be within the screen dimensions.
+    /// Column is clamped to `0..=self.width-1`.
+    /// Row is clamped to `0..=self.height-1`.
+    pub(super) fn clamp_coords(&self, col: usize, row: usize) -> (usize, usize) {
+        let clamped_col = col.min(self.width.saturating_sub(1));
+        let clamped_row = row.min(self.height.saturating_sub(1));
+        (clamped_col, clamped_row)
+    }
 }
 
 /// A placeholder constant for the scrollback shrink logic in `resize`.
 const SOME_REASONABLE_SLACK: usize = 20;
+

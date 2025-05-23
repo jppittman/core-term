@@ -124,6 +124,9 @@ fn main() -> anyhow::Result<()> {
     let mut ansi_parser = AnsiProcessor::new();
     let renderer = Renderer::new();
 
+    // Load or create default configuration
+    let config = config::Config::default(); // Create a default config instance
+
     // --- Create AppOrchestrator ---
     // The AppOrchestrator takes mutable references to the main components.
     let mut orchestrator = AppOrchestrator::new(
@@ -132,6 +135,7 @@ fn main() -> anyhow::Result<()> {
         &mut ansi_parser,
         renderer, // renderer is moved into the orchestrator
         &mut *driver,
+        &config, // Pass the loaded/defaulted config
     );
     info!("AppOrchestrator created.");
 

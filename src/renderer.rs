@@ -2,12 +2,21 @@
 
 //! This module defines the `Renderer`.
 use crate::term::SelectionRenderState; // Added for selection
+<<<<<<< Updated upstream
 //!
 //! The `Renderer`'s primary responsibility is to translate the visual state of the
 //! `TerminalEmulator` (obtained via the `TerminalInterface`) into a series of
 //! abstract drawing commands that can be executed by a `Driver`. It is designed
 //! to be backend-agnostic. It defines default foreground and background colors
 //! for resolving `Color::Default` from glyph attributes when rendering.
+=======
+//
+// The `Renderer`'s primary responsibility is to translate the visual state of the
+// `TerminalEmulator` (obtained via the `TerminalInterface`) into a series of
+// abstract drawing commands that can be executed by a `Driver`. It is designed
+// to be backend-agnostic. It defines default foreground and background colors
+// for resolving `Color::Default` from glyph attributes when rendering.
+>>>>>>> Stashed changes
 
 use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle};
 // Corrected: Import Color and NamedColor directly from the color module.
@@ -632,7 +641,11 @@ impl Renderer {
                  run_text.push(start_glyph.c);
                  run_total_cell_width = advance_by;
              } else {
+<<<<<<< Updated upstream
                  warn!( /* ... */ );
+=======
+                 // warn!( /* ... */ );
+>>>>>>> Stashed changes
                  return Ok(advance_by);
              }
         }
@@ -825,3 +838,4 @@ impl Default for Renderer {
 
 #[cfg(test)]
 mod tests;
+
