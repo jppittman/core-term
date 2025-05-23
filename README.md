@@ -80,7 +80,7 @@ cargo run
 **Dependencies:**
 For building, especially the X11 backend, you will likely need the Xlib development headers. On Debian/Ubuntu-based systems, these can typically be installed via:
 ```bash
-sudo apt-get install -y libx11-dev
+sudo apt-get install -y libx11-dev libxext-dev libxtf-dev libfontconfig1-dev libfreetype6-dev 
 ```
 Other platforms will have equivalent packages for their X11 development libraries.
 
