@@ -2,9 +2,9 @@
 
 // Note: This file is part of the `emulator` module.
 // `TerminalEmulator` struct is defined in `src/term/emulator/mod.rs`
-use super::TerminalEmulator; // Bring the struct into scope from the parent module
 use super::ansi_handler; // Use the new ansi_handler module
 use super::input_handler; // Use the new input_handler module
+use super::TerminalEmulator; // Bring the struct into scope from the parent module
 use crate::term::TerminalInterface; // For the `dimensions()` method
 
 // Corrected Crate-level imports for items within src/term/
@@ -32,8 +32,8 @@ use crate::{
     },
     backends::BackendEvent,
     glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER}, // Added WIDE_CHAR_PLACEHOLDER
-    // Note: cursor::CursorController and cursor::ScreenContext are used by methods in mod.rs
-    // and are thus imported there.
+                                                                  // Note: cursor::CursorController and cursor::ScreenContext are used by methods in mod.rs
+                                                                  // and are thus imported there.
 };
 
 // Logging

@@ -296,11 +296,13 @@ impl AnsiParser {
                 }
                 AnsiToken::Print(c) => {
                     if let Some(command) = AnsiCommand::from_esc(c) {
+                        // AnsiCommand::from_esc is from commands.rs
                         self.commands.push(command);
                     } else {
-                        self.dispatch_ignore(c as u8);
+                        // If 'c' does not form a valid ESC sequence, treat 'c' as a printable character.
+                        self.commands.push(AnsiCommand::Print(c));
                     }
-                    self.state = State::Ground;
+                    self.state = State::Ground; // Ensure state transitions back to Ground
                 }
                 AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
                 AnsiToken::C1Control(byte) => {
@@ -530,5 +532,3 @@ impl AnsiTokenByte for AnsiToken {
         }
     }
 }
-
-// Removed duplicate definition of from_esc_intermediate

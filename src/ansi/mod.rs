@@ -44,6 +44,10 @@ impl AnsiParser for AnsiProcessor {
         for byte in bytes {
             self.lexer.process_byte(*byte);
         }
+        // Finalize any pending UTF-8 sequence in the lexer.
+        self.lexer.finalize();
+
+        // Now take all tokens, including any finalization token.
         let tokens = self.lexer.take_tokens();
         for token in tokens {
             self.parser.process_token(token);
