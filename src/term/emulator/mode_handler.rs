@@ -55,7 +55,11 @@ impl TerminalEmulator {
         self.screen.default_attributes = current_attrs;
     }
 
-    pub(super) fn handle_set_mode(&mut self, mode_type: Mode, enable: bool) -> Option<EmulatorAction> {
+    pub(super) fn handle_set_mode(
+        &mut self,
+        mode_type: Mode,
+        enable: bool,
+    ) -> Option<EmulatorAction> {
         self.cursor_wrap_next = false;
         let mut action_to_return = None;
 

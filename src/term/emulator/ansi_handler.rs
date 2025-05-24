@@ -85,7 +85,11 @@ fn reverse_index(emulator: &mut TerminalEmulator) {
 // save_cursor_dec is now a method on TerminalEmulator in methods.rs
 // restore_cursor_dec is now a method on TerminalEmulator in methods.rs
 
-fn designate_character_set(emulator: &mut TerminalEmulator, g_set_index: usize, charset: CharacterSet) {
+fn designate_character_set(
+    emulator: &mut TerminalEmulator,
+    g_set_index: usize,
+    charset: CharacterSet,
+) {
     if g_set_index < emulator.active_charsets.len() {
         emulator.active_charsets[g_set_index] = charset;
         trace!("Designated G{} to {:?}", g_set_index, charset);
@@ -194,9 +198,11 @@ pub(super) fn process_ansi_command(
                 emulator.cursor_controller.set_attributes(default_attrs);
                 emulator.screen.default_attributes = default_attrs;
                 emulator.erase_in_display(EraseMode::All); // Call as method on emulator
-                emulator
-                    .cursor_controller
-                    .move_to_logical(0, 0, &emulator.current_screen_context());
+                emulator.cursor_controller.move_to_logical(
+                    0,
+                    0,
+                    &emulator.current_screen_context(),
+                );
                 emulator.dec_modes = DecPrivateModes::default();
                 emulator.screen.origin_mode = emulator.dec_modes.origin_mode;
                 let (_, h) = emulator.dimensions();
@@ -205,8 +211,7 @@ pub(super) fn process_ansi_command(
                 emulator.active_charset_g_level = 0;
                 emulator.screen.clear_tabstops(0, TabClearMode::All);
                 let (w, _) = emulator.dimensions();
-                for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize)
-                {
+                for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize) {
                     emulator.screen.set_tabstop(i);
                 }
                 emulator.cursor_wrap_next = false;
@@ -342,9 +347,11 @@ pub(super) fn process_ansi_command(
                 emulator
                     .screen
                     .set_scrolling_region(top as usize, bottom as usize);
-                emulator
-                    .cursor_controller
-                    .move_to_logical(0, 0, &emulator.current_screen_context());
+                emulator.cursor_controller.move_to_logical(
+                    0,
+                    0,
+                    &emulator.current_screen_context(),
+                );
                 None
             }
             CsiCommand::SetCursorStyle { shape } => {

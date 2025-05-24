@@ -10,8 +10,8 @@ use crate::{
         action::EmulatorAction,
         charset::{map_to_dec_line_drawing, CharacterSet},
         cursor::{CursorController, ScreenContext},
-                modes::{DecModeConstant, DecPrivateModes, Mode, EraseMode},
-                screen::{Screen, TabClearMode},
+        modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode},
+        screen::{Screen, TabClearMode},
     },
 };
 
@@ -20,12 +20,12 @@ use log::{debug, trace, warn};
 
 mod ansi_handler; // Include the ansi_handler module
 mod char_processor; // Include the char_processor module
+mod cursor_handler;
 mod input_handler; // Include the input_handler module
 mod methods; // Include the methods from methods.rs
 mod mode_handler; // Include the mode_handler module
 mod osc_handler; // Include the osc_handler module
-mod screen_ops; // Include the screen_ops module
-mod cursor_handler; // Include the cursor_handler module
+mod screen_ops; // Include the screen_ops module // Include the cursor_handler module
 
 // Constants
 const DEFAULT_CURSOR_SHAPE: u16 = 1; // Example default shape
@@ -139,7 +139,7 @@ impl TerminalEmulator {
     pub fn is_alt_screen_active(&self) -> bool {
         self.screen.alt_screen_active
     }
-    
+
     /// Resizes the terminal display grid.
     pub(super) fn resize(&mut self, cols: usize, rows: usize) {
         self.cursor_wrap_next = false;
