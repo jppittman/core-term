@@ -28,10 +28,12 @@ pub enum EmulatorAction {
     SetCursorVisibility(bool),
 
     /// Request to copy the given string to the system clipboard.
+    /// The orchestrator is responsible for interacting with the clipboard.
     CopyToClipboard(String),
 
     /// Request to fetch content from the system clipboard.
-    /// The orchestrator should respond with a `UserInputAction::PasteText`
-    /// if content is available.
+    /// The orchestrator should handle this by attempting to read from the clipboard
+    /// and, if successful, sending a `UserInputAction::PasteText` back to the
+    /// terminal emulator via `interpret_input`.
     RequestClipboardContent,
 }

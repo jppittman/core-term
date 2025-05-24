@@ -11,6 +11,7 @@ use crate::backends::{
 };
 use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
+use crate::renderer::RENDERER_DEFAULT_FG; // Added for selection handling
 
 use anyhow::{Context, Result};
 use libc::{winsize, STDIN_FILENO, TIOCGWINSZ}; // For terminal size and raw mode
@@ -288,9 +289,6 @@ impl Driver for ConsoleDriver {
     /// Draws a run of text on the console.
     /// `style.fg` and `style.bg` are guaranteed concrete by the Renderer.
     fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle, is_selected: bool) -> Result<()> {
-        // TODO (style): Consider how `is_selected` should affect console output.
-        //               For now, it's unused, but the trait requires it.
-        //               If selection inverts colors, that logic would go here.
         if text.is_empty() {
             return Ok(());
         }
@@ -304,6 +302,12 @@ impl Driver for ConsoleDriver {
             );
         }
 
+        let (eff_fg_color, eff_bg_color) = if is_selected {
+            (style.bg, style.fg) // Swap FG and BG for selection
+        } else {
+            (style.fg, style.bg)
+        };
+
         let mut cmd = String::new();
         // Move cursor to position (1-based for ANSI CUP).
         cmd.push_str(&Self::format_cursor_position(coords.y + 1, coords.x + 1));
@@ -311,7 +315,7 @@ impl Driver for ConsoleDriver {
         // Build SGR sequence.
         let mut sgr_codes = Vec::new();
         sgr_codes.push(SGR_RESET_ALL); // Reset first for a clean slate.
-        Self::sgr_append_concrete_attributes(&mut sgr_codes, style.fg, style.bg, style.flags);
+        Self::sgr_append_concrete_attributes(&mut sgr_codes, eff_fg_color, eff_bg_color, style.flags);
 
         if !sgr_codes.is_empty() {
             cmd.push_str(SGR_PREFIX);
@@ -340,9 +344,6 @@ impl Driver for ConsoleDriver {
     /// Fills a rectangular area of cells with a specified concrete color.
     /// This is done by setting the background color and printing spaces.
     fn fill_rect(&mut self, rect: CellRect, color: Color, is_selected: bool) -> Result<()> {
-        // TODO (style): Consider how `is_selected` should affect console output.
-        //               Similar to draw_text_run, if selection inverts the fill,
-        //               that logic would be applied here based on `is_selected`.
         if rect.width == 0 || rect.height == 0 {
             return Ok(());
         }
@@ -355,12 +356,20 @@ impl Driver for ConsoleDriver {
                 "ConsoleDriver::fill_rect received Color::Default. Renderer should resolve defaults."
             );
         }
+        
+        let final_bg_color_for_sgr = if is_selected {
+            // When selected, the background of the rect (filled with spaces)
+            // should visually appear as the terminal's default foreground color.
+            RENDERER_DEFAULT_FG
+        } else {
+            color // Use the provided color directly if not selected
+        };
 
         let mut cmd = String::new();
         // Set background color using SGR.
         let mut sgr_codes = Vec::new();
         sgr_codes.push(SGR_RESET_ALL); // Reset for clean application of background.
-        Self::sgr_append_concrete_bg_color(&mut sgr_codes, color);
+        Self::sgr_append_concrete_bg_color(&mut sgr_codes, final_bg_color_for_sgr);
 
         if !sgr_codes.is_empty() {
             cmd.push_str(SGR_PREFIX);
@@ -391,7 +400,7 @@ impl Driver for ConsoleDriver {
             rect.y,
             rect.width,
             rect.height,
-            color,
+            color, // Log original color for clarity, though final_bg_color_for_sgr is used
             cmd
         );
         Ok(())
@@ -609,4 +618,3 @@ impl Drop for ConsoleDriver {
         }
     }
 }
-

@@ -9,6 +9,7 @@ use log::{debug, error, info, trace, warn};
 use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
 use crate::color::{Color, NamedColor};
 use crate::glyph::AttrFlags;
+use crate::renderer::RENDERER_DEFAULT_FG; // Added for selection handling in fill_rect
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -382,7 +383,6 @@ impl Driver for XDriver {
     }
 
     fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle, is_selected: bool) -> Result<()> {
-        // TODO: Use is_selected to modify drawing style (e.g., invert colors).
         if text.is_empty() {
             return Ok(());
         }
@@ -396,6 +396,12 @@ impl Driver for XDriver {
                 "XDriver::draw_text_run received Color::Default. Renderer should resolve defaults."
             ));
         }
+        
+        let (eff_fg_color, eff_bg_color) = if is_selected {
+            (style.bg, style.fg) // Swap FG and BG for selection
+        } else {
+            (style.fg, style.bg)
+        };
 
         // Calculate pixel coordinates for the text run.
         let x_pixel = (coords.x * self.font_width as usize) as c_int;
@@ -405,17 +411,17 @@ impl Driver for XDriver {
 
         // Resolve foreground and background colors to XftColor.
         let xft_fg = self
-            .resolve_concrete_xft_color(style.fg)
-            .context("Failed to resolve foreground color for text run")?;
+            .resolve_concrete_xft_color(eff_fg_color)
+            .context("Failed to resolve effective foreground color for text run")?;
         let xft_bg = self
-            .resolve_concrete_xft_color(style.bg)
-            .context("Failed to resolve background color for text run")?;
+            .resolve_concrete_xft_color(eff_bg_color)
+            .context("Failed to resolve effective background color for text run")?;
 
         // Draw the background rectangle for the text run.
         unsafe {
             xft::XftDrawRect(
                 self.xft_draw,
-                &xft_bg, // Use the resolved background color
+                &xft_bg, // Use the resolved effective background color
                 x_pixel,
                 y_pixel,
                 run_pixel_width as u32, // Width of the text run
@@ -432,7 +438,7 @@ impl Driver for XDriver {
         unsafe {
             xft::XftDrawStringUtf8(
                 self.xft_draw,
-                &xft_fg,                          // Use the resolved foreground color
+                &xft_fg,                          // Use the resolved effective foreground color
                 self.xft_font,                    // The loaded Xft font
                 x_pixel,                          // X position in pixels
                 baseline_y_pixel,                 // Y position of the baseline in pixels
@@ -442,13 +448,14 @@ impl Driver for XDriver {
         }
 
         // Handle underline and strikethrough attributes if present.
+        // These should use the effective foreground color.
         if style.flags.contains(AttrFlags::UNDERLINE) {
             // Simple underline: 1 pixel high, a couple of pixels below the baseline.
             let underline_y = y_pixel + self.font_height as c_int - 2; // Adjust position as needed
             unsafe {
                 xft::XftDrawRect(
                     self.xft_draw,
-                    &xft_fg, // Use foreground color for underline
+                    &xft_fg, // Use effective foreground color for underline
                     x_pixel,
                     underline_y,
                     run_pixel_width as u32,
@@ -462,7 +469,7 @@ impl Driver for XDriver {
             unsafe {
                 xft::XftDrawRect(
                     self.xft_draw,
-                    &xft_fg, // Use foreground color for strikethrough
+                    &xft_fg, // Use effective foreground color for strikethrough
                     x_pixel,
                     strikethrough_y,
                     run_pixel_width as u32,
@@ -474,17 +481,23 @@ impl Driver for XDriver {
     }
 
     fn fill_rect(&mut self, rect: CellRect, color: Color, is_selected: bool) -> Result<()> {
-        // TODO: Use is_selected to modify drawing style (e.g., invert color with cell's original fg/bg).
         if rect.width == 0 || rect.height == 0 {
             return Ok(()); // Nothing to fill.
         }
-        // Contract: Renderer ensures color is concrete.
+        // Contract: Renderer ensures color is concrete (not Color::Default).
         if matches!(color, Color::Default) {
             error!("XDriver::fill_rect received Color::Default. This is a bug in the Renderer.");
             return Err(anyhow::anyhow!(
                 "XDriver::fill_rect received Color::Default. Renderer should resolve defaults."
             ));
         }
+
+        let final_fill_color = if is_selected {
+            // If selected, the background of the rect should become the default foreground color.
+            RENDERER_DEFAULT_FG 
+        } else {
+            color // Use the provided color directly if not selected
+        };
 
         // Calculate pixel dimensions for the rectangle.
         let x_pixel = (rect.x * self.font_width as usize) as c_int;
@@ -494,7 +507,7 @@ impl Driver for XDriver {
 
         // Resolve the concrete Color to an XftColor.
         let xft_fill_color = self
-            .resolve_concrete_xft_color(color)
+            .resolve_concrete_xft_color(final_fill_color)
             .context("Failed to resolve color for fill_rect")?;
 
         // Use XftDrawRect to fill the area.
@@ -1132,4 +1145,3 @@ impl Drop for XDriver {
         }
     }
 }
-

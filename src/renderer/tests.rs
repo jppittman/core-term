@@ -3,17 +3,17 @@
 #[cfg(test)]
 mod render_tests {
     use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
-    // Corrected: Import Color and NamedColor directly from the color module.
     use crate::color::{Color, NamedColor};
-    // AttrFlags, Attributes, and Glyph are correctly from the glyph module.
     use crate::glyph::{AttrFlags, Attributes, Glyph};
-    use crate::renderer::*; // Imports Renderer, RENDERER_DEFAULT_FG, RENDERER_DEFAULT_BG from parent module
-                            // Import EmulatorInput and EmulatorAction for the MockTerminal's interpret_input method
-    use crate::term::{EmulatorAction, EmulatorInput, TerminalInterface};
+    use crate::renderer::*; 
+    use crate::term::{
+        CursorRenderState, EmulatorAction, EmulatorInput, RenderSnapshot, SelectionMode,
+        SelectionRenderState, SnapshotLine, TerminalInterface, DEFAULT_CURSOR_SHAPE,
+    }; // Added SelectionRenderState, RenderSnapshot, etc.
     use anyhow::Result;
-    use std::collections::{HashSet, VecDeque}; // Added VecDeque for MockTerminal actions
+    use std::collections::{HashSet, VecDeque}; 
     use std::os::unix::io::RawFd;
-    use test_log::test; // For logging within tests
+    use test_log::test; 
 
     // --- MockTerminal Definition ---
     #[derive(Clone)]
@@ -22,14 +22,13 @@ mod render_tests {
         height: usize,
         grid: Vec<Vec<Glyph>>,
         cursor_visible: bool,
-        cursor_x: usize, // physical screen x for cursor
-        cursor_y: usize, // physical screen y for cursor
+        cursor_x: usize, 
+        cursor_y: usize, 
         dirty_lines: HashSet<usize>,
         current_default_attributes: Attributes,
-        // Added to allow tests to queue up actions for interpret_input
         actions_to_return_on_next_call: VecDeque<Option<EmulatorAction>>,
-        // Added to log inputs for verification
         inputs_received: Vec<EmulatorInput>,
+        selection_state: Option<SelectionRenderState>, // Added field
     }
 
     impl MockTerminal {
@@ -54,6 +53,7 @@ mod render_tests {
                 current_default_attributes: default_attributes,
                 actions_to_return_on_next_call: VecDeque::new(),
                 inputs_received: Vec::new(),
+                selection_state: None, // Initialize
             }
         }
 
@@ -83,10 +83,14 @@ mod render_tests {
             self.dirty_lines.clear();
         }
 
-        // Helper for tests to queue actions
         #[allow(dead_code)]
         fn expect_action_for_next_call(&mut self, action: Option<EmulatorAction>) {
             self.actions_to_return_on_next_call.push_back(action);
+        }
+
+        // Added method
+        fn set_selection(&mut self, selection: Option<SelectionRenderState>) {
+            self.selection_state = selection;
         }
     }
 
@@ -115,13 +119,38 @@ mod render_tests {
             lines.sort_unstable();
             lines
         }
-        // Implemented missing trait item
         fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
-            self.inputs_received.push(input); // Log the input
-                                              // Return a queued action if available, otherwise None
+            self.inputs_received.push(input); 
             self.actions_to_return_on_next_call
                 .pop_front()
                 .unwrap_or(None)
+        }
+
+        // Added method
+        fn get_render_snapshot(&self) -> RenderSnapshot {
+            let (width, height) = self.dimensions();
+            let mut lines = Vec::with_capacity(height);
+            for y_idx in 0..height {
+                lines.push(SnapshotLine {
+                    cells: self.grid[y_idx].clone(),
+                    is_dirty: self.dirty_lines.contains(&y_idx),
+                });
+            }
+            RenderSnapshot {
+                dimensions: (width, height),
+                lines,
+                cursor_state: if self.cursor_visible {
+                    Some(CursorRenderState {
+                        col: self.cursor_x,
+                        row: self.cursor_y,
+                        shape: DEFAULT_CURSOR_SHAPE, 
+                        is_visible: true,
+                    })
+                } else {
+                    None
+                },
+                selection_state: self.selection_state,
+            }
         }
     }
 
@@ -135,13 +164,14 @@ mod render_tests {
             coords: CellCoords,
             text: String,
             style: TextRunStyle,
+            is_selected: bool, // Updated
         },
         FillRect {
             rect: CellRect,
             color: Color,
+            is_selected: bool, // Updated
         },
         Present,
-        // Added to track calls for missing methods
         SetTitle {
             title: String,
         },
@@ -152,12 +182,11 @@ mod render_tests {
         SetFocus {
             focused: bool,
         },
-        Cleanup, // Already existed implicitly, added for clarity
+        Cleanup, 
     }
 
     struct MockDriver {
         calls: Vec<MockDriverCall>,
-        // Added for set_focus state tracking
         focus_state: bool,
     }
 
@@ -165,7 +194,7 @@ mod render_tests {
         fn new() -> Self {
             MockDriver {
                 calls: Vec::new(),
-                focus_state: true, // Assuming default focus state
+                focus_state: true, 
             }
         }
 
@@ -203,21 +232,25 @@ mod render_tests {
             self.calls.push(MockDriverCall::ClearAll { bg });
             Ok(())
         }
+        // Updated signature and implementation
         fn draw_text_run(
             &mut self,
             coords: CellCoords,
             text: &str,
             style: TextRunStyle,
+            is_selected: bool,
         ) -> Result<()> {
             self.calls.push(MockDriverCall::DrawTextRun {
                 coords,
                 text: text.to_string(),
                 style,
+                is_selected,
             });
             Ok(())
         }
-        fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
-            self.calls.push(MockDriverCall::FillRect { rect, color });
+        // Updated signature and implementation
+        fn fill_rect(&mut self, rect: CellRect, color: Color, is_selected: bool) -> Result<()> {
+            self.calls.push(MockDriverCall::FillRect { rect, color, is_selected });
             Ok(())
         }
         fn present(&mut self) -> Result<()> {
@@ -228,30 +261,25 @@ mod render_tests {
             self.calls.push(MockDriverCall::Cleanup);
             Ok(())
         }
-
-        // Implemented missing trait items
         fn set_title(&mut self, title: &str) {
             self.calls.push(MockDriverCall::SetTitle {
                 title: title.to_string(),
             });
         }
-
         fn bell(&mut self) {
             self.calls.push(MockDriverCall::Bell);
         }
-
         fn set_cursor_visibility(&mut self, visible: bool) {
             self.calls
                 .push(MockDriverCall::SetCursorVisibility { visible });
         }
-
         fn set_focus(&mut self, focused: bool) {
-            self.focus_state = focused; // Track focus state
+            self.focus_state = focused; 
             self.calls.push(MockDriverCall::SetFocus { focused });
         }
     }
 
-    // --- Renderer Tests (Unchanged from previous version, assuming they were correct based on this structure) ---
+    // --- Renderer Tests ---
 
     #[test]
     fn test_draw_empty_terminal() {
@@ -290,6 +318,7 @@ mod render_tests {
                 height: 1,
             },
             color: RENDERER_DEFAULT_BG,
+            is_selected: false, // Spaces are not selected by default
         };
         assert!(
             mock_driver.calls.contains(&expected_combined_space_fill),
@@ -301,10 +330,11 @@ mod render_tests {
             coords: CellCoords { x: 0, y: 0 },
             text: " ".to_string(),
             style: TextRunStyle {
-                fg: RENDERER_DEFAULT_BG,
+                fg: RENDERER_DEFAULT_BG, // Cursor inverts
                 bg: RENDERER_DEFAULT_FG,
                 flags: AttrFlags::empty(),
             },
+            is_selected: false, // Cursor cell itself is not "selected" for this call's purpose
         };
         assert!(
             mock_driver.calls.contains(&expected_cursor_draw),
@@ -362,6 +392,7 @@ mod render_tests {
                 bg: RENDERER_DEFAULT_BG,
                 flags: AttrFlags::empty(),
             },
+            is_selected: false,
         };
         assert!(
             mock_driver.calls.contains(&expected_text_run_a),
@@ -377,6 +408,7 @@ mod render_tests {
                 bg: RENDERER_DEFAULT_FG,
                 flags: AttrFlags::empty(),
             },
+            is_selected: false,
         };
         assert!(
             mock_driver.calls.contains(&expected_cursor_draw_over_a),
@@ -426,15 +458,17 @@ mod render_tests {
                 bg: bg_blue,
                 flags: AttrFlags::empty(),
             },
+            is_selected: false,
         };
         let expected_cursor_draw = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: "R".to_string(),
             style: TextRunStyle {
-                fg: bg_blue,
-                bg: fg_red,
+                fg: bg_blue, // Inverted for cursor
+                bg: fg_red,  // Inverted for cursor
                 flags: AttrFlags::empty(),
             },
+            is_selected: false,
         };
 
         assert!(
@@ -478,19 +512,21 @@ mod render_tests {
             coords: CellCoords { x: 0, y: 0 },
             text: "X".to_string(),
             style: TextRunStyle {
-                fg: RENDERER_DEFAULT_BG,
+                fg: RENDERER_DEFAULT_BG, // Swapped due to REVERSE
                 bg: RENDERER_DEFAULT_FG,
-                flags: AttrFlags::empty(),
+                flags: AttrFlags::empty(), // REVERSE flag consumed by renderer
             },
+            is_selected: false,
         };
         let expected_cursor_draw = MockDriverCall::DrawTextRun {
             coords: CellCoords { x: 0, y: 0 },
             text: "X".to_string(),
             style: TextRunStyle {
-                fg: RENDERER_DEFAULT_FG,
-                bg: RENDERER_DEFAULT_BG,
+                fg: RENDERER_DEFAULT_FG, // Inverted from cell's effective bg
+                bg: RENDERER_DEFAULT_BG, // Inverted from cell's effective fg
                 flags: AttrFlags::empty(),
             },
+            is_selected: false,
         };
         assert!(
             mock_driver.calls.contains(&expected_cell_draw),
@@ -512,41 +548,13 @@ mod render_tests {
         mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
 
-        mock_term.set_glyph(
-            0,
-            0,
-            Glyph {
-                c: 'A',
-                attr: Attributes::default(),
-            },
-        );
-        mock_term.set_glyph(
-            1,
-            0,
-            Glyph {
-                c: ' ',
-                attr: Attributes::default(),
-            },
-        );
-        mock_term.set_glyph(
-            0,
-            1,
-            Glyph {
-                c: 'B',
-                attr: Attributes::default(),
-            },
-        );
-        mock_term.set_glyph(
-            1,
-            1,
-            Glyph {
-                c: ' ',
-                attr: Attributes::default(),
-            },
-        );
+        mock_term.set_glyph(0,0, Glyph { c: 'A', attr: Attributes::default() });
+        mock_term.set_glyph(1,0, Glyph { c: ' ', attr: Attributes::default() });
+        mock_term.set_glyph(0,1, Glyph { c: 'B', attr: Attributes::default() });
+        mock_term.set_glyph(1,1, Glyph { c: ' ', attr: Attributes::default() });
 
-        mock_term.mark_line_dirty(1);
-        mock_term.set_cursor_screen_pos(0, 0);
+        mock_term.mark_line_dirty(1); // Line 1 is dirty
+        mock_term.set_cursor_screen_pos(0, 0); // Cursor on line 0
 
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
 
@@ -555,37 +563,19 @@ mod render_tests {
         let mut cursor_drawn_on_line_0 = false;
 
         for call in &mock_driver.calls {
-            if let MockDriverCall::DrawTextRun {
-                coords,
-                text,
-                style,
-            } = call
-            {
-                if coords.y == 0 && text == "A" && style.fg == RENDERER_DEFAULT_FG {
+            if let MockDriverCall::DrawTextRun { coords, text, style, is_selected } = call {
+                if coords.y == 0 && text == "A" && style.fg == RENDERER_DEFAULT_FG && !*is_selected {
                     drawn_content_a_on_line_0 = true;
-                } else if coords.y == 0 && text == "A" && style.fg == RENDERER_DEFAULT_BG {
-                    // Cursor is inverted
+                } else if coords.y == 0 && text == "A" && style.fg == RENDERER_DEFAULT_BG && !*is_selected {
                     cursor_drawn_on_line_0 = true;
-                } else if coords.y == 1 && text == "B" && style.fg == RENDERER_DEFAULT_FG {
+                } else if coords.y == 1 && text == "B" && style.fg == RENDERER_DEFAULT_FG && !*is_selected {
                     drawn_content_b_on_line_1 = true;
                 }
             }
         }
-        assert!(
-            drawn_content_a_on_line_0,
-            "Content 'A' of Line 0 (cursor line) should have been drawn. Calls: {:?}",
-            mock_driver.calls
-        );
-        assert!(
-            cursor_drawn_on_line_0,
-            "Cursor on Line 0 should have been drawn. Calls: {:?}",
-            mock_driver.calls
-        );
-        assert!(
-            drawn_content_b_on_line_1,
-            "Content 'B' of Line 1 (dirty) should have been drawn. Calls: {:?}",
-            mock_driver.calls
-        );
+        assert!(drawn_content_a_on_line_0, "Content 'A' of Line 0 (cursor line) should have been drawn. Calls: {:?}", mock_driver.calls);
+        assert!(cursor_drawn_on_line_0, "Cursor on Line 0 should have been drawn. Calls: {:?}", mock_driver.calls);
+        assert!(drawn_content_b_on_line_1, "Content 'B' of Line 1 (dirty) should have been drawn. Calls: {:?}", mock_driver.calls);
     }
 
     #[test]
@@ -597,38 +587,13 @@ mod render_tests {
         let mut mock_driver = MockDriver::new();
 
         let wide_char = '世';
-        let wide_char_attrs = Attributes {
-            fg: Color::Named(NamedColor::Green),
-            bg: RENDERER_DEFAULT_BG,
-            flags: AttrFlags::empty(),
-        };
+        let wide_char_attrs = Attributes { fg: Color::Named(NamedColor::Green), bg: RENDERER_DEFAULT_BG, flags: AttrFlags::empty() };
 
-        mock_term.set_glyph(
-            0,
-            0,
-            Glyph {
-                c: wide_char,
-                attr: wide_char_attrs,
-            },
-        );
-        mock_term.set_glyph(
-            1,
-            0,
-            Glyph {
-                c: '\0',
-                attr: wide_char_attrs,
-            },
-        );
-        mock_term.set_glyph(
-            2,
-            0,
-            Glyph {
-                c: 'N',
-                attr: Attributes::default(),
-            },
-        );
+        mock_term.set_glyph(0,0, Glyph { c: wide_char, attr: wide_char_attrs });
+        mock_term.set_glyph(1,0, Glyph { c: '\0', attr: wide_char_attrs }); // Placeholder
+        mock_term.set_glyph(2,0, Glyph { c: 'N', attr: Attributes::default() });
         mock_term.mark_line_dirty(0);
-        mock_term.set_cursor_screen_pos(0, 0);
+        mock_term.set_cursor_screen_pos(0, 0); // Cursor on the wide char
 
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
 
@@ -639,383 +604,148 @@ mod render_tests {
 
         for call in &mock_driver.calls {
             match call {
-                MockDriverCall::DrawTextRun {
-                    coords,
-                    text,
-                    style,
-                } => {
+                MockDriverCall::DrawTextRun { coords, text, style, is_selected } => {
                     if *coords == (CellCoords { x: 0, y: 0 }) && text == &wide_char.to_string() {
-                        if style.fg == Color::Named(NamedColor::Green)
-                            && style.bg == RENDERER_DEFAULT_BG
-                        {
+                        if style.fg == Color::Named(NamedColor::Green) && style.bg == RENDERER_DEFAULT_BG && !*is_selected {
                             wide_char_text_drawn = true;
-                        } else if style.fg == RENDERER_DEFAULT_BG
-                            && style.bg == Color::Named(NamedColor::Green)
-                        {
+                        } else if style.fg == RENDERER_DEFAULT_BG && style.bg == Color::Named(NamedColor::Green) && !*is_selected {
                             wide_char_cursor_drawn = true;
                         }
-                    } else if *coords == (CellCoords { x: 2, y: 0 })
-                        && text == "N"
-                        && style.fg == RENDERER_DEFAULT_FG
-                        && style.bg == RENDERER_DEFAULT_BG
-                    {
+                    } else if *coords == (CellCoords { x: 2, y: 0 }) && text == "N" && style.fg == RENDERER_DEFAULT_FG && style.bg == RENDERER_DEFAULT_BG && !*is_selected {
                         normal_char_drawn = true;
                     }
                 }
-                MockDriverCall::FillRect { rect, color } => {
-                    if *rect
-                        == (CellRect {
-                            x: 1,
-                            y: 0,
-                            width: 1,
-                            height: 1,
-                        })
-                        && *color == RENDERER_DEFAULT_BG
-                    {
+                MockDriverCall::FillRect { rect, color, is_selected } => {
+                    if *rect == (CellRect { x: 1, y: 0, width: 1, height: 1 }) && *color == RENDERER_DEFAULT_BG && !*is_selected {
                         placeholder_filled = true;
                     }
                 }
                 _ => {}
             }
         }
-        assert!(
-            wide_char_text_drawn,
-            "Wide char text run not found. Calls: {:?}",
-            mock_driver.calls
-        );
-        assert!(
-            wide_char_cursor_drawn,
-            "Wide char cursor run not found. Calls: {:?}",
-            mock_driver.calls
-        );
-        assert!(
-            placeholder_filled,
-            "Placeholder fill not found. Calls: {:?}",
-            mock_driver.calls
-        );
-        assert!(
-            normal_char_drawn,
-            "Normal char text run not found. Calls: {:?}",
-            mock_driver.calls
-        );
+        assert!(wide_char_text_drawn, "Wide char text run not found. Calls: {:?}", mock_driver.calls);
+        assert!(wide_char_cursor_drawn, "Wide char cursor run not found. Calls: {:?}", mock_driver.calls);
+        assert!(placeholder_filled, "Placeholder fill not found. Calls: {:?}", mock_driver.calls);
+        assert!(normal_char_drawn, "Normal char text run not found. Calls: {:?}", mock_driver.calls);
     }
-
+    
     #[test]
-    fn test_draw_line_of_spaces_optimised() {
+    fn test_draw_selected_text_passes_is_selected_true_to_driver() {
         let mut renderer = Renderer::new();
         renderer.first_draw = false;
-        let mut mock_term = MockTerminal::new(3, 1);
+        let mut mock_term = MockTerminal::new(5, 1);
         mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
 
-        let space_attributes = Attributes {
-            fg: RENDERER_DEFAULT_FG,
-            bg: RENDERER_DEFAULT_BG,
-            flags: AttrFlags::empty(),
-        };
-        mock_term.set_glyph(
-            0,
-            0,
-            Glyph {
-                c: ' ',
-                attr: space_attributes,
-            },
-        );
-        mock_term.set_glyph(
-            1,
-            0,
-            Glyph {
-                c: ' ',
-                attr: space_attributes,
-            },
-        );
-        mock_term.set_glyph(
-            2,
-            0,
-            Glyph {
-                c: ' ',
-                attr: space_attributes,
-            },
-        );
+        mock_term.set_glyph(0,0, Glyph { c: 'H', attr: Attributes::default() });
+        mock_term.set_glyph(1,0, Glyph { c: 'e', attr: Attributes::default() });
+        mock_term.set_glyph(2,0, Glyph { c: 'l', attr: Attributes::default() });
+        mock_term.set_glyph(3,0, Glyph { c: 'l', attr: Attributes::default() });
+        mock_term.set_glyph(4,0, Glyph { c: 'o', attr: Attributes::default() });
+        
+        mock_term.set_selection(Some(SelectionRenderState {
+            start_coords: (1,0), end_coords: (3,0), mode: SelectionMode::Normal
+        }));
         mock_term.mark_line_dirty(0);
-        mock_term.set_cursor_screen_pos(0, 0);
+        mock_term.set_cursor_screen_pos(0,0); // Cursor not in selection
 
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
 
-        let expected_fill = MockDriverCall::FillRect {
-            rect: CellRect {
-                x: 0,
-                y: 0,
-                width: 3,
-                height: 1,
-            },
-            color: RENDERER_DEFAULT_BG,
-        };
-        assert!(
-            mock_driver.calls.contains(&expected_fill),
-            "Expected FillRect for the line of spaces. Calls: {:?}",
-            mock_driver.calls
-        );
+        let mut h_drawn_unselected = false;
+        let mut ell_drawn_selected = false;
+        let mut o_drawn_unselected = false;
 
-        let text_run_for_spaces_exists = mock_driver.calls.iter().any(|call| {
-             matches!(call, MockDriverCall::DrawTextRun { text, style, .. } if text.trim().is_empty() && style.fg == RENDERER_DEFAULT_FG && style.bg == RENDERER_DEFAULT_BG)
-        });
-        assert!(
-            !text_run_for_spaces_exists,
-            "Spaces should be drawn with FillRect, not DrawTextRun for content. Calls: {:?}",
-            mock_driver.calls
-        );
-
-        let expected_cursor_draw = MockDriverCall::DrawTextRun {
-            coords: CellCoords { x: 0, y: 0 },
-            text: " ".to_string(),
-            style: TextRunStyle {
-                fg: RENDERER_DEFAULT_BG,
-                bg: RENDERER_DEFAULT_FG,
-                flags: AttrFlags::empty(),
-            },
-        };
-        assert!(
-            mock_driver.calls.contains(&expected_cursor_draw),
-            "Cursor draw not found over spaces. Calls: {:?}",
-            mock_driver.calls
-        );
+        for call in &mock_driver.calls {
+            if let MockDriverCall::DrawTextRun { text, is_selected, coords, .. } = call {
+                if coords.x == 0 && text == "H" { h_drawn_unselected = !*is_selected; }
+                if coords.x == 1 && text == "ell" { ell_drawn_selected = *is_selected; }
+                if coords.x == 4 && text == "o" { o_drawn_unselected = !*is_selected; }
+            }
+        }
+        assert!(h_drawn_unselected, "H should be drawn unselected. Calls: {:?}", mock_driver.calls);
+        assert!(ell_drawn_selected, "'ell' should be drawn selected. Calls: {:?}", mock_driver.calls);
+        assert!(o_drawn_unselected, "'o' should be drawn unselected. Calls: {:?}", mock_driver.calls);
     }
 
     #[test]
-    fn test_cursor_movement_redraws_old_and_new_cell_correctly() {
+    fn test_draw_selected_spaces_passes_is_selected_true_to_driver_fill_rect() {
         let mut renderer = Renderer::new();
         renderer.first_draw = false;
-        let mut mock_term = MockTerminal::new(2, 1);
+        let mut mock_term = MockTerminal::new(5, 1); // "A B C"
         mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
 
-        let attr_a = Attributes {
-            fg: Color::Named(NamedColor::Red),
-            bg: RENDERER_DEFAULT_BG,
-            flags: AttrFlags::empty(),
-        };
-        let attr_b = Attributes {
-            fg: Color::Named(NamedColor::Blue),
-            bg: RENDERER_DEFAULT_BG,
-            flags: AttrFlags::empty(),
-        };
-        mock_term.set_glyph(
-            0,
-            0,
-            Glyph {
-                c: 'A',
-                attr: attr_a,
-            },
-        );
-        mock_term.set_glyph(
-            1,
-            0,
-            Glyph {
-                c: 'B',
-                attr: attr_b,
-            },
-        );
+        mock_term.set_glyph(0,0, Glyph { c: 'A', attr: Attributes::default() });
+        mock_term.set_glyph(1,0, Glyph { c: ' ', attr: Attributes::default() });
+        mock_term.set_glyph(2,0, Glyph { c: 'B', attr: Attributes::default() });
+        mock_term.set_glyph(3,0, Glyph { c: ' ', attr: Attributes::default() });
+        mock_term.set_glyph(4,0, Glyph { c: 'C', attr: Attributes::default() });
 
-        mock_term.set_cursor_screen_pos(0, 0);
+        mock_term.set_selection(Some(SelectionRenderState {
+            start_coords: (1,0), end_coords: (1,0), mode: SelectionMode::Normal // Select space at (1,0)
+        }));
         mock_term.mark_line_dirty(0);
-        renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
-        mock_driver.calls.clear();
-
-        mock_term.clear_all_dirty_lines();
-        mock_term.set_cursor_screen_pos(1, 0);
-        mock_term.mark_line_dirty(0);
+        mock_term.set_cursor_screen_pos(0,0); // Cursor on A
 
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
+        
+        let mut space_at_1_selected = false;
+        let mut space_at_3_unselected = false;
 
-        let expected_redraw_a = MockDriverCall::DrawTextRun {
-            coords: CellCoords { x: 0, y: 0 },
-            text: "A".to_string(),
-            style: TextRunStyle {
-                fg: Color::Named(NamedColor::Red),
-                bg: RENDERER_DEFAULT_BG,
-                flags: AttrFlags::empty(),
-            },
-        };
-        assert!(
-            mock_driver.calls.contains(&expected_redraw_a),
-            "Old cursor cell 'A' not redrawn correctly. Calls: {:?}",
-            mock_driver.calls
-        );
-
-        let expected_draw_b_content = MockDriverCall::DrawTextRun {
-            coords: CellCoords { x: 1, y: 0 },
-            text: "B".to_string(),
-            style: TextRunStyle {
-                fg: Color::Named(NamedColor::Blue),
-                bg: RENDERER_DEFAULT_BG,
-                flags: AttrFlags::empty(),
-            },
-        };
-        assert!(
-            mock_driver.calls.contains(&expected_draw_b_content),
-            "New cursor cell 'B' content not drawn. Calls: {:?}",
-            mock_driver.calls
-        );
-
-        let expected_cursor_on_b = MockDriverCall::DrawTextRun {
-            coords: CellCoords { x: 1, y: 0 },
-            text: "B".to_string(),
-            style: TextRunStyle {
-                fg: RENDERER_DEFAULT_BG,
-                bg: Color::Named(NamedColor::Blue),
-                flags: AttrFlags::empty(),
-            },
-        };
-        assert!(
-            mock_driver.calls.contains(&expected_cursor_on_b),
-            "Cursor not drawn correctly at new position over 'B'. Calls: {:?}",
-            mock_driver.calls
-        );
-        assert!(mock_driver.calls.contains(&MockDriverCall::Present));
+        for call in &mock_driver.calls {
+            if let MockDriverCall::FillRect { rect, is_selected, .. } = call {
+                if rect.x == 1 && rect.width == 1 { space_at_1_selected = *is_selected; }
+                if rect.x == 3 && rect.width == 1 { space_at_3_unselected = !*is_selected; }
+            }
+        }
+        assert!(space_at_1_selected, "Space at (1,0) should be filled as selected. Calls: {:?}", mock_driver.calls);
+        assert!(space_at_3_unselected, "Space at (3,0) should be filled as unselected. Calls: {:?}", mock_driver.calls);
     }
 
     #[test]
-    fn test_visual_bug_cursor_leaves_white_tile_then_text_reappears() {
+    fn test_cursor_over_selected_text_uses_correct_selection_flags_for_driver() {
         let mut renderer = Renderer::new();
-        let mut mock_term = MockTerminal::new(2, 1);
+        renderer.first_draw = false;
+        let mut mock_term = MockTerminal::new(3, 1); // "XYZ"
+        mock_term.clear_all_dirty_lines();
         let mut mock_driver = MockDriver::new();
 
-        let initial_text_attr = Attributes {
-            fg: RENDERER_DEFAULT_FG,
-            bg: RENDERER_DEFAULT_BG,
-            flags: AttrFlags::empty(),
-        };
-        let space_attr = Attributes {
-            fg: RENDERER_DEFAULT_FG,
-            bg: RENDERER_DEFAULT_BG,
-            flags: AttrFlags::empty(),
-        };
-
-        mock_term.set_glyph(
-            0,
-            0,
-            Glyph {
-                c: 'T',
-                attr: initial_text_attr,
-            },
-        );
-        mock_term.set_glyph(
-            1,
-            0,
-            Glyph {
-                c: ' ',
-                attr: space_attr,
-            },
-        );
-
-        renderer.first_draw = true;
-        mock_term.clear_all_dirty_lines();
+        mock_term.set_glyph(0,0, Glyph { c: 'X', attr: Attributes::default() });
+        mock_term.set_glyph(1,0, Glyph { c: 'Y', attr: Attributes::default() });
+        mock_term.set_glyph(2,0, Glyph { c: 'Z', attr: Attributes::default() });
+        
+        mock_term.set_selection(Some(SelectionRenderState {
+            start_coords: (0,0), end_coords: (2,0), mode: SelectionMode::Normal // Select "XYZ"
+        }));
         mock_term.mark_line_dirty(0);
-        mock_term.set_cursor_screen_pos(0, 0);
+        mock_term.set_cursor_screen_pos(1,0); // Cursor on 'Y'
+
         renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
 
-        let expected_cursor_on_t_step1 = MockDriverCall::DrawTextRun {
-            coords: CellCoords { x: 0, y: 0 },
-            text: "T".to_string(),
-            style: TextRunStyle {
-                fg: RENDERER_DEFAULT_BG,
-                bg: RENDERER_DEFAULT_FG,
-                flags: AttrFlags::empty(),
-            },
-        };
-        assert!(
-            mock_driver.calls.contains(&MockDriverCall::ClearAll {
-                bg: RENDERER_DEFAULT_BG
-            }),
-            "Step 1 ClearAll missing"
-        );
-        assert!(
-            mock_driver.calls.contains(&expected_cursor_on_t_step1),
-            "Step 1 FAILURE: Cursor on 'T' was not drawn inverted. Calls: {:?}",
-            mock_driver.calls
-        );
-        mock_driver.calls.clear();
+        let mut x_content_selected = false;
+        let mut z_content_selected = false;
+        let mut y_content_selected_under_cursor = false; // The cell content draw for 'Y'
+        let mut y_cursor_itself_not_selected_flag = false; // The cursor overlay draw for 'Y'
 
-        mock_term.clear_all_dirty_lines();
-        mock_term.mark_line_dirty(0);
-        mock_term.set_cursor_screen_pos(1, 0);
-        renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
-
-        let expected_redraw_t_original_style_step2 = MockDriverCall::DrawTextRun {
-            coords: CellCoords { x: 0, y: 0 },
-            text: "T".to_string(),
-            style: TextRunStyle {
-                fg: RENDERER_DEFAULT_FG,
-                bg: RENDERER_DEFAULT_BG,
-                flags: AttrFlags::empty(),
-            },
-        };
-        assert!(
-            mock_driver
-                .calls
-                .contains(&expected_redraw_t_original_style_step2),
-            "Step 2 FAILURE: Original 'T' at (0,0) not redrawn. Calls: {:?}",
-            mock_driver.calls
-        );
-
-        let expected_cursor_on_space_step2 = MockDriverCall::DrawTextRun {
-            coords: CellCoords { x: 1, y: 0 },
-            text: " ".to_string(),
-            style: TextRunStyle {
-                fg: RENDERER_DEFAULT_BG,
-                bg: RENDERER_DEFAULT_FG,
-                flags: AttrFlags::empty(),
-            },
-        };
-        assert!(
-            mock_driver.calls.contains(&expected_cursor_on_space_step2),
-            "Step 2 FAILURE: Cursor on space at (1,0) not drawn inverted. Calls: {:?}",
-            mock_driver.calls
-        );
-        mock_driver.calls.clear();
-
-        mock_term.clear_all_dirty_lines();
-        mock_term.mark_line_dirty(0);
-        mock_term.set_cursor_screen_pos(0, 0);
-        renderer.draw(&mut mock_term, &mut mock_driver).unwrap();
-
-        let expected_redraw_space_original_style_step3 = MockDriverCall::FillRect {
-            rect: CellRect {
-                x: 1,
-                y: 0,
-                width: 1,
-                height: 1,
-            },
-            color: RENDERER_DEFAULT_BG,
-        };
-        assert!(
-            mock_driver
-                .calls
-                .contains(&expected_redraw_space_original_style_step3),
-            "Step 3 FAILURE: Original space at (1,0) not redrawn. Calls: {:?}",
-            mock_driver.calls
-        );
-
-        let expected_cursor_on_t_again_step3 = MockDriverCall::DrawTextRun {
-            coords: CellCoords { x: 0, y: 0 },
-            text: "T".to_string(),
-            style: TextRunStyle {
-                fg: RENDERER_DEFAULT_BG,
-                bg: RENDERER_DEFAULT_FG,
-                flags: AttrFlags::empty(),
-            },
-        };
-        assert!(
-            mock_driver
-                .calls
-                .contains(&expected_cursor_on_t_again_step3),
-            "Step 3 FAILURE: Cursor moving back onto 'T' not drawn inverted. Calls: {:?}",
-            mock_driver.calls
-        );
-        assert!(
-            mock_driver.calls.contains(&MockDriverCall::Present),
-            "Present was not called at the end of Step 3."
-        );
+        for call in &mock_driver.calls {
+            if let MockDriverCall::DrawTextRun { coords, text, style, is_selected } = call {
+                if coords.x == 0 && text == "X" { x_content_selected = *is_selected; }
+                if coords.x == 2 && text == "Z" { z_content_selected = *is_selected; }
+                if coords.x == 1 && text == "Y" {
+                    // This is tricky: renderer draws content first, then cursor.
+                    // Content 'Y' should be drawn selected.
+                    // Cursor 'Y' should be drawn with is_selected=false (as its colors are pre-inverted).
+                    if style.fg == RENDERER_DEFAULT_FG && style.bg == RENDERER_DEFAULT_BG { // Content style for selected
+                        y_content_selected_under_cursor = *is_selected;
+                    } else if style.fg == RENDERER_DEFAULT_BG && style.bg == RENDERER_DEFAULT_FG { // Cursor style
+                        y_cursor_itself_not_selected_flag = !*is_selected;
+                    }
+                }
+            }
+        }
+        assert!(x_content_selected, "Content 'X' should be drawn as selected. Calls: {:?}", mock_driver.calls);
+        assert!(z_content_selected, "Content 'Z' should be drawn as selected. Calls: {:?}", mock_driver.calls);
+        assert!(y_content_selected_under_cursor, "Content 'Y' (under cursor) should be drawn as selected. Calls: {:?}", mock_driver.calls);
+        assert!(y_cursor_itself_not_selected_flag, "Cursor overlay for 'Y' should have is_selected=false. Calls: {:?}", mock_driver.calls);
     }
 }

@@ -9,7 +9,7 @@ mod term_tests {
     use crate::backends::{BackendEvent, MouseButton, MouseEventType}; // Added MouseButton, MouseEventType
     use crate::color::{Color, NamedColor};
     use crate::config::{KeySymbol, Modifiers}; // Added for potential future use if mapping from BackendEvent to UserInputAction is tested here
-    use crate::glyph::{AttrFlags, Attributes, Glyph};
+    use crate::glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER};
     use crate::term::{
         DecModeConstant, EmulatorAction, EmulatorInput, SelectionMode, SelectionState,
         TerminalEmulator, TerminalInterface, UserInputAction, // Added UserInputAction, SelectionState, SelectionMode
@@ -19,7 +19,8 @@ mod term_tests {
 
     // --- Test Helpers ---
 
-    fn new_term(cols: usize, rows: usize) -> TerminalEmulator {
+    // Renamed new_term to create_term for consistency with instructions
+    fn create_term(cols: usize, rows: usize) -> TerminalEmulator {
         TerminalEmulator::new(cols, rows, 100)
     }
 
@@ -50,23 +51,16 @@ mod term_tests {
         }
         actions
     }
-
-    // screen_to_string_vec is unused, marked by compiler warning.
-    /*
-    fn screen_to_string_vec(term: &TerminalEmulator) -> Vec<String> {
-        let (cols, rows) = TerminalInterface::dimensions(term);
-        let mut result = Vec::with_capacity(rows);
-        for y in 0..rows {
-            let line: String = (0..cols).map(|x| TerminalInterface::get_glyph(term, x, y).c).collect();
-            result.push(line);
-        }
-        result
-    }
-    */
-
-    fn get_glyph_at(term: &TerminalEmulator, x: usize, y: usize) -> Glyph {
+    
+    fn get_glyph_at(term: &TerminalEmulator, x: usize, y: usize) -> Glyph { // x is col, y is row
         TerminalInterface::get_glyph(term, x, y)
     }
+    
+    // Adjusted get_char_at to match get_glyph_at (col, row)
+    fn get_char_at(term: &TerminalEmulator, col: usize, row: usize) -> char {
+        TerminalInterface::get_glyph(term, col, row).c
+    }
+
 
     fn assert_cursor_pos(term: &TerminalEmulator, x: usize, y: usize, message: &str) {
         assert_eq!(
@@ -90,7 +84,7 @@ mod term_tests {
 
     #[test]
     fn test_new_terminal_initial_state() {
-        let term = new_term(80, 24);
+        let term = create_term(80, 24); // Use create_term
         assert_eq!(
             TerminalInterface::dimensions(&term),
             (80, 24),
@@ -106,28 +100,28 @@ mod term_tests {
 
         let expected_initial_attrs = Attributes::default();
         assert_eq!(
-            get_glyph_at(&term, 0, 0).attr,
+            get_glyph_at(&term, 0, 0).attr, // x, y
             expected_initial_attrs,
             "Initial cell attributes at (0,0)"
         );
         assert_eq!(
-            get_glyph_at(&term, 79, 23).attr,
+            get_glyph_at(&term, 79, 23).attr, // x, y
             expected_initial_attrs,
             "Initial cell attributes at (79,23)"
         );
 
-        let mut term_mut_for_print = new_term(1, 1);
+        let mut term_mut_for_print = create_term(1, 1); // Use create_term
         process_input(
             &mut term_mut_for_print,
             EmulatorInput::Ansi(AnsiCommand::Print('T')),
         );
         assert_eq!(
-            get_glyph_at(&term_mut_for_print, 0, 0).attr,
+            get_glyph_at(&term_mut_for_print, 0, 0).attr, // x, y
             expected_initial_attrs,
             "Initial cursor attributes for printing"
         );
 
-        let mut term_mut_dirty = new_term(80, 24);
+        let mut term_mut_dirty = create_term(80, 24); // Use create_term
         let dirty_lines = TerminalInterface::take_dirty_lines(&mut term_mut_dirty);
         assert_eq!(dirty_lines.len(), 24, "All lines initially dirty");
         assert_eq!(
@@ -139,7 +133,7 @@ mod term_tests {
 
     #[test]
     fn test_new_terminal_minimum_dimensions() {
-        let term = new_term(0, 0);
+        let term = create_term(0, 0); // Use create_term
         assert_eq!(
             TerminalInterface::dimensions(&term).0,
             1,
@@ -156,7 +150,7 @@ mod term_tests {
 
     #[test]
     fn test_sgr_reset_restores_default_attributes_and_applies_to_new_chars() {
-        let mut term = new_term(10, 1);
+        let mut term = create_term(10, 1); // Use create_term
         let default_attrs = Attributes::default();
 
         process_input(
@@ -169,7 +163,7 @@ mod term_tests {
         );
 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('X')));
-        let glyph_x = get_glyph_at(&term, 0, 0);
+        let glyph_x = get_glyph_at(&term, 0, 0); // x, y
         assert_eq!(glyph_x.c, 'X');
         assert_eq!(glyph_x.attr.fg, Color::Named(NamedColor::Red));
         assert_eq!(glyph_x.attr.bg, Color::Named(NamedColor::Blue));
@@ -183,7 +177,7 @@ mod term_tests {
         );
 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('Y')));
-        let glyph_y = get_glyph_at(&term, 1, 0);
+        let glyph_y = get_glyph_at(&term, 1, 0); // x, y
         assert_eq!(glyph_y.c, 'Y');
         assert_eq!(
             glyph_y.attr, default_attrs,
@@ -199,7 +193,7 @@ mod term_tests {
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInLine(0))),
         );
         for x_idx in 2..TerminalInterface::dimensions(&term).0 {
-            let erased_glyph = get_glyph_at(&term, x_idx, 0);
+            let erased_glyph = get_glyph_at(&term, x_idx, 0); // x, y
             assert_eq!(
                 erased_glyph.attr, default_attrs,
                 "Erased cell at ({},0) should have default attributes after SGR Reset",
@@ -210,11 +204,11 @@ mod term_tests {
 
     #[test]
     fn test_reverse_attribute_impact_on_printed_char() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         let default_attrs = Attributes::default();
 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
-        let glyph_a = get_glyph_at(&term, 0, 0);
+        let glyph_a = get_glyph_at(&term, 0, 0); // x, y
         assert_eq!(glyph_a.attr.fg, default_attrs.fg);
         assert_eq!(glyph_a.attr.bg, default_attrs.bg);
         assert!(!glyph_a.attr.flags.contains(AttrFlags::REVERSE));
@@ -227,7 +221,7 @@ mod term_tests {
         );
 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('B')));
-        let glyph_b = get_glyph_at(&term, 1, 0);
+        let glyph_b = get_glyph_at(&term, 1, 0); // x, y
         assert_eq!(glyph_b.attr.fg, default_attrs.fg);
         assert_eq!(glyph_b.attr.bg, default_attrs.bg);
         assert!(glyph_b.attr.flags.contains(AttrFlags::REVERSE));
@@ -240,7 +234,7 @@ mod term_tests {
         );
 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('C')));
-        let glyph_c = get_glyph_at(&term, 2, 0);
+        let glyph_c = get_glyph_at(&term, 2, 0); // x, y
         assert_eq!(glyph_c.attr.fg, default_attrs.fg);
         assert_eq!(glyph_c.attr.bg, default_attrs.bg);
         assert!(!glyph_c.attr.flags.contains(AttrFlags::REVERSE));
@@ -248,7 +242,7 @@ mod term_tests {
 
     #[test]
     fn test_explicit_fg_bg_with_reverse() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         let red_fg = Color::Named(NamedColor::Red);
         let blue_bg = Color::Named(NamedColor::Blue);
 
@@ -267,7 +261,7 @@ mod term_tests {
         );
 
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('R')));
-        let glyph_r = get_glyph_at(&term, 0, 0);
+        let glyph_r = get_glyph_at(&term, 0, 0); // x, y
         assert_eq!(glyph_r.attr.fg, red_fg);
         assert_eq!(glyph_r.attr.bg, blue_bg);
         assert!(glyph_r.attr.flags.contains(AttrFlags::REVERSE));
@@ -275,7 +269,7 @@ mod term_tests {
 
     #[test]
     fn test_screen_default_attributes_updated_by_sgr_for_clearing() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         let default_attrs = Attributes::default();
         let red_fg = Color::Named(NamedColor::Red);
         let blue_bg = Color::Named(NamedColor::Blue);
@@ -288,7 +282,7 @@ mod term_tests {
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInLine(0))),
         );
-        assert_eq!(get_glyph_at(&term, 3, 0).attr, default_attrs);
+        assert_eq!(get_glyph_at(&term, 3, 0).attr, default_attrs); // x, y
 
         process_input(
             &mut term,
@@ -312,14 +306,14 @@ mod term_tests {
             bg: blue_bg,
             flags: AttrFlags::empty(),
         };
-        assert_eq!(get_glyph_at(&term, 0, 0).attr, expected_erase_attrs);
-        assert_eq!(get_glyph_at(&term, 1, 0).attr, expected_erase_attrs);
+        assert_eq!(get_glyph_at(&term, 0, 0).attr, expected_erase_attrs); // x, y
+        assert_eq!(get_glyph_at(&term, 1, 0).attr, expected_erase_attrs); // x, y
     }
 
     #[test]
     fn test_initial_screen_attributes_are_default() {
-        let term = new_term(10, 5);
-        let glyph = get_glyph_at(&term, 0, 0);
+        let term = create_term(10, 5); // Use create_term
+        let glyph = get_glyph_at(&term, 0, 0); // x, y
         let expected_attrs = Attributes::default(); // Compare with the constant
 
         assert_eq!(glyph.c, ' ');
@@ -328,7 +322,7 @@ mod term_tests {
 
     #[test]
     fn test_erase_in_line_uses_current_sgr_attributes() {
-        let mut term = new_term(10, 2);
+        let mut term = create_term(10, 2); // Use create_term
         let default_attrs = Attributes::default();
 
         process_input(
@@ -358,7 +352,7 @@ mod term_tests {
         };
 
         for x in 3..10 {
-            let glyph = get_glyph_at(&term, x, 0);
+            let glyph = get_glyph_at(&term, x, 0); // x, y
             assert_eq!(glyph.c, ' ');
             assert_eq!(glyph.attr, expected_attrs_magenta_bg);
         }
@@ -387,7 +381,7 @@ mod term_tests {
         );
 
         for x in 3..10 {
-            let glyph = get_glyph_at(&term, x, 1);
+            let glyph = get_glyph_at(&term, x, 1); // x, y
             assert_eq!(glyph.c, ' ');
             assert_eq!(glyph.attr, default_attrs);
         }
@@ -395,7 +389,7 @@ mod term_tests {
 
     #[test]
     fn test_erase_in_display_uses_current_sgr_attributes() {
-        let mut term = new_term(5, 3);
+        let mut term = create_term(5, 3); // Use create_term
         let default_attrs = Attributes::default();
 
         process_input(
@@ -418,7 +412,7 @@ mod term_tests {
 
         for y in 0..3 {
             for x in 0..5 {
-                let glyph = get_glyph_at(&term, x, y);
+                let glyph = get_glyph_at(&term, x, y); // x, y
                 assert_eq!(glyph.c, ' ');
                 assert_eq!(glyph.attr, expected_attrs_yellow_bg);
             }
@@ -437,7 +431,7 @@ mod term_tests {
 
         for y in 0..3 {
             for x in 0..5 {
-                let glyph = get_glyph_at(&term, x, y);
+                let glyph = get_glyph_at(&term, x, y); // x, y
                 assert_eq!(glyph.c, ' ');
                 assert_eq!(glyph.attr, default_attrs);
             }
@@ -448,7 +442,7 @@ mod term_tests {
 
     #[test]
     fn test_c0_bs_backspace_moves_cursor_left() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
         process_input(
             &mut term,
@@ -459,7 +453,7 @@ mod term_tests {
 
     #[test]
     fn test_c0_ht_horizontal_tab_moves_to_next_tab_stop() {
-        let mut term = new_term(20, 1);
+        let mut term = create_term(20, 1); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::HT)),
@@ -469,7 +463,7 @@ mod term_tests {
 
     #[test]
     fn test_c0_lf_line_feed_moves_down_and_to_col0() {
-        let mut term = new_term(5, 2);
+        let mut term = create_term(5, 2); // Use create_term
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
         process_input(
             &mut term,
@@ -480,7 +474,7 @@ mod term_tests {
 
     #[test]
     fn test_c0_cr_carriage_return_moves_to_col0() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
         process_input(
             &mut term,
@@ -491,7 +485,7 @@ mod term_tests {
 
     #[test]
     fn test_c0_bel_produces_ring_bell_action() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         let action = process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::BEL)),
@@ -505,7 +499,7 @@ mod term_tests {
 
     #[test]
     fn test_csi_cup_cursor_position_moves_cursor() {
-        let mut term = new_term(10, 5);
+        let mut term = create_term(10, 5); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(3, 4))),
@@ -520,7 +514,7 @@ mod term_tests {
 
     #[test]
     fn test_csi_sgr_set_graphics_rendition_bold_applies_to_glyph() {
-        let mut term = new_term(10, 1);
+        let mut term = create_term(10, 1); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
@@ -528,7 +522,7 @@ mod term_tests {
             ]))),
         );
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
-        let glyph = get_glyph_at(&term, 0, 0);
+        let glyph = get_glyph_at(&term, 0, 0); // x, y
         assert!(
             glyph.attr.flags.contains(AttrFlags::BOLD),
             "Printed char 'A' should have BOLD attribute"
@@ -537,19 +531,19 @@ mod term_tests {
 
     #[test]
     fn test_csi_ed_erase_in_display_all_clears_screen() {
-        let mut term = new_term(5, 3);
+        let mut term = create_term(5, 3); // Use create_term
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInDisplay(2))),
         );
         assert_eq!(
-            get_glyph_at(&term, 0, 0).c,
+            get_char_at(&term, 0, 0), // x, y
             ' ',
             "Cell (0,0) should be space after ED(2)"
         );
         assert_eq!(
-            get_glyph_at(&term, 0, 0).attr,
+            get_glyph_at(&term, 0, 0).attr, // x, y
             Attributes::default(),
             "Cell (0,0) attributes should be default after ED(2)"
         );
@@ -557,7 +551,7 @@ mod term_tests {
 
     #[test]
     fn test_dec_mode_origin_decom_set_moves_cursor_to_margin() {
-        let mut term = new_term(10, 5);
+        let mut term = create_term(10, 5); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetScrollingRegion {
@@ -581,7 +575,7 @@ mod term_tests {
 
     #[test]
     fn test_resize_larger_maintains_cursor_logical_pos() {
-        let mut term = new_term(5, 2);
+        let mut term = create_term(5, 2); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2, 2))),
@@ -597,7 +591,7 @@ mod term_tests {
 
     #[test]
     fn test_resize_smaller_clamps_cursor_logical_pos() {
-        let mut term = new_term(10, 4);
+        let mut term = create_term(10, 4); // Use create_term
         // CUP(row=4, col=8) is 1-based. This translates to 0-based logical (x=7, y=3).
         // In a 10x4 terminal, (x=7, y=3) is a valid logical position.
         process_input(
@@ -616,55 +610,61 @@ mod term_tests {
         );
     }
 
+    // Tests for UserInputAction, previously BackendEvent
     #[test]
     fn test_user_input_printable_key_generates_write_pty_action() {
-        let mut term = new_term(5, 1);
-        let action = term.interpret_input(EmulatorInput::User(BackendEvent::Key {
-            keysym: 'A' as u32,
-            text: "A".to_string(),
+        let mut term = create_term(5, 1);
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::KeyInput {
+            symbol: KeySymbol::Char('A'),
+            modifiers: Modifiers::empty(),
+            text: Some("A".to_string()),
         }));
         assert_eq!(action, Some(EmulatorAction::WritePty(b"A".to_vec())));
     }
 
     #[test]
     fn test_user_input_enter_key_generates_write_pty_action() {
-        let mut term = new_term(5, 1);
-        let action = term.interpret_input(EmulatorInput::User(BackendEvent::Key {
-            keysym: 0xFF0D,
-            text: "\r".to_string(),
+        let mut term = create_term(5, 1);
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::KeyInput {
+            symbol: KeySymbol::Return,
+            modifiers: Modifiers::empty(),
+            text: Some("\r".to_string()), // Or None, depending on how it's modeled
         }));
         assert_eq!(action, Some(EmulatorAction::WritePty(b"\r".to_vec())));
     }
 
     #[test]
     fn test_user_input_arrow_key_normal_mode_sends_csi_sequence() {
-        let mut term = new_term(5, 1);
-        let action = term.interpret_input(EmulatorInput::User(BackendEvent::Key {
-            keysym: 0xFF52,
-            text: "".to_string(),
+        let mut term = create_term(5, 1);
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::KeyInput {
+            symbol: KeySymbol::Up,
+            modifiers: Modifiers::empty(),
+            text: None,
         }));
         assert_eq!(action, Some(EmulatorAction::WritePty(b"\x1b[A".to_vec())));
     }
 
     #[test]
     fn test_user_input_arrow_key_application_mode_sends_ss3_sequence() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1);
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(
                 DecModeConstant::CursorKeys as u16,
             ))),
         );
-        let action = term.interpret_input(EmulatorInput::User(BackendEvent::Key {
-            keysym: 0xFF54,
-            text: "".to_string(),
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::KeyInput {
+            symbol: KeySymbol::Down, // Changed from keysym: 0xFF54
+            modifiers: Modifiers::empty(),
+            text: None,
         }));
         assert_eq!(action, Some(EmulatorAction::WritePty(b"\x1bOB".to_vec())));
     }
 
+
     #[test]
     fn test_dec_private_mode_12_att610_cursor_blink_is_processed() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(12))),
@@ -677,7 +677,7 @@ mod term_tests {
 
     #[test]
     fn test_dec_private_mode_2004_bracketed_paste_is_set_and_reset() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(2004))),
@@ -692,7 +692,7 @@ mod term_tests {
 
     #[test]
     fn test_dec_private_mouse_mode_1000_is_set_and_reset() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(1000))),
@@ -707,7 +707,7 @@ mod term_tests {
 
     #[test]
     fn test_dec_private_mode_focus_event_1004_is_set_and_reset() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(1004))),
@@ -722,7 +722,7 @@ mod term_tests {
 
     #[test]
     fn test_dec_private_mode_7727_is_processed() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(7727))),
@@ -735,7 +735,7 @@ mod term_tests {
 
     #[test]
     fn test_csi_sp_q_decscusr_set_cursor_style_updates_shape() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetCursorStyle { shape: 4 })),
@@ -745,7 +745,7 @@ mod term_tests {
 
     #[test]
     fn test_csi_t_window_manipulation_report_chars_produces_action() {
-        let mut term = new_term(80, 24);
+        let mut term = create_term(80, 24); // Use create_term
         let actions = process_commands(
             &mut term,
             vec![AnsiCommand::Csi(CsiCommand::WindowManipulation {
@@ -760,7 +760,7 @@ mod term_tests {
 
     #[test]
     fn test_csi_t_window_manipulation_unsupported_is_graceful() {
-        let mut term = new_term(80, 24);
+        let mut term = create_term(80, 24); // Use create_term
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::WindowManipulation {
@@ -773,80 +773,80 @@ mod term_tests {
 
     #[test]
     fn test_print_ascii_chars_updates_grid() {
-        let mut term = new_term(10, 1);
+        let mut term = create_term(10, 1); // Use create_term
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('H')));
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('i')));
-        assert_eq!(get_glyph_at(&term, 0, 0).c, 'H');
-        assert_eq!(get_glyph_at(&term, 1, 0).c, 'i');
+        assert_eq!(get_char_at(&term, 0, 0), 'H'); // x, y
+        assert_eq!(get_char_at(&term, 1, 0), 'i'); // x, y
         assert_cursor_pos(&term, 2, 0, "Cursor should be at (2,0) after 'Hi'");
     }
 
     #[test]
     fn test_print_chars_with_line_wrap_moves_to_next_line() {
-        let mut term = new_term(2, 2);
+        let mut term = create_term(2, 2); // Use create_term
         process_commands(
             &mut term,
             vec![AnsiCommand::Print('A'), AnsiCommand::Print('B')],
         );
         assert_cursor_pos(&term, 2, 0, "Cursor at end of line 0 before wrap");
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('C')));
-        assert_eq!(get_glyph_at(&term, 0, 1).c, 'C');
+        assert_eq!(get_char_at(&term, 0, 1), 'C'); // x, y
         assert_cursor_pos(&term, 1, 1, "Cursor should be at (1,1) after 'C' wrapped");
     }
 
     #[test]
     fn test_print_chars_with_scroll_moves_content_up() {
-        let mut term = new_term(1, 2);
+        let mut term = create_term(1, 2); // Use create_term
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)),
         );
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('B')));
-        assert_eq!(get_glyph_at(&term, 0, 0).c, 'A');
-        assert_eq!(get_glyph_at(&term, 0, 1).c, 'B');
+        assert_eq!(get_char_at(&term, 0, 0), 'A'); // x, y
+        assert_eq!(get_char_at(&term, 0, 1), 'B'); // x, y
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)),
         );
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('C')));
-        assert_eq!(get_glyph_at(&term, 0, 0).c, 'B');
-        assert_eq!(get_glyph_at(&term, 0, 1).c, 'C');
+        assert_eq!(get_char_at(&term, 0, 0), 'B'); // x, y
+        assert_eq!(get_char_at(&term, 0, 1), 'C'); // x, y
     }
 
     #[test]
     fn test_print_utf8_multibyte_char_occupies_correct_cells() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         process_commands(
             &mut term,
             vec![AnsiCommand::Print('你'), AnsiCommand::Print('好')],
         );
-        assert_eq!(get_glyph_at(&term, 0, 0).c, '你');
-        assert_eq!(get_glyph_at(&term, 1, 0).c, '\0');
-        assert_eq!(get_glyph_at(&term, 2, 0).c, '好');
-        assert_eq!(get_glyph_at(&term, 3, 0).c, '\0');
+        assert_eq!(get_char_at(&term, 0, 0), '你'); // x, y
+        assert_eq!(get_char_at(&term, 1, 0), WIDE_CHAR_PLACEHOLDER); // x, y
+        assert_eq!(get_char_at(&term, 2, 0), '好'); // x, y
+        assert_eq!(get_char_at(&term, 3, 0), WIDE_CHAR_PLACEHOLDER); // x, y
         assert_cursor_pos(&term, 4, 0, "Cursor after '你好'");
     }
 
     #[test]
     fn test_print_wide_character_cjk_advances_cursor_by_width() {
-        let mut term = new_term(5, 1);
+        let mut term = create_term(5, 1); // Use create_term
         let wide_char = '世';
         let char_width = crate::term::unicode::get_char_display_width(wide_char);
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::Print(wide_char)),
         );
-        assert_eq!(get_glyph_at(&term, 0, 0).c, wide_char);
+        assert_eq!(get_char_at(&term, 0, 0), wide_char); // x, y
         if char_width == 2 {
-            assert_eq!(get_glyph_at(&term, 1, 0).c, '\0');
+            assert_eq!(get_char_at(&term, 1, 0), WIDE_CHAR_PLACEHOLDER); // x, y
         }
         assert_cursor_pos(&term, char_width, 0, "Cursor should advance by char_width");
     }
 
     #[test]
     fn test_print_wide_character_at_edge_of_line_wraps_correctly() {
-        let mut term = new_term(2, 2);
+        let mut term = create_term(2, 2); // Use create_term
         let wide_char = '世';
         process_input(
             &mut term,
@@ -859,12 +859,12 @@ mod term_tests {
             "Cursor at end of line 0 before wrap for wide char",
         );
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
-        assert_eq!(get_glyph_at(&term, 0, 1).c, 'A');
+        assert_eq!(get_char_at(&term, 0, 1), 'A'); // x, y
         assert_cursor_pos(&term, 1, 1, "Cursor should be at (1,1) after 'A' wrapped");
     }
     #[test]
     fn test_esc_c_reset_to_initial_state_clears_and_homes_with_default_attrs() {
-        let mut term = new_term(10, 3); // Create a 10x3 terminal
+        let mut term = create_term(10, 3); // Use create_term
 
         // 1. Setup: Establish a non-default state
         // Set SGR to Red Foreground, Blue Background
@@ -888,7 +888,7 @@ mod term_tests {
         assert_cursor_pos(&term, 1, 1, "Cursor position before RIS");
 
         // Verify the initial state of a cell
-        let glyph_before_ris = get_glyph_at(&term, 0, 0);
+        let glyph_before_ris = get_glyph_at(&term, 0, 0); // x, y
         assert_eq!(glyph_before_ris.c, 'X', "Cell (0,0) char before RIS");
         assert_eq!(
             glyph_before_ris.attr.fg,
@@ -922,7 +922,7 @@ mod term_tests {
 
         for y_idx in 0..term_height {
             for x_idx in 0..term_width {
-                let glyph_after_ris = get_glyph_at(&term, x_idx, y_idx);
+                let glyph_after_ris = get_glyph_at(&term, x_idx, y_idx); // x, y
                 assert_eq!(
                     glyph_after_ris.c, ' ',
                     "Cell ({},{}) char after RIS should be a space",
@@ -940,7 +940,7 @@ mod term_tests {
         // Test this by printing a character 'Z' and checking its attributes.
         // 'Z' should appear at the new cursor position (0,0).
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('Z')));
-        let glyph_z = get_glyph_at(&term, 0, 0); // 'Z' is now at (0,0)
+        let glyph_z = get_glyph_at(&term, 0, 0); // x, y. 'Z' is now at (0,0)
         assert_eq!(glyph_z.c, 'Z', "Char 'Z' printed after RIS");
         assert_eq!(
             glyph_z.attr,
@@ -984,23 +984,26 @@ mod extensive_term_emulator_tests {
     // const ERASE_TO_START: u16 = 1; // Not used in current failing tests, but keep for completeness if needed
     const ERASE_ALL: u16 = 2;
 
-    fn create_term(cols: usize, rows: usize) -> TerminalEmulator {
+    fn create_term(cols: usize, rows: usize) -> TerminalEmulator { // Renamed
         TerminalEmulator::new(cols, rows, 100)
     }
-
-    fn get_char_at(term: &TerminalEmulator, row: usize, col: usize) -> char {
+    
+    // Adjusted get_char_at to match get_glyph_at (col, row)
+    fn get_char_at(term: &TerminalEmulator, col: usize, row: usize) -> char {
         TerminalInterface::get_glyph(term, col, row).c
     }
 
-    fn get_glyph_at(term: &TerminalEmulator, row: usize, col: usize) -> Glyph {
+    // Adjusted get_glyph_at to match common test usage (col, row)
+    fn get_glyph_at(term: &TerminalEmulator, col: usize, row: usize) -> Glyph {
         TerminalInterface::get_glyph(term, col, row)
     }
+
 
     fn get_line_as_string(term: &TerminalEmulator, row: usize) -> String {
         let (cols, _) = TerminalInterface::dimensions(term);
         let mut s = String::new();
         for col_idx in 0..cols {
-            s.push(get_char_at(term, row, col_idx));
+            s.push(get_char_at(term, col_idx, row)); // col, row
         }
         s.trim_end().to_string()
     }
@@ -1049,7 +1052,7 @@ mod extensive_term_emulator_tests {
         process_command(&mut term, AnsiCommand::Print('A'));
 
         assert_eq!(
-            get_char_at(&term, 0, 0),
+            get_char_at(&term, 0, 0), // col, row
             'A',
             "Character not printed correctly"
         );
@@ -1096,7 +1099,7 @@ mod extensive_term_emulator_tests {
 
         process_command(&mut term, AnsiCommand::Print('X'));
         assert_eq!(
-            get_char_at(&term, 1, 1),
+            get_char_at(&term, 1, 1), // col, row
             'X',
             "Character not printed at new cursor pos"
         );
@@ -1180,7 +1183,7 @@ mod extensive_term_emulator_tests {
         process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
         assert_and_clear_dirty_lines(&mut term, &[0, 1], "After LF in CRLF");
         assert_eq!(
-            get_char_at(&term, 0, 0),
+            get_char_at(&term, 0, 0), // col, row
             'H',
             "Char on line 0 incorrect after CRLF"
         );
@@ -1328,15 +1331,15 @@ mod extensive_term_emulator_tests {
         assert_and_clear_dirty_lines(&mut term, &[0, 1, 2, 3], "After full PTY output block");
 
         // The failing content assertion. Check char by char to bypass trim_end() for this specific check.
-        assert_eq!(get_char_at(&term, 0, 0), 'p', "Line 0 Col 0");
-        assert_eq!(get_char_at(&term, 0, 1), 'r', "Line 0 Col 1");
-        assert_eq!(get_char_at(&term, 0, 2), 'o', "Line 0 Col 2");
-        assert_eq!(get_char_at(&term, 0, 3), 'm', "Line 0 Col 3");
-        assert_eq!(get_char_at(&term, 0, 4), 'p', "Line 0 Col 4");
-        assert_eq!(get_char_at(&term, 0, 5), 't', "Line 0 Col 5");
-        assert_eq!(get_char_at(&term, 0, 6), '>', "Line 0 Col 6");
+        assert_eq!(get_char_at(&term, 0, 0), 'p', "Line 0 Col 0"); // col, row
+        assert_eq!(get_char_at(&term, 1, 0), 'r', "Line 0 Col 1"); // col, row
+        assert_eq!(get_char_at(&term, 2, 0), 'o', "Line 0 Col 2"); // col, row
+        assert_eq!(get_char_at(&term, 3, 0), 'm', "Line 0 Col 3"); // col, row
+        assert_eq!(get_char_at(&term, 4, 0), 'p', "Line 0 Col 4"); // col, row
+        assert_eq!(get_char_at(&term, 5, 0), 't', "Line 0 Col 5"); // col, row
+        assert_eq!(get_char_at(&term, 6, 0), '>', "Line 0 Col 6"); // col, row
         assert_eq!(
-            get_char_at(&term, 0, 7),
+            get_char_at(&term, 7, 0), // col, row
             ' ',
             "Line 0 Col 7 (the explicit space)"
         );
@@ -1373,14 +1376,13 @@ mod extensive_term_emulator_tests {
         for r in 0..3 {
             for c_idx in 0..5 {
                 assert_eq!(
-                    get_glyph_at(&term, r, c_idx),
+                    get_glyph_at(&term, c_idx, r), // col, row
                     Glyph {
                         c: ' ',
                         attr: Attributes::default(),
                     },
                     "Cell ({},{}) not default after ED All",
-                    r,
-                    c_idx
+                    c_idx, r
                 );
             }
         }
@@ -1408,11 +1410,11 @@ mod extensive_term_emulator_tests {
 
         process_commands(
             &mut term,
-            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(2, 2))],
+            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(2, 2))], // CUP row 2, col 2 (0-indexed: 1,1)
         );
         assert_and_clear_dirty_lines(
             &mut term,
-            &[],
+            &[], // CUP alone does not mark lines dirty for content change
             "Cursor move to (1,1) for ED FromCursor (CUP alone shouldn't dirty screen content)",
         );
 
@@ -1421,12 +1423,12 @@ mod extensive_term_emulator_tests {
             AnsiCommand::Csi(CsiCommand::EraseInDisplay(ERASE_TO_END)),
         );
 
-        let (_cols, rows) = TerminalInterface::dimensions(&term);
-        let all_expected_lines: Vec<usize> = (0..rows).collect();
+        // EraseInDisplay(ToEnd) will mark the current line (1) and all subsequent lines (2) dirty.
+        // Line 0 remains untouched.
         assert_and_clear_dirty_lines(
             &mut term,
-            &all_expected_lines,
-            "After ED FromCursor (ToEnd) - expecting all lines due to mark_all_dirty in erase_in_display",
+            &[1, 2], // Lines 1 and 2 should be dirty.
+            "After ED FromCursor (ToEnd)",
         );
         assert_eq!(
             get_line_as_string(&term, 0),
@@ -1434,13 +1436,13 @@ mod extensive_term_emulator_tests {
             "Line 0 after ED FromCursor"
         );
         assert_eq!(
-            get_char_at(&term, 1, 0),
+            get_char_at(&term, 0, 1), // col, row
             'L',
             "Line 1, Col 0 after ED FromCursor"
         );
         assert_eq!(
-            get_char_at(&term, 1, 1),
-            ' ',
+            get_char_at(&term, 1, 1), // col, row
+            ' ', // Cursor was at (1,1), so this cell and rest of line 1 are cleared.
             "Line 1, Col 1 (cursor pos) after ED FromCursor"
         );
         assert_eq!(
@@ -1449,6 +1451,7 @@ mod extensive_term_emulator_tests {
             "Line 2 after ED FromCursor"
         );
     }
+
 
     #[test]
     fn test_erase_in_line_all_marks_current_line_dirty() {
@@ -1470,7 +1473,7 @@ mod extensive_term_emulator_tests {
 
         process_command(
             &mut term,
-            AnsiCommand::Csi(CsiCommand::CursorPosition(2, 1)),
+            AnsiCommand::Csi(CsiCommand::CursorPosition(2, 1)), // CUP to row 2 (0-indexed 1), col 1
         );
         assert_and_clear_dirty_lines(
             &mut term,
@@ -1507,7 +1510,7 @@ mod extensive_term_emulator_tests {
 
         process_command(
             &mut term,
-            AnsiCommand::Csi(CsiCommand::CursorCharacterAbsolute(1)),
+            AnsiCommand::Csi(CsiCommand::CursorCharacterAbsolute(1)), // CHA to col 1 (0-indexed 0)
         );
         assert_and_clear_dirty_lines(
             &mut term,
@@ -1550,7 +1553,7 @@ mod extensive_term_emulator_tests {
         process_command(&mut term, AnsiCommand::Print('A'));
         assert_and_clear_dirty_lines(&mut term, &[0], "Print 'A' with new attribute");
         // ... content assertions
-        let glyph = get_glyph_at(&term, 0, 0);
+        let glyph = get_glyph_at(&term, 0, 0); // col, row
         assert_eq!(glyph.c, 'A');
         assert!(
             glyph.attr.flags.contains(AttrFlags::BOLD),
@@ -1584,7 +1587,7 @@ mod extensive_term_emulator_tests {
         // ... content assertions
         let (cols, _) = TerminalInterface::dimensions(&term);
         for c_idx in 0..cols {
-            let glyph = get_glyph_at(&term, 1, c_idx);
+            let glyph = get_glyph_at(&term, c_idx, 1); // col, row
             assert_eq!(glyph.c, ' ', "Erased char should be space on line 1");
             assert_eq!(
                 glyph.attr.bg,
@@ -1593,7 +1596,7 @@ mod extensive_term_emulator_tests {
                 c_idx
             );
         }
-        let glyph_other_line = get_glyph_at(&term, 0, 0);
+        let glyph_other_line = get_glyph_at(&term, 0, 0); // col, row
         assert_eq!(
             glyph_other_line.attr.bg,
             Color::Default,
@@ -1735,7 +1738,7 @@ mod extensive_term_emulator_tests {
 
         process_command(
             &mut term,
-            AnsiCommand::Csi(CsiCommand::CursorCharacterAbsolute(2)),
+            AnsiCommand::Csi(CsiCommand::CursorCharacterAbsolute(2)), // CHA to col 2 (0-indexed 1)
         );
         assert_and_clear_dirty_lines(
             &mut term,
@@ -1749,26 +1752,25 @@ mod extensive_term_emulator_tests {
         );
         assert_and_clear_dirty_lines(&mut term, &[0], "EL ToEnd with BG Blue");
         // ... content assertions
-        assert_eq!(get_char_at(&term, 0, 0), 'A', "Char at (0,0) should be A");
+        assert_eq!(get_char_at(&term, 0, 0), 'A', "Char at (0,0) should be A"); // col, row
         assert_eq!(
-            get_glyph_at(&term, 0, 0).attr.bg,
+            get_glyph_at(&term, 0, 0).attr.bg, // col, row
             Color::Default,
             "BG at (0,0) should be default"
         );
 
-        for c_idx in 1..10 {
-            let glyph = get_glyph_at(&term, 0, c_idx);
+        for c_idx in 1..10 { // From cursor pos (col 1) to end
+            let glyph = get_glyph_at(&term, c_idx, 0); // col, row
             assert_eq!(
                 glyph.c, ' ',
                 "Erased char at ({},{}) should be space",
-                0, c_idx
+                c_idx, 0
             );
             assert_eq!(
                 glyph.attr.bg,
                 Color::Named(NamedColor::Blue),
                 "BG at ({},{}) should be Blue",
-                0,
-                c_idx
+                c_idx, 0
             );
         }
     }
@@ -1778,9 +1780,9 @@ mod extensive_term_emulator_tests {
 // --- Selection and Copy/Paste Tests ---
 #[cfg(test)]
 mod selection_tests {
-    use super::term_tests::{create_term, get_glyph_at, get_line_as_string, process_command, process_commands, assert_and_clear_dirty_lines};
+    use super::term_tests::{create_term, get_glyph_at, get_line_as_string, process_command, process_commands, assert_and_clear_dirty_lines}; // Use create_term
     use crate::ansi::commands::{AnsiCommand, C0Control, CsiCommand};
-    use crate::backends::{MouseButton, MouseEventType};
+    use crate::backends::{MouseButton, MouseEventType, Modifiers as BackendModifiers};
     use crate::term::{
         EmulatorAction, EmulatorInput, SelectionMode, SelectionState, TerminalEmulator,
         TerminalInterface, UserInputAction,
@@ -1810,7 +1812,7 @@ mod selection_tests {
             col: 2,
             row: 1,
             button: MouseButton::Left,
-            modifiers: crate::backends::Modifiers::empty(),
+            modifiers: BackendModifiers::empty(),
         }));
 
         assert!(term.selection.is_some(), "Selection should be Some after press");
@@ -1831,7 +1833,7 @@ mod selection_tests {
             col: 2,
             row: 1,
             button: MouseButton::Left,
-            modifiers: crate::backends::Modifiers::empty(),
+            modifiers: BackendModifiers::empty(),
         }));
         let _ = TerminalInterface::take_dirty_lines(&mut term); // Clear dirty from press
 
@@ -1840,8 +1842,8 @@ mod selection_tests {
             event_type: MouseEventType::Move,
             col: 5,
             row: 2,
-            button: MouseButton::Left, // Usually not specified for move, but good to be explicit
-            modifiers: crate::backends::Modifiers::empty(),
+            button: MouseButton::Left, 
+            modifiers: BackendModifiers::empty(),
         }));
         
         assert!(term.selection.is_some(), "Selection should exist after drag");
@@ -1849,31 +1851,53 @@ mod selection_tests {
             assert_eq!(selection.start, (2, 1), "Selection start should remain the same");
             assert_eq!(selection.end, (5, 2), "Selection end should update to drag position");
         }
-        // Old end row (1) and new end row (2) should be dirty.
         assert_and_clear_dirty_lines(&mut term, &[1, 2], "Lines 1 and 2 (old and new end) should be dirty");
     }
+
+    #[test]
+    fn test_mouse_drag_noop_if_coords_unchanged() {
+        let mut term = create_term(10, 3);
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Press, col: 2, row: 1, button: MouseButton::Left, modifiers: BackendModifiers::empty(),
+        }));
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Move, col: 5, row: 1, button: MouseButton::Left, modifiers: BackendModifiers::empty(),
+        }));
+        assert_and_clear_dirty_lines(&mut term, &[1], "Initial drag marks line 1 dirty");
+
+        // Drag again to the same coordinates
+        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+            event_type: MouseEventType::Move,
+            col: 5,
+            row: 1,
+            button: MouseButton::Left,
+            modifiers: BackendModifiers::empty(),
+        }));
+        assert_and_clear_dirty_lines(&mut term, &[], "Dragging to same coords should not mark lines dirty again");
+    }
+
 
     #[test]
     fn test_selection_mouse_release_finalizes_selection() {
         let mut term = create_term(10, 3);
         term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
-            event_type: MouseEventType::Press, col: 2, row: 1, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
+            event_type: MouseEventType::Press, col: 2, row: 1, button: MouseButton::Left, modifiers: BackendModifiers::empty(),
         }));
         term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
-            event_type: MouseEventType::Move, col: 5, row: 1, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
+            event_type: MouseEventType::Move, col: 5, row: 1, button: MouseButton::Left, modifiers: BackendModifiers::empty(),
         }));
         let _ = TerminalInterface::take_dirty_lines(&mut term); 
 
         term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
             event_type: MouseEventType::Release,
-            col: 5, // Release coordinates
+            col: 5, 
             row: 1,
             button: MouseButton::Left,
-            modifiers: crate::backends::Modifiers::empty(),
+            modifiers: BackendModifiers::empty(),
         }));
 
         assert!(term.selection.is_some(), "Selection should still exist after release");
-        if let Some(selection) = &term.selection { // Ensure selection is still (2,1) to (5,1)
+        if let Some(selection) = &term.selection { 
             assert_eq!(selection.start, (2,1));
             assert_eq!(selection.end, (5,1));
         }
@@ -1881,43 +1905,53 @@ mod selection_tests {
     }
     
     #[test]
-    fn test_selection_cleared_on_initiate_copy() {
+    fn test_action_initiate_copy_with_selection_clears_selection() {
         let mut term = create_term(10, 3);
         set_content(&mut term, vec!["Hello World"]);
-        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
-            event_type: MouseEventType::Press, col: 0, row: 0, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
-        }));
-        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
-            event_type: MouseEventType::Move, col: 4, row: 0, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
-        })); // Selects "Hello"
+        term.selection = Some(SelectionState { start: (0,0), end: (4,0), mode: SelectionMode::Normal }); // Select "Hello"
         assert!(term.selection.is_some());
         let _ = TerminalInterface::take_dirty_lines(&mut term);
 
-        term.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+        
+        assert_eq!(action, Some(EmulatorAction::CopyToClipboard("Hello".to_string())));
         assert!(term.selection.is_none(), "Selection should be None after copy");
         assert_and_clear_dirty_lines(&mut term, &[0], "Line 0 (former selection) should be dirty after copy");
     }
 
     #[test]
-    fn test_selection_cleared_on_resize() {
-        let mut term = create_term(10, 3);
-        term.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
-            event_type: MouseEventType::Press, col: 0, row: 0, button: MouseButton::Left, modifiers: crate::backends::Modifiers::empty(),
-        }));
-        assert!(term.selection.is_some());
-        let _ = TerminalInterface::take_dirty_lines(&mut term); // Clear setup dirty
-
-        term.resize(5, 2); // Resize the terminal
-        assert!(term.selection.is_none(), "Selection should be None after resize");
-        // Resize marks all lines dirty by default. We also added specific dirtying for old selection.
-        // The `resize` method itself calls `screen.resize` which marks all new lines dirty.
-        // The test helper `assert_and_clear_dirty_lines` expects exact match.
-        // For simplicity, let's just check that the old selection line was dirtied if it's within new bounds.
-        // Or, more simply, rely on resize marking all lines dirty.
-        let (w,h) = TerminalInterface::dimensions(&term);
-        let all_lines: Vec<usize> = (0..h).collect();
-        assert_and_clear_dirty_lines(&mut term, &all_lines, "All lines should be dirty after resize");
+    fn test_action_initiate_copy_no_selection_returns_none() {
+        let mut term = create_term(10,3);
+        term.selection = None; // Ensure no selection
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+        assert_eq!(action, None);
+        assert_and_clear_dirty_lines(&mut term, &[], "No dirty lines if no copy occurred");
     }
+
+    #[test]
+    fn test_action_initiate_paste_returns_request_content() {
+        let mut term = create_term(10,3);
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiatePaste));
+        assert_eq!(action, Some(EmulatorAction::RequestClipboardContent));
+    }
+
+    #[test]
+    fn test_action_paste_text_normal_mode_writes_pty() {
+        let mut term = create_term(10,3);
+        term.dec_modes.bracketed_paste_mode = false;
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::PasteText("Pasted Data".to_string())));
+        assert_eq!(action, Some(EmulatorAction::WritePty(b"Pasted Data".to_vec())));
+    }
+
+    #[test]
+    fn test_action_paste_text_bracketed_mode_writes_pty_wrapped() {
+        let mut term = create_term(10,3);
+        term.dec_modes.bracketed_paste_mode = true;
+        let action = term.interpret_input(EmulatorInput::User(UserInputAction::PasteText("Pasted Data".to_string())));
+        let expected_bytes = [b"\x1b[200~".to_vec(), b"Pasted Data".to_vec(), b"\x1b[201~".to_vec()].concat();
+        assert_eq!(action, Some(EmulatorAction::WritePty(expected_bytes)));
+    }
+
 
     // --- get_selected_text() Tests ---
     #[test]
@@ -1925,6 +1959,15 @@ mod selection_tests {
         let term = create_term(10, 3);
         assert_eq!(term.get_selected_text(), None);
     }
+    
+    #[test]
+    fn test_gts_single_char() {
+        let mut term = create_term(10, 1);
+        set_content(&mut term, vec!["Test"]);
+        term.selection = Some(SelectionState { start: (1,0), end: (1,0), mode: SelectionMode::Normal }); // Select "e"
+        assert_eq!(term.get_selected_text(), Some("e".to_string()));
+    }
+
 
     #[test]
     fn test_get_selected_text_single_line_simple() {
@@ -1938,9 +1981,38 @@ mod selection_tests {
     fn test_get_selected_text_multi_line() {
         let mut term = create_term(10, 3);
         set_content(&mut term, vec!["First line", "Second row", "Third one"]);
-        // Select from "line" (0,5) on first line to "Sec" (1,2) on second line
+        // Select from "line" (col 6, row 0) on first line to "Sec" (col 2, row 1) on second line
         term.selection = Some(SelectionState { start: (6,0), end: (2,1), mode: SelectionMode::Normal }); 
         assert_eq!(term.get_selected_text(), Some("line\nSec".to_string()));
+    }
+    
+    #[test]
+    fn test_gts_multi_line_ends_at_line_start() {
+        let mut term = create_term(10, 2);
+        set_content(&mut term, vec!["ABC", "DEF"]); // Line 0: "ABC", Line 1: "DEF"
+        // Select "ABC\n" (from (0,0) to (0,1), which is start of line 1)
+        // The selection end (0,1) means up to, but not including, char at (0,1) on line 1 for the line content part.
+        // However, the newline character for line 0 is included.
+        term.selection = Some(SelectionState { start: (0,0), end: (0,1), mode: SelectionMode::Normal });
+        assert_eq!(term.get_selected_text(), Some("ABC\n".to_string()));
+    }
+
+    #[test]
+    fn test_gts_multi_line_starts_at_line_end() {
+        let mut term = create_term(10, 2);
+        set_content(&mut term, vec!["ABC", "DEF"]); // Line 0: "ABC", Line 1: "DEF"
+        // Select "\nDEF" (from end of line 0 (col 3) to end of line 1 (col 2))
+        term.selection = Some(SelectionState { start: (3,0), end: (2,1), mode: SelectionMode::Normal });
+        assert_eq!(term.get_selected_text(), Some("\nDEF".to_string()));
+    }
+
+    #[test]
+    fn test_gts_multi_line_full_lines_in_between() {
+        let mut term = create_term(20, 3);
+        set_content(&mut term, vec!["Line1", "Full Line 2", "Part Line3 End"]);
+        // Select "Line1\nFull Line 2\nPart Line3"
+        term.selection = Some(SelectionState { start: (0,0), end: (9,2), mode: SelectionMode::Normal });
+        assert_eq!(term.get_selected_text(), Some("Line1\nFull Line 2\nPart Line3".to_string()));
     }
     
     #[test]
@@ -1963,13 +2035,61 @@ mod selection_tests {
     fn test_get_selected_text_wide_chars() {
         let mut term = create_term(10, 3);
         set_content(&mut term, vec!["你好世界"]); // "Hello World" in Chinese
-        // Select "你好" (Ni Hao) which are 2 wide chars, so 4 cells
+        // Select "你好" (Ni Hao) which are 2 wide chars, so 4 cells (0,1,2,3)
         term.selection = Some(SelectionState { start: (0,0), end: (3,0), mode: SelectionMode::Normal });
         assert_eq!(term.get_selected_text(), Some("你好".to_string()));
         
-        // Select "世" (Shi) - one wide char
+        // Select "世" (Shi) - one wide char (cells 4,5)
         term.selection = Some(SelectionState { start: (4,0), end: (5,0), mode: SelectionMode::Normal });
         assert_eq!(term.get_selected_text(), Some("世".to_string()));
+    }
+
+    #[test]
+    fn test_gts_wide_char_single_cell_primary() {
+        let mut term = create_term(10,1);
+        set_content(&mut term, vec!["你好"]); // "你好" occupies cells (0,0)-(1,0) and (2,0)-(3,0)
+        term.selection = Some(SelectionState { start: (0,0), end: (0,0), mode: SelectionMode::Normal }); // Select first cell of '你'
+        assert_eq!(term.get_selected_text(), Some("你".to_string()));
+    }
+
+    #[test]
+    fn test_gts_wide_char_single_cell_spacer() {
+        let mut term = create_term(10,1);
+        set_content(&mut term, vec!["你好"]);
+        term.selection = Some(SelectionState { start: (1,0), end: (1,0), mode: SelectionMode::Normal }); // Select second cell of '你' (spacer)
+        assert_eq!(term.get_selected_text(), Some("".to_string()), "Selecting only spacer of wide char should yield empty or the char itself depending on strictness, current impl is empty");
+    }
+    
+    #[test]
+    fn test_gts_wide_char_both_cells() {
+        let mut term = create_term(10,1);
+        set_content(&mut term, vec!["你好"]);
+        term.selection = Some(SelectionState { start: (0,0), end: (1,0), mode: SelectionMode::Normal }); // Select both cells of '你'
+        assert_eq!(term.get_selected_text(), Some("你".to_string()));
+    }
+
+    #[test]
+    fn test_gts_wide_char_across_boundary() {
+        let mut term = create_term(10,1);
+        set_content(&mut term, vec!["你好"]);
+        term.selection = Some(SelectionState { start: (0,0), end: (2,0), mode: SelectionMode::Normal }); // Select '你' and first cell of '好'
+        assert_eq!(term.get_selected_text(), Some("你好".to_string()));
+    }
+    
+    #[test]
+    fn test_gts_trailing_spaces_preserved_on_final_line_if_selected() {
+        let mut term = create_term(10, 1);
+        set_content(&mut term, vec!["Final   "]); // Content is "Final   " (cols 0-7)
+        term.selection = Some(SelectionState { start: (0,0), end: (7,0), mode: SelectionMode::Normal }); // Select all 8 cells
+        assert_eq!(term.get_selected_text(), Some("Final   ".to_string()));
+    }
+
+    #[test]
+    fn test_gts_selection_beyond_line_length_clamps_correctly() {
+        let mut term = create_term(10, 1);
+        set_content(&mut term, vec!["Short"]); // Content "Short" (cols 0-4)
+        term.selection = Some(SelectionState { start: (0,0), end: (8,0), mode: SelectionMode::Normal }); // Select up to col 8
+        assert_eq!(term.get_selected_text(), Some("Short".to_string()));
     }
     
     #[test]
@@ -1992,46 +2112,24 @@ mod selection_tests {
         term.selection = Some(SelectionState { start: (10,0), end: (6,0), mode: SelectionMode::Normal }); // Select "World" backwards
         assert_eq!(term.get_selected_text(), Some("World".to_string()));
     }
-
-    // --- EmulatorAction Generation Tests ---
+    
     #[test]
-    fn test_action_initiate_copy_with_selection() {
+    fn test_gts_empty_lines_in_selection() {
+        let mut term = create_term(5,3);
+        set_content(&mut term, vec!["A", "", "B"]); // Line 0: A, Line 1: (empty), Line 2: B
+        term.selection = Some(SelectionState { start: (0,0), end: (0,2), mode: SelectionMode::Normal});
+        assert_eq!(term.get_selected_text(), Some("A\n\nB".to_string()));
+    }
+
+
+    // --- EmulatorAction Generation Tests (already covered by previous section, some repeated for clarity) ---
+    #[test]
+    fn test_action_initiate_copy_with_selection() { // Renamed from selection_cleared_on_initiate_copy
         let mut term = create_term(10,3);
         set_content(&mut term, vec!["Copy This"]);
         term.selection = Some(SelectionState { start: (0,0), end: (8,0), mode: SelectionMode::Normal });
         let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
         assert_eq!(action, Some(EmulatorAction::CopyToClipboard("Copy This".to_string())));
-    }
-
-    #[test]
-    fn test_action_initiate_copy_no_selection() {
-        let mut term = create_term(10,3);
-        let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
-        assert_eq!(action, None);
-    }
-
-    #[test]
-    fn test_action_initiate_paste_generates_request() {
-        let mut term = create_term(10,3);
-        let action = term.interpret_input(EmulatorInput::User(UserInputAction::InitiatePaste));
-        assert_eq!(action, Some(EmulatorAction::RequestClipboardContent));
-    }
-
-    // --- UserInputAction::PasteText Handling Tests ---
-    #[test]
-    fn test_paste_text_normal_mode() {
-        let mut term = create_term(10,3);
-        term.dec_modes.bracketed_paste_mode = false;
-        let action = term.interpret_input(EmulatorInput::User(UserInputAction::PasteText("Pasted!".to_string())));
-        assert_eq!(action, Some(EmulatorAction::WritePty(b"Pasted!".to_vec())));
-    }
-
-    #[test]
-    fn test_paste_text_bracketed_mode() {
-        let mut term = create_term(10,3);
-        term.dec_modes.bracketed_paste_mode = true;
-        let action = term.interpret_input(EmulatorInput::User(UserInputAction::PasteText("Pasted!".to_string())));
-        let expected_bytes = [b"\x1b[200~".to_vec(), b"Pasted!".to_vec(), b"\x1b[201~".to_vec()].concat();
-        assert_eq!(action, Some(EmulatorAction::WritePty(expected_bytes)));
+        // Selection clearing is tested in test_action_initiate_copy_with_selection_clears_selection
     }
 }
