@@ -20,6 +20,7 @@ use std::path::PathBuf; // For paths, like shell path.
 // Import color definitions from the main color module.
 // This ensures consistency in how colors are represented throughout the application.
 use crate::color::{Color, NamedColor};
+use crate::backends::{KeySymbol, Modifiers}; // For KeybindingConfig
 
 // --- Top-Level Configuration Structure ---
 
@@ -43,9 +44,32 @@ pub struct Config {
     pub shell: ShellConfig,
     /// Mouse behavior settings.
     pub mouse: MouseConfig,
-    // TODO: Add KeybindingsConfig when keybinding system is designed.
-    // pub keybindings: KeybindingsConfig,
+    /// Keybinding configurations.
+    pub keybindings: KeybindingsConfig,
 }
+
+// --- Keybinding Configuration ---
+
+/// Represents a combination of a key and modifiers for keybindings.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub struct KeyCombination {
+    #[serde(default)] // Use default for symbol if missing in config
+    pub symbol: KeySymbol,
+    #[serde(default)] // Use default for modifiers if missing in config
+    pub modifiers: Modifiers,
+}
+
+/// Defines keybindings for various actions.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct KeybindingsConfig {
+    /// Example: Keybinding for copying text.
+    pub copy: Option<KeyCombination>,
+    /// Example: Keybinding for pasting text.
+    pub paste: Option<KeyCombination>,
+    // Add other actions and their KeyCombination here.
+}
+
 
 // --- Appearance Configuration ---
 

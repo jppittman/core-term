@@ -14,7 +14,7 @@ mod emulator;
 pub mod modes;
 
 // Re-export items for easier use by other modules and within this module
-pub use action::EmulatorAction;
+pub use action::{ControlEvent, EmulatorAction, UserInputAction}; // Added UserInputAction, ControlEvent
 pub use charset::{map_to_dec_line_drawing, CharacterSet};
 pub use emulator::TerminalEmulator;
 pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
@@ -38,12 +38,7 @@ pub const DEFAULT_TAB_INTERVAL: u8 = 8;
 /// Default cursor shape (e.g., 2 for block).
 pub(crate) const DEFAULT_CURSOR_SHAPE: u16 = 2;
 
-/// Internal control events for the TerminalEmulator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlEvent {
-    FrameRendered,                       // Signifies that a frame has been rendered.
-    Resize { cols: usize, rows: usize }, // Signals a resize to new cell dimensions.
-}
+// ControlEvent is now defined in and re-exported from action.rs
 
 /// Inputs that the terminal emulator processes.
 ///
@@ -58,10 +53,10 @@ pub enum EmulatorInput {
 
     /// An event originating from the user (e.g., keyboard input) or the
     /// backend system (e.g., window resize, focus change), as reported
-    /// by the `Driver`.
-    User(BackendEvent),
+    /// by the `Driver` and translated by the `AppOrchestrator`.
+    User(UserInputAction), // Changed from BackendEvent to UserInputAction
     /// An internal control event, such as a resize notification from the orchestrator.
-    Control(ControlEvent),
+    Control(ControlEvent), // Uses ControlEvent from action.rs
 
     /// A single raw character. This variant might be used for scenarios
     /// where direct character printing is intended without full ANSI

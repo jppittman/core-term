@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.98"
-bitflags = "2.9.0"
+bitflags = { version = "2.9.0", features = ["serde"] }
 env_logger = "0.11.8"
 libc = "0.2.172"
 log = "0.4.27"
