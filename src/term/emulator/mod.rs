@@ -7,13 +7,15 @@ use std::cmp::min;
 use crate::{
     glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER},
     term::{
-        action::EmulatorAction,
+        action::{ControlEvent, EmulatorAction, UserInputAction}, // Added UserInputAction, ControlEvent
         charset::{map_to_dec_line_drawing, CharacterSet},
         cursor::{CursorController, ScreenContext},
         modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode},
         screen::{Screen, TabClearMode},
+        EmulatorInput, // Added EmulatorInput
     },
 };
+use crate::ansi::AnsiCommand; // Added AnsiCommand
 
 // Logging (optional, but good practice if used)
 use log::{debug, trace, warn};
@@ -152,5 +154,29 @@ impl TerminalEmulator {
             "Terminal resized to {}x{}. Cursor re-clamped. All lines marked dirty by screen.resize().",
             cols, rows
         );
+    }
+
+    /// Interprets a given `EmulatorInput` and updates terminal state.
+    /// Returns an `Option<EmulatorAction>` if the input results in an action
+    /// that needs to be handled externally (e.g., writing to PTY).
+    pub fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
+        match input {
+            EmulatorInput::Ansi(command) => {
+                // Delegate to ANSI command handler
+                ansi_handler::process_ansi_command(self, command)
+            }
+            EmulatorInput::User(action) => {
+                // Delegate to user input action handler
+                input_handler::process_user_input_action(self, action)
+            }
+            EmulatorInput::Control(event) => {
+                // Delegate to control event handler
+                input_handler::process_control_event(self, event)
+            }
+            EmulatorInput::RawChar(ch) => {
+                // Delegate to raw character processor
+                char_processor::process_raw_char(self, ch)
+            }
+        }
     }
 }

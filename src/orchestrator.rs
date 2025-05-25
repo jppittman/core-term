@@ -9,7 +9,7 @@ use crate::{
     backends::{BackendEvent, Driver},
     os::pty::PtyChannel,
     renderer::Renderer,
-    term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface},
+    term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction}, // Added UserInputAction
 };
 use anyhow::Error as AnyhowError;
 use std::io::ErrorKind as IoErrorKind;
@@ -124,8 +124,14 @@ impl<'a> AppOrchestrator<'a> {
 
     fn handle_specific_driver_event(&mut self, event: BackendEvent) {
         match event {
-            BackendEvent::Key { keysym, text } => {
-                let user_input = EmulatorInput::User(BackendEvent::Key { keysym, text });
+            BackendEvent::Key { symbol, modifiers, text } => { // New signature
+                // Translate BackendEvent::Key to UserInputAction::KeyInput
+                let key_input_action = UserInputAction::KeyInput {
+                    symbol,    // from BackendEvent
+                    modifiers, // from BackendEvent
+                    text: if text.is_empty() { None } else { Some(text) }, // Convert String to Option<String>
+                };
+                let user_input = EmulatorInput::User(key_input_action);
                 if let Some(action) = self.term.interpret_input(user_input) {
                     self.handle_emulator_action(action);
                 }

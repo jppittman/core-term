@@ -11,6 +11,7 @@ use crate::backends::{
 };
 use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
+use crate::keys::{KeySymbol, Modifiers}; // Added for new key representation
 
 use anyhow::{Context, Result};
 use libc::{winsize, STDIN_FILENO, TIOCGWINSZ}; // For terminal size and raw mode
@@ -199,18 +200,57 @@ impl Driver for ConsoleDriver {
                 // proper handling would involve parsing multi-byte sequences (e.g., for arrows).
                 for i in 0..bytes_read {
                     let byte = self.input_buffer[i];
-                    // For console, keysym is often just the byte value or 0 if it's part of a sequence.
-                    // Text is the byte converted to a char.
-                    let text = String::from_utf8_lossy(&[byte]).to_string();
-                    trace!("ConsoleDriver: Processed byte {} as char '{}'", byte, text);
-                    // Using byte as keysym is a placeholder. A more robust solution would map
-                    // common control chars or escape sequences to more meaningful keysyms.
+                for i in 0..bytes_read {
+                    let byte = self.input_buffer[i];
+                    let symbol: KeySymbol;
+                    let text: String;
+                    let modifiers = Modifiers::empty(); // Assume no modifiers for basic console input
+
+                    match byte {
+                        b'\r' | b'\n' => { // Carriage Return or Line Feed
+                            symbol = KeySymbol::Enter;
+                            text = "\n".to_string(); // Standardize to newline char for text
+                        }
+                        b'\t' => { // Tab
+                            symbol = KeySymbol::Tab;
+                            text = "\t".to_string();
+                        }
+                        0x08 | 0x7f => { // Backspace (0x08) or DEL (0x7f)
+                            // Some terminals send DEL (0x7f) for backspace.
+                            // For simplicity, mapping both to Backspace.
+                            symbol = KeySymbol::Backspace;
+                            text = "\x08".to_string(); // Use actual backspace char for text
+                        }
+                        0x1b => { // Escape
+                            symbol = KeySymbol::Escape;
+                            text = "\x1b".to_string(); // Escape character itself
+                        }
+                        // Handling for printable ASCII characters
+                        0x20..=0x7e => { // Space to Tilde
+                            let c = byte as char;
+                            symbol = KeySymbol::Char(c);
+                            text = c.to_string();
+                        }
+                        // Basic handling for some common Ctrl+<char> sequences
+                        0x01..=0x1a => { // Ctrl+A (SOH) to Ctrl+Z (SUB)
+                            let c = byte as char; // This will be a non-printable char
+                            symbol = KeySymbol::Char(c);
+                            text = c.to_string();
+                        }
+                        _ => { // Other bytes
+                            let c = byte as char; // May produce replacement characters
+                            symbol = KeySymbol::Char(c); // Or KeySymbol::Unknown if preferred
+                            text = c.to_string();
+                        }
+                    }
+                    trace!("ConsoleDriver: Processed byte {} as char '{}', symbol: {:?}, modifiers: {:?}", byte, text, symbol, modifiers);
                     backend_events.push(BackendEvent::Key {
-                        keysym: byte as u32,
+                        symbol,
+                        modifiers,
                         text,
                     });
                 }
-            }
+                }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 // No data available to read, which is normal for non-blocking.
                 trace!("ConsoleDriver: stdin read WouldBlock.");
