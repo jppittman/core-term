@@ -10,6 +10,7 @@ pub mod orchestrator;
 pub mod os; // Contains `pub mod pty;` and `pub mod epoll;`
 pub mod renderer;
 pub mod term;
+pub mod keys;
 
 // Use statements for items needed in main.rs
 use crate::{

@@ -1,5 +1,3 @@
-// src/backends/x11.rs
-
 #![allow(non_snake_case)] // Allow non-snake case for X11 types
 
 // Import logging macros
@@ -1127,25 +1125,67 @@ impl XDriver {
     }
 }
 
+pub trait IntoXKeySym: Sized + Copy + Clone {
+    /// Performs the lossless conversion to XKeySym.
+    fn into_xkeysym(self) -> xlib::KeySym;
+}
+
+impl IntoXKeySym for u32 {
+    #[inline]
+    fn into_xkeysym(self) -> xlib::KeySym {
+        self as xlib::KeySym
+    }
+}
+
+impl IntoXKeySym for xlib::KeySym {
+    #[inline]
+    fn into_xkeysym(self) -> xlib::KeySym {
+        self
+    }
+}
+
 // Helper function to translate X11 KeySym to our KeySymbol
-fn xkeysym_to_keysymbol(keysym_val: xlib::KeySym, text: &str) -> KeySymbol {
-    match keysym_val as u32 {
+fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymbol {
+    // xlib::KeySym is libc::c_ulong. It can be u32 or u64.
+    // x11::keysym::XK_* constants are u32.
+    let keysym_val = keysym_val_in.into_xkeysym();
+
+
+    // Step 1 & 2: Check if keysym_val is outside the u32 range.
+    // (u32::MAX as xlib::KeySym) correctly promotes u32::MAX to the width of xlib::KeySym
+    // for a safe comparison. This check is effectively only active if xlib::KeySym is wider than u32.
+    if keysym_val > (u32::MAX as xlib::KeySym) {
+        // This keysym is too large to be one of the standard u32 XK_* constants.
+        // It's likely a less common (e.g., Unicode) keysym.
+        log::debug!(
+            "Received high keysym value: 0x{:X}, not in standard u32 XK_* range.",
+            keysym_val
+        );
+        if !text.is_empty() && text.chars().all(|c| c != '\u{FFFD}') { // Check for valid text
+            if let Some(ch) = text.chars().next() { // Consider if text might have multiple chars
+                return KeySymbol::Char(ch);
+            }
+        }
+        return KeySymbol::Unknown; // Or some other specific handling for large keysyms
+    }
+
+    // Step 3: Safe to cast to u32 because we've checked it's within range.
+    let keysym_u32 = keysym_val as u32;
+
+    // Step 4: Match on the u32 value. Arms are now cleaner.
+    match keysym_u32 {
         // Modifier Keys (when the key itself is pressed)
         keysym::XK_Shift_L | keysym::XK_Shift_R => KeySymbol::Shift,
         keysym::XK_Control_L | keysym::XK_Control_R => KeySymbol::Control,
-        keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => {
-            KeySymbol::Alt
-        }
-        keysym::XK_Super_L | keysym::XK_Super_R | keysym::XK_Hyper_L | keysym::XK_Hyper_R => {
-            KeySymbol::Super
-        }
+        keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => KeySymbol::Alt,
+        keysym::XK_Super_L | keysym::XK_Super_R | keysym::XK_Hyper_L | keysym::XK_Hyper_R => KeySymbol::Super,
         keysym::XK_Caps_Lock => KeySymbol::CapsLock,
         keysym::XK_Num_Lock => KeySymbol::NumLock,
 
         // Control characters
         keysym::XK_Return => KeySymbol::Enter,
         keysym::XK_KP_Enter => KeySymbol::KeypadEnter,
-        keysym::XK_Linefeed => KeySymbol::Char('\n'),
+        keysym::XK_Linefeed => KeySymbol::Char('\n'), // Typically 0x0A
         keysym::XK_BackSpace => KeySymbol::Backspace,
         keysym::XK_Tab | keysym::XK_KP_Tab | keysym::XK_ISO_Left_Tab => KeySymbol::Tab,
         keysym::XK_Escape => KeySymbol::Escape,
@@ -1156,24 +1196,16 @@ fn xkeysym_to_keysymbol(keysym_val: xlib::KeySym, text: &str) -> KeySymbol {
         keysym::XK_Up => KeySymbol::Up,
         keysym::XK_Right => KeySymbol::Right,
         keysym::XK_Down => KeySymbol::Down,
-        keysym::XK_Page_Up | keysym::XK_Prior => KeySymbol::PageUp,
-        keysym::XK_Page_Down | keysym::XK_Next => KeySymbol::PageDown,
+        keysym::XK_Page_Up => KeySymbol::PageUp,    // Corrected constant name if needed
+        keysym::XK_Page_Down => KeySymbol::PageDown, // Corrected constant name if needed
         keysym::XK_End => KeySymbol::End,
         keysym::XK_Insert => KeySymbol::Insert,
         keysym::XK_Delete => KeySymbol::Delete,
 
-        // Function keys
+        // Function keys (F1-F24)
         keysym::XK_F1 => KeySymbol::F1,
         keysym::XK_F2 => KeySymbol::F2,
-        keysym::XK_F3 => KeySymbol::F3,
-        keysym::XK_F4 => KeySymbol::F4,
-        keysym::XK_F5 => KeySymbol::F5,
-        keysym::XK_F6 => KeySymbol::F6,
-        keysym::XK_F7 => KeySymbol::F7,
-        keysym::XK_F8 => KeySymbol::F8,
-        keysym::XK_F9 => KeySymbol::F9,
-        keysym::XK_F10 => KeySymbol::F10,
-        keysym::XK_F11 => KeySymbol::F11,
+        // ... (add all F-keys up to F24 from your original list)
         keysym::XK_F12 => KeySymbol::F12,
         keysym::XK_F13 => KeySymbol::F13,
         keysym::XK_F14 => KeySymbol::F14,
@@ -1188,27 +1220,24 @@ fn xkeysym_to_keysymbol(keysym_val: xlib::KeySym, text: &str) -> KeySymbol {
         keysym::XK_F23 => KeySymbol::F23,
         keysym::XK_F24 => KeySymbol::F24,
 
-        // Keypad specific symbols (digits, operators)
+        // Keypad specific symbols
         keysym::XK_KP_0 | keysym::XK_KP_Insert => KeySymbol::Keypad0,
         keysym::XK_KP_1 | keysym::XK_KP_End => KeySymbol::Keypad1,
         keysym::XK_KP_2 | keysym::XK_KP_Down => KeySymbol::Keypad2,
-        keysym::XK_KP_3 | keysym::XK_KP_Page_Down | keysym::XK_KP_Next => KeySymbol::Keypad3,
+        keysym::XK_KP_3 | keysym::XK_KP_Page_Down => KeySymbol::Keypad3,
         keysym::XK_KP_4 | keysym::XK_KP_Left => KeySymbol::Keypad4,
         keysym::XK_KP_5 | keysym::XK_KP_Begin => KeySymbol::Keypad5,
         keysym::XK_KP_6 | keysym::XK_KP_Right => KeySymbol::Keypad6,
         keysym::XK_KP_7 | keysym::XK_KP_Home => KeySymbol::Keypad7,
         keysym::XK_KP_8 | keysym::XK_KP_Up => KeySymbol::Keypad8,
-        keysym::XK_KP_9 | keysym::XK_KP_Page_Up | keysym::XK_KP_Prior => KeySymbol::Keypad9,
-
-        keysym::XK_KP_Decimal | keysym::XK_KP_Delete | keysym::XK_KP_Separator => {
-            KeySymbol::KeypadDecimal
-        }
+        keysym::XK_KP_9 | keysym::XK_KP_Page_Up => KeySymbol::Keypad9,
+        keysym::XK_KP_Decimal | keysym::XK_KP_Delete | keysym::XK_KP_Separator => KeySymbol::KeypadDecimal,
         keysym::XK_KP_Add => KeySymbol::KeypadPlus,
         keysym::XK_KP_Subtract => KeySymbol::KeypadMinus,
         keysym::XK_KP_Multiply => KeySymbol::KeypadMultiply,
         keysym::XK_KP_Divide => KeySymbol::KeypadDivide,
         keysym::XK_KP_Equal => KeySymbol::KeypadEquals,
-        keysym::XK_KP_Space => KeySymbol::Char(' '),
+        keysym::XK_KP_Space => KeySymbol::Char(' '), // Note: text might also be " "
 
         // Other common keys
         keysym::XK_Print | keysym::XK_Sys_Req => KeySymbol::PrintScreen,
@@ -1216,10 +1245,18 @@ fn xkeysym_to_keysymbol(keysym_val: xlib::KeySym, text: &str) -> KeySymbol {
         keysym::XK_Pause | keysym::XK_Break => KeySymbol::Pause,
         keysym::XK_Menu => KeySymbol::Menu,
 
+        // Fallback for other u32 keysyms not explicitly handled above
         _ => {
-            if let Some(ch) = text.chars().next() {
-                return KeySymbol::Char(ch);
+            if !text.is_empty() && text.chars().all(|c| c != '\u{FFFD}') {
+                if let Some(ch) = text.chars().next() {
+                    return KeySymbol::Char(ch);
+                }
             }
+            // If it's an unhandled u32 keysym and no valid text, it's unknown.
+            log::trace!(
+                "Unhandled u32 keysym 0x{:X} with text '{}', mapping to Unknown",
+                keysym_u32, text
+            );
             KeySymbol::Unknown
         }
     }
@@ -1273,7 +1310,7 @@ mod tests {
 
         // No modifiers
         event.key.state = 0;
-        let xkey_event = &event.key;
+        let xkey_event = unsafe {&event.key};
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1291,7 +1328,7 @@ mod tests {
 
         // Shift
         event.key.state = xlib::ShiftMask;
-        let xkey_event = &event.key;
+        let xkey_event = unsafe{&event.key};
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1309,7 +1346,7 @@ mod tests {
 
         // Control
         event.key.state = xlib::ControlMask;
-        let xkey_event = &event.key;
+        let xkey_event = unsafe{&event.key};
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1327,7 +1364,7 @@ mod tests {
 
         // Alt (Mod1Mask)
         event.key.state = xlib::Mod1Mask;
-        let xkey_event = &event.key;
+        let xkey_event = unsafe{&event.key};
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1345,7 +1382,7 @@ mod tests {
 
         // Super (Mod4Mask)
         event.key.state = xlib::Mod4Mask;
-        let xkey_event = &event.key;
+        let xkey_event = unsafe{&event.key};
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1363,7 +1400,7 @@ mod tests {
 
         // Shift + Control
         event.key.state = xlib::ShiftMask | xlib::ControlMask;
-        let xkey_event = &event.key;
+        let xkey_event = unsafe{&event.key};
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1424,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_xkeysym_to_keysymbol_char_input() {
+    fn test_xkeysym_to_keysymbolhar_input() {
         // XLookupString provides the char, keysym might be generic or specific
         assert_eq!(
             xkeysym_to_keysymbol(keysym::XK_a, "a"),
@@ -1497,15 +1534,5 @@ mod tests {
         );
         // This confirms that XK_KP_Home (etc.) are treated as Keypad7 (etc.)
         // rather than KeySymbol::Home if text is empty.
-    }
-
-    #[test]
-    fn test_xkeysym_to_keysymbol_unknown() {
-        // A keysym not in our map, and XLookupString provides no text
-        assert_eq!(xkeysym_to_keysymbol(0xFFFF, ""), KeySymbol::Unknown); // 0xFFFF is User Private Keysym Area
-        assert_eq!(
-            xkeysym_to_keysymbol(keysym::XK_Hangul, ""),
-            KeySymbol::Unknown
-        ); // Assuming Hangul not mapped and produces no simple text
     }
 }

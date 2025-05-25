@@ -30,7 +30,7 @@ use crate::{
         CsiCommand,
         EscCommand,
     },
-    backends::BackendEvent,
+    term::UserInputAction,
     glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER}, // Added WIDE_CHAR_PLACEHOLDER
                                                                   // Note: cursor::CursorController and cursor::ScreenContext are used by methods in mod.rs
                                                                   // and are thus imported there.
@@ -63,8 +63,8 @@ impl TerminalEmulator {
     // They will be called via `emulator.method_name()` from ansi_handler.rs.
 
     /// Handles a `BackendEvent`.
-    pub fn handle_backend_event(&mut self, event: BackendEvent) -> Option<EmulatorAction> {
-        input_handler::process_backend_event(self, event)
+    pub fn handle_user_event(&mut self, event: crate::term::UserInputAction) -> Option<EmulatorAction> {
+        input_handler::process_user_input_action(self, event)
     }
 
     /// Handles an internal `ControlEvent`.
