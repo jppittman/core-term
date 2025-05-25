@@ -2,7 +2,6 @@
 
 // Crate-level imports
 use crate::{
-    config,
     glyph::Attributes,
     term::{
         action::EmulatorAction, // Added UserInputAction, ControlEvent
@@ -27,7 +26,7 @@ mod osc_handler;
 mod screen_ops;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FocusState {
+pub(super) enum FocusState {
     Focused,
     Unfocused,
 }
@@ -35,13 +34,12 @@ enum FocusState {
 /// The core terminal emulator.
 pub struct TerminalEmulator {
     pub(super) screen: Screen,
-    pub(super) focus_sate: FocusState,
+    pub(super) focus_state: FocusState,
     pub(super) cursor_controller: CursorController,
     pub(super) dec_modes: DecPrivateModes,
     pub(super) active_charsets: [CharacterSet; 4],
     pub(super) active_charset_g_level: usize,
     pub(super) cursor_wrap_next: bool,
-    pub(super) current_cursor_shape: u16, // Stores the current cursor shape code
 }
 
 impl TerminalEmulator {
@@ -63,10 +61,9 @@ impl TerminalEmulator {
                 CharacterSet::Ascii, // G2
                 CharacterSet::Ascii, // G3
             ],
-            focus_sate: FocusState::Focused,
+            focus_state: FocusState::Focused,
             active_charset_g_level: 0, // Default to G0
             cursor_wrap_next: false,
-            current_cursor_shape: config::CONFIG., // Use constant for default
         }
     }
 
@@ -127,10 +124,6 @@ impl TerminalEmulator {
                 false
             }
         }
-    }
-    #[allow(dead_code)]
-    pub(super) fn get_cursor_shape(&self) -> u16 {
-        self.current_cursor_shape
     }
 
     /// Returns the current logical cursor position (0-based column, row).

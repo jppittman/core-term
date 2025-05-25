@@ -121,6 +121,7 @@ pub struct AppearanceConfig {
     pub rows: u16,
     pub border_pixels: u16,
     pub cursor: CursorConfig,
+    pub unfocused_cursor: CursorConfig,
 }
 
 impl Default for AppearanceConfig {
@@ -131,6 +132,11 @@ impl Default for AppearanceConfig {
             rows: 24,
             border_pixels: 2,
             cursor: CursorConfig::default(),
+            unfocused_cursor: CursorConfig{
+                shape: CursorShape::SteadyBar,
+                blink_timeout_ms: 0,
+                thickness: 2,
+            },
         }
     }
 }

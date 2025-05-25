@@ -6,9 +6,16 @@
 //! abstracting away the complexities of different terminal modes like Origin Mode (DECOM)
 //! from the main terminal emulation logic.
 
-use crate::{glyph::Attributes, config}; // Using default attributes from DEFAULT_GLYPH
+use crate::{ansi::commands::Attribute, config, glyph::Attributes};
+use anyhow::{Result, anyhow};
 use log::{trace, warn};
-use std::cmp::min; // For clamping positions // For trace logging
+use std::{cmp::min, fmt};
+use serde::{
+    de::{self, Deserializer, Visitor},
+    Deserialize,
+    Serializer,
+    Serialize,
+};
 
 // --- Structs ---
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,6 +30,9 @@ pub enum CursorShape {
 }
 
 impl CursorShape {
+    fn unfocused_default() -> Self {
+        config::CONFIG.appearance.unfocused_cursor.shape
+    }
     /// Creates a `CursorShape` from a u16 code as used in DECSCUSR.
     /// Handles unknown codes by defaulting and logging a warning.
     pub fn from_decscusr_code(code: u16) -> Self {
@@ -54,12 +64,27 @@ impl CursorShape {
             CursorShape::SteadyBar => "SteadyBar",
         }
     }
+    fn from_str(input: &str) -> Result<Self> {
+        let val = match input {
+            "BlinkingBlock" => CursorShape::BlinkingBlock,
+            "SteadyBlock" => CursorShape::SteadyBlock,
+            "BlinkingUnderline" => CursorShape::BlinkingUnderline,
+            "SteadyUnderline" => CursorShape::SteadyUnderline,
+            "BlinkingBar" => CursorShape::BlinkingBar,
+            "SteadyBar" => CursorShape::SteadyBar,
+            _ => {
+               return Err(anyhow!("unrecognized cursor shape, reverting to default"))
+            }
+        };
+        Ok(val)
+    }
 }
 
 impl Default for CursorShape {
     fn default() -> Self {
         config::CONFIG.appearance.cursor.shape
     }
+
 }
 
 /// Represents the state of the terminal cursor.
@@ -79,7 +104,8 @@ pub struct Cursor {
     pub attributes: Attributes,
     /// Visibility of the cursor. True if the cursor should be displayed.
     pub visible: bool,
-    pub shape: CursorShape
+    pub shape: CursorShape,
+    pub unfocused_shape: CursorShape,
 }
 
 impl Default for Cursor {
@@ -92,6 +118,7 @@ impl Default for Cursor {
             attributes: Attributes::default(), // Use attributes from a default glyph configuration.
             visible: true,
             shape: CursorShape::default(),
+            unfocused_shape: CursorShape::unfocused_default(),
         }
     }
 }
@@ -128,9 +155,9 @@ pub struct ScreenContext {
 #[derive(Debug, Clone)]
 pub struct CursorController {
     /// The current state of the cursor.
-    cursor: Cursor,
+    pub(super) cursor: Cursor,
     /// Saved cursor state for DECSC/DECRC functionality. `None` if no state is currently saved.
-    saved_cursor: Option<Cursor>,
+    pub(super) saved_cursor: Option<Cursor>,
 }
 
 // --- Implementations ---
@@ -375,6 +402,7 @@ impl CursorController {
                 attributes: default_attributes,
                 visible: true, // Default visibility on restore if nothing was saved.
                 shape: CursorShape::default(),
+                unfocused_shape: CursorShape::unfocused_default(),
             }
         });
 
@@ -395,5 +423,53 @@ impl CursorController {
             self.cursor,
             context
         );
+    }
+    pub fn reset(&mut self) {
+        self.set_attributes(Attributes::default());
+        self.set_visible(true);
+        self.cursor = Cursor::default();
+    }
+}
+
+// Serde Serialize + Deserialize Cursor Shape as string rather than u16
+impl Serialize for CursorShape {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.to_str())
+    }
+}
+
+struct CursorShapeVisitor;
+
+impl<'de> Visitor<'de> for CursorShapeVisitor {
+    type Value = CursorShape;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a string representing a CursorShape (e.g., 'BlinkingBlock', 'SteadyBlock')")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<CursorShape, E>
+    where
+        E: de::Error,
+    {
+        CursorShape::from_str(value).map_err(|_| de::Error::unknown_variant(value, &[
+                "BlinkingBlock",
+                "SteadyBlock",
+                "BlinkingUnderline",
+                "SteadyUnderline",
+                "BlinkingBar",
+                "SteadyBar",
+            ]))
+    }
+}
+
+impl<'de> Deserialize<'de> for CursorShape {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(CursorShapeVisitor)
     }
 }

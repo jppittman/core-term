@@ -8,7 +8,7 @@ use std::os::raw::{c_char, c_int, c_uint}; // For FFI types
 use std::sync::OnceLock; // Standard library for one-time initialization // Logging macros
 
 // --- FFI Declarations ---
-extern "C" {
+unsafe extern "C" {
     fn wcwidth(wc: c_uint) -> c_int;
     fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
 }
