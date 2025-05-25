@@ -1,16 +1,10 @@
 // src/term/emulator/ansi_handler.rs
 
 use super::TerminalEmulator;
-use crate::term::{
-    action::EmulatorAction,
-    charset::{map_to_dec_line_drawing, CharacterSet},
-    modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode},
-    screen::TabClearMode,
-    TerminalInterface, // For dimensions
-};
 use crate::{
-    ansi::commands::{AnsiCommand, Attribute, C0Control, CsiCommand, EscCommand},
-    glyph::Attributes, // For Attributes::default() in ResetToInitialState
+    ansi::commands::{AnsiCommand, C0Control, CsiCommand, EscCommand}, glyph::Attributes, term::{
+        action::EmulatorAction, charset::{map_to_dec_line_drawing, CharacterSet}, cursor::CursorShape, emulator::FocusState, modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode}, screen::TabClearMode, TerminalInterface // For dimensions
+    } // For Attributes::default() in ResetToInitialState
 };
 
 use log::{debug, trace, warn}; // Assuming logging is still desired
@@ -195,14 +189,9 @@ pub(super) fn process_ansi_command(
                     emulator.screen.exit_alt_screen();
                 }
                 let default_attrs = Attributes::default();
-                emulator.cursor_controller.set_attributes(default_attrs);
+                emulator.cursor_controller.reset();
                 emulator.screen.default_attributes = default_attrs;
                 emulator.erase_in_display(EraseMode::All); // Call as method on emulator
-                emulator.cursor_controller.move_to_logical(
-                    0,
-                    0,
-                    &emulator.current_screen_context(),
-                );
                 emulator.dec_modes = DecPrivateModes::default();
                 emulator.screen.origin_mode = emulator.dec_modes.origin_mode;
                 let (_, h) = emulator.dimensions();
@@ -215,8 +204,6 @@ pub(super) fn process_ansi_command(
                     emulator.screen.set_tabstop(i);
                 }
                 emulator.cursor_wrap_next = false;
-                emulator.current_cursor_shape = DEFAULT_CURSOR_SHAPE;
-                emulator.cursor_controller.set_visible(true);
                 if emulator.dec_modes.text_cursor_enable_mode {
                     return Some(EmulatorAction::SetCursorVisibility(true));
                 }
@@ -355,7 +342,12 @@ pub(super) fn process_ansi_command(
                 None
             }
             CsiCommand::SetCursorStyle { shape } => {
-                emulator.current_cursor_shape = shape;
+                let focus_state = emulator.focus_state;
+                let cursor_shape = CursorShape::from_decscusr_code(shape);
+                match focus_state {
+                    FocusState::Focused => emulator.cursor_controller.cursor.shape = cursor_shape,
+                    FocusState::Unfocused => emulator.cursor_controller.cursor.unfocused_shape = cursor_shape,
+                }
                 debug!("Set cursor style to shape: {}", shape);
                 None
             }

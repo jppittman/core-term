@@ -154,6 +154,7 @@ impl Renderer {
             // For subsequent draws, only redraw explicitly dirty lines and the cursor line.
             // The cursor line needs to be redrawn to correctly render the cell underneath
             // before overlaying the cursor itself.
+            #[allow(clippy::collapsible_if)] 
             if term.is_cursor_visible() && cursor_abs_y < term_height {
                 if lines_to_draw_content.insert(cursor_abs_y) {
                     trace!(
@@ -161,7 +162,6 @@ impl Renderer {
                         cursor_abs_y
                     );
                 }
-                // No longer setting something_was_drawn here directly.
             }
         }
 

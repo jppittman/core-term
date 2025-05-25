@@ -1,6 +1,6 @@
 // src/term/emulator/input_handler.rs
 
-use super::TerminalEmulator;
+use super::{TerminalEmulator, FocusState};
 use crate::keys::{KeySymbol, Modifiers};
 use crate::term::{
     action::{EmulatorAction, UserInputAction}, // UserInputAction from action.rs
@@ -16,9 +16,8 @@ pub(super) fn process_user_input_action(
     emulator.cursor_wrap_next = false;
 
     match action {
-        UserInputAction::FocusLost => {
-            emulator
-        }
+        UserInputAction::FocusLost =>  emulator.focus_state = FocusState::Unfocused,
+        UserInputAction::FocusGained =>  emulator.focus_state = FocusState::Focused,
         UserInputAction::KeyInput {
             symbol,
             modifiers,
