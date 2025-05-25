@@ -6,11 +6,61 @@
 //! abstracting away the complexities of different terminal modes like Origin Mode (DECOM)
 //! from the main terminal emulation logic.
 
-use crate::glyph::Attributes; // Using default attributes from DEFAULT_GLYPH
-use log::trace;
+use crate::{glyph::Attributes, config}; // Using default attributes from DEFAULT_GLYPH
+use log::{trace, warn};
 use std::cmp::min; // For clamping positions // For trace logging
 
 // --- Structs ---
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u16)]
+pub enum CursorShape {
+    BlinkingBlock = 1,
+    SteadyBlock = 2,
+    BlinkingUnderline = 3,
+    SteadyUnderline = 4,
+    BlinkingBar = 5,
+    SteadyBar = 6,
+}
+
+impl CursorShape {
+    /// Creates a `CursorShape` from a u16 code as used in DECSCUSR.
+    /// Handles unknown codes by defaulting and logging a warning.
+    pub fn from_decscusr_code(code: u16) -> Self {
+        match code {
+            0 => CursorShape::default(),
+            1 => CursorShape::BlinkingBlock,
+            2 => CursorShape::SteadyBlock,
+            3 => CursorShape::BlinkingUnderline,
+            4 => CursorShape::SteadyUnderline,
+            5 => CursorShape::BlinkingBar,
+            6 => CursorShape::SteadyBar,
+            _ => {
+                warn!( //
+                    "Received unknown DECSCUSR shape code: {}. Defaulting to DefaultOrBlinkingBlock.",
+                    code
+                );
+                CursorShape::default()
+            }
+        }
+    }
+        /// Returns the string representation for serialization.
+    fn to_str(self) -> &'static str {
+        match self {
+            CursorShape::BlinkingBlock => "BlinkingBlock",
+            CursorShape::SteadyBlock => "SteadyBlock",
+            CursorShape::BlinkingUnderline => "BlinkingUnderline",
+            CursorShape::SteadyUnderline => "SteadyUnderline",
+            CursorShape::BlinkingBar => "BlinkingBar",
+            CursorShape::SteadyBar => "SteadyBar",
+        }
+    }
+}
+
+impl Default for CursorShape {
+    fn default() -> Self {
+        config::CONFIG.appearance.cursor.shape
+    }
+}
 
 /// Represents the state of the terminal cursor.
 ///
@@ -29,6 +79,7 @@ pub struct Cursor {
     pub attributes: Attributes,
     /// Visibility of the cursor. True if the cursor should be displayed.
     pub visible: bool,
+    pub shape: CursorShape
 }
 
 impl Default for Cursor {
@@ -40,6 +91,7 @@ impl Default for Cursor {
             logical_y: 0,
             attributes: Attributes::default(), // Use attributes from a default glyph configuration.
             visible: true,
+            shape: CursorShape::default(),
         }
     }
 }
@@ -322,6 +374,7 @@ impl CursorController {
                 logical_y: 0,
                 attributes: default_attributes,
                 visible: true, // Default visibility on restore if nothing was saved.
+                shape: CursorShape::default(),
             }
         });
 

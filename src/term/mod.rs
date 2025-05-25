@@ -22,11 +22,8 @@ pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 // Crate-level imports (adjust paths based on where items are moved)
 use crate::{
     ansi::commands::AnsiCommand,
-    backends::BackendEvent,
     // Use crate::color::Color directly where needed, or via glyph::Color
     glyph::Glyph,
-    term::cursor::{CursorController, ScreenContext},
-    term::screen::Screen,
 };
 // Explicitly import Color and NamedColor if they are used directly in this module's functions,
 // though they are mostly encapsulated within other types like Attributes.
@@ -54,7 +51,7 @@ pub enum EmulatorInput {
     /// An event originating from the user (e.g., keyboard input) or the
     /// backend system (e.g., window resize, focus change), as reported
     /// by the `Driver` and translated by the `AppOrchestrator`.
-    User(UserInputAction), // Changed from BackendEvent to UserInputAction
+    User(UserInputAction),
     /// An internal control event, such as a resize notification from the orchestrator.
     Control(ControlEvent), // Uses ControlEvent from action.rs
 
@@ -75,7 +72,6 @@ pub trait TerminalInterface {
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction>;
 }
 
-// --- Implement TerminalInterface for TerminalEmulator ---
 impl TerminalInterface for TerminalEmulator {
     fn dimensions(&self) -> (usize, usize) {
         (self.screen.width, self.screen.height)
@@ -86,7 +82,7 @@ impl TerminalInterface for TerminalEmulator {
         let mut action = match input {
             EmulatorInput::Ansi(command) => self.handle_ansi_command(command),
             EmulatorInput::Control(event) => self.handle_control_event(event),
-            EmulatorInput::User(event) => self.handle_backend_event(event),
+            EmulatorInput::User(event) => self.handle_user_event(event),
             EmulatorInput::RawChar(ch) => {
                 self.print_char(ch);
                 None

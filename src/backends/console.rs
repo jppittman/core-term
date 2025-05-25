@@ -200,12 +200,9 @@ impl Driver for ConsoleDriver {
                 // proper handling would involve parsing multi-byte sequences (e.g., for arrows).
                 for i in 0..bytes_read {
                     let byte = self.input_buffer[i];
-                for i in 0..bytes_read {
-                    let byte = self.input_buffer[i];
                     let symbol: KeySymbol;
                     let text: String;
                     let modifiers = Modifiers::empty(); // Assume no modifiers for basic console input
-
                     match byte {
                         b'\r' | b'\n' => { // Carriage Return or Line Feed
                             symbol = KeySymbol::Enter;
@@ -250,7 +247,7 @@ impl Driver for ConsoleDriver {
                         text,
                     });
                 }
-                }
+            }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 // No data available to read, which is normal for non-blocking.
                 trace!("ConsoleDriver: stdin read WouldBlock.");

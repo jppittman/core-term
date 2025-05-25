@@ -16,6 +16,9 @@ pub(super) fn process_user_input_action(
     emulator.cursor_wrap_next = false;
 
     match action {
+        UserInputAction::FocusLost => {
+            emulator
+        }
         UserInputAction::KeyInput {
             symbol,
             modifiers,

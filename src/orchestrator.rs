@@ -185,7 +185,7 @@ impl<'a> AppOrchestrator<'a> {
                 self.driver.set_focus(true);
                 if let Some(action) = self
                     .term
-                    .interpret_input(EmulatorInput::User(BackendEvent::FocusGained))
+                    .interpret_input(EmulatorInput::User(UserInputAction::FocusGained))
                 {
                     self.handle_emulator_action(action);
                 }
@@ -195,7 +195,7 @@ impl<'a> AppOrchestrator<'a> {
                 self.driver.set_focus(false);
                 if let Some(action) = self
                     .term
-                    .interpret_input(EmulatorInput::User(BackendEvent::FocusLost))
+                    .interpret_input(EmulatorInput::User(UserInputAction::FocusLost))
                 {
                     self.handle_emulator_action(action);
                 }
@@ -239,6 +239,8 @@ impl<'a> AppOrchestrator<'a> {
                 );
                 self.driver.set_cursor_visibility(visible);
             }
+            EmulatorAction::CopyToClipboard(_) => !unimplemented!("clipboard feature not yet implemented"),
+            EmulatorAction::RequestClipboardContent => !unimplemented!("clipboard feature not yet implemented"),
         }
     }
 

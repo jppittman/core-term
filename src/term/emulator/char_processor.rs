@@ -13,6 +13,7 @@ use log::{trace, warn};
 impl TerminalEmulator {
     /// Maps a character to its equivalent in the currently active G0/G1/G2/G3 character set.
     // This is a helper for print_char, so it can be private to this impl block.
+    #[inline]
     fn map_char_to_active_charset(&self, ch: char) -> char {
         let current_set = self.active_charsets[self.active_charset_g_level];
         match current_set {

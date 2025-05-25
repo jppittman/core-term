@@ -1,41 +1,41 @@
 // src/term/emulator/mod.rs
 
-// Standard library imports
-use std::cmp::min;
-
 // Crate-level imports
 use crate::{
-    glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER},
+    config,
+    glyph::Attributes,
     term::{
-        action::{ControlEvent, EmulatorAction, UserInputAction}, // Added UserInputAction, ControlEvent
-        charset::{map_to_dec_line_drawing, CharacterSet},
+        action::EmulatorAction, // Added UserInputAction, ControlEvent
+        charset::CharacterSet,
         cursor::{CursorController, ScreenContext},
-        modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode},
-        screen::{Screen, TabClearMode},
+        modes::{DecModeConstant, DecPrivateModes},
+        screen::Screen,
         EmulatorInput, // Added EmulatorInput
     },
 };
-use crate::ansi::AnsiCommand; // Added AnsiCommand
 
 // Logging (optional, but good practice if used)
-use log::{debug, trace, warn};
+use log::{debug, warn};
 
-mod ansi_handler; // Include the ansi_handler module
-mod char_processor; // Include the char_processor module
+mod ansi_handler;
+mod char_processor;
 mod cursor_handler;
-mod input_handler; // Include the input_handler module
-mod methods; // Include the methods from methods.rs
-mod mode_handler; // Include the mode_handler module
-mod osc_handler; // Include the osc_handler module
-mod screen_ops; // Include the screen_ops module // Include the cursor_handler module
+mod input_handler;
+mod methods;
+mod mode_handler;
+mod osc_handler;
+mod screen_ops;
 
-// Constants
-const DEFAULT_CURSOR_SHAPE: u16 = 1; // Example default shape
-const DEFAULT_TAB_INTERVAL: u8 = 8; // Example default tab interval
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FocusState {
+    Focused,
+    Unfocused,
+}
 
 /// The core terminal emulator.
 pub struct TerminalEmulator {
     pub(super) screen: Screen,
+    pub(super) focus_sate: FocusState,
     pub(super) cursor_controller: CursorController,
     pub(super) dec_modes: DecPrivateModes,
     pub(super) active_charsets: [CharacterSet; 4],
@@ -63,9 +63,10 @@ impl TerminalEmulator {
                 CharacterSet::Ascii, // G2
                 CharacterSet::Ascii, // G3
             ],
+            focus_sate: FocusState::Focused,
             active_charset_g_level: 0, // Default to G0
             cursor_wrap_next: false,
-            current_cursor_shape: DEFAULT_CURSOR_SHAPE, // Use constant for default
+            current_cursor_shape: config::CONFIG., // Use constant for default
         }
     }
 
@@ -175,7 +176,8 @@ impl TerminalEmulator {
             }
             EmulatorInput::RawChar(ch) => {
                 // Delegate to raw character processor
-                char_processor::process_raw_char(self, ch)
+                self.print_char(ch);
+                None
             }
         }
     }

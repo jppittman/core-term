@@ -33,6 +33,8 @@ pub enum UserInputAction {
     },
     InitiateCopy,
     InitiatePaste,
+    FocusGained,
+    FocusLost,
     PasteText(String), // Content from clipboard to be pasted
     // Other user-driven actions can be added here.
 }
