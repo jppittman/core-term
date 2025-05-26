@@ -1,983 +1,632 @@
-// core-term/orchestrator/tests.rs
+// src/renderer/tests.rs
+#![cfg(test)]
+// These types are expected to be pub in src/renderer.rs
+use crate::renderer::{RenderAdapter, Renderer, ResolvedCellAttrs, ResolvedColor};
+// These types are expected to be pub in their respective modules,
+// and the modules (color, config, glyph, term) must be declared in src/main.rs or src/lib.rs
+use crate::color::{Colors, Rgb};
+use crate::config::FontDesc;
+use crate::glyph::{Cell, CellAttrs, Flags};
+use crate::term::cursor::{Cursor, CursorShape, CursorStyle};
+use crate::term::snapshot::{RenderSnapshot, SelectionRange};
+use std::rc::Rc;
+use std::sync::Mutex;
 
-//! Unit tests for the AppOrchestrator.
-//! These tests focus on the orchestrator's interactions with its dependencies:
-//! PtyChannel, TerminalInterface (TerminalEmulator), AnsiParser, Renderer, and Driver.
-//! Tests aim for robustness by verifying exact call sequences and parameters on mocks.
+#[derive(Debug, Clone, PartialEq)]
+enum DrawCommand {
+    Clear(Rgb), // crate::color::Rgb
+    Rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: Rgb, // crate::color::Rgb
+    },
+    Text {
+        text: String,
+        x: f32,
+        y: f32,
+        fg: Rgb,                  // crate::color::Rgb
+        bg: Rgb,                  // crate::color::Rgb
+        attrs: ResolvedCellAttrs, // crate::renderer::ResolvedCellAttrs
+        is_wide: bool,
+    },
+    Present,
+}
 
-#[cfg(test)]
-mod orchestrator_tests {
-    use crate::ansi::{AnsiCommand, AnsiParser as AnsiParserTrait};
-    use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
-    use crate::color::Color;
-    use crate::glyph::{AttrFlags, Attributes, Glyph};
-    use crate::orchestrator::{AppOrchestrator, OrchestratorStatus};
-    use crate::os::pty::PtyChannel;
-    use crate::renderer::{RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG, Renderer};
-    use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface};
+fn float_eq(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.001
+}
 
-    use anyhow::Result;
-    use nix::unistd::Pid;
-    use std::collections::{HashSet, VecDeque};
-    use std::io::{self, ErrorKind, Read, Write};
-    use std::os::unix::io::{AsRawFd, RawFd};
-    use std::sync::{Arc, Mutex};
-    use test_log::test; // For logging within tests
+fn match_rect_command(cmd: &DrawCommand, ex: f32, ey: f32, ew: f32, eh: f32, ecolor: Rgb) -> bool {
+    if let DrawCommand::Rect {
+        x,
+        y,
+        width,
+        height,
+        color,
+    } = cmd
+    {
+        float_eq(*x, ex)
+            && float_eq(*y, ey)
+            && float_eq(*width, ew)
+            && float_eq(*height, eh)
+            && *color == ecolor
+    } else {
+        false
+    }
+}
 
-    // --- Mock PtyChannel ---
-    #[derive(Debug)]
-    struct MockPtyChannel {
-        read_buffer: Arc<Mutex<VecDeque<u8>>>,
-        write_buffer: Arc<Mutex<Vec<u8>>>,
-        child_pid_val: Pid,
-        is_eof: Arc<Mutex<bool>>,
-        resize_calls: Arc<Mutex<Vec<(u16, u16)>>>,
+fn match_text_command(
+    cmd: &DrawCommand,
+    etext: &str,
+    ex: f32,
+    ey: f32,
+    efg: Rgb,
+    ebg: Rgb,
+    eattrs: ResolvedCellAttrs,
+    eis_wide: bool,
+) -> bool {
+    if let DrawCommand::Text {
+        text,
+        x,
+        y,
+        fg,
+        bg,
+        attrs,
+        is_wide,
+    } = cmd
+    {
+        text == etext
+            && float_eq(*x, ex)
+            && float_eq(*y, ey)
+            && *fg == efg
+            && *bg == ebg
+            && *attrs == eattrs
+            && *is_wide == eis_wide
+    } else {
+        false
+    }
+}
+
+struct MockRenderAdapter {
+    commands: Mutex<Vec<DrawCommand>>,
+    char_width: f32,
+    char_height: f32,
+    expected_screen_width: u32,
+    expected_screen_height: u32,
+}
+
+impl MockRenderAdapter {
+    fn new(char_width: f32, char_height: f32, screen_width: u32, screen_height: u32) -> Self {
+        Self {
+            commands: Mutex::new(Vec::new()),
+            char_width,
+            char_height,
+            expected_screen_width: screen_width,
+            expected_screen_height: screen_height,
+        }
     }
 
-    impl MockPtyChannel {
-        fn new() -> Self {
-            Self {
-                read_buffer: Arc::new(Mutex::new(VecDeque::new())),
-                write_buffer: Arc::new(Mutex::new(Vec::new())),
-                child_pid_val: Pid::from_raw(1234),
-                is_eof: Arc::new(Mutex::new(false)),
-                resize_calls: Arc::new(Mutex::new(Vec::new())),
+    fn commands(&self) -> Vec<DrawCommand> {
+        self.commands.lock().unwrap().clone()
+    }
+
+    fn clear_commands(&self) {
+        self.commands.lock().unwrap().clear();
+    }
+}
+
+impl RenderAdapter for MockRenderAdapter {
+    fn clear(&mut self, color: Rgb) {
+        self.commands
+            .lock()
+            .unwrap()
+            .push(DrawCommand::Clear(color));
+    }
+
+    fn draw_rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Rgb) {
+        self.commands.lock().unwrap().push(DrawCommand::Rect {
+            x,
+            y,
+            width,
+            height,
+            color,
+        });
+    }
+
+    fn draw_text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        fg_color: Rgb,
+        bg_color: Rgb,
+        attrs: ResolvedCellAttrs,
+        is_wide: bool,
+    ) {
+        self.commands.lock().unwrap().push(DrawCommand::Text {
+            text: text.to_string(),
+            x,
+            y,
+            fg: fg_color,
+            bg: bg_color,
+            attrs,
+            is_wide,
+        });
+    }
+
+    fn present(&mut self) {
+        self.commands.lock().unwrap().push(DrawCommand::Present);
+    }
+
+    fn get_char_size(&self) -> (f32, f32) {
+        (self.char_width, self.char_height)
+    }
+
+    fn get_screen_dimensions_pixels(&self) -> (u32, u32) {
+        (self.expected_screen_width, self.expected_screen_height)
+    }
+
+    fn set_font_size(&mut self, _size: f32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn create_test_renderer_and_colors(
+    num_cols: usize,
+    num_rows: usize,
+    char_width: f32,
+    char_height: f32,
+) -> (Renderer, Rc<Colors>, u32, u32) {
+    let colors = Rc::new(Colors::default_palleted());
+    let font_desc = FontDesc::new("monospace".to_string(), 15.0);
+    let screen_width_pixels = (num_cols as f32 * char_width) as u32;
+    let screen_height_pixels = (num_rows as f32 * char_height) as u32;
+    let dpr = 1.0;
+
+    let renderer = Renderer::new(
+        screen_width_pixels,
+        screen_height_pixels,
+        dpr,
+        font_desc,
+        colors.clone(),
+    )
+    .expect("Failed to create renderer for test");
+    (renderer, colors, screen_width_pixels, screen_height_pixels)
+}
+
+fn create_test_snapshot(
+    cells_slice: &[Cell],
+    cursor_ref: &Cursor,
+    num_cols: usize,
+    num_rows: usize,
+    focused: bool,
+    selection: Option<SelectionRange>,
+) -> RenderSnapshot {
+    RenderSnapshot::new(
+        cells_slice,
+        cursor_ref,
+        "Test Window Title".to_string(),
+        num_cols,
+        num_rows,
+        0,
+        false,
+        selection,
+        focused,
+    )
+}
+
+#[test]
+fn test_render_empty_screen() {
+    let char_width = 10.0;
+    let char_height = 20.0;
+    let num_cols = 3;
+    let num_rows = 2;
+
+    let (mut renderer, test_colors, screen_w, screen_h) =
+        create_test_renderer_and_colors(num_cols, num_rows, char_width, char_height);
+    let mut adapter = MockRenderAdapter::new(char_width, char_height, screen_w, screen_h);
+
+    let cells_data = vec![Cell::default(); num_cols * num_rows];
+    let cursor_data = Cursor::default();
+
+    let snapshot = create_test_snapshot(&cells_data, &cursor_data, num_cols, num_rows, true, None);
+    renderer.render_frame(&snapshot, &mut adapter);
+
+    let commands = adapter.commands();
+    assert!(!commands.is_empty(), "Should have drawing commands");
+
+    let expected_bg = test_colors.default_bg();
+    let cursor_fg_color = test_colors.cursor_fg();
+
+    assert!(
+        matches!(commands[0], DrawCommand::Clear(color) if color == test_colors.background()),
+        "First command should be Clear with background color"
+    );
+
+    let mut bg_rects_found = 0;
+    for r in 0..num_rows {
+        for c in 0..num_cols {
+            let x = c as f32 * char_width;
+            let y = r as f32 * char_height;
+            if commands
+                .iter()
+                .any(|cmd| match_rect_command(cmd, x, y, char_width, char_height, expected_bg))
+            {
+                bg_rects_found += 1;
             }
         }
-
-        fn push_bytes_to_read(&self, bytes: &[u8]) {
-            self.read_buffer.lock().unwrap().extend(bytes);
-        }
-
-        fn set_eof(&self, eof_state: bool) {
-            *self.is_eof.lock().unwrap() = eof_state;
-        }
-
-        fn get_written_data(&self) -> Vec<u8> {
-            self.write_buffer.lock().unwrap().clone()
-        }
-
-        fn clear_written_data(&self) {
-            self.write_buffer.lock().unwrap().clear();
-        }
-
-        fn get_resize_calls(&self) -> Vec<(u16, u16)> {
-            self.resize_calls.lock().unwrap().clone()
-        }
     }
+    assert_eq!(
+        bg_rects_found,
+        num_cols * num_rows,
+        "Should draw background rects for all cells"
+    );
 
-    impl Read for MockPtyChannel {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let mut read_buf = self.read_buffer.lock().unwrap();
-            if *self.is_eof.lock().unwrap() && read_buf.is_empty() {
-                return Ok(0);
-            }
-            if read_buf.is_empty() {
-                return Err(io::Error::new(ErrorKind::WouldBlock, "No data"));
-            }
-            let len = std::cmp::min(buf.len(), read_buf.len());
-            for i in 0..len {
-                buf[i] = read_buf.pop_front().unwrap();
-            }
-            Ok(len)
-        }
-    }
+    let cursor_x = cursor_data.col as f32 * char_width;
+    let cursor_y = cursor_data.row as f32 * char_height;
 
-    impl Write for MockPtyChannel {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.write_buffer.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl AsRawFd for MockPtyChannel {
-        fn as_raw_fd(&self) -> RawFd {
-            -1
-        }
-    }
-
-    impl PtyChannel for MockPtyChannel {
-        fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-            self.resize_calls.lock().unwrap().push((cols, rows));
-            Ok(())
-        }
-        fn child_pid(&self) -> Pid {
-            self.child_pid_val
-        }
-    }
-
-    // --- Mock AnsiParser ---
-    struct MockAnsiParser {
-        commands_to_return_on_next_call: VecDeque<AnsiCommand>,
-        bytes_processed_log: Arc<Mutex<Vec<Vec<u8>>>>,
-    }
-
-    impl MockAnsiParser {
-        fn new() -> Self {
-            Self {
-                commands_to_return_on_next_call: VecDeque::new(),
-                bytes_processed_log: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-
-        fn expect_commands_for_next_call(&mut self, cmds: Vec<AnsiCommand>) {
-            self.commands_to_return_on_next_call = cmds.into();
-        }
-
-        fn get_processed_bytes_log(&self) -> Vec<Vec<u8>> {
-            self.bytes_processed_log.lock().unwrap().clone()
-        }
-        #[allow(dead_code)]
-        fn clear_processed_bytes_log(&self) {
-            self.bytes_processed_log.lock().unwrap().clear();
-        }
-    }
-
-    impl AnsiParserTrait for MockAnsiParser {
-        fn process_bytes(&mut self, bytes: &[u8]) -> Vec<AnsiCommand> {
-            self.bytes_processed_log
-                .lock()
-                .unwrap()
-                .push(bytes.to_vec());
-            self.commands_to_return_on_next_call.drain(..).collect()
-        }
-    }
-
-    // --- Mock TerminalInterface ---
-    #[derive(Clone)]
-    struct MockTerminal {
-        width: Arc<Mutex<usize>>,
-        height: Arc<Mutex<usize>>,
-        cursor_x: Arc<Mutex<usize>>,
-        cursor_y: Arc<Mutex<usize>>,
-        cursor_visible: Arc<Mutex<bool>>,
-        grid: Arc<Mutex<Vec<Vec<Glyph>>>>,
-        dirty_lines: Arc<Mutex<HashSet<usize>>>,
-        inputs_received: Arc<Mutex<Vec<EmulatorInput>>>,
-        actions_to_return_on_next_call: Arc<Mutex<VecDeque<Option<EmulatorAction>>>>,
-        #[allow(dead_code)] // May not be used in all tests directly
-        scrollback_limit: usize,
-        default_attributes: Attributes,
-    }
-
-    impl MockTerminal {
-        fn new(width: usize, height: usize, scrollback_limit: usize) -> Self {
-            let default_attrs = Attributes {
-                fg: RENDERER_DEFAULT_FG,
-                bg: RENDERER_DEFAULT_BG,
-                flags: AttrFlags::empty(),
-            };
-            let initial_dirty_lines: HashSet<usize> = (0..height).collect();
-            Self {
-                width: Arc::new(Mutex::new(width)),
-                height: Arc::new(Mutex::new(height)),
-                cursor_x: Arc::new(Mutex::new(0)),
-                cursor_y: Arc::new(Mutex::new(0)),
-                cursor_visible: Arc::new(Mutex::new(true)),
-                grid: Arc::new(Mutex::new(vec![
-                    vec![
-                        Glyph {
-                            c: ' ',
-                            attr: default_attrs
-                        };
-                        width
-                    ];
-                    height
-                ])),
-                dirty_lines: Arc::new(Mutex::new(initial_dirty_lines)),
-                inputs_received: Arc::new(Mutex::new(Vec::new())),
-                actions_to_return_on_next_call: Arc::new(Mutex::new(VecDeque::new())),
-                scrollback_limit,
-                default_attributes: default_attrs,
-            }
-        }
-
-        fn expect_action_for_next_call(&mut self, action: Option<EmulatorAction>) {
-            self.actions_to_return_on_next_call
-                .lock()
-                .unwrap()
-                .push_back(action);
-        }
-
-        fn get_inputs_received(&self) -> Vec<EmulatorInput> {
-            self.inputs_received.lock().unwrap().clone()
-        }
-
-        fn clear_inputs_received(&self) {
-            self.inputs_received.lock().unwrap().clear();
-        }
-    }
-
-    impl TerminalInterface for MockTerminal {
-        fn dimensions(&self) -> (usize, usize) {
-            (*self.width.lock().unwrap(), *self.height.lock().unwrap())
-        }
-        fn get_glyph(&self, x: usize, y: usize) -> Glyph {
-            let grid = self.grid.lock().unwrap();
-            grid.get(y)
-                .and_then(|row| row.get(x))
-                .cloned()
-                .unwrap_or(Glyph {
-                    c: ' ',
-                    attr: self.default_attributes,
-                })
-        }
-        fn is_cursor_visible(&self) -> bool {
-            *self.cursor_visible.lock().unwrap()
-        }
-        fn get_screen_cursor_pos(&self) -> (usize, usize) {
-            (
-                *self.cursor_x.lock().unwrap(),
-                *self.cursor_y.lock().unwrap(),
+    assert!(
+        commands.iter().any(|cmd| {
+            match_rect_command(
+                cmd,
+                cursor_x,
+                cursor_y,
+                char_width,
+                char_height,
+                cursor_fg_color,
             )
-        }
-        fn take_dirty_lines(&mut self) -> Vec<usize> {
-            let mut lines: Vec<usize> = self.dirty_lines.lock().unwrap().drain().collect();
-            lines.sort_unstable();
-            lines
-        }
-        fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
-            self.inputs_received.lock().unwrap().push(input.clone());
-            if let EmulatorInput::Control(ControlEvent::Resize { cols, rows }) = input {
-                let mut w = self.width.lock().unwrap();
-                let mut h = self.height.lock().unwrap();
-                *w = cols;
-                *h = rows;
-                let mut grid_mut = self.grid.lock().unwrap();
-                *grid_mut = vec![
-                    vec![
-                        Glyph {
-                            c: ' ',
-                            attr: self.default_attributes
-                        };
-                        cols
-                    ];
-                    rows
-                ];
-                let mut dirty = self.dirty_lines.lock().unwrap();
-                dirty.clear();
-                for i in 0..rows {
-                    dirty.insert(i);
-                }
-            }
-            self.actions_to_return_on_next_call
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(None)
-        }
-    }
+        }),
+        "Missing block cursor draw command at (0,0)"
+    );
 
-    // --- Mock Driver ---
-    #[derive(Debug, Clone, PartialEq)]
-    enum MockDriverCall {
-        ClearAll {
-            bg: Color,
-        },
-        DrawTextRun {
-            coords: CellCoords,
-            text: String,
-            style: TextRunStyle,
-        },
-        FillRect {
-            rect: CellRect,
-            color: Color,
-        },
-        Present,
-        SetTitle {
-            title: String,
-        },
-        Bell,
-        SetCursorVisibility {
-            visible: bool,
-        },
-        SetFocus {
-            focused: bool,
-        },
-        Cleanup,
-        GetFontDimensions,
-        GetDisplayDimensionsPixels,
-        ProcessEvents,
-    }
+    assert!(
+        matches!(commands.last().unwrap(), DrawCommand::Present),
+        "Last command should be Present"
+    );
+}
 
-    struct MockDriver {
-        calls: Arc<Mutex<Vec<MockDriverCall>>>,
-        events_to_return_on_next_call: Arc<Mutex<VecDeque<BackendEvent>>>,
-        font_dims: (usize, usize),
-        display_dims_px: (u16, u16),
-        event_fd: Option<RawFd>,
-        focus_state: Arc<Mutex<bool>>,
-    }
+#[test]
+fn test_render_simple_text() {
+    let char_width = 10.0;
+    let char_height = 20.0;
+    let num_cols = 5;
+    let num_rows = 1;
 
-    impl MockDriver {
-        fn new() -> Self {
-            Self {
-                calls: Arc::new(Mutex::new(Vec::new())),
-                events_to_return_on_next_call: Arc::new(Mutex::new(VecDeque::new())),
-                font_dims: (8, 16),
-                display_dims_px: (640, 480),
-                event_fd: None,
-                focus_state: Arc::new(Mutex::new(true)),
-            }
-        }
+    let (mut renderer, test_colors, screen_w, screen_h) =
+        create_test_renderer_and_colors(num_cols, num_rows, char_width, char_height);
+    let mut adapter = MockRenderAdapter::new(char_width, char_height, screen_w, screen_h);
 
-        fn expect_events_for_next_call(&mut self, events: Vec<BackendEvent>) {
-            *self.events_to_return_on_next_call.lock().unwrap() = events.into();
-        }
+    let mut cells_data = vec![Cell::default(); num_cols * num_rows];
+    cells_data[0] = Cell {
+        char: 'H',
+        attrs: CellAttrs::default(),
+        flags: Flags::empty(),
+        width: 1,
+    };
+    cells_data[1] = Cell {
+        char: 'i',
+        attrs: CellAttrs::default(),
+        flags: Flags::empty(),
+        width: 1,
+    };
 
-        fn get_calls(&self) -> Vec<MockDriverCall> {
-            self.calls.lock().unwrap().clone()
-        }
+    let cursor_data = Cursor {
+        row: 0,
+        col: 2,
+        style: CursorStyle::default(),
+        ..Default::default()
+    };
 
-        fn clear_calls(&self) {
-            self.calls.lock().unwrap().clear();
-        }
-    }
+    let snapshot = create_test_snapshot(&cells_data, &cursor_data, num_cols, num_rows, true, None);
+    renderer.render_frame(&snapshot, &mut adapter);
 
-    impl Driver for MockDriver {
-        fn new() -> Result<Self> {
-            Ok(Self::new())
-        }
-        fn get_event_fd(&self) -> Option<RawFd> {
-            self.event_fd
-        }
-        fn process_events(&mut self) -> Result<Vec<BackendEvent>> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(MockDriverCall::ProcessEvents);
-            Ok(self
-                .events_to_return_on_next_call
-                .lock()
-                .unwrap()
-                .drain(..)
-                .collect())
-        }
-        fn get_font_dimensions(&self) -> (usize, usize) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(MockDriverCall::GetFontDimensions);
-            self.font_dims
-        }
-        fn get_display_dimensions_pixels(&self) -> (u16, u16) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(MockDriverCall::GetDisplayDimensionsPixels);
-            self.display_dims_px
-        }
-        fn clear_all(&mut self, bg: Color) -> Result<()> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(MockDriverCall::ClearAll { bg });
-            Ok(())
-        }
-        fn draw_text_run(
-            &mut self,
-            coords: CellCoords,
-            text: &str,
-            style: TextRunStyle,
-        ) -> Result<()> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(MockDriverCall::DrawTextRun {
-                    coords,
-                    text: text.to_string(),
-                    style,
-                });
-            Ok(())
-        }
-        fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(MockDriverCall::FillRect { rect, color });
-            Ok(())
-        }
-        fn present(&mut self) -> Result<()> {
-            self.calls.lock().unwrap().push(MockDriverCall::Present);
-            Ok(())
-        }
-        fn set_title(&mut self, title: &str) {
-            self.calls.lock().unwrap().push(MockDriverCall::SetTitle {
-                title: title.to_string(),
-            });
-        }
-        fn bell(&mut self) {
-            self.calls.lock().unwrap().push(MockDriverCall::Bell);
-        }
-        fn set_cursor_visibility(&mut self, visible: bool) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(MockDriverCall::SetCursorVisibility { visible });
-        }
-        fn set_focus(&mut self, focused: bool) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(MockDriverCall::SetFocus { focused });
-            *self.focus_state.lock().unwrap() = focused;
-        }
-        fn cleanup(&mut self) -> Result<()> {
-            self.calls.lock().unwrap().push(MockDriverCall::Cleanup);
-            Ok(())
-        }
-    }
+    let commands = adapter.commands();
 
-    // Helper function to create orchestrator for tests that need to re-instantiate it.
-    // Note: Renderer needs to be Clone if we pass it by value and re-create orchestrator.
-    // Assuming Renderer is Cloneable for the interleaved test.
-    fn create_orchestrator<'a>(
-        pty: &'a mut dyn PtyChannel,
-        term: &'a mut dyn TerminalInterface,
-        parser: &'a mut dyn AnsiParserTrait,
-        renderer: Renderer, // Takes ownership, will be moved
-        driver: &'a mut dyn Driver,
-    ) -> AppOrchestrator<'a> {
-        AppOrchestrator::new(pty, term, parser, renderer, driver)
-    }
+    let default_fg = test_colors.default_fg();
+    let default_bg = test_colors.default_bg();
+    let expected_attrs = ResolvedCellAttrs {
+        fg: ResolvedColor::from_rgb(default_fg),
+        bg: ResolvedColor::from_rgb(default_bg),
+        flags: Flags::empty(),
+        hyperlink: None,
+    };
 
-    #[test]
-    fn test_orchestrator_pty_data_flow_exact_verification() {
-        let mut mock_pty = MockPtyChannel::new();
-        let mut mock_term = MockTerminal::new(10, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let renderer = Renderer::new();
-        let mut mock_driver = MockDriver::new();
+    assert!(
+        commands.iter().any(|cmd| match_text_command(
+            cmd,
+            "H",
+            0.0 * char_width,
+            0.0 * char_height,
+            default_fg,
+            default_bg,
+            expected_attrs.clone(),
+            false
+        )),
+        "Missing text 'H'"
+    );
 
-        let pty_input_data = b"Hi";
-        mock_pty.push_bytes_to_read(pty_input_data);
+    assert!(
+        commands.iter().any(|cmd| match_text_command(
+            cmd,
+            "i",
+            1.0 * char_width,
+            0.0 * char_height,
+            default_fg,
+            default_bg,
+            expected_attrs,
+            false
+        )),
+        "Missing text 'i'"
+    );
+}
 
-        let expected_parsed_commands = vec![AnsiCommand::Print('H'), AnsiCommand::Print('i')];
-        mock_parser.expect_commands_for_next_call(expected_parsed_commands.clone());
+#[test]
+fn test_damage_tracking_no_change() {
+    let char_width = 10.0;
+    let char_height = 20.0;
+    let num_cols = 3;
+    let num_rows = 1;
 
-        let pty_action_response = EmulatorAction::WritePty(b"ack_H".to_vec());
-        mock_term.expect_action_for_next_call(Some(pty_action_response.clone()));
-        mock_term.expect_action_for_next_call(None);
+    let (mut renderer, test_colors, screen_w, screen_h) =
+        create_test_renderer_and_colors(num_cols, num_rows, char_width, char_height);
+    let mut adapter = MockRenderAdapter::new(char_width, char_height, screen_w, screen_h);
 
-        let status;
-        // Scope for orchestrator to release borrows
+    let mut cells_data = vec![Cell::default(); num_cols];
+    cells_data[0] = Cell {
+        char: 'A',
+        ..Default::default()
+    };
+    let cursor_data = Cursor::default();
+
+    let snapshot1 = create_test_snapshot(&cells_data, &cursor_data, num_cols, num_rows, true, None);
+    renderer.render_frame(&snapshot1, &mut adapter);
+    let commands_frame1_count = adapter.commands().len();
+    adapter.clear_commands();
+
+    let cells_clone = cells_data.clone();
+    let snapshot2 =
+        create_test_snapshot(&cells_clone, &cursor_data, num_cols, num_rows, true, None);
+    renderer.render_frame(&snapshot2, &mut adapter);
+    let commands_frame2 = adapter.commands();
+
+    let default_fg = test_colors.default_fg();
+    let default_bg = test_colors.default_bg();
+    let expected_attrs = ResolvedCellAttrs {
+        fg: ResolvedColor::from_rgb(default_fg),
+        bg: ResolvedColor::from_rgb(default_bg),
+        flags: Flags::empty(),
+        hyperlink: None,
+    };
+
+    let found_text_A_redraw = commands_frame2.iter().any(|cmd| {
+        match_text_command(
+            cmd,
+            "A",
+            0.0,
+            0.0,
+            default_fg,
+            default_bg,
+            expected_attrs,
+            false,
+        )
+    });
+    assert!(
+        !found_text_A_redraw,
+        "Cell 'A' should not have been redrawn if not damaged."
+    );
+
+    assert!(
+        commands_frame2.len() < commands_frame1_count || commands_frame1_count <= 5,
+        "Frame 2 (no change) should have fewer or equal commands than Frame 1, or Frame 1 was already minimal"
+    );
+    assert!(
+        commands_frame2.len() <= 5,
+        "Expected very few commands for a no-change frame, e.g. Clear, Cursor-related, Present"
+    );
+}
+
+#[test]
+fn test_damage_tracking_one_cell_change() {
+    let char_width = 10.0;
+    let char_height = 20.0;
+    let num_cols = 3;
+    let num_rows = 1;
+
+    let (mut renderer, test_colors, screen_w, screen_h) =
+        create_test_renderer_and_colors(num_cols, num_rows, char_width, char_height);
+    let mut adapter = MockRenderAdapter::new(char_width, char_height, screen_w, screen_h);
+
+    let mut cells_frame1_data = vec![Cell::default(); num_cols];
+    cells_frame1_data[0] = Cell {
+        char: 'A',
+        ..Default::default()
+    };
+    cells_frame1_data[1] = Cell {
+        char: 'B',
+        ..Default::default()
+    };
+    let cursor_data = Cursor {
+        col: 2,
+        ..Default::default()
+    };
+
+    let snapshot1 = create_test_snapshot(
+        &cells_frame1_data,
+        &cursor_data,
+        num_cols,
+        num_rows,
+        true,
+        None,
+    );
+    renderer.render_frame(&snapshot1, &mut adapter);
+    adapter.clear_commands();
+
+    let mut cells_frame2_data = cells_frame1_data.clone();
+    cells_frame2_data[1] = Cell {
+        char: 'C',
+        ..Default::default()
+    };
+
+    let snapshot2 = create_test_snapshot(
+        &cells_frame2_data,
+        &cursor_data,
+        num_cols,
+        num_rows,
+        true,
+        None,
+    );
+    renderer.render_frame(&snapshot2, &mut adapter);
+    let commands_frame2 = adapter.commands();
+
+    let default_fg = test_colors.default_fg();
+    let default_bg = test_colors.default_bg();
+    let expected_attrs = ResolvedCellAttrs {
+        fg: ResolvedColor::from_rgb(default_fg),
+        bg: ResolvedColor::from_rgb(default_bg),
+        flags: Flags::empty(),
+        hyperlink: None,
+    };
+
+    let found_text_A_redraw = commands_frame2.iter().any(|cmd| {
+        match_text_command(
+            cmd,
+            "A",
+            0.0 * char_width,
+            0.0,
+            default_fg,
+            default_bg,
+            expected_attrs.clone(),
+            false,
+        )
+    });
+    assert!(
+        !found_text_A_redraw,
+        "Cell 'A' should not have been redrawn."
+    );
+
+    let x_cell1 = 1.0 * char_width;
+    let y_cell1 = 0.0 * char_height;
+
+    assert!(
+        commands_frame2.iter().any(|cmd| {
+            match_rect_command(cmd, x_cell1, y_cell1, char_width, char_height, default_bg)
+        }),
+        "Missing background rect for changed cell 'C'"
+    );
+    assert!(
+        commands_frame2.iter().any(|cmd| {
+            match_text_command(
+                cmd,
+                "C",
+                x_cell1,
+                y_cell1,
+                default_fg,
+                default_bg,
+                expected_attrs,
+                false,
+            )
+        }),
+        "Missing text 'C' for changed cell"
+    );
+
+    assert!(matches!(
+        commands_frame2.last().unwrap(),
+        DrawCommand::Present
+    ));
+}
+
+#[test]
+fn test_full_redraw_on_font_change() {
+    let char_width = 10.0;
+    let char_height = 20.0;
+    let num_cols = 2;
+    let num_rows = 1;
+
+    let (mut renderer, test_colors, screen_w, screen_h) =
+        create_test_renderer_and_colors(num_cols, num_rows, char_width, char_height);
+    let mut adapter = MockRenderAdapter::new(char_width, char_height, screen_w, screen_h);
+
+    let mut cells_data = vec![Cell::default(); num_cols];
+    cells_data[0] = Cell {
+        char: 'X',
+        ..Default::default()
+    };
+    cells_data[1] = Cell {
+        char: 'Y',
+        ..Default::default()
+    };
+    let cursor_data = Cursor::default();
+
+    let snapshot1 = create_test_snapshot(&cells_data, &cursor_data, num_cols, num_rows, true, None);
+    renderer.render_frame(&snapshot1, &mut adapter);
+    adapter.clear_commands();
+
+    let new_font_desc = FontDesc::new("serif".to_string(), 16.0);
+    renderer
+        .update_font(new_font_desc)
+        .expect("Failed to update font");
+
+    let cells_clone = cells_data.clone();
+    let snapshot2 =
+        create_test_snapshot(&cells_clone, &cursor_data, num_cols, num_rows, true, None);
+    renderer.render_frame(&snapshot2, &mut adapter);
+    let commands_frame2 = adapter.commands();
+
+    let default_fg = test_colors.default_fg();
+    let default_bg = test_colors.default_bg();
+    let expected_attrs = ResolvedCellAttrs {
+        fg: ResolvedColor::from_rgb(default_fg),
+        bg: ResolvedColor::from_rgb(default_bg),
+        flags: Flags::empty(),
+        hyperlink: None,
+    };
+
+    assert!(
+        commands_frame2.iter().any(|cmd| {
+            match_text_command(
+                cmd,
+                "X",
+                0.0 * char_width,
+                0.0,
+                default_fg,
+                default_bg,
+                expected_attrs.clone(),
+                false,
+            )
+        }),
+        "Cell 'X' should have been redrawn after font change."
+    );
+    assert!(
+        commands_frame2.iter().any(|cmd| {
+            match_text_command(
+                cmd,
+                "Y",
+                1.0 * char_width,
+                0.0,
+                default_fg,
+                default_bg,
+                expected_attrs,
+                false,
+            )
+        }),
+        "Cell 'Y' should have been redrawn after font change."
+    );
+
+    let mut bg_rects_found = 0;
+    for c in 0..num_cols {
+        let x = c as f32 * char_width;
+        let y = 0.0 * char_height;
+        if commands_frame2
+            .iter()
+            .any(|cmd| match_rect_command(cmd, x, y, char_width, char_height, default_bg))
         {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer,
-                &mut mock_driver,
-            );
-            status = orchestrator.process_pty_events().unwrap();
+            bg_rects_found += 1;
         }
-        assert_eq!(
-            status,
-            OrchestratorStatus::Running,
-            "Orchestrator should be running"
-        );
-
-        assert_eq!(
-            mock_parser.get_processed_bytes_log(),
-            vec![pty_input_data.to_vec()],
-            "Parser did not receive exact PTY data"
-        );
-        let expected_inputs_to_term: Vec<EmulatorInput> = expected_parsed_commands
-            .into_iter()
-            .map(EmulatorInput::Ansi)
-            .collect();
-        assert_eq!(
-            mock_term.get_inputs_received(),
-            expected_inputs_to_term,
-            "Terminal did not receive exact parsed commands"
-        );
-        assert_eq!(
-            mock_pty.get_written_data(),
-            b"ack_H",
-            "PTY did not receive exact action response"
-        );
     }
-
-    #[test]
-    fn test_orchestrator_driver_key_event_flow_exact_verification() {
-        let mut mock_pty = MockPtyChannel::new();
-        let mut mock_term = MockTerminal::new(10, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let renderer = Renderer::new();
-        let mut mock_driver = MockDriver::new();
-
-        let key_event = BackendEvent::Key {
-            keysym: 'X' as u32,
-            text: "X".to_string(),
-        };
-        mock_driver.expect_events_for_next_call(vec![key_event.clone()]);
-
-        let pty_response_action = EmulatorAction::WritePty(b"X_response".to_vec());
-        mock_term.expect_action_for_next_call(Some(pty_response_action.clone()));
-
-        let status;
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer,
-                &mut mock_driver,
-            );
-            status = orchestrator.process_driver_events().unwrap();
-        }
-        assert_eq!(
-            status,
-            OrchestratorStatus::Running,
-            "Orchestrator should be running"
-        );
-
-        assert_eq!(
-            mock_term.get_inputs_received(),
-            vec![EmulatorInput::User(key_event)],
-            "Terminal did not receive exact key event"
-        );
-        assert_eq!(
-            mock_pty.get_written_data(),
-            b"X_response",
-            "PTY did not receive exact response for key event"
-        );
-        assert!(
-            mock_driver
-                .get_calls()
-                .contains(&MockDriverCall::ProcessEvents)
-        );
-    }
-
-    #[test]
-    fn test_orchestrator_driver_resize_event_flow_exact_verification() {
-        let mut mock_pty = MockPtyChannel::new();
-        let mut mock_term = MockTerminal::new(10, 5, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let renderer = Renderer::new();
-        let mut mock_driver = MockDriver::new();
-        mock_driver.font_dims = (10, 20);
-
-        let resize_event_px = BackendEvent::Resize {
-            width_px: 800,
-            height_px: 600,
-        };
-        mock_driver.expect_events_for_next_call(vec![resize_event_px.clone()]);
-        mock_term.expect_action_for_next_call(None);
-
-        let status;
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer,
-                &mut mock_driver,
-            );
-            status = orchestrator.process_driver_events().unwrap();
-        }
-        assert_eq!(status, OrchestratorStatus::Running);
-
-        let expected_cols = 80;
-        let expected_rows = 30;
-
-        assert_eq!(
-            mock_pty.get_resize_calls(),
-            vec![(expected_cols as u16, expected_rows as u16)],
-            "PTY resize call mismatch"
-        );
-        assert_eq!(
-            mock_term.get_inputs_received(),
-            vec![EmulatorInput::Control(ControlEvent::Resize {
-                cols: expected_cols,
-                rows: expected_rows,
-            })],
-            "Terminal did not receive correct resize control event"
-        );
-        assert_eq!(
-            mock_term.dimensions(),
-            (expected_cols, expected_rows),
-            "MockTerminal dimensions not updated as expected"
-        );
-
-        let driver_calls = mock_driver.get_calls();
-        assert!(driver_calls.contains(&MockDriverCall::ProcessEvents));
-        assert!(driver_calls.contains(&MockDriverCall::GetFontDimensions));
-    }
-
-    #[test]
-    fn test_render_if_needed_no_dirty_lines_no_first_draw() {
-        let mut mock_pty = MockPtyChannel::new();
-        let mut mock_term = MockTerminal::new(1, 1, 0);
-        mock_term.cursor_visible = Arc::new(Mutex::new(false));
-        let _ = mock_term.take_dirty_lines(); // Clear initial dirty lines
-        let mut mock_parser = MockAnsiParser::new();
-        let mut renderer = Renderer::new();
-        renderer.first_draw = false;
-        let mut mock_driver = MockDriver::new();
-
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer,
-                &mut mock_driver,
-            );
-            orchestrator.render_if_needed().unwrap();
-        }
-        let driver_calls = mock_driver.get_calls();
-        assert!(
-            driver_calls.is_empty(),
-            "Expected no driver calls when no rendering is needed. Got: {:?}",
-            driver_calls
-        );
-    }
-
-    #[test]
-    fn test_render_if_needed_first_draw_scenario() {
-        let mut mock_pty = MockPtyChannel::new();
-        let mut mock_term = MockTerminal::new(2, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let renderer_instance = Renderer::new(); // first_draw is true by default
-        let mut mock_driver = MockDriver::new();
-        let first_draw_flag_after_render;
-
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer_instance.clone(),
-                &mut mock_driver,
-            );
-            orchestrator.render_if_needed().unwrap();
-            first_draw_flag_after_render = orchestrator.renderer.first_draw;
-        }
-
-        let driver_calls = mock_driver.get_calls();
-        let expected_calls = vec![
-            MockDriverCall::ClearAll {
-                bg: RENDERER_DEFAULT_BG,
-            },
-            MockDriverCall::FillRect {
-                rect: CellRect {
-                    x: 0,
-                    y: 0,
-                    width: 2,
-                    height: 1,
-                },
-                color: RENDERER_DEFAULT_BG,
-            },
-            MockDriverCall::DrawTextRun {
-                coords: CellCoords { x: 0, y: 0 },
-                text: " ".to_string(),
-                style: TextRunStyle {
-                    fg: RENDERER_DEFAULT_BG,
-                    bg: RENDERER_DEFAULT_FG,
-                    flags: AttrFlags::empty(),
-                },
-            },
-            MockDriverCall::Present,
-        ];
-        assert_eq!(
-            driver_calls, expected_calls,
-            "Driver call sequence mismatch for first_draw"
-        );
-        assert!(
-            !first_draw_flag_after_render,
-            "first_draw flag should be false after initial render"
-        );
-    }
-
-    #[test]
-    fn test_orchestrator_pty_eof_signals_shutdown() {
-        let mut mock_pty = MockPtyChannel::new();
-        mock_pty.set_eof(true);
-        let mut mock_term = MockTerminal::new(1, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let renderer = Renderer::new();
-        let mut mock_driver = MockDriver::new();
-
-        let status;
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer,
-                &mut mock_driver,
-            );
-            status = orchestrator.process_pty_events().unwrap();
-        }
-        assert_eq!(status, OrchestratorStatus::Shutdown);
-    }
-
-    #[test]
-    fn test_orchestrator_driver_close_requested_signals_shutdown() {
-        let mut mock_pty = MockPtyChannel::new();
-        let mut mock_term = MockTerminal::new(1, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let renderer = Renderer::new();
-        let mut mock_driver = MockDriver::new();
-
-        mock_driver.expect_events_for_next_call(vec![BackendEvent::CloseRequested]);
-
-        let status;
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer,
-                &mut mock_driver,
-            );
-            status = orchestrator.process_driver_events().unwrap();
-        }
-        assert_eq!(status, OrchestratorStatus::Shutdown);
-    }
-
-    #[test]
-    fn test_orchestrator_handles_emulator_action_set_title_exact() {
-        let mut mock_pty = MockPtyChannel::new();
-        mock_pty.push_bytes_to_read(b"T");
-        let mut mock_term = MockTerminal::new(1, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let renderer = Renderer::new();
-        let mut mock_driver = MockDriver::new();
-
-        mock_parser.expect_commands_for_next_call(vec![AnsiCommand::Print('T')]);
-        mock_term
-            .expect_action_for_next_call(Some(EmulatorAction::SetTitle("Exact Title".to_string())));
-
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer,
-                &mut mock_driver,
-            );
-            orchestrator.process_pty_events().unwrap();
-        }
-        let driver_calls = mock_driver.get_calls();
-        assert_eq!(
-            driver_calls,
-            vec![MockDriverCall::SetTitle {
-                title: "Exact Title".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn test_orchestrator_handles_emulator_action_ring_bell_exact() {
-        let mut mock_pty = MockPtyChannel::new();
-        mock_pty.push_bytes_to_read(b"\x07");
-        let mut mock_term = MockTerminal::new(1, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let renderer = Renderer::new();
-        let mut mock_driver = MockDriver::new();
-
-        mock_parser.expect_commands_for_next_call(vec![AnsiCommand::C0Control(
-            crate::ansi::commands::C0Control::BEL,
-        )]);
-        mock_term.expect_action_for_next_call(Some(EmulatorAction::RingBell));
-
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer,
-                &mut mock_driver,
-            );
-            orchestrator.process_pty_events().unwrap();
-        }
-        assert_eq!(mock_driver.get_calls(), vec![MockDriverCall::Bell]);
-    }
-
-    #[test]
-    fn test_orchestrator_handles_focus_events_exact() {
-        let mut mock_pty = MockPtyChannel::new();
-        let mut mock_term = MockTerminal::new(10, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        // Renderer needs to be mutable if we want to check its state or pass it to multiple orchestrators
-        let mut renderer = Renderer::new();
-        let mut mock_driver = MockDriver::new();
-
-        // Test FocusGained
-        mock_driver.expect_events_for_next_call(vec![BackendEvent::FocusGained]);
-        mock_term.expect_action_for_next_call(None);
-        let status_gain;
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer.clone(),
-                &mut mock_driver,
-            );
-            status_gain = orchestrator.process_driver_events().unwrap();
-        }
-        assert_eq!(status_gain, OrchestratorStatus::Running);
-        assert_eq!(
-            mock_driver.get_calls(),
-            vec![
-                MockDriverCall::ProcessEvents,
-                MockDriverCall::SetFocus { focused: true }
-            ]
-        );
-        assert_eq!(
-            mock_term.get_inputs_received(),
-            vec![EmulatorInput::User(BackendEvent::FocusGained)]
-        );
-
-        mock_driver.clear_calls();
-        mock_term.clear_inputs_received();
-
-        // Test FocusLost
-        mock_driver.expect_events_for_next_call(vec![BackendEvent::FocusLost]);
-        mock_term.expect_action_for_next_call(None);
-        let status_lost;
-        {
-            // Re-assign renderer if it was moved, or clone if it's Cloneable
-            renderer = Renderer::new(); // Re-create or clone
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer.clone(),
-                &mut mock_driver,
-            );
-            status_lost = orchestrator.process_driver_events().unwrap();
-        }
-        assert_eq!(status_lost, OrchestratorStatus::Running);
-        assert_eq!(
-            mock_driver.get_calls(),
-            vec![
-                MockDriverCall::ProcessEvents,
-                MockDriverCall::SetFocus { focused: false }
-            ]
-        );
-        assert_eq!(
-            mock_term.get_inputs_received(),
-            vec![EmulatorInput::User(BackendEvent::FocusLost)]
-        );
-    }
-
-    #[test]
-    fn test_orchestrator_interleaved_pty_and_driver_events() {
-        let mut mock_pty = MockPtyChannel::new();
-        let mut mock_term = MockTerminal::new(10, 1, 0);
-        let mut mock_parser = MockAnsiParser::new();
-        let mut renderer = Renderer::new(); // Make it mutable to be re-used or cloned
-        let mut mock_driver = MockDriver::new();
-
-        // --- Phase 1: PTY data ---
-        mock_pty.push_bytes_to_read(b"P1");
-        mock_parser
-            .expect_commands_for_next_call(vec![AnsiCommand::Print('P'), AnsiCommand::Print('1')]);
-        mock_term.expect_action_for_next_call(Some(EmulatorAction::WritePty(b"AckP1".to_vec())));
-        mock_term.expect_action_for_next_call(None);
-        {
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer.clone(),
-                &mut mock_driver,
-            );
-            assert_eq!(
-                orchestrator.process_pty_events().unwrap(),
-                OrchestratorStatus::Running
-            );
-        }
-        assert_eq!(mock_parser.get_processed_bytes_log(), vec![b"P1".to_vec()]);
-        assert_eq!(
-            mock_term.get_inputs_received(),
-            vec![
-                EmulatorInput::Ansi(AnsiCommand::Print('P')),
-                EmulatorInput::Ansi(AnsiCommand::Print('1'))
-            ]
-        );
-        assert_eq!(mock_pty.get_written_data(), b"AckP1");
-
-        mock_parser.clear_processed_bytes_log();
-        mock_term.clear_inputs_received();
-        mock_pty.clear_written_data();
-        mock_driver.clear_calls();
-
-        // --- Phase 2: Driver key event ---
-        let key_event = BackendEvent::Key {
-            keysym: 'K' as u32,
-            text: "K".to_string(),
-        };
-        mock_driver.expect_events_for_next_call(vec![key_event.clone()]);
-        mock_term.expect_action_for_next_call(Some(EmulatorAction::WritePty(b"AckK".to_vec())));
-        {
-            // Re-initialize renderer if it was moved, or clone
-            renderer = Renderer::new(); // Or renderer.clone() if you modify it
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer.clone(),
-                &mut mock_driver,
-            );
-            assert_eq!(
-                orchestrator.process_driver_events().unwrap(),
-                OrchestratorStatus::Running
-            );
-        }
-        assert_eq!(mock_driver.get_calls(), vec![MockDriverCall::ProcessEvents]);
-        assert_eq!(
-            mock_term.get_inputs_received(),
-            vec![EmulatorInput::User(key_event)]
-        );
-        assert_eq!(mock_pty.get_written_data(), b"AckK");
-
-        mock_driver.clear_calls();
-        mock_term.clear_inputs_received();
-        mock_pty.clear_written_data();
-
-        // --- Phase 3: More PTY data ---
-        mock_pty.push_bytes_to_read(b"P2");
-        mock_parser
-            .expect_commands_for_next_call(vec![AnsiCommand::Print('P'), AnsiCommand::Print('2')]);
-        mock_term.expect_action_for_next_call(None);
-        mock_term
-            .expect_action_for_next_call(Some(EmulatorAction::SetTitle("TitleP2".to_string())));
-        {
-            renderer = Renderer::new(); // Or renderer.clone()
-            let mut orchestrator = create_orchestrator(
-                &mut mock_pty,
-                &mut mock_term,
-                &mut mock_parser,
-                renderer.clone(),
-                &mut mock_driver,
-            );
-            assert_eq!(
-                orchestrator.process_pty_events().unwrap(),
-                OrchestratorStatus::Running
-            );
-        }
-        assert_eq!(mock_parser.get_processed_bytes_log(), vec![b"P2".to_vec()]);
-        assert_eq!(
-            mock_term.get_inputs_received(),
-            vec![
-                EmulatorInput::Ansi(AnsiCommand::Print('P')),
-                EmulatorInput::Ansi(AnsiCommand::Print('2'))
-            ]
-        );
-        assert!(mock_pty.get_written_data().is_empty());
-        assert_eq!(
-            mock_driver.get_calls(),
-            vec![MockDriverCall::SetTitle {
-                title: "TitleP2".to_string()
-            }]
-        );
-    }
+    assert_eq!(
+        bg_rects_found, num_cols,
+        "All cell backgrounds should be redrawn after font change."
+    );
 }
