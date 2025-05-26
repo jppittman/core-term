@@ -4,8 +4,8 @@
 //! Converts a byte stream into `AnsiToken`s, processing byte by byte,
 //! handling UTF-8 decoding and state across calls.
 
-use std::{mem, str};
 use log::{trace, warn};
+use std::{mem, str};
 
 /// Unicode replacement character (U+FFFD).
 /// Used when encountering invalid UTF-8 sequences.
@@ -121,7 +121,9 @@ impl Utf8Decoder {
                 Utf8DecodeResult::InvalidSequence
             }
             _ => {
-                unreachable!("This default branch should ideally not be hit if ranges cover all u8 values.");
+                unreachable!(
+                    "This default branch should ideally not be hit if ranges cover all u8 values."
+                );
             }
         }
     }
@@ -191,7 +193,7 @@ impl AnsiLexer {
     /// they are handled by the Utf8Decoder returning InvalidSequence if they break a sequence.
     #[inline]
     fn is_unambiguous_interrupting_control(byte: u8) -> bool {
-        byte == ESC_BYTE || byte == 0x9C || 
+        byte == ESC_BYTE || byte == 0x9C ||
         // Consider which C0s truly interrupt. For now, all except common formatting.
         // Some tests might expect NUL or other C0s to also interrupt.
         // This list should match C0s that are *never* valid data mid-UTF-8.
@@ -240,7 +242,6 @@ impl AnsiLexer {
     }
 
     pub fn process_byte(&mut self, byte: u8) {
-
         if self.utf8_decoder.len > 0 {
             // --- Currently building a multi-byte UTF-8 char ---
             // Check for unambiguous interruptions (ESC, most C0s)

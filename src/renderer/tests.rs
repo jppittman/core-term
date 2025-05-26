@@ -3,13 +3,12 @@
 
 // Imports from the main crate
 use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter
-use crate::color::{Color, NamedColor}; // Rgb is now Color::Rgb, Colors struct removed
-use crate::config::FontConfig; // FontDesc is now FontConfig
+use crate::color::Color; // Rgb is now Color::Rgb, Colors struct removed
+// FontDesc is now FontConfig
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
-use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG};
+use crate::renderer::{RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG, Renderer};
 use crate::term::{
-    CursorRenderState, CursorShape, Point, RenderSnapshot, SelectionMode, SelectionRenderState,
-    SnapshotLine,
+    CursorRenderState, CursorShape, RenderSnapshot, SelectionRenderState, SnapshotLine,
 };
 
 use std::sync::Mutex;
@@ -237,17 +236,19 @@ fn test_render_empty_screen_with_cursor() {
 
     assert!(
         commands.contains(&expected_bg_fill_line0),
-        "Missing background fill for line 0. Commands: {:?}", commands
+        "Missing background fill for line 0. Commands: {:?}",
+        commands
     );
     assert!(
         commands.contains(&expected_bg_fill_line1),
-        "Missing background fill for line 1. Commands: {:?}", commands
+        "Missing background fill for line 1. Commands: {:?}",
+        commands
     );
 
     // Cursor drawing: The renderer draws the character under the cursor with fg/bg swapped.
     let cursor_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_BG, // Original BG becomes FG for cursor char
-        bg: RENDERER_DEFAULT_FG, // Original FG becomes BG for cursor cell
+        fg: RENDERER_DEFAULT_BG,   // Original BG becomes FG for cursor char
+        bg: RENDERER_DEFAULT_FG,   // Original FG becomes BG for cursor cell
         flags: AttrFlags::empty(), // Assuming no special flags for cursor text itself
     };
     let expected_cursor_draw = MockDrawCommand::DrawTextRun {
@@ -258,7 +259,8 @@ fn test_render_empty_screen_with_cursor() {
 
     assert!(
         commands.contains(&expected_cursor_draw),
-        "Missing cursor draw command. Commands: {:?}", commands
+        "Missing cursor draw command. Commands: {:?}",
+        commands
     );
     assert_eq!(
         commands.last().unwrap(),
@@ -306,8 +308,7 @@ fn test_render_simple_text() {
         cell_attributes_underneath: default_attrs(),
     });
 
-    let snapshot =
-        create_test_snapshot(lines_data, cursor_render_state, num_cols, num_rows, None);
+    let snapshot = create_test_snapshot(lines_data, cursor_render_state, num_cols, num_rows, None);
     renderer
         .draw(snapshot, &mut driver)
         .expect("Renderer draw failed");
@@ -328,7 +329,8 @@ fn test_render_simple_text() {
     };
     assert!(
         commands.contains(&expected_text_hi),
-        "Missing text 'Hi'. Commands: {:?}", commands
+        "Missing text 'Hi'. Commands: {:?}",
+        commands
     );
 
     // Renderer should fill the rest of the line (3 cells: "   ")
@@ -343,7 +345,8 @@ fn test_render_simple_text() {
     };
     assert!(
         commands.contains(&expected_fill_spaces),
-        "Missing fill for remaining spaces. Commands: {:?}", commands
+        "Missing fill for remaining spaces. Commands: {:?}",
+        commands
     );
 
     let cursor_style = TextRunStyle {
@@ -358,7 +361,8 @@ fn test_render_simple_text() {
     };
     assert!(
         commands.contains(&expected_cursor_draw),
-        "Missing cursor draw. Commands: {:?}", commands
+        "Missing cursor draw. Commands: {:?}",
+        commands
     );
     assert_eq!(commands.last().unwrap(), &MockDrawCommand::Present);
 }
@@ -376,29 +380,29 @@ fn test_dirty_line_processing() {
     let line0_dirty_cells = vec![
         Glyph {
             c: 'A',
-            attr: default_attrs()
+            attr: default_attrs(),
         },
         Glyph {
             c: 'B',
-            attr: default_attrs()
+            attr: default_attrs(),
         },
         Glyph {
             c: 'C',
-            attr: default_attrs()
+            attr: default_attrs(),
         },
     ];
     let line1_clean_cells = vec![
         Glyph {
             c: 'X',
-            attr: default_attrs()
+            attr: default_attrs(),
         },
         Glyph {
             c: 'Y',
-            attr: default_attrs()
+            attr: default_attrs(),
         },
         Glyph {
             c: 'Z',
-            attr: default_attrs()
+            attr: default_attrs(),
         },
     ];
 
@@ -443,7 +447,8 @@ fn test_dirty_line_processing() {
     };
     assert!(
         commands.contains(&expected_text_abc),
-        "Text 'ABC' from dirty line 0 should be drawn. Commands: {:?}", commands
+        "Text 'ABC' from dirty line 0 should be drawn. Commands: {:?}",
+        commands
     );
 
     // Check that "XYZ" from clean line 1 was NOT drawn as a text run
@@ -454,7 +459,8 @@ fn test_dirty_line_processing() {
     };
     assert!(
         !commands.contains(&non_expected_text_xyz),
-        "Text 'XYZ' from clean line 1 should NOT be drawn. Commands: {:?}", commands
+        "Text 'XYZ' from clean line 1 should NOT be drawn. Commands: {:?}",
+        commands
     );
 
     // Check if there's any FillRect for line 1 (it shouldn't be, as it's not dirty)
@@ -462,8 +468,11 @@ fn test_dirty_line_processing() {
         MockDrawCommand::FillRect { rect, .. } => rect.y == 1,
         _ => false,
     });
-    assert!(!fill_rect_line1_found, "No FillRect command should exist for clean line 1. Commands: {:?}", commands);
-
+    assert!(
+        !fill_rect_line1_found,
+        "No FillRect command should exist for clean line 1. Commands: {:?}",
+        commands
+    );
 
     let cursor_style = TextRunStyle {
         fg: RENDERER_DEFAULT_BG,
@@ -477,7 +486,8 @@ fn test_dirty_line_processing() {
     };
     assert!(
         commands.contains(&expected_cursor_draw),
-        "Missing cursor draw. Commands: {:?}", commands
+        "Missing cursor draw. Commands: {:?}",
+        commands
     );
 
     assert_eq!(commands.last().unwrap(), &MockDrawCommand::Present);
