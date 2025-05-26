@@ -144,10 +144,6 @@ impl Renderer {
         line_glyphs: &[Glyph],
         driver: &mut dyn Driver,
     ) -> Result<()> {
-        trace!(
-            "Renderer::draw_line_content_from_slice: Drawing line y={}",
-            y_abs
-        );
         let mut current_col: usize = 0;
 
         while current_col < term_width {
