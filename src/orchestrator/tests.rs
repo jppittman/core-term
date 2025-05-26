@@ -13,7 +13,7 @@ mod orchestrator_tests {
     use crate::glyph::{AttrFlags, Attributes, Glyph};
     use crate::orchestrator::{AppOrchestrator, OrchestratorStatus};
     use crate::os::pty::PtyChannel;
-    use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG};
+    use crate::renderer::{RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG, Renderer};
     use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface};
 
     use anyhow::Result;
@@ -545,9 +545,11 @@ mod orchestrator_tests {
             b"X_response",
             "PTY did not receive exact response for key event"
         );
-        assert!(mock_driver
-            .get_calls()
-            .contains(&MockDriverCall::ProcessEvents));
+        assert!(
+            mock_driver
+                .get_calls()
+                .contains(&MockDriverCall::ProcessEvents)
+        );
     }
 
     #[test]

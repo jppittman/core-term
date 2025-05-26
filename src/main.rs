@@ -6,16 +6,16 @@ pub mod backends;
 pub mod color;
 pub mod config;
 pub mod glyph;
+pub mod keys;
 pub mod orchestrator;
 pub mod os; // Contains `pub mod pty;` and `pub mod epoll;`
 pub mod renderer;
 pub mod term;
-pub mod keys;
 
 // Use statements for items needed in main.rs
 use crate::{
     ansi::AnsiProcessor, // AnsiProcessor is in the ansi module
-    backends::{console::ConsoleDriver, x11::XDriver, Driver},
+    backends::{Driver, console::ConsoleDriver, x11::XDriver},
     orchestrator::{AppOrchestrator, OrchestratorStatus},
     os::{
         epoll::{EpollFlags, EventMonitor}, // Using EventMonitor for epoll management
@@ -26,8 +26,10 @@ use crate::{
 };
 use std::os::unix::io::AsRawFd; // For getting raw file descriptors
 
+use ansi::{AnsiCommand, commands::EscCommand};
 // Logging
 use log::{error, info, trace, warn};
+use term::TerminalInterface;
 
 // Constants for epoll tokens.
 // These values are arbitrary but must be unique for each FD monitored.
@@ -240,9 +242,5 @@ fn main() -> anyhow::Result<()> {
             break 'main_loop;
         }
     }
-
-    info!("Exiting myterm orchestrator. Cleaning up...");
-    orchestrator.driver.cleanup()?; // Ensure driver resources are released.
-    info!("Cleanup complete.");
     Ok(())
 }

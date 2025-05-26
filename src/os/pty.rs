@@ -5,12 +5,12 @@ use std::ffi::CString;
 use std::io::{Read, Result as IoResult, Write};
 use std::os::unix::io::{AsFd, AsRawFd, OwnedFd, RawFd};
 
-use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::pty::openpty;
-use nix::sys::signal::{kill, Signal};
+use nix::sys::signal::{Signal, kill};
 use nix::sys::termios;
-use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{execvp, fork, setsid, ForkResult, Pid}; // Added ForkResult
+use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+use nix::unistd::{ForkResult, Pid, execvp, fork, setsid}; // Added ForkResult
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 #[derive(Debug, Clone)]
@@ -234,7 +234,11 @@ impl Drop for NixPty {
             Err(e) => {
                 // nix::Error
                 if matches!(e, nix::Error::ECHILD) || matches!(e, nix::Error::ESRCH) {
-                    log::debug!("NixPty drop: Child process {} does not exist or is not a child (waitpid error: {}). Already reaped?", self.child_pid, e);
+                    log::debug!(
+                        "NixPty drop: Child process {} does not exist or is not a child (waitpid error: {}). Already reaped?",
+                        self.child_pid,
+                        e
+                    );
                 } else {
                     log::warn!(
                         "NixPty drop: Error checking child process {} status with waitpid: {}",

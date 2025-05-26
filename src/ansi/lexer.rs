@@ -36,7 +36,7 @@ const UTF8_ASCII_MAX: u8 = 0x7F;
 const UTF8_CONT_MIN: u8 = 0x80; // Start of continuation byte range
 const UTF8_CONT_MAX: u8 = 0xBF; // End of continuation byte range
 const UTF8_2_BYTE_MIN: u8 = 0xC2; // Excludes overlong 0xC0, 0xC1
-                                  // const UTF8_2_BYTE_MAX: u8 = 0xDF; // Defined by next min - 1
+// const UTF8_2_BYTE_MAX: u8 = 0xDF; // Defined by next min - 1
 const UTF8_3_BYTE_MIN: u8 = 0xE0;
 // const UTF8_3_BYTE_MAX: u8 = 0xEF; // Defined by next min - 1
 const UTF8_4_BYTE_MIN: u8 = 0xF0;
@@ -44,7 +44,7 @@ const UTF8_4_BYTE_MAX: u8 = 0xF4; // Max valid start for 4-byte sequence (RFC 36
 const UTF8_INVALID_AS_START_MIN_RANGE1: u8 = UTF8_CONT_MIN; // 0x80 (can't start with continuation)
 const UTF8_INVALID_AS_START_MAX_RANGE1: u8 = 0xC1; // Up to (and including) overlong 0xC1
 const UTF8_INVALID_AS_START_MIN_RANGE2: u8 = 0xF5; // Invalid byte, per RFC 3629 (can't be > F4)
-                                                   // const UTF8_INVALID_AS_START_MAX_RANGE2: u8 = 0xFF;       // Defined by u8 max
+// const UTF8_INVALID_AS_START_MAX_RANGE2: u8 = 0xFF;       // Defined by u8 max
 
 /// Represents a single token identified by the lexer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,8 +263,8 @@ impl AnsiLexer {
                     // was not a valid continuation for what was in the buffer.
                     // Utf8Decoder has reset.
                     self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER)); // For the broken sequence
-                                                                               // Now, reprocess `byte` from a ground state.
-                                                                               // process_byte_as_new_token will correctly identify it if it's C1, C0, ESC, or data.
+                    // Now, reprocess `byte` from a ground state.
+                    // process_byte_as_new_token will correctly identify it if it's C1, C0, ESC, or data.
                     self.process_byte_as_new_token(byte);
                 }
                 Utf8DecodeResult::NeedsMoreBytes => {

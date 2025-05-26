@@ -16,11 +16,12 @@ pub mod snapshot; // Add this line to declare the module
 
 // Re-export items for easier use by other modules and within this module
 pub use action::{ControlEvent, EmulatorAction, UserInputAction}; // Added UserInputAction, ControlEvent
-pub use charset::{map_to_dec_line_drawing, CharacterSet};
+pub use charset::{CharacterSet, map_to_dec_line_drawing};
 pub use emulator::TerminalEmulator;
 pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 pub use snapshot::{
-    CursorRenderState, CursorShape, RenderSnapshot, SelectionMode, SelectionRenderState, SnapshotLine,
+    CursorRenderState, CursorShape, Point, RenderSnapshot, SelectionMode, SelectionRenderState,
+    SnapshotLine,
 };
 
 // Crate-level imports (adjust paths based on where items are moved)

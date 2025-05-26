@@ -3,7 +3,7 @@
 #![cfg(test)]
 
 use super::pty::{NixPty, PtyChannel, PtyConfig};
-use nix::sys::signal::{kill, Signal};
+use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use std::io::{ErrorKind, Read, Write};
 use std::thread;
@@ -98,7 +98,12 @@ fn read_from_pty_with_timeout(pty: &mut NixPty, expected_str: &str) -> Result<St
                     .windows(expected_bytes.len())
                     .any(|window| window == expected_bytes)
                 {
-                    log::warn!("Error {:?} occurred after expected string '{}' was already received. Output: '{}'", e, expected_str, String::from_utf8_lossy(&full_output_bytes));
+                    log::warn!(
+                        "Error {:?} occurred after expected string '{}' was already received. Output: '{}'",
+                        e,
+                        expected_str,
+                        String::from_utf8_lossy(&full_output_bytes)
+                    );
                     break;
                 }
                 return Err(format!(
@@ -266,9 +271,9 @@ fn test_pty_child_termination_on_drop() {
                 child_pid
             );
             let _ = kill(child_pid, Some(Signal::SIGKILL)); // Attempt to clean up
-                                                            // Depending on strictness, this could be a panic.
-                                                            // For CI stability, we might log and not panic, if SIGHUP is not 100% guaranteed kill for `sleep`.
-                                                            // panic!("Child process {} did not terminate after PTY drop.", child_pid);
+            // Depending on strictness, this could be a panic.
+            // For CI stability, we might log and not panic, if SIGHUP is not 100% guaranteed kill for `sleep`.
+            // panic!("Child process {} did not terminate after PTY drop.", child_pid);
         }
         Err(nix::Error::ESRCH) => {
             // ESRCH ("No such process") means the child terminated as expected.
@@ -308,7 +313,10 @@ fn test_pty_spawn_invalid_command() {
         Ok(mut pty) => {
             // Current behavior: spawn_with_config returns Ok because fork succeeds.
             // The execvp failure happens in the child.
-            log::info!("test_pty_spawn_invalid_command: NixPty::spawn_with_config returned Ok as expected for current behavior. Child PID: {}", pty.child_pid());
+            log::info!(
+                "test_pty_spawn_invalid_command: NixPty::spawn_with_config returned Ok as expected for current behavior. Child PID: {}",
+                pty.child_pid()
+            );
 
             // Variables from previous logic, now unused.
             // let mut buffer = [0; 1];
@@ -326,21 +334,32 @@ fn test_pty_spawn_invalid_command() {
 
             loop {
                 if read_attempts >= max_attempts {
-                    log::warn!("test_pty_spawn_invalid_command: Max read attempts reached. Total bytes read: {}", total_bytes_read);
+                    log::warn!(
+                        "test_pty_spawn_invalid_command: Max read attempts reached. Total bytes read: {}",
+                        total_bytes_read
+                    );
                     break;
                 }
                 read_attempts += 1;
 
                 match pty.read(&mut read_buffer) {
                     Ok(0) => {
-                        log::info!("test_pty_spawn_invalid_command: Read Ok(0) (EOF) after {} attempts and {} total bytes read.", read_attempts, total_bytes_read);
+                        log::info!(
+                            "test_pty_spawn_invalid_command: Read Ok(0) (EOF) after {} attempts and {} total bytes read.",
+                            read_attempts,
+                            total_bytes_read
+                        );
                         eof_reached = true;
                         break;
                     }
                     Ok(n) => {
                         total_bytes_read += n;
-                        log::info!("test_pty_spawn_invalid_command: Read {} bytes (total {}). Content: '{}'", 
-                                   n, total_bytes_read, String::from_utf8_lossy(&read_buffer[..n]).trim());
+                        log::info!(
+                            "test_pty_spawn_invalid_command: Read {} bytes (total {}). Content: '{}'",
+                            n,
+                            total_bytes_read,
+                            String::from_utf8_lossy(&read_buffer[..n]).trim()
+                        );
                         // Shell might output "command not found". We continue reading until EOF or error.
                     }
                     Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -352,8 +371,12 @@ fn test_pty_spawn_invalid_command() {
                         continue;
                     }
                     Err(e) => {
-                        log::info!("test_pty_spawn_invalid_command: Read Err ({:?}) after {} attempts and {} total bytes. This is an acceptable outcome.", 
-                                   e.kind(), read_attempts, total_bytes_read);
+                        log::info!(
+                            "test_pty_spawn_invalid_command: Read Err ({:?}) after {} attempts and {} total bytes. This is an acceptable outcome.",
+                            e.kind(),
+                            read_attempts,
+                            total_bytes_read
+                        );
                         error_reached = true;
                         break;
                     }
@@ -361,10 +384,17 @@ fn test_pty_spawn_invalid_command() {
             }
 
             // The child shell (hosting the invalid command) should have exited, leading to EOF or an error (like EIO) on the PTY master.
-            assert!(eof_reached || error_reached, "Expected EOF or a read error after attempting to spawn an invalid command, but got {} total bytes read and neither EOF nor specific error.", total_bytes_read);
+            assert!(
+                eof_reached || error_reached,
+                "Expected EOF or a read error after attempting to spawn an invalid command, but got {} total bytes read and neither EOF nor specific error.",
+                total_bytes_read
+            );
         }
         Err(e) => {
-            panic!("test_pty_spawn_invalid_command: Expected NixPty::spawn_with_config to return Ok (current behavior), but it returned Err: {:?}", e);
+            panic!(
+                "test_pty_spawn_invalid_command: Expected NixPty::spawn_with_config to return Ok (current behavior), but it returned Err: {:?}",
+                e
+            );
         }
     }
 }

@@ -4,6 +4,7 @@
 use crate::{
     glyph::{Attributes, Glyph}, // Ensure Glyph and Attributes are imported
     term::{
+        EmulatorInput,          // Added EmulatorInput
         action::EmulatorAction, // Added UserInputAction, ControlEvent
         charset::CharacterSet,
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
@@ -13,7 +14,6 @@ use crate::{
             CursorRenderState, CursorShape, RenderSnapshot, SelectionMode, SelectionRenderState,
             SnapshotLine,
         },
-        EmulatorInput, // Added EmulatorInput
     },
 };
 
@@ -82,25 +82,26 @@ impl TerminalEmulator {
         }
     }
 
-    // --- Public Accessor Methods for Tests ---
-    #[allow(dead_code)]
+    pub(super) fn dimensions(&self) -> (usize, usize) {
+        (self.screen.width, self.screen.height)
+    }
+
     pub(super) fn is_origin_mode_active(&self) -> bool {
         self.dec_modes.origin_mode
     }
-    #[allow(dead_code)]
+
     pub(super) fn is_cursor_keys_app_mode_active(&self) -> bool {
         self.dec_modes.cursor_keys_app_mode
     }
-    #[allow(dead_code)]
+
     pub(super) fn is_bracketed_paste_mode_active(&self) -> bool {
         self.dec_modes.bracketed_paste_mode
     }
-    #[allow(dead_code)]
+
     pub(super) fn is_focus_event_mode_active(&self) -> bool {
         self.dec_modes.focus_event_mode
     }
 
-    #[allow(dead_code)]
     pub(super) fn is_mouse_mode_active(&self, mode_num: u16) -> bool {
         match DecModeConstant::from_u16(mode_num) {
             Some(DecModeConstant::MouseX10) => self.dec_modes.mouse_x10_mode,
@@ -229,7 +230,6 @@ impl TerminalEmulator {
                 x: cursor_x,
                 y: cursor_y,
                 shape: mapped_shape,
-                is_visible: true, // DECTCEM is checked, actual blink state not handled yet
                 cell_char_underneath,
                 cell_attributes_underneath,
             });

@@ -6,19 +6,19 @@
 
 // Corrected: Import Color directly from the color module.
 use crate::backends::{
-    BackendEvent, CellCoords, CellRect, Driver, TextRunStyle, DEFAULT_WINDOW_HEIGHT_CHARS,
-    DEFAULT_WINDOW_WIDTH_CHARS,
+    BackendEvent, CellCoords, CellRect, DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
+    Driver, TextRunStyle,
 };
 use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 use crate::keys::{KeySymbol, Modifiers}; // Added for new key representation
 
 use anyhow::{Context, Result};
-use libc::{winsize, STDIN_FILENO, TIOCGWINSZ}; // For terminal size and raw mode
-use std::io::{self, stdin, stdout, Read, Write};
+use libc::{STDIN_FILENO, TIOCGWINSZ, winsize}; // For terminal size and raw mode
+use std::io::{self, Read, Write, stdin, stdout};
 use std::mem;
 use std::os::unix::io::RawFd;
-use termios::{tcsetattr, Termios, ECHO, ICANON, ISIG, TCSANOW, VMIN, VTIME}; // For raw mode
+use termios::{ECHO, ICANON, ISIG, TCSANOW, Termios, VMIN, VTIME, tcsetattr}; // For raw mode
 
 // Logging
 use log::{debug, error, info, trace, warn};
@@ -204,43 +204,53 @@ impl Driver for ConsoleDriver {
                     let text: String;
                     let modifiers = Modifiers::empty(); // Assume no modifiers for basic console input
                     match byte {
-                        b'\r' | b'\n' => { // Carriage Return or Line Feed
+                        b'\r' | b'\n' => {
+                            // Carriage Return or Line Feed
                             symbol = KeySymbol::Enter;
                             text = "\n".to_string(); // Standardize to newline char for text
                         }
-                        b'\t' => { // Tab
+                        b'\t' => {
+                            // Tab
                             symbol = KeySymbol::Tab;
                             text = "\t".to_string();
                         }
-                        0x08 | 0x7f => { // Backspace (0x08) or DEL (0x7f)
+                        0x08 | 0x7f => {
+                            // Backspace (0x08) or DEL (0x7f)
                             // Some terminals send DEL (0x7f) for backspace.
                             // For simplicity, mapping both to Backspace.
                             symbol = KeySymbol::Backspace;
                             text = "\x08".to_string(); // Use actual backspace char for text
                         }
-                        0x1b => { // Escape
+                        0x1b => {
+                            // Escape
                             symbol = KeySymbol::Escape;
                             text = "\x1b".to_string(); // Escape character itself
                         }
                         // Handling for printable ASCII characters
-                        0x20..=0x7e => { // Space to Tilde
+                        0x20..=0x7e => {
+                            // Space to Tilde
                             let c = byte as char;
                             symbol = KeySymbol::Char(c);
                             text = c.to_string();
                         }
                         // Basic handling for some common Ctrl+<char> sequences
-                        0x01..=0x1a => { // Ctrl+A (SOH) to Ctrl+Z (SUB)
+                        0x01..=0x1a => {
+                            // Ctrl+A (SOH) to Ctrl+Z (SUB)
                             let c = byte as char; // This will be a non-printable char
                             symbol = KeySymbol::Char(c);
                             text = c.to_string();
                         }
-                        _ => { // Other bytes
+                        _ => {
+                            // Other bytes
                             let c = byte as char; // May produce replacement characters
                             symbol = KeySymbol::Char(c); // Or KeySymbol::Unknown if preferred
                             text = c.to_string();
                         }
                     }
-                    trace!("ConsoleDriver: Processed byte {} as char '{}', symbol: {:?}, modifiers: {:?}", byte, text, symbol, modifiers);
+                    trace!(
+                        "ConsoleDriver: Processed byte {} as char '{}', symbol: {:?}, modifiers: {:?}",
+                        byte, text, symbol, modifiers
+                    );
                     backend_events.push(BackendEvent::Key {
                         symbol,
                         modifiers,
@@ -361,11 +371,7 @@ impl Driver for ConsoleDriver {
         print!("{}", cmd);
         trace!(
             "ConsoleDriver: draw_text_run at ({},{}) text '{}' style {:?} cmd: {:?}",
-            coords.x,
-            coords.y,
-            text,
-            style,
-            cmd
+            coords.x, coords.y, text, style, cmd
         );
         Ok(())
     }
@@ -417,12 +423,7 @@ impl Driver for ConsoleDriver {
         print!("{}", cmd);
         trace!(
             "ConsoleDriver: fill_rect at ({},{}, w:{}, h:{}) color {:?} cmd: {:?}",
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            color,
-            cmd
+            rect.x, rect.y, rect.width, rect.height, color, cmd
         );
         Ok(())
     }
@@ -440,7 +441,7 @@ impl Driver for ConsoleDriver {
         // OSC 0 sets icon name and window title. OSC 2 sets window title only.
         // Using OSC 0 for wider compatibility.
         print!("\x1b]0;{}\x07", title); // \x07 is the BEL character, often used as ST for OSC
-                                        // No flush here, assume present() will be called.
+        // No flush here, assume present() will be called.
         trace!("ConsoleDriver: Set window title to '{}'", title);
     }
 

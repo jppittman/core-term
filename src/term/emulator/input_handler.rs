@@ -1,10 +1,10 @@
 // src/term/emulator/input_handler.rs
 
-use super::{TerminalEmulator, FocusState};
+use super::{FocusState, TerminalEmulator};
 use crate::keys::{KeySymbol, Modifiers};
 use crate::term::{
+    ControlEvent, // ControlEvent from term::mod.rs (re-exported from action.rs)
     action::{EmulatorAction, UserInputAction}, // UserInputAction from action.rs
-    ControlEvent,                              // ControlEvent from term::mod.rs (re-exported from action.rs)
 };
 use log::trace;
 
@@ -16,8 +16,8 @@ pub(super) fn process_user_input_action(
     emulator.cursor_wrap_next = false;
 
     match action {
-        UserInputAction::FocusLost =>  emulator.focus_state = FocusState::Unfocused,
-        UserInputAction::FocusGained =>  emulator.focus_state = FocusState::Focused,
+        UserInputAction::FocusLost => emulator.focus_state = FocusState::Unfocused,
+        UserInputAction::FocusGained => emulator.focus_state = FocusState::Focused,
         UserInputAction::KeyInput {
             symbol,
             modifiers,
@@ -39,35 +39,29 @@ pub(super) fn process_user_input_action(
                 } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char('\\')
                 {
                     bytes_to_send.push(0x1c); // Ctrl+\ is FS
-                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char(']')
-                {
+                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char(']') {
                     bytes_to_send.push(0x1d); // Ctrl+] is GS
-                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char('^')
-                {
+                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char('^') {
                     // Typically Ctrl+6 for US layout
                     bytes_to_send.push(0x1e); // Ctrl+^ is RS
-                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char('_')
-                {
+                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char('_') {
                     // Typically Ctrl+- for US layout
                     bytes_to_send.push(0x1f); // Ctrl+_ is US
-                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char(' ')
-                {
+                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char(' ') {
                     bytes_to_send.push(0x00); // Ctrl+Space is NUL
-                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char('?') 
-                { 
+                } else if modifiers.contains(Modifiers::CONTROL) && symbol == KeySymbol::Char('?') {
                     // This is tricky. Ctrl+? often generates DEL (0x7f) or depends on terminal settings.
                     // Or, if symbol is KeySymbol::Backspace and modifier is CONTROL, it might be DEL.
                     // For now, assuming if KeySymbol::Char('?') with CONTROL, it's DEL.
                     bytes_to_send.push(0x7f); // Ctrl+? is DEL
-                }
-                else {
+                } else {
                     bytes_to_send.extend(txt_val.as_bytes());
                 }
             } else {
                 // Priority 2: Text is None. Use KeySymbol and Modifiers to generate sequence.
                 match symbol {
                     KeySymbol::Enter | KeySymbol::KeypadEnter => bytes_to_send.push(b'\r'), // Send CR
-                    KeySymbol::Backspace => bytes_to_send.push(0x08), // BS
+                    KeySymbol::Backspace => bytes_to_send.push(0x08),                       // BS
                     KeySymbol::Tab => {
                         if modifiers.contains(Modifiers::SHIFT) {
                             bytes_to_send.extend_from_slice(b"\x1b[Z"); // CSI Z (Shift+Tab)
@@ -107,7 +101,7 @@ pub(super) fn process_user_input_action(
                     ),
 
                     KeySymbol::Home => bytes_to_send.extend_from_slice(b"\x1b[1~"), // Standard: ESC [ 1 ~
-                    KeySymbol::End => bytes_to_send.extend_from_slice(b"\x1b[4~"),   // Standard: ESC [ 4 ~
+                    KeySymbol::End => bytes_to_send.extend_from_slice(b"\x1b[4~"), // Standard: ESC [ 4 ~
                     KeySymbol::PageUp => bytes_to_send.extend_from_slice(b"\x1b[5~"),
                     KeySymbol::PageDown => bytes_to_send.extend_from_slice(b"\x1b[6~"),
                     KeySymbol::Insert => bytes_to_send.extend_from_slice(b"\x1b[2~"),
@@ -149,7 +143,6 @@ pub(super) fn process_user_input_action(
                     KeySymbol::Keypad8 => bytes_to_send.push(b'8'),
                     KeySymbol::Keypad9 => bytes_to_send.push(b'9'),
                     // KeySymbol::KeypadEnter is handled by the KeySymbol::Enter case above.
-
                     KeySymbol::Char(c) => {
                         // Handle Alt+Char as ESC prefix + char
                         if modifiers.contains(Modifiers::ALT) {
@@ -161,8 +154,7 @@ pub(super) fn process_user_input_action(
                     _ => {
                         trace!(
                             "Unhandled KeySymbol (with no text): {:?}, Modifiers: {:?}",
-                            symbol,
-                            modifiers
+                            symbol, modifiers
                         );
                     }
                 }
@@ -218,12 +210,11 @@ pub(super) fn process_control_event(
         ControlEvent::Resize { cols, rows } => {
             trace!(
                 "TerminalEmulator: ControlEvent::Resize to {}x{} received.",
-                cols,
-                rows
+                cols, rows
             );
             emulator.resize(cols, rows); // Call the existing resize method on TerminalEmulator
             None // Resize itself doesn't directly cause an EmulatorAction to be returned.
-                 // Redraw is handled implicitly or by the orchestrator.
+            // Redraw is handled implicitly or by the orchestrator.
         }
     }
 }
