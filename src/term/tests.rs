@@ -100,7 +100,7 @@ mod term_tests {
         } else {
             panic!("Initial cursor state missing in snapshot");
         }
-        
+
         assert!(!term.is_alt_screen_active(), "Initially not on alt screen"); // is_alt_screen_active is pub(super)
 
         let expected_initial_attrs = Attributes::default();
@@ -461,7 +461,7 @@ mod term_tests {
         let mut term = new_term(5, 1);
         process_input(&mut term, EmulatorInput::Ansi(AnsiCommand::Print('A')));
         // After 'A', cursor is logically at (1,0)
-        
+
         process_input(
             &mut term,
             EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::BS)),
@@ -1339,7 +1339,7 @@ mod extensive_term_emulator_tests {
         assert_eq!(get_line_as_string(&term, 2), "C", "L2 before scroll");
 
         process_command(&mut term, AnsiCommand::C0Control(C0Control::LF));
-        
+
         let scroll_snapshot = term.get_render_snapshot();
         let scroll_dirty: HashSet<usize> = scroll_snapshot.lines.iter().enumerate().filter(|(_,l)|l.is_dirty).map(|(i,_)|i).collect();
         // scroll_up_serial marks all visible lines dirty.
@@ -1779,7 +1779,7 @@ mod extensive_term_emulator_tests {
         let mut expected_after_el = expected_after_cud.clone();
         expected_after_el.insert(1); // Line 1 is erased
         assert_eq!(el_dirty_lines, expected_after_el, "EL All on line 1 with BG Red - dirty mismatch. Got {:?}, expected {:?}", el_dirty_lines, expected_after_el);
-        
+
         // ... content assertions
         let (cols, _) = el_snapshot.dimensions;
         for c_idx in 0..cols {
@@ -1813,7 +1813,7 @@ mod extensive_term_emulator_tests {
         let dirty_resized: HashSet<usize> = snap_resized.lines.iter().enumerate().filter(|(_,l)|l.is_dirty).map(|(i,_)|i).collect();
         let expected_dirty_after_resize: HashSet<usize> = (0..5).collect();
         assert_eq!(dirty_resized, expected_dirty_after_resize, "After resize to 15x5 - dirty mismatch");
-        
+
         // ... content assertions
         let (cols, rows) = snap_resized.dimensions;
         assert_eq!(cols, 15, "Cols not updated after resize");

@@ -124,11 +124,16 @@ impl<'a> AppOrchestrator<'a> {
 
     fn handle_specific_driver_event(&mut self, event: BackendEvent) {
         match event {
-            BackendEvent::Key { symbol, modifiers, text } => { // New signature
+            BackendEvent::Key {
+                symbol,
+                modifiers,
+                text,
+            } => {
+                // New signature
                 // Translate BackendEvent::Key to UserInputAction::KeyInput
                 let key_input_action = UserInputAction::KeyInput {
-                    symbol,    // from BackendEvent
-                    modifiers, // from BackendEvent
+                    symbol,                                                // from BackendEvent
+                    modifiers,                                             // from BackendEvent
                     text: if text.is_empty() { None } else { Some(text) }, // Convert String to Option<String>
                 };
                 let user_input = EmulatorInput::User(key_input_action);
@@ -239,15 +244,19 @@ impl<'a> AppOrchestrator<'a> {
                 );
                 self.driver.set_cursor_visibility(visible);
             }
-            EmulatorAction::CopyToClipboard(_) => !unimplemented!("clipboard feature not yet implemented"),
-            EmulatorAction::RequestClipboardContent => !unimplemented!("clipboard feature not yet implemented"),
+            EmulatorAction::CopyToClipboard(_) => {
+                !unimplemented!("clipboard feature not yet implemented")
+            }
+            EmulatorAction::RequestClipboardContent => {
+                !unimplemented!("clipboard feature not yet implemented")
+            }
         }
     }
 
     pub fn render_if_needed(&mut self) -> anyhow::Result<()> {
         log::trace!("Orchestrator: Calling renderer.draw().");
-        self.renderer.draw(&mut *self.term, &mut *self.driver)?;
-        Ok(())
+        let snapshot = self.term.get_render_snapshot();
+        self.renderer.draw(snapshot, &mut *self.driver)
     }
 }
 

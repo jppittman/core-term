@@ -4,7 +4,7 @@ use super::TerminalEmulator;
 use crate::{
     glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER},
     term::{
-        charset::{map_to_dec_line_drawing, CharacterSet}, // For map_char_to_active_charset
+        charset::{CharacterSet, map_to_dec_line_drawing}, // For map_char_to_active_charset
         unicode::get_char_display_width,
     },
 };
@@ -57,9 +57,9 @@ impl TerminalEmulator {
         if self.cursor_wrap_next {
             self.carriage_return(); // Move to column 0 of the current line.
             self.move_down_one_line_and_dirty(); // Move to the next line, handles scrolling.
-                                                 // move_down_one_line_and_dirty also resets self.cursor_wrap_next to false.
+            // move_down_one_line_and_dirty also resets self.cursor_wrap_next to false.
             screen_ctx = self.current_screen_context(); // Update context after potential scroll/cursor move.
-                                                        // self.cursor_wrap_next is now false.
+            // self.cursor_wrap_next is now false.
         }
 
         // Get current physical cursor position for placing the glyph.
@@ -91,9 +91,9 @@ impl TerminalEmulator {
             // Perform wrap: CR then effectively LF.
             self.carriage_return();
             self.move_down_one_line_and_dirty(); // This moves cursor down and handles scrolling.
-                                                 // It also resets self.cursor_wrap_next.
+            // It also resets self.cursor_wrap_next.
             screen_ctx = self.current_screen_context(); // Update context
-                                                        // Get new physical cursor position after this wrap.
+            // Get new physical cursor position after this wrap.
             (physical_x, physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
         }
 

@@ -12,7 +12,7 @@ use crate::{
 };
 use log::{error, info}; // Added warn, info
 use serde::{Deserialize, Serialize};
-use std::{sync::LazyLock as Lazy, path::PathBuf};
+use std::{path::PathBuf, sync::LazyLock as Lazy};
 
 // --- Global Configuration Access ---
 
@@ -132,7 +132,7 @@ impl Default for AppearanceConfig {
             rows: 24,
             border_pixels: 2,
             cursor: CursorConfig::default(),
-            unfocused_cursor: CursorConfig{
+            unfocused_cursor: CursorConfig {
                 shape: CursorShape::SteadyBar,
                 blink_timeout_ms: 0,
                 thickness: 2,

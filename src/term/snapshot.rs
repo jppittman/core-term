@@ -1,6 +1,7 @@
 // src/term/snapshot.rs
 
 use crate::glyph::{Attributes, Glyph};
+use std::ops::Index;
 
 /// Represents the visual shape of the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,13 +25,20 @@ pub struct SnapshotLine {
     pub cells: Vec<Glyph>,
 }
 
+impl Index<usize> for SnapshotLine {
+    type Output = Glyph;
+
+    fn index(&self, column_index: usize) -> &Self::Output {
+        &self.cells[column_index] // Delegates to Vec<Glyph>'s indexing
+    }
+}
+
 /// Information needed by the Renderer to draw the cursor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CursorRenderState {
     pub x: usize, // Physical x of the cell the cursor is on/starts at
     pub y: usize, // Physical y
     pub shape: CursorShape,
-    pub is_visible: bool,
     pub cell_char_underneath: char, // Character in the cell (could be space)
     pub cell_attributes_underneath: Attributes, // Attributes of the cell
 }
@@ -51,4 +59,20 @@ pub struct RenderSnapshot {
     pub lines: Vec<SnapshotLine>,
     pub cursor_state: Option<CursorRenderState>,
     pub selection_state: Option<SelectionRenderState>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Point {
+    pub x: usize,
+    pub y: usize,
+}
+
+impl RenderSnapshot {
+    pub fn get_glyph(&self, p: Point) -> Option<Glyph> {
+        let (term_width, term_height) = self.dimensions;
+        if p.x >= term_width || p.y >= term_height {
+            return None;
+        }
+        Some(self.lines[p.y][p.x])
+    }
 }
