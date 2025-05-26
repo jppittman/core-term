@@ -11,9 +11,13 @@ use crate::backends::{KeySymbol, Modifiers}; // Assuming these are re-exported v
 // Placeholder for MouseButton and MouseEventType until fully defined
 // These might come from backends module as well if they are part of BackendEvent::Mouse
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseButton { /* TODO: Define variants like Left, Middle, Right, etc. */ Placeholder }
+pub enum MouseButton {
+    /* TODO: Define variants like Left, Middle, Right, etc. */ Placeholder,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseEventType { /* TODO: Define variants like Press, Release, Move */ Placeholder }
+pub enum MouseEventType {
+    /* TODO: Define variants like Press, Release, Move */ Placeholder,
+}
 
 /// Represents user-initiated actions that serve as input to the terminal emulator.
 /// This corresponds to `EmulatorInput::User(UserInputAction)`.
@@ -25,8 +29,8 @@ pub enum UserInputAction {
         text: Option<String>, // Text from IME or key press, if any
     },
     MouseInput {
-        col: usize,          // 0-based cell column
-        row: usize,          // 0-based cell row
+        col: usize, // 0-based cell column
+        row: usize, // 0-based cell row
         event_type: MouseEventType,
         button: MouseButton,
         modifiers: Modifiers,
@@ -36,7 +40,7 @@ pub enum UserInputAction {
     FocusGained,
     FocusLost,
     PasteText(String), // Content from clipboard to be pasted
-    // Other user-driven actions can be added here.
+                       // Other user-driven actions can be added here.
 }
 
 // --- Emulator Control Events ---
@@ -71,8 +75,7 @@ pub enum EmulatorAction {
     /// Signal that some part of the terminal display has changed and a redraw
     /// by the renderer is likely needed.
     RequestRedraw, // Note: NORTH_STAR.md v1.9.4 suggests this is implicit after rendering.
-                   // Keeping it for now as it's a common signal.
-
+    // Keeping it for now as it's a common signal.
     /// Request to set the visibility of the (potentially native) cursor by the driver.
     SetCursorVisibility(bool),
 

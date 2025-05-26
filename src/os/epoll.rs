@@ -90,10 +90,7 @@ impl EventMonitor {
         }
         trace!(
             "Added fd {} to epoll_fd {} with token {} and flags {:?}",
-            fd,
-            self.epoll_fd,
-            token,
-            flags
+            fd, self.epoll_fd, token, flags
         );
         Ok(())
     }
@@ -115,10 +112,7 @@ impl EventMonitor {
         }
         trace!(
             "Modified fd {} in epoll_fd {} to token {} and flags {:?}",
-            fd,
-            self.epoll_fd,
-            token,
-            flags
+            fd, self.epoll_fd, token, flags
         );
         Ok(())
     }
@@ -144,8 +138,7 @@ impl EventMonitor {
     pub fn events(&mut self, timeout_ms: isize) -> Result<&[libc::epoll_event]> {
         trace!(
             "EventMonitor: polling for events with timeout {}ms on epoll_fd {}",
-            timeout_ms,
-            self.epoll_fd
+            timeout_ms, self.epoll_fd
         );
 
         let num_events = unsafe {
@@ -168,8 +161,7 @@ impl EventMonitor {
 
         trace!(
             "EventMonitor: epoll_wait on fd {} returned {} events",
-            self.epoll_fd,
-            num_events
+            self.epoll_fd, num_events
         );
         Ok(&self.event_buffer[0..num_events as usize])
     }

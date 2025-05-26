@@ -5,8 +5,8 @@
 // Use the AnsiProcessor, which combines lexer and parser
 // Corrected imports using commands submodule path
 use super::{
-    commands::{AnsiCommand, Attribute, C0Control, CsiCommand, EscCommand},
     AnsiParser, AnsiProcessor,
+    commands::{AnsiCommand, Attribute, C0Control, CsiCommand, EscCommand},
 };
 use crate::color::{Color, NamedColor};
 use test_log::test; // Ensure test_log is a dev-dependency for log capturing in tests
@@ -119,8 +119,18 @@ fn it_should_process_dec_private_mode_reset_25_text_cursor_enable() {
 fn it_should_process_various_dec_private_mouse_modes() {
     let modes_to_test = vec![
         (1000, b"\x1b[?1000h", b"\x1b[?1000l", "XTERM_MOUSE_CLICK"),
-        (1002, b"\x1b[?1002h", b"\x1b[?1002l", "XTERM_MOUSE_BTN_MOTION"),
-        (1003, b"\x1b[?1003h", b"\x1b[?1003l", "XTERM_MOUSE_ANY_MOTION"),
+        (
+            1002,
+            b"\x1b[?1002h",
+            b"\x1b[?1002l",
+            "XTERM_MOUSE_BTN_MOTION",
+        ),
+        (
+            1003,
+            b"\x1b[?1003h",
+            b"\x1b[?1003l",
+            "XTERM_MOUSE_ANY_MOTION",
+        ),
         (1005, b"\x1b[?1005h", b"\x1b[?1005l", "XTERM_MOUSE_UTF8"),
         (1006, b"\x1b[?1006h", b"\x1b[?1006l", "XTERM_MOUSE_SGR"),
     ];
@@ -339,20 +349,43 @@ fn it_should_handle_fragmented_utf8_input_with_intermediate_finalization() {
     // This test demonstrates how AnsiProcessor (which calls lexer.finalize()
     // within its process_bytes) handles UTF-8 fragments delivered in separate calls.
     let mut processor_refined = AnsiProcessor::new();
-    assert_eq!(processor_refined.process_bytes(b"A"), vec![AnsiCommand::Print('A')], "Refined Frag 0: Print 'A'");
+    assert_eq!(
+        processor_refined.process_bytes(b"A"),
+        vec![AnsiCommand::Print('A')],
+        "Refined Frag 0: Print 'A'"
+    );
     // \xE4 is start of '你'. Since it's an incomplete sequence when process_bytes finishes, finalize() converts it.
-    assert_eq!(processor_refined.process_bytes(b"\xE4"), vec![AnsiCommand::Print(char::REPLACEMENT_CHARACTER)], "Refined Frag 1: Incomplete UTF-8 (E4) yields replacement char");
+    assert_eq!(
+        processor_refined.process_bytes(b"\xE4"),
+        vec![AnsiCommand::Print(char::REPLACEMENT_CHARACTER)],
+        "Refined Frag 1: Incomplete UTF-8 (E4) yields replacement char"
+    );
     // \xBD is now treated as a new byte. It's an invalid UTF-8 start. finalize() converts it.
-    assert_eq!(processor_refined.process_bytes(b"\xBD"), vec![AnsiCommand::Print(char::REPLACEMENT_CHARACTER)], "Refined Frag 2: Invalid UTF-8 start (BD) yields replacement char");
+    assert_eq!(
+        processor_refined.process_bytes(b"\xBD"),
+        vec![AnsiCommand::Print(char::REPLACEMENT_CHARACTER)],
+        "Refined Frag 2: Invalid UTF-8 start (BD) yields replacement char"
+    );
     // \xA0 is also an invalid UTF-8 start. finalize() converts it.
-    assert_eq!(processor_refined.process_bytes(b"\xA0"), vec![AnsiCommand::Print(char::REPLACEMENT_CHARACTER)], "Refined Frag 3: Invalid UTF-8 start (A0) yields replacement char");
-    assert_eq!(processor_refined.process_bytes(b"B"), vec![AnsiCommand::Print('B')], "Refined Frag 4: Print 'B'");
+    assert_eq!(
+        processor_refined.process_bytes(b"\xA0"),
+        vec![AnsiCommand::Print(char::REPLACEMENT_CHARACTER)],
+        "Refined Frag 3: Invalid UTF-8 start (A0) yields replacement char"
+    );
+    assert_eq!(
+        processor_refined.process_bytes(b"B"),
+        vec![AnsiCommand::Print('B')],
+        "Refined Frag 4: Print 'B'"
+    );
 
     // For contrast, show how a complete multi-byte char is processed in one call
     let mut processor_complete = AnsiProcessor::new();
-    assert_eq!(processor_complete.process_bytes(b"\xE4\xBD\xA0"), vec![AnsiCommand::Print('你')], "Complete '你' in one call");
+    assert_eq!(
+        processor_complete.process_bytes(b"\xE4\xBD\xA0"),
+        vec![AnsiCommand::Print('你')],
+        "Complete '你' in one call"
+    );
 }
-
 
 #[test]
 fn it_should_complete_csi_if_final_byte_arrives_after_params() {
@@ -458,7 +491,10 @@ fn it_should_buffer_incomplete_csi_sequence() {
     // AnsiProcessor calls finalize, which might clear incomplete CSI state
     // or the parser might hold it. If it holds, empty is correct.
     // If finalize clears it without error, empty is also correct.
-    assert!(commands.is_empty(), "Incomplete CSI should not produce commands yet, or should be cleared by finalize if unrecoverable by next process_bytes call");
+    assert!(
+        commands.is_empty(),
+        "Incomplete CSI should not produce commands yet, or should be cleared by finalize if unrecoverable by next process_bytes call"
+    );
 }
 
 #[test]
@@ -472,14 +508,20 @@ fn it_should_process_csi_with_invalid_final_byte_as_error() {
 fn it_should_buffer_incomplete_osc_sequence() {
     let bytes = b"\x1B]0;Title"; // Incomplete OSC
     let commands = process_bytes(bytes);
-    assert!(commands.is_empty(), "Incomplete OSC should not produce commands yet");
+    assert!(
+        commands.is_empty(),
+        "Incomplete OSC should not produce commands yet"
+    );
 }
 
 #[test]
 fn it_should_buffer_incomplete_dcs_sequence() {
     let bytes = b"\x1BPStuff"; // Incomplete DCS
     let commands = process_bytes(bytes);
-    assert!(commands.is_empty(), "Incomplete DCS should not produce commands yet");
+    assert!(
+        commands.is_empty(),
+        "Incomplete DCS should not produce commands yet"
+    );
 }
 
 #[test]
@@ -553,9 +595,9 @@ fn it_should_abort_csi_on_esc_and_process_subsequent_csi() {
     let commands = process_bytes(bytes);
     assert_eq!(
         commands,
-        vec![
-            AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Italic]))
-        ]
+        vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+            Attribute::Italic
+        ]))]
     );
 }
 
@@ -567,7 +609,6 @@ mod unicode_wide_tests {
     // Import C0Control and EscCommand if they are used in expected AnsiCommand variants
     use crate::ansi::commands::{C0Control, EscCommand};
     use test_log::test;
-
 
     // Define byte constants for clarity in tests
     const NUL: u8 = 0x00;
@@ -623,10 +664,7 @@ mod unicode_wide_tests {
         let commands = process_bytes_unicode(bytes);
         assert_eq!(
             commands,
-            vec![
-                AnsiCommand::Print('₄'),
-                AnsiCommand::Print('B'),
-            ],
+            vec![AnsiCommand::Print('₄'), AnsiCommand::Print('B'),],
             "0xE2 0x82 0x84 should decode to '₄', not be interrupted by 0x84 as C1 IND"
         );
     }
@@ -676,7 +714,10 @@ mod unicode_wide_tests {
     fn it_should_process_esc_c_ris_correctly() {
         let bytes = &[ESC, CHAR_C_BYTE];
         let commands = process_bytes_unicode(bytes);
-        assert_eq!(commands, vec![AnsiCommand::Esc(EscCommand::ResetToInitialState)]);
+        assert_eq!(
+            commands,
+            vec![AnsiCommand::Esc(EscCommand::ResetToInitialState)]
+        );
     }
 
     #[test]

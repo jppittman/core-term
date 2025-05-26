@@ -9,13 +9,11 @@
 use crate::{ansi::commands::Attribute, config, glyph::Attributes};
 use anyhow::{Result, anyhow};
 use log::{trace, warn};
-use std::{cmp::min, fmt};
 use serde::{
+    Deserialize, Serialize, Serializer,
     de::{self, Deserializer, Visitor},
-    Deserialize,
-    Serializer,
-    Serialize,
 };
+use std::{cmp::min, fmt};
 
 // --- Structs ---
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,7 +43,8 @@ impl CursorShape {
             5 => CursorShape::BlinkingBar,
             6 => CursorShape::SteadyBar,
             _ => {
-                warn!( //
+                warn!(
+                    //
                     "Received unknown DECSCUSR shape code: {}. Defaulting to DefaultOrBlinkingBlock.",
                     code
                 );
@@ -53,7 +52,7 @@ impl CursorShape {
             }
         }
     }
-        /// Returns the string representation for serialization.
+    /// Returns the string representation for serialization.
     fn to_str(self) -> &'static str {
         match self {
             CursorShape::BlinkingBlock => "BlinkingBlock",
@@ -72,9 +71,7 @@ impl CursorShape {
             "SteadyUnderline" => CursorShape::SteadyUnderline,
             "BlinkingBar" => CursorShape::BlinkingBar,
             "SteadyBar" => CursorShape::SteadyBar,
-            _ => {
-               return Err(anyhow!("unrecognized cursor shape, reverting to default"))
-            }
+            _ => return Err(anyhow!("unrecognized cursor shape, reverting to default")),
         };
         Ok(val)
     }
@@ -84,7 +81,6 @@ impl Default for CursorShape {
     fn default() -> Self {
         config::CONFIG.appearance.cursor.shape
     }
-
 }
 
 /// Represents the state of the terminal cursor.
@@ -272,9 +268,7 @@ impl CursorController {
         self.cursor.logical_y = min(new_y, max_y_logical);
         trace!(
             "Cursor moved (positioned) logically to ({}, {}). Context: {:?}",
-            self.cursor.logical_x,
-            self.cursor.logical_y,
-            context
+            self.cursor.logical_x, self.cursor.logical_y, context
         );
     }
 
@@ -286,8 +280,7 @@ impl CursorController {
         self.cursor.logical_y = self.cursor.logical_y.saturating_sub(n);
         trace!(
             "Cursor moved up by {} to logical_y: {}",
-            n,
-            self.cursor.logical_y
+            n, self.cursor.logical_y
         );
     }
 
@@ -308,9 +301,7 @@ impl CursorController {
         self.cursor.logical_y = min(self.cursor.logical_y.saturating_add(n), max_y_logical);
         trace!(
             "Cursor moved down by {} to logical_y: {}. Context: {:?}",
-            n,
-            self.cursor.logical_y,
-            context
+            n, self.cursor.logical_y, context
         );
     }
 
@@ -321,8 +312,7 @@ impl CursorController {
         self.cursor.logical_x = self.cursor.logical_x.saturating_sub(n);
         trace!(
             "Cursor moved left by {} to logical_x: {}",
-            n,
-            self.cursor.logical_x
+            n, self.cursor.logical_x
         );
     }
 
@@ -341,9 +331,7 @@ impl CursorController {
         self.cursor.logical_x = min(self.cursor.logical_x.saturating_add(n), max_x_for_advancing);
         trace!(
             "Cursor moved right (advanced) by {} to logical_x: {}. Context: {:?}",
-            n,
-            self.cursor.logical_x,
-            context
+            n, self.cursor.logical_x, context
         );
     }
 
@@ -361,8 +349,7 @@ impl CursorController {
         self.cursor.logical_x = min(new_x, max_x_for_positioning);
         trace!(
             "Cursor moved to logical_col: {}. Context: {:?}",
-            self.cursor.logical_x,
-            context
+            self.cursor.logical_x, context
         );
     }
 
@@ -420,8 +407,7 @@ impl CursorController {
         self.cursor.logical_y = min(self.cursor.logical_y, max_y_logical);
         trace!(
             "Cursor state restored to: {:?}. Context: {:?}",
-            self.cursor,
-            context
+            self.cursor, context
         );
     }
     pub fn reset(&mut self) {
@@ -447,21 +433,27 @@ impl<'de> Visitor<'de> for CursorShapeVisitor {
     type Value = CursorShape;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a string representing a CursorShape (e.g., 'BlinkingBlock', 'SteadyBlock')")
+        formatter
+            .write_str("a string representing a CursorShape (e.g., 'BlinkingBlock', 'SteadyBlock')")
     }
 
     fn visit_str<E>(self, value: &str) -> Result<CursorShape, E>
     where
         E: de::Error,
     {
-        CursorShape::from_str(value).map_err(|_| de::Error::unknown_variant(value, &[
-                "BlinkingBlock",
-                "SteadyBlock",
-                "BlinkingUnderline",
-                "SteadyUnderline",
-                "BlinkingBar",
-                "SteadyBar",
-            ]))
+        CursorShape::from_str(value).map_err(|_| {
+            de::Error::unknown_variant(
+                value,
+                &[
+                    "BlinkingBlock",
+                    "SteadyBlock",
+                    "BlinkingUnderline",
+                    "SteadyUnderline",
+                    "BlinkingBar",
+                    "SteadyBar",
+                ],
+            )
+        })
     }
 }
 

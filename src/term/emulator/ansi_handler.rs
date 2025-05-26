@@ -2,9 +2,17 @@
 
 use super::TerminalEmulator;
 use crate::{
-    ansi::commands::{AnsiCommand, C0Control, CsiCommand, EscCommand}, glyph::Attributes, term::{
-        action::EmulatorAction, charset::{map_to_dec_line_drawing, CharacterSet}, cursor::CursorShape, emulator::FocusState, modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode}, screen::TabClearMode, TerminalInterface // For dimensions
-    } // For Attributes::default() in ResetToInitialState
+    ansi::commands::{AnsiCommand, C0Control, CsiCommand, EscCommand},
+    glyph::Attributes,
+    term::{
+        TerminalInterface, // For dimensions
+        action::EmulatorAction,
+        charset::{CharacterSet, map_to_dec_line_drawing},
+        cursor::CursorShape,
+        emulator::FocusState,
+        modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode},
+        screen::TabClearMode,
+    }, // For Attributes::default() in ResetToInitialState
 };
 
 use log::{debug, trace, warn}; // Assuming logging is still desired
@@ -346,7 +354,9 @@ pub(super) fn process_ansi_command(
                 let cursor_shape = CursorShape::from_decscusr_code(shape);
                 match focus_state {
                     FocusState::Focused => emulator.cursor_controller.cursor.shape = cursor_shape,
-                    FocusState::Unfocused => emulator.cursor_controller.cursor.unfocused_shape = cursor_shape,
+                    FocusState::Unfocused => {
+                        emulator.cursor_controller.cursor.unfocused_shape = cursor_shape
+                    }
                 }
                 debug!("Set cursor style to shape: {}", shape);
                 None

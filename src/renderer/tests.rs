@@ -8,7 +8,7 @@ mod render_tests {
     // AttrFlags, Attributes, and Glyph are correctly from the glyph module.
     use crate::glyph::{AttrFlags, Attributes, Glyph};
     use crate::renderer::*; // Imports Renderer, RENDERER_DEFAULT_FG, RENDERER_DEFAULT_BG from parent module
-                            // Import EmulatorInput and EmulatorAction for the MockTerminal's interpret_input method
+    // Import EmulatorInput and EmulatorAction for the MockTerminal's interpret_input method
     use crate::term::{EmulatorAction, EmulatorInput, TerminalInterface};
     use anyhow::Result;
     use std::collections::{HashSet, VecDeque}; // Added VecDeque for MockTerminal actions
@@ -118,7 +118,7 @@ mod render_tests {
         // Implemented missing trait item
         fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
             self.inputs_received.push(input); // Log the input
-                                              // Return a queued action if available, otherwise None
+            // Return a queued action if available, otherwise None
             self.actions_to_return_on_next_call
                 .pop_front()
                 .unwrap_or(None)

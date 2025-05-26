@@ -173,15 +173,13 @@ impl TerminalEmulator {
         if current_physical_y == physical_effective_bottom {
             trace!(
                 "move_down_one_line: Scrolling up. Cursor at physical_y: {}, effective_bottom: {}",
-                current_physical_y,
-                physical_effective_bottom
+                current_physical_y, physical_effective_bottom
             );
             self.screen.scroll_up_serial(1);
         } else if current_logical_y < max_logical_y_in_region {
             trace!(
                 "move_down_one_line: Moving cursor down. logical_y: {}, max_logical_y_in_region: {}",
-                current_logical_y,
-                max_logical_y_in_region
+                current_logical_y, max_logical_y_in_region
             );
             self.cursor_controller.move_down(1, &screen_ctx);
         } else if !screen_ctx.origin_mode_active
@@ -189,23 +187,19 @@ impl TerminalEmulator {
         {
             trace!(
                 "move_down_one_line: Moving cursor down (below scroll region, origin mode off). physical_y: {}, screen_height: {}",
-                current_physical_y,
-                screen_ctx.height
+                current_physical_y, screen_ctx.height
             );
             self.cursor_controller.move_down(1, &screen_ctx);
         } else {
             trace!(
                 "move_down_one_line: Cursor at bottom, no scroll or move_down. physical_y: {}, logical_y: {}, max_logical_y: {}",
-                current_physical_y,
-                current_logical_y,
-                max_logical_y_in_region
+                current_physical_y, current_logical_y, max_logical_y_in_region
             );
         }
 
         trace!(
             "move_down_one_line: Marking old line dirty. current_physical_y: {}, screen_height: {}",
-            current_physical_y,
-            self.screen.height
+            current_physical_y, self.screen.height
         );
         if current_physical_y < self.screen.height {
             // Bounds check before marking dirty
@@ -219,8 +213,7 @@ impl TerminalEmulator {
         if current_physical_y != new_physical_y {
             trace!(
                 "move_down_one_line: Marking new line dirty. new_physical_y: {}, screen_height: {}",
-                new_physical_y,
-                self.screen.height
+                new_physical_y, self.screen.height
             );
             if new_physical_y < self.screen.height {
                 // Bounds check
@@ -229,8 +222,7 @@ impl TerminalEmulator {
         } else {
             trace!(
                 "move_down_one_line: New physical y ({}) is same as current ({}), not marking new line again.",
-                new_physical_y,
-                current_physical_y
+                new_physical_y, current_physical_y
             );
         }
     }

@@ -12,7 +12,7 @@ use bitflags::bitflags; // For creating flag enums like AttrFlags
 use std::fmt; // Import Color directly for use in Attributes
 
 /// Represents a single character cell on the screen.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Glyph {
     /// The character displayed in the cell.
     /// A `\0` (null character) often signifies the second part of a wide character.

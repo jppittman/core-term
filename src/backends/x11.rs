@@ -272,8 +272,8 @@ impl Driver for XDriver {
                             &mut xevent.key, // Pass as mutable pointer
                             key_text_buffer.as_mut_ptr() as *mut c_char,
                             key_text_buffer.len() as c_int, // Use KEY_TEXT_BUFFER_SIZE via .len()
-                            &mut x_keysym,   // Pass as mutable pointer, renamed
-                            ptr::null_mut(), // No XComposeStatus needed
+                            &mut x_keysym,                  // Pass as mutable pointer, renamed
+                            ptr::null_mut(),                // No XComposeStatus needed
                         )
                     };
                     let text = if count > 0 {
@@ -872,9 +872,7 @@ impl XDriver {
         }
         trace!(
             "Allocated XftColor for {} (idx {}, pixel: {})",
-            name_for_log,
-            index,
-            &self.xft_ansi_colors[index].pixel
+            name_for_log, index, &self.xft_ansi_colors[index].pixel
         );
         Ok(())
     }
@@ -899,7 +897,7 @@ impl XDriver {
                 // | xlib::KeyReleaseMask    // If needed
                 | xlib::StructureNotifyMask  // Resize/move events (ConfigureNotify)
                 | xlib::FocusChangeMask; // FocusIn/FocusOut events
-                                         // Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse
+            // Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse
 
             self.window = xlib::XCreateWindow(
                 self.display,
@@ -1021,7 +1019,7 @@ impl XDriver {
             size_hints.height_inc = self.font_height as c_int; // Resize step height
             size_hints.min_width = self.font_width as c_int; // Minimum window width (1 cell)
             size_hints.min_height = self.font_height as c_int; // Minimum window height (1 cell)
-                                                               // PBaseSize could also be set if borderpx were non-zero.
+            // PBaseSize could also be set if borderpx were non-zero.
             xlib::XSetWMNormalHints(self.display, self.window, &mut size_hints);
             debug!("WM size hints set.");
         }
@@ -1054,10 +1052,7 @@ impl XDriver {
                 if let Color::Rgb(r, g, b) = rgb_equivalent {
                     trace!(
                         "XDriver: Approximating Indexed({}) to RGB({},{},{}) for XftColor.",
-                        idx,
-                        r,
-                        g,
-                        b
+                        idx, r, g, b
                     );
                     self.cached_rgb_to_xft_color(r, g, b)
                 } else {
@@ -1150,7 +1145,6 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
     // x11::keysym::XK_* constants are u32.
     let keysym_val = keysym_val_in.into_xkeysym();
 
-
     // Step 1 & 2: Check if keysym_val is outside the u32 range.
     // (u32::MAX as xlib::KeySym) correctly promotes u32::MAX to the width of xlib::KeySym
     // for a safe comparison. This check is effectively only active if xlib::KeySym is wider than u32.
@@ -1161,8 +1155,10 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
             "Received high keysym value: 0x{:X}, not in standard u32 XK_* range.",
             keysym_val
         );
-        if !text.is_empty() && text.chars().all(|c| c != '\u{FFFD}') { // Check for valid text
-            if let Some(ch) = text.chars().next() { // Consider if text might have multiple chars
+        if !text.is_empty() && text.chars().all(|c| c != '\u{FFFD}') {
+            // Check for valid text
+            if let Some(ch) = text.chars().next() {
+                // Consider if text might have multiple chars
                 return KeySymbol::Char(ch);
             }
         }
@@ -1177,8 +1173,12 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
         // Modifier Keys (when the key itself is pressed)
         keysym::XK_Shift_L | keysym::XK_Shift_R => KeySymbol::Shift,
         keysym::XK_Control_L | keysym::XK_Control_R => KeySymbol::Control,
-        keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => KeySymbol::Alt,
-        keysym::XK_Super_L | keysym::XK_Super_R | keysym::XK_Hyper_L | keysym::XK_Hyper_R => KeySymbol::Super,
+        keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => {
+            KeySymbol::Alt
+        }
+        keysym::XK_Super_L | keysym::XK_Super_R | keysym::XK_Hyper_L | keysym::XK_Hyper_R => {
+            KeySymbol::Super
+        }
         keysym::XK_Caps_Lock => KeySymbol::CapsLock,
         keysym::XK_Num_Lock => KeySymbol::NumLock,
 
@@ -1196,7 +1196,7 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
         keysym::XK_Up => KeySymbol::Up,
         keysym::XK_Right => KeySymbol::Right,
         keysym::XK_Down => KeySymbol::Down,
-        keysym::XK_Page_Up => KeySymbol::PageUp,    // Corrected constant name if needed
+        keysym::XK_Page_Up => KeySymbol::PageUp, // Corrected constant name if needed
         keysym::XK_Page_Down => KeySymbol::PageDown, // Corrected constant name if needed
         keysym::XK_End => KeySymbol::End,
         keysym::XK_Insert => KeySymbol::Insert,
@@ -1231,7 +1231,9 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
         keysym::XK_KP_7 | keysym::XK_KP_Home => KeySymbol::Keypad7,
         keysym::XK_KP_8 | keysym::XK_KP_Up => KeySymbol::Keypad8,
         keysym::XK_KP_9 | keysym::XK_KP_Page_Up => KeySymbol::Keypad9,
-        keysym::XK_KP_Decimal | keysym::XK_KP_Delete | keysym::XK_KP_Separator => KeySymbol::KeypadDecimal,
+        keysym::XK_KP_Decimal | keysym::XK_KP_Delete | keysym::XK_KP_Separator => {
+            KeySymbol::KeypadDecimal
+        }
         keysym::XK_KP_Add => KeySymbol::KeypadPlus,
         keysym::XK_KP_Subtract => KeySymbol::KeypadMinus,
         keysym::XK_KP_Multiply => KeySymbol::KeypadMultiply,
@@ -1255,7 +1257,8 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
             // If it's an unhandled u32 keysym and no valid text, it's unknown.
             log::trace!(
                 "Unhandled u32 keysym 0x{:X} with text '{}', mapping to Unknown",
-                keysym_u32, text
+                keysym_u32,
+                text
             );
             KeySymbol::Unknown
         }
@@ -1310,7 +1313,7 @@ mod tests {
 
         // No modifiers
         event.key.state = 0;
-        let xkey_event = unsafe {&event.key};
+        let xkey_event = unsafe { &event.key };
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1328,7 +1331,7 @@ mod tests {
 
         // Shift
         event.key.state = xlib::ShiftMask;
-        let xkey_event = unsafe{&event.key};
+        let xkey_event = unsafe { &event.key };
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1346,7 +1349,7 @@ mod tests {
 
         // Control
         event.key.state = xlib::ControlMask;
-        let xkey_event = unsafe{&event.key};
+        let xkey_event = unsafe { &event.key };
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1364,7 +1367,7 @@ mod tests {
 
         // Alt (Mod1Mask)
         event.key.state = xlib::Mod1Mask;
-        let xkey_event = unsafe{&event.key};
+        let xkey_event = unsafe { &event.key };
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1382,7 +1385,7 @@ mod tests {
 
         // Super (Mod4Mask)
         event.key.state = xlib::Mod4Mask;
-        let xkey_event = unsafe{&event.key};
+        let xkey_event = unsafe { &event.key };
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);
@@ -1400,7 +1403,7 @@ mod tests {
 
         // Shift + Control
         event.key.state = xlib::ShiftMask | xlib::ControlMask;
-        let xkey_event = unsafe{&event.key};
+        let xkey_event = unsafe { &event.key };
         let mut modifiers = Modifiers::empty();
         if (xkey_event.state & xlib::ShiftMask) != 0 {
             modifiers.insert(Modifiers::SHIFT);

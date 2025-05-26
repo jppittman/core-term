@@ -2,21 +2,13 @@
 
 // Note: This file is part of the `emulator` module.
 // `TerminalEmulator` struct is defined in `src/term/emulator/mod.rs`
+use super::TerminalEmulator; // Bring the struct into scope from the parent module
 use super::ansi_handler; // Use the new ansi_handler module
 use super::input_handler; // Use the new input_handler module
-use super::TerminalEmulator; // Bring the struct into scope from the parent module
 use crate::term::TerminalInterface; // For the `dimensions()` method
 
 // Corrected Crate-level imports for items within src/term/
-use crate::term::{
-    action::EmulatorAction,
-    charset::{map_to_dec_line_drawing, CharacterSet},
-    modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode}, // EraseMode is here
-    screen::{Screen, TabClearMode},                             // Screen and TabClearMode
-    unicode::get_char_display_width,
-    ControlEvent,
-    // No need for super::* anymore, specific items are imported
-};
+use crate::term::{ControlEvent, action::EmulatorAction};
 
 // Standard library imports
 use std::cmp::min;
@@ -30,10 +22,8 @@ use crate::{
         CsiCommand,
         EscCommand,
     },
+    glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER},
     term::UserInputAction,
-    glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER}, // Added WIDE_CHAR_PLACEHOLDER
-                                                                  // Note: cursor::CursorController and cursor::ScreenContext are used by methods in mod.rs
-                                                                  // and are thus imported there.
 };
 
 // Logging
@@ -48,7 +38,7 @@ const DEFAULT_TAB_INTERVAL: u8 = 8;
 
 impl TerminalEmulator {
     /// Handles a parsed `AnsiCommand`.
-    pub fn handle_ansi_command(&mut self, command: AnsiCommand) -> Option<EmulatorAction> {
+    pub(super) fn handle_ansi_command(&mut self, command: AnsiCommand) -> Option<EmulatorAction> {
         // Delegate to the new handler in ansi_handler.rs
         ansi_handler::process_ansi_command(self, command)
     }
@@ -63,12 +53,15 @@ impl TerminalEmulator {
     // They will be called via `emulator.method_name()` from ansi_handler.rs.
 
     /// Handles a `BackendEvent`.
-    pub fn handle_user_event(&mut self, event: crate::term::UserInputAction) -> Option<EmulatorAction> {
+    pub(super) fn handle_user_event(
+        &mut self,
+        event: crate::term::UserInputAction,
+    ) -> Option<EmulatorAction> {
         input_handler::process_user_input_action(self, event)
     }
 
     /// Handles an internal `ControlEvent`.
-    pub fn handle_control_event(&mut self, event: ControlEvent) -> Option<EmulatorAction> {
+    pub(super) fn handle_control_event(&mut self, event: ControlEvent) -> Option<EmulatorAction> {
         input_handler::process_control_event(self, event)
     }
 
