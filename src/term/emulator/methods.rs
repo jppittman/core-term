@@ -5,29 +5,17 @@
 use super::TerminalEmulator; // Bring the struct into scope from the parent module
 use super::ansi_handler; // Use the new ansi_handler module
 use super::input_handler; // Use the new input_handler module
-use crate::term::TerminalInterface; // For the `dimensions()` method
+// For the `dimensions()` method
 
 // Corrected Crate-level imports for items within src/term/
 use crate::term::{ControlEvent, action::EmulatorAction};
 
 // Standard library imports
-use std::cmp::min;
 
 // Crate-level imports for items outside src/term/
-use crate::{
-    ansi::commands::{
-        AnsiCommand,
-        Attribute, // Keep Attribute as it's used in handle_sgr_attributes
-        C0Control,
-        CsiCommand,
-        EscCommand,
-    },
-    glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER},
-    term::UserInputAction,
-};
+use crate::{ansi::commands::AnsiCommand, glyph::Attributes};
 
 // Logging
-use log::{debug, trace, warn};
 
 // Constants (ensure these are defined, e.g., in term/mod.rs or config.rs if not already)
 const DEFAULT_CURSOR_SHAPE: u16 = 1; // Example default shape

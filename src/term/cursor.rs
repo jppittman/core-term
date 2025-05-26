@@ -6,7 +6,7 @@
 //! abstracting away the complexities of different terminal modes like Origin Mode (DECOM)
 //! from the main terminal emulation logic.
 
-use crate::{ansi::commands::Attribute, config, glyph::Attributes};
+use crate::{config, glyph::Attributes};
 use anyhow::{Result, anyhow};
 use log::{trace, warn};
 use serde::{

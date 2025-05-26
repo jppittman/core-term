@@ -1,7 +1,7 @@
 // src/term/emulator/screen_ops.rs
 
 use super::TerminalEmulator;
-use crate::glyph::Attributes; // For default_attributes
+// For default_attributes
 use crate::term::modes::EraseMode; // EraseMode is used by erase_in_display, erase_in_line
 use std::cmp::min; // For erase_chars
 

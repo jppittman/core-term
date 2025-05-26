@@ -1,7 +1,7 @@
 // src/term/emulator/cursor_handler.rs
 
 use super::TerminalEmulator;
-use crate::term::{TerminalInterface, action::EmulatorAction}; // For dimensions
+use crate::term::action::EmulatorAction; // For dimensions
 use log::warn; // For WindowManipulation
 
 impl TerminalEmulator {

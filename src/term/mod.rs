@@ -25,11 +25,7 @@ pub use snapshot::{
 };
 
 // Crate-level imports (adjust paths based on where items are moved)
-use crate::{
-    ansi::commands::AnsiCommand,
-    // Use crate::color::Color directly where needed, or via glyph::Color
-    glyph::Glyph,
-};
+use crate::ansi::commands::AnsiCommand;
 // Explicitly import Color and NamedColor if they are used directly in this module's functions,
 // though they are mostly encapsulated within other types like Attributes.
 
