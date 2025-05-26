@@ -720,7 +720,85 @@ fn test_ps1_multiline_prompt_overflows_tiny_screen_repeatedly() {
     let snapshot = term.get_render_snapshot();
     assert_screen_state(&snapshot, &["C ", "> "], Some((1,1))); 
     assert!(term.cursor_wrap_next, "cursor_wrap_next should be true after prompt fills line");
-
 }
 
+// Add to src/term/tests.rs
+#[test]
+fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
+    let cols = 10;
+    let rows = 5; // e.g., phys rows 0-4
+    let mut term = create_test_emulator(cols, rows);
 
+    // Ensure origin mode is OFF (default, but explicit for clarity)
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetModePrivate(DecModeConstant::Origin as u16),
+    )));
+
+    // Set scrolling region from phys row 1 to phys row 3 (1-based: top=2, bottom=4)
+    // So, scroll_top = 1, scroll_bot = 3. Physical screen bottom is row 4.
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
+    )));
+
+    // Sanity check the region (optional, but good for test setup)
+    let screen_ctx_after_stbm = term.current_screen_context();
+    assert_eq!(screen_ctx_after_stbm.scroll_top, 1, "STBM scroll_top mismatch");
+    assert_eq!(screen_ctx_after_stbm.scroll_bot, 3, "STBM scroll_bot mismatch");
+    assert!(!screen_ctx_after_stbm.origin_mode_active, "Origin mode should be off");
+    
+    // After STBM, cursor moves to (0,0) physical if origin mode off
+    // Move cursor to bottom of scrolling region: phys row 3, col 0
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(4, 1), // 1-based: row 4 (phys 3), col 1 (phys 0)
+    )));
+
+    // Print some text to fill a few lines in the scroll region
+    // and ensure content is distinct.
+    // Line 1 (phys): "XXXXX"
+    // Line 2 (phys): "YYYYY"
+    // Line 3 (phys): "ZZ" -> cursor after ZZ, on phys row 3, col 2
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2,1)))); // phys row 1
+    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X'))); }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(3,1)))); // phys row 2
+    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Y'))); }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(4,1)))); // phys row 3
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z')));
+
+    let snapshot_before_lf = term.get_render_snapshot();
+    assert_screen_state(
+        &snapshot_before_lf,
+        &[
+            "          ", // Row 0 (outside scroll region)
+            "XXXXX     ", // Row 1 (scroll_top)
+            "YYYYY     ", // Row 2
+            "ZZ        ", // Row 3 (scroll_bot, cursor after ZZ)
+            "          ", // Row 4 (outside scroll region)
+        ],
+        Some((3, 2)), // Cursor at physical (row 3, col 2)
+    );
+
+    // Issue an LF. Cursor is at physical row 3 (scroll_bot), origin mode is OFF.
+    // Expected: Region [1,3] should scroll up.
+    // "XXXXX" should be lost (scrolled out of region).
+    // "YYYYY" should move to physical row 1.
+    // "ZZ   " should move to physical row 2.
+    // Physical row 3 should become blank.
+    // Cursor should be at physical row 3, col 0.
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
+        C0Control::LF,
+    )));
+
+    let snapshot_after_lf = term.get_render_snapshot();
+    assert_screen_state(
+        &snapshot_after_lf,
+        &[
+            "          ", // Row 0 (outside scroll region, untouched)
+            "YYYYY     ", // Row 1 (old line 2 scrolled up)
+            "ZZ        ", // Row 2 (old line 3 scrolled up)
+            "          ", // Row 3 (new blank line in scroll region)
+            "          ", // Row 4 (outside scroll region, untouched)
+        ],
+        Some((3, 0)), // Cursor at physical (row 3, col 0)
+    );
+}
