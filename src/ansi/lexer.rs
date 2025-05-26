@@ -25,6 +25,7 @@ const C0_CONTROL_PRINTABLE_PART1_RANGE: core::ops::RangeInclusive<u8> = 0x00..=0
 const C0_CONTROL_PRINTABLE_PART2_RANGE: core::ops::RangeInclusive<u8> = 0x1C..=0x1F; // FS to US
 const DEL_BYTE: u8 = 0x7F;
 const ESC_BYTE: u8 = 0x1B;
+const STRING_TERMINATOR: u8 = 0x9C;
 const C1_CONTROL_RANGE: core::ops::RangeInclusive<u8> = 0x80..=0x9F;
 
 // --- Constants for Unicode boundaries ---
@@ -193,7 +194,7 @@ impl AnsiLexer {
     /// they are handled by the Utf8Decoder returning InvalidSequence if they break a sequence.
     #[inline]
     fn is_unambiguous_interrupting_control(byte: u8) -> bool {
-        byte == ESC_BYTE || byte == 0x9C ||
+        byte == ESC_BYTE || byte == STRING_TERMINATOR ||
         // Consider which C0s truly interrupt. For now, all except common formatting.
         // Some tests might expect NUL or other C0s to also interrupt.
         // This list should match C0s that are *never* valid data mid-UTF-8.
@@ -235,6 +236,7 @@ impl AnsiLexer {
                 Utf8DecodeResult::NeedsMoreBytes => { /* Byte buffered, wait for more */ }
                 Utf8DecodeResult::InvalidSequence => {
                     // This means 'byte' itself was an invalid UTF-8 start (e.g., 0xC0, 0xF5).
+                    warn!("invalid utf8 byte: {:X?} printing replacment character", byte);
                     self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER));
                 }
             }
@@ -246,6 +248,7 @@ impl AnsiLexer {
             // --- Currently building a multi-byte UTF-8 char ---
             // Check for unambiguous interruptions (ESC, most C0s)
             if Self::is_unambiguous_interrupting_control(byte) {
+                warn!("encountered control byte: {:X?} mid utf8 stream", byte);
                 self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER)); // For the aborted UTF-8
                 self.utf8_decoder.reset();
                 self.process_byte_as_new_token(byte); // Process the interrupting C0/ESC
