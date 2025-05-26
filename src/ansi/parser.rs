@@ -251,7 +251,6 @@ impl AnsiParser {
     }
 
     pub fn process_token(&mut self, token: AnsiToken) {
-        trace!("Processing token: {:?} in state: {:?}", token, self.state);
         match self.state {
             State::Ground => match token {
                 AnsiToken::Print(c) => self.dispatch_print(c),
