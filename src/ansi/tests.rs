@@ -6,7 +6,7 @@
 // Corrected imports using commands submodule path
 use super::{
     AnsiParser, AnsiProcessor,
-    commands::{AnsiCommand, Attribute, C0Control, CsiCommand, EscCommand},
+    commands::{AnsiCommand, Attribute, C0Control, CsiCommand},
 };
 use crate::color::{Color, NamedColor};
 use test_log::test; // Ensure test_log is a dev-dependency for log capturing in tests

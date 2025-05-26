@@ -16,7 +16,8 @@ impl TerminalEmulator {
             let ps = ps_str.parse::<u32>().unwrap_or(u32::MAX);
 
             match ps {
-                0 | 2 => { // OSC Set Icon Name or Set Window Title
+                0 | 2 => {
+                    // OSC Set Icon Name or Set Window Title
                     // Directly use content_str, assuming it's pre-processed by parser
                     return Some(EmulatorAction::SetTitle(content_str.to_string()));
                 }
