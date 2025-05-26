@@ -246,12 +246,12 @@ fn test_osc_set_window_title() {
     let mut term = create_test_emulator(10, 1);
 
     let action = term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Osc(
-        "2;New Title\x07".as_bytes().to_vec()
+        "2;New Title".as_bytes().to_vec()
     )));
     assert_eq!(action, Some(EmulatorAction::SetTitle("New Title".to_string())));
 
     let action2 = term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Osc(
-        "2;Another Title\x1b\\".as_bytes().to_vec() // ST as \x1b\\
+        "2;Another Title".as_bytes().to_vec() // ST as \x1b\\
     )));
     assert_eq!(action2, Some(EmulatorAction::SetTitle("Another Title".to_string())));
 }
