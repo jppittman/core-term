@@ -2,7 +2,7 @@
 
 // Crate-level imports
 use crate::{
-    glyph::{Attributes, Glyph}, // Ensure Glyph and Attributes are imported
+    glyph::Attributes, // Ensure Glyph and Attributes are imported
     term::{
         EmulatorInput,          // Added EmulatorInput
         action::EmulatorAction, // Added UserInputAction, ControlEvent
@@ -10,10 +10,7 @@ use crate::{
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
         modes::{DecModeConstant, DecPrivateModes},
         screen::Screen,
-        snapshot::{
-            CursorRenderState, CursorShape, RenderSnapshot, SelectionMode, SelectionRenderState,
-            SnapshotLine,
-        },
+        snapshot::{CursorRenderState, CursorShape, RenderSnapshot, SnapshotLine},
     },
 };
 
