@@ -26,45 +26,6 @@ pub const RENDERER_DEFAULT_BG: Color = Color::Named(NamedColor::Black);
 /// Constant representing a single terminal cell consumed by a drawing operation.
 const SINGLE_CELL_CONSUMED: usize = 1;
 
-/*
-Assumed definitions from src/term/mod.rs or similar (based on NORTH_STAR.md):
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Point {
-    pub x: usize,
-    pub y: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct SnapshotLine {
-    pub is_dirty: bool,
-    pub cells: Vec<Glyph>,
-}
-
-// CursorRenderState no longer needs `is_visible`. Its presence in `Option` signifies visibility.
-#[derive(Debug, Clone, Copy)]
-pub struct CursorRenderState {
-    pub x: usize, // Physical x of the cell the cursor is on/starts at
-    pub y: usize, // Physical y
-    // pub shape: term::cursor::CursorShape, // If needed by renderer for visual style
-}
-
-#[derive(Debug, Clone)]
-pub struct RenderSnapshot {
-    pub dimensions: (usize, usize), // cols, rows
-    pub lines: Vec<SnapshotLine>,
-    pub cursor_state: Option<CursorRenderState>, // If None, cursor is not drawn
-    // pub selection_state: Option<SelectionRenderState>, // Not used in current renderer logic
-}
-
-impl RenderSnapshot {
-    // Helper to get a glyph from the snapshot's lines
-    pub fn get_glyph(&self, point: Point) -> Option<&Glyph> {
-        self.lines.get(point.y)?.cells.get(point.x)
-    }
-}
-*/
-
 /// The `Renderer` translates `RenderSnapshot` state into abstract drawing commands
 /// for a `Driver`.
 ///

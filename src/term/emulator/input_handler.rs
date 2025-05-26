@@ -24,7 +24,6 @@ pub(super) fn process_user_input_action(
             text,
         } => {
             let mut bytes_to_send: Vec<u8> = Vec::new();
-
             if let Some(txt_val) = &text {
                 // Priority 1: Explicit text from driver.
                 // Specific Ctrl+Alpha generation is needed if `text` doesn't already contain the control char.
