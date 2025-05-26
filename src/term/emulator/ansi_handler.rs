@@ -5,12 +5,11 @@ use crate::{
     ansi::commands::{AnsiCommand, C0Control, CsiCommand, EscCommand},
     glyph::Attributes,
     term::{
-        TerminalInterface, // For dimensions
         action::EmulatorAction,
-        charset::{CharacterSet, map_to_dec_line_drawing},
+        charset::CharacterSet,
         cursor::CursorShape,
         emulator::FocusState,
-        modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode},
+        modes::{DecPrivateModes, EraseMode, Mode},
         screen::TabClearMode,
     }, // For Attributes::default() in ResetToInitialState
 };

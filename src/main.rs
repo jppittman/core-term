@@ -26,10 +26,8 @@ use crate::{
 };
 use std::os::unix::io::AsRawFd; // For getting raw file descriptors
 
-use ansi::{AnsiCommand, commands::EscCommand};
 // Logging
 use log::{error, info, trace, warn};
-use term::TerminalInterface;
 
 // Constants for epoll tokens.
 // These values are arbitrary but must be unique for each FD monitored.

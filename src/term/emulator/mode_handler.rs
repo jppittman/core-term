@@ -9,7 +9,7 @@ use crate::{
         modes::{DecModeConstant, Mode},
     },
 };
-use log::{debug, trace, warn};
+use log::{trace, warn};
 
 impl TerminalEmulator {
     pub(super) fn handle_sgr_attributes(&mut self, attributes_vec: Vec<Attribute>) {
