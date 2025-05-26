@@ -2,13 +2,17 @@
 
 // Crate-level imports
 use crate::{
-    glyph::Attributes,
+    glyph::{Attributes, Glyph}, // Ensure Glyph and Attributes are imported
     term::{
         action::EmulatorAction, // Added UserInputAction, ControlEvent
         charset::CharacterSet,
-        cursor::{CursorController, ScreenContext},
+        cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
         modes::{DecModeConstant, DecPrivateModes},
         screen::Screen,
+        snapshot::{
+            CursorRenderState, CursorShape, RenderSnapshot, SelectionMode, SelectionRenderState,
+            SnapshotLine,
+        },
         EmulatorInput, // Added EmulatorInput
     },
 };
@@ -127,12 +131,12 @@ impl TerminalEmulator {
     }
 
     /// Returns the current logical cursor position (0-based column, row).
-    pub fn cursor_pos(&self) -> (usize, usize) {
+    pub(super) fn cursor_pos(&self) -> (usize, usize) {
         self.cursor_controller.logical_pos()
     }
 
     /// Returns `true` if the alternate screen buffer is currently active.
-    pub fn is_alt_screen_active(&self) -> bool {
+    pub(super) fn is_alt_screen_active(&self) -> bool {
         self.screen.alt_screen_active
     }
 
@@ -172,6 +176,73 @@ impl TerminalEmulator {
                 self.print_char(ch);
                 None
             }
+        }
+    }
+
+    /// Creates a snapshot of the terminal's current visible state for rendering.
+    pub fn get_render_snapshot(&self) -> RenderSnapshot {
+        let (width, height) = (self.screen.width, self.screen.height);
+        let mut lines = Vec::with_capacity(height);
+        let active_grid = self.screen.active_grid();
+
+        for y_idx in 0..height {
+            // Screen lines are directly 0..height for the visible part in active_grid
+            let line_glyphs = active_grid[y_idx].clone();
+            let is_dirty = self.screen.dirty.get(y_idx).map_or(true, |&d| d != 0); // Mark dirty if out of bounds or non-zero
+            lines.push(SnapshotLine {
+                is_dirty,
+                cells: line_glyphs,
+            });
+        }
+
+        let mut cursor_state = None;
+        // Check DECTCEM mode for cursor visibility
+        if self.dec_modes.text_cursor_enable_mode {
+            let (cursor_x, cursor_y) = self
+                .cursor_controller
+                .physical_screen_pos(&self.current_screen_context());
+
+            let (cell_char_underneath, cell_attributes_underneath) =
+                if cursor_y < height && cursor_x < width {
+                    // Use active_grid directly as get_glyph might have side effects or different logic
+                    let glyph = &active_grid[cursor_y][cursor_x];
+                    (glyph.c, glyph.attr)
+                } else {
+                    (' ', Attributes::default()) // Default if cursor is out of bounds
+                };
+
+            // Map internal cursor_controller.cursor.shape to term::snapshot::CursorShape
+            let internal_shape = self.cursor_controller.cursor.shape;
+            let mapped_shape = match internal_shape {
+                cursor::CursorShape::BlinkingBlock | cursor::CursorShape::SteadyBlock => {
+                    CursorShape::Block
+                }
+                cursor::CursorShape::BlinkingUnderline | cursor::CursorShape::SteadyUnderline => {
+                    CursorShape::Underline
+                }
+                cursor::CursorShape::BlinkingBar | cursor::CursorShape::SteadyBar => {
+                    CursorShape::Bar
+                }
+            };
+
+            cursor_state = Some(CursorRenderState {
+                x: cursor_x,
+                y: cursor_y,
+                shape: mapped_shape,
+                is_visible: true, // DECTCEM is checked, actual blink state not handled yet
+                cell_char_underneath,
+                cell_attributes_underneath,
+            });
+        }
+
+        // Selection state is None for now as per plan.
+        let selection_state = None; // TODO: Populate this when selection is handled
+
+        RenderSnapshot {
+            dimensions: (width, height),
+            lines,
+            cursor_state,
+            selection_state,
         }
     }
 }

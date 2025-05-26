@@ -12,12 +12,16 @@ pub mod action;
 pub mod charset;
 mod emulator;
 pub mod modes;
+pub mod snapshot; // Add this line to declare the module
 
 // Re-export items for easier use by other modules and within this module
 pub use action::{ControlEvent, EmulatorAction, UserInputAction}; // Added UserInputAction, ControlEvent
 pub use charset::{map_to_dec_line_drawing, CharacterSet};
 pub use emulator::TerminalEmulator;
 pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
+pub use snapshot::{
+    CursorRenderState, CursorShape, RenderSnapshot, SelectionMode, SelectionRenderState, SnapshotLine,
+};
 
 // Crate-level imports (adjust paths based on where items are moved)
 use crate::{
@@ -62,74 +66,31 @@ pub enum EmulatorInput {
     RawChar(char),
 }
 
-/// Defines the interface the Renderer uses to interact with a terminal implementation.
+/// Defines the essential public interface for a terminal emulator.
+/// This interface is used by components like the `AppOrchestrator` and `Renderer`.
 pub trait TerminalInterface {
-    fn dimensions(&self) -> (usize, usize);
-    fn get_glyph(&self, x: usize, y: usize) -> Glyph;
-    fn is_cursor_visible(&self) -> bool;
-    fn get_screen_cursor_pos(&self) -> (usize, usize);
-    fn take_dirty_lines(&mut self) -> Vec<usize>;
+    /// Interprets an `EmulatorInput` and updates the terminal state.
+    /// Returns an `Option<EmulatorAction>` if the input results in an action
+    /// that needs to be handled externally.
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction>;
+
+    /// Creates a snapshot of the terminal's current visible state for rendering.
+    /// This method provides all necessary information for the renderer to draw
+    /// the terminal screen, including dirty flags, cell data, cursor, and selection.
+    fn get_render_snapshot(&self) -> RenderSnapshot;
 }
 
 impl TerminalInterface for TerminalEmulator {
-    fn dimensions(&self) -> (usize, usize) {
-        (self.screen.width, self.screen.height)
-    }
-
     /// Interprets an `EmulatorInput` and updates the terminal state.
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
-        let mut action = match input {
-            EmulatorInput::Ansi(command) => self.handle_ansi_command(command),
-            EmulatorInput::Control(event) => self.handle_control_event(event),
-            EmulatorInput::User(event) => self.handle_user_event(event),
-            EmulatorInput::RawChar(ch) => {
-                self.print_char(ch);
-                None
-            }
-        };
-
-        // If no explicit action was returned but the screen became dirty,
-        // signal a redraw request. This is a general catch-all.
-        // Specific operations that dirty the screen might also return RequestRedraw directly.
-        if action.is_none() && !self.screen.dirty.iter().all(|&d| d == 0) {
-            // Check if RequestRedraw is already the action to avoid duplication
-            if !matches!(action, Some(EmulatorAction::RequestRedraw)) {
-                action = Some(EmulatorAction::RequestRedraw);
-            }
-        }
-        action
+        // This just calls the inherent method on TerminalEmulator (defined in src/term/emulator/mod.rs)
+        self.interpret_input(input)
     }
 
-    fn get_glyph(&self, x: usize, y: usize) -> Glyph {
-        self.screen.get_glyph(x, y)
-    }
-
-    fn is_cursor_visible(&self) -> bool {
-        // Visibility is determined by DECTCEM mode AND potentially blink state
-        // For now, just the DECTCEM mode state.
-        self.dec_modes.text_cursor_enable_mode
-    }
-
-    fn get_screen_cursor_pos(&self) -> (usize, usize) {
-        self.cursor_controller
-            .physical_screen_pos(&self.current_screen_context())
-    }
-
-    fn take_dirty_lines(&mut self) -> Vec<usize> {
-        let mut all_dirty_indices: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
-
-        for (idx, &is_dirty_flag) in self.screen.dirty.iter().enumerate() {
-            if is_dirty_flag != 0 {
-                all_dirty_indices.insert(idx);
-            }
-        }
-        self.screen.clear_dirty_flags();
-
-        let mut sorted_dirty_lines: Vec<usize> = all_dirty_indices.into_iter().collect();
-        sorted_dirty_lines.sort_unstable();
-        sorted_dirty_lines
+    /// Creates a snapshot of the terminal's current visible state for rendering.
+    fn get_render_snapshot(&self) -> RenderSnapshot {
+        // This just calls the inherent method on TerminalEmulator (defined in src/term/emulator/mod.rs)
+        self.get_render_snapshot()
     }
 }
 
