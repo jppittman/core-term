@@ -4,20 +4,9 @@
 //! This includes user-initiated actions, control events, and actions
 //! the emulator signals to the orchestrator.
 
-use crate::backends::{KeySymbol, Modifiers}; // Assuming these are re-exported via backends
+use crate::backends::{KeySymbol, Modifiers, MouseButton, MouseEventType}; // Assuming these are re-exported via backends
 
 // --- User Input Actions ---
-
-// Placeholder for MouseButton and MouseEventType until fully defined
-// These might come from backends module as well if they are part of BackendEvent::Mouse
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseButton {
-    /* TODO: Define variants like Left, Middle, Right, etc. */ Placeholder,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseEventType {
-    /* TODO: Define variants like Press, Release, Move */ Placeholder,
-}
 
 /// Represents user-initiated actions that serve as input to the terminal emulator.
 /// This corresponds to `EmulatorInput::User(UserInputAction)`.

@@ -15,6 +15,27 @@ use std::os::unix::io::RawFd;
 pub mod console;
 pub mod x11;
 
+/// Represents mouse buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
+    Unknown,
+}
+
+/// Represents mouse event types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MouseEventType {
+    Press,
+    Release,
+    Move,
+}
+
 // It can be useful to re-export concrete driver types if they are frequently
 // used directly by `main.rs` or other high-level modules, though this is optional.
 // Example:
@@ -55,6 +76,14 @@ pub enum BackendEvent {
     FocusGained,
     /// The terminal window lost input focus.
     FocusLost,
+    /// A mouse event occurred.
+    Mouse {
+        col: usize,
+        row: usize,
+        event_type: MouseEventType,
+        button: MouseButton,
+        modifiers: Modifiers,
+    },
 }
 
 /// Defines coordinates for a single character cell on the terminal grid (0-based).

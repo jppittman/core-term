@@ -13,6 +13,7 @@ pub mod charset;
 mod emulator;
 pub mod modes;
 pub mod snapshot; // Add this line to declare the module
+pub mod selection;
 
 // Re-export items for easier use by other modules and within this module
 pub use action::{ControlEvent, EmulatorAction, UserInputAction}; // Added UserInputAction, ControlEvent
@@ -23,6 +24,7 @@ pub use snapshot::{
     CursorRenderState, CursorShape, Point, RenderSnapshot, SelectionMode, SelectionRenderState,
     SnapshotLine,
 };
+pub use selection::Selection;
 
 // Crate-level imports (adjust paths based on where items are moved)
 use crate::ansi::commands::AnsiCommand;

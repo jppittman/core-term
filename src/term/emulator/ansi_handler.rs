@@ -210,6 +210,7 @@ pub(super) fn process_ansi_command(
                 for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize) {
                     emulator.screen.set_tabstop(i);
                 }
+                emulator.selection.clear_selection(); // Clear selection state
                 emulator.cursor_wrap_next = false;
                 if emulator.dec_modes.text_cursor_enable_mode {
                     return Some(EmulatorAction::SetCursorVisibility(true));

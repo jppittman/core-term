@@ -4,7 +4,9 @@
 use log::{debug, error, info, trace, warn};
 
 // Crate-level imports
-use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
+use crate::backends::{
+    BackendEvent, CellCoords, CellRect, Driver, MouseButton, MouseEventType, TextRunStyle,
+};
 use crate::color::{Color, NamedColor};
 use crate::glyph::AttrFlags;
 use crate::keys::{KeySymbol, Modifiers}; // Added for new key representation
@@ -343,7 +345,40 @@ impl Driver for XDriver {
                     self.has_focus = false;
                     backend_events.push(BackendEvent::FocusLost);
                 }
-                // Add other event types as needed (e.g., ButtonPress, ButtonRelease, MotionNotify for mouse)
+                xlib::ButtonPress => {
+                    let xbutton_event = unsafe { xevent.button };
+                    let backend_event = self.x_button_event_to_backend_mouse_event(
+                        &xbutton_event,
+                        MouseEventType::Press,
+                    );
+                    debug!(
+                        "XEvent: ButtonPress (col:{}, row:{}, button:{:?}, modifiers:{:?})",
+                        backend_event.col, backend_event.row, backend_event.button, backend_event.modifiers
+                    );
+                    backend_events.push(BackendEvent::Mouse(backend_event));
+                }
+                xlib::ButtonRelease => {
+                    let xbutton_event = unsafe { xevent.button };
+                    let backend_event = self.x_button_event_to_backend_mouse_event(
+                        &xbutton_event,
+                        MouseEventType::Release,
+                    );
+                    debug!(
+                        "XEvent: ButtonRelease (col:{}, row:{}, button:{:?}, modifiers:{:?})",
+                        backend_event.col, backend_event.row, backend_event.button, backend_event.modifiers
+                    );
+                    backend_events.push(BackendEvent::Mouse(backend_event));
+                }
+                xlib::MotionNotify => {
+                    let xmotion_event = unsafe { xevent.motion };
+                    let backend_event = self.x_motion_event_to_backend_mouse_event(&xmotion_event);
+                    // Use trace for MotionNotify as it can be very verbose
+                    trace!(
+                        "XEvent: MotionNotify (col:{}, row:{}, button:{:?}, state: {}, modifiers:{:?})",
+                        backend_event.col, backend_event.row, backend_event.button, xmotion_event.state, backend_event.modifiers
+                    );
+                    backend_events.push(BackendEvent::Mouse(backend_event));
+                }
                 _ => {
                     // Log unhandled event types for debugging.
                     trace!("XEvent: Ignored (type: {})", event_type);
@@ -738,6 +773,101 @@ impl Driver for XDriver {
         info!("XDriver cleanup complete.");
         Ok(())
     }
+
+    // Helper to translate X11 state mask to our Modifiers enum
+    fn x_state_to_modifiers(state: c_uint) -> Modifiers {
+        let mut modifiers = Modifiers::empty();
+        if (state & xlib::ShiftMask) != 0 {
+            modifiers.insert(Modifiers::SHIFT);
+        }
+        if (state & xlib::ControlMask) != 0 {
+            modifiers.insert(Modifiers::CONTROL);
+        }
+        if (state & xlib::Mod1Mask) != 0 { // Mod1Mask is usually Alt
+            modifiers.insert(Modifiers::ALT);
+        }
+        if (state & xlib::Mod4Mask) != 0 { // Mod4Mask is usually Super/Windows/Command
+            modifiers.insert(Modifiers::SUPER);
+        }
+        modifiers
+    }
+
+    // Helper to translate XButtonEvent to our BackendEvent::Mouse payload
+    fn x_button_event_to_backend_mouse_event(
+        &self,
+        xbutton: &xlib::XButtonEvent,
+        event_type: MouseEventType,
+    ) -> crate::backends::MouseEvent { // Specify full path to avoid ambiguity
+        let col = if self.font_width > 0 {
+            (xbutton.x as usize) / self.font_width as usize
+        } else {
+            0
+        };
+        let row = if self.font_height > 0 {
+            (xbutton.y as usize) / self.font_height as usize
+        } else {
+            0
+        };
+        let button = match xbutton.button {
+            xlib::Button1 => MouseButton::Left,
+            xlib::Button2 => MouseButton::Middle,
+            xlib::Button3 => MouseButton::Right,
+            xlib::Button4 => MouseButton::ScrollUp,
+            xlib::Button5 => MouseButton::ScrollDown,
+            6 => MouseButton::ScrollLeft,
+            7 => MouseButton::ScrollRight,
+            _ => MouseButton::Unknown,
+        };
+        let modifiers = Self::x_state_to_modifiers(xbutton.state);
+
+        crate::backends::MouseEvent { // Specify full path
+            col,
+            row,
+            event_type,
+            button,
+            modifiers,
+        }
+    }
+
+    // Helper to translate XMotionEvent to our BackendEvent::Mouse payload
+    fn x_motion_event_to_backend_mouse_event(
+        &self,
+        xmotion: &xlib::XMotionEvent,
+    ) -> crate::backends::MouseEvent { // Specify full path
+        let col = if self.font_width > 0 {
+            (xmotion.x as usize) / self.font_width as usize
+        } else {
+            0
+        };
+        let row = if self.font_height > 0 {
+            (xmotion.y as usize) / self.font_height as usize
+        } else {
+            0
+        };
+        let event_type = MouseEventType::Move;
+        let button = if (xmotion.state & xlib::Button1Mask) != 0 {
+            MouseButton::Left
+        } else if (xmotion.state & xlib::Button2Mask) != 0 {
+            MouseButton::Middle
+        } else if (xmotion.state & xlib::Button3Mask) != 0 {
+            MouseButton::Right
+        } else if (xmotion.state & xlib::Button4Mask) != 0 {
+            MouseButton::ScrollUp
+        } else if (xmotion.state & xlib::Button5Mask) != 0 {
+            MouseButton::ScrollDown
+        } else {
+            MouseButton::Unknown
+        };
+        let modifiers = Self::x_state_to_modifiers(xmotion.state);
+
+        crate::backends::MouseEvent { // Specify full path
+            col,
+            row,
+            event_type,
+            button,
+            modifiers,
+        }
+    }
 }
 
 // --- XDriver Private Helper Methods ---
@@ -896,7 +1026,10 @@ impl XDriver {
                 | xlib::KeyPressMask       // Keyboard input
                 // | xlib::KeyReleaseMask    // If needed
                 | xlib::StructureNotifyMask  // Resize/move events (ConfigureNotify)
-                | xlib::FocusChangeMask; // FocusIn/FocusOut events
+                | xlib::FocusChangeMask // FocusIn/FocusOut events
+                | xlib::ButtonPressMask // Mouse button presses
+                | xlib::ButtonReleaseMask // Mouse button releases
+                | xlib::PointerMotionMask; // Mouse movement
             // Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse
 
             self.window = xlib::XCreateWindow(
@@ -1280,7 +1413,8 @@ impl Drop for XDriver {
 mod tests {
     use super::*; // To import XDriver, xkeysym_to_keysymbol, Modifiers, KeySymbol
     use x11::keysym;
-    use x11::xlib; // For xlib::KeySym and event structures // For XK_* constants
+    use x11::xlib; // For xlib::KeySym and event structures
+    use libc::c_uint; // For c_uint type used in XEvent states/buttons
 
     // Helper to create a basic XKeyEvent for testing modifier extraction
     fn mock_xkey_event(state: u32, keycode: u32) -> xlib::XKeyEvent {
@@ -1537,5 +1671,150 @@ mod tests {
         );
         // This confirms that XK_KP_Home (etc.) are treated as Keypad7 (etc.)
         // rather than KeySymbol::Home if text is empty.
+    }
+
+    // --- Tests for Mouse Event Translation Helpers ---
+
+    #[test]
+    fn test_x_state_to_modifiers_conversion() {
+        assert_eq!(XDriver::x_state_to_modifiers(0), Modifiers::empty());
+        assert_eq!(XDriver::x_state_to_modifiers(xlib::ShiftMask), Modifiers::SHIFT);
+        assert_eq!(XDriver::x_state_to_modifiers(xlib::ControlMask), Modifiers::CONTROL);
+        assert_eq!(XDriver::x_state_to_modifiers(xlib::Mod1Mask), Modifiers::ALT);
+        assert_eq!(XDriver::x_state_to_modifiers(xlib::Mod4Mask), Modifiers::SUPER);
+        assert_eq!(
+            XDriver::x_state_to_modifiers(xlib::ShiftMask | xlib::Mod1Mask),
+            Modifiers::SHIFT | Modifiers::ALT
+        );
+    }
+
+    // Mock XDriver for testing mouse event helpers. Only font_width/height are relevant.
+    fn mock_xdriver_for_mouse_tests() -> XDriver {
+        // Most fields can be null/zero as they aren't used by these specific helpers.
+        // This is safe because we are not calling `new()` or `process_events()`.
+        // We are only calling the static-like helper methods we just created.
+        // For `x_button_event_to_backend_mouse_event` and `x_motion_event_to_backend_mouse_event`
+        // which are methods on `&self`, we need an instance, but `display`, `window` etc.
+        // are not accessed by these specific helpers.
+        XDriver {
+            display: std::ptr::null_mut(),
+            screen: 0,
+            window: 0,
+            colormap: 0,
+            visual: std::ptr::null_mut(),
+            xft_font: std::ptr::null_mut(),
+            xft_draw: std::ptr::null_mut(),
+            xft_ansi_colors: Vec::new(),
+            xft_color_cache_rgb: HashMap::new(),
+            font_width: 8, // Crucial for tests
+            font_height: 16, // Crucial for tests
+            font_ascent: 0,
+            current_pixel_width: 0,
+            current_pixel_height: 0,
+            wm_delete_window: 0,
+            protocols_atom: 0,
+            clear_gc: std::ptr::null_mut(),
+            has_focus: true,
+            is_native_cursor_visible: true,
+        }
+    }
+    
+    fn mock_xbutton_event(x: i32, y: i32, button_code: u32, state_mask: u32) -> xlib::XButtonEvent {
+        let mut event: xlib::XButtonEvent = unsafe { mem::zeroed() };
+        event.type_ = xlib::ButtonPress; // Type can be press or release
+        event.x = x;
+        event.y = y;
+        event.button = button_code as c_uint;
+        event.state = state_mask as c_uint;
+        event
+    }
+
+    #[test]
+    fn test_x11_button_press_to_backend_event() {
+        let driver = mock_xdriver_for_mouse_tests();
+        let xbutton = mock_xbutton_event(30, 60, xlib::Button1, xlib::ShiftMask);
+        
+        let backend_event_payload = driver.x_button_event_to_backend_mouse_event(&xbutton, MouseEventType::Press);
+
+        assert_eq!(backend_event_payload.col, 3); // 30 / 8
+        assert_eq!(backend_event_payload.row, 3); // 60 / 16
+        assert_eq!(backend_event_payload.event_type, MouseEventType::Press);
+        assert_eq!(backend_event_payload.button, MouseButton::Left);
+        assert_eq!(backend_event_payload.modifiers, Modifiers::SHIFT);
+    }
+
+    #[test]
+    fn test_x11_button_release_to_backend_event() {
+        let driver = mock_xdriver_for_mouse_tests();
+        let xbutton = mock_xbutton_event(45, 85, xlib::Button3, xlib::ControlMask);
+
+        let backend_event_payload = driver.x_button_event_to_backend_mouse_event(&xbutton, MouseEventType::Release);
+        
+        assert_eq!(backend_event_payload.col, 5); // 45 / 8
+        assert_eq!(backend_event_payload.row, 5); // 85 / 16
+        assert_eq!(backend_event_payload.event_type, MouseEventType::Release);
+        assert_eq!(backend_event_payload.button, MouseButton::Right);
+        assert_eq!(backend_event_payload.modifiers, Modifiers::CONTROL);
+    }
+    
+    #[test]
+    fn test_x11_scroll_buttons_to_backend_event() {
+        let driver = mock_xdriver_for_mouse_tests();
+        // Scroll Up
+        let xbutton_scroll_up = mock_xbutton_event(10, 10, xlib::Button4, 0);
+        let backend_event_scroll_up = driver.x_button_event_to_backend_mouse_event(&xbutton_scroll_up, MouseEventType::Press);
+        assert_eq!(backend_event_scroll_up.button, MouseButton::ScrollUp);
+
+        // Scroll Down
+        let xbutton_scroll_down = mock_xbutton_event(10, 10, xlib::Button5, 0);
+        let backend_event_scroll_down = driver.x_button_event_to_backend_mouse_event(&xbutton_scroll_down, MouseEventType::Press);
+        assert_eq!(backend_event_scroll_down.button, MouseButton::ScrollDown);
+        
+        // Scroll Left (button 6)
+        let xbutton_scroll_left = mock_xbutton_event(10, 10, 6, 0);
+        let backend_event_scroll_left = driver.x_button_event_to_backend_mouse_event(&xbutton_scroll_left, MouseEventType::Press);
+        assert_eq!(backend_event_scroll_left.button, MouseButton::ScrollLeft);
+
+        // Scroll Right (button 7)
+        let xbutton_scroll_right = mock_xbutton_event(10, 10, 7, 0);
+        let backend_event_scroll_right = driver.x_button_event_to_backend_mouse_event(&xbutton_scroll_right, MouseEventType::Press);
+        assert_eq!(backend_event_scroll_right.button, MouseButton::ScrollRight);
+    }
+
+    fn mock_xmotion_event(x: i32, y: i32, state_mask: u32) -> xlib::XMotionEvent {
+        let mut event: xlib::XMotionEvent = unsafe { mem::zeroed() };
+        event.type_ = xlib::MotionNotify;
+        event.x = x;
+        event.y = y;
+        event.state = state_mask as c_uint;
+        event
+    }
+
+    #[test]
+    fn test_x11_motion_notify_to_backend_event_drag() {
+        let driver = mock_xdriver_for_mouse_tests();
+        let xmotion = mock_xmotion_event(45, 85, xlib::Button1Mask | xlib::ControlMask);
+        
+        let backend_event_payload = driver.x_motion_event_to_backend_mouse_event(&xmotion);
+
+        assert_eq!(backend_event_payload.col, 5); // 45 / 8
+        assert_eq!(backend_event_payload.row, 5); // 85 / 16
+        assert_eq!(backend_event_payload.event_type, MouseEventType::Move);
+        assert_eq!(backend_event_payload.button, MouseButton::Left); // Dragging with left
+        assert_eq!(backend_event_payload.modifiers, Modifiers::CONTROL | Modifiers::BUTTON_LEFT); // Modifiers should include the button being dragged
+    }
+
+    #[test]
+    fn test_x11_motion_notify_to_backend_event_hover() {
+        let driver = mock_xdriver_for_mouse_tests();
+        let xmotion = mock_xmotion_event(20, 40, xlib::Mod1Mask); // Alt modifier, no button
+        
+        let backend_event_payload = driver.x_motion_event_to_backend_mouse_event(&xmotion);
+
+        assert_eq!(backend_event_payload.col, 2); // 20 / 8
+        assert_eq!(backend_event_payload.row, 2); // 40 / 16
+        assert_eq!(backend_event_payload.event_type, MouseEventType::Move);
+        assert_eq!(backend_event_payload.button, MouseButton::Unknown); // Hover, no button
+        assert_eq!(backend_event_payload.modifiers, Modifiers::ALT);
     }
 }
