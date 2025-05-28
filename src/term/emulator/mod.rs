@@ -10,8 +10,10 @@ use crate::{
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
         modes::{DecModeConstant, DecPrivateModes},
         screen::Screen,
-        snapshot::{CursorRenderState, CursorShape, RenderSnapshot, SelectionRenderState, SnapshotLine}, // Added SelectionRenderState
         selection::Selection, // Import Selection
+        snapshot::{
+            CursorRenderState, CursorShape, RenderSnapshot, SelectionRenderState, SnapshotLine,
+        }, // Added SelectionRenderState
     },
 };
 
@@ -237,7 +239,9 @@ impl TerminalEmulator {
         }
 
         // Selection state is None for now as per plan.
-        let selection_state = self.selection.get_render_state(self.screen.width, self.screen.height);
+        let selection_state = self
+            .selection
+            .get_render_state(self.screen.width, self.screen.height);
 
         RenderSnapshot {
             dimensions: (width, height),
@@ -471,7 +475,7 @@ mod tests {
         let expected_sequence = b"\x1B[<0;6;3m".to_vec();
         assert_eq!(action, Some(EmulatorAction::WritePty(expected_sequence)));
     }
-    
+
     #[test]
     fn test_mouse_report_sgr_drag() {
         let mut emulator = default_emulator(80, 24);
@@ -479,28 +483,40 @@ mod tests {
 
         // Start selection (press) - SGR reports this
         let press_input = EmulatorInput::User(UserInputAction::MouseInput {
-            col: 5, row: 2, event_type: MouseEventType::Press, button: MouseButton::Left, modifiers: Modifiers::empty()
+            col: 5,
+            row: 2,
+            event_type: MouseEventType::Press,
+            button: MouseButton::Left,
+            modifiers: Modifiers::empty(),
         });
         let press_action = emulator.interpret_input(press_input);
         let expected_press_seq = b"\x1B[<0;6;3M".to_vec();
-        assert_eq!(press_action, Some(EmulatorAction::WritePty(expected_press_seq)));
-
+        assert_eq!(
+            press_action,
+            Some(EmulatorAction::WritePty(expected_press_seq))
+        );
 
         // Drag (move while button is considered pressed by selection state)
         let move_input = EmulatorInput::User(UserInputAction::MouseInput {
-            col: 6, row: 2, event_type: MouseEventType::Move, button: MouseButton::Left, modifiers: Modifiers::empty()
+            col: 6,
+            row: 2,
+            event_type: MouseEventType::Move,
+            button: MouseButton::Left,
+            modifiers: Modifiers::empty(),
         });
         let move_action = emulator.interpret_input(move_input);
-        
+
         // Expected: ESC [ < Button;Col+1;Row+1 M (still 'M' for drag)
         // Button = 0 (Left) + 32 (motion for SGR means button code includes motion if applicable, but for SGR, motion is reported with the button down)
         // Col+1 = 7
         // Row+1 = 3
         // The input_handler.rs for SGR drag does not add 32 to button. It uses the original button code.
-        let expected_drag_seq = b"\x1B[<0;7;3M".to_vec(); 
-        assert_eq!(move_action, Some(EmulatorAction::WritePty(expected_drag_seq)));
+        let expected_drag_seq = b"\x1B[<0;7;3M".to_vec();
+        assert_eq!(
+            move_action,
+            Some(EmulatorAction::WritePty(expected_drag_seq))
+        );
     }
-
 
     #[test]
     fn test_mouse_report_disabled() {
@@ -523,6 +539,6 @@ mod tests {
         assert_eq!(action, None);
         // Verify selection still happened
         assert!(emulator.selection.is_active);
-        assert_eq!(emulator.selection.start, Some((5,2)));
+        assert_eq!(emulator.selection.start, Some((5, 2)));
     }
 }

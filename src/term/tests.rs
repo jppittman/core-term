@@ -1,15 +1,24 @@
 // src/term/tests.rs
 
+use crate::ansi::commands::{Attribute, C0Control, CsiCommand};
+use crate::color::{Color, NamedColor};
+use crate::glyph::{AttrFlags, Attributes, Glyph};
+use crate::keys::{KeySymbol, Modifiers};
 use crate::term::{
     AnsiCommand,
-    EmulatorInput, TerminalEmulator, UserInputAction, ControlEvent, EmulatorAction,
-    RenderSnapshot, SelectionRenderState, SelectionMode, CursorRenderState, CursorShape, SnapshotLine,
+    ControlEvent,
+    CursorRenderState,
+    CursorShape,
     DecModeConstant, // For DECTCEM test
-};
-use crate::ansi::commands::{C0Control, CsiCommand, Attribute};
-use crate::glyph::{Glyph, Attributes, AttrFlags};
-use crate::keys::{KeySymbol, Modifiers};
-use crate::color::{Color, NamedColor}; // For color assertions
+    EmulatorAction,
+    EmulatorInput,
+    RenderSnapshot,
+    SelectionMode,
+    SelectionRenderState,
+    SnapshotLine,
+    TerminalEmulator,
+    UserInputAction,
+}; // For color assertions
 
 // Default scrollback for tests, can be adjusted.
 const TEST_SCROLLBACK_LIMIT: usize = 100;
@@ -21,7 +30,10 @@ fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
 // Helper to get a Glyph from the snapshot.
 fn get_glyph_from_snapshot(snapshot: &RenderSnapshot, row: usize, col: usize) -> Option<Glyph> {
     if row < snapshot.dimensions.1 && col < snapshot.dimensions.0 {
-        snapshot.lines.get(row).and_then(|line| line.cells.get(col).cloned())
+        snapshot
+            .lines
+            .get(row)
+            .and_then(|line| line.cells.get(col).cloned())
     } else {
         None
     }
@@ -46,14 +58,20 @@ fn assert_screen_state(
         // Ensure the first expected line (if any) isn't wider than the snapshot's column count.
         // This helps catch issues where the test itself might define an impossible expected screen.
         assert!(
-            snapshot.dimensions.0 >= expected_screen[0].chars().map(|c| crate::term::unicode::get_char_display_width(c).max(1)).sum::<usize>(),
+            snapshot.dimensions.0
+                >= expected_screen[0]
+                    .chars()
+                    .map(|c| crate::term::unicode::get_char_display_width(c).max(1))
+                    .sum::<usize>(),
             "Snapshot col count ({}) is less than the character-width-aware width of the first expected row ({}). Expected screen: {:?}",
             snapshot.dimensions.0,
-            expected_screen[0].chars().map(|c| crate::term::unicode::get_char_display_width(c).max(1)).sum::<usize>(),
+            expected_screen[0]
+                .chars()
+                .map(|c| crate::term::unicode::get_char_display_width(c).max(1))
+                .sum::<usize>(),
             expected_screen[0]
         );
     }
-
 
     for r in 0..snapshot.dimensions.1 {
         let expected_row_str = expected_screen.get(r).unwrap_or_else(|| {
@@ -64,13 +82,18 @@ fn assert_screen_state(
 
         while let Some(expected_char) = expected_chars_iter.next() {
             if s_col >= snapshot.dimensions.0 {
-                 // This condition means we've run out of snapshot columns to check,
-                 // but there are still expected characters. This indicates a mismatch
-                 // if the expected string (considering char widths) is wider than the terminal.
+                // This condition means we've run out of snapshot columns to check,
+                // but there are still expected characters. This indicates a mismatch
+                // if the expected string (considering char widths) is wider than the terminal.
                 let remaining_expected: String = expected_chars_iter.collect();
                 panic!(
                     "Snapshot row {} (len {}) is shorter than expected string '{}'. Expected char '{}' (and potentially '{}') at snapshot col {} would exceed width.",
-                    r, snapshot.dimensions.0, expected_row_str, expected_char, remaining_expected, s_col
+                    r,
+                    snapshot.dimensions.0,
+                    expected_row_str,
+                    expected_char,
+                    remaining_expected,
+                    s_col
                 );
             }
 
@@ -82,23 +105,50 @@ fn assert_screen_state(
             });
 
             assert_eq!(
-                glyph.c, expected_char,
+                glyph.c,
+                expected_char,
                 "Char mismatch at (row {}, snapshot_col {}). Expected '{}', got '{}'. Full expected row: '{}', Full actual row: '{:?}'",
-                r, s_col, expected_char, glyph.c, expected_row_str, snapshot.lines.get(r).map(|l| &l.cells)
+                r,
+                s_col,
+                expected_char,
+                glyph.c,
+                expected_row_str,
+                snapshot.lines.get(r).map(|l| &l.cells)
             );
 
             let char_width = crate::term::unicode::get_char_display_width(expected_char).max(1);
-            
+
             // If it's a wide char, check the spacer cell
             if char_width == 2 {
                 if s_col + 1 < snapshot.dimensions.0 {
-                    let spacer_glyph = get_glyph_from_snapshot(snapshot, r, s_col + 1).unwrap_or_else(|| {
-                        panic!("Wide char spacer glyph ({}, {}) not found. Primary char: '{}'", r, s_col + 1, expected_char)
-                    });
-                    assert_eq!(spacer_glyph.c, crate::glyph::WIDE_CHAR_PLACEHOLDER, "Expected wide char placeholder at ({}, {}) for char '{}'", r, s_col + 1, expected_char);
-                    assert!(spacer_glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_SPACER), "Spacer glyph at ({},{}) should have WIDE_CHAR_SPACER flag",r, s_col + 1);
+                    let spacer_glyph = get_glyph_from_snapshot(snapshot, r, s_col + 1)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "Wide char spacer glyph ({}, {}) not found. Primary char: '{}'",
+                                r,
+                                s_col + 1,
+                                expected_char
+                            )
+                        });
+                    assert_eq!(
+                        spacer_glyph.c,
+                        crate::glyph::WIDE_CHAR_PLACEHOLDER,
+                        "Expected wide char placeholder at ({}, {}) for char '{}'",
+                        r,
+                        s_col + 1,
+                        expected_char
+                    );
+                    assert!(
+                        spacer_glyph
+                            .attr
+                            .flags
+                            .contains(AttrFlags::WIDE_CHAR_SPACER),
+                        "Spacer glyph at ({},{}) should have WIDE_CHAR_SPACER flag",
+                        r,
+                        s_col + 1
+                    );
                 } else {
-                     // This means a wide character was expected at the very last column, which is valid if it's the primary part.
+                    // This means a wide character was expected at the very last column, which is valid if it's the primary part.
                 }
             }
             s_col += char_width;
@@ -118,15 +168,20 @@ fn assert_screen_state(
 
     if let Some((r_expected, c_expected)) = expected_cursor_pos {
         let cursor_state = snapshot.cursor_state.as_ref().unwrap_or_else(|| {
-            panic!("Expected cursor to be visible, but cursor_state is None. Expected pos: ({},{})", r_expected, c_expected);
+            panic!(
+                "Expected cursor to be visible, but cursor_state is None. Expected pos: ({},{})",
+                r_expected, c_expected
+            );
         });
         assert_eq!(cursor_state.y, r_expected, "Cursor row mismatch");
         assert_eq!(cursor_state.x, c_expected, "Cursor col mismatch");
     } else {
-        assert!(snapshot.cursor_state.is_none(), "Expected cursor to be hidden, but cursor_state is Some");
+        assert!(
+            snapshot.cursor_state.is_none(),
+            "Expected cursor to be hidden, but cursor_state is Some"
+        );
     }
 }
-
 
 #[test]
 fn test_simple_char_input() {
@@ -168,11 +223,15 @@ fn test_carriage_return_input() {
 #[test]
 fn test_csi_cursor_forward_cuf() {
     let mut term = create_test_emulator(10, 1); // Cursor at (0,0)
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorForward(1))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorForward(1),
+    )));
     let snapshot = term.get_render_snapshot();
     assert_screen_state(&snapshot, &["          "], Some((0, 1))); // Cursor physical (0,1)
 
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorForward(2))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorForward(2),
+    )));
     let snapshot2 = term.get_render_snapshot();
     assert_screen_state(&snapshot2, &["          "], Some((0, 3))); // Cursor physical (0,3)
 }
@@ -189,12 +248,16 @@ fn test_csi_ed_clear_below_csi_j() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('F'))); // Screen: ABC, DEF. Cursor at (1,3)
 
     // Move cursor to (1,0) (second row, first col) physical for the snapshot
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2, 1))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(2, 1),
+    )));
     let snapshot_before = term.get_render_snapshot();
     assert_screen_state(&snapshot_before, &["ABC", "DEF"], Some((1, 0)));
 
     // CSI J (EraseInDisplay(0) - Erase Below)
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::EraseInDisplay(0))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::EraseInDisplay(0),
+    )));
     let snapshot_after = term.get_render_snapshot();
     // Clears from cursor (1,0) to end of screen. Line 1 from (1,0) becomes "   "
     assert_screen_state(&snapshot_after, &["ABC", "   "], Some((1, 0)));
@@ -204,22 +267,34 @@ fn test_csi_ed_clear_below_csi_j() {
 fn test_csi_sgr_fg_color() {
     let mut term = create_test_emulator(5, 1);
     let red_attr = vec![Attribute::Foreground(Color::Named(NamedColor::Red))];
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(red_attr))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetGraphicsRendition(red_attr),
+    )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
 
     let snapshot = term.get_render_snapshot();
     let glyph_a = get_glyph_from_snapshot(&snapshot, 0, 0).unwrap();
 
     assert_eq!(glyph_a.c, 'A');
-    assert_eq!(glyph_a.attr.fg, Color::Named(NamedColor::Red), "Foreground color should be Red");
+    assert_eq!(
+        glyph_a.attr.fg,
+        Color::Named(NamedColor::Red),
+        "Foreground color should be Red"
+    );
 
     // Reset SGR
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]),
+    )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
     let snapshot_b = term.get_render_snapshot();
     assert_screen_state(&snapshot_b, &["AB   "], Some((0, 2))); // A is red, B is default
     let glyph_b = get_glyph_from_snapshot(&snapshot_b, 0, 1).unwrap();
-    assert_eq!(glyph_b.attr.fg, Attributes::default().fg, "Foreground color should have reset to default");
+    assert_eq!(
+        glyph_b.attr.fg,
+        Attributes::default().fg,
+        "Foreground color should have reset to default"
+    );
 }
 
 #[test]
@@ -237,7 +312,10 @@ fn test_resize_larger() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('D')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('E'))); // Cursor at (1,5) logical
 
-    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize { cols: 10, rows: 4 }));
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize {
+        cols: 10,
+        rows: 4,
+    }));
     let snapshot = term.get_render_snapshot();
     // Content should be preserved, cursor position might be clamped or adjusted.
     // After resize, cursor is at its old logical position (1,5), which is (row 1, col 5) physical.
@@ -259,7 +337,10 @@ fn test_resize_smaller_content_truncation() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('W'))); // Cursor at logical (1,1)
 
-    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize { cols: 3, rows: 1 }));
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize {
+        cols: 3,
+        rows: 1,
+    }));
     let snapshot = term.get_render_snapshot();
     // Content "Hello" becomes "Hel". "World" is lost. Cursor (1,1) logical becomes (0,1) physical (clamped).
     assert_screen_state(&snapshot, &["Hel"], Some((0, 1)));
@@ -270,16 +351,21 @@ fn test_osc_set_window_title() {
     let mut term = create_test_emulator(10, 1);
 
     let action = term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Osc(
-        "2;New Title".as_bytes().to_vec()
+        "2;New Title".as_bytes().to_vec(),
     )));
-    assert_eq!(action, Some(EmulatorAction::SetTitle("New Title".to_string())));
+    assert_eq!(
+        action,
+        Some(EmulatorAction::SetTitle("New Title".to_string()))
+    );
 
     let action2 = term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Osc(
-        "0;Another Title".as_bytes().to_vec() 
+        "0;Another Title".as_bytes().to_vec(),
     )));
-    assert_eq!(action2, Some(EmulatorAction::SetTitle("Another Title".to_string())));
+    assert_eq!(
+        action2,
+        Some(EmulatorAction::SetTitle("Another Title".to_string()))
+    );
 }
-
 
 #[test]
 fn test_key_event_printable_char() {
@@ -290,7 +376,10 @@ fn test_key_event_printable_char() {
         text: Some("X".to_string()),
     };
     let action = term.interpret_input(EmulatorInput::User(key_input));
-    assert_eq!(action, Some(EmulatorAction::WritePty("X".to_string().into_bytes())));
+    assert_eq!(
+        action,
+        Some(EmulatorAction::WritePty("X".to_string().into_bytes()))
+    );
 
     // Simulate PTY echoing 'X' back
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
@@ -324,10 +413,16 @@ fn test_key_event_arrow_up() {
 fn test_snapshot_with_selection() {
     let num_cols = 10;
     let num_rows = 2;
-    let default_glyph = Glyph { c: ' ', attr: Attributes::default() };
+    let default_glyph = Glyph {
+        c: ' ',
+        attr: Attributes::default(),
+    };
 
     let lines = vec![
-        SnapshotLine { is_dirty: true, cells: vec![default_glyph; num_cols] };
+        SnapshotLine {
+            is_dirty: true,
+            cells: vec![default_glyph; num_cols]
+        };
         num_rows
     ];
 
@@ -340,19 +435,25 @@ fn test_snapshot_with_selection() {
     let snapshot_with_selection = RenderSnapshot {
         dimensions: (num_cols, num_rows),
         lines,
-        cursor_state: Some(CursorRenderState { x:0, y:0, shape: CursorShape::Block, cell_char_underneath: ' ', cell_attributes_underneath: Attributes::default()}),
+        cursor_state: Some(CursorRenderState {
+            x: 0,
+            y: 0,
+            shape: CursorShape::Block,
+            cell_char_underneath: ' ',
+            cell_attributes_underneath: Attributes::default(),
+        }),
         selection_state,
     };
 
     assert!(snapshot_with_selection.selection_state.is_some());
     let sel = snapshot_with_selection.selection_state.unwrap();
-    assert_eq!(sel.start_coords, (1,0));
-    assert_eq!(sel.end_coords, (3,1));
+    assert_eq!(sel.start_coords, (1, 0));
+    assert_eq!(sel.end_coords, (3, 1));
     assert_eq!(sel.mode, SelectionMode::Normal);
 
     let snapshot_cleared = RenderSnapshot {
         dimensions: (num_cols, num_rows),
-        lines: snapshot_with_selection.lines.clone(), 
+        lines: snapshot_with_selection.lines.clone(),
         cursor_state: snapshot_with_selection.cursor_state.clone(),
         selection_state: None,
     };
@@ -360,26 +461,36 @@ fn test_snapshot_with_selection() {
 }
 
 #[test]
-fn test_mode_show_cursor_dectcem() { 
+fn test_mode_show_cursor_dectcem() {
     let mut term = create_test_emulator(5, 1);
 
     let snap_default = term.get_render_snapshot();
-    assert!(snap_default.cursor_state.is_some(), "Cursor should be visible by default");
+    assert!(
+        snap_default.cursor_state.is_some(),
+        "Cursor should be visible by default"
+    );
     let initial_shape = snap_default.cursor_state.as_ref().unwrap().shape;
 
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(
-        DecModeConstant::TextCursorEnable as u16
-    ))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetModePrivate(DecModeConstant::TextCursorEnable as u16),
+    )));
     let snap_hidden = term.get_render_snapshot();
-    assert!(snap_hidden.cursor_state.is_none(), "Cursor should be hidden after DECRST ?25l");
+    assert!(
+        snap_hidden.cursor_state.is_none(),
+        "Cursor should be hidden after DECRST ?25l"
+    );
 
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(
-        DecModeConstant::TextCursorEnable as u16
-    ))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::TextCursorEnable as u16),
+    )));
     let snap_shown = term.get_render_snapshot();
-    assert!(snap_shown.cursor_state.is_some(), "Cursor should be visible again after DECSET ?25h");
+    assert!(
+        snap_shown.cursor_state.is_some(),
+        "Cursor should be visible again after DECSET ?25h"
+    );
     assert_eq!(
-        snap_shown.cursor_state.as_ref().unwrap().shape, initial_shape,
+        snap_shown.cursor_state.as_ref().unwrap().shape,
+        initial_shape,
         "Cursor should revert to its initial non-hidden shape"
     );
 }
@@ -391,9 +502,13 @@ fn test_ps1_multiline_prompt_at_bottom_causes_scroll() {
     let mut term = create_test_emulator(5, 3); // 5 columns, 3 rows
 
     // Fill first two lines
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); }
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B'))); }
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     // Screen: AAAAA\nBBBBB\n     , cursor at (phys 2,0)
 
@@ -423,7 +538,9 @@ fn test_ps1_multiline_prompt_ends_on_last_line_no_scroll_by_prompt() {
     let mut term = create_test_emulator(5, 3); // 5 columns, 3 rows
 
     // Fill first line
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); }
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     // Screen: AAAAA\n     \n     , cursor at (phys 1,0)
 
@@ -450,7 +567,9 @@ fn test_ps1_multiline_prompt_last_line_fills_screen_then_input() {
     let mut term = create_test_emulator(3, 2); // 3 columns, 2 rows
 
     // Fill first line
-    for _ in 0..3 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); }
+    for _ in 0..3 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     // Screen: AAA\n   , cursor at (phys 1,0)
 
@@ -470,7 +589,10 @@ fn test_ps1_multiline_prompt_last_line_fills_screen_then_input() {
 
     let snapshot_after_prompt = term.get_render_snapshot();
     assert_screen_state(&snapshot_after_prompt, &["B  ", "CDE"], Some((1, 2)));
-    assert!(term.cursor_wrap_next, "cursor_wrap_next should be true after prompt fills line");
+    assert!(
+        term.cursor_wrap_next,
+        "cursor_wrap_next should be true after prompt fills line"
+    );
 
     // Simulate user typing 'X'
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
@@ -483,7 +605,10 @@ fn test_ps1_multiline_prompt_last_line_fills_screen_then_input() {
 
     let snapshot_after_input = term.get_render_snapshot();
     assert_screen_state(&snapshot_after_input, &["CDE", "X  "], Some((1, 1)));
-    assert!(!term.cursor_wrap_next, "cursor_wrap_next should be false after printing 'X'");
+    assert!(
+        !term.cursor_wrap_next,
+        "cursor_wrap_next should be false after printing 'X'"
+    );
 }
 
 #[test]
@@ -491,7 +616,9 @@ fn test_ps1_prompt_causes_multiple_scrolls() {
     let mut term = create_test_emulator(3, 2); // 3 cols, 2 rows
 
     // Line 0: "AAA"
-    for _ in 0..3 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); }
+    for _ in 0..3 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     // Screen: AAA\n   , cursor at (phys 1,0)
 
@@ -527,7 +654,9 @@ fn test_ps1_prompt_causes_multiple_scrolls() {
 fn test_ps1_prompt_with_internal_wrapping_and_scrolling() {
     let mut term = create_test_emulator(3, 2); // 3 cols, 2 rows
     // Fill line 0
-    for _ in 0..3 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); }
+    for _ in 0..3 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     // Screen: AAA\n   , cursor at (phys 1,0)
 
@@ -601,18 +730,26 @@ fn test_ps1_multiline_with_sgr_at_bottom_scrolls() {
     let mut term = create_test_emulator(5, 2); // 5 cols, 2 rows
 
     // Line 0: "AAAAA"
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); }
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     // Screen: AAAAA\n     , cursor (phys 1,0)
 
     // Prompt: \e[31mP1\e[0m\n\e[32m$ \e[0m
     // Set Red
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Named(NamedColor::Red))]))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Named(
+            NamedColor::Red,
+        ))]),
+    )));
     // "P1"
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('P')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     // Reset
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]),
+    )));
     // Screen: AAAAA\nP1   (P1 in red), cursor (phys 1,2)
 
     // LF (scrolls)
@@ -620,12 +757,18 @@ fn test_ps1_multiline_with_sgr_at_bottom_scrolls() {
     // Screen: P1   \n     (P1 in red), cursor (phys 1,0)
 
     // Set Green
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Named(NamedColor::Green))]))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Named(
+            NamedColor::Green,
+        ))]),
+    )));
     // "$ "
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('$')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(' ')));
     // Reset
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]),
+    )));
     // Screen: P1   \n$    ($ and space in green), cursor (phys 1,2)
 
     let snapshot = term.get_render_snapshot();
@@ -642,8 +785,15 @@ fn test_ps1_multiline_with_sgr_at_bottom_scrolls() {
     assert_eq!(glyph_p.attr.fg, Color::Named(NamedColor::Red));
     assert_eq!(glyph_1.attr.fg, Color::Named(NamedColor::Red));
     assert_eq!(glyph_dollar.attr.fg, Color::Named(NamedColor::Green));
-    assert_eq!(glyph_space_after_dollar.attr.fg, Color::Named(NamedColor::Green));
-    assert_eq!(glyph_final_cursor_cell.attr.fg, Attributes::default().fg, "Cursor cell attributes should be reset");
+    assert_eq!(
+        glyph_space_after_dollar.attr.fg,
+        Color::Named(NamedColor::Green)
+    );
+    assert_eq!(
+        glyph_final_cursor_cell.attr.fg,
+        Attributes::default().fg,
+        "Cursor cell attributes should be reset"
+    );
 }
 
 #[test]
@@ -651,25 +801,40 @@ fn test_ps1_multiline_at_bottom_of_scrolling_region() {
     let mut term = create_test_emulator(5, 4); // 5 cols, 4 rows
 
     // Set scrolling region: top=2, bottom=4 (1-based), so physical rows 1 to 3.
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetScrollingRegion { top: 2, bottom: 4 })));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
+    )));
     // Cursor moves to (0,0) logical, which is (phys 0,0) since origin mode is off by default.
     let snap_after_stbm = term.get_render_snapshot();
-    assert_screen_state(&snap_after_stbm, &["     ","     ","     ","     "], Some((0,0)));
-
+    assert_screen_state(
+        &snap_after_stbm,
+        &["     ", "     ", "     ", "     "],
+        Some((0, 0)),
+    );
 
     // Line 0: "XXXXX" (outside scroll region)
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(1,1)))); // Phys (0,0)
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X'))); }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(1, 1),
+    ))); // Phys (0,0)
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
+    }
     // Screen: XXXXX\n     \n     \n     , cursor (phys 0,4) after wrap_next logic (logical (0,5))
 
     // Line 1 (top of scroll region, phys_row=1): "AAAAA"
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2,1)))); // Phys (1,0)
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(2, 1),
+    ))); // Phys (1,0)
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // LF within region
     // Screen: XXXXX\nAAAAA\n     \n     , cursor (phys 2,0)
 
     // Line 2 (middle of scroll region, phys_row=2): "BBBBB"
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B'))); }
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
+    }
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // LF within region
     // Screen: XXXXX\nAAAAA\nBBBBB\n     , cursor (phys 3,0) - this is bottom of scroll region
 
@@ -692,7 +857,11 @@ fn test_ps1_multiline_at_bottom_of_scrolling_region() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
 
     let snapshot = term.get_render_snapshot();
-    assert_screen_state(&snapshot, &["XXXXX", "BBBBB", "P1   ", "P2   "], Some((3, 2)));
+    assert_screen_state(
+        &snapshot,
+        &["XXXXX", "BBBBB", "P1   ", "P2   "],
+        Some((3, 2)),
+    );
 }
 
 #[test]
@@ -718,8 +887,11 @@ fn test_ps1_multiline_prompt_overflows_tiny_screen_repeatedly() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(' '))); // C \n> , cur(1,2) -> wrap_next
 
     let snapshot = term.get_render_snapshot();
-    assert_screen_state(&snapshot, &["C ", "> "], Some((1,1))); 
-    assert!(term.cursor_wrap_next, "cursor_wrap_next should be true after prompt fills line");
+    assert_screen_state(&snapshot, &["C ", "> "], Some((1, 1)));
+    assert!(
+        term.cursor_wrap_next,
+        "cursor_wrap_next should be true after prompt fills line"
+    );
 }
 
 // Add to src/term/tests.rs
@@ -742,10 +914,19 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
 
     // Sanity check the region (optional, but good for test setup)
     let screen_ctx_after_stbm = term.current_screen_context();
-    assert_eq!(screen_ctx_after_stbm.scroll_top, 1, "STBM scroll_top mismatch");
-    assert_eq!(screen_ctx_after_stbm.scroll_bot, 3, "STBM scroll_bot mismatch");
-    assert!(!screen_ctx_after_stbm.origin_mode_active, "Origin mode should be off");
-    
+    assert_eq!(
+        screen_ctx_after_stbm.scroll_top, 1,
+        "STBM scroll_top mismatch"
+    );
+    assert_eq!(
+        screen_ctx_after_stbm.scroll_bot, 3,
+        "STBM scroll_bot mismatch"
+    );
+    assert!(
+        !screen_ctx_after_stbm.origin_mode_active,
+        "Origin mode should be off"
+    );
+
     // After STBM, cursor moves to (0,0) physical if origin mode off
     // Move cursor to bottom of scrolling region: phys row 3, col 0
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -757,11 +938,21 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     // Line 1 (phys): "XXXXX"
     // Line 2 (phys): "YYYYY"
     // Line 3 (phys): "ZZ" -> cursor after ZZ, on phys row 3, col 2
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2,1)))); // phys row 1
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X'))); }
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(3,1)))); // phys row 2
-    for _ in 0..5 { term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Y'))); }
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(4,1)))); // phys row 3
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(2, 1),
+    ))); // phys row 1
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
+    }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(3, 1),
+    ))); // phys row 2
+    for _ in 0..5 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Y')));
+    }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(4, 1),
+    ))); // phys row 3
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z')));
 
@@ -785,9 +976,7 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     // "ZZ   " should move to physical row 2.
     // Physical row 3 should become blank.
     // Cursor should be at physical row 3, col 0.
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
-        C0Control::LF,
-    )));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     let snapshot_after_lf = term.get_render_snapshot();
     assert_screen_state(

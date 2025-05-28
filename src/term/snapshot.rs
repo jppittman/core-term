@@ -12,7 +12,7 @@ pub enum CursorShape {
 }
 
 /// Represents the mode of text selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SelectionMode {
     Normal, // Character-wise selection
     Block,  // Rectangular block selection

@@ -8,22 +8,28 @@ use crate::backends::{KeySymbol, Modifiers, MouseButton, MouseEventType}; // Ass
 
 // --- User Input Actions ---
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyInput {
+    pub symbol: KeySymbol,
+    pub modifiers: Modifiers,
+    pub text: Option<String>, // Text from IME or key press, if any
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MouseInput {
+    pub col: usize, // 0-based cell column
+    pub row: usize, // 0-based cell row
+    pub event_type: MouseEventType,
+    pub button: MouseButton,
+    pub modifiers: Modifiers,
+}
+
 /// Represents user-initiated actions that serve as input to the terminal emulator.
 /// This corresponds to `EmulatorInput::User(UserInputAction)`.
 #[derive(Debug, Clone, PartialEq)] // Eq might be tricky if text is String
 pub enum UserInputAction {
-    KeyInput {
-        symbol: KeySymbol,
-        modifiers: Modifiers,
-        text: Option<String>, // Text from IME or key press, if any
-    },
-    MouseInput {
-        col: usize, // 0-based cell column
-        row: usize, // 0-based cell row
-        event_type: MouseEventType,
-        button: MouseButton,
-        modifiers: Modifiers,
-    },
+    KeyInput(KeyInput),
+    MouseInput(MouseInput),
     InitiateCopy,
     InitiatePaste,
     FocusGained,

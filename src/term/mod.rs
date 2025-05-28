@@ -5,26 +5,26 @@
 
 // Sub-modules - existing and new
 pub mod cursor;
-pub mod screen;
+mod screen;
 pub mod unicode;
 
 pub mod action;
 pub mod charset;
 mod emulator;
-pub mod modes;
+mod modes;
+mod selection;
 pub mod snapshot; // Add this line to declare the module
-pub mod selection;
 
 // Re-export items for easier use by other modules and within this module
 pub use action::{ControlEvent, EmulatorAction, UserInputAction}; // Added UserInputAction, ControlEvent
 pub use charset::{CharacterSet, map_to_dec_line_drawing};
 pub use emulator::TerminalEmulator;
 pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
+use selection::Selection;
 pub use snapshot::{
     CursorRenderState, CursorShape, Point, RenderSnapshot, SelectionMode, SelectionRenderState,
     SnapshotLine,
 };
-pub use selection::Selection;
 
 // Crate-level imports (adjust paths based on where items are moved)
 use crate::ansi::commands::AnsiCommand;

@@ -272,10 +272,10 @@ impl<'a> AppOrchestrator<'a> {
                 self.driver.set_cursor_visibility(visible);
             }
             EmulatorAction::CopyToClipboard(_) => {
-                !unimplemented!("clipboard feature not yet implemented")
+                unimplemented!("clipboard feature not yet implemented")
             }
             EmulatorAction::RequestClipboardContent => {
-                !unimplemented!("clipboard feature not yet implemented")
+                unimplemented!("clipboard feature not yet implemented")
             }
         }
     }
@@ -291,7 +291,8 @@ impl<'a> AppOrchestrator<'a> {
 mod tests {
     use super::*;
     use crate::ansi::commands::AnsiCommand;
-    use crate::backends::{BackendEvent, Driver, MouseButton, MouseEventType, KeySymbol};
+    use crate::backends::{BackendEvent, Driver, KeySymbol, MouseButton, MouseEventType};
+    use crate::color::Color;
     use crate::keys::Modifiers;
     use crate::os::pty::PtyChannel;
     use crate::renderer::Renderer;
@@ -303,8 +304,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::io;
-    use std::os::unix::io::RawFd;
-    use crate::color::Color; // For Renderer/Driver if needed
+    use std::os::unix::io::RawFd; // For Renderer/Driver if needed
 
     // --- Mock Implementations ---
 
@@ -348,7 +348,9 @@ mod tests {
             self.resize_calls.borrow_mut().push((cols, rows));
             Ok(())
         }
-        fn get_raw_fd(&self) -> Option<RawFd> { Some(-1) }
+        fn get_raw_fd(&self) -> Option<RawFd> {
+            Some(-1)
+        }
     }
 
     struct MockTerminalInterface {
@@ -373,12 +375,14 @@ mod tests {
 
         fn get_render_snapshot(&self) -> RenderSnapshot {
             // Return a default or pre-configured snapshot
-             self.snapshot_to_return.clone().unwrap_or_else(|| RenderSnapshot {
-                dimensions: (80, 24),
-                lines: Vec::new(),
-                cursor_state: None,
-                selection_state: None,
-            })
+            self.snapshot_to_return
+                .clone()
+                .unwrap_or_else(|| RenderSnapshot {
+                    dimensions: (80, 24),
+                    lines: Vec::new(),
+                    cursor_state: None,
+                    selection_state: None,
+                })
         }
     }
 
@@ -404,7 +408,8 @@ mod tests {
         fn process_bytes(&mut self, bytes: &[u8]) -> Vec<AnsiCommand> {
             // Simple passthrough or pre-programmed responses
             let mut returned_cmds = Vec::new();
-            if !bytes.is_empty() { // Only return if there was actual input
+            if !bytes.is_empty() {
+                // Only return if there was actual input
                 while let Some(cmd) = self.commands_to_return.borrow_mut().pop_front() {
                     returned_cmds.push(cmd);
                 }
@@ -420,7 +425,6 @@ mod tests {
         title_set_calls: RefCell<Vec<String>>,
         bell_rung_count: RefCell<usize>,
         cursor_visibility_calls: RefCell<Vec<bool>>,
-
     }
 
     impl MockDriver {
@@ -442,30 +446,62 @@ mod tests {
 
     impl Driver for MockDriver {
         fn new() -> Result<Self> {
-            Ok(Self::new(8,16)) // Default font dims for new
+            Ok(Self::new(8, 16)) // Default font dims for new
         }
-        fn get_event_fd(&self) -> Option<RawFd> { Some(-1) }
+        fn get_event_fd(&self) -> Option<RawFd> {
+            Some(-1)
+        }
         fn process_events(&mut self) -> Result<Vec<BackendEvent>> {
             Ok(self.events_to_process.borrow_mut().drain(..).collect())
         }
-        fn get_font_dimensions(&self) -> (usize, usize) { self.font_dims }
-        fn get_display_dimensions_pixels(&self) -> (u16, u16) { (800, 600) } // Example
-        fn clear_all(&mut self, _bg: Color) -> Result<()> { Ok(()) }
-        fn draw_text_run(&mut self, _coords: crate::backends::CellCoords, _text: &str, _style: crate::backends::TextRunStyle) -> Result<()> { Ok(()) }
-        fn fill_rect(&mut self, _rect: crate::backends::CellRect, _color: Color) -> Result<()> { Ok(()) }
-        fn present(&mut self) -> Result<()> { Ok(()) }
-        fn set_title(&mut self, title: &str) { self.title_set_calls.borrow_mut().push(title.to_string()); }
-        fn bell(&mut self) { *self.bell_rung_count.borrow_mut() += 1; }
-        fn set_cursor_visibility(&mut self, visible: bool) { self.cursor_visibility_calls.borrow_mut().push(visible); }
-        fn set_focus(&mut self, focused: bool) { self.focus_set_calls.borrow_mut().push(focused); }
-        fn cleanup(&mut self) -> Result<()> { Ok(()) }
+        fn get_font_dimensions(&self) -> (usize, usize) {
+            self.font_dims
+        }
+        fn get_display_dimensions_pixels(&self) -> (u16, u16) {
+            (800, 600)
+        } // Example
+        fn clear_all(&mut self, _bg: Color) -> Result<()> {
+            Ok(())
+        }
+        fn draw_text_run(
+            &mut self,
+            _coords: crate::backends::CellCoords,
+            _text: &str,
+            _style: crate::backends::TextRunStyle,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn fill_rect(&mut self, _rect: crate::backends::CellRect, _color: Color) -> Result<()> {
+            Ok(())
+        }
+        fn present(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn set_title(&mut self, title: &str) {
+            self.title_set_calls.borrow_mut().push(title.to_string());
+        }
+        fn bell(&mut self) {
+            *self.bell_rung_count.borrow_mut() += 1;
+        }
+        fn set_cursor_visibility(&mut self, visible: bool) {
+            self.cursor_visibility_calls.borrow_mut().push(visible);
+        }
+        fn set_focus(&mut self, focused: bool) {
+            self.focus_set_calls.borrow_mut().push(focused);
+        }
+        fn cleanup(&mut self) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
     fn test_orchestrator_backend_mouse_event_to_emulator_input() {
         let mut mock_pty = MockPtyChannel::new();
         let mock_term_snapshot = RenderSnapshot {
-            dimensions: (80, 24), lines: Vec::new(), cursor_state: None, selection_state: None,
+            dimensions: (80, 24),
+            lines: Vec::new(),
+            cursor_state: None,
+            selection_state: None,
         };
         let mut mock_term = MockTerminalInterface::new(Some(mock_term_snapshot));
         let mut mock_parser = MockAnsiParser::new();
@@ -487,10 +523,10 @@ mod tests {
             button: MouseButton::Left,
             modifiers: Modifiers::SHIFT,
         };
-        
+
         // Simulate this event coming from the driver
         mock_driver.queue_event(backend_mouse_event.clone());
-        
+
         // Process driver events
         match orchestrator.process_driver_events() {
             Ok(status) => assert_eq!(status, OrchestratorStatus::Running),
@@ -498,7 +534,11 @@ mod tests {
         }
 
         let inputs = mock_term.inputs_received.borrow();
-        assert_eq!(inputs.len(), 1, "Expected one input to be sent to terminal emulator");
+        assert_eq!(
+            inputs.len(),
+            1,
+            "Expected one input to be sent to terminal emulator"
+        );
 
         let expected_user_input_action = UserInputAction::MouseInput {
             col: 5,
@@ -509,6 +549,9 @@ mod tests {
         };
         let expected_emulator_input = EmulatorInput::User(expected_user_input_action);
 
-        assert_eq!(inputs[0], expected_emulator_input, "EmulatorInput does not match expected");
+        assert_eq!(
+            inputs[0], expected_emulator_input,
+            "EmulatorInput does not match expected"
+        );
     }
 }

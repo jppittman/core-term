@@ -150,7 +150,7 @@ impl TerminalEmulator {
         self.screen.default_attributes = self.cursor_controller.attributes();
         self.screen.scroll_down_serial(n);
     }
-        /// Handles the screen operations for moving the cursor down one line,
+    /// Handles the screen operations for moving the cursor down one line,
     /// typically as part of a Line Feed (LF/`\n`) or similar control sequence.
     ///
     /// This function is responsible for:
@@ -190,14 +190,17 @@ impl TerminalEmulator {
                 // new bottom line of the region (which is now blank).
                 log::trace!(
                     "move_down_one_line (origin_mode ON): Scrolled region [{},{}] due to cursor at scroll_bot ({})",
-                    screen_ctx.scroll_top, screen_ctx.scroll_bot, current_physical_y
+                    screen_ctx.scroll_top,
+                    screen_ctx.scroll_bot,
+                    current_physical_y
                 );
             } else {
                 // Not at scroll_bot, try to move logical_y down if there's space within the logical region.
                 // max_logical_y_in_logical_region is the last valid logical_y index within the scrolling region.
-                let max_logical_y_in_logical_region = screen_ctx.scroll_bot.saturating_sub(screen_ctx.scroll_top);
+                let max_logical_y_in_logical_region =
+                    screen_ctx.scroll_bot.saturating_sub(screen_ctx.scroll_top);
                 if current_logical_y < max_logical_y_in_logical_region {
-                     self.cursor_controller.move_down(1, &screen_ctx);
+                    self.cursor_controller.move_down(1, &screen_ctx);
                 }
                 // If current_logical_y == max_logical_y_in_logical_region, cursor is already at the logical bottom
                 // of the region, so no further downward movement within the region is possible without scrolling.
@@ -212,7 +215,9 @@ impl TerminalEmulator {
                 scrolled_this_op = true;
                 log::trace!(
                     "move_down_one_line (origin_mode OFF): Scrolled region [{},{}] due to cursor at scroll_bot ({})",
-                    screen_ctx.scroll_top, screen_ctx.scroll_bot, current_physical_y
+                    screen_ctx.scroll_top,
+                    screen_ctx.scroll_bot,
+                    current_physical_y
                 );
                 // Cursor logical_y (and physical_y) effectively stays on this line (screen_ctx.scroll_bot),
                 // which is now blanked due to the scroll. The subsequent carriage_return (if part of LF handling)
@@ -231,14 +236,17 @@ impl TerminalEmulator {
 
         // Mark lines dirty for rendering.
         // The Screen::scroll_up_serial method already marks all lines within its scrolled region as dirty.
-        let (_final_physical_x, final_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
+        let (_final_physical_x, final_physical_y) =
+            self.cursor_controller.physical_screen_pos(&screen_ctx);
 
         // Mark the original line the cursor was on as dirty.
         if current_physical_y < screen_ctx.height {
             self.screen.mark_line_dirty(current_physical_y);
             log::trace!(
                 "move_down_one_line: Marked old line {} dirty. Cursor moved to new line {}. Scrolled: {}.",
-                current_physical_y, final_physical_y, scrolled_this_op
+                current_physical_y,
+                final_physical_y,
+                scrolled_this_op
             );
         }
 
@@ -255,6 +263,4 @@ impl TerminalEmulator {
             }
         }
     }
-
-
 }
