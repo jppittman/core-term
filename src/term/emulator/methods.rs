@@ -3,54 +3,15 @@
 // Note: This file is part of the `emulator` module.
 // `TerminalEmulator` struct is defined in `src/term/emulator/mod.rs`
 use super::TerminalEmulator; // Bring the struct into scope from the parent module
-// For the `dimensions()` method
-
-// Standard library imports
 
 // Crate-level imports for items outside src/term/
 use crate::glyph::Attributes;
 
-// Logging
-
-// Note: The TerminalEmulator struct and several of its methods have been moved to src/term/emulator/mod.rs
-// The methods remaining in this file are part of the `impl TerminalEmulator` block.
-
 impl TerminalEmulator {
-    // The following methods (`resize`, `cursor_pos`, `is_alt_screen_active`) were moved to src/term/emulator/mod.rs
-    // and are removed from here to avoid duplicate definitions:
-    // - resize
-    // - cursor_pos
-    // - is_alt_screen_active
-
-    // --- Character Printing and Low-Level Operations ---
-    // `print_char` and `map_char_to_active_charset` have been moved to char_processor.rs
-
-    // Note: `backspace`, `horizontal_tab`, `perform_line_feed`, (now in ansi_handler or methods.rs)
-    // `carriage_return`, `set_g_level`, `designate_character_set`, `index`, `reverse_index`,
-    // `save_cursor_dec`, `restore_cursor_dec` and CSI sub-handlers like `cursor_up`, `cursor_down`,
-    // `cursor_forward`, `cursor_backward`, `cursor_to_column`, `cursor_to_pos`
-    // were moved to ansi_handler.rs
-
-    // Methods like erase_in_display, erase_in_line etc. are kept here as they are larger
-    // and might be refactored into their own modules later.
-    // They are called from ansi_handler.rs via `emulator.method_name()`.
-
-    // --- Methods moved back from ansi_handler or kept for use by print_char/handle_set_mode ---
     pub(super) fn carriage_return(&mut self) {
         self.cursor_wrap_next = false;
         self.cursor_controller.carriage_return();
     }
-
-    // move_down_one_line_and_dirty has been moved to screen_ops.rs
-    // erase_in_display has been moved to screen_ops.rs
-    // erase_in_line has been moved to screen_ops.rs
-    // erase_chars has been moved to screen_ops.rs
-    // insert_blank_chars has been moved to screen_ops.rs
-    // delete_chars has been moved to screen_ops.rs
-    // insert_lines has been moved to screen_ops.rs
-    // delete_lines has been moved to screen_ops.rs
-    // scroll_up has been moved to screen_ops.rs
-    // scroll_down has been moved to screen_ops.rs
 
     pub(super) fn save_cursor_dec(&mut self) {
         self.cursor_controller.save_state();
@@ -83,11 +44,4 @@ impl TerminalEmulator {
             self.screen.mark_line_dirty(new_physical_y);
         }
     }
-    // --- End of methods moved back or to be kept ---
-
-    // Methods like handle_sgr_attributes, handle_set_mode, handle_window_manipulation, handle_osc
-    // remain here as they are more about mode setting and attribute handling rather than direct screen ops.
-    // `handle_sgr_attributes` and `handle_set_mode` have been moved to mode_handler.rs
-    // `handle_osc` has been moved to osc_handler.rs
-    // `handle_window_manipulation` has been moved to cursor_handler.rs
 }
