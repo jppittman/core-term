@@ -20,7 +20,7 @@ pub use charset::{map_to_dec_line_drawing, CharacterSet};
 pub use emulator::TerminalEmulator;
 pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 pub use snapshot::{
-    CursorRenderState, CursorShape, Point, RenderSnapshot, SelectionMode, SelectionRenderState,
+    CursorRenderState, CursorShape, Point, RenderSnapshot, SelectionMode, Selection, // Changed SelectionRenderState to Selection
     SnapshotLine,
 };
 

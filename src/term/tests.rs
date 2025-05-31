@@ -4,6 +4,7 @@ use crate::ansi::commands::{Attribute, C0Control, CsiCommand};
 use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::keys::{KeySymbol, Modifiers};
+use crate::term::action::{MouseButton, MouseEventType};
 use crate::term::{
     AnsiCommand,
     ControlEvent,
@@ -12,13 +13,16 @@ use crate::term::{
     DecModeConstant, // For DECTCEM test
     EmulatorAction,
     EmulatorInput,
+    // Imports for new tests:
+    Point, // From snapshot
     RenderSnapshot,
     SelectionMode,
-    SelectionRenderState,
+    Selection, // Added missing import
+    // SelectionRenderState, // This was the old name, replaced by snapshot::Selection
     SnapshotLine,
     TerminalEmulator,
     UserInputAction,
-}; // For color assertions
+}; // For mouse input
 
 // Default scrollback for tests, can be adjusted.
 const TEST_SCROLLBACK_LIMIT: usize = 100;
@@ -279,6 +283,406 @@ fn test_csi_sgr_fg_color() {
     );
 }
 
+// --- Helpers for Selection Integration Tests ---
+
+fn send_mouse_input(
+    emu: &mut TerminalEmulator,
+    col: usize,
+    row: usize,
+    event_type: MouseEventType,
+    button: MouseButton,
+) -> Option<EmulatorAction> {
+    emu.interpret_input(EmulatorInput::User(UserInputAction::MouseInput {
+        col,
+        row,
+        event_type,
+        button,
+        modifiers: Modifiers::empty(), // Default: no modifiers
+    }))
+}
+
+fn fill_emulator_screen(emu: &mut TerminalEmulator, text_lines: Vec<String>) {
+    for (r, line) in text_lines.iter().enumerate() {
+        if r > 0 {
+            // Simulate CRLF for new lines after the first.
+            // CR might not be strictly necessary if LF alone moves to col 0 in this emulator,
+            // but it's safer for typical terminal behavior.
+            emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
+            emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+        }
+        for char_val in line.chars() {
+            // Using AnsiCommand::Print for individual characters.
+            // Emulator's char_processor will handle them.
+            emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(char_val)));
+        }
+    }
+}
+
+// --- End of Helpers for Selection Integration Tests ---
+
+// --- Basic Selection Flow Tests ---
+#[test]
+fn test_mouse_press_starts_selection() {
+    let mut emu = create_test_emulator(10, 5);
+    let action = send_mouse_input(&mut emu, 1, 1, MouseEventType::Press, MouseButton::Left);
+
+    assert!(
+        emu.screen.selection.is_active,
+        "Selection should be active after left press."
+    );
+    assert_eq!(
+        emu.screen.selection.start,
+        Some(Point { x: 1, y: 1 }),
+        "Selection start point mismatch."
+    );
+    assert_eq!(
+        emu.screen.selection.end,
+        Some(Point { x: 1, y: 1 }),
+        "Selection end point should be same as start initially."
+    );
+    assert_eq!(
+        emu.screen.selection.mode,
+        SelectionMode::Normal,
+        "Default selection mode should be Normal."
+    );
+    assert_eq!(
+        action,
+        Some(EmulatorAction::RequestRedraw),
+        "Action should be RequestRedraw."
+    );
+}
+
+#[test]
+fn test_mouse_drag_updates_selection() {
+    let mut emu = create_test_emulator(10, 5);
+    // Initial press
+    send_mouse_input(&mut emu, 1, 1, MouseEventType::Press, MouseButton::Left);
+
+    // Drag
+    let action = send_mouse_input(&mut emu, 5, 2, MouseEventType::Move, MouseButton::Left); // Button for Move is often ignored if already dragging
+
+    assert!(
+        emu.screen.selection.is_active,
+        "Selection should remain active during drag."
+    );
+    assert_eq!(
+        emu.screen.selection.start,
+        Some(Point { x: 1, y: 1 }),
+        "Selection start point should not change during drag."
+    );
+    assert_eq!(
+        emu.screen.selection.end,
+        Some(Point { x: 5, y: 2 }),
+        "Selection end point should update to drag position."
+    );
+    assert_eq!(
+        action,
+        Some(EmulatorAction::RequestRedraw),
+        "Action should be RequestRedraw."
+    );
+}
+
+#[test]
+fn test_mouse_release_ends_selection_activity() {
+    let mut emu = create_test_emulator(10, 5);
+    // Press and Drag
+    send_mouse_input(&mut emu, 1, 1, MouseEventType::Press, MouseButton::Left);
+    send_mouse_input(&mut emu, 5, 2, MouseEventType::Move, MouseButton::Left);
+
+    // Release
+    let action = send_mouse_input(&mut emu, 5, 2, MouseEventType::Release, MouseButton::Left);
+
+    assert!(
+        !emu.screen.selection.is_active,
+        "Selection should be inactive after release."
+    );
+    assert_eq!(
+        emu.screen.selection.start,
+        Some(Point { x: 1, y: 1 }),
+        "Selection start point should be retained."
+    );
+    assert_eq!(
+        emu.screen.selection.end,
+        Some(Point { x: 5, y: 2 }),
+        "Selection end point should be retained."
+    );
+    assert_eq!(
+        action,
+        Some(EmulatorAction::RequestRedraw),
+        "Action should be RequestRedraw."
+    );
+}
+
+// --- End of Basic Selection Flow Tests ---
+
+// --- Copy Action Tests ---
+#[test]
+fn test_initiate_copy_no_selection() {
+    let mut emu = create_test_emulator(10, 5);
+    let action = emu.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+    assert_eq!(action, None, "Should return None if no selection exists.");
+}
+
+#[test]
+fn test_initiate_copy_with_selection() {
+    let mut emu = create_test_emulator(10, 2);
+    fill_emulator_screen(&mut emu, vec!["Hello".to_string(), "World".to_string()]);
+
+    // Select "Hello" which is from (0,0) to (4,0)
+    send_mouse_input(&mut emu, 0, 0, MouseEventType::Press, MouseButton::Left);
+    send_mouse_input(&mut emu, 4, 0, MouseEventType::Move, MouseButton::Left); // End of "Hello" is col 4
+    send_mouse_input(&mut emu, 4, 0, MouseEventType::Release, MouseButton::Left);
+
+    let action = emu.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+    assert_eq!(
+        action,
+        Some(EmulatorAction::CopyToClipboard("Hello".to_string())),
+        "Selected text mismatch."
+    );
+}
+
+#[test]
+fn test_initiate_copy_block_selection() {
+    let mut emu = create_test_emulator(3, 3);
+    fill_emulator_screen(
+        &mut emu,
+        vec!["ABC".to_string(), "DEF".to_string(), "GHI".to_string()],
+    );
+
+    // Manually set up a block selection from (0,0) to (1,1)
+    // This creates a 2x2 block: A B
+    //                           D E
+    emu.screen.clear_selection(); // Ensure no prior state
+    emu.screen
+        .start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
+    emu.screen.update_selection(Point { x: 1, y: 1 });
+    emu.screen.end_selection(); // Mark as not active, but coordinates remain
+
+    let action = emu.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
+    // Expected text for block (0,0)-(1,1) from "ABC\nDEF\nGHI":
+    // Line 0, cols 0-1: "AB"
+    // Line 1, cols 0-1: "DE"
+    assert_eq!(
+        action,
+        Some(EmulatorAction::CopyToClipboard("AB\nDE".to_string())),
+        "Block selected text mismatch."
+    );
+}
+// --- End of Copy Action Tests ---
+
+// --- Selection Clearing Tests ---
+#[test]
+fn test_new_mouse_press_clears_old_selection() {
+    let mut emu = create_test_emulator(10, 5);
+
+    // First selection
+    send_mouse_input(&mut emu, 0, 0, MouseEventType::Press, MouseButton::Left);
+    send_mouse_input(&mut emu, 2, 0, MouseEventType::Move, MouseButton::Left);
+    send_mouse_input(&mut emu, 2, 0, MouseEventType::Release, MouseButton::Left);
+
+    let old_selection_end = emu.screen.selection.end;
+    assert_eq!(
+        old_selection_end,
+        Some(Point { x: 2, y: 0 }),
+        "Pre-condition: First selection should be (0,0) to (2,0)"
+    );
+    assert!(!emu.screen.selection.is_active);
+
+    // New mouse press
+    let action = send_mouse_input(&mut emu, 1, 1, MouseEventType::Press, MouseButton::Left);
+
+    assert!(
+        emu.screen.selection.is_active,
+        "New selection should be active."
+    );
+    assert_eq!(
+        emu.screen.selection.start,
+        Some(Point { x: 1, y: 1 }),
+        "New selection start point mismatch."
+    );
+    assert_eq!(
+        emu.screen.selection.end,
+        Some(Point { x: 1, y: 1 }),
+        "New selection end point should be same as new start."
+    );
+    assert_ne!(
+        emu.screen.selection.end, old_selection_end,
+        "New selection should differ from old one."
+    );
+    assert_eq!(action, Some(EmulatorAction::RequestRedraw));
+}
+// --- End of Selection Clearing Tests ---
+
+// --- Selection Interaction with Scrolling Test ---
+#[test]
+fn test_selection_coordinates_adjust_on_scroll() {
+    let mut emu = create_test_emulator(10, 3); // 3 rows high
+    fill_emulator_screen(
+        &mut emu,
+        vec![
+            "Line0".to_string(),
+            "Line1".to_string(),
+            "Line2".to_string(),
+        ],
+    );
+    // Screen:
+    // Line0
+    // Line1
+    // Line2
+    // Cursor is at end of Line2.
+
+    // Select "Line1" which is from (0,1) to (4,1)
+    send_mouse_input(&mut emu, 0, 1, MouseEventType::Press, MouseButton::Left);
+    send_mouse_input(&mut emu, 4, 1, MouseEventType::Move, MouseButton::Left);
+    send_mouse_input(&mut emu, 4, 1, MouseEventType::Release, MouseButton::Left); // Selection is (0,1)-(4,1), inactive
+
+    assert_eq!(emu.screen.selection.start, Some(Point { x: 0, y: 1 }));
+    assert_eq!(emu.screen.selection.end, Some(Point { x: 4, y: 1 }));
+    assert!(!emu.screen.selection.is_active);
+
+    // Cause a scroll by adding a new line.
+    // Move cursor to end of Line2 first if not already there (fill_emulator_screen might leave it there)
+    // Then print a newline.
+    // To be sure, explicitly move cursor to last line, then print LF.
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(3, 1),
+    ))); // Row 3, Col 1
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+    // This LF at the last line (Line2) should scroll up the content.
+    // Line0 is lost.
+    // Line1 moves to row 0.
+    // Line2 moves to row 1.
+    // New blank line at row 2.
+
+    // The selection was for "Line1". Its original coordinates were y=1.
+    // After scroll, "Line1" is now on y=0.
+    // The selection coordinates should have been adjusted by screen.scroll_up_serial().
+    // Screen::scroll_up_serial does not currently adjust selection coordinates.
+    // This test will demonstrate that.
+    // If selection *should* adjust, this test will fail and Screen::scroll_up_serial needs an update.
+    // For now, let's test current behavior: selection coordinates are NOT adjusted by scroll.
+    // This means the selection might now point to different text or invalid rows.
+
+    // Current expectation based on Screen::scroll_up_serial not touching selection:
+    // assert_eq!(emu.screen.selection.start, Some(Point { x: 0, y: 1 }), "Selection start Y should NOT change if scroll doesn't update it.");
+    // assert_eq!(emu.screen.selection.end, Some(Point { x: 4, y: 1 }), "Selection end Y should NOT change if scroll doesn't update it.");
+
+    // Revised expectation: If lines are added to scrollback (which scroll_up_serial does for top==0),
+    // the grid lines are rotated. So (0,1) becomes (0,0) effectively.
+    // This implies that the selection *should* track the content.
+    // The `Screen::scroll_up_serial` method does:
+    //   `active_grid[top..=bot].rotate_left(n_val);`
+    // This means the underlying `Row` objects in the `grid` Vec are shifted.
+    // If `Selection` stores absolute row indices relative to the `grid` Vec,
+    // then selection *should* automatically follow the scrolled content.
+
+    // Let's re-verify: scroll_up_serial when top == 0 (which is the case here after cursor move and LF):
+    // 1. Lines are moved to scrollback.
+    // 2. The grid itself is rotated (`active_grid[top..=bot].rotate_left(n_val)`).
+    // This means `grid[0]` becomes the old `grid[1]`, `grid[1]` becomes old `grid[2]`, etc.
+    // So, if selection was `Point {y:1, ...}`, it should now refer to the content that was previously at `y=1`.
+    // No, this is incorrect. The Point {y:1} still means the *new* grid[1].
+    // The content at grid[1] has changed.
+    // So, selection does NOT automatically follow content with the current `scroll_up_serial`.
+
+    // Therefore, the test should assert that selection coordinates *do not change* with scroll,
+    // and thus the selected text would change.
+    // OR, if the requirement is that selection *should* try to follow content, then this test
+    // will highlight that `scroll_up_serial` needs to adjust selection coordinates.
+
+    // Sticking to testing the *current* implementation of `Screen::scroll_up_serial` which does not adjust selection:
+    assert_eq!(
+        emu.screen.selection.start,
+        Some(Point { x: 0, y: 1 }),
+        "Selection start Y should not change due to scroll."
+    );
+    assert_eq!(
+        emu.screen.selection.end,
+        Some(Point { x: 4, y: 1 }),
+        "Selection end Y should not change due to scroll."
+    );
+
+    // Now, if we get selected text, it should be from the *new* line 1, which is old Line2.
+    let selected_text_after_scroll = emu.screen.get_selected_text();
+    assert_eq!(
+        selected_text_after_scroll,
+        Some("Line2".to_string()),
+        "Selected text should be from the new line 1 (old Line2)."
+    );
+}
+// --- End of Selection Interaction with Scrolling Test ---
+
+// --- Selection with Alternate Screen Test ---
+#[test]
+fn test_selection_on_alt_screen_then_exit() {
+    let mut emu = create_test_emulator(10, 3);
+    fill_emulator_screen(
+        &mut emu,
+        vec!["Primary1".to_string(), "Primary2".to_string()],
+    );
+
+    // Enter alt screen
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16),
+    )));
+    // Alt screen should be clear. Let's fill it.
+    fill_emulator_screen(&mut emu, vec!["Alt1".to_string(), "Alt2".to_string()]);
+
+    // Select "Alt1" on the alt screen (0,0) to (3,0)
+    send_mouse_input(&mut emu, 0, 0, MouseEventType::Press, MouseButton::Left);
+    send_mouse_input(&mut emu, 3, 0, MouseEventType::Move, MouseButton::Left); // "Alt1" is 4 chars
+    send_mouse_input(&mut emu, 3, 0, MouseEventType::Release, MouseButton::Left);
+
+    assert!(emu.screen.alt_screen_active, "Should be on alt screen.");
+    assert_eq!(
+        emu.screen.get_selected_text(),
+        Some("Alt1".to_string()),
+        "Selection on alt screen incorrect."
+    );
+
+    // Exit alt screen
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16),
+    )));
+
+    assert!(
+        !emu.screen.alt_screen_active,
+        "Should be back on primary screen."
+    );
+
+    // Behavior of selection when switching screens can vary.
+    // Common choices:
+    // 1. Selection is cleared.
+    // 2. Selection from alt screen is discarded, primary screen might have an old selection or none.
+    // The current `exit_alt_screen` in `screen.rs` calls `mark_all_dirty` but does not touch `self.selection`.
+    // The `enter_alt_screen` also does not touch `self.selection`.
+    // This means a selection made on one screen *could* persist visually on the other if not cleared,
+    // which is usually undesirable.
+    // Let's assume the desired behavior is that selection is cleared when switching.
+    // This test will fail if `enter_alt_screen` or `exit_alt_screen` don't clear it.
+    // This is a good test for that behavior.
+    // The most robust behavior is usually that selection is specific to a screen buffer.
+    // So, exiting alt screen should clear any selection that was on the alt screen.
+    // And entering alt screen might clear any primary screen selection.
+
+    // For this test, we'll assert that selection is cleared upon exiting alt screen.
+    assert_eq!(
+        emu.screen.selection,
+        Selection::default(),
+        "Selection should be cleared after exiting alt screen."
+    );
+    assert_eq!(
+        emu.screen.get_selected_text(),
+        None,
+        "No selection should be active/present on primary screen after exiting alt."
+    );
+
+    // Verify primary screen content is restored (sanity check, not main focus of test)
+    let snapshot = emu.get_render_snapshot();
+    assert_eq!(snapshot.lines[0].cells[0].c, 'P'); // "Primary1"
+}
+// --- End of Selection with Alternate Screen Test ---
+
 #[test]
 fn test_resize_larger() {
     let mut term = create_test_emulator(5, 2);
@@ -408,10 +812,11 @@ fn test_snapshot_with_selection() {
         num_rows
     ];
 
-    let selection_state = Some(SelectionRenderState {
-        start_coords: (1, 0), // col 1, row 0
-        end_coords: (3, 1),   // col 3, row 1
+    let selection_state = Some(Selection {
+        start: Some(Point { x: 1, y: 0 }), // col 1, row 0
+        end: Some(Point { x: 3, y: 1 }),   // col 3, row 1
         mode: SelectionMode::Normal,
+        is_active: false, // For a static snapshot, assume selection is not actively changing
     });
 
     let snapshot_with_selection = RenderSnapshot {
@@ -429,8 +834,8 @@ fn test_snapshot_with_selection() {
 
     assert!(snapshot_with_selection.selection_state.is_some());
     let sel = snapshot_with_selection.selection_state.unwrap();
-    assert_eq!(sel.start_coords, (1, 0));
-    assert_eq!(sel.end_coords, (3, 1));
+    assert_eq!(sel.start, Some(Point { x: 1, y: 0 }));
+    assert_eq!(sel.end, Some(Point { x: 3, y: 1 }));
     assert_eq!(sel.mode, SelectionMode::Normal);
 
     let snapshot_cleared = RenderSnapshot {
