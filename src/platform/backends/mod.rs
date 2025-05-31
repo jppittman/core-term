@@ -62,6 +62,58 @@ pub enum BackendEvent {
     FocusLost,
 }
 
+/// Commands for the renderer to execute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderCommand {
+    /// Clears the entire display area with the specified background color.
+    ClearAll { bg: Color },
+    /// Draws a run of text characters at a given cell coordinate with a specified style.
+    DrawTextRun {
+        x: usize,
+        y: usize,
+        text: String,
+        fg: Color,
+        bg: Color,
+        flags: AttrFlags,
+        is_selected: bool,
+    },
+    /// Fills a rectangular area of cells with a specified concrete color.
+    FillRect {
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        color: Color,
+        is_selection_bg: bool,
+    },
+    /// Sets the visibility of the cursor.
+    SetCursorVisibility { visible: bool },
+    /// Sets the window title.
+    SetWindowTitle { title: String },
+    /// Rings the terminal bell.
+    RingBell,
+    /// Presents the composed frame to the display.
+    PresentFrame,
+}
+
+/// Holds the current state of the platform, including display metrics and event sources.
+/// This struct is typically owned and managed by a `Driver` implementation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlatformState {
+    /// Optional raw file descriptor that the orchestrator can monitor for platform events.
+    pub event_fd: Option<RawFd>,
+    /// Width of a single character cell in pixels.
+    pub font_cell_width_px: usize,
+    /// Height of a single character cell in pixels.
+    pub font_cell_height_px: usize,
+    /// The display scale factor (e.g., for HiDPI displays).
+    pub scale_factor: f64,
+    /// Current width of the display area in pixels.
+    pub display_width_px: u16,
+    /// Current height of the display area in pixels.
+    pub display_height_px: u16,
+}
+
 /// Defines coordinates for a single character cell on the terminal grid (0-based).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] // Added Eq
 pub struct CellCoords {
@@ -140,51 +192,25 @@ pub trait Driver {
     ///   or an error if event processing failed critically.
     fn process_events(&mut self) -> Result<Vec<BackendEvent>>;
 
-    /// Retrieves the dimensions of a single character cell in pixels.
+    /// Retrieves the current platform state, including display metrics and event file descriptor.
     ///
     /// # Returns
-    /// A tuple `(width_px, height_px)` representing the width and height of a character cell.
-    fn get_font_dimensions(&self) -> (usize, usize);
+    /// The `PlatformState` struct containing the current state.
+    fn get_platform_state(&self) -> PlatformState;
 
-    /// Retrieves the current dimensions of the display area managed by this driver, in pixels.
-    /// This typically corresponds to the client area of a window or the full console dimensions.
+    // --- Render Command Execution ---
+
+    /// Executes a list of render commands.
+    ///
+    /// This method is called by the `Renderer` to draw the terminal state.
+    /// The driver should iterate through the commands and apply them to its display surface.
+    ///
+    /// # Arguments
+    /// * `commands`: A `Vec<RenderCommand>` to be executed by the driver.
     ///
     /// # Returns
-    /// A tuple `(width_px, height_px)` representing the total display width and height in pixels.
-    fn get_display_dimensions_pixels(&self) -> (u16, u16);
-
-    // --- Abstract Drawing Primitives ---
-    // These methods are called by the Renderer to draw the terminal.
-    // The `Color` arguments for drawing (e.g., `bg` in `clear_all`, `style.fg`, `style.bg`
-    // in `draw_text_run`, `color` in `fill_rect`) are guaranteed by the Renderer
-    // to be concrete colors (i.e., not `Color::Default`). The Driver implements
-    // the actual drawing using these concrete colors.
-
-    /// Clears the entire display area with the specified background color.
-    /// This is typically called at the beginning of a full redraw.
-    ///
-    /// # Arguments
-    /// * `bg`: The concrete `Color` to fill the entire display area with.
-    fn clear_all(&mut self, bg: Color) -> Result<()>;
-
-    /// Draws a run of text characters at a given cell coordinate with a specified style.
-    ///
-    /// # Arguments
-    /// * `coords`: The `CellCoords` (0-based column, row) where the text run begins.
-    /// * `text`: The string of characters to draw. These are Unicode characters.
-    ///           The driver should handle rendering them appropriately with its font.
-    ///           The `Renderer` handles wide characters by drawing the character in the first
-    ///           cell and ensuring the second cell (placeholder) is cleared or handled correctly.
-    /// * `style`: The `TextRunStyle` (concrete foreground color, concrete background color, attribute flags) for the text.
-    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()>;
-
-    /// Fills a rectangular area of cells with a specified concrete color.
-    /// This is typically used for clearing parts of lines or drawing backgrounds for text runs.
-    ///
-    /// # Arguments
-    /// * `rect`: The `CellRect` (top-left x, y, width, height in cells) defining the area to fill.
-    /// * `color`: The concrete `Color` to fill the rectangle with.
-    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()>;
+    /// * `Result<()>`: Ok if all commands were processed successfully, or an error if one failed.
+    fn execute_render_commands(&mut self, commands: Vec<RenderCommand>) -> Result<()>;
 
     /// Presents the composed frame to the display.
     /// For double-buffered systems, this would typically swap the buffers.

@@ -6,10 +6,10 @@
 
 use crate::{
     ansi::AnsiParser,
-    platform::backends::{BackendEvent, Driver},
+    platform::backends::{BackendEvent, Driver, RenderCommand}, // Removed PlatformState
     platform::os::pty::PtyChannel,
     renderer::Renderer,
-    term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction}, // Added UserInputAction
+    term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction},
 };
 use anyhow::Error as AnyhowError;
 use std::io::ErrorKind as IoErrorKind;
@@ -38,6 +38,10 @@ pub struct AppOrchestrator<'a> {
     pub renderer: Renderer,
     pub driver: &'a mut dyn Driver,
     pty_read_buffer: [u8; PTY_READ_BUFFER_SIZE],
+    // Store relevant parts of PlatformState
+    font_cell_width_px: usize,
+    font_cell_height_px: usize,
+    pending_render_actions: Vec<EmulatorAction>,
 }
 
 impl<'a> AppOrchestrator<'a> {
@@ -47,8 +51,36 @@ impl<'a> AppOrchestrator<'a> {
         term: &'a mut dyn TerminalInterface,
         parser: &'a mut dyn AnsiParser,
         renderer: Renderer,
-        driver: &'a mut dyn Driver,
+        driver: &'a mut dyn Driver, // driver is already mutable
     ) -> Self {
+        // Get initial platform state
+        let initial_platform_state = driver.get_platform_state();
+        let font_cell_width_px = initial_platform_state.font_cell_width_px.max(1); // Ensure not zero
+        let font_cell_height_px = initial_platform_state.font_cell_height_px.max(1); // Ensure not zero
+
+        // Calculate initial dimensions for the terminal
+        let initial_cols = (initial_platform_state.display_width_px as usize / font_cell_width_px).max(1);
+        let initial_rows = (initial_platform_state.display_height_px as usize / font_cell_height_px).max(1);
+
+        // Inform the terminal about its initial size and cell pixel size
+        term.interpret_input(EmulatorInput::Control(ControlEvent::Resize {
+            cols: initial_cols,
+            rows: initial_rows,
+        }));
+        // Assuming TerminalEmulator has a way to receive cell pixel size,
+        // or it recalculates internally based on new grid dimensions and display pixel size.
+        // For now, let's assume `ControlEvent::Resize` is enough for the terminal to adjust.
+        // If `term.update_cell_pixel_size` existed, it would be called here:
+        // term.update_cell_pixel_size(font_cell_width_px, font_cell_height_px);
+
+        // Inform the PTY of its initial size (cells only)
+        if let Err(e) = pty_channel.resize(
+            initial_cols as u16,
+            initial_rows as u16
+        ) {
+            log::warn!("Orchestrator: Failed to set initial PTY size: {}", e);
+        }
+
         AppOrchestrator {
             pty_channel,
             term,
@@ -56,6 +88,9 @@ impl<'a> AppOrchestrator<'a> {
             renderer,
             driver,
             pty_read_buffer: [0; PTY_READ_BUFFER_SIZE],
+            font_cell_width_px,
+            font_cell_height_px,
+            pending_render_actions: Vec::new(),
         }
     }
 
@@ -85,15 +120,14 @@ impl<'a> AppOrchestrator<'a> {
     }
 
     fn interpret_pty_bytes_mut_access(&mut self, pty_data_slice: &[u8]) {
-        let commands = self
-            .parser
-            .process_bytes(pty_data_slice)
-            .into_iter()
-            .map(EmulatorInput::Ansi);
-
-        for command_input in commands {
+        for command_input in self.parser.process_bytes(pty_data_slice).into_iter().map(EmulatorInput::Ansi) {
             if let Some(action) = self.term.interpret_input(command_input) {
-                self.handle_emulator_action(action);
+                if matches!(action, EmulatorAction::WritePty(_)) {
+                    // WritePty is handled immediately and does not generate render commands.
+                    self.handle_emulator_action(action, &mut Vec::new()); // Pass dummy vec
+                } else {
+                    self.pending_render_actions.push(action);
+                }
             }
         }
     }
@@ -138,71 +172,78 @@ impl<'a> AppOrchestrator<'a> {
                 };
                 let user_input = EmulatorInput::User(key_input_action);
                 if let Some(action) = self.term.interpret_input(user_input) {
-                    self.handle_emulator_action(action);
+                    if matches!(action, EmulatorAction::WritePty(_)) {
+                        self.handle_emulator_action(action, &mut Vec::new());
+                    } else {
+                        self.pending_render_actions.push(action);
+                    }
                 }
             }
-            BackendEvent::Resize {
-                width_px,
-                height_px,
-            } => {
-                let (char_width, char_height) = self.driver.get_font_dimensions();
-                if char_width == 0 || char_height == 0 {
-                    log::warn!(
-                        "Orchestrator: Received resize but driver reported zero char dimensions ({}, {}). Ignoring resize.",
-                        char_width,
-                        char_height
-                    );
-                    return;
-                }
+            BackendEvent::Resize { .. } => { // width_px, height_px from event are noted but platform_state is source of truth
+                let platform_state = self.driver.get_platform_state();
 
-                let new_cols = (width_px as usize / char_width.max(1)).max(1);
-                let new_rows = (height_px as usize / char_height.max(1)).max(1);
+                // Update stored font dimensions, they might change (e.g. DPI change on X11)
+                self.font_cell_width_px = platform_state.font_cell_width_px.max(1);
+                self.font_cell_height_px = platform_state.font_cell_height_px.max(1);
+
+                // Use dimensions from platform_state as it's the most current from the driver after resize
+                let new_cols = (platform_state.display_width_px as usize / self.font_cell_width_px).max(1);
+                let new_rows = (platform_state.display_height_px as usize / self.font_cell_height_px).max(1);
 
                 log::info!(
                     "Orchestrator: Resizing to {}x{} cells ({}x{} px, char_size: {}x{})",
                     new_cols,
                     new_rows,
-                    width_px,
-                    height_px,
-                    char_width,
-                    char_height
+                    platform_state.display_width_px,
+                    platform_state.display_height_px,
+                    self.font_cell_width_px,
+                    self.font_cell_height_px
                 );
 
-                if let Err(e) = self.pty_channel.resize(new_cols as u16, new_rows as u16) {
-                    log::warn!(
-                        "Orchestrator: Failed to resize PTY to {}x{}: {}",
-                        new_cols,
-                        new_rows,
-                        e
-                    );
+                // Resize PTY (cells only)
+                if let Err(e) = self.pty_channel.resize(
+                    new_cols as u16,
+                    new_rows as u16
+                ) {
+                    log::warn!("Orchestrator: Failed to resize PTY: {}", e);
                 }
 
-                let resize_event = EmulatorInput::Control(ControlEvent::Resize {
+                // Update terminal emulator dimensions
+                let resize_emulator_input = EmulatorInput::Control(ControlEvent::Resize {
                     cols: new_cols,
                     rows: new_rows,
                 });
-                if let Some(action) = self.term.interpret_input(resize_event) {
-                    self.handle_emulator_action(action);
+                if let Some(action) = self.term.interpret_input(resize_emulator_input) {
+                    // Actions from resize are unlikely to be render commands.
+                    if matches!(action, EmulatorAction::WritePty(_)) {
+                        self.handle_emulator_action(action, &mut Vec::new());
+                    } else {
+                        self.pending_render_actions.push(action);
+                    }
                 }
+                // TODO: If TerminalEmulator needs explicit cell pixel size updates:
+                // self.term.update_cell_pixel_size(self.font_cell_width_px, self.font_cell_height_px);
             }
             BackendEvent::FocusGained => {
                 log::debug!("Orchestrator: FocusGained event.");
-                self.driver.set_focus(crate::platform::backends::x11::FocusState::Focused);
-                if let Some(action) = self
-                    .term
-                    .interpret_input(EmulatorInput::User(UserInputAction::FocusGained))
-                {
-                    self.handle_emulator_action(action);
+                self.driver.set_focus(crate::platform::backends::FocusState::Focused); // Corrected FocusState path
+                if let Some(action) = self.term.interpret_input(EmulatorInput::User(UserInputAction::FocusGained)) {
+                    if matches!(action, EmulatorAction::WritePty(_)) {
+                        self.handle_emulator_action(action, &mut Vec::new());
+                    } else {
+                        self.pending_render_actions.push(action);
+                    }
                 }
             }
             BackendEvent::FocusLost => {
                 log::debug!("Orchestrator: FocusLost event.");
-                self.driver.set_focus(crate::platform::backends::x11::FocusState::Unfocused);
-                if let Some(action) = self
-                    .term
-                    .interpret_input(EmulatorInput::User(UserInputAction::FocusLost))
-                {
-                    self.handle_emulator_action(action);
+                self.driver.set_focus(crate::platform::backends::FocusState::Unfocused); // Corrected FocusState path
+                 if let Some(action) = self.term.interpret_input(EmulatorInput::User(UserInputAction::FocusLost)) {
+                    if matches!(action, EmulatorAction::WritePty(_)) {
+                        self.handle_emulator_action(action, &mut Vec::new());
+                    } else {
+                        self.pending_render_actions.push(action);
+                    }
                 }
             }
             BackendEvent::CloseRequested => {
@@ -214,40 +255,31 @@ impl<'a> AppOrchestrator<'a> {
     }
 
     /// Handles actions signaled by the `TerminalInterface` implementation.
-    fn handle_emulator_action(&mut self, action: EmulatorAction) {
+    /// Some actions are handled immediately (e.g., writing to PTY), while others
+    /// that affect rendering are converted to `RenderCommand`s and appended to the given list.
+    fn handle_emulator_action(&mut self, action: EmulatorAction, commands: &mut Vec<RenderCommand>) {
         log::debug!("Orchestrator: Handling EmulatorAction: {:?}", action);
         match action {
             EmulatorAction::WritePty(data) => {
                 if let Err(e) = self.pty_channel.write_all(&data) {
-                    log::error!(
-                        "Orchestrator: Failed to write_all {} bytes to PTY: {}",
-                        data.len(),
-                        e
-                    );
+                    log::error!("Orchestrator: Failed to write_all {} bytes to PTY: {}", data.len(), e);
                 } else {
                     log::trace!("Orchestrator: Wrote {} bytes to PTY.", data.len());
                 }
             }
             EmulatorAction::SetTitle(title) => {
-                self.driver.set_title(&title);
+                commands.push(RenderCommand::SetWindowTitle { title });
             }
             EmulatorAction::RingBell => {
-                self.driver.bell();
+                commands.push(RenderCommand::RingBell);
             }
             EmulatorAction::RequestRedraw => {
-                log::trace!("Orchestrator: EmulatorAction::RequestRedraw received (now implicit).");
+                log::trace!("Orchestrator: EmulatorAction::RequestRedraw received (rendering is managed by main loop).");
             }
             EmulatorAction::SetCursorVisibility(visible) => {
-                log::trace!(
-                    "Orchestrator: Setting driver cursor visibility to: {}",
-                    visible
-                );
-                let cursor_visibility = if visible {
-                    crate::platform::backends::x11::window::CursorVisibility::Shown
-                } else {
-                    crate::platform::backends::x11::window::CursorVisibility::Hidden
-                };
-                self.driver.set_cursor_visibility(cursor_visibility);
+                // This refers to the *native* OS cursor, not the terminal's drawn cursor.
+                // The terminal's drawn cursor visibility is part of RenderSnapshot.
+                commands.push(RenderCommand::SetCursorVisibility { visible });
             }
             EmulatorAction::CopyToClipboard(_) => {
                 unimplemented!("clipboard feature not yet implemented")
@@ -259,9 +291,28 @@ impl<'a> AppOrchestrator<'a> {
     }
 
     pub fn render_if_needed(&mut self) -> anyhow::Result<()> {
-        log::trace!("Orchestrator: Calling renderer.draw().");
+        log::trace!("Orchestrator: Preparing render commands for frame.");
         let snapshot = self.term.get_render_snapshot();
-        self.renderer.draw(snapshot, &mut *self.driver)
+        let mut final_render_commands = self.renderer.draw(snapshot)?;
+
+        // Process any pending emulator actions that translate to render commands
+        let actions_to_process: Vec<EmulatorAction> = self.pending_render_actions.drain(..).collect();
+        for action in actions_to_process {
+            // Note: WritePty actions were already handled immediately and won't be in this list.
+            self.handle_emulator_action(action, &mut final_render_commands);
+        }
+
+        // Always add PresentFrame as the last command for this frame.
+        final_render_commands.push(RenderCommand::PresentFrame);
+
+        log::debug!("Orchestrator: Executing {} render commands.", final_render_commands.len());
+        self.driver.execute_render_commands(final_render_commands)?;
+
+        // Optionally, notify the terminal that the frame was rendered.
+        // This can be useful for synchronization or for features like DA1 "Send Primary Device Attributes".
+        // self.term.interpret_input(EmulatorInput::Control(ControlEvent::FrameRendered));
+
+        Ok(())
     }
 }
 

@@ -18,7 +18,7 @@ use crate::{
     platform::backends::{console::ConsoleDriver, x11::XDriver, Driver},
     platform::os::{
         epoll::{EpollFlags, EventMonitor}, // Using EventMonitor for epoll management
-        pty::{NixPty, PtyChannel, PtyConfig}, // NixPty for PTY channel, PtyConfig for its setup
+        pty::{NixPty, PtyConfig}, // NixPty for PTY channel, PtyConfig for its setup. Removed PtyChannel.
     },
     renderer::Renderer,
     term::TerminalEmulator, // The core terminal state machine
@@ -57,9 +57,9 @@ fn main() -> anyhow::Result<()> {
     let shell_args: Vec<String> = Vec::new(); // No specific args by default
     let shell_args_str: Vec<&str> = shell_args.iter().map(AsRef::as_ref).collect();
 
-    // Initial dimensions, may be updated by the driver.
-    let mut initial_cols = platform::backends::DEFAULT_WINDOW_WIDTH_CHARS as u16;
-    let mut initial_rows = platform::backends::DEFAULT_WINDOW_HEIGHT_CHARS as u16;
+    // Initial dimensions, these are default and might be updated by AppOrchestrator based on driver.
+    let initial_cols = platform::backends::DEFAULT_WINDOW_WIDTH_CHARS as u16;
+    let initial_rows = platform::backends::DEFAULT_WINDOW_HEIGHT_CHARS as u16;
 
     // --- Setup PTY ---
     let pty_config = PtyConfig {
@@ -92,33 +92,24 @@ fn main() -> anyhow::Result<()> {
     };
     info!("Driver initialized.");
 
-    // Update initial dimensions based on driver's font and display metrics.
-    let (display_width_px, display_height_px) = driver.get_display_dimensions_pixels();
-    let (char_width_px, char_height_px) = driver.get_font_dimensions();
-    if char_width_px > 0 && char_height_px > 0 {
-        initial_cols = (display_width_px as usize / char_width_px).max(1) as u16;
-        initial_rows = (display_height_px as usize / char_height_px).max(1) as u16;
-        // Resize the PTY to match the new cell dimensions.
-        if let Err(e) = pty_channel.resize(initial_cols, initial_rows) {
-            warn!(
-                "Failed to resize PTY to initial driver dimensions: {}x{} cells. Error: {}",
-                initial_cols, initial_rows, e
-            );
-        }
-    }
-    info!(
-        "Initial terminal dimensions set to: {}x{} cells",
-        initial_cols, initial_rows
-    );
+    // Note: Initial dimensions (initial_cols, initial_rows) are passed to PtyConfig.
+    // AppOrchestrator::new will now query the driver for its actual PlatformState
+    // (including font and display pixel dimensions), calculate the resulting grid size,
+    // and then resize both the PTY and the TerminalEmulator instance accordingly.
+    // So, the explicit dimension query and PTY resize previously done here in main.rs
+    // are no longer needed.
 
     // --- Setup Terminal Emulator, Parser, Renderer ---
+    // TerminalEmulator is initialized with initial_cols and initial_rows,
+    // but AppOrchestrator::new will immediately send a Resize ControlEvent
+    // to update it based on actual driver metrics.
     trace!(
-        "Initializing TerminalEmulator with scrollback limit: {}",
+        "Initializing TerminalEmulator with default scrollback limit: {}",
         DEFAULT_SCROLLBACK_LIMIT
     );
     let mut term_emulator = TerminalEmulator::new(
-        initial_cols as usize,
-        initial_rows as usize,
+        initial_cols as usize, // These might be default, orchestrator will resize
+        initial_rows as usize, // These might be default, orchestrator will resize
         DEFAULT_SCROLLBACK_LIMIT,
     );
     let mut ansi_parser = AnsiProcessor::new();
