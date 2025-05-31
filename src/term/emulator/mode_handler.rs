@@ -102,7 +102,7 @@ impl TerminalEmulator {
                             if !self.dec_modes.using_alt_screen {
                                 // Assuming this flag exists
                                 if mode_num == DecModeConstant::AltScreenBufferSaveRestore as u16 {
-                                    self.save_cursor_dec();
+                                    self.save_cursor();
                                 }
                                 self.screen.default_attributes =
                                     self.cursor_controller.attributes();
@@ -120,7 +120,7 @@ impl TerminalEmulator {
                             self.screen.exit_alt_screen();
                             self.dec_modes.using_alt_screen = false;
                             if mode_num == DecModeConstant::AltScreenBufferSaveRestore as u16 {
-                                self.restore_cursor_dec();
+                                self.restore_cursor();
                             } else {
                                 self.cursor_controller.move_to_logical(
                                     0,
@@ -136,9 +136,9 @@ impl TerminalEmulator {
                     }
                     Some(DecModeConstant::SaveRestoreCursor) => {
                         if enable {
-                            self.save_cursor_dec();
+                            self.save_cursor();
                         } else {
-                            self.restore_cursor_dec();
+                            self.restore_cursor();
                         }
                     }
                     Some(DecModeConstant::BracketedPaste) => {

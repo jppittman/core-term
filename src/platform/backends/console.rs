@@ -5,20 +5,20 @@
 //! environments without a graphical display server or as a fallback.
 
 // Corrected: Import Color directly from the color module.
-use crate::platform::backends::{
-    BackendEvent, CellCoords, CellRect, DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
-    Driver, TextRunStyle,
-};
 use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
-use crate::keys::{KeySymbol, Modifiers}; // Added for new key representation
+use crate::keys::{KeySymbol, Modifiers};
+use crate::platform::backends::{
+    BackendEvent, CellCoords, CellRect, Driver, TextRunStyle, DEFAULT_WINDOW_HEIGHT_CHARS,
+    DEFAULT_WINDOW_WIDTH_CHARS,
+}; // Added for new key representation
 
 use anyhow::{Context, Result};
-use libc::{STDIN_FILENO, TIOCGWINSZ, winsize}; // For terminal size and raw mode
-use std::io::{self, Read, Write, stdin, stdout};
+use libc::{winsize, STDIN_FILENO, TIOCGWINSZ}; // For terminal size and raw mode
+use std::io::{self, stdin, stdout, Read, Write};
 use std::mem;
 use std::os::unix::io::RawFd;
-use termios::{ECHO, ICANON, ISIG, TCSANOW, Termios, VMIN, VTIME, tcsetattr}; // For raw mode
+use termios::{tcsetattr, Termios, ECHO, ICANON, ISIG, TCSANOW, VMIN, VTIME}; // For raw mode
 
 // Logging
 use log::{debug, error, info, trace, warn};
@@ -371,7 +371,11 @@ impl Driver for ConsoleDriver {
         print!("{}", cmd);
         trace!(
             "ConsoleDriver: draw_text_run at ({},{}) text '{}' style {:?} cmd: {:?}",
-            coords.x, coords.y, text, style, cmd
+            coords.x,
+            coords.y,
+            text,
+            style,
+            cmd
         );
         Ok(())
     }
@@ -423,7 +427,12 @@ impl Driver for ConsoleDriver {
         print!("{}", cmd);
         trace!(
             "ConsoleDriver: fill_rect at ({},{}, w:{}, h:{}) color {:?} cmd: {:?}",
-            rect.x, rect.y, rect.width, rect.height, color, cmd
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            color,
+            cmd
         );
         Ok(())
     }
@@ -441,7 +450,7 @@ impl Driver for ConsoleDriver {
         // OSC 0 sets icon name and window title. OSC 2 sets window title only.
         // Using OSC 0 for wider compatibility.
         print!("\x1b]0;{}\x07", title); // \x07 is the BEL character, often used as ST for OSC
-        // No flush here, assume present() will be called.
+                                        // No flush here, assume present() will be called.
         trace!("ConsoleDriver: Set window title to '{}'", title);
     }
 

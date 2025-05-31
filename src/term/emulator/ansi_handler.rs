@@ -101,6 +101,32 @@ fn designate_character_set(
 // cursor_to_column, cursor_to_pos) have been moved to cursor_handler.rs
 // and are now methods on TerminalEmulator.
 
+fn reset(emulator: &mut TerminalEmulator) -> Option<EmulatorAction> {
+    if emulator.screen.alt_screen_active {
+        emulator.screen.exit_alt_screen();
+    }
+    let default_attrs = Attributes::default();
+    emulator.cursor_controller.reset();
+    emulator.screen.default_attributes = default_attrs;
+    emulator.erase_in_display(EraseMode::All); // Call as method on emulator
+    emulator.dec_modes = DecPrivateModes::default();
+    emulator.screen.origin_mode = emulator.dec_modes.origin_mode;
+    let (_, h) = emulator.dimensions();
+    emulator.screen.set_scrolling_region(1, h);
+    emulator.active_charsets = [CharacterSet::Ascii; 4];
+    emulator.active_charset_g_level = 0;
+    emulator.screen.clear_tabstops(0, TabClearMode::All);
+    let (w, _) = emulator.dimensions();
+    for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize) {
+        emulator.screen.set_tabstop(i);
+    }
+    emulator.cursor_wrap_next = false;
+    if emulator.dec_modes.text_cursor_enable_mode {
+        return Some(EmulatorAction::SetCursorVisibility(true));
+    }
+    None
+}
+
 // The main ANSI command processing function
 #[allow(clippy::too_many_lines)] // To be addressed by further refactoring if needed
 pub(super) fn process_ansi_command(
@@ -163,11 +189,11 @@ pub(super) fn process_ansi_command(
                 None
             }
             EscCommand::SaveCursor => {
-                emulator.save_cursor_dec(); // Call as method
+                emulator.save_cursor(); // Call as method
                 None
             }
             EscCommand::RestoreCursor => {
-                emulator.restore_cursor_dec(); // Call as method
+                emulator.restore_cursor(); // Call as method
                 None
             }
             EscCommand::SelectCharacterSet(intermediate_char, final_char) => {
@@ -187,32 +213,7 @@ pub(super) fn process_ansi_command(
                 designate_character_set(emulator, g_idx, CharacterSet::from_char(final_char));
                 None
             }
-            EscCommand::ResetToInitialState => {
-                trace!("Processing ESC c (ResetToInitialState)");
-                if emulator.screen.alt_screen_active {
-                    emulator.screen.exit_alt_screen();
-                }
-                let default_attrs = Attributes::default();
-                emulator.cursor_controller.reset();
-                emulator.screen.default_attributes = default_attrs;
-                emulator.erase_in_display(EraseMode::All); // Call as method on emulator
-                emulator.dec_modes = DecPrivateModes::default();
-                emulator.screen.origin_mode = emulator.dec_modes.origin_mode;
-                let (_, h) = emulator.dimensions();
-                emulator.screen.set_scrolling_region(1, h);
-                emulator.active_charsets = [CharacterSet::Ascii; 4];
-                emulator.active_charset_g_level = 0;
-                emulator.screen.clear_tabstops(0, TabClearMode::All);
-                let (w, _) = emulator.dimensions();
-                for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize) {
-                    emulator.screen.set_tabstop(i);
-                }
-                emulator.cursor_wrap_next = false;
-                if emulator.dec_modes.text_cursor_enable_mode {
-                    return Some(EmulatorAction::SetCursorVisibility(true));
-                }
-                None
-            }
+            EscCommand::ResetToInitialState => reset(emulator),
             _ => {
                 debug!("Unhandled Esc command: {:?}", esc_cmd);
                 None
@@ -319,12 +320,12 @@ pub(super) fn process_ansi_command(
                 emulator.scroll_down(n.max(1) as usize); // Call as method
                 None
             }
-            CsiCommand::SaveCursor => {
-                emulator.save_cursor_dec(); // Call as method
+            CsiCommand::SaveCursor | CsiCommand::SaveCursorAnsi => {
+                emulator.save_cursor();
                 None
             }
-            CsiCommand::RestoreCursor => {
-                emulator.restore_cursor_dec(); // Call as method
+            CsiCommand::RestoreCursor | CsiCommand::RestoreCursorAnsi => {
+                emulator.restore_cursor();
                 None
             }
             CsiCommand::ClearTabStops(mode_val) => {
@@ -360,17 +361,18 @@ pub(super) fn process_ansi_command(
             CsiCommand::WindowManipulation { ps1, ps2, ps3 } => {
                 emulator.handle_window_manipulation(ps1, ps2, ps3)
             }
+            CsiCommand::PrimaryDeviceAttributes => {
+                let response = "\x1b[?6c".to_string().into_bytes();
+                Some(EmulatorAction::WritePty(response))
+            }
+            CsiCommand::SetTabStop => {
+                todo!("ansi set tabstop");
+            }
+            CsiCommand::Reset => reset(emulator),
             CsiCommand::Unsupported(intermediates, final_byte_opt) => {
                 warn!(
                     "TerminalEmulator received CsiCommand::Unsupported: intermediates={:?}, final={:?}. This is usually an error from the parser.",
                     intermediates, final_byte_opt
-                );
-                None
-            }
-            _ => {
-                debug!(
-                    "Unhandled CsiCommand variant in TerminalEmulator: {:?}",
-                    csi
                 );
                 None
             }

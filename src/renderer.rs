@@ -8,9 +8,9 @@
 //! to be backend-agnostic. It defines default foreground and background colors
 //! for resolving `Color::Default` from glyph attributes when rendering.
 
-use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle};
 use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
+use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle};
 use crate::term::unicode::get_char_display_width;
 // Assuming RenderSnapshot, SnapshotLine, CursorRenderState, and Point are defined in crate::term
 use crate::term::{Point, RenderSnapshot};
@@ -399,7 +399,9 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Placeholder. FillRect with bg={:?}",
-            y, x, effective_bg
+            y,
+            x,
+            effective_bg
         );
         driver.fill_rect(rect, effective_bg)?;
         Ok(SINGLE_CELL_CONSUMED)
@@ -475,7 +477,11 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}",
-            y, start_col, space_run_len, start_eff_bg, start_eff_flags
+            y,
+            start_col,
+            space_run_len,
+            start_eff_bg,
+            start_eff_flags
         );
         driver.fill_rect(rect, start_eff_bg)?;
         Ok(space_run_len)
@@ -539,7 +545,9 @@ impl Renderer {
             if char_display_width == 0 {
                 trace!(
                     "    Line {}, Col {}: Appending zero-width char '{}'.",
-                    y, current_scan_col, glyph_at_scan.c
+                    y,
+                    current_scan_col,
+                    glyph_at_scan.c
                 );
                 run_text.push(glyph_at_scan.c);
                 current_scan_col += SINGLE_CELL_CONSUMED;
@@ -576,7 +584,11 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style={:?}",
-            y, start_col, run_text, run_total_cell_width, style
+            y,
+            start_col,
+            run_text,
+            run_total_cell_width,
+            style
         );
         driver.draw_text_run(coords, &run_text, style)?;
         Ok(run_total_cell_width)
@@ -657,7 +669,9 @@ impl Renderer {
             );
         trace!(
             "    Original cell effective attrs for cursor: fg={:?}, bg={:?}, flags={:?}",
-            resolved_original_fg, resolved_original_bg, resolved_original_flags
+            resolved_original_fg,
+            resolved_original_bg,
+            resolved_original_flags
         );
 
         let cursor_char_fg = resolved_original_bg;
@@ -681,7 +695,10 @@ impl Renderer {
         };
         trace!(
             "    Drawing cursor overlay: char='{}' at physical ({},{}) with style: {:?}",
-            final_char_to_draw_for_cursor, physical_cursor_x_for_draw, cursor_abs_y, style
+            final_char_to_draw_for_cursor,
+            physical_cursor_x_for_draw,
+            cursor_abs_y,
+            style
         );
         driver.draw_text_run(coords, &final_char_to_draw_for_cursor.to_string(), style)?;
         Ok(())

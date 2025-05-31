@@ -2,10 +2,10 @@
 #![cfg(test)]
 
 // Updated imports based on current crate structure
-use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
 use crate::color::Color;
-use crate::renderer::{RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG, Renderer}; // Rgb is now a variant Color::Rgb(...). Colors struct removed.
-// FontDesc is now FontConfig. Using ColorScheme for palette.
+use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
+use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG}; // Rgb is now a variant Color::Rgb(...). Colors struct removed.
+                                                                           // FontDesc is now FontConfig. Using ColorScheme for palette.
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
 use crate::term::{
     CursorRenderState, CursorShape, RenderSnapshot, SelectionRenderState, SnapshotLine,

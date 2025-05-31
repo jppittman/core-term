@@ -142,7 +142,11 @@ impl AnsiParser {
     fn dispatch_csi(&mut self, final_byte: u8) {
         trace!(
             "Dispatching CSI: Private={}, Params={:?}, Intermediates={:?}, Final={}({})",
-            self.is_private_csi, self.params, self.intermediates, final_byte as char, final_byte
+            self.is_private_csi,
+            self.params,
+            self.intermediates,
+            final_byte as char,
+            final_byte
         );
         // These are the actual parameters and intermediates collected by the parser state machine
         let params_vec = mem::take(&mut self.params);

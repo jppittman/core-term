@@ -11,9 +11,9 @@ use crate::{
     term::cursor::CursorShape, // Assumes CursorShape is in `crate::term::modes`
 };
 use log::{error, info}; // Added warn, info
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use once_cell::sync::Lazy;
 
 // --- Global Configuration Access ---
 

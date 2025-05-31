@@ -5,12 +5,12 @@ use std::ffi::CString;
 use std::io::{Read, Result as IoResult, Write};
 use std::os::unix::io::{AsFd, AsRawFd, OwnedFd, RawFd};
 
-use nix::fcntl::{FcntlArg, OFlag, fcntl};
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use nix::pty::openpty;
-use nix::sys::signal::{Signal, kill};
+use nix::sys::signal::{kill, Signal};
 use nix::sys::termios;
-use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::{ForkResult, Pid, execvp, fork, setsid}; // Added ForkResult
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::{execvp, fork, setsid, ForkResult, Pid}; // Added ForkResult
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 #[derive(Debug, Clone)]
@@ -90,6 +90,7 @@ impl NixPty {
                     .with_context(|| "Child: Failed to get terminal attributes")?;
                 termios::cfmakeraw(&mut termios_attrs);
                 termios_attrs.local_flags |= termios::LocalFlags::ISIG;
+                termios_attrs.input_flags |= termios::InputFlags::ICRNL;
                 termios::tcsetattr(&slave_fd, termios::SetArg::TCSANOW, &termios_attrs)
                     .with_context(|| "Child: Failed to set terminal attributes to raw mode")?;
 

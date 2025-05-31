@@ -5,7 +5,7 @@ use super::TerminalEmulator;
 use crate::term::modes::EraseMode; // EraseMode is used by erase_in_display, erase_in_line
 use std::cmp::min; // For erase_chars
 
-use log::{warn};
+use log::warn;
 
 impl TerminalEmulator {
     pub(super) fn erase_in_display(&mut self, mode: EraseMode) {
@@ -150,7 +150,7 @@ impl TerminalEmulator {
         self.screen.default_attributes = self.cursor_controller.attributes();
         self.screen.scroll_down_serial(n);
     }
-        /// Handles the screen operations for moving the cursor down one line,
+    /// Handles the screen operations for moving the cursor down one line,
     /// typically as part of a Line Feed (LF/`\n`) or similar control sequence.
     ///
     /// This function is responsible for:
@@ -195,9 +195,10 @@ impl TerminalEmulator {
             } else {
                 // Not at scroll_bot, try to move logical_y down if there's space within the logical region.
                 // max_logical_y_in_logical_region is the last valid logical_y index within the scrolling region.
-                let max_logical_y_in_logical_region = screen_ctx.scroll_bot.saturating_sub(screen_ctx.scroll_top);
+                let max_logical_y_in_logical_region =
+                    screen_ctx.scroll_bot.saturating_sub(screen_ctx.scroll_top);
                 if current_logical_y < max_logical_y_in_logical_region {
-                     self.cursor_controller.move_down(1, &screen_ctx);
+                    self.cursor_controller.move_down(1, &screen_ctx);
                 }
                 // If current_logical_y == max_logical_y_in_logical_region, cursor is already at the logical bottom
                 // of the region, so no further downward movement within the region is possible without scrolling.
@@ -231,7 +232,8 @@ impl TerminalEmulator {
 
         // Mark lines dirty for rendering.
         // The Screen::scroll_up_serial method already marks all lines within its scrolled region as dirty.
-        let (_final_physical_x, final_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
+        let (_final_physical_x, final_physical_y) =
+            self.cursor_controller.physical_screen_pos(&screen_ctx);
 
         // Mark the original line the cursor was on as dirty.
         if current_physical_y < screen_ctx.height {
@@ -255,6 +257,4 @@ impl TerminalEmulator {
             }
         }
     }
-
-
 }

@@ -4,10 +4,10 @@
 use log::{debug, error, info, trace, warn};
 
 // Crate-level imports
-use crate::platform::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
 use crate::color::{Color, NamedColor};
 use crate::glyph::AttrFlags;
-use crate::keys::{KeySymbol, Modifiers}; // Added for new key representation
+use crate::keys::{KeySymbol, Modifiers};
+use crate::platform::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle}; // Added for new key representation
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -872,7 +872,9 @@ impl XDriver {
         }
         trace!(
             "Allocated XftColor for {} (idx {}, pixel: {})",
-            name_for_log, index, &self.xft_ansi_colors[index].pixel
+            name_for_log,
+            index,
+            &self.xft_ansi_colors[index].pixel
         );
         Ok(())
     }
@@ -897,7 +899,7 @@ impl XDriver {
                 // | xlib::KeyReleaseMask    // If needed
                 | xlib::StructureNotifyMask  // Resize/move events (ConfigureNotify)
                 | xlib::FocusChangeMask; // FocusIn/FocusOut events
-            // Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse
+                                         // Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse
 
             self.window = xlib::XCreateWindow(
                 self.display,
@@ -1019,7 +1021,7 @@ impl XDriver {
             size_hints.height_inc = self.font_height as c_int; // Resize step height
             size_hints.min_width = self.font_width as c_int; // Minimum window width (1 cell)
             size_hints.min_height = self.font_height as c_int; // Minimum window height (1 cell)
-            // PBaseSize could also be set if borderpx were non-zero.
+                                                               // PBaseSize could also be set if borderpx were non-zero.
             xlib::XSetWMNormalHints(self.display, self.window, &mut size_hints);
             debug!("WM size hints set.");
         }
@@ -1052,7 +1054,10 @@ impl XDriver {
                 if let Color::Rgb(r, g, b) = rgb_equivalent {
                     trace!(
                         "XDriver: Approximating Indexed({}) to RGB({},{},{}) for XftColor.",
-                        idx, r, g, b
+                        idx,
+                        r,
+                        g,
+                        b
                     );
                     self.cached_rgb_to_xft_color(r, g, b)
                 } else {
