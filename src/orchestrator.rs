@@ -187,7 +187,7 @@ impl<'a> AppOrchestrator<'a> {
             }
             BackendEvent::FocusGained => {
                 log::debug!("Orchestrator: FocusGained event.");
-                self.driver.set_focus(true);
+                self.driver.set_focus(crate::platform::backends::x11::FocusState::Focused);
                 if let Some(action) = self
                     .term
                     .interpret_input(EmulatorInput::User(UserInputAction::FocusGained))
@@ -197,7 +197,7 @@ impl<'a> AppOrchestrator<'a> {
             }
             BackendEvent::FocusLost => {
                 log::debug!("Orchestrator: FocusLost event.");
-                self.driver.set_focus(false);
+                self.driver.set_focus(crate::platform::backends::x11::FocusState::Unfocused);
                 if let Some(action) = self
                     .term
                     .interpret_input(EmulatorInput::User(UserInputAction::FocusLost))
@@ -242,7 +242,12 @@ impl<'a> AppOrchestrator<'a> {
                     "Orchestrator: Setting driver cursor visibility to: {}",
                     visible
                 );
-                self.driver.set_cursor_visibility(visible);
+                let cursor_visibility = if visible {
+                    crate::platform::backends::x11::window::CursorVisibility::Shown
+                } else {
+                    crate::platform::backends::x11::window::CursorVisibility::Hidden
+                };
+                self.driver.set_cursor_visibility(cursor_visibility);
             }
             EmulatorAction::CopyToClipboard(_) => {
                 unimplemented!("clipboard feature not yet implemented")

@@ -15,6 +15,11 @@ use std::os::unix::io::RawFd;
 pub mod console;
 pub mod x11;
 
+// Import enums for Driver trait method signatures
+pub use x11::window::CursorVisibility; // For set_cursor_visibility - Made pub
+pub use x11::FocusState; // For set_focus - Made pub
+
+
 // It can be useful to re-export concrete driver types if they are frequently
 // used directly by `main.rs` or other high-level modules, though this is optional.
 // Example:
@@ -196,13 +201,11 @@ pub trait Driver {
     fn bell(&mut self);
 
     /// Sets the visibility of the cursor for the backend.
-    /// `true` to show the cursor, `false` to hide it.
-    fn set_cursor_visibility(&mut self, visible: bool);
+    fn set_cursor_visibility(&mut self, visibility: CursorVisibility);
 
     /// Informs the driver about focus changes.
-    /// `true` if the terminal gained focus, `false` if it lost focus.
     /// This can be used by the driver to change cursor appearance (e.g., solid vs. hollow).
-    fn set_focus(&mut self, focused: bool);
+    fn set_focus(&mut self, focus_state: FocusState);
 
     /// Performs any necessary cleanup before the driver is dropped.
     /// This includes releasing platform resources (e.g., closing display connections,

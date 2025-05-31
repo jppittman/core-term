@@ -52,19 +52,27 @@ pub fn process_pending_events(
     let display = connection.display();
 
     // Loop while there are events pending on the X display connection.
-    // SAFETY: XPending is safe to call with a valid display pointer.
+    // SAFETY: `XPending` is safe to call with `display`, which is a valid pointer
+    // from an active `Connection`. It returns the number of events in the queue.
     while unsafe { xlib::XPending(display) } > 0 {
         let mut xevent: xlib::XEvent = unsafe { mem::zeroed() };
-        // SAFETY: XNextEvent is safe to call with a valid display and a pointer to an XEvent struct.
-        // It blocks if no events are pending, but the XPending check prevents this.
+        // SAFETY: `XNextEvent` is safe here. `display` is a valid pointer from an
+        // active `Connection`. `xevent` is a valid mutable pointer to a zero-initialized
+        // `XEvent` struct. The loop condition `XPending(display) > 0` ensures that
+        // `XNextEvent` will not block indefinitely if no events are available,
+        // though `XNextEvent` itself is designed to block until an event is received.
         unsafe { xlib::XNextEvent(display, &mut xevent) };
 
-        // SAFETY: Accessing the `type_` field of the XEvent union is safe after XNextEvent.
+        // SAFETY: Accessing the `type_` field of the `XEvent` union is safe.
+        // `XNextEvent` has successfully populated `xevent`, and `type_` is a common
+        // discriminant field for all XEvent variants.
         let event_type = unsafe { xevent.type_ };
 
         match event_type {
             xlib::Expose => {
-                // SAFETY: Accessing `xexpose` union field is safe for Expose events.
+                // SAFETY: Accessing the `xexpose` union field of `xevent` is safe because
+                // the `event_type` (derived from `xevent.type_`) has been confirmed
+                // to be `xlib::Expose`.
                 let expose_event = unsafe { xevent.expose };
                 // Process only the last Expose event in a series (when count is 0).
                 // The renderer handles the actual redrawing based on its own state.
@@ -76,7 +84,8 @@ pub fn process_pending_events(
                 }
             }
             xlib::ConfigureNotify => {
-                // SAFETY: Accessing `xconfigure` union field is safe for ConfigureNotify events.
+                // SAFETY: Accessing the `xconfigure` union field of `xevent` is safe because
+                // the `event_type` has been confirmed to be `xlib::ConfigureNotify`.
                 let configure_event = unsafe { xevent.configure };
                 let (current_w, current_h) = window.current_dimensions_pixels();
 
@@ -111,17 +120,29 @@ pub fn process_pending_events(
                 }
             }
             xlib::KeyPress => {
-                // SAFETY: Accessing `xkey` union field is safe for KeyPress events.
-                // `key_event` needs to be mutable for XLookupString.
+                // SAFETY: Accessing the `xkey` union field of `xevent` is safe because
+                // the `event_type` has been confirmed to be `xlib::KeyPress`.
+                // A mutable reference `&mut xevent.key` is taken because `XLookupString`
+                // requires a mutable pointer to the `XKeyEvent` structure, although it
+                // typically does not modify it in ways that would affect other fields
+                // beyond what's related to key translation state if an XIM were involved
+                // (which it isn't here, as `XLookupString` is used without an XIM).
                 let key_event = unsafe { &mut xevent.key };
                 let mut x_keysym: xlib::KeySym = 0;
                 let mut key_text_buffer = [0u8; KEY_TEXT_BUFFER_SIZE];
 
-                // SAFETY: XLookupString is an Xlib FFI call.
-                // It requires a mutable pointer to the XKeyEvent.
+                // SAFETY: `XLookupString` is an Xlib FFI call.
+                // - `key_event` is a valid pointer to an `XKeyEvent` (part of `xevent`).
+                // - `key_text_buffer.as_mut_ptr()` provides a valid pointer to a writable buffer.
+                // - `key_text_buffer.len()` correctly specifies the buffer's size.
+                // - `&mut x_keysym` provides a valid pointer for storing the KeySym.
+                // - `ptr::null_mut()` is acceptable for the XComposeStatus argument if compose
+                //   sequence information is not needed.
+                // The function populates `key_text_buffer` with translated characters and
+                // `x_keysym` with the KeySym.
                 let count = unsafe {
                     xlib::XLookupString(
-                        key_event,
+                        key_event, // This is `*mut xlib::XKeyEvent`
                         key_text_buffer.as_mut_ptr() as *mut c_char,
                         key_text_buffer.len() as c_int,
                         &mut x_keysym,
@@ -163,7 +184,8 @@ pub fn process_pending_events(
                 });
             }
             xlib::ClientMessage => {
-                // SAFETY: Accessing `xclient` union field is safe for ClientMessage events.
+                // SAFETY: Accessing the `xclient` union field of `xevent` is safe because
+                // the `event_type` has been confirmed to be `xlib::ClientMessage`.
                 let client_message_event = unsafe { xevent.client_message };
                 // Check if this is a WM_DELETE_WINDOW message.
                 if client_message_event.message_type == window.protocols_atom()
@@ -185,8 +207,12 @@ pub fn process_pending_events(
                 }
             }
             xlib::FocusIn => {
-                // SAFETY: Accessing `xfocus` union field is safe for FocusIn events.
-                let focus_event = unsafe { xevent.crossing };
+                // SAFETY: Accessing the `xfocus` (or `xcrossing` as they share layout for `type_` and `window`)
+                // union field of `xevent` is safe because the `event_type` has been
+                // confirmed to be `xlib::FocusIn`. `XFocusChangeEvent` (which `xfocus` is)
+                // and `XCrossingEvent` (which `xcrossing` is) share common initial fields
+                // like `type`, `serial`, `send_event`, `display`, and `window`.
+                let focus_event = unsafe { xevent.crossing }; // xfocus could also be used
                 debug!(
                     "XEvent: FocusIn (type: {}) on window {}. Setting focus true.",
                     focus_event.type_, focus_event.window
@@ -195,8 +221,10 @@ pub fn process_pending_events(
                 backend_events.push(BackendEvent::FocusGained);
             }
             xlib::FocusOut => {
-                // SAFETY: Accessing `xfocus` union field is safe for FocusOut events.
-                let focus_event = unsafe { xevent.crossing };
+                // SAFETY: Accessing the `xfocus` (or `xcrossing`) union field of `xevent` is safe
+                // because the `event_type` has been confirmed to be `xlib::FocusOut`.
+                // Similar to FocusIn, the relevant common fields are safely accessible.
+                let focus_event = unsafe { xevent.crossing }; // xfocus could also be used
                 debug!(
                     "XEvent: FocusOut (type: {}) on window {}. Setting focus false.",
                     focus_event.type_, focus_event.window
@@ -249,23 +277,34 @@ impl IntoXKeySym for xlib::KeySym {
 /// # Returns
 /// The corresponding `KeySymbol`.
 fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymbol {
+    // Prioritize text from XLookupString if it's a valid single character.
+    // This handles cases like keypad numbers when NumLock is on.
+    if !text.is_empty() {
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() == 1 && chars[0] != '\u{FFFD}' {
+            // If XLookupString provides a single valid character, use it.
+            // This is typically the case for printable characters, including those
+            // from keypad when NumLock is active.
+            return KeySymbol::Char(chars[0]);
+        }
+        // If `text` is multiple characters (e.g., from dead keys) or invalid,
+        // we might still fall back to keysym matching for special keys,
+        // but generally, multi-char text from a single key press is complex
+        // and might be better handled as a sequence of Char events if needed,
+        // or by an IME. For now, we prioritize single valid chars from `text`.
+        // If `text` is not a single valid char, proceed to keysym matching.
+    }
+
     let keysym_val = keysym_val_in.into_xkeysym();
 
     // Handle cases where KeySym might be a Unicode character directly,
     // especially if it's outside the typical u32 range of standard XK_* constants.
     // xlib::KeySym can be u64 on some systems.
     if keysym_val > (u32::MAX as xlib::KeySym) {
-        // If text is available and seems valid (not replacement char), use it.
-        if !text.is_empty() && text.chars().next().map_or(false, |c| c != '\u{FFFD}') {
-            // Assuming the first char of text is the most relevant one.
-            if let Some(ch) = text.chars().next() {
-                return KeySymbol::Char(ch);
-            }
-        }
-        // Large keysym with no usable text.
+        // Large keysym with no usable text (already checked text above).
         warn!(
-            "Received high keysym value: 0x{:X} with no usable text, mapping to Unknown.",
-            keysym_val
+            "Received high keysym value: 0x{:X} with no usable text (text='{}'), mapping to Unknown.",
+            keysym_val, text
         );
         return KeySymbol::Unknown;
     }
@@ -274,6 +313,7 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
     let keysym_u32 = keysym_val as u32;
 
     // Match against known X11 keysym constants.
+    // This is now primarily for non-printable keys or when XLookupString yields no text.
     match keysym_u32 {
         // Modifier Keys (when the key itself is pressed, not when used as a modifier)
         keysym::XK_Shift_L | keysym::XK_Shift_R => KeySymbol::Shift,
@@ -362,15 +402,12 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
         keysym::XK_Pause | keysym::XK_Break => KeySymbol::Pause, // Break is often Ctrl+Pause
         keysym::XK_Menu => KeySymbol::Menu,
 
-        // Fallback: If text is available from XLookupString, use its first character.
-        // This handles most printable characters (letters, numbers, symbols).
+        // Fallback: If we reached here, text was empty or not a single valid char,
+        // and the keysym didn't match any special keys above.
         _ => {
-            if !text.is_empty() && text.chars().next().map_or(false, |c| c != '\u{FFFD}') {
-                if let Some(ch) = text.chars().next() {
-                    return KeySymbol::Char(ch);
-                }
-            }
-            // If it's an unhandled u32 keysym and no valid text, it's Unknown.
+            // The initial check for `text` at the function start should handle most
+            // KeySymbol::Char cases. If we are here, it means `text` was not suitable,
+            // or the keysym is for a non-char key not explicitly mapped.
             trace!(
                 "Unhandled u32 keysym 0x{:X} with text '{}', mapping to KeySymbol::Unknown",
                 keysym_u32,
