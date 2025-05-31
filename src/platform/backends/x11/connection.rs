@@ -1,14 +1,14 @@
 // src/platform/backends/x11/connection.rs
 #![allow(non_snake_case)] // Allow non-snake case for X11 types
 
-use anyhow::{anyhow, Context, Result}; // Combined anyhow imports
+use anyhow::{anyhow, Result}; // Combined anyhow imports
 use log::{debug, error, info, warn};
 use std::os::unix::io::RawFd;
 use std::ptr;
 
 // X11 library imports
-use x11::xlib;
 use libc::c_int;
+use x11::xlib;
 
 /// Represents and manages the connection to the X server.
 ///
@@ -208,7 +208,6 @@ impl Drop for Connection {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,7 +243,6 @@ mod tests {
         }
     }
     */
-
     #[test]
     fn test_cleanup_idempotency() {
         // This test does not require a running X server as it simulates the display pointer state.
@@ -256,8 +254,14 @@ mod tests {
         };
 
         // Call cleanup on an already "closed" connection
-        assert!(conn.cleanup().is_ok(), "cleanup on null display should be Ok");
-        assert!(conn.display.is_null(), "display should remain null after cleanup on null");
+        assert!(
+            conn.cleanup().is_ok(),
+            "cleanup on null display should be Ok"
+        );
+        assert!(
+            conn.display.is_null(),
+            "display should remain null after cleanup on null"
+        );
 
         // Simulate an opened display (without actually opening one).
         // THIS IS GENERALLY UNSAFE but acceptable for this specific test's logic,
@@ -266,26 +270,40 @@ mod tests {
         let dummy_display_ptr = 1 as *mut xlib::Display;
         conn.display = dummy_display_ptr;
 
-        assert!(conn.cleanup().is_ok(), "cleanup on dummy display should be Ok");
-        assert!(conn.display.is_null(), "Display pointer should be null after cleanup");
+        assert!(
+            conn.cleanup().is_ok(),
+            "cleanup on dummy display should be Ok"
+        );
+        assert!(
+            conn.display.is_null(),
+            "Display pointer should be null after cleanup"
+        );
 
         // Call cleanup again to ensure it's idempotent after being set to null
-        assert!(conn.cleanup().is_ok(), "second cleanup call should also be Ok");
+        assert!(
+            conn.cleanup().is_ok(),
+            "second cleanup call should also be Ok"
+        );
         assert!(conn.display.is_null(), "Display pointer should remain null");
     }
 
-     #[test]
+    #[test]
     fn test_get_event_fd_on_closed_display() {
-        let conn = Connection { // Use a non-mutable conn for this test as get_event_fd takes &self
+        let conn = Connection {
+            // Use a non-mutable conn for this test as get_event_fd takes &self
             display: ptr::null_mut(), // Simulate closed display
             screen: 0,
             colormap: 0,
             visual: ptr::null_mut(),
         };
-        assert!(conn.get_event_fd().is_none(), "get_event_fd on a null display should return None");
+        assert!(
+            conn.get_event_fd().is_none(),
+            "get_event_fd on a null display should return None"
+        );
     }
 
     // Test for get_event_fd when display is notionally open (requires mocking or specific setup if not using real X)
     // For now, covered by the intent of test_new_connection_requires_x_server if that were enabled and passing.
     // The main thing test_get_event_fd_on_closed_display covers is the null path.
+    //
 }

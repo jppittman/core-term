@@ -14,10 +14,9 @@ use std::mem;
 use std::ptr;
 
 // X11 library imports
-use x11::{xft, xlib};
+use libc::c_int;
 use x11::xrender::{XGlyphInfo, XRenderColor};
-use libc::{c_char, c_int};
-
+use x11::{xft, xlib};
 
 // --- Constants ---
 
@@ -45,13 +44,13 @@ struct Rgb16Components {
 /// This data includes loaded font resources, calculated metrics, pre-allocated ANSI colors,
 /// and the determined default background pixel value. It's passed to the second stage
 /// of `Graphics::new` once the window is created.
-struct PreGraphicsData {
-    xft_font: *mut xft::XftFont,
-    font_width_px: u32,
-    font_height_px: u32,
-    font_ascent_px: u32,
-    xft_ansi_colors: Vec<xft::XftColor>,
-    default_bg_pixel_value: xlib::Atom,
+pub(super) struct PreGraphicsData {
+    pub(super) xft_font: *mut xft::XftFont,
+    pub(super) font_width_px: u32,
+    pub(super) font_height_px: u32,
+    pub(super) font_ascent_px: u32,
+    pub(super) xft_ansi_colors: Vec<xft::XftColor>,
+    pub(super) default_bg_pixel_value: xlib::Atom,
 }
 
 /// Manages graphics resources for X11 rendering, including fonts, colors,
@@ -75,7 +74,6 @@ pub struct Graphics {
     font_height_px: u32,
     font_ascent_px: u32,
     clear_gc: xlib::GC,
-    default_bg_pixel_value: xlib::Atom,
 }
 
 impl Graphics {
@@ -92,24 +90,28 @@ impl Graphics {
     /// # Returns
     /// * `Ok(PreGraphicsData)`: Contains the loaded font, metrics, ANSI colors, and default background pixel.
     /// * `Err(anyhow::Error)`: If font loading or color allocation fails.
-    pub fn load_font_and_colors(connection: &Connection) -> Result<PreGraphicsData> {
+    pub(super) fn load_font_and_colors(connection: &Connection) -> Result<PreGraphicsData> {
         info!("Graphics: Loading font and pre-allocating colors.");
         let display = connection.display();
         let screen = connection.screen();
 
         // 1. Load Font & Metrics
         debug!("Loading font: {}", DEFAULT_FONT_NAME);
-        let font_name_cstr = CString::new(DEFAULT_FONT_NAME)
-            .context("Failed to create CString for font name")?;
+        let font_name_cstr =
+            CString::new(DEFAULT_FONT_NAME).context("Failed to create CString for font name")?;
 
         // SAFETY: Xlib/Xft FFI call. `display` and `screen` must be valid.
         let xft_font = unsafe { xft::XftFontOpenName(display, screen, font_name_cstr.as_ptr()) };
         if xft_font.is_null() {
             return Err(anyhow!(
-                "XftFontOpenName failed for font: '{}'. Ensure font is installed and accessible.", DEFAULT_FONT_NAME
+                "XftFontOpenName failed for font: '{}'. Ensure font is installed and accessible.",
+                DEFAULT_FONT_NAME
             ));
         }
-        debug!("Font '{}' loaded successfully: {:p}", DEFAULT_FONT_NAME, xft_font);
+        debug!(
+            "Font '{}' loaded successfully: {:p}",
+            DEFAULT_FONT_NAME, xft_font
+        );
 
         // SAFETY: Accessing fields of a valid `xft_font` pointer.
         let font_height_px = unsafe { ((*xft_font).ascent + (*xft_font).descent) as u32 };
@@ -133,10 +135,15 @@ impl Graphics {
         if font_width_px < MIN_FONT_WIDTH || font_height_px < MIN_FONT_HEIGHT {
             // Ensure font is closed if metrics are invalid.
             // SAFETY: Xlib/Xft FFI call. `display` and `xft_font` must be valid.
-            unsafe { xft::XftFontClose(display, xft_font); }
+            unsafe {
+                xft::XftFontClose(display, xft_font);
+            }
             return Err(anyhow!(
                 "Font dimensions (W:{}, H:{}) are below minimum requirements (W:{}, H:{}).",
-                font_width_px, font_height_px, MIN_FONT_WIDTH, MIN_FONT_HEIGHT
+                font_width_px,
+                font_height_px,
+                MIN_FONT_WIDTH,
+                MIN_FONT_HEIGHT
             ));
         }
         info!(
@@ -148,7 +155,9 @@ impl Graphics {
         let mut xft_ansi_colors = Vec::with_capacity(ANSI_COLOR_COUNT);
         // SAFETY: `set_len` is safe here as `XftColorAllocValue` will initialize each element.
         // Vec elements are `MaybeUninit<XftColor>` effectively until written by Xft.
-        unsafe { xft_ansi_colors.set_len(ANSI_COLOR_COUNT); }
+        unsafe {
+            xft_ansi_colors.set_len(ANSI_COLOR_COUNT);
+        }
 
         for i in 0..ANSI_COLOR_COUNT {
             let named_color_enum = NamedColor::from_index(i as u8);
@@ -158,7 +167,7 @@ impl Graphics {
                 _ => {
                     // This case should not be reached if `to_rgb_color` is correct.
                     warn!("NamedColor::to_rgb_color for index {} did not return Color::Rgb. Defaulting to black.", i);
-                    (0,0,0) // Default to black if conversion fails.
+                    (0, 0, 0) // Default to black if conversion fails.
                 }
             };
             // Convert 8-bit RGB to 16-bit for XRenderColor (0xRRGGBB -> 0xRRRRGGGGBBBB).
@@ -182,25 +191,43 @@ impl Graphics {
                     display,
                     connection.visual(),
                     connection.colormap(),
-                    &render_color, // const pointer
+                    &render_color,           // const pointer
                     &mut xft_ansi_colors[i], // mutable pointer
                 )
-            } == 0 { // XftColorAllocValue returns 0 on failure.
+            } == 0
+            {
+                // XftColorAllocValue returns 0 on failure.
                 // Cleanup partially allocated resources before returning error.
                 // SAFETY: Xlib/Xft FFI call.
-                unsafe { xft::XftFontClose(display, xft_font); }
-                for j in 0..i { // Free already allocated colors.
-                     // SAFETY: Xlib/Xft FFI call.
-                     unsafe { xft::XftColorFree(display, connection.visual(), connection.colormap(), &mut xft_ansi_colors[j]); }
+                unsafe {
+                    xft::XftFontClose(display, xft_font);
                 }
-                return Err(anyhow!("XftColorAllocValue failed for ANSI color index {}", i));
+                for j in 0..i {
+                    // Free already allocated colors.
+                    // SAFETY: Xlib/Xft FFI call.
+                    unsafe {
+                        xft::XftColorFree(
+                            display,
+                            connection.visual(),
+                            connection.colormap(),
+                            &mut xft_ansi_colors[j],
+                        );
+                    }
+                }
+                return Err(anyhow!(
+                    "XftColorAllocValue failed for ANSI color index {}",
+                    i
+                ));
             }
         }
         debug!("Preallocated ANSI Xft colors initialized.");
 
         // Determine default background pixel value from the pre-allocated black.
         let default_bg_pixel_value = xft_ansi_colors[NamedColor::Black as usize].pixel;
-        info!("Default background pixel value (from Black ANSI color): {}", default_bg_pixel_value);
+        info!(
+            "Default background pixel value (from Black ANSI color): {}",
+            default_bg_pixel_value
+        );
 
         Ok(PreGraphicsData {
             xft_font,
@@ -226,12 +253,15 @@ impl Graphics {
     /// * `Ok(Graphics)`: A fully initialized `Graphics` instance.
     /// * `Err(anyhow::Error)`: If creating `XftDraw` or GC fails. Resources from `pre_data`
     ///   are cleaned up internally in case of error.
-    pub fn new(
+    pub(super) fn new(
         connection: &Connection,
         window_id: xlib::Window,
         pre_data: PreGraphicsData,
     ) -> Result<Self> {
-        info!("Graphics: Finalizing initialization with window ID: {}", window_id);
+        info!(
+            "Graphics: Finalizing initialization with window ID: {}",
+            window_id
+        );
         let display = connection.display();
 
         // 1. Create XftDraw object for the window.
@@ -249,11 +279,20 @@ impl Graphics {
             // SAFETY: Xlib/Xft FFI calls.
             unsafe {
                 xft::XftFontClose(display, pre_data.xft_font);
-                for mut color in pre_data.xft_ansi_colors { // `Vec` owns `XftColor`s now.
-                    xft::XftColorFree(display, connection.visual(), connection.colormap(), &mut color);
+                for mut color in pre_data.xft_ansi_colors {
+                    // `Vec` owns `XftColor`s now.
+                    xft::XftColorFree(
+                        display,
+                        connection.visual(),
+                        connection.colormap(),
+                        &mut color,
+                    );
                 }
             }
-            return Err(anyhow!("Failed to create XftDraw object for window ID {}", window_id));
+            return Err(anyhow!(
+                "Failed to create XftDraw object for window ID {}",
+                window_id
+            ));
         }
         debug!("XftDraw object created: {:p}", xft_draw);
 
@@ -261,10 +300,9 @@ impl Graphics {
         // Note: XftDraw is generally preferred for text and colored rects with XRender.
         // A simple GC might be used for other operations if ever needed.
         let gc_values: xlib::XGCValues = unsafe { mem::zeroed() }; // Initialize with defaults.
-        // SAFETY: Xlib FFI call. `display` and `window_id` must be valid.
-        let clear_gc = unsafe {
-            xlib::XCreateGC(display, window_id, 0, &gc_values as *const _ as *mut _)
-        };
+                                                                   // SAFETY: Xlib FFI call. `display` and `window_id` must be valid.
+        let clear_gc =
+            unsafe { xlib::XCreateGC(display, window_id, 0, &gc_values as *const _ as *mut _) };
         if clear_gc.is_null() {
             // Cleanup previously created XftDraw and pre_data resources.
             // SAFETY: Xlib/Xft FFI calls.
@@ -272,7 +310,12 @@ impl Graphics {
                 xft::XftDrawDestroy(xft_draw);
                 xft::XftFontClose(display, pre_data.xft_font);
                 for mut color in pre_data.xft_ansi_colors {
-                    xft::XftColorFree(display, connection.visual(), connection.colormap(), &mut color);
+                    xft::XftColorFree(
+                        display,
+                        connection.visual(),
+                        connection.colormap(),
+                        &mut color,
+                    );
                 }
             }
             return Err(anyhow!("XCreateGC failed for window ID {}", window_id));
@@ -288,7 +331,6 @@ impl Graphics {
             font_height_px: pre_data.font_height_px,
             font_ascent_px: pre_data.font_ascent_px,
             clear_gc,
-            default_bg_pixel_value: pre_data.default_bg_pixel_value,
         })
     }
 
@@ -331,14 +373,15 @@ impl Graphics {
                     self.cached_rgb_to_xft_color(connection, r, g, b)
                 } else {
                     // Should not happen if convert_to_rgb_color is correct.
-                    error!("Failed to convert Indexed({}) to RGB. Defaulting to black.", idx);
+                    error!(
+                        "Failed to convert Indexed({}) to RGB. Defaulting to black.",
+                        idx
+                    );
                     self.cached_rgb_to_xft_color(connection, 0, 0, 0)
                         .context("Fallback to black failed after Indexed color conversion error")
                 }
             }
-            Color::Rgb(r, g, b) => {
-                self.cached_rgb_to_xft_color(connection, r, g, b)
-            }
+            Color::Rgb(r, g, b) => self.cached_rgb_to_xft_color(connection, r, g, b),
         }
     }
 
@@ -389,11 +432,19 @@ impl Graphics {
                 &render_color,      // const pointer
                 &mut new_xft_color, // mutable pointer
             )
-        } == 0 { // XftColorAllocValue returns 0 on failure.
-            Err(anyhow!("XftColorAllocValue failed for RGB({},{},{})", r_u8, g_u8, b_u8))
+        } == 0
+        {
+            // XftColorAllocValue returns 0 on failure.
+            Err(anyhow!(
+                "XftColorAllocValue failed for RGB({},{},{})",
+                r_u8,
+                g_u8,
+                b_u8
+            ))
         } else {
             // Store the newly allocated color in the cache.
-            self.xft_color_cache_rgb.insert((r_u8, g_u8, b_u8), new_xft_color);
+            self.xft_color_cache_rgb
+                .insert((r_u8, g_u8, b_u8), new_xft_color);
             Ok(new_xft_color)
         }
     }
@@ -410,8 +461,9 @@ impl Graphics {
     ///
     /// # Returns
     /// * `Ok(())` if successful, or an error if color resolution fails.
-    pub fn clear_all(&mut self, connection: &Connection, bg: Color) -> Result<()> {
-        let xft_bg_color = self.resolve_concrete_xft_color(connection, bg)
+    pub(super) fn clear_all(&mut self, connection: &Connection, bg: Color) -> Result<()> {
+        let xft_bg_color = self
+            .resolve_concrete_xft_color(connection, bg)
             .context("Failed to resolve background color for clear_all")?;
 
         // TODO: Replace placeholder dimensions with actual window dimensions passed as arguments.
@@ -425,14 +477,19 @@ impl Graphics {
 
         // SAFETY: Xft FFI call. `self.xft_draw` must be valid.
         unsafe {
-             xft::XftDrawRect(
+            xft::XftDrawRect(
                 self.xft_draw,
                 &xft_bg_color,
-                0, 0, // x, y
-                placeholder_width, placeholder_height // width, height
+                0,
+                0, // x, y
+                placeholder_width,
+                placeholder_height, // width, height
             );
         }
-        trace!("Window cleared (with placeholder dimensions) using color pixel: {}", xft_bg_color.pixel);
+        trace!(
+            "Window cleared (with placeholder dimensions) using color pixel: {}",
+            xft_bg_color.pixel
+        );
         Ok(())
     }
 
@@ -449,7 +506,7 @@ impl Graphics {
     ///
     /// # Returns
     /// * `Ok(())` if successful, or an error if color resolution or CString conversion fails.
-    pub fn draw_text_run(
+    pub(super) fn draw_text_run(
         &mut self,
         connection: &Connection,
         coords: CellCoords,
@@ -467,9 +524,11 @@ impl Graphics {
         let run_pixel_width = text.chars().count() * self.font_width_px as usize;
 
         // Resolve foreground and background colors to XftColor.
-        let xft_fg = self.resolve_concrete_xft_color(connection, style.fg)
+        let xft_fg = self
+            .resolve_concrete_xft_color(connection, style.fg)
             .context("Failed to resolve foreground color for text run")?;
-        let xft_bg = self.resolve_concrete_xft_color(connection, style.bg)
+        let xft_bg = self
+            .resolve_concrete_xft_color(connection, style.bg)
             .context("Failed to resolve background color for text run")?;
 
         // Draw the background rectangle for the text run.
@@ -495,11 +554,11 @@ impl Graphics {
         unsafe {
             xft::XftDrawStringUtf8(
                 self.xft_draw,
-                &xft_fg,          // Use the resolved foreground color
-                self.xft_font,    // The loaded Xft font
-                x_pixel,          // X position in pixels
-                baseline_y_pixel, // Y position of the baseline in pixels
-                c_text.as_ptr() as *const u8, // Text as C string
+                &xft_fg,                          // Use the resolved foreground color
+                self.xft_font,                    // The loaded Xft font
+                x_pixel,                          // X position in pixels
+                baseline_y_pixel,                 // Y position of the baseline in pixels
+                c_text.as_ptr() as *const u8,     // Text as C string
                 c_text.as_bytes().len() as c_int, // Length of the text in bytes
             );
         }
@@ -508,17 +567,31 @@ impl Graphics {
         if style.flags.contains(AttrFlags::UNDERLINE) {
             // Simple underline: 1 pixel high, positioned near the bottom of the cell.
             let underline_y = y_pixel + self.font_height_px as c_int - 2; // Adjust position as needed.
-            // SAFETY: Xft FFI call.
+                                                                          // SAFETY: Xft FFI call.
             unsafe {
-                xft::XftDrawRect(self.xft_draw, &xft_fg, x_pixel, underline_y, run_pixel_width as u32, 1 /* thickness */);
+                xft::XftDrawRect(
+                    self.xft_draw,
+                    &xft_fg,
+                    x_pixel,
+                    underline_y,
+                    run_pixel_width as u32,
+                    1, /* thickness */
+                );
             }
         }
         if style.flags.contains(AttrFlags::STRIKETHROUGH) {
             // Simple strikethrough: 1 pixel high, roughly in the middle of the text ascent.
             let strikethrough_y = y_pixel + (self.font_ascent_px / 2) as c_int; // Adjust position as needed.
-            // SAFETY: Xft FFI call.
+                                                                                // SAFETY: Xft FFI call.
             unsafe {
-                xft::XftDrawRect(self.xft_draw, &xft_fg, x_pixel, strikethrough_y, run_pixel_width as u32, 1 /* thickness */);
+                xft::XftDrawRect(
+                    self.xft_draw,
+                    &xft_fg,
+                    x_pixel,
+                    strikethrough_y,
+                    run_pixel_width as u32,
+                    1, /* thickness */
+                );
             }
         }
         Ok(())
@@ -533,7 +606,7 @@ impl Graphics {
     ///
     /// # Returns
     /// * `Ok(())` if successful, or an error if color resolution fails.
-    pub fn fill_rect(
+    pub(super) fn fill_rect(
         &mut self,
         connection: &Connection,
         rect: CellRect,
@@ -550,7 +623,8 @@ impl Graphics {
         let rect_pixel_height = (rect.height * self.font_height_px as usize) as u32;
 
         // Resolve the concrete Color to an XftColor.
-        let xft_fill_color = self.resolve_concrete_xft_color(connection, color)
+        let xft_fill_color = self
+            .resolve_concrete_xft_color(connection, color)
             .context("Failed to resolve color for fill_rect")?;
 
         // SAFETY: Xft FFI call. `self.xft_draw` must be valid.
@@ -558,8 +632,10 @@ impl Graphics {
             xft::XftDrawRect(
                 self.xft_draw,
                 &xft_fill_color,
-                x_pixel, y_pixel,
-                rect_pixel_width, rect_pixel_height,
+                x_pixel,
+                y_pixel,
+                rect_pixel_width,
+                rect_pixel_height,
             );
         }
         Ok(())
@@ -577,7 +653,7 @@ impl Graphics {
     ///
     /// # Returns
     /// * `Ok(())` always. Errors during freeing of X resources are logged but not propagated.
-    pub fn cleanup(&mut self, connection: &Connection) -> Result<()> {
+    pub(super) fn cleanup(&mut self, connection: &Connection) -> Result<()> {
         info!("Cleaning up Graphics resources...");
         let display = connection.display();
         // SAFETY: Xlib/Xft FFI calls. Ensure connection members are valid.
@@ -595,22 +671,42 @@ impl Graphics {
             }
 
             if !self.xft_ansi_colors.is_empty() {
-                trace!("Freeing {} preallocated ANSI XftColors.", self.xft_ansi_colors.len());
+                trace!(
+                    "Freeing {} preallocated ANSI XftColors.",
+                    self.xft_ansi_colors.len()
+                );
                 for color_ptr in self.xft_ansi_colors.iter_mut() {
                     // Check if pixel is non-zero or color components are non-zero before freeing,
                     // as XftColorFree might behave unexpectedly with entirely zeroed XftColor structs
                     // that were never successfully allocated.
-                    if color_ptr.pixel != 0 || color_ptr.color.red != 0 || color_ptr.color.green != 0 || color_ptr.color.blue != 0 {
-                        xft::XftColorFree(display, connection.visual(), connection.colormap(), color_ptr);
+                    if color_ptr.pixel != 0
+                        || color_ptr.color.red != 0
+                        || color_ptr.color.green != 0
+                        || color_ptr.color.blue != 0
+                    {
+                        xft::XftColorFree(
+                            display,
+                            connection.visual(),
+                            connection.colormap(),
+                            color_ptr,
+                        );
                     }
                 }
                 self.xft_ansi_colors.clear();
             }
 
             if !self.xft_color_cache_rgb.is_empty() {
-                trace!("Freeing {} cached RGB XftColors.", self.xft_color_cache_rgb.len());
+                trace!(
+                    "Freeing {} cached RGB XftColors.",
+                    self.xft_color_cache_rgb.len()
+                );
                 for (_, mut cached_color) in self.xft_color_cache_rgb.drain() {
-                    xft::XftColorFree(display, connection.visual(), connection.colormap(), &mut cached_color);
+                    xft::XftColorFree(
+                        display,
+                        connection.visual(),
+                        connection.colormap(),
+                        &mut cached_color,
+                    );
                 }
                 // HashMap::drain clears the map.
             }
@@ -629,15 +725,8 @@ impl Graphics {
 
     /// Returns the dimensions (width, height) of a single character cell in pixels.
     #[inline]
-    pub fn font_dimensions_pixels(&self) -> (u32, u32) {
+    pub(super) fn font_dimensions_pixels(&self) -> (u32, u32) {
         (self.font_width_px, self.font_height_px)
-    }
-
-    /// Returns the pixel value used for the initial background of the window.
-    /// This value is typically derived from the pre-allocated black ANSI color.
-    #[inline]
-    pub fn initial_background_pixel_value(&self) -> xlib::Atom {
-        self.default_bg_pixel_value
     }
 }
 
@@ -654,7 +743,8 @@ impl Drop for Graphics {
             || !self.xft_draw.is_null()
             || !self.clear_gc.is_null()
             || !self.xft_ansi_colors.is_empty()
-            || !self.xft_color_cache_rgb.is_empty() {
+            || !self.xft_color_cache_rgb.is_empty()
+        {
             error!(
                 "Graphics dropped without explicit cleanup called by XDriver. X server resources may leak. Font: {:?}, Draw: {:?}, GC: {:?}, ANSI colors: {}, RGB cache: {}",
                 self.xft_font, self.xft_draw, self.clear_gc, self.xft_ansi_colors.len(), self.xft_color_cache_rgb.len()

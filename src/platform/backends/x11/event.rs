@@ -12,8 +12,8 @@ use std::mem;
 use std::ptr;
 
 // X11 library imports
-use x11::{keysym, xlib};
 use libc::{c_char, c_int};
+use x11::{keysym, xlib};
 
 /// Buffer size for text obtained from `XLookupString`.
 const KEY_TEXT_BUFFER_SIZE: usize = 32;
@@ -81,13 +81,22 @@ pub fn process_pending_events(
                 let (current_w, current_h) = window.current_dimensions_pixels();
 
                 // Check if the window dimensions have actually changed.
-                if current_w != configure_event.width as u16 || current_h != configure_event.height as u16 {
+                if current_w != configure_event.width as u16
+                    || current_h != configure_event.height as u16
+                {
                     debug!(
                         "XEvent: ConfigureNotify (resize from {}x{} to {}x{}) on window {}",
-                        current_w, current_h, configure_event.width, configure_event.height, configure_event.window
+                        current_w,
+                        current_h,
+                        configure_event.width,
+                        configure_event.height,
+                        configure_event.window
                     );
                     // Update internal window dimension cache.
-                    window.update_dimensions(configure_event.width as u16, configure_event.height as u16);
+                    window.update_dimensions(
+                        configure_event.width as u16,
+                        configure_event.height as u16,
+                    );
 
                     backend_events.push(BackendEvent::Resize {
                         width_px: configure_event.width as u16,
@@ -95,7 +104,10 @@ pub fn process_pending_events(
                     });
                 } else {
                     // Event might be for other changes (e.g., position), which we ignore for now.
-                    trace!("XEvent: ConfigureNotify (no size change detected) on window {}", configure_event.window);
+                    trace!(
+                        "XEvent: ConfigureNotify (no size change detected) on window {}",
+                        configure_event.window
+                    );
                 }
             }
             xlib::KeyPress => {
@@ -125,10 +137,18 @@ pub fn process_pending_events(
 
                 // Determine active modifiers.
                 let mut modifiers = Modifiers::empty();
-                if (key_event.state & xlib::ShiftMask) != 0 { modifiers.insert(Modifiers::SHIFT); }
-                if (key_event.state & xlib::ControlMask) != 0 { modifiers.insert(Modifiers::CONTROL); }
-                if (key_event.state & xlib::Mod1Mask) != 0 { modifiers.insert(Modifiers::ALT); } // Mod1Mask is typically Alt.
-                if (key_event.state & xlib::Mod4Mask) != 0 { modifiers.insert(Modifiers::SUPER); } // Mod4Mask is typically Super/Windows.
+                if (key_event.state & xlib::ShiftMask) != 0 {
+                    modifiers.insert(Modifiers::SHIFT);
+                }
+                if (key_event.state & xlib::ControlMask) != 0 {
+                    modifiers.insert(Modifiers::CONTROL);
+                }
+                if (key_event.state & xlib::Mod1Mask) != 0 {
+                    modifiers.insert(Modifiers::ALT);
+                } // Mod1Mask is typically Alt.
+                if (key_event.state & xlib::Mod4Mask) != 0 {
+                    modifiers.insert(Modifiers::SUPER);
+                } // Mod4Mask is typically Super/Windows.
 
                 let symbol = xkeysym_to_keysymbol(x_keysym, &text);
 
@@ -136,34 +156,51 @@ pub fn process_pending_events(
                     "XEvent: KeyPress (symbol: {:?}, keysym: {:X}, modifiers: {:?}, text: '{}') on window {}",
                     symbol, x_keysym, modifiers, text, key_event.window
                 );
-                backend_events.push(BackendEvent::Key { symbol, modifiers, text });
+                backend_events.push(BackendEvent::Key {
+                    symbol,
+                    modifiers,
+                    text,
+                });
             }
             xlib::ClientMessage => {
                 // SAFETY: Accessing `xclient` union field is safe for ClientMessage events.
                 let client_message_event = unsafe { xevent.client_message };
                 // Check if this is a WM_DELETE_WINDOW message.
-                if client_message_event.message_type == window.protocols_atom() &&
-                   client_message_event.data.as_longs()[0] as xlib::Atom == window.wm_delete_window_atom() {
-                    info!("XEvent: WM_DELETE_WINDOW received from window manager for window {}.", client_message_event.window);
+                if client_message_event.message_type == window.protocols_atom()
+                    && client_message_event.data.as_longs()[0] as xlib::Atom
+                        == window.wm_delete_window_atom()
+                {
+                    info!(
+                        "XEvent: WM_DELETE_WINDOW received from window manager for window {}.",
+                        client_message_event.window
+                    );
                     backend_events.push(BackendEvent::CloseRequested);
                 } else {
                     trace!(
                         "XEvent: Ignored ClientMessage (type: {}, format: {}) on window {}",
-                        client_message_event.message_type, client_message_event.format, client_message_event.window
+                        client_message_event.message_type,
+                        client_message_event.format,
+                        client_message_event.window
                     );
                 }
             }
             xlib::FocusIn => {
                 // SAFETY: Accessing `xfocus` union field is safe for FocusIn events.
-                let focus_event = unsafe { xevent.focus };
-                debug!("XEvent: FocusIn (type: {}) on window {}. Setting focus true.", focus_event.type_, focus_event.window);
+                let focus_event = unsafe { xevent.crossing };
+                debug!(
+                    "XEvent: FocusIn (type: {}) on window {}. Setting focus true.",
+                    focus_event.type_, focus_event.window
+                );
                 *xdriver_has_focus = true;
                 backend_events.push(BackendEvent::FocusGained);
             }
             xlib::FocusOut => {
                 // SAFETY: Accessing `xfocus` union field is safe for FocusOut events.
-                let focus_event = unsafe { xevent.focus };
-                debug!("XEvent: FocusOut (type: {}) on window {}. Setting focus false.", focus_event.type_, focus_event.window);
+                let focus_event = unsafe { xevent.crossing };
+                debug!(
+                    "XEvent: FocusOut (type: {}) on window {}. Setting focus false.",
+                    focus_event.type_, focus_event.window
+                );
                 *xdriver_has_focus = false;
                 backend_events.push(BackendEvent::FocusLost);
             }
@@ -175,7 +212,6 @@ pub fn process_pending_events(
     }
     Ok(backend_events)
 }
-
 
 // --- Key Translation Logic ---
 // This section contains helpers to convert X11 KeySym values to the application's KeySymbol enum.
@@ -227,7 +263,10 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
             }
         }
         // Large keysym with no usable text.
-        warn!("Received high keysym value: 0x{:X} with no usable text, mapping to Unknown.", keysym_val);
+        warn!(
+            "Received high keysym value: 0x{:X} with no usable text, mapping to Unknown.",
+            keysym_val
+        );
         return KeySymbol::Unknown;
     }
 
@@ -239,15 +278,19 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
         // Modifier Keys (when the key itself is pressed, not when used as a modifier)
         keysym::XK_Shift_L | keysym::XK_Shift_R => KeySymbol::Shift,
         keysym::XK_Control_L | keysym::XK_Control_R => KeySymbol::Control,
-        keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => KeySymbol::Alt,
-        keysym::XK_Super_L | keysym::XK_Super_R | keysym::XK_Hyper_L | keysym::XK_Hyper_R => KeySymbol::Super,
+        keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => {
+            KeySymbol::Alt
+        }
+        keysym::XK_Super_L | keysym::XK_Super_R | keysym::XK_Hyper_L | keysym::XK_Hyper_R => {
+            KeySymbol::Super
+        }
         keysym::XK_Caps_Lock => KeySymbol::CapsLock,
         keysym::XK_Num_Lock => KeySymbol::NumLock,
 
         // Editing and Control Keys
         keysym::XK_Return => KeySymbol::Enter,
         keysym::XK_KP_Enter => KeySymbol::KeypadEnter, // Keypad Enter
-        keysym::XK_Linefeed => KeySymbol::Char('\n'), // Typically 0x0A, treated as Char
+        keysym::XK_Linefeed => KeySymbol::Char('\n'),  // Typically 0x0A, treated as Char
         keysym::XK_BackSpace => KeySymbol::Backspace,
         keysym::XK_Tab | keysym::XK_KP_Tab | keysym::XK_ISO_Left_Tab => KeySymbol::Tab, // Tab and Keypad Tab
         keysym::XK_Escape => KeySymbol::Escape,
@@ -267,23 +310,44 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
         keysym::XK_Delete | keysym::XK_KP_Delete => KeySymbol::Delete, // KP_Delete is often KP_Decimal with NumLock
 
         // Function Keys F1-F24
-        keysym::XK_F1 => KeySymbol::F1, keysym::XK_F2 => KeySymbol::F2, keysym::XK_F3 => KeySymbol::F3,
-        keysym::XK_F4 => KeySymbol::F4, keysym::XK_F5 => KeySymbol::F5, keysym::XK_F6 => KeySymbol::F6,
-        keysym::XK_F7 => KeySymbol::F7, keysym::XK_F8 => KeySymbol::F8, keysym::XK_F9 => KeySymbol::F9,
-        keysym::XK_F10 => KeySymbol::F10, keysym::XK_F11 => KeySymbol::F11, keysym::XK_F12 => KeySymbol::F12,
-        keysym::XK_F13 => KeySymbol::F13, keysym::XK_F14 => KeySymbol::F14, keysym::XK_F15 => KeySymbol::F15,
-        keysym::XK_F16 => KeySymbol::F16, keysym::XK_F17 => KeySymbol::F17, keysym::XK_F18 => KeySymbol::F18,
-        keysym::XK_F19 => KeySymbol::F19, keysym::XK_F20 => KeySymbol::F20, keysym::XK_F21 => KeySymbol::F21,
-        keysym::XK_F22 => KeySymbol::F22, keysym::XK_F23 => KeySymbol::F23, keysym::XK_F24 => KeySymbol::F24,
+        keysym::XK_F1 => KeySymbol::F1,
+        keysym::XK_F2 => KeySymbol::F2,
+        keysym::XK_F3 => KeySymbol::F3,
+        keysym::XK_F4 => KeySymbol::F4,
+        keysym::XK_F5 => KeySymbol::F5,
+        keysym::XK_F6 => KeySymbol::F6,
+        keysym::XK_F7 => KeySymbol::F7,
+        keysym::XK_F8 => KeySymbol::F8,
+        keysym::XK_F9 => KeySymbol::F9,
+        keysym::XK_F10 => KeySymbol::F10,
+        keysym::XK_F11 => KeySymbol::F11,
+        keysym::XK_F12 => KeySymbol::F12,
+        keysym::XK_F13 => KeySymbol::F13,
+        keysym::XK_F14 => KeySymbol::F14,
+        keysym::XK_F15 => KeySymbol::F15,
+        keysym::XK_F16 => KeySymbol::F16,
+        keysym::XK_F17 => KeySymbol::F17,
+        keysym::XK_F18 => KeySymbol::F18,
+        keysym::XK_F19 => KeySymbol::F19,
+        keysym::XK_F20 => KeySymbol::F20,
+        keysym::XK_F21 => KeySymbol::F21,
+        keysym::XK_F22 => KeySymbol::F22,
+        keysym::XK_F23 => KeySymbol::F23,
+        keysym::XK_F24 => KeySymbol::F24,
 
         // Keypad Symbols (these are for keys that are distinctly keypad operations,
         // or when XLookupString provides no text for them, e.g., NumLock is off for digits)
         // If `text` from XLookupString is a digit ('0'-'9'), that often takes precedence below.
-        keysym::XK_KP_0 => KeySymbol::Keypad0, keysym::XK_KP_1 => KeySymbol::Keypad1,
-        keysym::XK_KP_2 => KeySymbol::Keypad2, keysym::XK_KP_3 => KeySymbol::Keypad3,
-        keysym::XK_KP_4 => KeySymbol::Keypad4, keysym::XK_KP_5 | keysym::XK_KP_Begin => KeySymbol::Keypad5, // XK_KP_Begin is often KP_5
-        keysym::XK_KP_6 => KeySymbol::Keypad6, keysym::XK_KP_7 => KeySymbol::Keypad7,
-        keysym::XK_KP_8 => KeySymbol::Keypad8, keysym::XK_KP_9 => KeySymbol::Keypad9,
+        keysym::XK_KP_0 => KeySymbol::Keypad0,
+        keysym::XK_KP_1 => KeySymbol::Keypad1,
+        keysym::XK_KP_2 => KeySymbol::Keypad2,
+        keysym::XK_KP_3 => KeySymbol::Keypad3,
+        keysym::XK_KP_4 => KeySymbol::Keypad4,
+        keysym::XK_KP_5 | keysym::XK_KP_Begin => KeySymbol::Keypad5, // XK_KP_Begin is often KP_5
+        keysym::XK_KP_6 => KeySymbol::Keypad6,
+        keysym::XK_KP_7 => KeySymbol::Keypad7,
+        keysym::XK_KP_8 => KeySymbol::Keypad8,
+        keysym::XK_KP_9 => KeySymbol::Keypad9,
         keysym::XK_KP_Decimal | keysym::XK_KP_Separator => KeySymbol::KeypadDecimal,
         keysym::XK_KP_Add => KeySymbol::KeypadPlus,
         keysym::XK_KP_Subtract => KeySymbol::KeypadMinus,
@@ -307,7 +371,11 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
                 }
             }
             // If it's an unhandled u32 keysym and no valid text, it's Unknown.
-            trace!("Unhandled u32 keysym 0x{:X} with text '{}', mapping to KeySymbol::Unknown", keysym_u32, text);
+            trace!(
+                "Unhandled u32 keysym 0x{:X} with text '{}', mapping to KeySymbol::Unknown",
+                keysym_u32,
+                text
+            );
             KeySymbol::Unknown
         }
     }
@@ -321,42 +389,99 @@ mod tests {
 
     #[test]
     fn test_xkeysym_to_keysymbol_special_keys() {
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_Return, ""), KeySymbol::Enter);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_Escape, ""), KeySymbol::Escape);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_BackSpace, ""), KeySymbol::Backspace);
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_Return, ""),
+            KeySymbol::Enter
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_Escape, ""),
+            KeySymbol::Escape
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_BackSpace, ""),
+            KeySymbol::Backspace
+        );
         assert_eq!(xkeysym_to_keysymbol(keysym::XK_Tab, ""), KeySymbol::Tab);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_Shift_L, ""), KeySymbol::Shift);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_Control_R, ""), KeySymbol::Control);
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_Shift_L, ""),
+            KeySymbol::Shift
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_Control_R, ""),
+            KeySymbol::Control
+        );
         assert_eq!(xkeysym_to_keysymbol(keysym::XK_Alt_L, ""), KeySymbol::Alt);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_Super_L, ""), KeySymbol::Super);
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_Super_L, ""),
+            KeySymbol::Super
+        );
         assert_eq!(xkeysym_to_keysymbol(keysym::XK_Home, ""), KeySymbol::Home);
         assert_eq!(xkeysym_to_keysymbol(keysym::XK_Left, ""), KeySymbol::Left);
         assert_eq!(xkeysym_to_keysymbol(keysym::XK_F1, ""), KeySymbol::F1);
         assert_eq!(xkeysym_to_keysymbol(keysym::XK_F12, ""), KeySymbol::F12);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_Delete, ""), KeySymbol::Delete);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_Insert, ""), KeySymbol::Insert);
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_Delete, ""),
+            KeySymbol::Delete
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_Insert, ""),
+            KeySymbol::Insert
+        );
     }
 
     #[test]
     fn test_xkeysym_to_keysymbol_char_input() {
         // XLookupString provides the char; keysym might be generic (like XK_a) or specific.
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_a, "a"), KeySymbol::Char('a'));
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_A, "A"), KeySymbol::Char('A')); // Shifted 'a'
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_b, "b"), KeySymbol::Char('b'));
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_eacute, "é"), KeySymbol::Char('é')); // Char from compose/dead key
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_plus, "+"), KeySymbol::Char('+'));
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_space, " "), KeySymbol::Char(' '));
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_a, "a"),
+            KeySymbol::Char('a')
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_A, "A"),
+            KeySymbol::Char('A')
+        ); // Shifted 'a'
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_b, "b"),
+            KeySymbol::Char('b')
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_eacute, "é"),
+            KeySymbol::Char('é')
+        ); // Char from compose/dead key
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_plus, "+"),
+            KeySymbol::Char('+')
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_space, " "),
+            KeySymbol::Char(' ')
+        );
         // Keypad space often also yields " " via XLookupString.
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Space, " "), KeySymbol::Char(' '));
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Space, " "),
+            KeySymbol::Char(' ')
+        );
     }
 
     #[test]
     fn test_xkeysym_to_keysymbol_keypad_numbers_with_text() {
         // If XLookupString provides text (e.g., NumLock ON), it should be KeySymbol::Char.
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_0, "0"), KeySymbol::Char('0'));
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_1, "1"), KeySymbol::Char('1'));
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Decimal, "."), KeySymbol::Char('.'));
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Add, "+"), KeySymbol::Char('+'));
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_0, "0"),
+            KeySymbol::Char('0')
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_1, "1"),
+            KeySymbol::Char('1')
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Decimal, "."),
+            KeySymbol::Char('.')
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Add, "+"),
+            KeySymbol::Char('+')
+        );
     }
 
     #[test]
@@ -366,22 +491,49 @@ mod tests {
         // the function should map to specific Keypad KeySymbol variants.
 
         // Navigation keys (NumLock off typically)
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Home, ""), KeySymbol::Home);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Left, ""), KeySymbol::Left);
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Home, ""),
+            KeySymbol::Home
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Left, ""),
+            KeySymbol::Left
+        );
         assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Up, ""), KeySymbol::Up);
         // ... etc. for other KP_nav keys matching their non-KP counterparts.
 
         // Operator keys that might not produce text via XLookupString
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Add, ""), KeySymbol::KeypadPlus);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Subtract, ""), KeySymbol::KeypadMinus);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Multiply, ""), KeySymbol::KeypadMultiply);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Divide, ""), KeySymbol::KeypadDivide);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_Equal, ""), KeySymbol::KeypadEquals);
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Add, ""),
+            KeySymbol::KeypadPlus
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Subtract, ""),
+            KeySymbol::KeypadMinus
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Multiply, ""),
+            KeySymbol::KeypadMultiply
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Divide, ""),
+            KeySymbol::KeypadDivide
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_Equal, ""),
+            KeySymbol::KeypadEquals
+        );
 
         // Digit keysyms without text (simulating NumLock off for these specific keysyms)
         // The xkeysym_to_keysymbol function has explicit mappings for XK_KP_0 through XK_KP_9.
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_0, ""), KeySymbol::Keypad0);
-        assert_eq!(xkeysym_to_keysymbol(keysym::XK_KP_1, ""), KeySymbol::Keypad1);
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_0, ""),
+            KeySymbol::Keypad0
+        );
+        assert_eq!(
+            xkeysym_to_keysymbol(keysym::XK_KP_1, ""),
+            KeySymbol::Keypad1
+        );
     }
 
     // Note: Modifier key (Shift, Ctrl, Alt, Super) extraction is part of the KeyPress event
