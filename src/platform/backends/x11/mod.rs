@@ -19,7 +19,9 @@ pub const DEFAULT_WINDOW_WIDTH_CHARS: usize = 80;
 /// Default height of the terminal window in character cells, used if not otherwise specified.
 pub const DEFAULT_WINDOW_HEIGHT_CHARS: usize = 24;
 
-use crate::platform::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
+use crate::platform::backends::{
+    BackendEvent, CellCoords, CellRect, Driver, PlatformState, RenderCommand, TextRunStyle,
+}; // Added PlatformState, RenderCommand
 use anyhow::Result;
 use log::{debug, error, warn, info, trace};
 use std::os::unix::io::RawFd;
@@ -180,43 +182,93 @@ impl Driver for XDriver {
     /// Retrieves the dimensions of a single character cell in pixels.
     ///
     /// Delegates to `Graphics::font_dimensions_pixels()`.
-    fn get_font_dimensions(&self) -> (usize, usize) {
-        let (w, h) = self.graphics.font_dimensions_pixels();
-        (w as usize, h as usize)
+    fn get_platform_state(&self) -> PlatformState {
+        let (font_w, font_h) = self.graphics.font_dimensions_pixels();
+        let (display_w, display_h) = self.window.current_dimensions_pixels();
+        PlatformState {
+            event_fd: self.connection.get_event_fd(),
+            font_cell_width_px: font_w as usize,
+            font_cell_height_px: font_h as usize,
+            scale_factor: 1.0, // Assuming 1.0 for X11 unless HiDPI is explicitly handled
+            display_width_px: display_w,
+            display_height_px: display_h,
+        }
     }
 
-    /// Retrieves the current dimensions of the display area (window client area) in pixels.
-    ///
-    /// Delegates to `Window::current_dimensions_pixels()`.
-    fn get_display_dimensions_pixels(&self) -> (u16, u16) {
-        self.window.current_dimensions_pixels()
-    }
+    fn execute_render_commands(&mut self, commands: Vec<RenderCommand>) -> Result<()> {
+        for command in commands {
+            match command {
+                RenderCommand::ClearAll { bg } => {
+                    // Assuming graphics.clear_all is updated or adapted.
+                    // For now, using existing clear_all which has a TODO for dimensions.
+                    // A proper fix involves modifying graphics.clear_all.
+                    // As a temporary measure, if graphics.clear_all isn't fixed,
+                    // this might not clear correctly or use placeholder dimensions.
+                    // Or, we can use fill_rect to clear the whole window.
+                    let (w, h) = self.window.current_dimensions_pixels();
+                     // self.graphics.clear_all(&self.connection, bg)?; // if clear_all is updated
+                     // Using fill_rect_absolute_px to clear the entire area.
+                     // The calculation for full_window_rect in cell terms is not needed here
+                     // as fill_rect_absolute_px takes pixel dimensions.
+                    self.graphics.fill_rect_absolute_px(&self.connection, 0,0, w, h, bg)?;
 
-    /// Clears the entire display area with the specified background color.
-    ///
-    /// Delegates to `Graphics::clear_all()`.
-    /// Note: `Graphics::clear_all` currently uses placeholder dimensions and needs
-    /// updating to accept current window dimensions for accurate clearing.
-    fn clear_all(&mut self, bg: crate::color::Color) -> Result<()> {
-        // TODO: Update Graphics::clear_all to accept width & height, then pass them:
-        // let (width_px, height_px) = self.window.current_dimensions_pixels();
-        // self.graphics.clear_all_with_dimensions(&self.connection, bg, width_px, height_px)
-        self.graphics.clear_all(&self.connection, bg)
-    }
-
-    /// Draws a run of text characters at a given cell coordinate with a specified style.
-    ///
-    /// Delegates to `Graphics::draw_text_run()`.
-    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()> {
-        self.graphics
-            .draw_text_run(&self.connection, coords, text, style)
-    }
-
-    /// Fills a rectangular area of cells with a specified concrete color.
-    ///
-    /// Delegates to `Graphics::fill_rect()`.
-    fn fill_rect(&mut self, rect: CellRect, color: crate::color::Color) -> Result<()> {
-        self.graphics.fill_rect(&self.connection, rect, color)
+                }
+                RenderCommand::DrawTextRun {
+                    x,
+                    y,
+                    text,
+                    fg,
+                    bg,
+                    flags,
+                    is_selected,
+                } => {
+                    let coords = CellCoords { x, y };
+                    let (actual_fg, actual_bg) = if is_selected {
+                        (bg, fg) // Reverse video for selection
+                    } else {
+                        (fg, bg)
+                    };
+                    let style = TextRunStyle {
+                        fg: actual_fg,
+                        bg: actual_bg,
+                        flags,
+                    };
+                    self.graphics
+                        .draw_text_run(&self.connection, coords, &text, style)?;
+                }
+                RenderCommand::FillRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    color,
+                    is_selection_bg: _, // Currently not changing color based on is_selection_bg, assuming `color` is final.
+                } => {
+                    let rect = CellRect { x, y, width, height };
+                    self.graphics.fill_rect(&self.connection, rect, color)?;
+                }
+                RenderCommand::SetCursorVisibility { visible } => {
+                    let visibility = if visible {
+                        CursorVisibility::Shown
+                    } else {
+                        CursorVisibility::Hidden
+                    };
+                    self.window
+                        .set_native_cursor_visibility(&self.connection, visibility);
+                }
+                RenderCommand::SetWindowTitle { title } => {
+                    self.window.set_title(&self.connection, &title)?;
+                }
+                RenderCommand::RingBell => {
+                    self.window.bell(&self.connection);
+                }
+                RenderCommand::PresentFrame => {
+                    // Call the XDriver's own present method, which handles flushing.
+                    self.present()?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Presents the composed frame to the display.

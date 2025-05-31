@@ -597,39 +597,6 @@ impl Graphics {
     /// * `connection`: A reference to the active X11 `Connection`.
     /// * `bg`: The `Color` to use for clearing the background. Assumed to be a concrete color.
     ///
-    /// # Returns
-    /// * `Ok(())` if successful, or an error if color resolution fails.
-    pub(super) fn clear_all(&mut self, connection: &Connection, bg: Color) -> Result<()> {
-        let xft_bg_color = self // This now returns an owned xft::XftColor
-            .resolve_concrete_xft_color(connection, bg)
-            .context("Failed to resolve background color for clear_all")?;
-
-        // TODO: Replace placeholder dimensions with actual window dimensions.
-        let placeholder_width = 800;
-        let placeholder_height = 600;
-        warn!(
-            "Graphics::clear_all using placeholder dimensions {}x{}. Update required.",
-            placeholder_width, placeholder_height
-        );
-
-        // SAFETY: Xft FFI call. `self.xft_draw.raw()` must be valid.
-        unsafe {
-            xft::XftDrawRect(
-                self.xft_draw.raw(), // Use raw pointer from SafeXftDraw
-                &xft_bg_color,       // Pass a reference to the owned XftColor
-                0,
-                0,
-                placeholder_width,
-                placeholder_height,
-            );
-        }
-        trace!(
-            "Window cleared (with placeholder dimensions) using color pixel: {}",
-            xft_bg_color.pixel
-        );
-        Ok(())
-    }
-
     /// Draws a run of text characters at specified cell coordinates with a given style.
     ///
     /// The background of the text run is filled first, then the text is drawn on top.
@@ -772,6 +739,48 @@ impl Graphics {
         }
         Ok(())
     }
+
+    /// Fills a rectangular area specified in absolute pixel coordinates with a given color.
+    ///
+    /// # Arguments
+    /// * `connection`: A reference to the active X11 `Connection`.
+    /// * `x_pixel`, `y_pixel`: Top-left coordinates of the rectangle in pixels.
+    /// * `width_pixel`, `height_pixel`: Dimensions of the rectangle in pixels.
+    /// * `color`: The `Color` to fill the rectangle with. Assumed to be a concrete color.
+    ///
+    /// # Returns
+    /// * `Ok(())` if successful, or an error if color resolution fails.
+    pub(super) fn fill_rect_absolute_px(
+        &mut self,
+        connection: &Connection,
+        x_pixel: u16,
+        y_pixel: u16,
+        width_pixel: u16,
+        height_pixel: u16,
+        color: Color,
+    ) -> Result<()> {
+        if width_pixel == 0 || height_pixel == 0 {
+            return Ok(()); // Nothing to fill.
+        }
+
+        let xft_fill_color = self
+            .resolve_concrete_xft_color(connection, color)
+            .context("Failed to resolve color for fill_rect_absolute_px")?;
+
+        // SAFETY: Xft FFI call. `self.xft_draw.raw()` must be valid.
+        unsafe {
+            xft::XftDrawRect(
+                self.xft_draw.raw(),
+                &xft_fill_color, // Pass a reference to the owned XftColor
+                x_pixel as c_int,
+                y_pixel as c_int,
+                width_pixel as u32,
+                height_pixel as u32,
+            );
+        }
+        Ok(())
+    }
+
 
     /// Cleans up graphics resources.
     ///
