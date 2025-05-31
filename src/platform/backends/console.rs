@@ -9,7 +9,7 @@ use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 use crate::keys::{KeySymbol, Modifiers};
 use crate::platform::backends::{
-    BackendEvent, CellCoords, CellRect, Driver, FocusState, TextRunStyle, // Added FocusState
+    BackendEvent, Driver, FocusState, PlatformState, RenderCommand, // Updated imports
     DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
 };
 use crate::platform::backends::x11::window::CursorVisibility; // Added CursorVisibility
@@ -275,166 +275,164 @@ impl Driver for ConsoleDriver {
         Ok(backend_events)
     }
 
-    /// Returns the nominal font dimensions used by the console driver.
-    fn get_font_dimensions(&self) -> (usize, usize) {
-        (self.font_width_px as usize, self.font_height_px as usize)
-    }
-
-    /// Returns the display dimensions in pixels, calculated from cell dimensions and nominal font size.
-    fn get_display_dimensions_pixels(&self) -> (u16, u16) {
-        let width_px = self
+    fn get_platform_state(&self) -> PlatformState {
+        let display_width_px = self
             .last_known_width_cells
             .saturating_mul(self.font_width_px);
-        let height_px = self
+        let display_height_px = self
             .last_known_height_cells
             .saturating_mul(self.font_height_px);
-        (width_px, height_px)
+
+        PlatformState {
+            event_fd: Some(STDIN_FILENO),
+            font_cell_width_px: self.font_width_px as usize,
+            font_cell_height_px: self.font_height_px as usize,
+            scale_factor: 1.0, // Consoles typically don't have fractional scaling
+            display_width_px,
+            display_height_px,
+        }
     }
 
-    /// Clears the entire console screen using ANSI codes.
-    /// The `bg` color argument (guaranteed concrete by Renderer) is used to set the
-    /// background color before clearing.
-    fn clear_all(&mut self, bg: Color) -> Result<()> {
-        // Renderer ensures `bg` is not Color::Default.
-        // If it were, this would be an internal logic error.
-        if matches!(bg, Color::Default) {
-            error!(
-                "ConsoleDriver::clear_all received Color::Default. This is a bug in the Renderer."
-            );
-            // Fallback or panic, as this violates the contract with Renderer.
-            panic!(
-                "ConsoleDriver::clear_all received Color::Default. Renderer should resolve defaults."
-            );
+    fn execute_render_commands(&mut self, commands: Vec<RenderCommand>) -> Result<()> {
+        let mut output_buffer = String::new();
+
+        for command in commands {
+            match command {
+                RenderCommand::ClearAll { bg } => {
+                    // Contract: Renderer ensures bg is concrete.
+                    if matches!(bg, Color::Default) {
+                        error!("ConsoleDriver::ClearAll received Color::Default. Bug in Renderer.");
+                        // This panic is consistent with previous behavior for contract violations.
+                        panic!("ConsoleDriver::ClearAll received Color::Default. Renderer should resolve defaults.");
+                    }
+                    let mut sgr_codes = Vec::new();
+                    Self::sgr_append_concrete_bg_color(&mut sgr_codes, bg);
+                    if !sgr_codes.is_empty() {
+                        output_buffer.push_str(SGR_PREFIX);
+                        output_buffer.push_str(
+                            &sgr_codes
+                                .iter()
+                                .map(u16::to_string)
+                                .collect::<Vec<_>>()
+                                .join(&SGR_SEPARATOR.to_string()),
+                        );
+                        output_buffer.push(SGR_SUFFIX);
+                    }
+                    output_buffer.push_str(CLEAR_SCREEN_AND_HOME);
+                }
+                RenderCommand::DrawTextRun {
+                    x,
+                    y,
+                    text,
+                    fg,
+                    bg,
+                    flags,
+                    is_selected: _, // Not directly used by console for basic drawing
+                } => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    // Contract: Renderer ensures colors are concrete.
+                    if matches!(fg, Color::Default) || matches!(bg, Color::Default) {
+                        error!("ConsoleDriver::DrawTextRun received Color::Default. Bug in Renderer.");
+                        panic!("ConsoleDriver::DrawTextRun received Color::Default. Renderer should resolve defaults.");
+                    }
+
+                    output_buffer.push_str(&Self::format_cursor_position(y + 1, x + 1));
+                    let mut sgr_codes = Vec::new();
+                    sgr_codes.push(SGR_RESET_ALL); // Reset for clean application.
+                    Self::sgr_append_concrete_attributes(&mut sgr_codes, fg, bg, flags);
+                    if !sgr_codes.is_empty() {
+                        output_buffer.push_str(SGR_PREFIX);
+                        output_buffer.push_str(
+                            &sgr_codes
+                                .iter()
+                                .map(u16::to_string)
+                                .collect::<Vec<_>>()
+                                .join(&SGR_SEPARATOR.to_string()),
+                        );
+                        output_buffer.push(SGR_SUFFIX);
+                    }
+                    output_buffer.push_str(&text);
+                }
+                RenderCommand::FillRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    color,
+                    is_selection_bg: _, // Not directly used by console for basic drawing
+                } => {
+                    if width == 0 || height == 0 {
+                        continue;
+                    }
+                    // Contract: Renderer ensures color is concrete.
+                    if matches!(color, Color::Default) {
+                        error!("ConsoleDriver::FillRect received Color::Default. Bug in Renderer.");
+                        panic!("ConsoleDriver::FillRect received Color::Default. Renderer should resolve defaults.");
+                    }
+
+                    let mut sgr_codes = Vec::new();
+                    sgr_codes.push(SGR_RESET_ALL); // Reset for clean application.
+                    Self::sgr_append_concrete_bg_color(&mut sgr_codes, color);
+                    if !sgr_codes.is_empty() {
+                        output_buffer.push_str(SGR_PREFIX);
+                        output_buffer.push_str(
+                            &sgr_codes
+                                .iter()
+                                .map(u16::to_string)
+                                .collect::<Vec<_>>()
+                                .join(&SGR_SEPARATOR.to_string()),
+                        );
+                        output_buffer.push(SGR_SUFFIX);
+                    }
+
+                    let spaces: String = vec![' '; width].into_iter().collect();
+                    for row_offset in 0..height {
+                        output_buffer.push_str(&Self::format_cursor_position(
+                            y + row_offset + 1,
+                            x + 1,
+                        ));
+                        output_buffer.push_str(&spaces);
+                    }
+                }
+                RenderCommand::SetCursorVisibility { visible } => {
+                    // These commands print directly, not usually buffered with drawing ops.
+                    if visible {
+                        print!("{}", CURSOR_SHOW);
+                    } else {
+                        print!("{}", CURSOR_HIDE);
+                    }
+                    self.is_cursor_logically_visible = visible;
+                }
+                RenderCommand::SetWindowTitle { title } => {
+                    // Prints directly.
+                    print!("\x1b]0;{}\x07", title);
+                }
+                RenderCommand::RingBell => {
+                    // Prints directly.
+                    print!("\x07");
+                }
+                RenderCommand::PresentFrame => {
+                    // This command implies flushing, so print buffer then flush.
+                    if !output_buffer.is_empty() {
+                        print!("{}", output_buffer);
+                        output_buffer.clear(); // Clear after printing.
+                    }
+                    stdout().flush().context("ConsoleDriver: Failed to flush stdout for PresentFrame command")?;
+                }
+            }
         }
 
-        let mut cmd = String::new();
-        // Set the specific background color for the whole screen using SGR.
-        let mut sgr_codes = Vec::new();
-        Self::sgr_append_concrete_bg_color(&mut sgr_codes, bg);
-        if !sgr_codes.is_empty() {
-            cmd.push_str(SGR_PREFIX);
-            cmd.push_str(
-                &sgr_codes
-                    .iter()
-                    .map(u16::to_string) // Use direct method reference
-                    .collect::<Vec<_>>()
-                    .join(&SGR_SEPARATOR.to_string()),
-            );
-            cmd.push(SGR_SUFFIX);
+        // Print any remaining content in the buffer if PresentFrame wasn't the last command
+        // or if no PresentFrame was issued (though one is expected per frame).
+        if !output_buffer.is_empty() {
+            print!("{}", output_buffer);
         }
-        // Standard clear screen and home cursor sequence.
-        // This should apply the SGR background set above to the cleared area.
-        cmd.push_str(CLEAR_SCREEN_AND_HOME);
-
-        print!("{}", cmd);
-        trace!("ConsoleDriver: clear_all command prepared: {:?}", cmd);
-        // No flush needed here, as `present` will handle flushing.
-        Ok(())
-    }
-
-    /// Draws a run of text on the console.
-    /// `style.fg` and `style.bg` are guaranteed concrete by the Renderer.
-    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        // Contract: Renderer ensures colors are concrete.
-        if matches!(style.fg, Color::Default) || matches!(style.bg, Color::Default) {
-            error!(
-                "ConsoleDriver::draw_text_run received Color::Default in style. This is a bug in the Renderer."
-            );
-            panic!(
-                "ConsoleDriver::draw_text_run received Color::Default. Renderer should resolve defaults."
-            );
-        }
-
-        let mut cmd = String::new();
-        // Move cursor to position (1-based for ANSI CUP).
-        cmd.push_str(&Self::format_cursor_position(coords.y + 1, coords.x + 1));
-
-        // Build SGR sequence.
-        let mut sgr_codes = Vec::new();
-        sgr_codes.push(SGR_RESET_ALL); // Reset first for a clean slate.
-        Self::sgr_append_concrete_attributes(&mut sgr_codes, style.fg, style.bg, style.flags);
-
-        if !sgr_codes.is_empty() {
-            cmd.push_str(SGR_PREFIX);
-            cmd.push_str(
-                &sgr_codes
-                    .iter()
-                    .map(u16::to_string)
-                    .collect::<Vec<_>>()
-                    .join(&SGR_SEPARATOR.to_string()),
-            );
-            cmd.push(SGR_SUFFIX);
-        }
-        cmd.push_str(text); // Append the text to draw.
-        print!("{}", cmd);
-        trace!(
-            "ConsoleDriver: draw_text_run at ({},{}) text '{}' style {:?} cmd: {:?}",
-            coords.x,
-            coords.y,
-            text,
-            style,
-            cmd
-        );
-        Ok(())
-    }
-
-    /// Fills a rectangular area of cells with a specified concrete color.
-    /// This is done by setting the background color and printing spaces.
-    fn fill_rect(&mut self, rect: CellRect, color: Color) -> Result<()> {
-        if rect.width == 0 || rect.height == 0 {
-            return Ok(());
-        }
-        // Contract: Renderer ensures color is concrete.
-        if matches!(color, Color::Default) {
-            error!(
-                "ConsoleDriver::fill_rect received Color::Default. This is a bug in the Renderer."
-            );
-            panic!(
-                "ConsoleDriver::fill_rect received Color::Default. Renderer should resolve defaults."
-            );
-        }
-
-        let mut cmd = String::new();
-        // Set background color using SGR.
-        let mut sgr_codes = Vec::new();
-        sgr_codes.push(SGR_RESET_ALL); // Reset for clean application of background.
-        Self::sgr_append_concrete_bg_color(&mut sgr_codes, color);
-
-        if !sgr_codes.is_empty() {
-            cmd.push_str(SGR_PREFIX);
-            cmd.push_str(
-                &sgr_codes
-                    .iter()
-                    .map(u16::to_string)
-                    .collect::<Vec<_>>()
-                    .join(&SGR_SEPARATOR.to_string()),
-            );
-            cmd.push(SGR_SUFFIX);
-        }
-
-        // Create a string of spaces with the required width.
-        let spaces: String = vec![' '; rect.width].into_iter().collect();
-        // Iterate over each row in the rectangle.
-        for y_offset in 0..rect.height {
-            let current_y = rect.y + y_offset;
-            // Move cursor to the start of the segment for this row.
-            cmd.push_str(&Self::format_cursor_position(current_y + 1, rect.x + 1));
-            // Print spaces to fill the segment with the set background color.
-            cmd.push_str(&spaces);
-        }
-        print!("{}", cmd);
-        trace!(
-            "ConsoleDriver: fill_rect at ({},{}, w:{}, h:{}) color {:?} cmd: {:?}",
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            color,
-            cmd
-        );
+        // Note: The main `present` method will also flush, ensuring everything is sent.
+        // If RenderCommand::PresentFrame is the only mechanism for flushing, then the
+        // final print here might need its own flush if PresentFrame is not guaranteed.
+        // However, the Driver::present() method is likely called after execute_render_commands.
         Ok(())
     }
 
