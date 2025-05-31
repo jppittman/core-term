@@ -5,7 +5,7 @@ use super::TerminalEmulator;
 use crate::term::modes::EraseMode; // EraseMode is used by erase_in_display, erase_in_line
 use std::cmp::min; // For erase_chars
 
-use log::{trace, warn};
+use log::{warn};
 
 impl TerminalEmulator {
     pub(super) fn erase_in_display(&mut self, mode: EraseMode) {

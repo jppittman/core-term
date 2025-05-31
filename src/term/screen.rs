@@ -499,11 +499,6 @@ impl Screen {
         }
     }
 
-    /// Clears all dirty flags.
-    pub fn clear_dirty_flags(&mut self) {
-        self.dirty.fill(0);
-    }
-
     /// Switches to the alternate screen buffer.
     /// If `clear_alt_screen` is true, the alternate screen is filled using `self.default_attributes`.
     ///
@@ -556,19 +551,6 @@ impl Screen {
             "Scrolling region set to (0-based: {}, {}).",
             self.scroll_top, self.scroll_bot
         );
-    }
-
-    /// Gets a clone of the glyph at the specified `(x, y)` coordinates.
-    pub fn get_glyph(&self, x: usize, y: usize) -> Glyph {
-        let grid_to_use = self.active_grid();
-        if y < grid_to_use.len() && x < grid_to_use.get(y).map_or(0, |row| row.len()) {
-            grid_to_use[y][x].clone()
-        } else {
-            Glyph {
-                c: ' ',
-                attr: self.default_attributes,
-            }
-        }
     }
 
     /// Sets the glyph at the specified `(x, y)` coordinates.

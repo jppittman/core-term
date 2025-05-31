@@ -11,14 +11,11 @@ use crate::{
         emulator::FocusState,
         modes::{DecPrivateModes, EraseMode, Mode},
         screen::TabClearMode,
+        DEFAULT_TAB_INTERVAL,
     }, // For Attributes::default() in ResetToInitialState
 };
 
 use log::{debug, trace, warn}; // Assuming logging is still desired
-
-// Constants from the original file, if used by moved functions (e.g., ResetToInitialState)
-const DEFAULT_CURSOR_SHAPE: u16 = 1;
-const DEFAULT_TAB_INTERVAL: u8 = 8;
 
 // --- Helper functions moved from TerminalEmulator ---
 // These are now private to the ansi_handler module, or are methods on TerminalEmulator called via `emulator.`

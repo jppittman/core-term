@@ -61,10 +61,6 @@ impl MockDriver {
     fn commands(&self) -> Vec<MockDrawCommand> {
         self.commands.lock().unwrap().clone()
     }
-
-    fn clear_commands(&self) {
-        self.commands.lock().unwrap().clear();
-    }
 }
 
 impl Driver for MockDriver {

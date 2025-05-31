@@ -3,56 +3,19 @@
 // Note: This file is part of the `emulator` module.
 // `TerminalEmulator` struct is defined in `src/term/emulator/mod.rs`
 use super::TerminalEmulator; // Bring the struct into scope from the parent module
-use super::ansi_handler; // Use the new ansi_handler module
-use super::input_handler; // Use the new input_handler module
 // For the `dimensions()` method
-
-// Corrected Crate-level imports for items within src/term/
-use crate::term::{ControlEvent, action::EmulatorAction};
 
 // Standard library imports
 
 // Crate-level imports for items outside src/term/
-use crate::{ansi::commands::AnsiCommand, glyph::Attributes};
+use crate::glyph::Attributes;
 
 // Logging
-
-// Constants (ensure these are defined, e.g., in term/mod.rs or config.rs if not already)
-const DEFAULT_CURSOR_SHAPE: u16 = 1; // Example default shape
-const DEFAULT_TAB_INTERVAL: u8 = 8;
 
 // Note: The TerminalEmulator struct and several of its methods have been moved to src/term/emulator/mod.rs
 // The methods remaining in this file are part of the `impl TerminalEmulator` block.
 
 impl TerminalEmulator {
-    /// Handles a parsed `AnsiCommand`.
-    pub(super) fn handle_ansi_command(&mut self, command: AnsiCommand) -> Option<EmulatorAction> {
-        // Delegate to the new handler in ansi_handler.rs
-        ansi_handler::process_ansi_command(self, command)
-    }
-
-    // Helper methods like backspace, horizontal_tab, perform_line_feed, carriage_return,
-    // set_g_level, index, reverse_index, save_cursor_dec, restore_cursor_dec,
-    // designate_character_set, and the small CSI cursor movement helpers
-    // have been moved to ansi_handler.rs and are now private functions there.
-
-    // Larger methods that were called by handle_ansi_command (like erase_in_display,
-    // handle_sgr_attributes, etc.) remain here as methods on TerminalEmulator.
-    // They will be called via `emulator.method_name()` from ansi_handler.rs.
-
-    /// Handles a `BackendEvent`.
-    pub(super) fn handle_user_event(
-        &mut self,
-        event: crate::term::UserInputAction,
-    ) -> Option<EmulatorAction> {
-        input_handler::process_user_input_action(self, event)
-    }
-
-    /// Handles an internal `ControlEvent`.
-    pub(super) fn handle_control_event(&mut self, event: ControlEvent) -> Option<EmulatorAction> {
-        input_handler::process_control_event(self, event)
-    }
-
     // The following methods (`resize`, `cursor_pos`, `is_alt_screen_active`) were moved to src/term/emulator/mod.rs
     // and are removed from here to avoid duplicate definitions:
     // - resize

@@ -8,14 +8,14 @@ use crate::{
         action::EmulatorAction, // Added UserInputAction, ControlEvent
         charset::CharacterSet,
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
-        modes::{DecModeConstant, DecPrivateModes},
+        modes::DecPrivateModes,
         screen::Screen,
         snapshot::{CursorRenderState, CursorShape, RenderSnapshot, SnapshotLine},
     },
 };
 
 // Logging (optional, but good practice if used)
-use log::{debug, warn};
+use log::debug;
 
 mod ansi_handler;
 mod char_processor;
@@ -81,61 +81,6 @@ impl TerminalEmulator {
 
     pub(super) fn dimensions(&self) -> (usize, usize) {
         (self.screen.width, self.screen.height)
-    }
-
-    pub(super) fn is_origin_mode_active(&self) -> bool {
-        self.dec_modes.origin_mode
-    }
-
-    pub(super) fn is_cursor_keys_app_mode_active(&self) -> bool {
-        self.dec_modes.cursor_keys_app_mode
-    }
-
-    pub(super) fn is_bracketed_paste_mode_active(&self) -> bool {
-        self.dec_modes.bracketed_paste_mode
-    }
-
-    pub(super) fn is_focus_event_mode_active(&self) -> bool {
-        self.dec_modes.focus_event_mode
-    }
-
-    pub(super) fn is_mouse_mode_active(&self, mode_num: u16) -> bool {
-        match DecModeConstant::from_u16(mode_num) {
-            Some(DecModeConstant::MouseX10) => self.dec_modes.mouse_x10_mode,
-            Some(DecModeConstant::MouseVt200) => self.dec_modes.mouse_vt200_mode,
-            Some(DecModeConstant::MouseVt200Highlight) => self.dec_modes.mouse_vt200_highlight_mode,
-            Some(DecModeConstant::MouseButtonEvent) => self.dec_modes.mouse_button_event_mode,
-            Some(DecModeConstant::MouseAnyEvent) => self.dec_modes.mouse_any_event_mode,
-            Some(DecModeConstant::MouseUtf8) => self.dec_modes.mouse_utf8_mode,
-            Some(DecModeConstant::MouseSgr) => self.dec_modes.mouse_sgr_mode,
-            Some(DecModeConstant::MouseUrxvt) => {
-                warn!("is_mouse_mode_active check for MouseUrxvt (1015): Not fully implemented.");
-                false
-            }
-            Some(DecModeConstant::MousePixelPosition) => {
-                warn!(
-                    "is_mouse_mode_active check for MousePixelPosition (1016): Not fully implemented."
-                );
-                false
-            }
-            _ => {
-                warn!(
-                    "is_mouse_mode_active called with non-mouse mode or unhandled mouse mode: {}",
-                    mode_num
-                );
-                false
-            }
-        }
-    }
-
-    /// Returns the current logical cursor position (0-based column, row).
-    pub(super) fn cursor_pos(&self) -> (usize, usize) {
-        self.cursor_controller.logical_pos()
-    }
-
-    /// Returns `true` if the alternate screen buffer is currently active.
-    pub(super) fn is_alt_screen_active(&self) -> bool {
-        self.screen.alt_screen_active
     }
 
     /// Resizes the terminal display grid.
