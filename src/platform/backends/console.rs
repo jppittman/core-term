@@ -9,9 +9,10 @@ use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 use crate::keys::{KeySymbol, Modifiers};
 use crate::platform::backends::{
-    BackendEvent, CellCoords, CellRect, Driver, TextRunStyle, DEFAULT_WINDOW_HEIGHT_CHARS,
-    DEFAULT_WINDOW_WIDTH_CHARS,
-}; // Added for new key representation
+    BackendEvent, CellCoords, CellRect, Driver, FocusState, TextRunStyle, // Added FocusState
+    DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
+};
+use crate::platform::backends::x11::window::CursorVisibility; // Added CursorVisibility
 
 use anyhow::{Context, Result};
 use libc::{winsize, STDIN_FILENO, TIOCGWINSZ}; // For terminal size and raw mode
@@ -462,10 +463,15 @@ impl Driver for ConsoleDriver {
     }
 
     /// Sets the visibility of the console's native cursor using ANSI codes.
-    fn set_cursor_visibility(&mut self, visible: bool) {
+    fn set_cursor_visibility(&mut self, visibility: CursorVisibility) {
+        let visible = match visibility {
+            CursorVisibility::Shown => true,
+            CursorVisibility::Hidden => false,
+        };
         trace!(
-            "ConsoleDriver: Setting native cursor visibility to: {}",
-            visible
+            "ConsoleDriver: Setting native cursor visibility to: {} ({:?})",
+            visible,
+            visibility
         );
         if visible {
             print!("{}", CURSOR_SHOW);
@@ -480,12 +486,13 @@ impl Driver for ConsoleDriver {
     /// For a console driver, this is typically a no-op as focus is managed
     /// by the terminal emulator application itself or the OS, not via ANSI codes
     /// that the driver would send.
-    fn set_focus(&mut self, focused: bool) {
+    fn set_focus(&mut self, focus_state: FocusState) {
         trace!(
-            "ConsoleDriver: Focus event received (focused: {}). No specific action taken by console driver.",
-            focused
+            "ConsoleDriver: Focus event received (state: {:?}). No specific action taken by console driver.",
+            focus_state
         );
         // No action needed for console driver regarding focus typically.
+        // self.is_focused could be set here if ConsoleDriver had such a field.
     }
 
     /// Restores original terminal attributes and shows the cursor.

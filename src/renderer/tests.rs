@@ -3,8 +3,8 @@
 
 // Imports from the main crate
 use crate::color::Color;
-use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
-                                                                             // FontDesc is now FontConfig
+use crate::platform::backends::{CellCoords, CellRect, Driver, FocusState, TextRunStyle}; // Added FocusState // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
+use crate::platform::backends::x11::window::CursorVisibility; // Import for MockDriver // FontDesc is now FontConfig
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
 use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG};
 use crate::term::{
@@ -126,8 +126,8 @@ impl Driver for MockDriver {
 
     fn set_title(&mut self, _title: &str) {}
     fn bell(&mut self) {}
-    fn set_cursor_visibility(&mut self, _visible: bool) {}
-    fn set_focus(&mut self, _focused: bool) {}
+    fn set_cursor_visibility(&mut self, _visibility: CursorVisibility) {} // Updated type
+    fn set_focus(&mut self, _focus_state: FocusState) {} // Updated type
     fn cleanup(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
