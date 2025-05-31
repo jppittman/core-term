@@ -5,7 +5,7 @@
 //! environments without a graphical display server or as a fallback.
 
 // Corrected: Import Color directly from the color module.
-use crate::backends::{
+use crate::platform::backends::{
     BackendEvent, CellCoords, CellRect, DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
     Driver, TextRunStyle,
 };

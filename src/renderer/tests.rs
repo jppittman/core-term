@@ -2,7 +2,7 @@
 #![cfg(test)]
 
 // Imports from the main crate
-use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter
+use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter
 use crate::color::Color; // Rgb is now Color::Rgb, Colors struct removed
 // FontDesc is now FontConfig
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
@@ -79,7 +79,7 @@ impl Driver for MockDriver {
     fn get_event_fd(&self) -> Option<std::os::unix::io::RawFd> {
         None
     }
-    fn process_events(&mut self) -> anyhow::Result<Vec<crate::backends::BackendEvent>> {
+    fn process_events(&mut self) -> anyhow::Result<Vec<crate::platform::backends::BackendEvent>> {
         Ok(Vec::new())
     }
 
