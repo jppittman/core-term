@@ -2,7 +2,7 @@
 #![cfg(test)]
 
 // Updated imports based on current crate structure
-use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
+use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
 use crate::color::Color;
 use crate::renderer::{RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG, Renderer}; // Rgb is now a variant Color::Rgb(...). Colors struct removed.
 // FontDesc is now FontConfig. Using ColorScheme for palette.
@@ -84,7 +84,7 @@ impl Driver for MockDriver {
     fn get_event_fd(&self) -> Option<std::os::unix::io::RawFd> {
         None
     }
-    fn process_events(&mut self) -> anyhow::Result<Vec<crate::backends::BackendEvent>> {
+    fn process_events(&mut self) -> anyhow::Result<Vec<crate::platform::backends::BackendEvent>> {
         Ok(Vec::new())
     }
 
@@ -140,7 +140,7 @@ impl Driver for MockDriver {
         #![cfg(test)]
 
         // Updated imports based on current crate structure
-        use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
+        use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
         use crate::color::Color;
         use crate::renderer::{RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG, Renderer}; // Rgb is now a variant Color::Rgb(...). Colors struct removed.
         // FontDesc is now FontConfig. Using ColorScheme for palette.
@@ -222,7 +222,7 @@ impl Driver for MockDriver {
             fn get_event_fd(&self) -> Option<std::os::unix::io::RawFd> {
                 None
             }
-            fn process_events(&mut self) -> anyhow::Result<Vec<crate::backends::BackendEvent>> {
+            fn process_events(&mut self) -> anyhow::Result<Vec<crate::platform::backends::BackendEvent>> {
                 Ok(Vec::new())
             }
 

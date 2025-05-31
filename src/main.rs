@@ -2,22 +2,21 @@
 
 // Declare modules
 pub mod ansi;
-pub mod backends;
 pub mod color;
 pub mod config;
 pub mod glyph;
 pub mod keys;
 pub mod orchestrator;
-pub mod os; // Contains `pub mod pty;` and `pub mod epoll;`
+pub mod platform; // This will now contain os and backends
 pub mod renderer;
 pub mod term;
 
 // Use statements for items needed in main.rs
 use crate::{
     ansi::AnsiProcessor, // AnsiProcessor is in the ansi module
-    backends::{Driver, console::ConsoleDriver, x11::XDriver},
+    platform::backends::{Driver, console::ConsoleDriver, x11::XDriver},
     orchestrator::{AppOrchestrator, OrchestratorStatus},
-    os::{
+    platform::os::{
         epoll::{EpollFlags, EventMonitor}, // Using EventMonitor for epoll management
         pty::{NixPty, PtyChannel, PtyConfig}, // NixPty for PTY channel, PtyConfig for its setup
     },
@@ -59,8 +58,8 @@ fn main() -> anyhow::Result<()> {
     let shell_args_str: Vec<&str> = shell_args.iter().map(AsRef::as_ref).collect();
 
     // Initial dimensions, may be updated by the driver.
-    let mut initial_cols = backends::DEFAULT_WINDOW_WIDTH_CHARS as u16;
-    let mut initial_rows = backends::DEFAULT_WINDOW_HEIGHT_CHARS as u16;
+    let mut initial_cols = platform::backends::DEFAULT_WINDOW_WIDTH_CHARS as u16;
+    let mut initial_rows = platform::backends::DEFAULT_WINDOW_HEIGHT_CHARS as u16;
 
     // --- Setup PTY ---
     let pty_config = PtyConfig {
