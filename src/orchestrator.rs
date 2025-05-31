@@ -245,10 +245,10 @@ impl<'a> AppOrchestrator<'a> {
                 self.driver.set_cursor_visibility(visible);
             }
             EmulatorAction::CopyToClipboard(_) => {
-                !unimplemented!("clipboard feature not yet implemented")
+                unimplemented!("clipboard feature not yet implemented")
             }
             EmulatorAction::RequestClipboardContent => {
-                !unimplemented!("clipboard feature not yet implemented")
+                unimplemented!("clipboard feature not yet implemented")
             }
         }
     }
