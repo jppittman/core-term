@@ -11,7 +11,7 @@ pub use crate::keys::{KeySymbol, Modifiers}; // Re-export KeySymbol and Modifier
 use anyhow::Result;
 use std::os::unix::io::RawFd;
 
-// Re-export driver implementations so they can be accessed via `crate::backends::console::ConsoleDriver`, etc.
+// Re-export driver implementations so they can be accessed via `crate::platform::backends::console::ConsoleDriver`, etc.
 pub mod console;
 pub mod x11;
 

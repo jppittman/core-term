@@ -8,7 +8,7 @@
 //! to be backend-agnostic. It defines default foreground and background colors
 //! for resolving `Color::Default` from glyph attributes when rendering.
 
-use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle};
+use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle};
 use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::term::unicode::get_char_display_width;

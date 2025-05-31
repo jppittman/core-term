@@ -6,8 +6,8 @@
 
 use crate::{
     ansi::AnsiParser,
-    backends::{BackendEvent, Driver},
-    os::pty::PtyChannel,
+    platform::backends::{BackendEvent, Driver},
+    platform::os::pty::PtyChannel,
     renderer::Renderer,
     term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction}, // Added UserInputAction
 };

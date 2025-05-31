@@ -4,7 +4,7 @@
 use log::{debug, error, info, trace, warn};
 
 // Crate-level imports
-use crate::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
+use crate::platform::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
 use crate::color::{Color, NamedColor};
 use crate::glyph::AttrFlags;
 use crate::keys::{KeySymbol, Modifiers}; // Added for new key representation

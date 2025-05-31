@@ -12,7 +12,8 @@ use crate::{
 };
 use log::{error, info}; // Added warn, info
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::LazyLock as Lazy};
+use std::path::PathBuf;
+use once_cell::sync::Lazy;
 
 // --- Global Configuration Access ---
 
