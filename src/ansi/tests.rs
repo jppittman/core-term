@@ -5,8 +5,8 @@
 // Use the AnsiProcessor, which combines lexer and parser
 // Corrected imports using commands submodule path
 use super::{
-    AnsiParser, AnsiProcessor,
     commands::{AnsiCommand, Attribute, C0Control, CsiCommand},
+    AnsiParser, AnsiProcessor,
 };
 use crate::color::{Color, NamedColor};
 use test_log::test; // Ensure test_log is a dev-dependency for log capturing in tests

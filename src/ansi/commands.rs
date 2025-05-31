@@ -180,7 +180,7 @@ impl C0Control {
         if (byte <= 0x1F && byte != 0x1B/* ESC is handled separately by parser state */)
             || byte == 0x7F
         {
-            Some(unsafe { std::mem::transmute(byte) })
+            Some(unsafe { std::mem::transmute::<u8, C0Control>(byte) })
         } else {
             None
         }
@@ -191,36 +191,37 @@ impl C0Control {
 /// Represents Control Sequence Introducer (CSI) commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CsiCommand {
-    CursorUp(u16),
+    ClearTabStops(u16),
+    CursorBackward(u16),
+    CursorCharacterAbsolute(u16),
     CursorDown(u16),
     CursorForward(u16),
-    CursorBackward(u16),
     CursorNextLine(u16),
-    CursorPrevLine(u16),
-    CursorCharacterAbsolute(u16),
     CursorPosition(u16, u16), // Parameters are 1-based: (row, col)
-    EraseInDisplay(u16),
-    EraseInLine(u16),
-    EraseCharacter(u16),
-    InsertCharacter(u16),
-    InsertLine(u16),
+    CursorPrevLine(u16),
+    CursorUp(u16),
     DeleteCharacter(u16),
     DeleteLine(u16),
-    ScrollUp(u16),
-    ScrollDown(u16),
-    SetTabStop,
-    ClearTabStops(u16),
-    SetGraphicsRendition(Vec<Attribute>),
-    SetMode(u16),
-    ResetMode(u16),
-    SetModePrivate(u16),
-    ResetModePrivate(u16),
     DeviceStatusReport(u16),
-    SaveCursorAnsi,
+    EraseCharacter(u16),
+    EraseInDisplay(u16),
+    EraseInLine(u16),
+    InsertCharacter(u16),
+    InsertLine(u16),
+    PrimaryDeviceAttributes,
+    Reset,
+    ResetMode(u16),
+    ResetModePrivate(u16),
+    RestoreCursor,
     RestoreCursorAnsi,
     SaveCursor,
-    RestoreCursor,
-    Reset,
+    SaveCursorAnsi,
+    ScrollDown(u16),
+    ScrollUp(u16),
+    SetGraphicsRendition(Vec<Attribute>),
+    SetMode(u16),
+    SetModePrivate(u16),
+    SetTabStop,
     SetScrollingRegion {
         top: u16,
         bottom: u16,
@@ -234,7 +235,6 @@ pub enum CsiCommand {
         ps2: Option<u16>,
         ps3: Option<u16>,
     },
-
     Unsupported(Vec<u8>, Option<u8>),
 }
 
@@ -530,6 +530,8 @@ impl AnsiCommand {
             (false, b"", b'J') => {
                 Some(AnsiCommand::Csi(CsiCommand::EraseInDisplay(param_or(0, 0))))
             }
+            // In AnsiCommand::from_csi, add a case for 'c':
+            (false, b"", b'c') => Some(AnsiCommand::Csi(CsiCommand::PrimaryDeviceAttributes)),
             (false, b"", b'K') => Some(AnsiCommand::Csi(CsiCommand::EraseInLine(param_or(0, 0)))),
             (false, b"", b'X') => Some(AnsiCommand::Csi(CsiCommand::EraseCharacter(param_or_1(0)))),
             (false, b"", b'@') => {

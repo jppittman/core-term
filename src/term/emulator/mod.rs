@@ -4,13 +4,13 @@
 use crate::{
     glyph::Attributes, // Ensure Glyph and Attributes are imported
     term::{
-        EmulatorInput,          // Added EmulatorInput
         action::EmulatorAction, // Added UserInputAction, ControlEvent
         charset::CharacterSet,
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
         modes::DecPrivateModes,
         screen::Screen,
         snapshot::{CursorRenderState, CursorShape, RenderSnapshot, SnapshotLine},
+        EmulatorInput, // Added EmulatorInput
     },
 };
 

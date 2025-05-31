@@ -2,11 +2,11 @@
 #![cfg(test)]
 
 // Imports from the main crate
-use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter
-use crate::color::Color; // Rgb is now Color::Rgb, Colors struct removed
-// FontDesc is now FontConfig
+use crate::color::Color;
+use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
+                                                                             // FontDesc is now FontConfig
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
-use crate::renderer::{RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG, Renderer};
+use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG};
 use crate::term::{
     CursorRenderState, CursorShape, RenderSnapshot, SelectionRenderState, SnapshotLine,
 };

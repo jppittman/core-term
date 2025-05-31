@@ -3,8 +3,8 @@
 use super::{FocusState, TerminalEmulator};
 use crate::keys::{KeySymbol, Modifiers};
 use crate::term::{
-    ControlEvent, // ControlEvent from term::mod.rs (re-exported from action.rs)
     action::{EmulatorAction, UserInputAction}, // UserInputAction from action.rs
+    ControlEvent, // ControlEvent from term::mod.rs (re-exported from action.rs)
 };
 use log::trace;
 
@@ -153,7 +153,8 @@ pub(super) fn process_user_input_action(
                     _ => {
                         trace!(
                             "Unhandled KeySymbol (with no text): {:?}, Modifiers: {:?}",
-                            symbol, modifiers
+                            symbol,
+                            modifiers
                         );
                     }
                 }
@@ -209,11 +210,12 @@ pub(super) fn process_control_event(
         ControlEvent::Resize { cols, rows } => {
             trace!(
                 "TerminalEmulator: ControlEvent::Resize to {}x{} received.",
-                cols, rows
+                cols,
+                rows
             );
             emulator.resize(cols, rows); // Call the existing resize method on TerminalEmulator
             None // Resize itself doesn't directly cause an EmulatorAction to be returned.
-            // Redraw is handled implicitly or by the orchestrator.
+                 // Redraw is handled implicitly or by the orchestrator.
         }
     }
 }

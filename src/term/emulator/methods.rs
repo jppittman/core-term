@@ -13,11 +13,11 @@ impl TerminalEmulator {
         self.cursor_controller.carriage_return();
     }
 
-    pub(super) fn save_cursor_dec(&mut self) {
+    pub(super) fn save_cursor(&mut self) {
         self.cursor_controller.save_state();
     }
 
-    pub(super) fn restore_cursor_dec(&mut self) {
+    pub(super) fn restore_cursor(&mut self) {
         self.cursor_wrap_next = false;
         self.cursor_controller
             .restore_state(&self.current_screen_context(), Attributes::default());
