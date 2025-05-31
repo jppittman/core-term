@@ -21,7 +21,7 @@ pub const DEFAULT_WINDOW_HEIGHT_CHARS: usize = 24;
 
 use crate::platform::backends::{BackendEvent, CellCoords, CellRect, Driver, TextRunStyle};
 use anyhow::Result;
-use log::{debug, error, info};
+use log::{debug, error, warn, info, trace};
 use std::os::unix::io::RawFd;
 
 // Declare submodules. These contain the specialized logic for different aspects of X11 handling.
@@ -77,8 +77,9 @@ impl XDriver {
         })?;
         info!("Font loaded and initial colors allocated by Graphics module.");
 
-        let (font_width_px, font_height_px) = pre_graphics_data.font_dimensions_pixels();
-        let initial_bg_pixel = pre_graphics_data.initial_background_pixel_value();
+        let font_width_px = pre_graphics_data.font_width_px;
+        let font_height_px = pre_graphics_data.font_height_px;
+        let initial_bg_pixel = pre_graphics_data.default_bg_pixel_value;
 
         debug!(
             "Using font metrics from Graphics: width={}, height={}, initial_bg_pixel={}",
@@ -154,7 +155,8 @@ impl Driver for XDriver {
     /// translation to `BackendEvent`s, and updates window state (dimensions, focus).
     fn process_events(&mut self) -> Result<Vec<BackendEvent>> {
         // Logging for this can be noisy, so it's primarily within the event module.
-        match event::process_pending_events(&self.connection, &mut self.window, &mut self.has_focus) {
+        match event::process_pending_events(&self.connection, &mut self.window, &mut self.has_focus)
+        {
             Ok(events) => {
                 if !events.is_empty() {
                     debug!("XDriver processed {} backend events.", events.len());
@@ -198,23 +200,15 @@ impl Driver for XDriver {
     /// Draws a run of text characters at a given cell coordinate with a specified style.
     ///
     /// Delegates to `Graphics::draw_text_run()`.
-    fn draw_text_run(
-        &mut self,
-        coords: CellCoords,
-        text: &str,
-        style: TextRunStyle,
-    ) -> Result<()> {
-        self.graphics.draw_text_run(&self.connection, coords, text, style)
+    fn draw_text_run(&mut self, coords: CellCoords, text: &str, style: TextRunStyle) -> Result<()> {
+        self.graphics
+            .draw_text_run(&self.connection, coords, text, style)
     }
 
     /// Fills a rectangular area of cells with a specified concrete color.
     ///
     /// Delegates to `Graphics::fill_rect()`.
-    fn fill_rect(
-        &mut self,
-        rect: CellRect,
-        color: crate::color::Color,
-    ) -> Result<()> {
+    fn fill_rect(&mut self, rect: CellRect, color: crate::color::Color) -> Result<()> {
         self.graphics.fill_rect(&self.connection, rect, color)
     }
 
@@ -226,7 +220,9 @@ impl Driver for XDriver {
         // SAFETY: XFlush is safe to call with a valid display pointer.
         // Connection::display() returns the pointer, which is non-null if connection is active.
         if !self.connection.display().is_null() {
-            unsafe { x11::xlib::XFlush(self.connection.display()); }
+            unsafe {
+                x11::xlib::XFlush(self.connection.display());
+            }
             trace!("XDriver::present() flushed X display.");
         } else {
             warn!("XDriver::present() called on a closed or invalid X display connection.");
@@ -259,7 +255,8 @@ impl Driver for XDriver {
         } else {
             CursorVisibility::Hidden
         };
-        self.window.set_native_cursor_visibility(&self.connection, visibility);
+        self.window
+            .set_native_cursor_visibility(&self.connection, visibility);
     }
 
     /// Informs the driver of focus changes, typically called by the application core.
@@ -268,7 +265,10 @@ impl Driver for XDriver {
     /// in `event::process_pending_events`, which directly updates `self.has_focus`.
     /// This method allows external setting of focus state if needed.
     fn set_focus(&mut self, focused: bool) {
-        info!("XDriver::set_focus called by application core with: {}", focused);
+        info!(
+            "XDriver::set_focus called by application core with: {}",
+            focused
+        );
         self.has_focus = focused;
         // This state change could be used to influence rendering (e.g., cursor style),
         // though such visual changes are typically triggered by the FocusGained/FocusLost BackendEvents.

@@ -6,11 +6,10 @@ use anyhow::{anyhow, Context, Result}; // Combined anyhow
 use log::{debug, error, info, trace, warn};
 use std::ffi::CString;
 use std::mem;
-use std::ptr;
 
 // X11 library imports
-use x11::xlib;
 use libc::{c_char, c_int, c_uint};
+use x11::xlib;
 
 /// Defines the desired visibility state for the native X11 mouse cursor
 /// when it is positioned over the terminal window.
@@ -41,7 +40,7 @@ pub struct Window {
     current_pixel_width: u16,
     current_pixel_height: u16,
     is_native_cursor_visible: bool, // Tracks the current state of the X11 cursor
-    initial_bg_pixel: xlib::Atom, // Background pixel value used at window creation
+    initial_bg_pixel: xlib::Atom,   // Background pixel value used at window creation
 }
 
 /// Value for the Xterm cursor shape, used when making the cursor visible.
@@ -100,14 +99,14 @@ impl Window {
             xlib::XCreateWindow(
                 display,
                 root_window,
-                0,                                  // x position (top-left relative to parent)
-                0,                                  // y position
-                width_px as c_uint,                 // width
-                height_px as c_uint,                // height
-                border_width,                       // border width
+                0,                                    // x position (top-left relative to parent)
+                0,                                    // y position
+                width_px as c_uint,                   // width
+                height_px as c_uint,                  // height
+                border_width,                         // border width
                 xlib::XDefaultDepth(display, screen), // depth from parent
-                xlib::InputOutput as c_uint,        // class: InputOutput window
-                visual,                             // visual from parent
+                xlib::InputOutput as c_uint,          // class: InputOutput window
+                visual,                               // visual from parent
                 xlib::CWColormap | xlib::CWBackPixel | xlib::CWBorderPixel | xlib::CWEventMask, // attribute mask
                 &mut attributes,
             )
@@ -156,10 +155,13 @@ impl Window {
         font_char_height: u32,
     ) -> Result<()> {
         if self.id == 0 {
-             warn!("setup_protocols_and_hints called on an invalid window ID (0). Skipping.");
+            warn!("setup_protocols_and_hints called on an invalid window ID (0). Skipping.");
             return Ok(());
         }
-        info!("Setting up WM protocols and hints for window ID: {}", self.id);
+        info!(
+            "Setting up WM protocols and hints for window ID: {}",
+            self.id
+        );
         let display = connection.display();
         // SAFETY: Xlib calls involving FFI. Ensure connection and window ID are valid.
         unsafe {
@@ -190,7 +192,8 @@ impl Window {
             }
 
             // Set initial window title.
-            let title_cstr = CString::new("core-term").context("Failed to create CString for initial title")?;
+            let title_cstr =
+                CString::new("core-term").context("Failed to create CString for initial title")?;
             xlib::XStoreName(display, self.id, title_cstr.as_ptr() as *mut c_char);
 
             // Set _NET_WM_NAME for UTF-8 titles, preferred by modern WMs.
@@ -227,10 +230,13 @@ impl Window {
                 size_hints.flags = xlib::PResizeInc | xlib::PMinSize; // We specify resize increments and min size.
                 size_hints.width_inc = font_char_width as c_int;
                 size_hints.height_inc = font_char_height as c_int;
-                size_hints.min_width = font_char_width as c_int;  // Minimum window width (1 cell)
+                size_hints.min_width = font_char_width as c_int; // Minimum window width (1 cell)
                 size_hints.min_height = font_char_height as c_int; // Minimum window height (1 cell)
                 xlib::XSetWMNormalHints(display, self.id, &mut size_hints);
-                debug!("WM size hints set (inc: {}x{}, min: {}x{}).", font_char_width, font_char_height, font_char_width, font_char_height);
+                debug!(
+                    "WM size hints set (inc: {}x{}, min: {}x{}).",
+                    font_char_width, font_char_height, font_char_width, font_char_height
+                );
             } else {
                 warn!("Font dimensions are zero ({}, {}), skipping WM size hints based on character cells.", font_char_width, font_char_height);
             }
@@ -277,7 +283,11 @@ impl Window {
             warn!("set_title called on an invalid window ID (0).");
             return Ok(()); // Not an error, but operation cannot proceed.
         }
-        trace!("Setting window title to '{}' for window ID: {}", title, self.id);
+        trace!(
+            "Setting window title to '{}' for window ID: {}",
+            title,
+            self.id
+        );
         let display = connection.display();
         // SAFETY: Xlib calls. Ensure connection and window ID are valid.
         unsafe {
@@ -342,7 +352,11 @@ impl Window {
     ///
     /// * `connection`: A reference to the active X11 `Connection`.
     /// * `visibility`: A `CursorVisibility` enum indicating whether to show or hide the cursor.
-    pub fn set_native_cursor_visibility(&mut self, connection: &Connection, visibility: CursorVisibility) {
+    pub fn set_native_cursor_visibility(
+        &mut self,
+        connection: &Connection,
+        visibility: CursorVisibility,
+    ) {
         if self.id == 0 {
             warn!("set_native_cursor_visibility called on an invalid window ID (0).");
             return;
@@ -359,7 +373,8 @@ impl Window {
         self.is_native_cursor_visible = should_be_visible;
         trace!(
             "Setting native X11 cursor visibility to: {:?} for window ID: {}",
-            visibility, self.id
+            visibility,
+            self.id
         );
 
         let display = connection.display();
@@ -371,7 +386,8 @@ impl Window {
                 xlib::XDefineCursor(display, self.id, cursor);
                 // If XDefineCursor is successful, X server has a copy of the cursor.
                 // We should free the cursor we created if we don't store it elsewhere.
-                if cursor != 0 { // Check if cursor creation was successful
+                if cursor != 0 {
+                    // Check if cursor creation was successful
                     xlib::XFreeCursor(display, cursor);
                 }
             } else {
@@ -386,7 +402,8 @@ impl Window {
                 let cursor = xlib::XCreatePixmapCursor(
                     display, pixmap, pixmap, &mut color, &mut color, 0, 0,
                 );
-                if cursor != 0 { // Check if cursor creation was successful
+                if cursor != 0 {
+                    // Check if cursor creation was successful
                     xlib::XDefineCursor(display, self.id, cursor);
                     xlib::XFreeCursor(display, cursor); // Free the cursor resource
                 } else {
