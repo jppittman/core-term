@@ -4,32 +4,53 @@
 //! This includes user-initiated actions, control events, and actions
 //! the emulator signals to the orchestrator.
 
-use crate::backends::{KeySymbol, Modifiers, MouseButton, MouseEventType}; // Assuming these are re-exported via backends
+use crate::platform::backends::{KeySymbol, Modifiers}; // Assuming these are re-exported via backends
 
 // --- User Input Actions ---
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct KeyInput {
-    pub symbol: KeySymbol,
-    pub modifiers: Modifiers,
-    pub text: Option<String>, // Text from IME or key press, if any
+/// Represents the buttons on a mouse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MouseButton {
+    /// The left mouse button.
+    Left,
+    /// The middle mouse button.
+    Middle,
+    /// The right mouse button.
+    Right,
+    /// Mouse wheel scrolled up.
+    ScrollUp,
+    /// Mouse wheel scrolled down.
+    ScrollDown,
+    // Add other buttons if necessary (e.g., Forward, Back)
+    // Example: Forward, Back
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MouseInput {
-    pub col: usize, // 0-based cell column
-    pub row: usize, // 0-based cell row
-    pub event_type: MouseEventType,
-    pub button: MouseButton,
-    pub modifiers: Modifiers,
+/// Represents the type of a mouse event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MouseEventType {
+    /// A mouse button was pressed.
+    Press,
+    /// A mouse button was released.
+    Release,
+    Move,
 }
 
 /// Represents user-initiated actions that serve as input to the terminal emulator.
 /// This corresponds to `EmulatorInput::User(UserInputAction)`.
 #[derive(Debug, Clone, PartialEq)] // Eq might be tricky if text is String
 pub enum UserInputAction {
-    KeyInput(KeyInput),
-    MouseInput(MouseInput),
+    KeyInput {
+        symbol: KeySymbol,
+        modifiers: Modifiers,
+        text: Option<String>, // Text from IME or key press, if any
+    },
+    MouseInput {
+        col: usize, // 0-based cell column
+        row: usize, // 0-based cell row
+        event_type: MouseEventType,
+        button: MouseButton,
+        modifiers: Modifiers,
+    },
     InitiateCopy,
     InitiatePaste,
     FocusGained,

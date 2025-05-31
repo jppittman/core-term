@@ -5,24 +5,22 @@
 
 // Sub-modules - existing and new
 pub mod cursor;
-mod screen;
+pub mod screen;
 pub mod unicode;
 
 pub mod action;
 pub mod charset;
 mod emulator;
-mod modes;
-mod selection;
+pub mod modes;
 pub mod snapshot; // Add this line to declare the module
 
 // Re-export items for easier use by other modules and within this module
 pub use action::{ControlEvent, EmulatorAction, UserInputAction}; // Added UserInputAction, ControlEvent
-pub use charset::{CharacterSet, map_to_dec_line_drawing};
+pub use charset::{map_to_dec_line_drawing, CharacterSet};
 pub use emulator::TerminalEmulator;
 pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
-use selection::Selection;
 pub use snapshot::{
-    CursorRenderState, CursorShape, Point, RenderSnapshot, SelectionMode, SelectionRenderState,
+    CursorRenderState, CursorShape, Point, RenderSnapshot, SelectionMode, Selection, // Changed SelectionRenderState to Selection
     SnapshotLine,
 };
 
@@ -35,8 +33,6 @@ use crate::ansi::commands::AnsiCommand;
 
 /// Default tab interval.
 pub const DEFAULT_TAB_INTERVAL: u8 = 8;
-/// Default cursor shape (e.g., 2 for block).
-pub(crate) const DEFAULT_CURSOR_SHAPE: u16 = 2;
 
 // ControlEvent is now defined in and re-exported from action.rs
 

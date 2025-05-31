@@ -8,10 +8,9 @@
 //! to be backend-agnostic. It defines default foreground and background colors
 //! for resolving `Color::Default` from glyph attributes when rendering.
 
-use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle};
 use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
-use crate::term::snapshot::{SelectionMode, SelectionRenderState}; // Added
+use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle};
 use crate::term::unicode::get_char_display_width;
 // Assuming RenderSnapshot, SnapshotLine, CursorRenderState, and Point are defined in crate::term
 use crate::term::{Point, RenderSnapshot};
@@ -23,8 +22,6 @@ use log::{trace, warn}; // For logging.
 pub const RENDERER_DEFAULT_FG: Color = Color::Named(NamedColor::White);
 /// Default background color used by the renderer when a glyph specifies `Color::Default`.
 pub const RENDERER_DEFAULT_BG: Color = Color::Named(NamedColor::Black);
-/// Background color for selected cells.
-const SELECTION_BACKGROUND: Color = Color::Rgb(0x30, 0x30, 0x70); // Muted blue
 
 /// Constant representing a single terminal cell consumed by a drawing operation.
 const SINGLE_CELL_CONSUMED: usize = 1;
@@ -48,28 +45,19 @@ impl Renderer {
     fn get_effective_colors_and_flags(
         &self,
         cell_fg: Color,
-        mut cell_bg: Color, // Make mutable to apply selection
+        cell_bg: Color,
         cell_flags: AttrFlags,
-        is_selected: bool, // New parameter
     ) -> (Color, Color, AttrFlags) {
-        if is_selected {
-            cell_bg = SELECTION_BACKGROUND; // Override background if selected
-            // Foreground remains original cell_fg, resolved below
-        }
-
         let mut resolved_fg = match cell_fg {
             Color::Default => RENDERER_DEFAULT_FG,
             c => c,
         };
         let mut resolved_bg = match cell_bg {
-            Color::Default => RENDERER_DEFAULT_BG, // Default BG if selection color is also 'Default' (not the case here)
+            Color::Default => RENDERER_DEFAULT_BG,
             c => c,
         };
         let mut effective_flags = cell_flags;
-
         if cell_flags.contains(AttrFlags::REVERSE) {
-            // If selected, cell_bg is SELECTION_BACKGROUND. Reverse would make fg SELECTION_BACKGROUND.
-            // If not selected, it's normal reverse.
             std::mem::swap(&mut resolved_fg, &mut resolved_bg);
             effective_flags.remove(AttrFlags::REVERSE);
         }
@@ -121,8 +109,6 @@ impl Renderer {
             lines_to_draw_indices
         );
 
-        let selection_state_ref = snapshot.selection_state.as_ref();
-
         for &y_abs in &lines_to_draw_indices {
             // Guard: Ensure line index is within bounds (already implicitly handled by .get later, but good for clarity).
             if y_abs >= term_height {
@@ -138,13 +124,7 @@ impl Renderer {
                 continue; // Should not happen if y_abs is from snapshot lines enumeration
             };
 
-            self.draw_line_content_from_slice(
-                y_abs,
-                term_width,
-                &line_data.cells,
-                selection_state_ref, // Pass selection state
-                driver,
-            )?;
+            self.draw_line_content_from_slice(y_abs, term_width, &line_data.cells, driver)?;
         }
 
         // Overlay the cursor if its state is present in the snapshot.
@@ -162,13 +142,8 @@ impl Renderer {
         y_abs: usize,
         term_width: usize,
         line_glyphs: &[Glyph],
-        selection_state: Option<&SelectionRenderState>, // New parameter
         driver: &mut dyn Driver,
     ) -> Result<()> {
-        trace!(
-            "Renderer::draw_line_content_from_slice: Drawing line y={}",
-            y_abs
-        );
         let mut current_col: usize = 0;
 
         while current_col < term_width {
@@ -182,15 +157,6 @@ impl Renderer {
                     y_abs,
                     line_glyphs.len()
                 );
-                // Check if the fill area is selected
-                let is_selected_fill =
-                    is_cell_selected(current_col, y_abs, selection_state, term_width);
-                let fill_bg = if is_selected_fill {
-                    SELECTION_BACKGROUND
-                } else {
-                    RENDERER_DEFAULT_BG
-                };
-
                 if current_col < term_width {
                     // If there's still part of the conceptual line to fill
                     let rect = CellRect {
@@ -199,25 +165,14 @@ impl Renderer {
                         width: term_width - current_col,
                         height: 1,
                     };
-                    driver.fill_rect(rect, fill_bg)?;
+                    driver.fill_rect(rect, RENDERER_DEFAULT_BG)?;
                 }
                 break; // Exit the loop as there are no more glyphs in this line's data.
             };
 
-            let is_current_cell_selected =
-                is_cell_selected(current_col, y_abs, selection_state, term_width);
-
             let cells_consumed = match start_glyph.c {
                 '\0' => {
-                    // Wide char placeholder is selected if its primary char is selected.
-                    // is_cell_selected for the placeholder column itself will determine this.
-                    self.handle_wide_char_placeholder(
-                        current_col,
-                        y_abs,
-                        line_glyphs,
-                        is_current_cell_selected,
-                        driver,
-                    )?
+                    self.handle_wide_char_placeholder(current_col, y_abs, line_glyphs, driver)?
                 }
                 ' ' => self.draw_space_run_from_slice(
                     current_col,
@@ -225,7 +180,6 @@ impl Renderer {
                     term_width,
                     start_glyph,
                     line_glyphs,
-                    selection_state, // Pass selection state
                     driver,
                 )?,
                 _ => self.handle_text_segment(
@@ -234,7 +188,6 @@ impl Renderer {
                     term_width,
                     start_glyph,
                     line_glyphs,
-                    selection_state, // Pass selection state
                     driver,
                 )?,
             };
@@ -266,7 +219,6 @@ impl Renderer {
         current_col: usize,
         y_abs: usize,
         line_glyphs: &[Glyph],
-        is_selected: bool, // New parameter
         driver: &mut dyn Driver,
     ) -> Result<usize> {
         // Guard: If placeholder is at column 0, it's unexpected. Use default background.
@@ -275,12 +227,7 @@ impl Renderer {
                 "Placeholder found at column 0 on line {}. This is unexpected. Using default background.",
                 y_abs
             );
-            let bg_color = if is_selected {
-                SELECTION_BACKGROUND
-            } else {
-                RENDERER_DEFAULT_BG
-            };
-            self.draw_placeholder_cell(current_col, y_abs, bg_color, driver)?;
+            self.draw_placeholder_cell(current_col, y_abs, RENDERER_DEFAULT_BG, driver)?;
             return Ok(SINGLE_CELL_CONSUMED);
         }
 
@@ -290,12 +237,7 @@ impl Renderer {
                 "Placeholder at ({},{}) with current_col > 0 but no previous glyph. Using default BG.",
                 current_col, y_abs
             );
-            let bg_color = if is_selected {
-                SELECTION_BACKGROUND
-            } else {
-                RENDERER_DEFAULT_BG
-            };
-            self.draw_placeholder_cell(current_col, y_abs, bg_color, driver)?;
+            self.draw_placeholder_cell(current_col, y_abs, RENDERER_DEFAULT_BG, driver)?;
             return Ok(SINGLE_CELL_CONSUMED);
         };
 
@@ -308,23 +250,15 @@ impl Renderer {
                 "Placeholder at ({},{}) but previous char ('{}') is not WIDE_CHAR_PRIMARY or double-width. Using default BG.",
                 current_col, y_abs, prev_glyph.c
             );
-            let bg_color = if is_selected {
-                SELECTION_BACKGROUND
-            } else {
-                RENDERER_DEFAULT_BG
-            };
-            self.draw_placeholder_cell(current_col, y_abs, bg_color, driver)?;
+            self.draw_placeholder_cell(current_col, y_abs, RENDERER_DEFAULT_BG, driver)?;
             return Ok(SINGLE_CELL_CONSUMED);
         }
 
         // Determine the background color from the primary wide character.
-        // The selection status of the placeholder is the same as its primary character.
-        // is_cell_selected for current_col (placeholder) determines if it's selected.
         let (_, prev_eff_bg, _) = self.get_effective_colors_and_flags(
             prev_glyph.attr.fg,
             prev_glyph.attr.bg,
             prev_glyph.attr.flags,
-            is_selected, // Use the selection status of the placeholder cell itself
         );
         self.draw_placeholder_cell(current_col, y_abs, prev_eff_bg, driver)?;
         Ok(SINGLE_CELL_CONSUMED)
@@ -345,18 +279,14 @@ impl Renderer {
         term_width: usize,
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
-        selection_state: Option<&SelectionRenderState>, // New parameter
         driver: &mut dyn Driver,
     ) -> Result<usize> {
-        let is_start_glyph_selected =
-            is_cell_selected(current_col, y_abs, selection_state, term_width);
         let cells_consumed_by_text_run = self.draw_text_segment_from_slice(
             current_col,
             y_abs,
             term_width,
             start_glyph,
             line_glyphs,
-            selection_state, // Pass selection_state
             driver,
         )?;
 
@@ -379,33 +309,17 @@ impl Renderer {
             return Ok(cells_consumed_by_text_run);
         }
 
-        // The placeholder's selection status is determined by its own column index.
-        let is_placeholder_selected =
-            is_cell_selected(placeholder_col, y_abs, selection_state, term_width);
-
         let (_, placeholder_expected_bg, _) = self.get_effective_colors_and_flags(
-            start_glyph.attr.fg, // Original fg of primary char
-            start_glyph.attr.bg, // Original bg of primary char
+            start_glyph.attr.fg,
+            start_glyph.attr.bg,
             start_glyph.attr.flags,
-            is_start_glyph_selected, // Use selection status of the primary character for its own background part
         );
-
-        // If the placeholder cell itself is selected, its background should be SELECTION_BACKGROUND.
-        // This is handled by get_effective_colors_and_flags when we determine current_placeholder_actual_bg.
-        // The placeholder_expected_bg here is what the *primary* char's background part would be.
-        // We need to fill the placeholder cell using its own effective background.
 
         let Some(glyph_at_placeholder) = line_glyphs.get(placeholder_col) else {
             warn!(
-                "    Line {}, Col {}: Could not get glyph at placeholder position for wide char '{}'. Forcing fill.",
+                "    Line {}, Col {}: Could not get glyph at placeholder position for wide char '{}'. Forcing fill with primary's bg.",
                 y_abs, placeholder_col, start_glyph.c
             );
-            // Determine the fill color for the placeholder based on its own selection state
-            let fill_bg_for_missing_placeholder = if is_placeholder_selected {
-                SELECTION_BACKGROUND
-            } else {
-                placeholder_expected_bg
-            };
             driver.fill_rect(
                 CellRect {
                     x: placeholder_col,
@@ -413,7 +327,7 @@ impl Renderer {
                     width: 1,
                     height: 1,
                 },
-                fill_bg_for_missing_placeholder,
+                placeholder_expected_bg,
             )?;
             return Ok(cells_consumed_by_text_run);
         };
@@ -423,32 +337,14 @@ impl Renderer {
                 .attr
                 .flags
                 .contains(AttrFlags::WIDE_CHAR_SPACER);
-
-        // Get the actual background that would be rendered for the placeholder based on its own attributes and selection state.
         let (_, current_placeholder_actual_bg, _) = self.get_effective_colors_and_flags(
             glyph_at_placeholder.attr.fg,
             glyph_at_placeholder.attr.bg,
             glyph_at_placeholder.attr.flags,
-            is_placeholder_selected, // Use selection status of the placeholder cell
         );
 
-        // The placeholder needs to be explicitly filled if it's not a correct spacer OR if its current background
-        // (considering its own selection state) is not what it should be.
-        // The "expected" background for the placeholder cell is simply its own effective background.
-        let placeholder_is_fine = is_correct_spacer; // We only care if it's a spacer. Its background will be set by its own styling.
-
-        // This fill logic might be redundant if draw_wide_char_placeholder is called for the placeholder cell.
-        // The main loop should call handle_wide_char_placeholder when it encounters a '\0'.
-        // This section might be trying to proactively style it.
-        // Let's simplify: the main loop handles placeholders. This function ensures the primary char is drawn.
-        // The placeholder cell will be handled by handle_wide_char_placeholder when the loop gets to it.
-        // The only concern here is if the primary char's *own background fill* (if it's a text run of 1 wide char)
-        // correctly covers two cells. draw_text_run is given the string (1 wide char) and its style.
-        // The driver's draw_text_run should handle filling the background for the entire width of the text.
-
-        // So, if the primary character is drawn, its background (potentially selection color)
-        // should cover both cells. No separate placeholder fill needed here.
-        // The `handle_wide_char_placeholder` is for when the loop *lands on* a '\0' cell.
+        let placeholder_is_fine =
+            is_correct_spacer && current_placeholder_actual_bg == placeholder_expected_bg;
 
         if !placeholder_is_fine {
             // Placeholder needs to be filled. Log details at trace level.
@@ -503,7 +399,9 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Placeholder. FillRect with bg={:?}",
-            y, x, effective_bg
+            y,
+            x,
+            effective_bg
         );
         driver.fill_rect(rect, effective_bg)?;
         Ok(SINGLE_CELL_CONSUMED)
@@ -520,7 +418,6 @@ impl Renderer {
         term_width: usize,
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
-        selection_state: Option<&SelectionRenderState>, // New parameter
         driver: &mut dyn Driver,
     ) -> Result<usize> {
         debug_assert!(
@@ -528,13 +425,10 @@ impl Renderer {
             "draw_space_run_from_slice called with non-space start_glyph"
         );
 
-        // Determine effective style for the first space cell, considering selection
-        let is_first_cell_selected = is_cell_selected(start_col, y, selection_state, term_width);
         let (_, start_eff_bg, start_eff_flags) = self.get_effective_colors_and_flags(
             start_glyph.attr.fg,
             start_glyph.attr.bg,
             start_glyph.attr.flags,
-            is_first_cell_selected, // Pass selection state
         );
 
         let mut space_run_len = 0;
@@ -548,18 +442,13 @@ impl Renderer {
                 break;
             }
 
-            let is_current_scan_cell_selected =
-                is_cell_selected(current_scan_col, y, selection_state, term_width);
             let (_, current_scan_eff_bg, current_scan_flags) = self.get_effective_colors_and_flags(
                 glyph_at_scan.attr.fg,
                 glyph_at_scan.attr.bg,
                 glyph_at_scan.attr.flags,
-                is_current_scan_cell_selected, // Pass selection state
             );
 
             if current_scan_eff_bg != start_eff_bg || current_scan_flags != start_eff_flags {
-                // This condition means the *effective* style changed, which includes selection.
-                // So a selected space will not join a non-selected space run.
                 break;
             }
             space_run_len += 1;
@@ -588,7 +477,11 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}",
-            y, start_col, space_run_len, start_eff_bg, start_eff_flags
+            y,
+            start_col,
+            space_run_len,
+            start_eff_bg,
+            start_eff_flags
         );
         driver.fill_rect(rect, start_eff_bg)?;
         Ok(space_run_len)
@@ -607,7 +500,6 @@ impl Renderer {
         term_width: usize,
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
-        selection_state: Option<&SelectionRenderState>, // New parameter
         driver: &mut dyn Driver,
     ) -> Result<usize> {
         debug_assert!(
@@ -615,13 +507,10 @@ impl Renderer {
             "draw_text_segment_from_slice called with space or placeholder start_glyph"
         );
 
-        // Determine effective style for the first glyph, considering selection
-        let is_first_glyph_selected = is_cell_selected(start_col, y, selection_state, term_width);
         let (start_eff_fg, start_eff_bg, start_eff_flags) = self.get_effective_colors_and_flags(
             start_glyph.attr.fg,
             start_glyph.attr.bg,
             start_glyph.attr.flags,
-            is_first_glyph_selected, // Pass selection state
         );
 
         let mut run_text = String::new();
@@ -634,59 +523,31 @@ impl Renderer {
             };
 
             if glyph_at_scan.c == ' ' || glyph_at_scan.c == '\0' {
-                // Stop text run at space or placeholder
                 break;
             }
-
-            let char_display_width = get_char_display_width(glyph_at_scan.c);
-            let is_current_scan_glyph_selected = if char_display_width == 2 {
-                // For a wide char, its selection status applies to both cells it occupies.
-                // We check the primary cell's selection status.
-                is_cell_selected(current_scan_col, y, selection_state, term_width)
-            } else {
-                is_cell_selected(current_scan_col, y, selection_state, term_width)
-            };
 
             let (current_glyph_eff_fg, current_glyph_eff_bg, current_glyph_flags) = self
                 .get_effective_colors_and_flags(
                     glyph_at_scan.attr.fg,
                     glyph_at_scan.attr.bg,
                     glyph_at_scan.attr.flags,
-                    is_current_scan_glyph_selected, // Pass selection state
                 );
 
             if !(current_glyph_eff_fg == start_eff_fg
                 && current_glyph_eff_bg == start_eff_bg
                 && current_glyph_flags == start_eff_flags)
             {
-                // Style changed (could be due to selection status change or base attributes)
                 break;
             }
 
-            // If a wide char would overflow, break before adding it.
-            if char_display_width == 2
-                && (start_col + run_total_cell_width + char_display_width) > term_width
-            {
-                // Also ensure placeholder cell is selected status matches primary for coalescing
-                if current_scan_col + 1 < term_width {
-                    let is_placeholder_selected =
-                        is_cell_selected(current_scan_col + 1, y, selection_state, term_width);
-                    if is_placeholder_selected != is_current_scan_glyph_selected {
-                        // If selection status differs between primary and placeholder of a wide char,
-                        // it can't be part of this run. This might mean drawing it as a separate run.
-                        // This scenario is complex; for now, we break the run.
-                        break;
-                    }
-                } else {
-                    // Wide char at last column, no space for placeholder
-                    break;
-                }
-            }
+            let char_display_width = get_char_display_width(glyph_at_scan.c);
 
             if char_display_width == 0 {
                 trace!(
                     "    Line {}, Col {}: Appending zero-width char '{}'.",
-                    y, current_scan_col, glyph_at_scan.c
+                    y,
+                    current_scan_col,
+                    glyph_at_scan.c
                 );
                 run_text.push(glyph_at_scan.c);
                 current_scan_col += SINGLE_CELL_CONSUMED;
@@ -723,7 +584,11 @@ impl Renderer {
         };
         trace!(
             "    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style={:?}",
-            y, start_col, run_text, run_total_cell_width, style
+            y,
+            start_col,
+            run_text,
+            run_total_cell_width,
+            style
         );
         driver.draw_text_run(coords, &run_text, style)?;
         Ok(run_total_cell_width)
@@ -796,26 +661,14 @@ impl Renderer {
             physical_cursor_x_for_draw = cursor_abs_x;
         }
 
-        // Determine if the cell under the cursor is selected
-        let is_cursor_cell_selected = snapshot.selection_state.as_ref().map_or(false, |ss| {
-            is_cell_selected(
-                physical_cursor_x_for_draw,
-                cursor_abs_y,
-                Some(ss),
-                term_width,
-            )
-        });
-
         let (resolved_original_fg, resolved_original_bg, resolved_original_flags) = self
             .get_effective_colors_and_flags(
                 original_attrs_at_cursor.fg,
                 original_attrs_at_cursor.bg,
                 original_attrs_at_cursor.flags,
-                is_cursor_cell_selected, // Pass selection status for cell under cursor
             );
         trace!(
-            "    Original cell effective attrs for cursor (selected: {}): fg={:?}, bg={:?}, flags={:?}",
-            is_cursor_cell_selected,
+            "    Original cell effective attrs for cursor: fg={:?}, bg={:?}, flags={:?}",
             resolved_original_fg,
             resolved_original_bg,
             resolved_original_flags
@@ -842,7 +695,10 @@ impl Renderer {
         };
         trace!(
             "    Drawing cursor overlay: char='{}' at physical ({},{}) with style: {:?}",
-            final_char_to_draw_for_cursor, physical_cursor_x_for_draw, cursor_abs_y, style
+            final_char_to_draw_for_cursor,
+            physical_cursor_x_for_draw,
+            cursor_abs_y,
+            style
         );
         driver.draw_text_run(coords, &final_char_to_draw_for_cursor.to_string(), style)?;
         Ok(())
@@ -851,45 +707,3 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests;
-
-// Helper function to determine if a cell is selected
-fn is_cell_selected(
-    col: usize,
-    row: usize,
-    selection_state: Option<&SelectionRenderState>,
-    _term_cols: usize, // May not be needed if coords in SelectionRenderState are already clamped
-) -> bool {
-    if selection_state.is_none() {
-        return false;
-    }
-    let state = selection_state.unwrap();
-
-    let (start_col, start_row) = state.start_coords;
-    let (end_col, end_row) = state.end_coords; // These are normalized (start_row <= end_row)
-
-    if row < start_row || row > end_row {
-        return false; // Outside selected rows
-    }
-
-    match state.mode {
-        SelectionMode::Block => {
-            // For block selection, start_col and end_col are the horizontal bounds of the block
-            col >= start_col && col <= end_col
-        }
-        SelectionMode::Normal => {
-            if start_row == end_row {
-                // Single-line selection
-                col >= start_col && col <= end_col
-            } else {
-                // Multi-line selection
-                if row == start_row {
-                    col >= start_col // From start_col to end of line
-                } else if row == end_row {
-                    col <= end_col // From start of line to end_col
-                } else {
-                    true // Entire intermediate line is selected
-                }
-            }
-        }
-    }
-}

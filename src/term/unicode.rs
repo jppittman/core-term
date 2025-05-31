@@ -8,7 +8,7 @@ use std::os::raw::{c_char, c_int, c_uint}; // For FFI types
 use std::sync::OnceLock; // Standard library for one-time initialization // Logging macros
 
 // --- FFI Declarations ---
-unsafe extern "C" {
+extern "C" {
     fn wcwidth(wc: c_uint) -> c_int;
     fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
 }
@@ -55,13 +55,15 @@ impl LocaleInitializer {
                 if c.is_control() {
                     trace!(
                         "wcwidth returned -1 for control char '{}' (U+{:X}), width is 0.",
-                        c, wc
+                        c,
+                        wc
                     );
                     0
                 } else {
                     trace!(
                         "wcwidth returned -1 for char '{}' (U+{:X}), defaulting to width 1.",
-                        c, wc
+                        c,
+                        wc
                     );
                     1
                 }

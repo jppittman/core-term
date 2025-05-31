@@ -7,11 +7,11 @@
 //! from the main terminal emulation logic.
 
 use crate::{config, glyph::Attributes};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use log::{trace, warn};
 use serde::{
-    Deserialize, Serialize, Serializer,
     de::{self, Deserializer, Visitor},
+    Deserialize, Serialize, Serializer,
 };
 use std::{cmp::min, fmt};
 
@@ -268,7 +268,9 @@ impl CursorController {
         self.cursor.logical_y = min(new_y, max_y_logical);
         trace!(
             "Cursor moved (positioned) logically to ({}, {}). Context: {:?}",
-            self.cursor.logical_x, self.cursor.logical_y, context
+            self.cursor.logical_x,
+            self.cursor.logical_y,
+            context
         );
     }
 
@@ -280,7 +282,8 @@ impl CursorController {
         self.cursor.logical_y = self.cursor.logical_y.saturating_sub(n);
         trace!(
             "Cursor moved up by {} to logical_y: {}",
-            n, self.cursor.logical_y
+            n,
+            self.cursor.logical_y
         );
     }
 
@@ -301,7 +304,9 @@ impl CursorController {
         self.cursor.logical_y = min(self.cursor.logical_y.saturating_add(n), max_y_logical);
         trace!(
             "Cursor moved down by {} to logical_y: {}. Context: {:?}",
-            n, self.cursor.logical_y, context
+            n,
+            self.cursor.logical_y,
+            context
         );
     }
 
@@ -312,7 +317,8 @@ impl CursorController {
         self.cursor.logical_x = self.cursor.logical_x.saturating_sub(n);
         trace!(
             "Cursor moved left by {} to logical_x: {}",
-            n, self.cursor.logical_x
+            n,
+            self.cursor.logical_x
         );
     }
 
@@ -331,7 +337,9 @@ impl CursorController {
         self.cursor.logical_x = min(self.cursor.logical_x.saturating_add(n), max_x_for_advancing);
         trace!(
             "Cursor moved right (advanced) by {} to logical_x: {}. Context: {:?}",
-            n, self.cursor.logical_x, context
+            n,
+            self.cursor.logical_x,
+            context
         );
     }
 
@@ -349,7 +357,8 @@ impl CursorController {
         self.cursor.logical_x = min(new_x, max_x_for_positioning);
         trace!(
             "Cursor moved to logical_col: {}. Context: {:?}",
-            self.cursor.logical_x, context
+            self.cursor.logical_x,
+            context
         );
     }
 
@@ -407,7 +416,8 @@ impl CursorController {
         self.cursor.logical_y = min(self.cursor.logical_y, max_y_logical);
         trace!(
             "Cursor state restored to: {:?}. Context: {:?}",
-            self.cursor, context
+            self.cursor,
+            context
         );
     }
     pub fn reset(&mut self) {

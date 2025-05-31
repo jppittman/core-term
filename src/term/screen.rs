@@ -11,9 +11,11 @@
 //! is expected to be kept in sync by `TerminalEmulator`.
 
 use std::cmp::min;
+use std::cmp::{max, min as std_min}; // For local min/max, renamed from std::cmp::min
 use std::collections::VecDeque;
 
 use crate::glyph::{Attributes, Glyph};
+use crate::term::snapshot::{Point, Selection, SelectionMode};
 use crate::term::DEFAULT_TAB_INTERVAL;
 use log::{trace, warn};
 
@@ -85,6 +87,8 @@ pub(super) struct Screen {
     /// `Screen` itself uses absolute coordinates for grid operations.
     /// This flag is primarily for `TerminalEmulator` to construct `ScreenContext`.
     pub origin_mode: bool,
+    /// Current selection state.
+    pub selection: Selection,
 }
 
 impl Screen {
@@ -100,8 +104,6 @@ impl Screen {
     pub fn new(width: usize, height: usize, scrollback_limit: usize) -> Self {
         let w = width.max(1);
         let h = height.max(1);
-        // Initialize default_attributes from a global constant or a sensible default.
-        // TerminalEmulator will be responsible for updating this as SGR commands are processed.
         let default_attributes = Attributes::default();
         let default_fill_char = Glyph {
             c: ' ',
@@ -110,7 +112,9 @@ impl Screen {
 
         trace!(
             "Creating new Screen: {}x{}, scrollback: {}",
-            w, h, scrollback_limit
+            w,
+            h,
+            scrollback_limit
         );
 
         let grid = vec![vec![default_fill_char.clone(); w]; h];
@@ -136,8 +140,9 @@ impl Screen {
             scroll_bot: h.saturating_sub(1),
             tabs,
             dirty: vec![1; h],
-            default_attributes, // Store the initial default attributes
+            default_attributes,
             origin_mode: false,
+            selection: Selection::default(),
         }
     }
 
@@ -175,7 +180,6 @@ impl Screen {
     }
 
     /// Helper to get the glyph used for filling cleared areas.
-    /// It uses a space character with the screen's `default_attributes`.
     fn get_default_fill_glyph(&self) -> Glyph {
         Glyph {
             c: ' ',
@@ -183,17 +187,6 @@ impl Screen {
         }
     }
 
-    /// Fills a rectangular region of a single line `y` from `x_start` (inclusive)
-    /// to `x_end` (exclusive) with the provided `fill_glyph`.
-    /// Marks the line `y` as dirty. Coordinates are clamped to screen dimensions.
-    /// This method is kept for cases where a specific, non-default glyph is needed for filling.
-    /// For standard clearing, other methods will use `get_default_fill_glyph()`.
-    ///
-    /// # Arguments
-    /// * `y` - The 0-based row index.
-    /// * `x_start` - The starting column index (inclusive).
-    /// * `x_end` - The ending column index (exclusive).
-    /// * `fill_glyph` - The `Glyph` to fill the region with.
     pub fn fill_region_with_glyph(
         &mut self,
         y: usize,
@@ -209,14 +202,14 @@ impl Screen {
             return;
         }
         let width = self.width;
-        let height = self.height;
+        let height_for_log = self.height; // Used for logging only
 
         let row = match self.active_grid_mut().get_mut(y) {
             Some(r) => r,
             None => {
                 warn!(
                     "fill_region_with_glyph: Failed to get row {} despite bounds check (height {}). Internal inconsistency.",
-                    y, height
+                    y, height_for_log
                 );
                 return;
             }
@@ -233,14 +226,8 @@ impl Screen {
         self.mark_line_dirty(y);
     }
 
-    /// Scrolls the content of the defined scrolling region up by `n` lines.
-    /// New lines appearing at the bottom are filled using `self.default_attributes`.
-    ///
-    /// # Arguments
-    /// * `n` - The number of lines to scroll up.
     pub fn scroll_up_serial(&mut self, n: usize) {
         let fill_glyph = self.get_default_fill_glyph();
-        // --- Rest of the logic is the same as before, but uses the locally obtained fill_glyph ---
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
             warn!(
                 "scroll_up_serial: Invalid scroll region top={}, bot={}, height={}",
@@ -254,7 +241,9 @@ impl Screen {
         }
         trace!(
             "Scrolling up by {} lines in region ({}, {}) with default fill",
-            n_val, self.scroll_top, self.scroll_bot
+            n_val,
+            self.scroll_top,
+            self.scroll_bot
         );
 
         let top = self.scroll_top;
@@ -285,14 +274,8 @@ impl Screen {
         }
     }
 
-    /// Scrolls the content of the defined scrolling region down by `n` lines.
-    /// New lines appearing at the top are filled using `self.default_attributes`.
-    ///
-    /// # Arguments
-    /// * `n` - The number of lines to scroll down.
     pub fn scroll_down_serial(&mut self, n: usize) {
         let fill_glyph = self.get_default_fill_glyph();
-        // --- Rest of the logic is the same as before ---
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
             warn!(
                 "scroll_down_serial: Invalid scroll region top={}, bot={}, height={}",
@@ -306,7 +289,9 @@ impl Screen {
         }
         trace!(
             "Scrolling down by {} lines in region ({}, {}) with default fill",
-            n_val, self.scroll_top, self.scroll_bot
+            n_val,
+            self.scroll_top,
+            self.scroll_bot
         );
 
         let top = self.scroll_top;
@@ -326,15 +311,8 @@ impl Screen {
         }
     }
 
-    /// Inserts `n` blank characters (using `self.default_attributes`) in line `y` at column `x`.
-    ///
-    /// # Arguments
-    /// * `y` - The 0-based row index.
-    /// * `x` - The 0-based column index where insertion starts.
-    /// * `n` - The number of blank characters to insert.
     pub fn insert_blank_chars_in_line(&mut self, y: usize, x: usize, n: usize) {
         let fill_glyph = self.get_default_fill_glyph();
-        // --- Rest of the logic is the same as before ---
         if y >= self.height {
             warn!(
                 "insert_blank_chars_in_line: y coordinate {} out of bounds (height {}).",
@@ -373,16 +351,8 @@ impl Screen {
         self.mark_line_dirty(y);
     }
 
-    /// Deletes `n` characters in line `y` starting at column `x`.
-    /// Space freed at the end is filled using `self.default_attributes`.
-    ///
-    /// # Arguments
-    /// * `y` - The 0-based row index.
-    /// * `x` - The 0-based column index where deletion starts.
-    /// * `n` - The number of characters to delete.
     pub fn delete_chars_in_line(&mut self, y: usize, x: usize, n: usize) {
         let fill_glyph = self.get_default_fill_glyph();
-        // --- Rest of the logic is the same as before ---
         if y >= self.height {
             warn!(
                 "delete_chars_in_line: y coordinate {} out of bounds (height {}).",
@@ -422,7 +392,6 @@ impl Screen {
         self.mark_line_dirty(y);
     }
 
-    /// Resizes the screen. `TerminalEmulator` updates `self.default_attributes` separately.
     pub fn resize(&mut self, new_width: usize, new_height: usize, new_scrollback_limit: usize) {
         let nw = new_width.max(1);
         let nh = new_height.max(1);
@@ -431,14 +400,13 @@ impl Screen {
             self.width, self.height, self.scrollback_limit, nw, nh, new_scrollback_limit
         );
 
+        self.clear_selection(); // Clear selection on resize
+
         let old_width = self.width;
         self.width = nw;
         self.height = nh;
         self.scrollback_limit = new_scrollback_limit;
 
-        // Use the *current* self.default_attributes for filling new cells.
-        // TerminalEmulator is responsible for ensuring this is appropriate *before* calling resize,
-        // or for updating it immediately after if the resize implies a specific default state.
         let fill_glyph = self.get_default_fill_glyph();
 
         self.grid.resize_with(nh, || vec![fill_glyph.clone(); nw]);
@@ -476,16 +444,15 @@ impl Screen {
         self.dirty = vec![1; nh];
         trace!(
             "Screen resized. New dimensions: {}x{}. All lines marked dirty.",
-            nw, nh
+            nw,
+            nh
         );
     }
 
-    /// Marks all lines on the screen as dirty.
     pub fn mark_all_dirty(&mut self) {
         self.dirty.fill(1);
     }
 
-    /// Marks a single line `y` as dirty.
     pub fn mark_line_dirty(&mut self, y: usize) {
         if y < self.dirty.len() {
             self.dirty[y] = 1;
@@ -499,26 +466,16 @@ impl Screen {
         }
     }
 
-    /// Clears all dirty flags.
-    pub fn clear_dirty_flags(&mut self) {
-        self.dirty.fill(0);
-    }
-
-    /// Switches to the alternate screen buffer.
-    /// If `clear_alt_screen` is true, the alternate screen is filled using `self.default_attributes`.
-    ///
-    /// # Arguments
-    /// * `clear_alt_screen` - If true, the alternate screen is cleared.
     pub fn enter_alt_screen(&mut self, clear_alt_screen: bool) {
         if self.alt_screen_active {
             return;
         }
+        self.clear_selection();
         self.alt_screen_active = true;
 
         if clear_alt_screen {
             let fill_glyph = self.get_default_fill_glyph();
             for y_idx in 0..self.height {
-                // Use fill_region_with_glyph to be explicit about the fill.
                 self.fill_region_with_glyph(y_idx, 0, self.width, fill_glyph.clone());
             }
         }
@@ -526,17 +483,16 @@ impl Screen {
         trace!("Entered alt screen. All lines marked dirty.");
     }
 
-    /// Switches back to the primary screen buffer.
     pub fn exit_alt_screen(&mut self) {
         if !self.alt_screen_active {
             return;
         }
+        self.clear_selection();
         self.alt_screen_active = false;
         self.mark_all_dirty();
         trace!("Exited alt screen. All lines marked dirty.");
     }
 
-    /// Sets the scrolling region (DECSTBM).
     pub fn set_scrolling_region(&mut self, top_1_based: usize, bottom_1_based: usize) {
         let t = top_1_based.saturating_sub(1);
         let b = bottom_1_based.saturating_sub(1);
@@ -554,24 +510,11 @@ impl Screen {
         }
         trace!(
             "Scrolling region set to (0-based: {}, {}).",
-            self.scroll_top, self.scroll_bot
+            self.scroll_top,
+            self.scroll_bot
         );
     }
 
-    /// Gets a clone of the glyph at the specified `(x, y)` coordinates.
-    pub fn get_glyph(&self, x: usize, y: usize) -> Glyph {
-        let grid_to_use = self.active_grid();
-        if y < grid_to_use.len() && x < grid_to_use.get(y).map_or(0, |row| row.len()) {
-            grid_to_use[y][x].clone()
-        } else {
-            Glyph {
-                c: ' ',
-                attr: self.default_attributes,
-            }
-        }
-    }
-
-    /// Sets the glyph at the specified `(x, y)` coordinates.
     pub fn set_glyph(&mut self, x: usize, y: usize, glyph: Glyph) {
         if y >= self.height || x >= self.width {
             warn!(
@@ -580,8 +523,8 @@ impl Screen {
             );
             return;
         }
-        let width = self.width;
-        let height = self.height;
+        let width_for_log = self.width;
+        let height_for_log = self.height;
 
         let grid_to_use = self.active_grid_mut();
         if y < grid_to_use.len() && x < grid_to_use.get(y).map_or(0, |row| row.len()) {
@@ -592,31 +535,20 @@ impl Screen {
                 "set_glyph: coordinates ({},{}) out of grid internal bounds. Screen: {}x{}, Grid row {} len: {:?}",
                 x,
                 y,
-                width,
-                height,
+                width_for_log,
+                height_for_log,
                 y,
                 grid_to_use.get(y).map(|r| r.len())
             );
         }
     }
 
-    /// Clears a segment of line `y` from `x_start` to `x_end` (exclusive)
-    /// by filling it with space characters using `self.default_attributes`.
-    /// Marks the line `y` as dirty.
-    ///
-    /// # Arguments
-    /// * `y` - The 0-based row index.
-    /// * `x_start` - The starting column index (inclusive).
-    /// * `x_end` - The ending column index (exclusive).
     pub fn clear_line_segment(&mut self, y: usize, x_start: usize, x_end: usize) {
         let fill_glyph = self.get_default_fill_glyph();
-        // Use fill_region_with_glyph to perform the fill, ensuring dirty flags are set.
         self.fill_region_with_glyph(y, x_start, x_end, fill_glyph);
     }
 
     // --- Tab stop methods ---
-
-    /// Sets a tab stop at the given column `x`.
     pub fn set_tabstop(&mut self, x: usize) {
         if x < self.tabs.len() {
             self.tabs[x] = true;
@@ -629,7 +561,6 @@ impl Screen {
         }
     }
 
-    /// Clears tab stops based on the `mode`.
     pub fn clear_tabstops(&mut self, current_cursor_x: usize, mode: TabClearMode) {
         match mode {
             TabClearMode::CurrentColumn => {
@@ -652,7 +583,6 @@ impl Screen {
         }
     }
 
-    /// Finds the next tab stop column at or after the given column `x`.
     pub fn get_next_tabstop(&self, x: usize) -> Option<usize> {
         self.tabs
             .iter()
@@ -660,7 +590,624 @@ impl Screen {
             .position(|&is_set| is_set)
             .map(|pos_after_skip| x.saturating_add(1) + pos_after_skip)
     }
+
+    // --- Selection methods ---
+
+    /// Marks lines within the current selection range as dirty.
+    /// This is an internal helper called when selection changes to ensure
+    /// the visual representation of the selection is updated.
+    fn mark_dirty_for_selection(&mut self) {
+        if let (Some(start), Some(end)) = (self.selection.start, self.selection.end) {
+            let top_row = std_min(start.y, end.y);
+            let bottom_row = max(start.y, end.y);
+            for y in top_row..=bottom_row {
+                if y < self.height {
+                    self.mark_line_dirty(y);
+                }
+            }
+        }
+    }
+
+    /// Starts a new text selection or replaces an existing one.
+    ///
+    /// When a new selection is started, any previous selection is marked dirty
+    /// for re-rendering. The new selection is initialized with the given `point`
+    /// as both its start and end, set to the specified `mode`, and marked as active.
+    /// The line(s) covered by this initial single-point selection are also marked dirty.
+    ///
+    /// # Arguments
+    /// * `point` - The starting `Point` (column and row) of the selection.
+    /// * `mode` - The `SelectionMode` (e.g., `Normal`, `Block`) for the new selection.
+    pub fn start_selection(&mut self, point: Point, mode: SelectionMode) {
+        if self.selection.start.is_some() && self.selection.end.is_some() {
+            self.mark_dirty_for_selection();
+        }
+
+        self.selection = Selection {
+            start: Some(point),
+            end: Some(point),
+            mode,
+            is_active: true,
+        };
+        self.mark_dirty_for_selection();
+        trace!(
+            "Selection started at ({}, {}) with mode {:?}. Active: {}",
+            point.x,
+            point.y,
+            mode,
+            self.selection.is_active
+        );
+    }
+
+    /// Updates the end point of the current active selection.
+    ///
+    /// If no selection is currently active (i.e., `selection.is_active` is `false`),
+    /// this function does nothing. Otherwise, it updates the selection's
+    /// end point to the given `point`. Both the previously selected region (before
+    /// this update) and the newly defined region (after this update) are marked dirty
+    /// to ensure correct re-rendering. The selection remains active.
+    ///
+    /// # Arguments
+    /// * `point` - The new end `Point` for the selection.
+    pub fn update_selection(&mut self, point: Point) {
+        if !self.selection.is_active {
+            return;
+        }
+        self.mark_dirty_for_selection();
+        self.selection.end = Some(point);
+        self.mark_dirty_for_selection();
+        if let Some(end) = self.selection.end {
+            trace!(
+                "Selection updated. End point: ({}, {}). Active: {}",
+                end.x,
+                end.y,
+                self.selection.is_active
+            );
+        }
+    }
+
+    /// Deactivates the current selection.
+    ///
+    /// This sets `selection.is_active` to `false`, indicating that the selection
+    /// process (e.g., mouse drag) has ended. The selection's coordinates (`start`, `end`, `mode`)
+    /// are preserved, allowing the selection to remain visually highlighted until
+    /// it's explicitly cleared or a new selection is started.
+    /// No lines are marked dirty by this action itself, as the visual state of the
+    /// selection highlight does not change upon deactivation.
+    pub fn end_selection(&mut self) {
+        if self.selection.is_active {
+            self.selection.is_active = false;
+            trace!("Selection ended. Active: {}", self.selection.is_active);
+        }
+    }
+
+    /// Clears the current selection entirely and marks the previously selected area as dirty.
+    ///
+    /// This resets the selection state to its default (no selection active, no start/end points).
+    /// If a selection was present before clearing, the lines it covered are marked dirty
+    /// to ensure the selection highlighting is removed upon the next render.
+    pub fn clear_selection(&mut self) {
+        if self.selection.start.is_some() || self.selection.end.is_some() {
+            self.mark_dirty_for_selection();
+        }
+        self.selection = Selection::default();
+        trace!("Selection cleared.");
+    }
+
+    /// Checks if a given grid cell `point` is part of the current selection.
+    ///
+    /// This is primarily used for rendering to determine if a cell should be
+    /// highlighted.
+    ///
+    /// # Arguments
+    /// * `point` - The grid cell coordinates (`x` for column, `y` for row) to check.
+    ///
+    /// # Returns
+    /// `true` if the cell is selected, `false` otherwise.
+    pub fn is_selected(&self, point: Point) -> bool {
+        if point.x >= self.width || point.y >= self.height { // FIX 1: Out of bounds check
+            return false;
+        }
+
+        if self.selection.start.is_none() || self.selection.end.is_none() {
+            return false;
+        }
+
+        let raw_start = self.selection.start.unwrap();
+        let raw_end = self.selection.end.unwrap();
+
+        match self.selection.mode {
+            SelectionMode::Normal => {
+                // Determine the visual top-left and bottom-right of the selection box based on raw gesture points
+                let (box_start_y, box_end_y) = if raw_start.y <= raw_end.y {
+                    (raw_start.y, raw_end.y)
+                } else {
+                    (raw_end.y, raw_start.y)
+                };
+
+                if point.y < box_start_y || point.y > box_end_y {
+                    return false; // Outside the lines covered by selection
+                }
+
+                // Single-line selection (gesture started and ended on the same line)
+                if raw_start.y == raw_end.y {
+                    let line_min_x = std_min(raw_start.x, raw_end.x);
+                    let line_max_x = max(raw_start.x, raw_end.x); // Use imported max
+                    return point.x >= line_min_x && point.x <= line_max_x;
+                }
+
+                // Multi-line selection
+                if point.y == raw_start.y { // Point is on the line where the selection gesture started
+                    return if raw_start.y < raw_end.y { // Gesture downwards
+                        point.x >= raw_start.x
+                    } else { // Gesture upwards (raw_start.y > raw_end.y)
+                        point.x <= raw_start.x
+                    };
+                } else if point.y == raw_end.y { // Point is on the line where the selection gesture ended
+                    return if raw_start.y < raw_end.y { // Gesture came from above
+                        point.x <= raw_end.x
+                    } else { // Gesture came from below (raw_start.y > raw_end.y)
+                        point.x >= raw_end.x
+                    };
+                } else { // Point is on a line fully between the start and end gesture lines
+                    return true; // These lines are fully selected column-wise
+                }
+            }
+            SelectionMode::Block => {
+                let min_x = std_min(raw_start.x, raw_end.x);
+                let max_x = max(raw_start.x, raw_end.x);
+                let min_y = std_min(raw_start.y, raw_end.y);
+                let max_y = max(raw_start.y, raw_end.y);
+                return point.x >= min_x
+                    && point.x <= max_x
+                    && point.y >= min_y
+                    && point.y <= max_y;
+            }
+        }
+    }
+
+    /// Retrieves the text content of the current selection.
+    ///
+    /// Handles `Normal` and `Block` selection modes.
+    /// Text is ordered logically from the selection start to end (top-left to bottom-right
+    /// after normalization).
+    ///
+    /// For `Normal` mode, it attempts to replicate common terminal behavior regarding
+    /// line endings and trimming of trailing whitespace from lines that are not the
+    /// last line of the selection if they extend to the end of the line.
+    /// For `Block` mode, it extracts a rectangular region of text, padding with spaces
+    /// if the selection extends beyond the content of any given line.
+    ///
+    /// # Returns
+    /// An `Option<String>` containing the selected text, or `None` if there's
+    /// no valid selection or the selection is empty.
+    pub fn get_selected_text(&self) -> Option<String> {
+        if self.selection.start.is_none() || self.selection.end.is_none() {
+            return None;
+        }
+
+        // The logic below aims to replicate common terminal text selection behavior,
+        // including how lines are formed and how trailing spaces are handled,
+        // especially for multi-line selections.
+        let start_point = self.selection.start.unwrap(); // User's actual start of gesture
+        let end_point = self.selection.end.unwrap();     // User's actual end of gesture
+
+        // Normalize points for iteration: norm_start_point is top-left, norm_end_point is bottom-right
+        let (norm_start_point, norm_end_point) = if start_point.y > end_point.y || (start_point.y == end_point.y && start_point.x > end_point.x) {
+            (end_point, start_point)
+        } else {
+            (start_point, end_point)
+        };
+
+        let mut selected_text_buffer = String::new();
+        let grid_to_use = self.active_grid();
+
+        match self.selection.mode {
+            SelectionMode::Normal => {
+                for y in norm_start_point.y..=norm_end_point.y {
+                    if y >= grid_to_use.len() { continue; }
+
+                    let current_row_glyphs = &grid_to_use[y];
+                    let mut current_line_text = String::new();
+
+                    // Corrected start/end for normalized iteration
+                    let iter_col_start = if y == norm_start_point.y { norm_start_point.x } else { 0 };
+                    let iter_col_end = if y == norm_end_point.y { norm_end_point.x } else { self.width - 1 };
+
+
+                    for x in iter_col_start..=std_min(iter_col_end, self.width - 1) {
+                        if x < current_row_glyphs.len() {
+                            current_line_text.push(current_row_glyphs[x].c);
+                        } else {
+                            current_line_text.push(' ');
+                        }
+                    }
+
+                    // Trailing space trimming logic for Normal mode (FIX 3)
+                    // If it's a multi-line selection (norm_start_point.y != norm_end_point.y)
+                    // AND this is not the last line of the selection (y < norm_end_point.y)
+                    // AND the selection on this line effectively extended to the screen width
+                    // (iter_col_end for this line was self.width - 1)
+                    if norm_start_point.y != norm_end_point.y && y < norm_end_point.y {
+                        if iter_col_end == self.width - 1 { // Selection on this line reached screen edge
+                            if let Some(last_char_idx) = current_line_text.rfind(|c: char| c != ' ') {
+                                current_line_text.truncate(last_char_idx + 1);
+                            } else {
+                                current_line_text.clear(); // Line was all spaces
+                            }
+                        }
+                    }
+
+                    selected_text_buffer.push_str(&current_line_text);
+                    if y < norm_end_point.y {
+                        selected_text_buffer.push('\n');
+                    }
+                }
+            }
+            SelectionMode::Block => {
+                let min_x = std_min(start_point.x, end_point.x); // Use original gesture points for block bounds
+                let max_x = max(start_point.x, end_point.x);
+
+                for y in norm_start_point.y..=norm_end_point.y { // Iterate over normalized y range
+                    if y >= grid_to_use.len() { continue; }
+                    let current_row_glyphs = &grid_to_use[y];
+                    let mut current_line_text = String::new();
+
+                    for x in min_x..=max_x { // Iterate over original gesture's x bounds
+                        if x < current_row_glyphs.len() {
+                            current_line_text.push(current_row_glyphs[x].c);
+                        } else {
+                            current_line_text.push(' ');
+                        }
+                    }
+                    selected_text_buffer.push_str(&current_line_text);
+                    if y < norm_end_point.y {
+                        selected_text_buffer.push('\n');
+                    }
+                }
+            }
+        }
+
+        if selected_text_buffer.is_empty() {
+            None
+        } else {
+            Some(selected_text_buffer)
+        }
+    }
 }
 
-/// A placeholder constant for the scrollback shrink logic in `resize`.
 const SOME_REASONABLE_SLACK: usize = 20;
+
+#[cfg(test)]
+mod tests {
+    use super::{Attributes, Glyph, Point, Screen, Selection, SelectionMode};
+
+    fn create_test_screen(width: usize, height: usize) -> Screen {
+        Screen::new(width, height, 0)
+    }
+
+    fn fill_screen_with_pattern(screen: &mut Screen) {
+        for r in 0..screen.height {
+            for c in 0..screen.width {
+                let char_val =
+                    char::from_u32(('a' as u32) + (c % 26) as u32 + (r % 3) as u32).unwrap_or('?');
+                screen.grid[r][c] = Glyph {
+                    c: char_val,
+                    attr: Attributes::default(),
+                };
+            }
+        }
+    }
+
+    #[test]
+    fn test_selection_default_state() {
+        let screen = create_test_screen(10, 5);
+        assert_eq!(screen.selection, Selection::default());
+    }
+
+    #[test]
+    fn test_start_selection() {
+        let mut screen = create_test_screen(10, 5);
+        let start_point = Point { x: 1, y: 1 };
+        screen.dirty.fill(0);
+        screen.start_selection(start_point, SelectionMode::Normal);
+        assert_eq!(screen.selection.start, Some(start_point));
+        assert_eq!(screen.selection.end, Some(start_point));
+        assert!(screen.selection.is_active);
+        assert_eq!(screen.dirty[start_point.y], 1);
+    }
+
+    #[test]
+    fn test_update_selection() {
+        let mut screen = create_test_screen(10, 5);
+        let start_point = Point { x: 1, y: 1 };
+        let update_point = Point { x: 5, y: 2 };
+        screen.start_selection(start_point, SelectionMode::Normal);
+        screen.dirty.fill(0);
+        screen.mark_line_dirty(start_point.y);
+        screen.update_selection(update_point);
+        assert_eq!(screen.selection.end, Some(update_point));
+        assert!(screen.selection.is_active);
+        assert_eq!(screen.dirty[update_point.y], 1);
+    }
+
+    #[test]
+    fn test_update_selection_marks_old_and_new_lines_dirty() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 3, y: 1 });
+        screen.dirty.fill(0);
+        screen.update_selection(Point { x: 5, y: 2 });
+        assert_eq!(screen.dirty[1], 1); // y=1 from old and new
+        assert_eq!(screen.dirty[2], 1); // y=2 from new
+    }
+
+    #[test]
+    fn test_update_selection_when_not_active() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Normal);
+        screen.selection.is_active = false;
+        let original_selection_state = screen.selection;
+        screen.update_selection(Point { x: 5, y: 2 });
+        assert_eq!(screen.selection, original_selection_state);
+    }
+
+    #[test]
+    fn test_end_selection() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Normal);
+        screen.end_selection();
+        assert!(!screen.selection.is_active);
+    }
+
+    #[test]
+    fn test_clear_selection() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 3, y: 2 });
+        screen.dirty.fill(0);
+        screen.clear_selection();
+        assert_eq!(screen.selection, Selection::default());
+        assert_eq!(screen.dirty[1], 1);
+        assert_eq!(screen.dirty[2], 1);
+    }
+
+    #[test]
+    fn test_is_selected_normal_no_selection() {
+        let screen = create_test_screen(10, 5);
+        assert!(!screen.is_selected(Point { x: 1, y: 1 }));
+    }
+
+    #[test]
+    fn test_is_selected_normal_single_line() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 2, y: 1 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 5, y: 1 });
+        assert!(!screen.is_selected(Point { x: 1, y: 1 }));
+        assert!(screen.is_selected(Point { x: 2, y: 1 }));
+        assert!(screen.is_selected(Point { x: 5, y: 1 }));
+        assert!(!screen.is_selected(Point { x: 6, y: 1 }));
+    }
+
+    #[test]
+    fn test_is_selected_normal_multi_line() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 3, y: 1 }, SelectionMode::Normal); // Start
+        screen.update_selection(Point { x: 2, y: 3 });    // End
+        assert!(screen.is_selected(Point { x: 4, y: 1 })); // First line, after start.x
+        assert!(screen.is_selected(Point { x: 1, y: 2 })); // Middle line
+        assert!(screen.is_selected(Point { x: 1, y: 3 })); // Last line, before end.x
+        assert!(!screen.is_selected(Point { x: 2, y: 1 })); // First line, before start.x
+        assert!(!screen.is_selected(Point { x: 3, y: 3 })); // Last line, after end.x
+    }
+
+    #[test]
+    fn test_is_selected_normal_multi_line_selection_ends_at_width_minus_1() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 8, y: 0 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 2, y: 2 });
+        assert!(screen.is_selected(Point{x: 9, y:0})); // screen.width - 1
+        assert!(screen.is_selected(Point{x: 0, y:1}));
+        assert!(screen.is_selected(Point{x: 9, y:1}));
+        assert!(screen.is_selected(Point{x: 0, y:2}));
+        assert!(screen.is_selected(Point{x: 2, y:2}));
+    }
+
+    #[test]
+    fn test_is_selected_normal_reverse_selection_points() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 5, y: 2 }, SelectionMode::Normal); // User start
+        screen.update_selection(Point { x: 1, y: 1 });    // User end
+        assert!(screen.is_selected(Point { x: 1, y: 1 })); // User end point
+        assert!(screen.is_selected(Point { x: 3, y: 1 })); // Middle of first visual line
+        assert!(screen.is_selected(Point { x: 5, y: 1 })); // Extent of first visual line
+        assert!(screen.is_selected(Point { x: 1, y: 2 })); // Extent of second visual line
+        assert!(screen.is_selected(Point { x: 3, y: 2 })); // Middle of second visual line
+        assert!(screen.is_selected(Point { x: 5, y: 2 })); // User start point
+    }
+
+    #[test]
+    fn test_is_selected_point_equals_start_or_end() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 2, y: 2 }, SelectionMode::Normal);
+        assert!(screen.is_selected(Point { x: 2, y: 2 }));
+        screen.update_selection(Point { x: 4, y: 2 });
+        assert!(screen.is_selected(Point { x: 2, y: 2 }));
+        assert!(screen.is_selected(Point { x: 4, y: 2 }));
+    }
+
+    #[test]
+    fn test_is_selected_out_of_bounds_point() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: screen.width - 1, y: screen.height - 1 });
+        assert!(!screen.is_selected(Point { x: screen.width, y: 0 }));
+        assert!(!screen.is_selected(Point { x: 0, y: screen.height }));
+    }
+
+    #[test]
+    fn test_is_selected_block_no_selection() {
+        let screen = create_test_screen(10, 5);
+        assert!(!screen.is_selected(Point { x: 1, y: 1 }));
+    }
+
+    #[test]
+    fn test_is_selected_block_simple() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 3, y: 3 });
+        assert!(screen.is_selected(Point { x: 2, y: 2 }));
+        assert!(!screen.is_selected(Point { x: 0, y: 2 }));
+    }
+
+    #[test]
+    fn test_is_selected_block_reverse_points() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 3, y: 3 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 1, y: 1 });
+        assert!(screen.is_selected(Point { x: 2, y: 2 }));
+    }
+
+    #[test]
+    fn test_get_selected_text_normal_no_selection() {
+        let screen = create_test_screen(10, 5);
+        assert_eq!(screen.get_selected_text(), None);
+    }
+
+    #[test]
+    fn test_get_selected_text_normal_single_char() {
+        let mut screen = create_test_screen(5, 3);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Normal);
+        assert_eq!(screen.get_selected_text(), Some("c".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_normal_single_line_partial() {
+        let mut screen = create_test_screen(5, 3);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 3, y: 0 });
+        assert_eq!(screen.get_selected_text(), Some("bcd".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_normal_single_line_full() {
+        let mut screen = create_test_screen(5, 3);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: screen.width - 1, y: 0 });
+        assert_eq!(screen.get_selected_text(), Some("abcde".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_normal_multi_line() {
+        let mut screen = create_test_screen(3, 3);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 1, y: 2 });
+        assert_eq!(screen.get_selected_text(), Some("bc\nbcd\ncd".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_normal_multi_line_reversed_points() {
+        let mut screen = create_test_screen(3, 3);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 2 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 1, y: 0 });
+        assert_eq!(screen.get_selected_text(), Some("bc\nbcd\ncd".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_normal_trailing_spaces_behavior() {
+        let mut screen = create_test_screen(5, 2);
+        screen.grid[0][0] = Glyph { c: 'a', attr: Attributes::default() };
+        screen.grid[0][1] = Glyph { c: 'a', attr: Attributes::default() };
+        screen.grid[0][2] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[0][3] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[0][4] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[1][0] = Glyph { c: 'b', attr: Attributes::default() };
+        screen.grid[1][1] = Glyph { c: 'b', attr: Attributes::default() };
+        screen.grid[1][2] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[1][3] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[1][4] = Glyph { c: ' ', attr: Attributes::default() };
+
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 4, y: 0 }); // Select "aa   "
+        assert_eq!(screen.get_selected_text(), Some("aa   ".to_string()));
+
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 1, y: 1 }); // Select "aa   " on L0 and "bb" on L1
+        assert_eq!(screen.get_selected_text(), Some("aa\nbb".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_block_no_selection() {
+        let mut screen = create_test_screen(10, 5);
+        screen.selection.mode = SelectionMode::Block;
+        assert_eq!(screen.get_selected_text(), None);
+    }
+
+    #[test]
+    fn test_get_selected_text_block_simple() {
+        let mut screen = create_test_screen(5, 4);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 3, y: 2 });
+        assert_eq!(screen.get_selected_text(), Some("bcd\ncde\ndef".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_block_reversed_points() {
+        let mut screen = create_test_screen(5, 4);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 3, y: 2 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 1, y: 0 });
+        assert_eq!(screen.get_selected_text(), Some("bcd\ncde\ndef".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_block_one_column() {
+        let mut screen = create_test_screen(5, 4);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 1, y: 2 });
+        assert_eq!(screen.get_selected_text(), Some("b\nc\nd".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_block_one_row() {
+        let mut screen = create_test_screen(5, 4);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 3, y: 1 });
+        assert_eq!(screen.get_selected_text(), Some("cde".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_block_beyond_line_length() {
+        let mut screen = create_test_screen(3, 2);
+        screen.grid[0][0] = Glyph { c: 'a', attr: Attributes::default() };
+        screen.grid[0][1] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[0][2] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[1][0] = Glyph { c: 'b', attr: Attributes::default() };
+        screen.grid[1][1] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[1][2] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 1, y: 1 });
+        assert_eq!(screen.get_selected_text(), Some("a \nb ".to_string()));
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 2, y: 1 });
+        assert_eq!(screen.get_selected_text(), Some("a  \nb  ".to_string()));
+    }
+
+    #[test]
+    fn test_selection_cleared_on_resize() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Normal);
+        screen.update_selection(Point { x: 5, y: 2 });
+        assert!(screen.selection.start.is_some());
+        screen.resize(20, 10, 0);
+        assert_eq!(screen.selection, Selection::default());
+    }
+}

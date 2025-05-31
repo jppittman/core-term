@@ -25,6 +25,7 @@ const C0_CONTROL_PRINTABLE_PART1_RANGE: core::ops::RangeInclusive<u8> = 0x00..=0
 const C0_CONTROL_PRINTABLE_PART2_RANGE: core::ops::RangeInclusive<u8> = 0x1C..=0x1F; // FS to US
 const DEL_BYTE: u8 = 0x7F;
 const ESC_BYTE: u8 = 0x1B;
+const STRING_TERMINATOR: u8 = 0x9C;
 const C1_CONTROL_RANGE: core::ops::RangeInclusive<u8> = 0x80..=0x9F;
 
 // --- Constants for Unicode boundaries ---
@@ -37,7 +38,7 @@ const UTF8_ASCII_MAX: u8 = 0x7F;
 const UTF8_CONT_MIN: u8 = 0x80; // Start of continuation byte range
 const UTF8_CONT_MAX: u8 = 0xBF; // End of continuation byte range
 const UTF8_2_BYTE_MIN: u8 = 0xC2; // Excludes overlong 0xC0, 0xC1
-// const UTF8_2_BYTE_MAX: u8 = 0xDF; // Defined by next min - 1
+                                  // const UTF8_2_BYTE_MAX: u8 = 0xDF; // Defined by next min - 1
 const UTF8_3_BYTE_MIN: u8 = 0xE0;
 // const UTF8_3_BYTE_MAX: u8 = 0xEF; // Defined by next min - 1
 const UTF8_4_BYTE_MIN: u8 = 0xF0;
@@ -45,7 +46,7 @@ const UTF8_4_BYTE_MAX: u8 = 0xF4; // Max valid start for 4-byte sequence (RFC 36
 const UTF8_INVALID_AS_START_MIN_RANGE1: u8 = UTF8_CONT_MIN; // 0x80 (can't start with continuation)
 const UTF8_INVALID_AS_START_MAX_RANGE1: u8 = 0xC1; // Up to (and including) overlong 0xC1
 const UTF8_INVALID_AS_START_MIN_RANGE2: u8 = 0xF5; // Invalid byte, per RFC 3629 (can't be > F4)
-// const UTF8_INVALID_AS_START_MAX_RANGE2: u8 = 0xFF;       // Defined by u8 max
+                                                   // const UTF8_INVALID_AS_START_MAX_RANGE2: u8 = 0xFF;       // Defined by u8 max
 
 /// Represents a single token identified by the lexer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +194,7 @@ impl AnsiLexer {
     /// they are handled by the Utf8Decoder returning InvalidSequence if they break a sequence.
     #[inline]
     fn is_unambiguous_interrupting_control(byte: u8) -> bool {
-        byte == ESC_BYTE || byte == 0x9C ||
+        byte == ESC_BYTE || byte == STRING_TERMINATOR ||
         // Consider which C0s truly interrupt. For now, all except common formatting.
         // Some tests might expect NUL or other C0s to also interrupt.
         // This list should match C0s that are *never* valid data mid-UTF-8.
@@ -235,6 +236,10 @@ impl AnsiLexer {
                 Utf8DecodeResult::NeedsMoreBytes => { /* Byte buffered, wait for more */ }
                 Utf8DecodeResult::InvalidSequence => {
                     // This means 'byte' itself was an invalid UTF-8 start (e.g., 0xC0, 0xF5).
+                    warn!(
+                        "invalid utf8 byte: {:X?} printing replacment character",
+                        byte
+                    );
                     self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER));
                 }
             }
@@ -246,6 +251,7 @@ impl AnsiLexer {
             // --- Currently building a multi-byte UTF-8 char ---
             // Check for unambiguous interruptions (ESC, most C0s)
             if Self::is_unambiguous_interrupting_control(byte) {
+                warn!("encountered control byte: {:X?} mid utf8 stream", byte);
                 self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER)); // For the aborted UTF-8
                 self.utf8_decoder.reset();
                 self.process_byte_as_new_token(byte); // Process the interrupting C0/ESC
@@ -265,8 +271,8 @@ impl AnsiLexer {
                     // was not a valid continuation for what was in the buffer.
                     // Utf8Decoder has reset.
                     self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER)); // For the broken sequence
-                    // Now, reprocess `byte` from a ground state.
-                    // process_byte_as_new_token will correctly identify it if it's C1, C0, ESC, or data.
+                                                                               // Now, reprocess `byte` from a ground state.
+                                                                               // process_byte_as_new_token will correctly identify it if it's C1, C0, ESC, or data.
                     self.process_byte_as_new_token(byte);
                 }
                 Utf8DecodeResult::NeedsMoreBytes => {

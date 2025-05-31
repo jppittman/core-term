@@ -5,7 +5,7 @@ use super::TerminalEmulator;
 use crate::term::modes::EraseMode; // EraseMode is used by erase_in_display, erase_in_line
 use std::cmp::min; // For erase_chars
 
-use log::{trace, warn};
+use log::warn;
 
 impl TerminalEmulator {
     pub(super) fn erase_in_display(&mut self, mode: EraseMode) {
@@ -190,9 +190,7 @@ impl TerminalEmulator {
                 // new bottom line of the region (which is now blank).
                 log::trace!(
                     "move_down_one_line (origin_mode ON): Scrolled region [{},{}] due to cursor at scroll_bot ({})",
-                    screen_ctx.scroll_top,
-                    screen_ctx.scroll_bot,
-                    current_physical_y
+                    screen_ctx.scroll_top, screen_ctx.scroll_bot, current_physical_y
                 );
             } else {
                 // Not at scroll_bot, try to move logical_y down if there's space within the logical region.
@@ -215,9 +213,7 @@ impl TerminalEmulator {
                 scrolled_this_op = true;
                 log::trace!(
                     "move_down_one_line (origin_mode OFF): Scrolled region [{},{}] due to cursor at scroll_bot ({})",
-                    screen_ctx.scroll_top,
-                    screen_ctx.scroll_bot,
-                    current_physical_y
+                    screen_ctx.scroll_top, screen_ctx.scroll_bot, current_physical_y
                 );
                 // Cursor logical_y (and physical_y) effectively stays on this line (screen_ctx.scroll_bot),
                 // which is now blanked due to the scroll. The subsequent carriage_return (if part of LF handling)
@@ -244,9 +240,7 @@ impl TerminalEmulator {
             self.screen.mark_line_dirty(current_physical_y);
             log::trace!(
                 "move_down_one_line: Marked old line {} dirty. Cursor moved to new line {}. Scrolled: {}.",
-                current_physical_y,
-                final_physical_y,
-                scrolled_this_op
+                current_physical_y, final_physical_y, scrolled_this_op
             );
         }
 

@@ -2,13 +2,13 @@
 #![cfg(test)]
 
 // Imports from the main crate
-use crate::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter
-use crate::color::Color; // Rgb is now Color::Rgb, Colors struct removed
-// FontDesc is now FontConfig
+use crate::color::Color;
+use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle}; // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
+                                                                             // FontDesc is now FontConfig
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
-use crate::renderer::{RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG, Renderer};
+use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG};
 use crate::term::{
-    CursorRenderState, CursorShape, RenderSnapshot, SelectionRenderState, SnapshotLine,
+    CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine, // Changed SelectionRenderState
 };
 
 use std::sync::Mutex;
@@ -61,10 +61,6 @@ impl MockDriver {
     fn commands(&self) -> Vec<MockDrawCommand> {
         self.commands.lock().unwrap().clone()
     }
-
-    fn clear_commands(&self) {
-        self.commands.lock().unwrap().clear();
-    }
 }
 
 impl Driver for MockDriver {
@@ -79,7 +75,7 @@ impl Driver for MockDriver {
     fn get_event_fd(&self) -> Option<std::os::unix::io::RawFd> {
         None
     }
-    fn process_events(&mut self) -> anyhow::Result<Vec<crate::backends::BackendEvent>> {
+    fn process_events(&mut self) -> anyhow::Result<Vec<crate::platform::backends::BackendEvent>> {
         Ok(Vec::new())
     }
 
@@ -157,7 +153,7 @@ fn create_test_snapshot(
     cursor_state: Option<CursorRenderState>,
     num_cols: usize,
     num_rows: usize,
-    selection_state: Option<SelectionRenderState>,
+    selection_state: Option<Selection>, // Changed SelectionRenderState
 ) -> RenderSnapshot {
     RenderSnapshot {
         dimensions: (num_cols, num_rows),
