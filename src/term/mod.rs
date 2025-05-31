@@ -33,8 +33,6 @@ use crate::ansi::commands::AnsiCommand;
 
 /// Default tab interval.
 pub const DEFAULT_TAB_INTERVAL: u8 = 8;
-/// Default cursor shape (e.g., 2 for block).
-pub(crate) const DEFAULT_CURSOR_SHAPE: u16 = 2;
 
 // ControlEvent is now defined in and re-exported from action.rs
 
