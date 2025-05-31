@@ -34,6 +34,13 @@ use connection::Connection;
 use graphics::Graphics;
 use window::{CursorVisibility, Window}; // Import CursorVisibility enum
 
+/// Represents the focus state of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusState {
+    Focused,
+    Unfocused,
+}
+
 /// Implements the `Driver` trait for the X11 windowing system.
 ///
 /// `XDriver` coordinates X11 resources and operations through its contained submodules:
@@ -249,12 +256,7 @@ impl Driver for XDriver {
     /// Sets the visibility of the native X11 mouse pointer over the window.
     ///
     /// Adapts the boolean `visible` to the `CursorVisibility` enum required by the `Window` module.
-    fn set_cursor_visibility(&mut self, visible: bool) {
-        let visibility = if visible {
-            CursorVisibility::Shown
-        } else {
-            CursorVisibility::Hidden
-        };
+    fn set_cursor_visibility(&mut self, visibility: CursorVisibility) { // Changed parameter
         self.window
             .set_native_cursor_visibility(&self.connection, visibility);
     }
@@ -264,12 +266,15 @@ impl Driver for XDriver {
     /// The X11 driver also detects focus changes via `FocusIn`/`FocusOut` events
     /// in `event::process_pending_events`, which directly updates `self.has_focus`.
     /// This method allows external setting of focus state if needed.
-    fn set_focus(&mut self, focused: bool) {
+    fn set_focus(&mut self, focus_state: FocusState) { // Changed parameter
         info!(
-            "XDriver::set_focus called by application core with: {}",
-            focused
+            "XDriver::set_focus called by application core with: {:?}", // Updated log
+            focus_state
         );
-        self.has_focus = focused;
+        self.has_focus = match focus_state { // Updated logic
+            FocusState::Focused => true,
+            FocusState::Unfocused => false,
+        };
         // This state change could be used to influence rendering (e.g., cursor style),
         // though such visual changes are typically triggered by the FocusGained/FocusLost BackendEvents.
     }
