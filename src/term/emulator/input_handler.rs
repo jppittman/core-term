@@ -3,8 +3,9 @@
 use super::{FocusState, TerminalEmulator};
 use crate::keys::{KeySymbol, Modifiers};
 use crate::term::{
-    action::{EmulatorAction, UserInputAction}, // UserInputAction from action.rs
-    ControlEvent, // ControlEvent from term::mod.rs (re-exported from action.rs)
+    action::{EmulatorAction, MouseButton, MouseEventType, UserInputAction}, // Added MouseButton, MouseEventType
+    snapshot::{Point, SelectionMode}, // Added Point, SelectionMode
+    ControlEvent,
 };
 use log::trace;
 
@@ -164,16 +165,90 @@ pub(super) fn process_user_input_action(
                 return Some(EmulatorAction::WritePty(bytes_to_send));
             }
         }
-        UserInputAction::MouseInput { .. } => {
-            trace!("TODO: Handle UserInputAction::MouseInput");
-            // Placeholder for mouse input processing
+        UserInputAction::MouseInput {
+            col,
+            row,
+            event_type,
+            button,
+            modifiers: _, // Modifiers currently unused for basic selection
+        } => {
+            let point = Point { x: col, y: row };
+            let mut request_redraw = false;
+            let mut action_to_return = None;
+
+            // TODO: Check if mouse events should be processed based on mouse reporting modes.
+            // For now, assume selection is independent of terminal mouse reporting modes.
+
+            match event_type {
+                MouseEventType::Press => {
+                    if button == MouseButton::Left {
+                        // Determine selection mode (e.g., based on modifiers like Shift for Block)
+                        // For now, default to Normal.
+                        let mode = SelectionMode::Normal;
+                        // TODO: Check if a click on an existing selection should drag or start new.
+                        // Common behavior: new click outside clears old, starts new.
+                        // Click inside might allow dragging (not implemented here).
+                        emulator.screen.clear_selection(); // Clear previous selection.
+                        emulator.screen.start_selection(point, mode);
+                        request_redraw = true;
+                        trace!(
+                            "MouseInput: Left Press at ({}, {}), selection started.",
+                            col,
+                            row
+                        );
+                    }
+                    // ScrollUp/ScrollDown are not handled here for now, assuming they are
+                    // translated to key events or specific escape codes by a lower layer if needed,
+                    // or handled by a mouse reporting protocol if active.
+                }
+                MouseEventType::Move => {
+                    // Only update selection if the left button is considered active (drag).
+                    // Screen.selection.is_active should correctly track this.
+                    if emulator.screen.selection.is_active {
+                        emulator.screen.update_selection(point);
+                        request_redraw = true;
+                        trace!("MouseInput: Move to ({}, {}), selection updated.", col, row);
+                    }
+                }
+                MouseEventType::Release => {
+                    if button == MouseButton::Left {
+                        if emulator.screen.selection.is_active {
+                            emulator.screen.end_selection();
+                            // Optional: copy on select behavior (e.g., based on a config flag)
+                            // if emulator.config.copy_on_select {
+                            //    if let Some(text) = emulator.screen.get_selected_text() {
+                            //        if !text.is_empty() {
+                            //            action_to_return = Some(EmulatorAction::CopyToClipboard(text));
+                            //        }
+                            //    }
+                            // }
+                            request_redraw = true; // Ensure redraw to show final selection state
+                            trace!(
+                                "MouseInput: Left Release at ({}, {}), selection ended.",
+                                col,
+                                row
+                            );
+                        }
+                    }
+                }
+            }
+
+            if request_redraw && action_to_return.is_none() {
+                action_to_return = Some(EmulatorAction::RequestRedraw);
+            }
+            return action_to_return; // Explicitly return, might be None or Some(RequestRedraw/CopyToClipboard)
         }
         UserInputAction::InitiateCopy => {
-            // TODO: Implement actual text extraction from TerminalEmulator selection state.
-            // For now, sending placeholder text.
-            return Some(EmulatorAction::CopyToClipboard(
-                "NEEDS_IMPLEMENTATION: Get selected text from TerminalEmulator".to_string(),
-            ));
+            if let Some(text) = emulator.screen.get_selected_text() {
+                if !text.is_empty() {
+                    // Optional: Clear selection after copy
+                    // emulator.screen.clear_selection();
+                    // if emulator.screen.selection.start.is_none() { // Check if clear_selection also requests redraw
+                    //     return Some(EmulatorAction::RequestRedraw); // if clearing selection and it doesn't redraw
+                    // }
+                    return Some(EmulatorAction::CopyToClipboard(text));
+                }
+            }
         }
         UserInputAction::InitiatePaste => {
             return Some(EmulatorAction::RequestClipboardContent);

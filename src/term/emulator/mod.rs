@@ -4,12 +4,24 @@
 use crate::{
     glyph::Attributes, // Ensure Glyph and Attributes are imported
     term::{
-        action::EmulatorAction, // Added UserInputAction, ControlEvent
+        action::{
+            EmulatorAction,
+            // MouseButton, // Unused
+            // MouseEventType, // Unused
+            // UserInputAction, // Unused
+        },
         charset::CharacterSet,
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
         modes::DecPrivateModes,
         screen::Screen,
-        snapshot::{CursorRenderState, CursorShape, RenderSnapshot, SnapshotLine},
+        snapshot::{
+            CursorRenderState,
+            CursorShape,
+            // Point, // Unused
+            RenderSnapshot,
+            // SelectionMode, // Unused
+            SnapshotLine,
+        },
         EmulatorInput, // Added EmulatorInput
     },
 };
@@ -177,8 +189,12 @@ impl TerminalEmulator {
             });
         }
 
-        // Selection state is None for now as per plan.
-        let selection_state = None; // TODO: Populate this when selection is handled
+        // Populate selection state
+        let selection_state = if self.screen.selection.start.is_some() {
+            Some(self.screen.selection)
+        } else {
+            None
+        };
 
         RenderSnapshot {
             dimensions: (width, height),

@@ -1,15 +1,13 @@
 // src/orchestrator/tests.rs
-#![cfg(test)]
 
 // Updated imports based on current crate structure
 use crate::color::Color;
-use crate::platform::backends::{CellCoords, CellRect, Driver, TextRunStyle, FocusState}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
-use crate::platform::backends::x11::window::CursorVisibility; // Import for MockDriver
+use crate::platform::backends::{CellCoords, CellRect, CursorVisibility, Driver, FocusState, TextRunStyle}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
 use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG}; // Rgb is now a variant Color::Rgb(...). Colors struct removed.
                                                                            // FontDesc is now FontConfig. Using ColorScheme for palette.
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
 use crate::term::{
-    CursorRenderState, CursorShape, RenderSnapshot, SelectionRenderState, SnapshotLine,
+    CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine, // Changed SelectionRenderState to Selection
 }; // CursorStyle removed, SelectionRange -> SelectionRenderState
 
 use std::sync::Mutex;
@@ -42,8 +40,6 @@ struct MockDriver {
     font_height: usize,
     display_width_px: u16,
     display_height_px: u16,
-    is_focused: bool,
-    is_cursor_visible: bool,
 }
 
 impl MockDriver {
@@ -59,8 +55,6 @@ impl MockDriver {
             font_height,
             display_width_px,
             display_height_px,
-            is_focused: true,
-            is_cursor_visible: true,
         }
     }
 
@@ -136,17 +130,9 @@ impl Driver for MockDriver {
 
     fn set_title(&mut self, _title: &str) {}
     fn bell(&mut self) {}
-    fn set_cursor_visibility(&mut self, visibility: CursorVisibility) {
-        self.is_cursor_visible = match visibility {
-            CursorVisibility::Shown => true,
-            CursorVisibility::Hidden => false,
-        };
+    fn set_cursor_visibility(&mut self, _visible: CursorVisibility) {
     }
-    fn set_focus(&mut self, focus_state: FocusState) {
-        self.is_focused = match focus_state {
-            FocusState::Focused => true,
-            FocusState::Unfocused => false,
-        };
+    fn set_focus(&mut self, _focused: FocusState) {
     }
     fn cleanup(&mut self) -> anyhow::Result<()> {
         Ok(())
@@ -159,7 +145,7 @@ fn create_test_snapshot(
     cursor_state: Option<CursorRenderState>,
     num_cols: usize,
     num_rows: usize,
-    selection_state: Option<SelectionRenderState>,
+    selection_state: Option<Selection>, // Changed SelectionRenderState to Selection
 ) -> RenderSnapshot {
     RenderSnapshot {
         dimensions: (num_cols, num_rows),

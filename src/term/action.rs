@@ -8,15 +8,31 @@ use crate::platform::backends::{KeySymbol, Modifiers}; // Assuming these are re-
 
 // --- User Input Actions ---
 
-// Placeholder for MouseButton and MouseEventType until fully defined
-// These might come from backends module as well if they are part of BackendEvent::Mouse
+/// Represents the buttons on a mouse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
-    /* TODO: Define variants like Left, Middle, Right, etc. */ Placeholder,
+    /// The left mouse button.
+    Left,
+    /// The middle mouse button.
+    Middle,
+    /// The right mouse button.
+    Right,
+    /// Mouse wheel scrolled up.
+    ScrollUp,
+    /// Mouse wheel scrolled down.
+    ScrollDown,
+    // Add other buttons if necessary (e.g., Forward, Back)
+    // Example: Forward, Back
 }
+
+/// Represents the type of a mouse event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseEventType {
-    /* TODO: Define variants like Press, Release, Move */ Placeholder,
+    /// A mouse button was pressed.
+    Press,
+    /// A mouse button was released.
+    Release,
+    Move,
 }
 
 /// Represents user-initiated actions that serve as input to the terminal emulator.
