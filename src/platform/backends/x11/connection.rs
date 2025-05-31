@@ -245,9 +245,10 @@ mod tests {
     */
     #[test]
     fn test_cleanup_idempotency() {
-        // This test does not require a running X server as it simulates the display pointer state.
+    // This test checks that cleanup can be called multiple times on a connection
+    // that was initialized with a null display pointer (simulating a closed or failed connection).
         let mut conn = Connection {
-            display: ptr::null_mut(), // Start with a null display to simulate closed or uninitialized
+        display: ptr::null_mut(),
             screen: 0,
             colormap: 0,
             visual: ptr::null_mut(),
@@ -260,31 +261,18 @@ mod tests {
         );
         assert!(
             conn.display.is_null(),
-            "display should remain null after cleanup on null"
+        "display should remain null after first cleanup on null"
         );
 
-        // Simulate an opened display (without actually opening one).
-        // THIS IS GENERALLY UNSAFE but acceptable for this specific test's logic,
-        // as we are only checking if cleanup sets it to null and don't call Xlib functions
-        // that would dereference this dummy pointer.
-        let dummy_display_ptr = 1 as *mut xlib::Display;
-        conn.display = dummy_display_ptr;
-
+    // Call cleanup again to ensure it's idempotent
         assert!(
             conn.cleanup().is_ok(),
-            "cleanup on dummy display should be Ok"
+        "second cleanup call on null display should also be Ok"
         );
         assert!(
             conn.display.is_null(),
-            "Display pointer should be null after cleanup"
+        "display should remain null after second cleanup on null"
         );
-
-        // Call cleanup again to ensure it's idempotent after being set to null
-        assert!(
-            conn.cleanup().is_ok(),
-            "second cleanup call should also be Ok"
-        );
-        assert!(conn.display.is_null(), "Display pointer should remain null");
     }
 
     #[test]

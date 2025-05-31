@@ -251,18 +251,12 @@ impl IntoXKeySym for xlib::KeySym {
 fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymbol {
     let keysym_val = keysym_val_in.into_xkeysym();
 
-    // Handle cases where KeySym might be a Unicode character directly,
-    // especially if it's outside the typical u32 range of standard XK_* constants.
-    // xlib::KeySym can be u64 on some systems.
     if keysym_val > (u32::MAX as xlib::KeySym) {
-        // If text is available and seems valid (not replacement char), use it.
         if !text.is_empty() && text.chars().next().map_or(false, |c| c != '\u{FFFD}') {
-            // Assuming the first char of text is the most relevant one.
             if let Some(ch) = text.chars().next() {
                 return KeySymbol::Char(ch);
             }
         }
-        // Large keysym with no usable text.
         warn!(
             "Received high keysym value: 0x{:X} with no usable text, mapping to Unknown.",
             keysym_val
@@ -270,34 +264,60 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
         return KeySymbol::Unknown;
     }
 
-    // Standard keysyms are within u32 range.
     let keysym_u32 = keysym_val as u32;
 
-    // Match against known X11 keysym constants.
+    // Prioritize text from XLookupString if it's available and valid,
+    // especially for keypad keys that can produce characters or act as special keys.
+    if !text.is_empty() {
+        if let Some(ch) = text.chars().next() {
+            // Ensure it's not the Unicode replacement character U+FFFD,
+            // which XLookupString might return for unmappable dead keys or sequences.
+            if ch != '\u{FFFD}' {
+                match keysym_u32 {
+                    // Keypad keys that should produce Chars if text is available (NumLock ON)
+                    keysym::XK_KP_0 | keysym::XK_KP_1 | keysym::XK_KP_2 | keysym::XK_KP_3 |
+                    keysym::XK_KP_4 | keysym::XK_KP_5 | keysym::XK_KP_6 | keysym::XK_KP_7 |
+                    keysym::XK_KP_8 | keysym::XK_KP_9 | keysym::XK_KP_Decimal => {
+                        return KeySymbol::Char(ch);
+                    }
+                    // Keypad operators that might also produce characters
+                    keysym::XK_KP_Add | keysym::XK_KP_Subtract | keysym::XK_KP_Multiply |
+                    keysym::XK_KP_Divide | keysym::XK_KP_Equal => {
+                        return KeySymbol::Char(ch);
+                    }
+                    // Keypad Space: if text is " ", it should be Char(' ')
+                    keysym::XK_KP_Space => {
+                        return KeySymbol::Char(ch);
+                    }
+                    // For other keysyms, if text is present, they will be handled by the
+                    // fallback case in the main match statement below.
+                    // This specific pre-check is for keypad keys where text output (NumLock on)
+                    // should override their non-textual KeySymbol (NumLock off).
+                    _ => {} // Proceed to main match
+                }
+            }
+        }
+    }
+
+    // Main match for keysyms (text handling for specific KP keys done above)
     match keysym_u32 {
         // Modifier Keys (when the key itself is pressed, not when used as a modifier)
         keysym::XK_Shift_L | keysym::XK_Shift_R => KeySymbol::Shift,
         keysym::XK_Control_L | keysym::XK_Control_R => KeySymbol::Control,
-        keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => {
-            KeySymbol::Alt
-        }
-        keysym::XK_Super_L | keysym::XK_Super_R | keysym::XK_Hyper_L | keysym::XK_Hyper_R => {
-            KeySymbol::Super
-        }
+        keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => KeySymbol::Alt,
+        keysym::XK_Super_L | keysym::XK_Super_R | keysym::XK_Hyper_L | keysym::XK_Hyper_R => KeySymbol::Super,
         keysym::XK_Caps_Lock => KeySymbol::CapsLock,
         keysym::XK_Num_Lock => KeySymbol::NumLock,
 
         // Editing and Control Keys
         keysym::XK_Return => KeySymbol::Enter,
-        keysym::XK_KP_Enter => KeySymbol::KeypadEnter, // Keypad Enter
-        keysym::XK_Linefeed => KeySymbol::Char('\n'),  // Typically 0x0A, treated as Char
+        keysym::XK_KP_Enter => KeySymbol::KeypadEnter,
+        keysym::XK_Linefeed => KeySymbol::Char('\n'),
         keysym::XK_BackSpace => KeySymbol::Backspace,
-        keysym::XK_Tab | keysym::XK_KP_Tab | keysym::XK_ISO_Left_Tab => KeySymbol::Tab, // Tab and Keypad Tab
+        keysym::XK_Tab | keysym::XK_KP_Tab | keysym::XK_ISO_Left_Tab => KeySymbol::Tab,
         keysym::XK_Escape => KeySymbol::Escape,
 
         // Navigation Keys
-        // Note: Keypad navigation keys (e.g., XK_KP_Home) often yield the same keysym as their main
-        // counterparts when NumLock is off. XLookupString might return empty for these.
         keysym::XK_Home | keysym::XK_KP_Home => KeySymbol::Home,
         keysym::XK_Left | keysym::XK_KP_Left => KeySymbol::Left,
         keysym::XK_Up | keysym::XK_KP_Up => KeySymbol::Up,
@@ -306,8 +326,8 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
         keysym::XK_Page_Up | keysym::XK_KP_Page_Up => KeySymbol::PageUp,
         keysym::XK_Page_Down | keysym::XK_KP_Page_Down => KeySymbol::PageDown,
         keysym::XK_End | keysym::XK_KP_End => KeySymbol::End,
-        keysym::XK_Insert | keysym::XK_KP_Insert => KeySymbol::Insert, // KP_Insert is often KP_0 with NumLock
-        keysym::XK_Delete | keysym::XK_KP_Delete => KeySymbol::Delete, // KP_Delete is often KP_Decimal with NumLock
+        keysym::XK_Insert | keysym::XK_KP_Insert => KeySymbol::Insert,
+        keysym::XK_Delete | keysym::XK_KP_Delete => KeySymbol::Delete,
 
         // Function Keys F1-F24
         keysym::XK_F1 => KeySymbol::F1,
@@ -337,40 +357,40 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
 
         // Keypad Symbols (these are for keys that are distinctly keypad operations,
         // or when XLookupString provides no text for them, e.g., NumLock is off for digits)
-        // If `text` from XLookupString is a digit ('0'-'9'), that often takes precedence below.
         keysym::XK_KP_0 => KeySymbol::Keypad0,
         keysym::XK_KP_1 => KeySymbol::Keypad1,
         keysym::XK_KP_2 => KeySymbol::Keypad2,
         keysym::XK_KP_3 => KeySymbol::Keypad3,
         keysym::XK_KP_4 => KeySymbol::Keypad4,
-        keysym::XK_KP_5 | keysym::XK_KP_Begin => KeySymbol::Keypad5, // XK_KP_Begin is often KP_5
+        keysym::XK_KP_5 | keysym::XK_KP_Begin => KeySymbol::Keypad5,
         keysym::XK_KP_6 => KeySymbol::Keypad6,
         keysym::XK_KP_7 => KeySymbol::Keypad7,
         keysym::XK_KP_8 => KeySymbol::Keypad8,
         keysym::XK_KP_9 => KeySymbol::Keypad9,
+        // XK_KP_Decimal was handled by text check if text was present
         keysym::XK_KP_Decimal | keysym::XK_KP_Separator => KeySymbol::KeypadDecimal,
+        // XK_KP_Add etc were handled by text check if text was present
         keysym::XK_KP_Add => KeySymbol::KeypadPlus,
         keysym::XK_KP_Subtract => KeySymbol::KeypadMinus,
         keysym::XK_KP_Multiply => KeySymbol::KeypadMultiply,
         keysym::XK_KP_Divide => KeySymbol::KeypadDivide,
         keysym::XK_KP_Equal => KeySymbol::KeypadEquals,
-        keysym::XK_KP_Space => KeySymbol::Char(' '), // Keypad space. Text might also be " ".
+        // XK_KP_Space was handled by text check
 
         // Other Common Keys
-        keysym::XK_Print | keysym::XK_Sys_Req => KeySymbol::PrintScreen, // Sys_Req is often Shift+Print
+        keysym::XK_Print | keysym::XK_Sys_Req => KeySymbol::PrintScreen,
         keysym::XK_Scroll_Lock => KeySymbol::ScrollLock,
-        keysym::XK_Pause | keysym::XK_Break => KeySymbol::Pause, // Break is often Ctrl+Pause
+        keysym::XK_Pause | keysym::XK_Break => KeySymbol::Pause,
         keysym::XK_Menu => KeySymbol::Menu,
 
-        // Fallback: If text is available from XLookupString, use its first character.
-        // This handles most printable characters (letters, numbers, symbols).
+        // Fallback: If text is available from XLookupString (and not handled above), use its first character.
+        // This handles most printable characters (letters, numbers, symbols from main keyboard block).
         _ => {
             if !text.is_empty() && text.chars().next().map_or(false, |c| c != '\u{FFFD}') {
                 if let Some(ch) = text.chars().next() {
                     return KeySymbol::Char(ch);
                 }
             }
-            // If it's an unhandled u32 keysym and no valid text, it's Unknown.
             trace!(
                 "Unhandled u32 keysym 0x{:X} with text '{}', mapping to KeySymbol::Unknown",
                 keysym_u32,
