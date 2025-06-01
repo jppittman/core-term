@@ -54,8 +54,6 @@ fn main() -> anyhow::Result<()> {
 
     // --- Configuration ---
     let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let shell_args: Vec<String> = Vec::new(); // No specific args by default
-    let shell_args_str: Vec<&str> = shell_args.iter().map(AsRef::as_ref).collect();
 
     // Initial dimensions, these are default and might be updated by AppOrchestrator based on driver.
     let initial_cols = platform::backends::DEFAULT_WINDOW_WIDTH_CHARS as u16;
@@ -64,7 +62,7 @@ fn main() -> anyhow::Result<()> {
     // --- Setup PTY ---
     let pty_config = PtyConfig {
         command_executable: &shell_path,
-        args: &shell_args_str,
+        args: &[],
         initial_cols,
         initial_rows,
     };

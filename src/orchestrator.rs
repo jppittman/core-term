@@ -94,6 +94,25 @@ impl<'a> AppOrchestrator<'a> {
         }
     }
 
+    /// Processes input for the terminal emulator and routes resulting actions.
+    fn process_emulator_input(&mut self, input: EmulatorInput) {
+        if let Some(action) = self.term.interpret_input(input) {
+            match action {
+                EmulatorAction::WritePty(_) |
+                EmulatorAction::CopyToClipboard(_) |
+                EmulatorAction::RequestClipboardContent => {
+                    self.handle_non_render_emulator_action(action);
+                }
+                EmulatorAction::SetTitle(_) |
+                EmulatorAction::RingBell |
+                EmulatorAction::RequestRedraw |
+                EmulatorAction::SetCursorVisibility(_) => {
+                    self.pending_render_actions.push(action);
+                }
+            }
+        }
+    }
+
     pub fn process_pty_events(&mut self) -> Result<OrchestratorStatus, AnyhowError> {
         log::trace!("Orchestrator: Processing available PTY data...");
         match self.pty_channel.read(&mut self.pty_read_buffer) {
@@ -121,14 +140,7 @@ impl<'a> AppOrchestrator<'a> {
 
     fn interpret_pty_bytes_mut_access(&mut self, pty_data_slice: &[u8]) {
         for command_input in self.parser.process_bytes(pty_data_slice).into_iter().map(EmulatorInput::Ansi) {
-            if let Some(action) = self.term.interpret_input(command_input) {
-                if matches!(action, EmulatorAction::WritePty(_)) {
-                    // WritePty is handled immediately and does not generate render commands.
-                    self.handle_emulator_action(action, &mut Vec::new()); // Pass dummy vec
-                } else {
-                    self.pending_render_actions.push(action);
-                }
-            }
+            self.process_emulator_input(command_input);
         }
     }
 
@@ -171,13 +183,7 @@ impl<'a> AppOrchestrator<'a> {
                     text: if text.is_empty() { None } else { Some(text) }, // Convert String to Option<String>
                 };
                 let user_input = EmulatorInput::User(key_input_action);
-                if let Some(action) = self.term.interpret_input(user_input) {
-                    if matches!(action, EmulatorAction::WritePty(_)) {
-                        self.handle_emulator_action(action, &mut Vec::new());
-                    } else {
-                        self.pending_render_actions.push(action);
-                    }
-                }
+                self.process_emulator_input(user_input);
             }
             BackendEvent::Resize { .. } => { // width_px, height_px from event are noted but platform_state is source of truth
                 let platform_state = self.driver.get_platform_state();
@@ -213,38 +219,19 @@ impl<'a> AppOrchestrator<'a> {
                     cols: new_cols,
                     rows: new_rows,
                 });
-                if let Some(action) = self.term.interpret_input(resize_emulator_input) {
-                    // Actions from resize are unlikely to be render commands.
-                    if matches!(action, EmulatorAction::WritePty(_)) {
-                        self.handle_emulator_action(action, &mut Vec::new());
-                    } else {
-                        self.pending_render_actions.push(action);
-                    }
-                }
+                self.process_emulator_input(resize_emulator_input);
                 // TODO: If TerminalEmulator needs explicit cell pixel size updates:
                 // self.term.update_cell_pixel_size(self.font_cell_width_px, self.font_cell_height_px);
             }
             BackendEvent::FocusGained => {
                 log::debug!("Orchestrator: FocusGained event.");
                 self.driver.set_focus(crate::platform::backends::FocusState::Focused); // Corrected FocusState path
-                if let Some(action) = self.term.interpret_input(EmulatorInput::User(UserInputAction::FocusGained)) {
-                    if matches!(action, EmulatorAction::WritePty(_)) {
-                        self.handle_emulator_action(action, &mut Vec::new());
-                    } else {
-                        self.pending_render_actions.push(action);
-                    }
-                }
+                self.process_emulator_input(EmulatorInput::User(UserInputAction::FocusGained));
             }
             BackendEvent::FocusLost => {
                 log::debug!("Orchestrator: FocusLost event.");
                 self.driver.set_focus(crate::platform::backends::FocusState::Unfocused); // Corrected FocusState path
-                 if let Some(action) = self.term.interpret_input(EmulatorInput::User(UserInputAction::FocusLost)) {
-                    if matches!(action, EmulatorAction::WritePty(_)) {
-                        self.handle_emulator_action(action, &mut Vec::new());
-                    } else {
-                        self.pending_render_actions.push(action);
-                    }
-                }
+                self.process_emulator_input(EmulatorInput::User(UserInputAction::FocusLost));
             }
             BackendEvent::CloseRequested => {
                 log::warn!(
@@ -255,16 +242,7 @@ impl<'a> AppOrchestrator<'a> {
                 log::debug!("Orchestrator: PasteData event received with text length: {}", text.len());
                 let paste_input_action = UserInputAction::PasteText(text);
                 let user_input = EmulatorInput::User(paste_input_action);
-                if let Some(action) = self.term.interpret_input(user_input) {
-                    // Actions from PasteText are typically WritePty or other non-render commands.
-                    if matches!(action, EmulatorAction::WritePty(_)) {
-                        self.handle_emulator_action(action, &mut Vec::new());
-                    } else {
-                        // It's less common for PasteText to generate direct render commands,
-                        // but handle it if it does.
-                        self.pending_render_actions.push(action);
-                    }
-                }
+                self.process_emulator_input(user_input);
             }
             BackendEvent::MouseButtonPress { button, x, y, modifiers: _ } => {
                 if self.font_cell_width_px == 0 || self.font_cell_height_px == 0 {
@@ -286,13 +264,7 @@ impl<'a> AppOrchestrator<'a> {
                 };
 
                 if let Some(action) = user_action {
-                    if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(action)) {
-                        if matches!(emulator_action, EmulatorAction::WritePty(_)) {
-                            self.handle_emulator_action(emulator_action, &mut Vec::new());
-                        } else {
-                            self.pending_render_actions.push(emulator_action);
-                        }
-                    }
+                    self.process_emulator_input(EmulatorInput::User(action));
                 }
             }
             BackendEvent::MouseButtonRelease { button, x, y, modifiers: _ } => {
@@ -313,13 +285,7 @@ impl<'a> AppOrchestrator<'a> {
                 };
 
                 if let Some(action) = user_action {
-                    if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(action)) {
-                         if matches!(emulator_action, EmulatorAction::WritePty(_)) {
-                            self.handle_emulator_action(emulator_action, &mut Vec::new());
-                        } else {
-                            self.pending_render_actions.push(emulator_action);
-                        }
-                    }
+                    self.process_emulator_input(EmulatorInput::User(action));
                 }
             }
             BackendEvent::MouseMove { x, y, modifiers: _ } => {
@@ -333,22 +299,15 @@ impl<'a> AppOrchestrator<'a> {
 
 
                 let user_action = UserInputAction::ExtendSelection { x: cell_x, y: cell_y };
-                if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(user_action)) {
-                    if matches!(emulator_action, EmulatorAction::WritePty(_)) {
-                        self.handle_emulator_action(emulator_action, &mut Vec::new());
-                    } else {
-                        self.pending_render_actions.push(emulator_action);
-                    }
-                }
+                self.process_emulator_input(EmulatorInput::User(user_action));
             }
         }
     }
 
-    /// Handles actions signaled by the `TerminalInterface` implementation.
-    /// Some actions are handled immediately (e.g., writing to PTY), while others
-    /// that affect rendering are converted to `RenderCommand`s and appended to the given list.
-    fn handle_emulator_action(&mut self, action: EmulatorAction, commands: &mut Vec<RenderCommand>) {
-        log::debug!("Orchestrator: Handling EmulatorAction: {:?}", action);
+    /// Handles emulator actions that do not directly generate render commands,
+    /// such as PTY writes or clipboard operations.
+    fn handle_non_render_emulator_action(&mut self, action: EmulatorAction) {
+        log::debug!("Orchestrator: Handling non-render EmulatorAction: {:?}", action);
         match action {
             EmulatorAction::WritePty(data) => {
                 if let Err(e) = self.pty_channel.write_all(&data) {
@@ -357,6 +316,34 @@ impl<'a> AppOrchestrator<'a> {
                     log::trace!("Orchestrator: Wrote {} bytes to PTY.", data.len());
                 }
             }
+            EmulatorAction::CopyToClipboard(text) => {
+                // TODO: Consider relocating these constants to platform::backends or as associated constants on the Driver trait.
+                const TRAIT_ATOM_ID_PRIMARY: u64 = 1; // Example abstract ID for Primary selection
+                const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard selection
+
+                self.driver.own_selection(TRAIT_ATOM_ID_CLIPBOARD, text.clone());
+                self.driver.own_selection(TRAIT_ATOM_ID_PRIMARY, text);
+                log::info!("Orchestrator: Requested driver to own PRIMARY and CLIPBOARD selections.");
+            }
+            EmulatorAction::RequestClipboardContent => {
+                // TODO: Consider relocating these constants to platform::backends or as associated constants on the Driver trait.
+                const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard
+                const TRAIT_ATOM_ID_UTF8_STRING: u64 = 10; // Example abstract ID for UTF8_STRING target
+
+                self.driver.request_selection_data(TRAIT_ATOM_ID_CLIPBOARD, TRAIT_ATOM_ID_UTF8_STRING);
+                log::info!("Orchestrator: Requested clipboard content from driver (target UTF8_STRING).");
+            }
+            _ => {
+                log::warn!("Orchestrator: handle_non_render_emulator_action received an unexpected action: {:?}", action);
+                // Or use unimplemented!("Action {:?} not handled by handle_non_render_emulator_action", action);
+            }
+        }
+    }
+
+    /// Handles emulator actions that generate render commands.
+    fn handle_render_generating_emulator_action(&mut self, action: EmulatorAction, commands: &mut Vec<RenderCommand>) {
+        log::debug!("Orchestrator: Handling render-generating EmulatorAction: {:?}", action);
+        match action {
             EmulatorAction::SetTitle(title) => {
                 commands.push(RenderCommand::SetWindowTitle { title });
             }
@@ -364,32 +351,17 @@ impl<'a> AppOrchestrator<'a> {
                 commands.push(RenderCommand::RingBell);
             }
             EmulatorAction::RequestRedraw => {
-                log::trace!("Orchestrator: EmulatorAction::RequestRedraw received (rendering is managed by main loop).");
+                log::trace!("Orchestrator: EmulatorAction::RequestRedraw received (handled by render_if_needed).");
+                // This action is a signal; actual redrawing is managed by the main loop's call to render_if_needed.
+                // No direct command is generated here, but it's categorized as render-related.
             }
             EmulatorAction::SetCursorVisibility(visible) => {
                 // This refers to the *native* OS cursor, not the terminal's drawn cursor.
-                // The terminal's drawn cursor visibility is part of RenderSnapshot.
                 commands.push(RenderCommand::SetCursorVisibility { visible });
             }
-            EmulatorAction::CopyToClipboard(text) => {
-                // These constants define abstract identifiers for selections and targets
-                // at the orchestrator/trait level. The XDriver implementation of the
-                // Driver trait methods will map these to concrete X11 atoms.
-                const TRAIT_ATOM_ID_PRIMARY: u64 = 1; // Example abstract ID for Primary selection
-                const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard selection
-
-                self.driver.own_selection(TRAIT_ATOM_ID_CLIPBOARD, text.clone());
-                self.driver.own_selection(TRAIT_ATOM_ID_PRIMARY, text);
-                log::info!("Orchestrator: Requested driver to own PRIMARY and CLIPBOARD selections.");
-                // This action typically does not generate direct render commands.
-            }
-            EmulatorAction::RequestClipboardContent => {
-                const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard
-                const TRAIT_ATOM_ID_UTF8_STRING: u64 = 10; // Example abstract ID for UTF8_STRING target
-
-                self.driver.request_selection_data(TRAIT_ATOM_ID_CLIPBOARD, TRAIT_ATOM_ID_UTF8_STRING);
-                log::info!("Orchestrator: Requested clipboard content from driver (target UTF8_STRING).");
-                // This action does not generate direct render commands; data arrives via BackendEvent::PasteData.
+            _ => {
+                log::warn!("Orchestrator: handle_render_generating_emulator_action received an unexpected action: {:?}", action);
+                // Or use unimplemented!("Action {:?} not handled by handle_render_generating_emulator_action", action);
             }
         }
     }
@@ -402,8 +374,8 @@ impl<'a> AppOrchestrator<'a> {
         // Process any pending emulator actions that translate to render commands
         let actions_to_process: Vec<EmulatorAction> = self.pending_render_actions.drain(..).collect();
         for action in actions_to_process {
-            // Note: WritePty actions were already handled immediately and won't be in this list.
-            self.handle_emulator_action(action, &mut final_render_commands);
+            // Non-render actions were already handled immediately and won't be in this list.
+            self.handle_render_generating_emulator_action(action, &mut final_render_commands);
         }
 
         // Always add PresentFrame as the last command for this frame.
