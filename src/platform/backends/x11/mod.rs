@@ -36,7 +36,8 @@ pub mod selection; // Added selection module
 use connection::Connection;
 use graphics::Graphics;
 use window::{CursorVisibility, Window}; // Import CursorVisibility enum
-use super::super::x11::selection::SelectionAtoms; // For XDriver field
+use crate::platform::backends::x11::selection::SelectionAtoms; // For XDriver field
+use x11::xlib; // Added import
 
 /// Represents the focus state of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2,7 +2,7 @@
 
 // Imports from the main crate
 use crate::color::Color;
-use crate::platform::backends::{CellCoords, CellRect, CursorVisibility, Driver, FocusState, TextRunStyle}; // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
+use crate::platform::backends::{CellCoords, CellRect, CursorVisibility, Driver, FocusState, TextRunStyle, PlatformState, BackendEvent, RenderCommand as ActualRenderCommand}; // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
                                                                              // FontDesc is now FontConfig
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
 use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG};
@@ -11,6 +11,7 @@ use crate::term::{
 };
 
 use std::sync::Mutex;
+use anyhow::Result;
 
 // Mocking structures for testing the renderer's interaction with a Driver.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,11 +22,13 @@ enum MockDrawCommand {
     FillRect {
         rect: CellRect,
         color: Color,
+        is_selection_bg: bool, // Added to match RenderCommand
     },
     DrawTextRun {
         coords: CellCoords,
         text: String,
         style: TextRunStyle,
+        is_selected: bool, // Added to match RenderCommand
     },
     Present,
     // MockDriver specific commands, if any, or just stick to Driver trait
@@ -33,7 +36,7 @@ enum MockDrawCommand {
 
 // Mock Driver implementation
 struct MockDriver {
-    commands: Mutex<Vec<MockDrawCommand>>,
+    commands: Mutex<Vec<ActualRenderCommand>>, // Changed to ActualRenderCommand
     font_width: usize,
     font_height: usize,
     display_width_px: u16,
@@ -57,7 +60,7 @@ impl MockDriver {
         }
     }
 
-    fn commands(&self) -> Vec<MockDrawCommand> {
+    fn commands(&self) -> Vec<ActualRenderCommand> { // Changed to ActualRenderCommand
         self.commands.lock().unwrap().clone()
     }
 }
@@ -67,69 +70,47 @@ impl Driver for MockDriver {
     where
         Self: Sized,
     {
-        // For mock, provide some defaults. Real drivers would initialize properly.
         Ok(MockDriver::new(8, 16, 80 * 8, 24 * 16))
     }
 
     fn get_event_fd(&self) -> Option<std::os::unix::io::RawFd> {
         None
     }
-    fn process_events(&mut self) -> anyhow::Result<Vec<crate::platform::backends::BackendEvent>> {
+    fn process_events(&mut self) -> anyhow::Result<Vec<BackendEvent>> {
         Ok(Vec::new())
     }
 
-    fn get_font_dimensions(&self) -> (usize, usize) {
-        (self.font_width, self.font_height)
-    }
-    fn get_display_dimensions_pixels(&self) -> (u16, u16) {
-        (self.display_width_px, self.display_height_px)
+    fn get_platform_state(&self) -> PlatformState { // Added implementation
+        PlatformState {
+            event_fd: None,
+            font_cell_width_px: self.font_width,
+            font_cell_height_px: self.font_height,
+            display_width_px: self.display_width_px,
+            display_height_px: self.display_height_px,
+            scale_factor: 1.0,
+        }
     }
 
-    fn clear_all(&mut self, bg: Color) -> anyhow::Result<()> {
-        self.commands
-            .lock()
-            .unwrap()
-            .push(MockDrawCommand::ClearAll { bg });
+    fn execute_render_commands(&mut self, commands: Vec<ActualRenderCommand>) -> Result<()> { // Added implementation
+        self.commands.lock().unwrap().extend(commands);
         Ok(())
     }
 
-    fn draw_text_run(
-        &mut self,
-        coords: CellCoords,
-        text: &str,
-        style: TextRunStyle,
-    ) -> anyhow::Result<()> {
-        self.commands
-            .lock()
-            .unwrap()
-            .push(MockDrawCommand::DrawTextRun {
-                coords,
-                text: text.to_string(),
-                style,
-            });
-        Ok(())
-    }
-
-    fn fill_rect(&mut self, rect: CellRect, color: Color) -> anyhow::Result<()> {
-        self.commands
-            .lock()
-            .unwrap()
-            .push(MockDrawCommand::FillRect { rect, color });
-        Ok(())
-    }
 
     fn present(&mut self) -> anyhow::Result<()> {
-        self.commands.lock().unwrap().push(MockDrawCommand::Present);
+        self.commands.lock().unwrap().push(ActualRenderCommand::PresentFrame); // Changed to ActualRenderCommand
         Ok(())
     }
 
     fn set_title(&mut self, _title: &str) {}
     fn bell(&mut self) {}
-    fn set_cursor_visibility(&mut self, _visible: CursorVisibility){}
-    fn set_focus(&mut self, _focused: FocusState) {}
+    fn set_cursor_visibility(&mut self, _visible: CursorVisibility){} // Changed parameter name
+    fn set_focus(&mut self, _focus_state: FocusState) {} // Changed parameter name
     fn cleanup(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
+    fn own_selection(&mut self, _selection_name_atom_u64: u64, _text: String) {} // Added own_selection
+    fn request_selection_data(&mut self, _selection_name_atom_u64: u64, _target_atom_u64: u64) {} // Added request_selection_data
 }
 
 // Helper to create a Renderer and MockDriver
@@ -139,7 +120,7 @@ fn create_test_renderer_and_driver(
     font_width: usize,
     font_height: usize,
 ) -> (Renderer, MockDriver) {
-    let renderer = Renderer::new(); // Renderer::new takes no args
+    let renderer = Renderer::new();
     let display_width_px = (num_cols * font_width) as u16;
     let display_height_px = (num_rows * font_height) as u16;
     let driver = MockDriver::new(font_width, font_height, display_width_px, display_height_px);
@@ -152,13 +133,13 @@ fn create_test_snapshot(
     cursor_state: Option<CursorRenderState>,
     num_cols: usize,
     num_rows: usize,
-    selection_state: Option<Selection>, // Changed SelectionRenderState
+    selection: Selection,
 ) -> RenderSnapshot {
     RenderSnapshot {
         dimensions: (num_cols, num_rows),
         lines: lines_data,
         cursor_state,
-        selection_state,
+        selection, // Changed from selection_state
     }
 }
 
@@ -200,33 +181,31 @@ fn test_render_empty_screen_with_cursor() {
         cell_attributes_underneath: default_attrs(),
     });
 
-    let snapshot = create_test_snapshot(lines, cursor_render_state, num_cols, num_rows, None);
-    renderer
-        .draw(snapshot, &mut driver)
-        .expect("Renderer draw failed");
+    let snapshot = create_test_snapshot(lines, cursor_render_state, num_cols, num_rows, Selection::default());
+    let render_commands = renderer
+        .draw(snapshot)
+        .expect("Render draw failed");
+    driver.execute_render_commands(render_commands).expect("Execute render commands failed");
+    driver.present().expect("Driver present failed");
 
     let commands = driver.commands();
     assert!(!commands.is_empty(), "Should have drawing commands");
 
-    // Expected: FillRect for each dirty line's background, then cursor, then Present.
-    // The renderer should coalesce fills if possible.
-    let expected_bg_fill_line0 = MockDrawCommand::FillRect {
-        rect: CellRect {
-            x: 0,
-            y: 0,
-            width: num_cols,
-            height: 1,
-        },
+    let expected_bg_fill_line0 = ActualRenderCommand::FillRect {
+        x: 0,
+        y: 0,
+        width: num_cols,
+        height: 1,
         color: RENDERER_DEFAULT_BG,
+        is_selection_bg: false,
     };
-    let expected_bg_fill_line1 = MockDrawCommand::FillRect {
-        rect: CellRect {
-            x: 0,
-            y: 1,
-            width: num_cols,
-            height: 1,
-        },
+    let expected_bg_fill_line1 = ActualRenderCommand::FillRect {
+        x: 0,
+        y: 1,
+        width: num_cols,
+        height: 1,
         color: RENDERER_DEFAULT_BG,
+        is_selection_bg: false,
     };
 
     assert!(
@@ -240,16 +219,19 @@ fn test_render_empty_screen_with_cursor() {
         commands
     );
 
-    // Cursor drawing: The renderer draws the character under the cursor with fg/bg swapped.
     let cursor_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_BG,   // Original BG becomes FG for cursor char
-        bg: RENDERER_DEFAULT_FG,   // Original FG becomes BG for cursor cell
-        flags: AttrFlags::empty(), // Assuming no special flags for cursor text itself
+        fg: RENDERER_DEFAULT_BG,
+        bg: RENDERER_DEFAULT_FG,
+        flags: AttrFlags::empty(),
     };
-    let expected_cursor_draw = MockDrawCommand::DrawTextRun {
-        coords: CellCoords { x: 0, y: 0 },
-        text: " ".to_string(), // Character under cursor
-        style: cursor_style,
+    let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
+        x: 0,
+        y: 0,
+        text: " ".to_string(),
+        fg: cursor_style.fg,
+        bg: cursor_style.bg,
+        flags: cursor_style.flags,
+        is_selected: false,
     };
 
     assert!(
@@ -259,7 +241,7 @@ fn test_render_empty_screen_with_cursor() {
     );
     assert_eq!(
         commands.last().unwrap(),
-        &MockDrawCommand::Present,
+        &ActualRenderCommand::PresentFrame,
         "Last command should be Present"
     );
 }
@@ -296,17 +278,19 @@ fn test_render_simple_text() {
     }];
 
     let cursor_render_state = Some(CursorRenderState {
-        x: 2, // Cursor after "Hi"
+        x: 2,
         y: 0,
         shape: CursorShape::Block,
-        cell_char_underneath: ' ', // Char under cursor at (0,2) is space
+        cell_char_underneath: ' ',
         cell_attributes_underneath: default_attrs(),
     });
 
-    let snapshot = create_test_snapshot(lines_data, cursor_render_state, num_cols, num_rows, None);
-    renderer
-        .draw(snapshot, &mut driver)
-        .expect("Renderer draw failed");
+    let snapshot = create_test_snapshot(lines_data, cursor_render_state, num_cols, num_rows, Selection::default());
+    let render_commands = renderer
+        .draw(snapshot)
+        .expect("Render draw failed");
+    driver.execute_render_commands(render_commands).expect("Execute render commands failed");
+    driver.present().expect("Driver present failed");
 
     let commands = driver.commands();
 
@@ -316,11 +300,14 @@ fn test_render_simple_text() {
         flags: AttrFlags::empty(),
     };
 
-    // Renderer should coalesce "H" and "i" into one DrawTextRun
-    let expected_text_hi = MockDrawCommand::DrawTextRun {
-        coords: CellCoords { x: 0, y: 0 },
+    let expected_text_hi = ActualRenderCommand::DrawTextRun {
+        x: 0,
+        y: 0,
         text: "Hi".to_string(),
-        style: default_text_style,
+        fg: default_text_style.fg,
+        bg: default_text_style.bg,
+        flags: default_text_style.flags,
+        is_selected: false,
     };
     assert!(
         commands.contains(&expected_text_hi),
@@ -328,15 +315,13 @@ fn test_render_simple_text() {
         commands
     );
 
-    // Renderer should fill the rest of the line (3 cells: "   ")
-    let expected_fill_spaces = MockDrawCommand::FillRect {
-        rect: CellRect {
-            x: 2, // Starts after "Hi"
-            y: 0,
-            width: num_cols - 2, // 3 cells
-            height: 1,
-        },
+    let expected_fill_spaces = ActualRenderCommand::FillRect {
+        x: 2,
+        y: 0,
+        width: num_cols - 2,
+        height: 1,
         color: RENDERER_DEFAULT_BG,
+        is_selection_bg: false,
     };
     assert!(
         commands.contains(&expected_fill_spaces),
@@ -349,17 +334,21 @@ fn test_render_simple_text() {
         bg: RENDERER_DEFAULT_FG,
         flags: AttrFlags::empty(),
     };
-    let expected_cursor_draw = MockDrawCommand::DrawTextRun {
-        coords: CellCoords { x: 2, y: 0 }, // Cursor at (0,2)
-        text: " ".to_string(),             // Char under cursor is space
-        style: cursor_style,
+    let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
+        x: 2,
+        y: 0,
+        text: " ".to_string(),
+        fg: cursor_style.fg,
+        bg: cursor_style.bg,
+        flags: cursor_style.flags,
+        is_selected: false,
     };
     assert!(
         commands.contains(&expected_cursor_draw),
         "Missing cursor draw. Commands: {:?}",
         commands
     );
-    assert_eq!(commands.last().unwrap(), &MockDrawCommand::Present);
+    assert_eq!(commands.last().unwrap(), &ActualRenderCommand::PresentFrame);
 }
 
 #[test]
@@ -407,12 +396,11 @@ fn test_dirty_line_processing() {
             cells: line0_dirty_cells.clone(),
         },
         SnapshotLine {
-            is_dirty: false, // Line 1 is NOT dirty
+            is_dirty: false,
             cells: line1_clean_cells.clone(),
         },
     ];
 
-    // Cursor on the dirty line
     let cursor_state = Some(CursorRenderState {
         x: 1,
         y: 0,
@@ -421,10 +409,12 @@ fn test_dirty_line_processing() {
         cell_attributes_underneath: default_attrs(),
     });
 
-    let snapshot = create_test_snapshot(lines_data, cursor_state, num_cols, num_rows, None);
-    renderer
-        .draw(snapshot, &mut driver)
-        .expect("Renderer draw failed");
+    let snapshot = create_test_snapshot(lines_data, cursor_state, num_cols, num_rows, Selection::default());
+    let render_commands = renderer
+        .draw(snapshot)
+        .expect("Render draw failed");
+    driver.execute_render_commands(render_commands).expect("Execute render commands failed");
+    driver.present().expect("Driver present failed");
 
     let commands = driver.commands();
 
@@ -434,11 +424,14 @@ fn test_dirty_line_processing() {
         flags: AttrFlags::empty(),
     };
 
-    // Check that "ABC" from dirty line 0 was drawn
-    let expected_text_abc = MockDrawCommand::DrawTextRun {
-        coords: CellCoords { x: 0, y: 0 },
+    let expected_text_abc = ActualRenderCommand::DrawTextRun {
+        x: 0,
+        y: 0,
         text: "ABC".to_string(),
-        style: default_text_style,
+        fg: default_text_style.fg,
+        bg: default_text_style.bg,
+        flags: default_text_style.flags,
+        is_selected: false,
     };
     assert!(
         commands.contains(&expected_text_abc),
@@ -446,11 +439,14 @@ fn test_dirty_line_processing() {
         commands
     );
 
-    // Check that "XYZ" from clean line 1 was NOT drawn as a text run
-    let non_expected_text_xyz = MockDrawCommand::DrawTextRun {
-        coords: CellCoords { x: 0, y: 1 },
+    let non_expected_text_xyz = ActualRenderCommand::DrawTextRun {
+        x: 0,
+        y: 1,
         text: "XYZ".to_string(),
-        style: default_text_style,
+        fg: default_text_style.fg,
+        bg: default_text_style.bg,
+        flags: default_text_style.flags,
+        is_selected: false,
     };
     assert!(
         !commands.contains(&non_expected_text_xyz),
@@ -458,9 +454,8 @@ fn test_dirty_line_processing() {
         commands
     );
 
-    // Check if there's any FillRect for line 1 (it shouldn't be, as it's not dirty)
     let fill_rect_line1_found = commands.iter().any(|cmd| match cmd {
-        MockDrawCommand::FillRect { rect, .. } => rect.y == 1,
+        ActualRenderCommand::FillRect { y, .. } => *y == 1, // Corrected destructuring
         _ => false,
     });
     assert!(
@@ -474,10 +469,14 @@ fn test_dirty_line_processing() {
         bg: RENDERER_DEFAULT_FG,
         flags: AttrFlags::empty(),
     };
-    let expected_cursor_draw = MockDrawCommand::DrawTextRun {
-        coords: CellCoords { x: 1, y: 0 }, // Cursor at (0,1) over 'B'
+    let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
+        x: 1,
+        y: 0,
         text: "B".to_string(),
-        style: cursor_style,
+        fg: cursor_style.fg,
+        bg: cursor_style.bg,
+        flags: cursor_style.flags,
+        is_selected: false,
     };
     assert!(
         commands.contains(&expected_cursor_draw),
@@ -485,5 +484,5 @@ fn test_dirty_line_processing() {
         commands
     );
 
-    assert_eq!(commands.last().unwrap(), &MockDrawCommand::Present);
+    assert_eq!(commands.last().unwrap(), &ActualRenderCommand::PresentFrame);
 }

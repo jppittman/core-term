@@ -4,7 +4,7 @@ use super::{FocusState, TerminalEmulator};
 use crate::keys::{KeySymbol, Modifiers};
 use crate::term::{
     action::{EmulatorAction, UserInputAction}, // Removed MouseButton, MouseEventType
-    snapshot::Point, // Removed SelectionMode as it's handled in TerminalEmulator methods
+    snapshot::{Point, SelectionMode}, // Removed SelectionMode as it's handled in TerminalEmulator methods
     ControlEvent,
 };
 use log::{debug, trace}; // Added debug log
@@ -165,20 +165,16 @@ pub(super) fn process_user_input_action(
                 return Some(EmulatorAction::WritePty(bytes_to_send));
             }
         }
-        // --- New Selection Handlers ---
         UserInputAction::StartSelection { x, y } => {
-            emulator.start_selection(Point { x, y });
-            // Potentially mark screen as dirty or request redraw
+            emulator.start_selection(Point { x, y }, SelectionMode::Cell);
             return Some(EmulatorAction::RequestRedraw);
         }
         UserInputAction::ExtendSelection { x, y } => {
             emulator.extend_selection(Point { x, y });
-            // Potentially mark screen as dirty or request redraw
             return Some(EmulatorAction::RequestRedraw);
         }
         UserInputAction::ApplySelectionClear => {
             emulator.apply_selection_clear();
-            // Potentially mark screen as dirty or request redraw
             return Some(EmulatorAction::RequestRedraw);
         }
         UserInputAction::RequestClipboardPaste => {
@@ -186,78 +182,37 @@ pub(super) fn process_user_input_action(
             return Some(EmulatorAction::RequestClipboardContent);
         }
         UserInputAction::RequestPrimaryPaste => {
-            // TODO: Implement primary paste. For now, it might behave like clipboard paste or log.
             debug!("UserInputAction: RequestPrimaryPaste received. (Currently not fully implemented, forwarding to RequestClipboardContent)");
-            // For now, let's make it behave like a standard clipboard paste request.
-            // Later, this could be a different EmulatorAction if the orchestrator needs to distinguish.
             return Some(EmulatorAction::RequestClipboardContent);
         }
-        // --- End of New Selection Handlers ---
         UserInputAction::InitiateCopy => {
-            // This uses `emulator.screen.get_selected_text()`.
-            // The `get_selected_text` method needs to be implemented on `Screen` or `TerminalEmulator`.
-            // Assuming `TerminalEmulator::get_selected_text()` will be added later and call `self.screen.get_selected_text()`.
-            // For now, this might not compile if `get_selected_text` is not yet on `Screen` or `TerminalEmulator`.
-            // Let's assume `get_selected_text` will be part of `TerminalEmulator` and accesses `self.screen.selection`.
-            // if let Some(text) = emulator.get_selected_text() { // TODO: Uncomment when get_selected_text is available
-            if let Some(_text) = String::new().into() { // Placeholder for compilation
-               // TODO: Replace placeholder with actual call to get_selected_text
-               // if !text.is_empty() {
-                    // return Some(EmulatorAction::CopyToClipboard(text));
-                // }
+            if let Some(text) = emulator.get_selected_text() {
+                if !text.is_empty() {
+                    return Some(EmulatorAction::CopyToClipboard(text));
+                }
             }
-            // Fallthrough for now, or log if get_selected_text is not ready
-            debug!("UserInputAction: InitiateCopy called. `get_selected_text` needs implementation.");
-        }
-        UserInputAction::InitiatePaste => { // This action might be redundant if RequestClipboardPaste is used
-            debug!("UserInputAction: InitiatePaste received. Forwarding to RequestClipboardContent.");
-            return Some(EmulatorAction::RequestClipboardContent);
+            debug!("UserInputAction: InitiateCopy called but no text selected or selection empty.");
         }
         UserInputAction::PasteText(text_to_paste) => {
             if emulator.dec_modes.bracketed_paste_mode {
                 log::debug!("InputHandler: Bracketed paste mode ON. Wrapping and sending to PTY.");
                 let mut pasted_bytes = Vec::new();
-                pasted_bytes.extend_from_slice(b"\x1b[200~"); // Start bracketed paste
+                pasted_bytes.extend_from_slice(b"\x1b[200~");
                 pasted_bytes.extend_from_slice(text_to_paste.as_bytes());
-                pasted_bytes.extend_from_slice(b"\x1b[201~"); // End bracketed paste
+                pasted_bytes.extend_from_slice(b"\x1b[201~");
                 return Some(EmulatorAction::WritePty(pasted_bytes));
             } else {
                 log::debug!("InputHandler: Bracketed paste mode OFF. Calling emulator.paste_text.");
-                emulator.paste_text(text_to_paste); // Process char by char
-                return Some(EmulatorAction::RequestRedraw); // Ensure UI updates after char-by-char paste
-            }
-        }
-    }
-    None
-}
-                    // if emulator.screen.selection.start.is_none() { // Check if clear_selection also requests redraw
-                    //     return Some(EmulatorAction::RequestRedraw); // if clearing selection and it doesn't redraw
-                    // }
-                    return Some(EmulatorAction::CopyToClipboard(text));
+                for char_val in text_to_paste.chars() { // Iterate over chars and process them
+                    emulator.print_char(char_val);
                 }
-            }
-        }
-        UserInputAction::InitiatePaste => {
-            return Some(EmulatorAction::RequestClipboardContent);
-        }
-        UserInputAction::PasteText(text_to_paste) => {
-            // Convert pasted text to bytes and send to PTY.
-            // This might need further processing (e.g., bracketed paste mode wrapping).
-            if emulator.dec_modes.bracketed_paste_mode {
-                let mut pasted_bytes = Vec::new();
-                pasted_bytes.extend_from_slice(b"\x1b[200~"); // Start bracketed paste
-                pasted_bytes.extend_from_slice(text_to_paste.as_bytes());
-                pasted_bytes.extend_from_slice(b"\x1b[201~"); // End bracketed paste
-                return Some(EmulatorAction::WritePty(pasted_bytes));
-            } else {
-                return Some(EmulatorAction::WritePty(text_to_paste.into_bytes()));
+                return Some(EmulatorAction::RequestRedraw);
             }
         }
     }
     None
 }
 
-// Preserving process_control_event as it's called from TerminalEmulator::interpret_input
 pub(super) fn process_control_event(
     emulator: &mut TerminalEmulator,
     event: ControlEvent,
@@ -266,7 +221,6 @@ pub(super) fn process_control_event(
     match event {
         ControlEvent::FrameRendered => {
             trace!("TerminalEmulator: FrameRendered event received.");
-            // Potentially reset some per-frame state here if needed in the future.
             None
         }
         ControlEvent::Resize { cols, rows } => {
@@ -275,18 +229,18 @@ pub(super) fn process_control_event(
                 cols,
                 rows
             );
-            emulator.resize(cols, rows); // Call the existing resize method on TerminalEmulator
-            None // Resize itself doesn't directly cause an EmulatorAction to be returned.
-                 // Redraw is handled implicitly or by the orchestrator.
+            emulator.resize(cols, rows);
+            None
         }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::emulator::TerminalEmulator; // For creating test emulator
-    use crate::term::DecPrivateModes; // For setting bracketed paste
+    use crate::term::emulator::TerminalEmulator;
+    use crate::term::DecPrivateModes;
 
-    // Helper to create a default emulator for input handler tests
     fn create_test_emu_for_input() -> TerminalEmulator {
         TerminalEmulator::new(80, 24, 100)
     }
@@ -294,7 +248,7 @@ mod tests {
     #[test]
     fn test_paste_text_action_bracketed_on() {
         let mut emu = create_test_emu_for_input();
-        emu.dec_modes.bracketed_paste_mode = true; // Turn on bracketed paste
+        emu.dec_modes.bracketed_paste_mode = true;
 
         let text_to_paste = "Hello\nWorld".to_string();
         let action = UserInputAction::PasteText(text_to_paste.clone());
@@ -308,27 +262,27 @@ mod tests {
     #[test]
     fn test_paste_text_action_bracketed_off() {
         let mut emu = create_test_emu_for_input();
-        // Bracketed paste is off by default
         assert!(!emu.dec_modes.bracketed_paste_mode);
 
         let text_to_paste = "Hello\nWorld".to_string();
         let action = UserInputAction::PasteText(text_to_paste.clone());
 
-        // process_user_input_action will call emu.paste_text() internally.
-        // We check that the correct EmulatorAction is returned.
         let result = process_user_input_action(&mut emu, action);
         assert_eq!(result, Some(EmulatorAction::RequestRedraw));
 
-        // Additionally, verify side effect of paste_text on emulator (optional, more of an integration check)
-        // This relies on TerminalEmulator::paste_text and ::print_char working as expected.
         let snapshot = emu.get_render_snapshot();
+        // Print the actual screen content for debugging
+        for (r, line) in snapshot.lines.iter().enumerate() {
+            let line_str: String = line.cells.iter().map(|cell| cell.c).collect();
+            println!("Actual line {}: '{}'", r, line_str);
+        }
+        println!("Actual cursor pos: {:?}", snapshot.cursor_state.map(|cs| (cs.y, cs.x)));
+
         assert_eq!(snapshot.lines[0].cells[0].c, 'H');
         assert_eq!(snapshot.lines[0].cells[1].c, 'e');
         assert_eq!(snapshot.lines[0].cells[2].c, 'l');
         assert_eq!(snapshot.lines[0].cells[3].c, 'l');
         assert_eq!(snapshot.lines[0].cells[4].c, 'o');
-        assert_eq!(snapshot.lines[1].cells[0].c, 'W'); // After newline
-    }
-}
+        assert_eq!(snapshot.lines[1].cells[0].c, 'W');
     }
 }

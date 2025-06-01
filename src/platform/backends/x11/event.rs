@@ -12,6 +12,7 @@ use std::ffi::c_void; // For XGetWindowProperty
 use log::{debug, info, trace, warn};
 use std::mem;
 use std::ptr;
+use std::os::raw::{c_ulong, c_long}; // Added c_ulong and c_long
 
 // X11 library imports
 use libc::{c_char, c_int};
@@ -343,7 +344,7 @@ pub fn process_pending_events(
             }
             xlib::SelectionRequest => {
                 // SAFETY: Accessing `xselectionrequest` is safe.
-                let req = unsafe { xevent.selectionrequest };
+                let req = unsafe { xevent.selection_request };
                 debug!(
                     "XEvent: SelectionRequest (owner: {}, requestor: {}, selection: {}, target: {}, property: {})",
                     req.owner, req.requestor, req.selection, req.target, req.property
@@ -355,7 +356,7 @@ pub fn process_pending_events(
                 response_event.requestor = req.requestor;
                 response_event.selection = req.selection;
                 response_event.target = req.target;
-                response_event.property = xlib::None; // Default to None, set if successful
+                response_event.property = 0; // Default to None (0), set if successful
                 response_event.time = req.time;
 
                 if req.owner == window.id() {
@@ -449,7 +450,7 @@ pub fn process_pending_events(
 
                 // We are the requestor, so sel_event.requestor should be our window.
                 if sel_event.requestor == window.id() {
-                    if sel_event.property != xlib::None {
+                    if sel_event.property != 0 { // Property is not None (0)
                         // Property is set, data should be available.
                         let mut actual_type_return: xlib::Atom = 0;
                         let mut actual_format_return: c_int = 0;
@@ -464,9 +465,9 @@ pub fn process_pending_events(
                                 sel_event.requestor, // Our window
                                 sel_event.property,  // Property where data is stored
                                 0,                   // offset
-                                c_long::MAX,         // length (request as much as possible)
+                                i32::MAX as c_long,  // length (request as much as possible)
                                 xlib::True,          // delete property after fetching
-                                xlib::AnyPropertyType, // requested type (AnyPropertyType allows server to choose)
+                                xlib::AnyPropertyType as u64, // requested type (AnyPropertyType allows server to choose)
                                 &mut actual_type_return,
                                 &mut actual_format_return,
                                 &mut nitems_return,

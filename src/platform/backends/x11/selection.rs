@@ -50,7 +50,7 @@ impl SelectionAtoms {
             let atom = unsafe {
                 xlib::XInternAtom(display, atom_name_cstr.as_ptr() as *const c_char, xlib::False)
             };
-            if atom == xlib::NONE { // xlib::NONE is typically 0
+            if atom == 0 { // xlib::NONE is typically 0
                 Err(anyhow::anyhow!("Failed to intern X11 atom: {}", name))
             } else {
                 Ok(atom)

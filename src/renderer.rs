@@ -11,7 +11,7 @@
 use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::platform::backends::RenderCommand; // Updated import
-use crate::term::snapshot::{Point, RenderSnapshot, Selection}; // Updated import (removed SelectionMode)
+use crate::term::snapshot::{Point, RenderSnapshot, Selection};
 use crate::term::unicode::get_char_display_width;
 
 
@@ -109,7 +109,7 @@ impl Renderer {
                 continue;
             };
 
-            self.draw_line_content_from_slice(y_abs, term_width, &line_data.cells, &snapshot.selection_state, &mut commands)?;
+            self.draw_line_content_from_slice(y_abs, term_width, &line_data.cells, &Some(snapshot.selection.clone()), &mut commands)?;
         }
 
         self.draw_cursor_overlay(&snapshot, &mut commands)?;
@@ -118,13 +118,13 @@ impl Renderer {
     }
 
     /// Helper to check if a cell (x,y) is within the selection range.
-    fn is_cell_selected(&self, x: usize, y: usize, term_width: usize, selection_state: &Option<Selection>) -> bool {
+    fn is_cell_selected(&self, x: usize, y: usize, term_width: usize, selection: &Option<Selection>) -> bool {
         if term_width == 0 { return false; }
-        if let Some(selection) = selection_state {
-            if !selection.is_active { return false; }
-            if let (Some(start_point), Some(end_point)) = (selection.start, selection.end) {
-                let mut start_offset = start_point.y * term_width + start_point.x;
-                let mut end_offset = end_point.y * term_width + end_point.x;
+        if let Some(sel) = selection {
+            if !sel.is_active { return false; }
+            if let Some(range) = &sel.range {
+                let mut start_offset = range.start.y * term_width + range.start.x;
+                let mut end_offset = range.end.y * term_width + range.end.x;
 
                 // Handle selection direction
                 if start_offset > end_offset {
@@ -144,7 +144,7 @@ impl Renderer {
         y_abs: usize,
         term_width: usize,
         line_glyphs: &[Glyph],
-        selection_state: &Option<Selection>,
+        selection: &Option<Selection>,
         commands: &mut Vec<RenderCommand>,
     ) -> Result<()> {
         let mut current_col: usize = 0;
@@ -167,8 +167,8 @@ impl Renderer {
 
             let cells_consumed = match start_glyph.c {
                 '\0' => self.handle_wide_char_placeholder(current_col, y_abs, line_glyphs, commands)?,
-                ' ' => self.draw_space_run_from_slice(current_col, y_abs, term_width, start_glyph, line_glyphs, selection_state, commands)?,
-                _ => self.handle_text_segment(current_col, y_abs, term_width, start_glyph, line_glyphs, selection_state, commands)?,
+                ' ' => self.draw_space_run_from_slice(current_col, y_abs, term_width, start_glyph, line_glyphs, selection, commands)?,
+                _ => self.handle_text_segment(current_col, y_abs, term_width, start_glyph, line_glyphs, selection, commands)?,
             };
 
             if cells_consumed == 0 {
@@ -222,11 +222,11 @@ impl Renderer {
         term_width: usize,
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
-        selection_state: &Option<Selection>,
+        selection: &Option<Selection>,
         commands: &mut Vec<RenderCommand>,
     ) -> Result<usize> {
         let cells_consumed_by_text_run = self.draw_text_segment_from_slice(
-            current_col, y_abs, term_width, start_glyph, line_glyphs, selection_state, commands,
+            current_col, y_abs, term_width, start_glyph, line_glyphs, selection, commands,
         )?;
 
         if get_char_display_width(start_glyph.c) != 2 {
@@ -295,7 +295,7 @@ impl Renderer {
         term_width: usize,
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
-        selection_state: &Option<Selection>,
+        selection: &Option<Selection>,
         commands: &mut Vec<RenderCommand>,
     ) -> Result<usize> {
         debug_assert!(start_glyph.c == ' ', "draw_space_run_from_slice called with non-space start_glyph");
@@ -319,7 +319,7 @@ impl Renderer {
 
         if space_run_len == 0 {
             warn!("Renderer::draw_space_run_from_slice: space_run_len is 0 at ({},{}). Drawing single space.", start_col, y);
-            let is_selected = self.is_cell_selected(start_col, y, term_width, selection_state);
+            let is_selected = self.is_cell_selected(start_col, y, term_width, selection);
             commands.push(RenderCommand::FillRect {
                 x: start_col, y, width: 1, height: 1,
                 color: start_eff_bg, is_selection_bg: is_selected,
@@ -327,7 +327,7 @@ impl Renderer {
             return Ok(SINGLE_CELL_CONSUMED);
         }
 
-        let is_run_selected = self.is_cell_selected(start_col, y, term_width, selection_state);
+        let is_run_selected = self.is_cell_selected(start_col, y, term_width, selection);
 
         trace!("    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}, selected: {}", y, start_col, space_run_len, start_eff_bg, start_eff_flags, is_run_selected);
         commands.push(RenderCommand::FillRect {
@@ -344,7 +344,7 @@ impl Renderer {
         term_width: usize,
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
-        selection_state: &Option<Selection>,
+        selection: &Option<Selection>,
         commands: &mut Vec<RenderCommand>,
     ) -> Result<usize> {
         debug_assert!(start_glyph.c != ' ' && start_glyph.c != '\0', "draw_text_segment_from_slice called with space or placeholder start_glyph");
@@ -387,7 +387,7 @@ impl Renderer {
             return Ok(initial_char_width.max(SINGLE_CELL_CONSUMED));
         }
 
-        let is_run_selected = self.is_cell_selected(start_col, y, term_width, selection_state);
+        let is_run_selected = self.is_cell_selected(start_col, y, term_width, selection);
 
         trace!("    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style=fg:{:?},bg:{:?},flags:{:?},selected:{}", y, start_col, run_text, run_total_cell_width, start_eff_fg, start_eff_bg, start_eff_flags, is_run_selected);
         commands.push(RenderCommand::DrawTextRun {
@@ -447,7 +447,7 @@ impl Renderer {
         let cursor_display_flags = resolved_original_flags;
         let final_char_to_draw_for_cursor = if char_to_draw_at_cursor == '\0' { ' ' } else { char_to_draw_at_cursor };
 
-        let is_cursor_pos_selected = self.is_cell_selected(physical_cursor_x_for_draw, cursor_abs_y, term_width, &snapshot.selection_state);
+        let is_cursor_pos_selected = self.is_cell_selected(physical_cursor_x_for_draw, cursor_abs_y, term_width, &Some(snapshot.selection.clone()));
 
         trace!("    Drawing cursor overlay: char='{}' at physical ({},{}) with style: fg:{:?},bg:{:?},flags:{:?},selected:{}", final_char_to_draw_for_cursor, physical_cursor_x_for_draw, cursor_abs_y, cursor_char_fg, cursor_cell_bg, cursor_display_flags, is_cursor_pos_selected);
         commands.push(RenderCommand::DrawTextRun {
