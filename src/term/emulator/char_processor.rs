@@ -34,6 +34,12 @@ impl TerminalEmulator {
     // Called from ansi_handler.rs, so pub(super) or pub.
     // pub(super) is fine as ansi_handler is a sibling module.
     pub fn print_char(&mut self, ch: char) {
+        if ch == '\n' {
+            self.carriage_return();
+            self.move_down_one_line_and_dirty();
+            return;
+        }
+
         // Map character to the active G0/G1/G2/G3 character set.
         let ch_to_print = self.map_char_to_active_charset(ch);
         let char_width = get_char_display_width(ch_to_print);
@@ -167,5 +173,8 @@ impl TerminalEmulator {
         // Set cursor_wrap_next if the cursor is exactly at or beyond the width.
         // e.g., width 80 (cols 0-79). If final_logical_x is 80, it's at the wrap position.
         self.cursor_wrap_next = final_logical_x >= screen_ctx.width;
+        if self.cursor_wrap_next {
+            println!("cursor_wrap_next set to true. final_logical_x: {}, screen_ctx.width: {}", final_logical_x, screen_ctx.width);
+        }
     }
 }
