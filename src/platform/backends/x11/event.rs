@@ -4,9 +4,11 @@
 use super::connection::Connection;
 use super::window::Window;
 use crate::keys::{KeySymbol, Modifiers};
-use crate::platform::backends::BackendEvent;
+use crate::platform::backends::{BackendEvent, MouseButton}; // Import MouseButton
+use super::selection::SelectionAtoms; // Added for selection handling
 
 use anyhow::Result; // Context not used directly, anyhow for Result
+use std::ffi::c_void; // For XGetWindowProperty
 use log::{debug, info, trace, warn};
 use std::mem;
 use std::ptr;
@@ -33,6 +35,10 @@ const KEY_TEXT_BUFFER_SIZE: usize = 32;
 /// * `xdriver_has_focus`: A mutable reference to a boolean flag, managed by `XDriver`,
 ///   indicating if the application window currently has input focus. This flag is
 ///   updated by this function based on `FocusIn` and `FocusOut` XEvents.
+/// * `selection_atoms`: A reference to the `SelectionAtoms` struct containing interned atoms
+///   for selection handling (e.g., PRIMARY, CLIPBOARD, UTF8_STRING).
+/// * `selection_text`: An optional reference to the string currently held by the `XDriver`
+///   if it owns a selection. This is used to respond to `SelectionRequest` events.
 ///
 /// # Returns
 ///
@@ -47,6 +53,8 @@ pub fn process_pending_events(
     connection: &Connection,
     window: &mut Window,
     xdriver_has_focus: &mut bool,
+    selection_atoms: &SelectionAtoms,    // Added
+    selection_text: Option<&String>, // Added
 ) -> Result<Vec<BackendEvent>> {
     let mut backend_events = Vec::new();
     let display = connection.display();
@@ -232,7 +240,303 @@ pub fn process_pending_events(
                 *xdriver_has_focus = false;
                 backend_events.push(BackendEvent::FocusLost);
             }
-            // TODO: Add handlers for other event types as needed (e.g., ButtonPress for mouse input).
+            xlib::ButtonPress => {
+                // SAFETY: Accessing `xbutton` is safe as `event_type` is `ButtonPress`.
+                let button_event = unsafe { xevent.button };
+                let mut modifiers = Modifiers::empty();
+                if (button_event.state & xlib::ShiftMask) != 0 {
+                    modifiers.insert(Modifiers::SHIFT);
+                }
+                if (button_event.state & xlib::ControlMask) != 0 {
+                    modifiers.insert(Modifiers::CONTROL);
+                }
+                if (button_event.state & xlib::Mod1Mask) != 0 {
+                    modifiers.insert(Modifiers::ALT);
+                }
+                if (button_event.state & xlib::Mod4Mask) != 0 {
+                    modifiers.insert(Modifiers::SUPER);
+                }
+
+                let button = match button_event.button {
+                    xlib::Button1 => MouseButton::Left,
+                    xlib::Button2 => MouseButton::Middle,
+                    xlib::Button3 => MouseButton::Right,
+                    xlib::Button4 => MouseButton::ScrollUp, // Conventionally scroll up
+                    xlib::Button5 => MouseButton::ScrollDown, // Conventionally scroll down
+                    other => MouseButton::Other(other as u8),
+                };
+
+                debug!(
+                    "XEvent: ButtonPress (button: {:?}, x: {}, y: {}, modifiers: {:?}) on window {}",
+                    button, button_event.x, button_event.y, modifiers, button_event.window
+                );
+                backend_events.push(BackendEvent::MouseButtonPress {
+                    button,
+                    x: button_event.x as u16,
+                    y: button_event.y as u16,
+                    modifiers,
+                });
+            }
+            xlib::ButtonRelease => {
+                // SAFETY: Accessing `xbutton` is safe as `event_type` is `ButtonRelease`.
+                let button_event = unsafe { xevent.button };
+                let mut modifiers = Modifiers::empty();
+                if (button_event.state & xlib::ShiftMask) != 0 {
+                    modifiers.insert(Modifiers::SHIFT);
+                }
+                if (button_event.state & xlib::ControlMask) != 0 {
+                    modifiers.insert(Modifiers::CONTROL);
+                }
+                if (button_event.state & xlib::Mod1Mask) != 0 {
+                    modifiers.insert(Modifiers::ALT);
+                }
+                if (button_event.state & xlib::Mod4Mask) != 0 {
+                    modifiers.insert(Modifiers::SUPER);
+                }
+
+                let button = match button_event.button {
+                    xlib::Button1 => MouseButton::Left,
+                    xlib::Button2 => MouseButton::Middle,
+                    xlib::Button3 => MouseButton::Right,
+                    xlib::Button4 => MouseButton::ScrollUp,
+                    xlib::Button5 => MouseButton::ScrollDown,
+                    other => MouseButton::Other(other as u8),
+                };
+
+                debug!(
+                    "XEvent: ButtonRelease (button: {:?}, x: {}, y: {}, modifiers: {:?}) on window {}",
+                    button, button_event.x, button_event.y, modifiers, button_event.window
+                );
+                backend_events.push(BackendEvent::MouseButtonRelease {
+                    button,
+                    x: button_event.x as u16,
+                    y: button_event.y as u16,
+                    modifiers,
+                });
+            }
+            xlib::MotionNotify => {
+                // SAFETY: Accessing `xmotion` is safe as `event_type` is `MotionNotify`.
+                let motion_event = unsafe { xevent.motion };
+                let mut modifiers = Modifiers::empty();
+                if (motion_event.state & xlib::ShiftMask) != 0 {
+                    modifiers.insert(Modifiers::SHIFT);
+                }
+                if (motion_event.state & xlib::ControlMask) != 0 {
+                    modifiers.insert(Modifiers::CONTROL);
+                }
+                if (motion_event.state & xlib::Mod1Mask) != 0 {
+                    modifiers.insert(Modifiers::ALT);
+                }
+                if (motion_event.state & xlib::Mod4Mask) != 0 {
+                    modifiers.insert(Modifiers::SUPER);
+                }
+
+                trace!(
+                    "XEvent: MotionNotify (x: {}, y: {}, modifiers: {:?}) on window {}",
+                    motion_event.x, motion_event.y, modifiers, motion_event.window
+                );
+                backend_events.push(BackendEvent::MouseMove {
+                    x: motion_event.x as u16,
+                    y: motion_event.y as u16,
+                    modifiers,
+                });
+            }
+            xlib::SelectionRequest => {
+                // SAFETY: Accessing `xselectionrequest` is safe.
+                let req = unsafe { xevent.selectionrequest };
+                debug!(
+                    "XEvent: SelectionRequest (owner: {}, requestor: {}, selection: {}, target: {}, property: {})",
+                    req.owner, req.requestor, req.selection, req.target, req.property
+                );
+
+                let mut response_event: xlib::XSelectionEvent = unsafe { mem::zeroed() };
+                response_event.type_ = xlib::SelectionNotify;
+                response_event.display = req.display; // Must be set
+                response_event.requestor = req.requestor;
+                response_event.selection = req.selection;
+                response_event.target = req.target;
+                response_event.property = xlib::None; // Default to None, set if successful
+                response_event.time = req.time;
+
+                if req.owner == window.id() {
+                    if let Some(owned_text_str) = selection_text {
+                        if req.target == selection_atoms.utf8_string ||
+                           req.target == selection_atoms.text ||
+                           req.target == xlib::XA_STRING { // XA_STRING is often used for basic text
+                            // SAFETY: FFI call.
+                            unsafe {
+                                xlib::XChangeProperty(
+                                    display,
+                                    req.requestor,
+                                    req.property,
+                                    req.target, // Use the requested target type as the property type
+                                    8, // format 8 for UTF-8 text
+                                    xlib::PropModeReplace,
+                                    owned_text_str.as_ptr() as *const u8,
+                                    owned_text_str.len() as c_int,
+                                );
+                            }
+                            response_event.property = req.property; // Signal success
+                            debug!("SelectionRequest: Responded with UTF8_STRING for selection atom {}", req.selection);
+                        } else if req.target == selection_atoms.targets {
+                            // Respond with a list of supported targets.
+                            let mut supported_targets: Vec<xlib::Atom> = vec![
+                                selection_atoms.targets,
+                                selection_atoms.utf8_string,
+                                selection_atoms.text,
+                                xlib::XA_STRING,
+                                // Add other supported types like COMPOUND_TEXT if handled
+                            ];
+                            // SAFETY: FFI call.
+                            unsafe {
+                                xlib::XChangeProperty(
+                                    display,
+                                    req.requestor,
+                                    req.property,
+                                    xlib::XA_ATOM, // Property type is ATOM for TARGETS
+                                    32, // format 32 for atoms
+                                    xlib::PropModeReplace,
+                                    supported_targets.as_mut_ptr() as *mut u8, // Pointer to atom data
+                                    supported_targets.len() as c_int,    // Number of items
+                                );
+                            }
+                            response_event.property = req.property; // Signal success
+                            debug!("SelectionRequest: Responded with TARGETS for selection atom {}", req.selection);
+                        } else {
+                            warn!(
+                                "SelectionRequest: Unsupported target type {} for selection atom {}",
+                                req.target, req.selection
+                            );
+                            // Property remains None, indicating failure to convert.
+                        }
+                    } else {
+                        // We are the owner, but selection_text is None. This shouldn't typically happen
+                        // if we correctly set selection_text when calling XSetSelectionOwner.
+                        warn!("SelectionRequest: Owner but no selection text available for selection atom {}.", req.selection);
+                        // Property remains None.
+                    }
+                } else {
+                    // This should not happen if XSetSelectionOwner was successful and another window
+                    // hasn't immediately taken ownership.
+                    warn!(
+                        "SelectionRequest: Received request for selection atom {}, but we are not the owner (owner is {}).",
+                        req.selection, req.owner
+                    );
+                    // Property remains None.
+                }
+
+                // SAFETY: FFI call to send the SelectionNotify event.
+                // `XSendEvent` needs a pointer to the event.
+                unsafe {
+                    xlib::XSendEvent(
+                        display,
+                        req.requestor,
+                        xlib::False, // Don't propagate
+                        xlib::NoEventMask, // No event mask
+                        &mut response_event as *mut xlib::XSelectionEvent as *mut xlib::XEvent,
+                    );
+                    xlib::XFlush(display); // Ensure event is sent.
+                }
+                trace!("Sent SelectionNotify to requestor {}", req.requestor);
+            }
+            xlib::SelectionNotify => {
+                // SAFETY: Accessing `xselection` is safe.
+                let sel_event = unsafe { xevent.selection };
+                debug!(
+                    "XEvent: SelectionNotify (requestor: {}, selection: {}, target: {}, property: {})",
+                    sel_event.requestor, sel_event.selection, sel_event.target, sel_event.property
+                );
+
+                // We are the requestor, so sel_event.requestor should be our window.
+                if sel_event.requestor == window.id() {
+                    if sel_event.property != xlib::None {
+                        // Property is set, data should be available.
+                        let mut actual_type_return: xlib::Atom = 0;
+                        let mut actual_format_return: c_int = 0;
+                        let mut nitems_return: c_ulong = 0;
+                        let mut bytes_after_return: c_ulong = 0;
+                        let mut prop_return_ptr: *mut u8 = ptr::null_mut();
+
+                        // SAFETY: FFI call to XGetWindowProperty.
+                        let status = unsafe {
+                            xlib::XGetWindowProperty(
+                                display,
+                                sel_event.requestor, // Our window
+                                sel_event.property,  // Property where data is stored
+                                0,                   // offset
+                                c_long::MAX,         // length (request as much as possible)
+                                xlib::True,          // delete property after fetching
+                                xlib::AnyPropertyType, // requested type (AnyPropertyType allows server to choose)
+                                &mut actual_type_return,
+                                &mut actual_format_return,
+                                &mut nitems_return,
+                                &mut bytes_after_return,
+                                &mut prop_return_ptr,
+                            )
+                        };
+
+                        if status == xlib::Success.into() && !prop_return_ptr.is_null() && nitems_return > 0 {
+                            if actual_type_return == selection_atoms.utf8_string ||
+                               actual_type_return == selection_atoms.text ||
+                               actual_type_return == xlib::XA_STRING {
+                                // Assume 8-bit format for text data.
+                                if actual_format_return == 8 {
+                                    // SAFETY: Create slice from raw pointer.
+                                    let data_slice = unsafe {
+                                        std::slice::from_raw_parts(prop_return_ptr, nitems_return as usize)
+                                    };
+                                    match String::from_utf8(data_slice.to_vec()) {
+                                        Ok(text) => {
+                                            debug!("SelectionNotify: Received text: '{}'", text);
+                                            backend_events.push(BackendEvent::PasteData { text });
+                                        }
+                                        Err(e) => {
+                                            warn!("SelectionNotify: Failed to decode UTF-8 string: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    warn!(
+                                        "SelectionNotify: Received text data with unexpected format (expected 8, got {}).",
+                                        actual_format_return
+                                    );
+                                }
+                            } else if actual_type_return == selection_atoms.targets {
+                                // We requested TARGETS, this would be a list of atoms.
+                                // This case is less common for a typical paste operation, usually we ask for text directly.
+                                // If we were to handle it, we'd parse the list of atoms.
+                                info!("SelectionNotify: Received TARGETS (type atom: {}). Data items: {}.", actual_type_return, nitems_return);
+                            } else {
+                                warn!(
+                                    "SelectionNotify: Received data in unexpected type (atom: {}). Format: {}. Items: {}.",
+                                    actual_type_return, actual_format_return, nitems_return
+                                );
+                            }
+                            // Free the data returned by XGetWindowProperty.
+                            // SAFETY: prop_return_ptr was allocated by Xlib.
+                            unsafe { xlib::XFree(prop_return_ptr as *mut c_void) };
+                        } else {
+                            warn!(
+                                "SelectionNotify: XGetWindowProperty failed or returned no data. Status: {}, nitems: {}, ptr_is_null: {}",
+                                status, nitems_return, prop_return_ptr.is_null()
+                            );
+                        }
+                        // Property should have been deleted by XGetWindowProperty if delete was True.
+                        // If not (e.g., delete was False or we want to be sure):
+                        // unsafe { xlib::XDeleteProperty(display, sel_event.requestor, sel_event.property); }
+                    } else {
+                        // Property is None, meaning the selection owner could not convert to the requested target.
+                        info!(
+                            "SelectionNotify: Paste request failed - owner could not convert selection (selection: {}, target: {}).",
+                            sel_event.selection, sel_event.target
+                        );
+                    }
+                } else {
+                    warn!(
+                        "SelectionNotify: Received event for unexpected window (expected our window ID {}, got {}).",
+                        window.id(), sel_event.requestor
+                    );
+                }
+            }
             _ => {
                 trace!("XEvent: Ignored (type: {})", event_type);
             }

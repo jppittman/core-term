@@ -60,6 +60,39 @@ pub enum BackendEvent {
     FocusGained,
     /// The terminal window lost input focus.
     FocusLost,
+    /// A mouse button was pressed.
+    MouseButtonPress {
+        button: MouseButton,
+        x: u16,
+        y: u16,
+        modifiers: Modifiers,
+    },
+    /// A mouse button was released.
+    MouseButtonRelease {
+        button: MouseButton,
+        x: u16,
+        y: u16,
+        modifiers: Modifiers,
+    },
+    /// The mouse was moved.
+    MouseMove {
+        x: u16,
+        y: u16,
+        modifiers: Modifiers,
+    },
+    /// Paste data received from clipboard or primary selection.
+    PasteData { text: String },
+}
+
+/// Represents mouse buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    ScrollUp,
+    ScrollDown,
+    Other(u8),
 }
 
 /// Commands for the renderer to execute.
@@ -237,4 +270,22 @@ pub trait Driver {
     /// This includes releasing platform resources (e.g., closing display connections,
     /// restoring terminal modes). This method should be idempotent.
     fn cleanup(&mut self) -> Result<()>;
+
+    // --- Selection Handling (optional for backends) ---
+
+    /// Takes ownership of the specified selection (e.g., PRIMARY, CLIPBOARD).
+    /// Atom types are u64 for trait compatibility; X11 backend will cast to xlib::Atom.
+    #[allow(unused_variables)]
+    fn own_selection(&mut self, selection_name_atom: u64, text: String) {
+        // Default implementation: no-op for backends that don't support selection ownership.
+        log::trace!("Driver::own_selection called but not implemented for this backend.");
+    }
+
+    /// Requests data from the specified selection in the given target format.
+    /// Atom types are u64 for trait compatibility.
+    #[allow(unused_variables)]
+    fn request_selection_data(&mut self, selection_name_atom: u64, target_atom: u64) {
+        // Default implementation: no-op for backends that don't support requesting selection data.
+        log::trace!("Driver::request_selection_data called but not implemented for this backend.");
+    }
 }

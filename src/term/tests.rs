@@ -1399,3 +1399,298 @@ fn test_primary_device_attributes_response() {
         "Terminal should respond to Primary Device Attributes query (CSI c)"
     );
 }
+
+// --- Tests for Selection Logic in TerminalEmulator ---
+#[cfg(test)]
+mod selection_logic_tests {
+    use super::*; // Imports from outer scope like create_test_emulator, Point, etc.
+    use crate::term::snapshot::SelectionRange;
+
+    #[test]
+    fn test_start_selection() {
+        let mut emu = create_test_emulator(10, 5);
+        let point = Point { x: 2, y: 1 };
+        emu.start_selection(point);
+
+        assert_eq!(emu.screen.selection.range, Some(SelectionRange { start: point, end: point }));
+        assert!(emu.screen.selection.is_active);
+        assert_eq!(emu.screen.selection.mode, SelectionMode::Cell);
+    }
+
+    #[test]
+    fn test_extend_selection_active_and_inactive() {
+        let mut emu = create_test_emulator(10, 5);
+        let start_point = Point { x: 2, y: 1 };
+        let extend_point = Point { x: 5, y: 2 };
+
+        // Test when not active
+        emu.extend_selection(extend_point); // Should do nothing
+        assert_eq!(emu.screen.selection.range, None);
+        assert!(!emu.screen.selection.is_active);
+
+        // Test when active
+        emu.start_selection(start_point);
+        emu.extend_selection(extend_point);
+        assert_eq!(emu.screen.selection.range, Some(SelectionRange { start: start_point, end: extend_point }));
+        assert!(emu.screen.selection.is_active);
+    }
+
+    #[test]
+    fn test_apply_selection_clear_click_and_drag() {
+        let mut emu = create_test_emulator(10, 5);
+        let point1 = Point { x: 2, y: 1 };
+        let point2 = Point { x: 5, y: 1 };
+
+        // Test click (start == end)
+        emu.start_selection(point1);
+        assert!(emu.screen.selection.is_active);
+        emu.apply_selection_clear(); // end is same as start
+        assert_eq!(emu.screen.selection.range, None, "Selection should be cleared on click");
+        assert!(!emu.screen.selection.is_active, "Selection should be inactive after click");
+
+        // Test drag
+        emu.start_selection(point1);
+        emu.extend_selection(point2);
+        assert!(emu.screen.selection.is_active);
+        emu.apply_selection_clear();
+        assert_eq!(emu.screen.selection.range, Some(SelectionRange { start: point1, end: point2 }), "Selection range should be maintained after drag");
+        assert!(!emu.screen.selection.is_active, "Selection should be inactive after drag");
+    }
+
+    #[test]
+    fn test_clear_selection() {
+        let mut emu = create_test_emulator(10, 5);
+        let point1 = Point { x: 2, y: 1 };
+        let point2 = Point { x: 5, y: 1 };
+
+        emu.start_selection(point1);
+        emu.extend_selection(point2);
+        emu.apply_selection_clear(); // Make it inactive but present
+
+        assert!(emu.screen.selection.range.is_some());
+        assert!(!emu.screen.selection.is_active);
+
+        emu.clear_selection();
+        assert_eq!(emu.screen.selection.range, None);
+        assert!(!emu.screen.selection.is_active);
+    }
+}
+
+#[cfg(test)]
+mod get_selected_text_tests {
+    use super::*;
+    use crate::term::snapshot::{Point, SelectionRange};
+
+    // Helper to manually set screen content for focused text selection tests
+    fn set_screen_content(emu: &mut TerminalEmulator, lines: &[&str]) {
+        for (y, line_str) in lines.iter().enumerate() {
+            for (x, char_val) in line_str.chars().enumerate() {
+                if x < emu.screen.width && y < emu.screen.height {
+                    emu.screen.active_grid_mut()[y][x] = Glyph { c: char_val, attr: Attributes::default() };
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_selected_text_no_selection() {
+        let mut emu = create_test_emulator(10, 5);
+        assert_eq!(emu.get_selected_text(), None);
+    }
+
+    #[test]
+    fn test_get_selected_text_single_line() {
+        let mut emu = create_test_emulator(10, 5);
+        set_screen_content(&mut emu, &["Hello World"]);
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 0, y: 0 },
+            end: Point { x: 4, y: 0 }, // Selects "Hello"
+        });
+        assert_eq!(emu.get_selected_text(), Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_single_line_trailing_spaces_in_selection() {
+        let mut emu = create_test_emulator(10, 1);
+        set_screen_content(&mut emu, &["Hi   "]); // Logical line "Hi" with spaces
+        // Select "Hi  " (0,0) to (4,0)
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 0, y: 0 },
+            end: Point { x: 4, y: 0 }
+        });
+        // The get_selected_text implementation fills with spaces up to selection end if line is shorter.
+        assert_eq!(emu.get_selected_text(), Some("Hi   ".to_string()));
+    }
+
+
+    #[test]
+    fn test_get_selected_text_multi_line() {
+        let mut emu = create_test_emulator(10, 5);
+        set_screen_content(&mut emu, &["First line", "Second line", "Third line"]);
+        // Select from "rst" in "First" to "cond" in "Second"
+        // "First line" -> F i r s t   l i n e
+        //                     (2,0) (4,0)
+        // "Second line" -> S e c o n d   l i n e
+        //                    (0,1) (3,1)
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 2, y: 0 }, // 'r' in "First"
+            end: Point { x: 3, y: 1 },   // 'o' in "Second"
+        });
+        // Expected: "rst line" + \n + "Seco"
+        assert_eq!(emu.get_selected_text(), Some("rst line\nSeco".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_multi_line_full_lines() {
+        let mut emu = create_test_emulator(10, 3);
+        set_screen_content(&mut emu, &["Line One", "Line Two", "Line Three"]);
+        // Select all of Line Two
+        // Start of "Line Two" (0,1) to end of "Line Two" (7,1)
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 0, y: 1 },
+            end: Point { x: 7, y: 1 },
+        });
+        assert_eq!(emu.get_selected_text(), Some("Line Two".to_string()));
+
+        // Select Line One and Line Two
+        // Start of "Line One" (0,0) to end of "Line Two" (7,1)
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 0, y: 0 },
+            end: Point { x: 7, y: 1 },
+        });
+        assert_eq!(emu.get_selected_text(), Some("Line One\nLine Two".to_string()));
+    }
+
+
+    #[test]
+    fn test_get_selected_text_line_boundaries() {
+        let mut emu = create_test_emulator(10, 2);
+        set_screen_content(&mut emu, &["0123456789", "abcdefghij"]);
+        // Select last 3 chars of line 0 and first 3 chars of line 1
+        // "789" + \n + "abc"
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 7, y: 0 },
+            end: Point { x: 2, y: 1 },
+        });
+        assert_eq!(emu.get_selected_text(), Some("789\nabc".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_empty_cells_within_grid() {
+        let mut emu = create_test_emulator(5, 1);
+        // Screen has "A   E", but only A and E are set, rest are default spaces
+        emu.screen.active_grid_mut()[0][0] = Glyph { c: 'A', attr: Attributes::default() };
+        // Cells [0][1], [0][2], [0][3] are ' ' by default from create_test_emulator's screen init
+        emu.screen.active_grid_mut()[0][4] = Glyph { c: 'E', attr: Attributes::default() };
+
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 0, y: 0 },
+            end: Point { x: 4, y: 0 }, // Select "A   E"
+        });
+        // The current get_selected_text fills with spaces if cell.c is default,
+        // or if selection extends past line.len() but within grid width.
+        // Since create_test_emulator initializes with space Glyphs, this should work.
+        assert_eq!(emu.get_selected_text(), Some("A   E".to_string()));
+    }
+
+    #[test]
+    fn test_get_selected_text_selection_beyond_line_length() {
+        let mut emu = create_test_emulator(10, 1);
+        set_screen_content(&mut emu, &["Test"]); // Line is "Test      " effectively due to grid
+        // Select from 'e' (x=1) to x=7. "Test" is length 4.
+        // Expected: "est   " (3 chars from "Test", plus 3 spaces to fill up to x=7)
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 1, y: 0 },
+            end: Point { x: 7, y: 0 },
+        });
+        assert_eq!(emu.get_selected_text(), Some("est    ".to_string())); // "est" + 4 spaces
+    }
+
+    #[test]
+    fn test_get_selected_text_reversed_points() {
+        let mut emu = create_test_emulator(10, 5);
+        set_screen_content(&mut emu, &["Hello World"]);
+        // Select "Hello" but with end point before start point (e.g., drag right to left)
+        emu.screen.selection.range = Some(SelectionRange {
+            start: Point { x: 4, y: 0 },
+            end: Point { x: 0, y: 0 },
+        });
+        assert_eq!(emu.get_selected_text(), Some("Hello".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod paste_text_tests {
+    use super::*; // For create_test_emulator, assert_screen_state
+
+    #[test]
+    fn test_paste_text_bracketed_off_simple() {
+        let mut emu = create_test_emulator(20, 5);
+        // Ensure bracketed paste is off (it's off by default in DecPrivateModes)
+        assert!(!emu.dec_modes.bracketed_paste_mode);
+
+        let text_to_paste = "Pasted text.";
+        emu.paste_text(text_to_paste.to_string());
+
+        let snapshot = emu.get_render_snapshot();
+        // Expect "Pasted text." on the first line, cursor after the text.
+        let expected_cursor_x = text_to_paste.chars().count();
+        assert_screen_state(&snapshot, &["Pasted text.        "], Some((0, expected_cursor_x)));
+    }
+
+    #[test]
+    fn test_paste_text_bracketed_off_with_newline() {
+        let mut emu = create_test_emulator(20, 5);
+        assert!(!emu.dec_modes.bracketed_paste_mode);
+
+        let text_to_paste = "Line1\nLine2"; // Contains a newline
+        emu.paste_text(text_to_paste.to_string());
+
+        // `TerminalEmulator::paste_text` calls `print_char` for each char.
+        // `print_char` for '\n' should perform a newline operation (CR+LF typically).
+        let snapshot = emu.get_render_snapshot();
+        let expected_screen = [
+            "Line1               ", // Cursor moves to start of next line
+            "Line2               ", // Cursor after "Line2"
+        ];
+        // Cursor position after "Line2" on the second line (row 1)
+        let expected_cursor_x = "Line2".chars().count();
+        assert_screen_state(&snapshot, &expected_screen, Some((1, expected_cursor_x)));
+    }
+
+    #[test]
+    fn test_paste_text_bracketed_off_causes_wrap() {
+        let mut emu = create_test_emulator(5, 2); // Small width
+        assert!(!emu.dec_modes.bracketed_paste_mode);
+
+        let text_to_paste = "HelloWorld"; // Longer than width
+        emu.paste_text(text_to_paste.to_string());
+
+        let snapshot = emu.get_render_snapshot();
+        // Expected: "Hello" on line 0, "World" on line 1
+        // Cursor after "World"
+        let expected_screen = [
+            "Hello",
+            "World",
+        ];
+        let expected_cursor_x = "World".chars().count();
+        assert_screen_state(&snapshot, &expected_screen, Some((1, expected_cursor_x)));
+    }
+
+    #[test]
+    fn test_paste_text_bracketed_on_logs_warning_processes_chars() {
+        // This test verifies the current fallback behavior of paste_text
+        // when bracketed paste mode is on (logs warning, processes chars).
+        // The actual bracketed paste wrapping is handled by input_handler.rs.
+        let mut emu = create_test_emulator(20, 5);
+        emu.dec_modes.bracketed_paste_mode = true; // Manually turn it on
+
+        let text_to_paste = "Pasted";
+        emu.paste_text(text_to_paste.to_string()); // Should log a warning
+
+        let snapshot = emu.get_render_snapshot();
+        // Expect screen to show "Pasted" because of fallback char processing
+        let expected_cursor_x = text_to_paste.chars().count();
+        assert_screen_state(&snapshot, &["Pasted              "], Some((0, expected_cursor_x)));
+    }
+}

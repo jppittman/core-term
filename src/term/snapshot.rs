@@ -1,5 +1,8 @@
 // src/term/snapshot.rs
 
+//! Defines data structures representing snapshots of terminal state for rendering,
+//! including individual glyphs, lines, cursor, and selection state.
+
 use crate::glyph::{Attributes, Glyph};
 use std::ops::Index;
 
@@ -11,12 +14,28 @@ pub enum CursorShape {
     Bar,
 }
 
+/// Represents a 2D point in the terminal grid, typically (column, row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Point {
+    /// The column (x-coordinate), 0-based.
+    pub x: usize,
+    /// The row (y-coordinate), 0-based.
+    pub y: usize,
+}
+
+/// Represents the start and end points of a selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SelectionRange {
+    pub start: Point,
+    pub end: Point,
+}
+
 /// Represents the mode of text selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionMode {
     #[default]
-    Normal, // Character-wise selection
-    Block, // Rectangular block selection
+    Cell,   // Standard character-by-character selection
+    // Block, // Future: for block selection
 }
 
 /// A snapshot of a single line in the terminal grid.
@@ -45,16 +64,13 @@ pub struct CursorRenderState {
 }
 
 /// Represents the state of a text selection in the terminal.
-/// This includes the start and end points, the selection mode (e.g., normal, block),
+/// This includes the range of the selection, the selection mode (e.g., cell-wise),
 /// and whether the selection is currently active (e.g., being dragged).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Selection {
-    /// The starting point of the selection. `None` if no selection is defined.
-    pub start: Option<Point>,
-    /// The ending point of the selection. `None` if no selection is defined.
-    pub end: Option<Point>,
+    pub range: Option<SelectionRange>, // Make it optional
     pub mode: SelectionMode,
-    pub is_active: bool,
+    pub is_active: bool, // True if selection process is ongoing (e.g., mouse button held down)
 }
 
 /// A complete snapshot of the terminal's visible state at a moment in time.
@@ -64,19 +80,15 @@ pub struct RenderSnapshot {
     pub dimensions: (usize, usize), // cols, rows
     pub lines: Vec<SnapshotLine>,
     pub cursor_state: Option<CursorRenderState>,
-    pub selection_state: Option<Selection>, // Updated to use Selection
+    pub selection: Selection, // Current selection state.
 }
 
-/// Represents a 2D point in the terminal grid, typically (column, row).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Point {
-    /// The column (x-coordinate), 0-based.
-    pub x: usize,
-    /// The row (y-coordinate), 0-based.
-    pub y: usize,
-}
+// Point struct was moved up
 
 impl RenderSnapshot {
+    /// Gets the glyph at the given `Point` (column, row) if it exists within the snapshot dimensions.
+    ///
+    /// Returns `None` if the coordinates are out of bounds.
     pub fn get_glyph(&self, p: Point) -> Option<Glyph> {
         let (term_width, term_height) = self.dimensions;
         if p.x >= term_width || p.y >= term_height {

@@ -138,8 +138,10 @@ impl Window {
                 | xlib::KeyPressMask       // Keyboard input
                 // | xlib::KeyReleaseMask    // If needed later for specific key release events
                 | xlib::StructureNotifyMask  // For ConfigureNotify (resize/move events)
-                | xlib::FocusChangeMask; // For FocusIn/FocusOut events
-                                         // TODO: Add ButtonPressMask, ButtonReleaseMask, PointerMotionMask for mouse event handling.
+                | xlib::FocusChangeMask // For FocusIn/FocusOut events
+                | xlib::ButtonPressMask // For mouse button presses
+                | xlib::ButtonReleaseMask // For mouse button releases
+                | xlib::PointerMotionMask; // For mouse movement
 
             xlib::XCreateWindow(
                 display,

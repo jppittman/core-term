@@ -251,6 +251,96 @@ impl<'a> AppOrchestrator<'a> {
                     "Orchestrator: CloseRequested event unexpectedly reached handle_specific_driver_event."
                 );
             }
+            BackendEvent::PasteData { text } => {
+                log::debug!("Orchestrator: PasteData event received with text length: {}", text.len());
+                let paste_input_action = UserInputAction::PasteText(text);
+                let user_input = EmulatorInput::User(paste_input_action);
+                if let Some(action) = self.term.interpret_input(user_input) {
+                    // Actions from PasteText are typically WritePty or other non-render commands.
+                    if matches!(action, EmulatorAction::WritePty(_)) {
+                        self.handle_emulator_action(action, &mut Vec::new());
+                    } else {
+                        // It's less common for PasteText to generate direct render commands,
+                        // but handle it if it does.
+                        self.pending_render_actions.push(action);
+                    }
+                }
+            }
+            BackendEvent::MouseButtonPress { button, x, y, modifiers: _ } => {
+                if self.font_cell_width_px == 0 || self.font_cell_height_px == 0 {
+                    log::warn!("Font dimensions are zero, cannot process mouse click.");
+                    return;
+                }
+                let cell_x = (x as usize) / self.font_cell_width_px;
+                let cell_y = (y as usize) / self.font_cell_height_px;
+                log::debug!("MouseButtonPress: {:?} at pixel ({}, {}), cell ({}, {})", button, x, y, cell_x, cell_y);
+
+                let user_action = match button {
+                    crate::platform::backends::MouseButton::Left => {
+                        Some(UserInputAction::StartSelection { x: cell_x, y: cell_y })
+                    }
+                    crate::platform::backends::MouseButton::Middle => {
+                        Some(UserInputAction::RequestPrimaryPaste)
+                    }
+                    _ => None, // Other buttons ignored for now
+                };
+
+                if let Some(action) = user_action {
+                    if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(action)) {
+                        if matches!(emulator_action, EmulatorAction::WritePty(_)) {
+                            self.handle_emulator_action(emulator_action, &mut Vec::new());
+                        } else {
+                            self.pending_render_actions.push(emulator_action);
+                        }
+                    }
+                }
+            }
+            BackendEvent::MouseButtonRelease { button, x, y, modifiers: _ } => {
+                if self.font_cell_width_px == 0 || self.font_cell_height_px == 0 {
+                    log::warn!("Font dimensions are zero, cannot process mouse release.");
+                    return;
+                }
+                let cell_x = (x as usize) / self.font_cell_width_px; // Though x,y might not be used for release action itself
+                let cell_y = (y as usize) / self.font_cell_height_px;
+                log::debug!("MouseButtonRelease: {:?} at pixel ({}, {}), cell ({}, {})", button, x, y, cell_x, cell_y);
+
+
+                let user_action = match button {
+                    crate::platform::backends::MouseButton::Left => {
+                        Some(UserInputAction::ApplySelectionClear)
+                    }
+                    _ => None, // Other buttons ignored for now
+                };
+
+                if let Some(action) = user_action {
+                    if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(action)) {
+                         if matches!(emulator_action, EmulatorAction::WritePty(_)) {
+                            self.handle_emulator_action(emulator_action, &mut Vec::new());
+                        } else {
+                            self.pending_render_actions.push(emulator_action);
+                        }
+                    }
+                }
+            }
+            BackendEvent::MouseMove { x, y, modifiers: _ } => {
+                if self.font_cell_width_px == 0 || self.font_cell_height_px == 0 {
+                    log::warn!("Font dimensions are zero, cannot process mouse move.");
+                    return;
+                }
+                let cell_x = (x as usize) / self.font_cell_width_px;
+                let cell_y = (y as usize) / self.font_cell_height_px;
+                log::trace!("MouseMove: at pixel ({}, {}), cell ({}, {})", x, y, cell_x, cell_y);
+
+
+                let user_action = UserInputAction::ExtendSelection { x: cell_x, y: cell_y };
+                if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(user_action)) {
+                    if matches!(emulator_action, EmulatorAction::WritePty(_)) {
+                        self.handle_emulator_action(emulator_action, &mut Vec::new());
+                    } else {
+                        self.pending_render_actions.push(emulator_action);
+                    }
+                }
+            }
         }
     }
 
@@ -281,11 +371,25 @@ impl<'a> AppOrchestrator<'a> {
                 // The terminal's drawn cursor visibility is part of RenderSnapshot.
                 commands.push(RenderCommand::SetCursorVisibility { visible });
             }
-            EmulatorAction::CopyToClipboard(_) => {
-                unimplemented!("clipboard feature not yet implemented")
+            EmulatorAction::CopyToClipboard(text) => {
+                // These constants define abstract identifiers for selections and targets
+                // at the orchestrator/trait level. The XDriver implementation of the
+                // Driver trait methods will map these to concrete X11 atoms.
+                const TRAIT_ATOM_ID_PRIMARY: u64 = 1; // Example abstract ID for Primary selection
+                const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard selection
+
+                self.driver.own_selection(TRAIT_ATOM_ID_CLIPBOARD, text.clone());
+                self.driver.own_selection(TRAIT_ATOM_ID_PRIMARY, text);
+                log::info!("Orchestrator: Requested driver to own PRIMARY and CLIPBOARD selections.");
+                // This action typically does not generate direct render commands.
             }
             EmulatorAction::RequestClipboardContent => {
-                unimplemented!("clipboard feature not yet implemented")
+                const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard
+                const TRAIT_ATOM_ID_UTF8_STRING: u64 = 10; // Example abstract ID for UTF8_STRING target
+
+                self.driver.request_selection_data(TRAIT_ATOM_ID_CLIPBOARD, TRAIT_ATOM_ID_UTF8_STRING);
+                log::info!("Orchestrator: Requested clipboard content from driver (target UTF8_STRING).");
+                // This action does not generate direct render commands; data arrives via BackendEvent::PasteData.
             }
         }
     }
