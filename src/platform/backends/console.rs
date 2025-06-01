@@ -9,7 +9,7 @@ use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 use crate::keys::{KeySymbol, Modifiers};
 use crate::platform::backends::{
-    BackendEvent, Driver, FocusState, PlatformState, RenderCommand, // Updated imports
+    BackendEvent, Driver, FocusState, PlatformState, PlatformActionCommand, // Updated imports
     DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
 };
 use crate::platform::backends::x11::window::CursorVisibility; // Added CursorVisibility
@@ -151,7 +151,7 @@ impl Driver for ConsoleDriver {
     ///
     /// # Returns
     /// * `Result<Vec<BackendEvent>>`: A list of detected events, or an error if stdin read fails.
-    fn process_events(&mut self) -> Result<Vec<BackendEvent>> {
+    fn process_ui_events(&mut self) -> Result<Vec<BackendEvent>> {
         let mut backend_events = Vec::new();
 
         // Check for terminal resize.
@@ -293,12 +293,12 @@ impl Driver for ConsoleDriver {
         }
     }
 
-    fn execute_render_commands(&mut self, commands: Vec<RenderCommand>) -> Result<()> {
+    fn execute_platform_actions(&mut self, commands: Vec<PlatformActionCommand>) -> Result<()> {
         let mut output_buffer = String::new();
 
         for command in commands {
             match command {
-                RenderCommand::ClearAll { bg } => {
+                PlatformActionCommand::ClearAll { bg } => {
                     // Contract: Renderer ensures bg is concrete.
                     if matches!(bg, Color::Default) {
                         error!("ConsoleDriver::ClearAll received Color::Default. Bug in Renderer.");
@@ -320,7 +320,7 @@ impl Driver for ConsoleDriver {
                     }
                     output_buffer.push_str(CLEAR_SCREEN_AND_HOME);
                 }
-                RenderCommand::DrawTextRun {
+                PlatformActionCommand::DrawTextRun {
                     x,
                     y,
                     text,
@@ -355,7 +355,7 @@ impl Driver for ConsoleDriver {
                     }
                     output_buffer.push_str(&text);
                 }
-                RenderCommand::FillRect {
+                PlatformActionCommand::FillRect {
                     x,
                     y,
                     width,
@@ -396,7 +396,7 @@ impl Driver for ConsoleDriver {
                         output_buffer.push_str(&spaces);
                     }
                 }
-                RenderCommand::SetCursorVisibility { visible } => {
+                PlatformActionCommand::SetCursorVisibility { visible } => {
                     // These commands print directly, not usually buffered with drawing ops.
                     if visible {
                         print!("{}", CURSOR_SHOW);
@@ -405,15 +405,15 @@ impl Driver for ConsoleDriver {
                     }
                     self.is_cursor_logically_visible = visible;
                 }
-                RenderCommand::SetWindowTitle { title } => {
+                PlatformActionCommand::SetWindowTitle { title } => {
                     // Prints directly.
                     print!("\x1b]0;{}\x07", title);
                 }
-                RenderCommand::RingBell => {
+                PlatformActionCommand::RingBell => {
                     // Prints directly.
                     print!("\x07");
                 }
-                RenderCommand::PresentFrame => {
+                PlatformActionCommand::PresentFrame => {
                     // This command implies flushing, so print buffer then flush.
                     if !output_buffer.is_empty() {
                         print!("{}", output_buffer);
@@ -430,67 +430,10 @@ impl Driver for ConsoleDriver {
             print!("{}", output_buffer);
         }
         // Note: The main `present` method will also flush, ensuring everything is sent.
-        // If RenderCommand::PresentFrame is the only mechanism for flushing, then the
+        // If PlatformActionCommand::PresentFrame is the only mechanism for flushing, then the
         // final print here might need its own flush if PresentFrame is not guaranteed.
-        // However, the Driver::present() method is likely called after execute_render_commands.
+        // However, the Driver::present() method is likely called after execute_platform_actions.
         Ok(())
-    }
-
-    /// Flushes stdout to ensure all buffered commands are sent to the console.
-    fn present(&mut self) -> Result<()> {
-        stdout()
-            .flush()
-            .context("ConsoleDriver: Failed to flush stdout during present")
-    }
-
-    /// Sets the window title using an OSC sequence.
-    /// This is a common way to set titles in terminal emulators that support it.
-    fn set_title(&mut self, title: &str) {
-        // OSC 0 sets icon name and window title. OSC 2 sets window title only.
-        // Using OSC 0 for wider compatibility.
-        print!("\x1b]0;{}\x07", title); // \x07 is the BEL character, often used as ST for OSC
-                                        // No flush here, assume present() will be called.
-        trace!("ConsoleDriver: Set window title to '{}'", title);
-    }
-
-    /// Rings the terminal bell by printing the BEL character.
-    fn bell(&mut self) {
-        print!("\x07");
-        // No flush here.
-        trace!("ConsoleDriver: Rang bell.");
-    }
-
-    /// Sets the visibility of the console's native cursor using ANSI codes.
-    fn set_cursor_visibility(&mut self, visibility: CursorVisibility) {
-        let visible = match visibility {
-            CursorVisibility::Shown => true,
-            CursorVisibility::Hidden => false,
-        };
-        trace!(
-            "ConsoleDriver: Setting native cursor visibility to: {} ({:?})",
-            visible,
-            visibility
-        );
-        if visible {
-            print!("{}", CURSOR_SHOW);
-        } else {
-            print!("{}", CURSOR_HIDE);
-        }
-        // No flush here, assume present() will be called.
-        self.is_cursor_logically_visible = visible;
-    }
-
-    /// Informs the driver about focus changes.
-    /// For a console driver, this is typically a no-op as focus is managed
-    /// by the terminal emulator application itself or the OS, not via ANSI codes
-    /// that the driver would send.
-    fn set_focus(&mut self, focus_state: FocusState) {
-        trace!(
-            "ConsoleDriver: Focus event received (state: {:?}). No specific action taken by console driver.",
-            focus_state
-        );
-        // No action needed for console driver regarding focus typically.
-        // self.is_focused could be set here if ConsoleDriver had such a field.
     }
 
     /// Restores original terminal attributes and shows the cursor.

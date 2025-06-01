@@ -20,8 +20,9 @@ pub const DEFAULT_WINDOW_WIDTH_CHARS: usize = 80;
 pub const DEFAULT_WINDOW_HEIGHT_CHARS: usize = 24;
 
 use crate::platform::backends::{
-    BackendEvent, CellCoords, CellRect, Driver, PlatformState, RenderCommand, TextRunStyle,
-}; // Added PlatformState, RenderCommand
+    BackendEvent, CellCoords, CellRect, Driver, PlatformActionCommand, PlatformState,
+    TextRunStyle,
+}; // Added PlatformState, PlatformActionCommand
 use anyhow::Result;
 use log::{debug, error, warn, info, trace};
 use std::os::unix::io::RawFd;
@@ -235,7 +236,7 @@ impl Driver for XDriver {
     ///
     /// Delegates to `event::process_pending_events`, which handles X event polling,
     /// translation to `BackendEvent`s, and updates window state (dimensions, focus).
-    fn process_events(&mut self) -> Result<Vec<BackendEvent>> {
+    fn process_ui_events(&mut self) -> Result<Vec<BackendEvent>> {
         // Logging for this can be noisy, so it's primarily within the event module.
         match event::process_pending_events(
             &self.connection,
@@ -273,10 +274,10 @@ impl Driver for XDriver {
         }
     }
 
-    fn execute_render_commands(&mut self, commands: Vec<RenderCommand>) -> Result<()> {
+    fn execute_platform_actions(&mut self, commands: Vec<PlatformActionCommand>) -> Result<()> {
         for command in commands {
             match command {
-                RenderCommand::ClearAll { bg } => {
+                PlatformActionCommand::ClearAll { bg } => {
                     // Assuming graphics.clear_all is updated or adapted.
                     // For now, using existing clear_all which has a TODO for dimensions.
                     // A proper fix involves modifying graphics.clear_all.
@@ -291,7 +292,7 @@ impl Driver for XDriver {
                     self.graphics.fill_rect_absolute_px(&self.connection, 0,0, w, h, bg)?;
 
                 }
-                RenderCommand::DrawTextRun {
+                PlatformActionCommand::DrawTextRun {
                     x,
                     y,
                     text,
@@ -314,7 +315,7 @@ impl Driver for XDriver {
                     self.graphics
                         .draw_text_run(&self.connection, coords, &text, style)?;
                 }
-                RenderCommand::FillRect {
+                PlatformActionCommand::FillRect {
                     x,
                     y,
                     width,
@@ -325,7 +326,7 @@ impl Driver for XDriver {
                     let rect = CellRect { x, y, width, height };
                     self.graphics.fill_rect(&self.connection, rect, color)?;
                 }
-                RenderCommand::SetCursorVisibility { visible } => {
+                PlatformActionCommand::SetCursorVisibility { visible } => {
                     let visibility = if visible {
                         CursorVisibility::Shown
                     } else {
@@ -334,13 +335,13 @@ impl Driver for XDriver {
                     self.window
                         .set_native_cursor_visibility(&self.connection, visibility);
                 }
-                RenderCommand::SetWindowTitle { title } => {
+                PlatformActionCommand::SetWindowTitle { title } => {
                     self.window.set_title(&self.connection, &title)?;
                 }
-                RenderCommand::RingBell => {
+                PlatformActionCommand::RingBell => {
                     self.window.bell(&self.connection);
                 }
-                RenderCommand::PresentFrame => {
+                PlatformActionCommand::PresentFrame => {
                     // Call the XDriver's own present method, which handles flushing.
                     self.present()?;
                 }
@@ -351,64 +352,6 @@ impl Driver for XDriver {
 
     /// Presents the composed frame to the display.
     ///
-    /// For X11, this typically means flushing the X command buffer to ensure all
-    /// drawing commands are sent to the server.
-    fn present(&mut self) -> Result<()> {
-        // SAFETY: XFlush is safe to call with a valid display pointer.
-        // Connection::display() returns the pointer, which is non-null if connection is active.
-        if !self.connection.display().is_null() {
-            unsafe {
-                x11::xlib::XFlush(self.connection.display());
-            }
-            trace!("XDriver::present() flushed X display.");
-        } else {
-            warn!("XDriver::present() called on a closed or invalid X display connection.");
-        }
-        Ok(())
-    }
-
-    /// Sets the window title.
-    ///
-    /// Delegates to `Window::set_title()`.
-    fn set_title(&mut self, title: &str) {
-        if let Err(e) = self.window.set_title(&self.connection, title) {
-            error!("XDriver failed to set window title: {}", e);
-        }
-    }
-
-    /// Rings the terminal bell.
-    ///
-    /// Delegates to `Window::bell()`.
-    fn bell(&mut self) {
-        self.window.bell(&self.connection);
-    }
-
-    /// Sets the visibility of the native X11 mouse pointer over the window.
-    ///
-    /// Adapts the boolean `visible` to the `CursorVisibility` enum required by the `Window` module.
-    fn set_cursor_visibility(&mut self, visibility: CursorVisibility) { // Changed parameter
-        self.window
-            .set_native_cursor_visibility(&self.connection, visibility);
-    }
-
-    /// Informs the driver of focus changes, typically called by the application core.
-    ///
-    /// The X11 driver also detects focus changes via `FocusIn`/`FocusOut` events
-    /// in `event::process_pending_events`, which directly updates `self.has_focus`.
-    /// This method allows external setting of focus state if needed.
-    fn set_focus(&mut self, focus_state: FocusState) { // Changed parameter
-        info!(
-            "XDriver::set_focus called by application core with: {:?}", // Updated log
-            focus_state
-        );
-        self.has_focus = match focus_state { // Updated logic
-            FocusState::Focused => true,
-            FocusState::Unfocused => false,
-        };
-        // This state change could be used to influence rendering (e.g., cursor style),
-        // though such visual changes are typically triggered by the FocusGained/FocusLost BackendEvents.
-    }
-
     /// Cleans up all X11 resources managed by the driver.
     ///
     /// This method ensures that resources are released in the correct order:

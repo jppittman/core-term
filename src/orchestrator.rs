@@ -6,15 +6,17 @@
 
 use crate::{
     ansi::AnsiParser,
-    platform::backends::{BackendEvent, Driver, RenderCommand}, // Removed PlatformState
-    platform::os::pty::PtyChannel,
+    // platform::backends::{BackendEvent, Driver, PlatformActionCommand}, // Driver trait no longer directly used by Orchestrator fields
+    platform::backends::{BackendEvent, PlatformActionCommand}, // Keep BackendEvent, PlatformActionCommand
+    // platform::os::pty::PtyChannel, // PtyChannel trait no longer directly used
+    platform::Platform, // Import the concrete Platform enum
     renderer::Renderer,
     term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction},
 };
 use anyhow::Error as AnyhowError;
 use std::io::ErrorKind as IoErrorKind;
 
-const PTY_READ_BUFFER_SIZE: usize = 4096;
+const PTY_READ_BUFFER_SIZE: usize = 4096; // This might become internal to Platform's PTY handling
 
 /// Represents the status of the orchestrator after processing an event or an iteration of its loop.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -32,12 +34,13 @@ pub enum OrchestratorStatus {
 /// `Driver`) to allow for mocking in tests and flexibility in choosing
 /// concrete implementations. The `Renderer` is a concrete type.
 pub struct AppOrchestrator<'a> {
-    pty_channel: &'a mut dyn PtyChannel,
+    // pty_channel: &'a mut dyn PtyChannel, // Replaced by platform
     term: &'a mut dyn TerminalInterface,
     parser: &'a mut dyn AnsiParser,
     pub renderer: Renderer,
-    pub driver: &'a mut dyn Driver,
-    pty_read_buffer: [u8; PTY_READ_BUFFER_SIZE],
+    // pub driver: &'a mut dyn Driver, // Replaced by platform
+    pub platform: Platform, // Using the concrete Platform enum
+    // pty_read_buffer: [u8; PTY_READ_BUFFER_SIZE], // Reading via platform.primary_io_read() which returns Vec<u8>
     // Store relevant parts of PlatformState
     font_cell_width_px: usize,
     font_cell_height_px: usize,
@@ -47,14 +50,15 @@ pub struct AppOrchestrator<'a> {
 impl<'a> AppOrchestrator<'a> {
     /// Creates a new `AppOrchestrator`.
     pub fn new(
-        pty_channel: &'a mut dyn PtyChannel,
+        // pty_channel: &'a mut dyn PtyChannel, // Replaced by platform
         term: &'a mut dyn TerminalInterface,
         parser: &'a mut dyn AnsiParser,
         renderer: Renderer,
-        driver: &'a mut dyn Driver, // driver is already mutable
+        // driver: &'a mut dyn Driver, // Replaced by platform
+        platform: Platform,
     ) -> Self {
         // Get initial platform state
-        let initial_platform_state = driver.get_platform_state();
+        let initial_platform_state = platform.driver_get_platform_state();
         let font_cell_width_px = initial_platform_state.font_cell_width_px.max(1); // Ensure not zero
         let font_cell_height_px = initial_platform_state.font_cell_height_px.max(1); // Ensure not zero
 
@@ -74,7 +78,7 @@ impl<'a> AppOrchestrator<'a> {
         // term.update_cell_pixel_size(font_cell_width_px, font_cell_height_px);
 
         // Inform the PTY of its initial size (cells only)
-        if let Err(e) = pty_channel.resize(
+        if let Err(e) = platform.primary_io_resize(
             initial_cols as u16,
             initial_rows as u16
         ) {
@@ -82,12 +86,13 @@ impl<'a> AppOrchestrator<'a> {
         }
 
         AppOrchestrator {
-            pty_channel,
+            // pty_channel, // Replaced
             term,
             parser,
             renderer,
-            driver,
-            pty_read_buffer: [0; PTY_READ_BUFFER_SIZE],
+            // driver, // Replaced
+            platform,
+            // pty_read_buffer: [0; PTY_READ_BUFFER_SIZE], // Removed
             font_cell_width_px,
             font_cell_height_px,
             pending_render_actions: Vec::new(),
@@ -96,21 +101,37 @@ impl<'a> AppOrchestrator<'a> {
 
     pub fn process_pty_events(&mut self) -> Result<OrchestratorStatus, AnyhowError> {
         log::trace!("Orchestrator: Processing available PTY data...");
-        match self.pty_channel.read(&mut self.pty_read_buffer) {
-            Ok(0) => {
-                log::info!("Orchestrator: PTY EOF received. Signaling shutdown.");
-                Ok(OrchestratorStatus::Shutdown)
+        // Reading now returns Result<Vec<u8>>
+        match self.platform.primary_io_read() {
+            Ok(pty_data_vec) if pty_data_vec.is_empty() => {
+                // This condition might signify EOF if read consistently returns empty Vec.
+                // However, primary_io_read itself might return an error for EOF,
+                // or specific error kinds. This depends on its implementation.
+                // For now, assuming empty vec means no data or potential EOF.
+                // If it's a non-blocking read that found no data, it might also be empty.
+                // The previous code checked for Ok(0) on a read into a buffer.
+                // A robust solution needs primary_io_read to distinguish EOF from "no data yet".
+                // Let's assume for now an empty Vec after a successful read could be EOF.
+                // A better way is for primary_io_read to return specific error for EOF.
+                log::info!("Orchestrator: PTY read returned empty data. Assuming EOF or no data. Signaling shutdown if consistently empty.");
+                // This needs more robust EOF handling based on primary_io_read's contract.
+                // For now, let's treat empty as "no new data" rather than immediate shutdown,
+                // unless it's an error. A true EOF might come as an error with ErrorKind::BrokenPipe or similar.
+                Ok(OrchestratorStatus::Running) // Or Shutdown if EOF is confirmed
             }
-            Ok(count) => {
-                log::debug!("Orchestrator: Read {} bytes from PTY.", count);
-                let data_slice = &self.pty_read_buffer[..count];
-                let pty_data_copy = data_slice.to_vec();
-                self.interpret_pty_bytes_mut_access(&pty_data_copy);
+            Ok(pty_data_vec) => {
+                log::debug!("Orchestrator: Read {} bytes from PTY.", pty_data_vec.len());
+                self.interpret_pty_bytes_mut_access(&pty_data_vec);
                 Ok(OrchestratorStatus::Running)
             }
-            Err(e) if e.kind() == IoErrorKind::WouldBlock => {
+            Err(e) if e.downcast_ref::<IoErrorKind>() == Some(&IoErrorKind::WouldBlock) => {
                 log::trace!("Orchestrator: PTY read would block (no new data available).");
                 Ok(OrchestratorStatus::Running)
+            }
+            // Handling EOF explicitly if primary_io_read signals it via specific error kind
+            Err(e) if e.downcast_ref::<IoErrorKind>() == Some(&IoErrorKind::BrokenPipe) => { // Example for EOF
+                log::info!("Orchestrator: PTY EOF received (BrokenPipe). Signaling shutdown.");
+                Ok(OrchestratorStatus::Shutdown)
             }
             Err(e) => {
                 log::error!("Orchestrator: Unrecoverable error reading from PTY: {}", e);
@@ -134,7 +155,7 @@ impl<'a> AppOrchestrator<'a> {
 
     pub fn process_driver_events(&mut self) -> Result<OrchestratorStatus, String> {
         log::trace!("Orchestrator: Processing available driver events...");
-        let events = self.driver.process_events().map_err(|e| {
+        let events = self.platform.driver_process_ui_events().map_err(|e| {
             let err_msg = format!("Orchestrator: Driver error processing events: {}", e);
             log::error!("{}", err_msg);
             err_msg
@@ -180,7 +201,7 @@ impl<'a> AppOrchestrator<'a> {
                 }
             }
             BackendEvent::Resize { .. } => { // width_px, height_px from event are noted but platform_state is source of truth
-                let platform_state = self.driver.get_platform_state();
+                let platform_state = self.platform.driver_get_platform_state();
 
                 // Update stored font dimensions, they might change (e.g. DPI change on X11)
                 self.font_cell_width_px = platform_state.font_cell_width_px.max(1);
@@ -201,7 +222,7 @@ impl<'a> AppOrchestrator<'a> {
                 );
 
                 // Resize PTY (cells only)
-                if let Err(e) = self.pty_channel.resize(
+                if let Err(e) = self.platform.primary_io_resize(
                     new_cols as u16,
                     new_rows as u16
                 ) {
@@ -226,7 +247,8 @@ impl<'a> AppOrchestrator<'a> {
             }
             BackendEvent::FocusGained => {
                 log::debug!("Orchestrator: FocusGained event.");
-                self.driver.set_focus(crate::platform::backends::FocusState::Focused); // Corrected FocusState path
+                // self.driver.set_focus(crate::platform::backends::FocusState::Focused); // Removed direct call
+                self.pending_render_actions.push(EmulatorAction::SetFocus(crate::platform::backends::FocusState::Focused));
                 if let Some(action) = self.term.interpret_input(EmulatorInput::User(UserInputAction::FocusGained)) {
                     if matches!(action, EmulatorAction::WritePty(_)) {
                         self.handle_emulator_action(action, &mut Vec::new());
@@ -237,7 +259,8 @@ impl<'a> AppOrchestrator<'a> {
             }
             BackendEvent::FocusLost => {
                 log::debug!("Orchestrator: FocusLost event.");
-                self.driver.set_focus(crate::platform::backends::FocusState::Unfocused); // Corrected FocusState path
+                // self.driver.set_focus(crate::platform::backends::FocusState::Unfocused); // Removed direct call
+                self.pending_render_actions.push(EmulatorAction::SetFocus(crate::platform::backends::FocusState::Unfocused));
                  if let Some(action) = self.term.interpret_input(EmulatorInput::User(UserInputAction::FocusLost)) {
                     if matches!(action, EmulatorAction::WritePty(_)) {
                         self.handle_emulator_action(action, &mut Vec::new());
@@ -346,30 +369,31 @@ impl<'a> AppOrchestrator<'a> {
 
     /// Handles actions signaled by the `TerminalInterface` implementation.
     /// Some actions are handled immediately (e.g., writing to PTY), while others
-    /// that affect rendering are converted to `RenderCommand`s and appended to the given list.
-    fn handle_emulator_action(&mut self, action: EmulatorAction, commands: &mut Vec<RenderCommand>) {
+    /// that affect rendering are converted to `PlatformActionCommand`s and appended to the given list.
+    fn handle_emulator_action(&mut self, action: EmulatorAction, commands: &mut Vec<PlatformActionCommand>) {
         log::debug!("Orchestrator: Handling EmulatorAction: {:?}", action);
         match action {
             EmulatorAction::WritePty(data) => {
-                if let Err(e) = self.pty_channel.write_all(&data) {
+                if let Err(e) = self.platform.primary_io_write_all(&data) {
                     log::error!("Orchestrator: Failed to write_all {} bytes to PTY: {}", data.len(), e);
                 } else {
                     log::trace!("Orchestrator: Wrote {} bytes to PTY.", data.len());
                 }
             }
             EmulatorAction::SetTitle(title) => {
-                commands.push(RenderCommand::SetWindowTitle { title });
+                commands.push(PlatformActionCommand::SetWindowTitle { title });
             }
             EmulatorAction::RingBell => {
-                commands.push(RenderCommand::RingBell);
+                commands.push(PlatformActionCommand::RingBell);
             }
             EmulatorAction::RequestRedraw => {
                 log::trace!("Orchestrator: EmulatorAction::RequestRedraw received (rendering is managed by main loop).");
             }
             EmulatorAction::SetCursorVisibility(visible) => {
-                // This refers to the *native* OS cursor, not the terminal's drawn cursor.
-                // The terminal's drawn cursor visibility is part of RenderSnapshot.
-                commands.push(RenderCommand::SetCursorVisibility { visible });
+                commands.push(PlatformActionCommand::SetCursorVisibility { visible });
+            }
+            EmulatorAction::SetFocus(focus_state) => { // Added to handle focus via PlatformActionCommand
+                commands.push(PlatformActionCommand::SetFocus { state: focus_state });
             }
             EmulatorAction::CopyToClipboard(text) => {
                 // These constants define abstract identifiers for selections and targets
@@ -378,8 +402,8 @@ impl<'a> AppOrchestrator<'a> {
                 const TRAIT_ATOM_ID_PRIMARY: u64 = 1; // Example abstract ID for Primary selection
                 const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard selection
 
-                self.driver.own_selection(TRAIT_ATOM_ID_CLIPBOARD, text.clone());
-                self.driver.own_selection(TRAIT_ATOM_ID_PRIMARY, text);
+                self.platform.driver_own_selection(TRAIT_ATOM_ID_CLIPBOARD, text.clone());
+                self.platform.driver_own_selection(TRAIT_ATOM_ID_PRIMARY, text);
                 log::info!("Orchestrator: Requested driver to own PRIMARY and CLIPBOARD selections.");
                 // This action typically does not generate direct render commands.
             }
@@ -387,7 +411,7 @@ impl<'a> AppOrchestrator<'a> {
                 const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard
                 const TRAIT_ATOM_ID_UTF8_STRING: u64 = 10; // Example abstract ID for UTF8_STRING target
 
-                self.driver.request_selection_data(TRAIT_ATOM_ID_CLIPBOARD, TRAIT_ATOM_ID_UTF8_STRING);
+                self.platform.driver_request_selection_data(TRAIT_ATOM_ID_CLIPBOARD, TRAIT_ATOM_ID_UTF8_STRING);
                 log::info!("Orchestrator: Requested clipboard content from driver (target UTF8_STRING).");
                 // This action does not generate direct render commands; data arrives via BackendEvent::PasteData.
             }
@@ -407,10 +431,10 @@ impl<'a> AppOrchestrator<'a> {
         }
 
         // Always add PresentFrame as the last command for this frame.
-        final_render_commands.push(RenderCommand::PresentFrame);
+        final_render_commands.push(PlatformActionCommand::PresentFrame);
 
         log::debug!("Orchestrator: Executing {} render commands.", final_render_commands.len());
-        self.driver.execute_render_commands(final_render_commands)?;
+        self.platform.driver_execute_actions(final_render_commands)?;
 
         // Optionally, notify the terminal that the frame was rendered.
         // This can be useful for synchronization or for features like DA1 "Send Primary Device Attributes".

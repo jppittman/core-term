@@ -14,28 +14,20 @@ pub mod term;
 // Use statements for items needed in main.rs
 use crate::{
     ansi::AnsiProcessor, // AnsiProcessor is in the ansi module
+    config::CONFIG, // Use the global configuration
     orchestrator::{AppOrchestrator, OrchestratorStatus},
-    platform::backends::{console::ConsoleDriver, x11::XDriver, Driver},
-    platform::os::{
-        epoll::{EpollFlags, EventMonitor}, // Using EventMonitor for epoll management
-        pty::{NixPty, PtyConfig}, // NixPty for PTY channel, PtyConfig for its setup. Removed PtyChannel.
-    },
+    platform::Platform, // Use the Platform enum
+    platform::SystemEvent, // Import SystemEvent
     renderer::Renderer,
     term::TerminalEmulator, // The core terminal state machine
 };
-use std::os::unix::io::AsRawFd; // For getting raw file descriptors
+// use std::os::unix::io::AsRawFd; // No longer needed directly in main for FDs
 
 // Logging
 use log::{error, info, trace, warn};
 
-// Constants for epoll tokens.
-// These values are arbitrary but must be unique for each FD monitored.
-const PTY_EPOLL_TOKEN: u64 = 1;
-const DRIVER_EPOLL_TOKEN: u64 = 2;
-
-// Timeout for epoll_wait in milliseconds. -1 means block indefinitely.
-const EPOLL_TIMEOUT_INDEFINITE: isize = -1;
-// const EPOLL_TIMEOUT_SHORT_MS: isize = 16; // Example for a ~60Hz polling if driver needs it
+// Timeout for platform event polling.
+const PLATFORM_EVENT_POLL_TIMEOUT_MS: i32 = 16; // Approx 60 FPS for Tick events
 
 /// Default scrollback limit for the terminal emulator.
 const DEFAULT_SCROLLBACK_LIMIT: usize = 1000;
@@ -50,129 +42,83 @@ fn main() -> anyhow::Result<()> {
         .format_timestamp_micros()
         .init();
 
-    info!("Starting myterm orchestrator...");
+    info!("Starting myterm application...");
 
     // --- Configuration ---
-    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let shell_args: Vec<String> = Vec::new(); // No specific args by default
-    let shell_args_str: Vec<&str> = shell_args.iter().map(AsRef::as_ref).collect();
+    // Access the globally initialized configuration.
+    // CONFIG is a Lazy<Config>, so dereferencing it gives access to the Config struct.
+    let config = &*CONFIG;
+    info!("Configuration loaded/initialized globally.");
 
-    // Initial dimensions, these are default and might be updated by AppOrchestrator based on driver.
-    let initial_cols = platform::backends::DEFAULT_WINDOW_WIDTH_CHARS as u16;
-    let initial_rows = platform::backends::DEFAULT_WINDOW_HEIGHT_CHARS as u16;
-
-    // --- Setup PTY ---
-    let pty_config = PtyConfig {
-        command_executable: &shell_path,
-        args: &shell_args_str,
-        initial_cols,
-        initial_rows,
-    };
-    let mut pty_channel = NixPty::spawn_with_config(&pty_config).unwrap_or_else(|e| {
-        eprintln!("Fatal: Failed to spawn PTY: {}", e);
-        std::process::exit(1); // Exit on critical PTY setup failure
-    });
-    let pty_fd = pty_channel.as_raw_fd();
-    info!("PTY spawned with master fd: {}", pty_fd);
-
-    // --- Setup Driver ---
-    // Attempt to initialize X11 driver, fall back to ConsoleDriver on error.
-    let mut driver: Box<dyn Driver> = match XDriver::new() {
-        Ok(d) => Box::new(d),
-        Err(e) => {
-            warn!(
-                "Failed to initialize X11 driver: {}. Falling back to ConsoleDriver.",
+    // --- Setup Platform (replaces PTY and Driver setup) ---
+    let mut platform = {
+        if cfg!(feature = "x11") {
+            Platform::new_x11(config).map_err(|e| {
+                error!("Failed to initialize X11 platform: {}", e);
+                e // Propagate error to main's Result
+            })?
+        } else if cfg!(feature = "console") {
+            Platform::new_console(config).map_err(|e| {
+                error!("Failed to initialize Console platform: {}", e);
                 e
-            );
-            Box::new(ConsoleDriver::new().unwrap_or_else(|ce| {
-                eprintln!("Fatal: Failed to initialize ConsoleDriver: {}", ce);
-                std::process::exit(1); // Exit on critical ConsoleDriver setup failure
-            }))
+            })?
+        } else {
+            // This case should ideally be caught by feature assertions at build time if possible,
+            // or handled by a default feature in Cargo.toml.
+            return Err(anyhow::anyhow!("No platform backend feature (x11 or console) enabled. Please compile with --features x11 or --features console."));
         }
     };
-    info!("Driver initialized.");
+    info!("Platform initialized successfully.");
 
-    // Note: Initial dimensions (initial_cols, initial_rows) are passed to PtyConfig.
-    // AppOrchestrator::new will now query the driver for its actual PlatformState
-    // (including font and display pixel dimensions), calculate the resulting grid size,
-    // and then resize both the PTY and the TerminalEmulator instance accordingly.
-    // So, the explicit dimension query and PTY resize previously done here in main.rs
-    // are no longer needed.
 
     // --- Setup Terminal Emulator, Parser, Renderer ---
-    // TerminalEmulator is initialized with initial_cols and initial_rows,
-    // but AppOrchestrator::new will immediately send a Resize ControlEvent
-    // to update it based on actual driver metrics.
+    // Initial dimensions are now derived by AppOrchestrator::new from platform state.
+    // So, TerminalEmulator can be initialized with defaults that Orchestrator will override.
+    let initial_cols = config.appearance.columns as usize;
+    let initial_rows = config.appearance.rows as usize;
+
     trace!(
-        "Initializing TerminalEmulator with default scrollback limit: {}",
-        DEFAULT_SCROLLBACK_LIMIT
+        "Initializing TerminalEmulator with default scrollback limit: {} and configured dimensions: {}x{}",
+        DEFAULT_SCROLLBACK_LIMIT, initial_cols, initial_rows
     );
     let mut term_emulator = TerminalEmulator::new(
-        initial_cols as usize, // These might be default, orchestrator will resize
-        initial_rows as usize, // These might be default, orchestrator will resize
+        initial_cols,
+        initial_rows,
         DEFAULT_SCROLLBACK_LIMIT,
     );
     let mut ansi_parser = AnsiProcessor::new();
     let renderer = Renderer::new();
 
     // --- Create AppOrchestrator ---
-    // The AppOrchestrator takes mutable references to the main components.
     let mut orchestrator = AppOrchestrator::new(
-        &mut pty_channel,
+        // &mut pty_channel, // Replaced by platform
         &mut term_emulator,
         &mut ansi_parser,
         renderer, // renderer is moved into the orchestrator
-        &mut *driver,
+        // &mut *driver, // Replaced by platform
+        platform, // Pass the concrete Platform enum instance
     );
     info!("AppOrchestrator created.");
 
-    // --- Setup EventMonitor (epoll wrapper) ---
-    let mut event_monitor = EventMonitor::new()
-        .map_err(|e| anyhow::anyhow!("Failed to create event monitor: {}", e))?;
-
-    // Add PTY file descriptor for monitoring read events.
-    event_monitor
-        .add(pty_fd, PTY_EPOLL_TOKEN, EpollFlags::EPOLLIN)
-        .map_err(|e| anyhow::anyhow!("Failed to add PTY FD {} to event monitor: {}", pty_fd, e))?;
-    trace!("PTY FD {} added to event monitor for read events.", pty_fd);
-
-    // Add driver's event file descriptor, if available.
-    if let Some(driver_event_fd) = orchestrator.driver.get_event_fd() {
-        event_monitor
-            .add(driver_event_fd, DRIVER_EPOLL_TOKEN, EpollFlags::EPOLLIN)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to add Driver FD {} to event monitor: {}",
-                    driver_event_fd,
-                    e
-                )
-            })?;
-        trace!(
-            "Driver FD {} added to event monitor for read events.",
-            driver_event_fd
-        );
-    } else {
-        info!("Driver does not provide an event FD. Main loop will not poll it via epoll.");
-    }
-
+    // --- Main Event Loop (simplified using Platform::poll_system_events) ---
     info!("Starting main event loop...");
     'main_loop: loop {
-        // Wait for events on monitored file descriptors.
-        match event_monitor.events(EPOLL_TIMEOUT_INDEFINITE) {
-            Ok(events_slice) => {
-                log::trace!("Event monitor returned {} events.", events_slice.len());
-                if events_slice.is_empty() {
-                    // This case typically happens if epoll_wait times out with 0 events.
-                    // If timeout is indefinite (-1), this should ideally not happen unless interrupted.
-                    log::trace!("Event monitor timed out or returned no events, continuing loop.");
+        match orchestrator.platform.poll_system_events(Some(PLATFORM_EVENT_POLL_TIMEOUT_MS)) {
+            Ok(system_events) => {
+                if system_events.is_empty() {
+                    // This can happen if poll_system_events had a timeout of 0ms and no events were pending.
+                    // Or if an internal interruption (like EINTR for epoll) occurred which poll_system_events handled.
+                    // If PLATFORM_EVENT_POLL_TIMEOUT_MS was > 0, an empty vec implies no specific FD events but not necessarily a Tick.
+                    // Tick is explicitly returned by poll_system_events if the timeout expires.
+                    // So, an empty vec here means "no specific I/O or UI event, and no Tick either".
+                    // We might not need to do anything special other than re-rendering if needed.
+                    trace!("poll_system_events returned no specific events this cycle.");
                 }
 
-                for event in events_slice {
-                    let event_token = event.u64; // Retrieve the token associated with the event.
-                    match event_token {
-                        PTY_EPOLL_TOKEN => {
-                            log::trace!("Event on PTY FD (token {}).", PTY_EPOLL_TOKEN);
-                            // Process data from the PTY.
+                for event in system_events {
+                    trace!("Processing SystemEvent: {:?}", event);
+                    match event {
+                        SystemEvent::PrimaryIoReady => {
                             match orchestrator.process_pty_events() {
                                 Ok(OrchestratorStatus::Running) => { /* Continue */ }
                                 Ok(OrchestratorStatus::Shutdown) => {
@@ -185,9 +131,7 @@ fn main() -> anyhow::Result<()> {
                                 }
                             }
                         }
-                        DRIVER_EPOLL_TOKEN => {
-                            log::trace!("Event on Driver FD (token {}).", DRIVER_EPOLL_TOKEN);
-                            // Process events from the backend driver.
+                        SystemEvent::UiInputReady => {
                             match orchestrator.process_driver_events() {
                                 Ok(OrchestratorStatus::Running) => { /* Continue */ }
                                 Ok(OrchestratorStatus::Shutdown) => {
@@ -200,26 +144,25 @@ fn main() -> anyhow::Result<()> {
                                 }
                             }
                         }
-                        _ => {
-                            warn!("Unknown epoll token: {}", event_token);
+                        SystemEvent::Tick => {
+                            // Handle tick events (e.g., for cursor blinking or other periodic tasks)
+                            // For now, just log it. Orchestrator might handle it internally if needed.
+                            trace!("Tick event received.");
+                            // Orchestrator's render_if_needed might handle cursor blinking based on Tick.
+                        }
+                        SystemEvent::Error(e) => {
+                            error!("System error from platform: {}. Exiting.", e);
+                            break 'main_loop;
+                        }
+                        SystemEvent::ShutdownAdvised => {
+                            info!("Platform advised shutdown. Exiting main loop.");
+                            break 'main_loop;
                         }
                     }
                 }
             }
             Err(e) => {
-                // Handle errors from epoll_wait, specifically EINTR (interrupted system call).
-                if let Some(nix_err) = e.root_cause().downcast_ref::<nix::Error>() {
-                    if *nix_err == nix::Error::EINTR {
-                        trace!("Event monitor wait interrupted by EINTR, continuing.");
-                        continue 'main_loop;
-                    }
-                }
-                // For other epoll errors, log and exit.
-                error!(
-                    "Event monitor wait failed: {}. Root cause: {:?}",
-                    e,
-                    e.root_cause()
-                );
+                error!("Failed to poll platform system events: {}. Exiting.", e);
                 break 'main_loop;
             }
         }
@@ -230,5 +173,14 @@ fn main() -> anyhow::Result<()> {
             break 'main_loop;
         }
     }
+
+    // Cleanup platform resources before exiting
+    if let Err(e) = orchestrator.platform.cleanup() {
+        error!("Error during platform cleanup: {}", e);
+    } else {
+        info!("Platform cleanup successful.");
+    }
+
+    info!("MyTerm application terminated.");
     Ok(())
 }

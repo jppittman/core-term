@@ -4,7 +4,7 @@
 //! This includes user-initiated actions, control events, and actions
 //! the emulator signals to the orchestrator.
 
-use crate::platform::backends::{KeySymbol, Modifiers}; // Assuming these are re-exported via backends
+use crate::platform::backends::{FocusState, KeySymbol, Modifiers}; // Assuming these are re-exported via backends
 
 // --- User Input Actions ---
 
@@ -75,6 +75,9 @@ pub enum EmulatorAction {
     // Keeping it for now as it's a common signal.
     /// Request to set the visibility of the (potentially native) cursor by the driver.
     SetCursorVisibility(bool),
+
+    /// Request to set the focus state of the window.
+    SetFocus(FocusState),
 
     /// Request to copy the provided text to the system clipboard.
     CopyToClipboard(String),

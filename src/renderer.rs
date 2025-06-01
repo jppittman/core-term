@@ -10,7 +10,7 @@
 
 use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
-use crate::platform::backends::RenderCommand; // Updated import
+use crate::platform::backends::PlatformActionCommand; // Updated import
 use crate::term::snapshot::{Point, RenderSnapshot, Selection};
 use crate::term::unicode::get_char_display_width;
 
@@ -70,9 +70,9 @@ impl Renderer {
     /// * `snapshot`: A `RenderSnapshot` of the current terminal state.
     ///
     /// # Returns
-    /// * `Result<Vec<RenderCommand>>`: A vector of render commands, or an error.
-    pub fn draw(&self, snapshot: RenderSnapshot) -> Result<Vec<RenderCommand>> {
-        let mut commands: Vec<RenderCommand> = Vec::new();
+    /// * `Result<Vec<PlatformActionCommand>>`: A vector of render commands, or an error.
+    pub fn draw(&self, snapshot: RenderSnapshot) -> Result<Vec<PlatformActionCommand>> {
+        let mut commands: Vec<PlatformActionCommand> = Vec::new();
         let (term_width, term_height) = snapshot.dimensions;
 
         if term_width == 0 || term_height == 0 {
@@ -145,7 +145,7 @@ impl Renderer {
         term_width: usize,
         line_glyphs: &[Glyph],
         selection: &Option<Selection>,
-        commands: &mut Vec<RenderCommand>,
+        commands: &mut Vec<PlatformActionCommand>,
     ) -> Result<()> {
         let mut current_col: usize = 0;
 
@@ -153,7 +153,7 @@ impl Renderer {
             let Some(start_glyph) = line_glyphs.get(current_col) else {
                 warn!("draw_line_content_from_slice: Column {} reached end of glyph data for line {} (len {}). Filling rest of line.", current_col, y_abs, line_glyphs.len());
                 if current_col < term_width {
-                    commands.push(RenderCommand::FillRect {
+                    commands.push(PlatformActionCommand::FillRect {
                         x: current_col,
                         y: y_abs,
                         width: term_width - current_col,
@@ -186,7 +186,7 @@ impl Renderer {
         current_col: usize,
         y_abs: usize,
         line_glyphs: &[Glyph],
-        commands: &mut Vec<RenderCommand>,
+        commands: &mut Vec<PlatformActionCommand>,
     ) -> Result<usize> {
         if current_col == 0 {
             warn!("Placeholder found at column 0 on line {}. This is unexpected. Using default background.", y_abs);
@@ -223,7 +223,7 @@ impl Renderer {
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
         selection: &Option<Selection>,
-        commands: &mut Vec<RenderCommand>,
+        commands: &mut Vec<PlatformActionCommand>,
     ) -> Result<usize> {
         let cells_consumed_by_text_run = self.draw_text_segment_from_slice(
             current_col, y_abs, term_width, start_glyph, line_glyphs, selection, commands,
@@ -248,7 +248,7 @@ impl Renderer {
 
         let Some(glyph_at_placeholder) = line_glyphs.get(placeholder_col) else {
             warn!("    Line {}, Col {}: Could not get glyph at placeholder position for wide char '{}'. Forcing fill with primary's bg.", y_abs, placeholder_col, start_glyph.c);
-            commands.push(RenderCommand::FillRect {
+            commands.push(PlatformActionCommand::FillRect {
                 x: placeholder_col, y: y_abs, width: 1, height: 1,
                 color: placeholder_expected_bg, is_selection_bg: false,
             });
@@ -264,7 +264,7 @@ impl Renderer {
 
         if !placeholder_is_fine {
             trace!("    Line {}, Col {}: Filling placeholder for wide char '{}' (primary at col {}). Expected bg: {:?}, actual_char: '{}', actual_flags: {:?}, actual_bg: {:?}, is_correct_spacer: {}.", y_abs,placeholder_col,start_glyph.c,current_col,placeholder_expected_bg,glyph_at_placeholder.c,glyph_at_placeholder.attr.flags,current_placeholder_actual_bg,is_correct_spacer);
-            commands.push(RenderCommand::FillRect {
+            commands.push(PlatformActionCommand::FillRect {
                 x: placeholder_col, y: y_abs, width: 1, height: 1,
                 color: placeholder_expected_bg, is_selection_bg: false,
             });
@@ -279,10 +279,10 @@ impl Renderer {
         x: usize,
         y: usize,
         effective_bg: Color,
-        commands: &mut Vec<RenderCommand>,
+        commands: &mut Vec<PlatformActionCommand>,
     ) -> Result<usize> {
         trace!("    Line {}, Col {}: Placeholder. FillRect with bg={:?}", y, x, effective_bg);
-        commands.push(RenderCommand::FillRect {
+        commands.push(PlatformActionCommand::FillRect {
             x, y, width: 1, height: 1, color: effective_bg, is_selection_bg: false,
         });
         Ok(SINGLE_CELL_CONSUMED)
@@ -296,7 +296,7 @@ impl Renderer {
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
         selection: &Option<Selection>,
-        commands: &mut Vec<RenderCommand>,
+        commands: &mut Vec<PlatformActionCommand>,
     ) -> Result<usize> {
         debug_assert!(start_glyph.c == ' ', "draw_space_run_from_slice called with non-space start_glyph");
 
@@ -320,7 +320,7 @@ impl Renderer {
         if space_run_len == 0 {
             warn!("Renderer::draw_space_run_from_slice: space_run_len is 0 at ({},{}). Drawing single space.", start_col, y);
             let is_selected = self.is_cell_selected(start_col, y, term_width, selection);
-            commands.push(RenderCommand::FillRect {
+            commands.push(PlatformActionCommand::FillRect {
                 x: start_col, y, width: 1, height: 1,
                 color: start_eff_bg, is_selection_bg: is_selected,
             });
@@ -330,7 +330,7 @@ impl Renderer {
         let is_run_selected = self.is_cell_selected(start_col, y, term_width, selection);
 
         trace!("    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}, selected: {}", y, start_col, space_run_len, start_eff_bg, start_eff_flags, is_run_selected);
-        commands.push(RenderCommand::FillRect {
+        commands.push(PlatformActionCommand::FillRect {
             x: start_col, y, width: space_run_len, height: 1,
             color: start_eff_bg, is_selection_bg: is_run_selected,
         });
@@ -345,7 +345,7 @@ impl Renderer {
         start_glyph: &Glyph,
         line_glyphs: &[Glyph],
         selection: &Option<Selection>,
-        commands: &mut Vec<RenderCommand>,
+        commands: &mut Vec<PlatformActionCommand>,
     ) -> Result<usize> {
         debug_assert!(start_glyph.c != ' ' && start_glyph.c != '\0', "draw_text_segment_from_slice called with space or placeholder start_glyph");
 
@@ -390,7 +390,7 @@ impl Renderer {
         let is_run_selected = self.is_cell_selected(start_col, y, term_width, selection);
 
         trace!("    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style=fg:{:?},bg:{:?},flags:{:?},selected:{}", y, start_col, run_text, run_total_cell_width, start_eff_fg, start_eff_bg, start_eff_flags, is_run_selected);
-        commands.push(RenderCommand::DrawTextRun {
+        commands.push(PlatformActionCommand::DrawTextRun {
             x: start_col, y, text: run_text,
             fg: start_eff_fg, bg: start_eff_bg, flags: start_eff_flags,
             is_selected: is_run_selected,
@@ -401,7 +401,7 @@ impl Renderer {
     fn draw_cursor_overlay(
         &self,
         snapshot: &RenderSnapshot,
-        commands: &mut Vec<RenderCommand>,
+        commands: &mut Vec<PlatformActionCommand>,
     ) -> Result<()> {
         let Some(cursor_state) = &snapshot.cursor_state else { return Ok(()); };
         let (term_width, term_height) = snapshot.dimensions;
@@ -450,7 +450,7 @@ impl Renderer {
         let is_cursor_pos_selected = self.is_cell_selected(physical_cursor_x_for_draw, cursor_abs_y, term_width, &Some(snapshot.selection.clone()));
 
         trace!("    Drawing cursor overlay: char='{}' at physical ({},{}) with style: fg:{:?},bg:{:?},flags:{:?},selected:{}", final_char_to_draw_for_cursor, physical_cursor_x_for_draw, cursor_abs_y, cursor_char_fg, cursor_cell_bg, cursor_display_flags, is_cursor_pos_selected);
-        commands.push(RenderCommand::DrawTextRun {
+        commands.push(PlatformActionCommand::DrawTextRun {
             x: physical_cursor_x_for_draw, y: cursor_abs_y,
             text: final_char_to_draw_for_cursor.to_string(),
             fg: cursor_char_fg, bg: cursor_cell_bg, flags: cursor_display_flags,
