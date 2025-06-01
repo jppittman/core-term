@@ -46,6 +46,8 @@ pub enum DecModeConstant {
     CursorKeys = 1,
     /// Origin Mode (DECOM). Changes how cursor coordinates are interpreted relative to scrolling margins.
     Origin = 6,
+    /// Autowrap Mode (DECAWM). Controls whether cursor wraps to next line at EOL.
+    AutoWrapMode = 7, // DECAWM
     /// Text Cursor Enable Mode (DECTCEM). Controls visibility of the text cursor.
     TextCursorEnable = 25,
 
@@ -97,6 +99,7 @@ impl DecModeConstant {
         match value {
             1 => Some(DecModeConstant::CursorKeys),
             6 => Some(DecModeConstant::Origin),
+            7 => Some(DecModeConstant::AutoWrapMode), // DECAWM
             9 => Some(DecModeConstant::MouseX10),
             12 => Some(DecModeConstant::Att610CursorBlink),
             25 => Some(DecModeConstant::TextCursorEnable),
@@ -157,9 +160,10 @@ pub struct DecPrivateModes {
     // Note: mouse_urxvt_mode (?1015) and mouse_pixel_position_mode (?1016) would be added here
     // if they were being fully implemented with state flags.
     pub insert_mode: bool,
-    pub lnm_testing_flag: bool, // Renamed for debugging
+    pub linefeed_newline_mode: bool,
     pub text_cursor_enable_mode: bool,
     pub cursor_blink_mode: bool,
+    pub autowrap_mode: bool,
 }
 
 impl Default for DecPrivateModes {
@@ -181,7 +185,8 @@ impl Default for DecPrivateModes {
             allow_alt_screen: true,        // Default: allow alt screen
             cursor_blink_mode: true,       // Default: blinking enabled (visuals TBD)
             insert_mode: false,            // Default: replace mode
-            lnm_testing_flag: false,  // Renamed for debugging: Default: LF is just LF
+            linefeed_newline_mode: false,  // Default: LF is just LF
+            autowrap_mode: true,        // Default: Autowrap ON
         }
     }
 }

@@ -171,11 +171,19 @@ impl TerminalEmulator {
                         );
                     }
                     Some(DecModeConstant::Att610CursorBlink) => {
-                        self.dec_modes.cursor_blink_mode = enable; // Assuming this flag exists
+                        self.dec_modes.cursor_blink_mode = enable;
                         warn!(
                             "DEC Private Mode 12 (ATT610 Cursor Blink) set to {}. Visual blink not implemented.",
                             enable
                         );
+                    }
+                    Some(DecModeConstant::AutoWrapMode) => {
+                        self.dec_modes.autowrap_mode = enable;
+                        // Re-evaluate cursor_wrap_next based on new autowrap_mode state
+                        let (logical_x, _) = self.cursor_controller.logical_pos();
+                        let screen_ctx = self.current_screen_context();
+                        self.cursor_wrap_next = logical_x >= screen_ctx.width && self.dec_modes.autowrap_mode;
+                        trace!("DEC Private Mode 7 (DECAWM Autowrap) set to {}, cursor_wrap_next is now {}", enable, self.cursor_wrap_next);
                     }
                     Some(DecModeConstant::Unknown7727) => {
                         warn!(
@@ -196,7 +204,7 @@ impl TerminalEmulator {
                     self.dec_modes.insert_mode = enable;
                 }
                 20 => {
-                    self.dec_modes.lnm_testing_flag = enable; // Renamed for debugging
+                    self.dec_modes.linefeed_newline_mode = enable;
                 }
                 _ => {
                     warn!(

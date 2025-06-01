@@ -201,11 +201,12 @@ impl TerminalEmulator {
 
         // Check if the new logical cursor position requires a wrap on the *next* character.
         let (final_logical_x, _) = self.cursor_controller.logical_pos();
-        // Set cursor_wrap_next if the cursor is exactly at or beyond the width.
-        // e.g., width 80 (cols 0-79). If final_logical_x is 80, it's at the wrap position.
-        self.cursor_wrap_next = final_logical_x >= screen_ctx.width;
-        if self.cursor_wrap_next {
-            println!("cursor_wrap_next set to true. final_logical_x: {}, screen_ctx.width: {}", final_logical_x, screen_ctx.width);
+        // Set cursor_wrap_next if the cursor is exactly at or beyond the width AND autowrap is on.
+        self.cursor_wrap_next = final_logical_x >= screen_ctx.width && self.dec_modes.autowrap_mode;
+        if self.cursor_wrap_next { // This logging might be too verbose for normal operation
+            // Consider using trace level or removing if not essential for debugging.
+            log::trace!("cursor_wrap_next set to true. final_logical_x: {}, screen_ctx.width: {}, autowrap: {}",
+                      final_logical_x, screen_ctx.width, self.dec_modes.autowrap_mode);
         }
     }
 }
