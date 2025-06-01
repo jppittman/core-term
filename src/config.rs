@@ -8,7 +8,8 @@
 // --- Crates and Modules ---
 use crate::{
     color::{Color, NamedColor},
-    term::cursor::CursorShape, // Assumes CursorShape is in `crate::term::modes`
+    keys::{KeySymbol, Modifiers}, // Added for Keybinding
+    term::cursor::CursorShape,   // Assumes CursorShape is in `crate::term::modes`
 };
 use log::{error, info}; // Added warn, info
 use once_cell::sync::Lazy;
@@ -98,6 +99,7 @@ pub struct Config {
     pub colors: ColorScheme,
     pub shell: ShellConfig,
     pub mouse: MouseConfig,
+    pub copy_paste_keybindings: CopyPasteKeybindings,
 }
 
 impl Default for Config {
@@ -109,6 +111,41 @@ impl Default for Config {
             colors: ColorScheme::default(),
             shell: ShellConfig::default(),
             mouse: MouseConfig::default(),
+            copy_paste_keybindings: CopyPasteKeybindings::default(),
+        }
+    }
+}
+
+// --- Keybinding Configuration ---
+
+/// Represents a single keybinding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Keybinding {
+    pub key: KeySymbol,
+    pub mods: Modifiers,
+}
+
+/// Defines keybindings for copy and paste actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CopyPasteKeybindings {
+    pub copy: Vec<Keybinding>,
+    pub paste_clipboard: Vec<Keybinding>,
+    pub paste_primary: Option<Vec<Keybinding>>,
+}
+
+impl Default for CopyPasteKeybindings {
+    fn default() -> Self {
+        CopyPasteKeybindings {
+            copy: vec![Keybinding {
+                key: KeySymbol::Char('C'),
+                mods: Modifiers::CONTROL | Modifiers::SHIFT,
+            }],
+            paste_clipboard: vec![Keybinding {
+                key: KeySymbol::Char('V'),
+                mods: Modifiers::CONTROL | Modifiers::SHIFT,
+            }],
+            paste_primary: None, // No default for primary selection paste yet
         }
     }
 }

@@ -395,10 +395,10 @@ pub fn process_pending_events(
                                     req.requestor,
                                     req.property,
                                     xlib::XA_ATOM, // Property type is ATOM for TARGETS
-                                    32, // format 32 for atoms
+                                    32, // format 32 for atoms (assuming Atom is 32-bit)
                                     xlib::PropModeReplace,
-                                    supported_targets.as_mut_ptr() as *mut u8, // Pointer to atom data
-                                    supported_targets.len() as c_int,    // Number of items
+                                    supported_targets.as_ptr() as *const u8, // Corrected: use as_ptr()
+                                    supported_targets.len() as c_int,        // Number of items
                                 );
                             }
                             response_event.property = req.property; // Signal success

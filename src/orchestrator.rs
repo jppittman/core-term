@@ -6,6 +6,7 @@
 
 use crate::{
     ansi::AnsiParser,
+    config::CONFIG, // Added for keybindings
     platform::backends::{BackendEvent, Driver, RenderCommand}, // Removed PlatformState
     platform::os::pty::PtyChannel,
     renderer::Renderer,
@@ -163,19 +164,72 @@ impl<'a> AppOrchestrator<'a> {
                 modifiers,
                 text,
             } => {
-                // New signature
-                // Translate BackendEvent::Key to UserInputAction::KeyInput
-                let key_input_action = UserInputAction::KeyInput {
-                    symbol,                                                // from BackendEvent
-                    modifiers,                                             // from BackendEvent
-                    text: if text.is_empty() { None } else { Some(text) }, // Convert String to Option<String>
-                };
-                let user_input = EmulatorInput::User(key_input_action);
-                if let Some(action) = self.term.interpret_input(user_input) {
-                    if matches!(action, EmulatorAction::WritePty(_)) {
-                        self.handle_emulator_action(action, &mut Vec::new());
-                    } else {
-                        self.pending_render_actions.push(action);
+                // --- Keybinding Logic ---
+                let keybindings = &CONFIG.copy_paste_keybindings;
+                let mut keybinding_matched = false;
+                let mut user_input_action = None;
+
+                // Check for copy keybindings
+                for kb in &keybindings.copy {
+                    if kb.key == symbol && kb.mods == modifiers {
+                        user_input_action = Some(UserInputAction::InitiateCopy);
+                        keybinding_matched = true;
+                        break;
+                    }
+                }
+
+                // Check for paste_clipboard keybindings if no copy binding matched
+                if !keybinding_matched {
+                    for kb in &keybindings.paste_clipboard {
+                        if kb.key == symbol && kb.mods == modifiers {
+                            user_input_action = Some(UserInputAction::RequestClipboardPaste);
+                            keybinding_matched = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Check for paste_primary keybindings if no other binding matched
+                if !keybinding_matched {
+                    if let Some(primary_kbs) = &keybindings.paste_primary {
+                        for kb in primary_kbs {
+                            if kb.key == symbol && kb.mods == modifiers {
+                                user_input_action = Some(UserInputAction::RequestPrimaryPaste);
+                                keybinding_matched = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if keybinding_matched {
+                    if let Some(action_to_send) = user_input_action {
+                        log::debug!("Orchestrator: Keybinding matched, sending UserInputAction: {:?}", action_to_send);
+                        let user_input = EmulatorInput::User(action_to_send);
+                        if let Some(emu_action) = self.term.interpret_input(user_input) {
+                            if matches!(emu_action, EmulatorAction::WritePty(_)) {
+                                self.handle_emulator_action(emu_action, &mut Vec::new());
+                            } else {
+                                self.pending_render_actions.push(emu_action);
+                            }
+                        }
+                    }
+                    // Keybinding was matched and processed, do not send as KeyInput
+                } else {
+                    // No keybinding matched, proceed with existing logic
+                    log::debug!("Orchestrator: No keybinding matched. Processing as regular KeyInput.");
+                    let key_input_action = UserInputAction::KeyInput {
+                        symbol,
+                        modifiers,
+                        text: if text.is_empty() { None } else { Some(text) },
+                    };
+                    let user_input = EmulatorInput::User(key_input_action);
+                    if let Some(action) = self.term.interpret_input(user_input) {
+                        if matches!(action, EmulatorAction::WritePty(_)) {
+                            self.handle_emulator_action(action, &mut Vec::new());
+                        } else {
+                            self.pending_render_actions.push(action);
+                        }
                     }
                 }
             }
