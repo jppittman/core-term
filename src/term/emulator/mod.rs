@@ -53,6 +53,7 @@ pub(super) enum FocusState {
 }
 
 /// The core terminal emulator.
+#[derive(Clone)]
 pub struct TerminalEmulator {
     pub(super) screen: Screen,
     pub(super) focus_state: FocusState,

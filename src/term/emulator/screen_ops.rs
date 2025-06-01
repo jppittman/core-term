@@ -35,7 +35,10 @@ impl TerminalEmulator {
             }
             EraseMode::Scrollback => {
                 self.screen.scrollback.clear();
-                return;
+                // CSI 3J should also clear the screen like CSI 2J
+                for y in 0..screen_ctx.height {
+                    self.screen.clear_line_segment(y, 0, screen_ctx.width);
+                }
             }
             EraseMode::Unknown => warn!("Unknown ED mode used."),
         }

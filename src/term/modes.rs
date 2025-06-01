@@ -157,7 +157,7 @@ pub struct DecPrivateModes {
     // Note: mouse_urxvt_mode (?1015) and mouse_pixel_position_mode (?1016) would be added here
     // if they were being fully implemented with state flags.
     pub insert_mode: bool,
-    pub linefeed_newline_mode: bool,
+    pub lnm_testing_flag: bool, // Renamed for debugging
     pub text_cursor_enable_mode: bool,
     pub cursor_blink_mode: bool,
 }
@@ -181,7 +181,7 @@ impl Default for DecPrivateModes {
             allow_alt_screen: true,        // Default: allow alt screen
             cursor_blink_mode: true,       // Default: blinking enabled (visuals TBD)
             insert_mode: false,            // Default: replace mode
-            linefeed_newline_mode: false,  // Default: LF is just LF
+            lnm_testing_flag: false,  // Renamed for debugging: Default: LF is just LF
         }
     }
 }
