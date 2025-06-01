@@ -91,3 +91,6 @@ impl TerminalInterface for TerminalEmulator {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod core_tests;

@@ -476,7 +476,7 @@ pub fn process_pending_events(
                             )
                         };
 
-                        if status == xlib::Success.into() && !prop_return_ptr.is_null() && nitems_return > 0 {
+                        if status == xlib::Success as i32 && !prop_return_ptr.is_null() && nitems_return > 0 {
                             if actual_type_return == selection_atoms.utf8_string ||
                                actual_type_return == selection_atoms.text ||
                                actual_type_return == xlib::XA_STRING {

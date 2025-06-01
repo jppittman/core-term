@@ -42,7 +42,9 @@ fn horizontal_tab(emulator: &mut TerminalEmulator) {
 fn perform_line_feed(emulator: &mut TerminalEmulator) {
     log::trace!("perform_line_feed called in ansi_handler");
     emulator.move_down_one_line_and_dirty(); // Call as method
-    emulator.carriage_return(); // Call as method
+    if emulator.dec_modes.lnm_testing_flag { // Check LNM mode
+        emulator.carriage_return(); // Call as method
+    }
 }
 
 // move_down_one_line_and_dirty is now a method on TerminalEmulator in methods.rs

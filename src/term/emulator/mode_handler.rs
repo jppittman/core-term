@@ -196,7 +196,7 @@ impl TerminalEmulator {
                     self.dec_modes.insert_mode = enable;
                 }
                 20 => {
-                    self.dec_modes.linefeed_newline_mode = enable;
+                    self.dec_modes.lnm_testing_flag = enable; // Renamed for debugging
                 }
                 _ => {
                     warn!(
