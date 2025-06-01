@@ -112,6 +112,37 @@ impl TerminalEmulator {
                 attr: glyph_attrs, // Use the full attributes from the cursor
             };
 
+            // Before setting the new glyph, check if the old glyph was a WIDE_CHAR_PRIMARY.
+            // If so, and the new char is not wide or is different, clear the old spacer.
+            if physical_y < screen_ctx.height && physical_x < screen_ctx.width { // Bounds check for old_glyph_at_pos
+                let old_glyph_at_pos = self.screen.active_grid()[physical_y][physical_x].clone(); // Clone to avoid borrow issues
+                if old_glyph_at_pos
+                    .attr
+                    .flags
+                    .contains(AttrFlags::WIDE_CHAR_PRIMARY)
+                {
+                    // If the new char isn't wide, or if it is but we're overwriting,
+                    // we must clear the old spacer.
+                    if char_width != 2 || old_glyph_at_pos.c != ch_to_print {
+                        if physical_x + 1 < screen_ctx.width {
+                            let default_attrs = Attributes {
+                                fg: crate::config::CONFIG.colors.foreground,
+                                bg: crate::config::CONFIG.colors.background,
+                                flags: AttrFlags::empty(),
+                            };
+                            let default_glyph = Glyph {
+                                c: ' ',
+                                attr: default_attrs,
+                            };
+                            self.screen
+                                .set_glyph(physical_x + 1, physical_y, default_glyph);
+                            // Line will be marked dirty anyway by the new char.
+                        }
+                    }
+                }
+            }
+
+
             self.screen.set_glyph(
                 physical_x,
                 physical_y,
