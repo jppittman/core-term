@@ -31,10 +31,12 @@ pub mod connection;
 pub mod event;
 pub mod graphics;
 pub mod window;
+pub mod selection; // Added selection module
 
 use connection::Connection;
 use graphics::Graphics;
 use window::{CursorVisibility, Window}; // Import CursorVisibility enum
+use super::super::x11::selection::SelectionAtoms; // For XDriver field
 
 /// Represents the focus state of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,8 @@ pub struct XDriver {
     window: Window,
     graphics: Graphics,
     has_focus: bool, // Tracks if the application window currently has input focus.
+    selection_atoms: SelectionAtoms,
+    selection_text: Option<String>, // Stores text if we own a selection
 }
 
 impl XDriver {
@@ -76,6 +80,12 @@ impl XDriver {
             e
         })?;
         info!("X11 connection established successfully.");
+
+        let selection_atoms = SelectionAtoms::new(&connection).map_err(|e| {
+            error!("Failed to intern selection atoms: {}", e);
+            e
+        })?;
+        info!("X11 selection atoms interned successfully.");
 
         // Stage 1 of Graphics init: Load font, determine metrics, pre-allocate ANSI colors, get default bg pixel.
         // This is done before window creation as font metrics are needed for initial window sizing
@@ -137,7 +147,69 @@ impl XDriver {
             window,
             graphics,
             has_focus: true, // Assume window has focus initially. Event processing will update this.
+            selection_atoms,
+            selection_text: None,
         })
+    }
+
+    /// Takes ownership of a given X11 selection (e.g., PRIMARY or CLIPBOARD).
+    ///
+    /// # Arguments
+    /// * `selection_name_atom`: The atom identifying the selection to own (e.g., `self.selection_atoms.primary`).
+    /// * `text`: The string content to associate with this selection.
+    fn own_selection_internal(&mut self, selection_name_atom: xlib::Atom, text: String) {
+        // SAFETY: FFI call. `connection.display()`, `window.id()`, and `selection_name_atom` must be valid.
+        // `xlib::CurrentTime` is standard for timestamp.
+        unsafe {
+            xlib::XSetSelectionOwner(
+                self.connection.display(),
+                selection_name_atom,
+                self.window.id(),
+                xlib::CurrentTime, // Using CurrentTime is common
+            );
+            // No direct confirmation of success from XSetSelectionOwner,
+            // but we can check if we are now the owner. This is usually implicit.
+            // XFlush might be needed if other clients need to know about the ownership change immediately.
+            xlib::XFlush(self.connection.display());
+        }
+        self.selection_text = Some(text);
+        // It's good to log which selection we attempted to own.
+        // For more robust atom-to-name, we'd need XGetAtomName, but that's another round trip.
+        // For now, just use the atom value.
+        info!("Attempted to own selection (atom ID: {}). Stored text length: {}.",
+              selection_name_atom, self.selection_text.as_ref().map_or(0, |s| s.len()));
+    }
+
+    /// Requests data from the current owner of a specified X11 selection.
+    ///
+    /// The data will be delivered via a `SelectionNotify` event.
+    ///
+    /// # Arguments
+    /// * `selection_name_atom`: The atom identifying the selection to request (e.g., `self.selection_atoms.clipboard`).
+    /// * `target_atom`: The desired format of the data (e.g., `self.selection_atoms.utf8_string`).
+    fn request_selection_data_internal(&mut self, selection_name_atom: xlib::Atom, target_atom: xlib::Atom) {
+        // Property atom where the selection owner should place the data.
+        // Using the selection name atom itself for the property is a common convention,
+        // or a dedicated atom like "XSEL_DATA". Let's use the selection name atom for simplicity here.
+        // The property must be set on *our* window (`self.window.id()`).
+        let property_to_set = selection_name_atom; // Or a custom atom
+
+        // SAFETY: FFI call. Ensure all parameters are valid.
+        // `xlib::CurrentTime` is standard for timestamp.
+        unsafe {
+            xlib::XConvertSelection(
+                self.connection.display(),
+                selection_name_atom,
+                target_atom,
+                property_to_set, // Property on our window for the result
+                self.window.id(), // Our window is the requestor
+                xlib::CurrentTime,
+            );
+            // XFlush might be needed to ensure the request is sent promptly.
+            xlib::XFlush(self.connection.display());
+        }
+        info!("Requested selection data (selection atom ID: {}, target atom ID: {}) for property atom ID: {}",
+              selection_name_atom, target_atom, property_to_set);
     }
 }
 
@@ -164,8 +236,13 @@ impl Driver for XDriver {
     /// translation to `BackendEvent`s, and updates window state (dimensions, focus).
     fn process_events(&mut self) -> Result<Vec<BackendEvent>> {
         // Logging for this can be noisy, so it's primarily within the event module.
-        match event::process_pending_events(&self.connection, &mut self.window, &mut self.has_focus)
-        {
+        match event::process_pending_events(
+            &self.connection,
+            &mut self.window,
+            &mut self.has_focus,
+            &self.selection_atoms,
+            self.selection_text.as_ref(),
+        ) {
             Ok(events) => {
                 if !events.is_empty() {
                     debug!("XDriver processed {} backend events.", events.len());
@@ -342,6 +419,54 @@ impl Driver for XDriver {
     /// * `Ok(())`: If all cleanup operations succeed or were already performed.
     /// * `Err(anyhow::Error)`: If an error occurs during cleanup of `Graphics` or `Connection`.
     ///   Errors from `Window::cleanup` are logged but not propagated from this function.
+    fn own_selection(&mut self, selection_name_atom_u64: u64, text: String) {
+        // Map abstract u64 IDs from the trait to concrete X11 atoms.
+        // These IDs must match those used in AppOrchestrator.
+        const TRAIT_ATOM_ID_PRIMARY: u64 = 1;
+        const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2;
+
+        let actual_atom = match selection_name_atom_u64 {
+            TRAIT_ATOM_ID_PRIMARY => self.selection_atoms.primary,
+            TRAIT_ATOM_ID_CLIPBOARD => self.selection_atoms.clipboard,
+            _ => {
+                warn!("XDriver::own_selection (trait): Received unknown abstract atom ID: {}", selection_name_atom_u64);
+                return;
+            }
+        };
+        // Call the internal method that expects an xlib::Atom
+        self.own_selection_internal(actual_atom, text);
+    }
+
+    fn request_selection_data(&mut self, selection_name_atom_u64: u64, target_atom_u64: u64) {
+        // Map abstract u64 IDs from the trait to concrete X11 atoms.
+        const TRAIT_ATOM_ID_PRIMARY: u64 = 1;
+        const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2;
+        const TRAIT_ATOM_ID_UTF8_STRING: u64 = 10;
+        // Add more target mappings as needed (e.g., TARGETS)
+
+        let actual_selection_atom = match selection_name_atom_u64 {
+            TRAIT_ATOM_ID_PRIMARY => self.selection_atoms.primary,
+            TRAIT_ATOM_ID_CLIPBOARD => self.selection_atoms.clipboard,
+            _ => {
+                warn!("XDriver::request_selection_data (trait): Received unknown abstract selection atom ID: {}", selection_name_atom_u64);
+                return;
+            }
+        };
+
+        let actual_target_atom = match target_atom_u64 {
+            TRAIT_ATOM_ID_UTF8_STRING => self.selection_atoms.utf8_string,
+            // Example: if AppOrchestrator used an abstract ID for TARGETS (e.g., 11)
+            // const TRAIT_ATOM_ID_TARGETS: u64 = 11;
+            // TRAIT_ATOM_ID_TARGETS => self.selection_atoms.targets,
+            _ => {
+                warn!("XDriver::request_selection_data (trait): Received unknown abstract target atom ID: {}", target_atom_u64);
+                return;
+            }
+        };
+        // Call the internal method that expects xlib::Atom
+        self.request_selection_data_internal(actual_selection_atom, actual_target_atom);
+    }
+
     fn cleanup(&mut self) -> Result<()> {
         info!("XDriver::cleanup() called, releasing X11 resources.");
         // Cleanup components in reverse order of dependency or creation.

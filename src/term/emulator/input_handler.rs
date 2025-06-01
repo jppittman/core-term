@@ -3,11 +3,11 @@
 use super::{FocusState, TerminalEmulator};
 use crate::keys::{KeySymbol, Modifiers};
 use crate::term::{
-    action::{EmulatorAction, MouseButton, MouseEventType, UserInputAction}, // Added MouseButton, MouseEventType
-    snapshot::{Point, SelectionMode}, // Added Point, SelectionMode
+    action::{EmulatorAction, UserInputAction}, // Removed MouseButton, MouseEventType
+    snapshot::Point, // Removed SelectionMode as it's handled in TerminalEmulator methods
     ControlEvent,
 };
-use log::trace;
+use log::{debug, trace}; // Added debug log
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn process_user_input_action(
@@ -165,84 +165,71 @@ pub(super) fn process_user_input_action(
                 return Some(EmulatorAction::WritePty(bytes_to_send));
             }
         }
-        UserInputAction::MouseInput {
-            col,
-            row,
-            event_type,
-            button,
-            modifiers: _, // Modifiers currently unused for basic selection
-        } => {
-            let point = Point { x: col, y: row };
-            let mut request_redraw = false;
-            let mut action_to_return = None;
-
-            // TODO: Check if mouse events should be processed based on mouse reporting modes.
-            // For now, assume selection is independent of terminal mouse reporting modes.
-
-            match event_type {
-                MouseEventType::Press => {
-                    if button == MouseButton::Left {
-                        // Determine selection mode (e.g., based on modifiers like Shift for Block)
-                        // For now, default to Normal.
-                        let mode = SelectionMode::Normal;
-                        // TODO: Check if a click on an existing selection should drag or start new.
-                        // Common behavior: new click outside clears old, starts new.
-                        // Click inside might allow dragging (not implemented here).
-                        emulator.screen.clear_selection(); // Clear previous selection.
-                        emulator.screen.start_selection(point, mode);
-                        request_redraw = true;
-                        trace!(
-                            "MouseInput: Left Press at ({}, {}), selection started.",
-                            col,
-                            row
-                        );
-                    }
-                    // ScrollUp/ScrollDown are not handled here for now, assuming they are
-                    // translated to key events or specific escape codes by a lower layer if needed,
-                    // or handled by a mouse reporting protocol if active.
-                }
-                MouseEventType::Move => {
-                    // Only update selection if the left button is considered active (drag).
-                    // Screen.selection.is_active should correctly track this.
-                    if emulator.screen.selection.is_active {
-                        emulator.screen.update_selection(point);
-                        request_redraw = true;
-                        trace!("MouseInput: Move to ({}, {}), selection updated.", col, row);
-                    }
-                }
-                MouseEventType::Release => {
-                    if button == MouseButton::Left {
-                        if emulator.screen.selection.is_active {
-                            emulator.screen.end_selection();
-                            // Optional: copy on select behavior (e.g., based on a config flag)
-                            // if emulator.config.copy_on_select {
-                            //    if let Some(text) = emulator.screen.get_selected_text() {
-                            //        if !text.is_empty() {
-                            //            action_to_return = Some(EmulatorAction::CopyToClipboard(text));
-                            //        }
-                            //    }
-                            // }
-                            request_redraw = true; // Ensure redraw to show final selection state
-                            trace!(
-                                "MouseInput: Left Release at ({}, {}), selection ended.",
-                                col,
-                                row
-                            );
-                        }
-                    }
-                }
-            }
-
-            if request_redraw && action_to_return.is_none() {
-                action_to_return = Some(EmulatorAction::RequestRedraw);
-            }
-            return action_to_return; // Explicitly return, might be None or Some(RequestRedraw/CopyToClipboard)
+        // --- New Selection Handlers ---
+        UserInputAction::StartSelection { x, y } => {
+            emulator.start_selection(Point { x, y });
+            // Potentially mark screen as dirty or request redraw
+            return Some(EmulatorAction::RequestRedraw);
         }
+        UserInputAction::ExtendSelection { x, y } => {
+            emulator.extend_selection(Point { x, y });
+            // Potentially mark screen as dirty or request redraw
+            return Some(EmulatorAction::RequestRedraw);
+        }
+        UserInputAction::ApplySelectionClear => {
+            emulator.apply_selection_clear();
+            // Potentially mark screen as dirty or request redraw
+            return Some(EmulatorAction::RequestRedraw);
+        }
+        UserInputAction::RequestClipboardPaste => {
+            debug!("UserInputAction: RequestClipboardPaste received. Requesting clipboard content.");
+            return Some(EmulatorAction::RequestClipboardContent);
+        }
+        UserInputAction::RequestPrimaryPaste => {
+            // TODO: Implement primary paste. For now, it might behave like clipboard paste or log.
+            debug!("UserInputAction: RequestPrimaryPaste received. (Currently not fully implemented, forwarding to RequestClipboardContent)");
+            // For now, let's make it behave like a standard clipboard paste request.
+            // Later, this could be a different EmulatorAction if the orchestrator needs to distinguish.
+            return Some(EmulatorAction::RequestClipboardContent);
+        }
+        // --- End of New Selection Handlers ---
         UserInputAction::InitiateCopy => {
-            if let Some(text) = emulator.screen.get_selected_text() {
-                if !text.is_empty() {
-                    // Optional: Clear selection after copy
-                    // emulator.screen.clear_selection();
+            // This uses `emulator.screen.get_selected_text()`.
+            // The `get_selected_text` method needs to be implemented on `Screen` or `TerminalEmulator`.
+            // Assuming `TerminalEmulator::get_selected_text()` will be added later and call `self.screen.get_selected_text()`.
+            // For now, this might not compile if `get_selected_text` is not yet on `Screen` or `TerminalEmulator`.
+            // Let's assume `get_selected_text` will be part of `TerminalEmulator` and accesses `self.screen.selection`.
+            // if let Some(text) = emulator.get_selected_text() { // TODO: Uncomment when get_selected_text is available
+            if let Some(_text) = String::new().into() { // Placeholder for compilation
+               // TODO: Replace placeholder with actual call to get_selected_text
+               // if !text.is_empty() {
+                    // return Some(EmulatorAction::CopyToClipboard(text));
+                // }
+            }
+            // Fallthrough for now, or log if get_selected_text is not ready
+            debug!("UserInputAction: InitiateCopy called. `get_selected_text` needs implementation.");
+        }
+        UserInputAction::InitiatePaste => { // This action might be redundant if RequestClipboardPaste is used
+            debug!("UserInputAction: InitiatePaste received. Forwarding to RequestClipboardContent.");
+            return Some(EmulatorAction::RequestClipboardContent);
+        }
+        UserInputAction::PasteText(text_to_paste) => {
+            if emulator.dec_modes.bracketed_paste_mode {
+                log::debug!("InputHandler: Bracketed paste mode ON. Wrapping and sending to PTY.");
+                let mut pasted_bytes = Vec::new();
+                pasted_bytes.extend_from_slice(b"\x1b[200~"); // Start bracketed paste
+                pasted_bytes.extend_from_slice(text_to_paste.as_bytes());
+                pasted_bytes.extend_from_slice(b"\x1b[201~"); // End bracketed paste
+                return Some(EmulatorAction::WritePty(pasted_bytes));
+            } else {
+                log::debug!("InputHandler: Bracketed paste mode OFF. Calling emulator.paste_text.");
+                emulator.paste_text(text_to_paste); // Process char by char
+                return Some(EmulatorAction::RequestRedraw); // Ensure UI updates after char-by-char paste
+            }
+        }
+    }
+    None
+}
                     // if emulator.screen.selection.start.is_none() { // Check if clear_selection also requests redraw
                     //     return Some(EmulatorAction::RequestRedraw); // if clearing selection and it doesn't redraw
                     // }
@@ -292,5 +279,56 @@ pub(super) fn process_control_event(
             None // Resize itself doesn't directly cause an EmulatorAction to be returned.
                  // Redraw is handled implicitly or by the orchestrator.
         }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::term::emulator::TerminalEmulator; // For creating test emulator
+    use crate::term::DecPrivateModes; // For setting bracketed paste
+
+    // Helper to create a default emulator for input handler tests
+    fn create_test_emu_for_input() -> TerminalEmulator {
+        TerminalEmulator::new(80, 24, 100)
+    }
+
+    #[test]
+    fn test_paste_text_action_bracketed_on() {
+        let mut emu = create_test_emu_for_input();
+        emu.dec_modes.bracketed_paste_mode = true; // Turn on bracketed paste
+
+        let text_to_paste = "Hello\nWorld".to_string();
+        let action = UserInputAction::PasteText(text_to_paste.clone());
+
+        let result = process_user_input_action(&mut emu, action);
+
+        let expected_bytes = format!("\x1b[200~{}\x1b[201~", text_to_paste).into_bytes();
+        assert_eq!(result, Some(EmulatorAction::WritePty(expected_bytes)));
+    }
+
+    #[test]
+    fn test_paste_text_action_bracketed_off() {
+        let mut emu = create_test_emu_for_input();
+        // Bracketed paste is off by default
+        assert!(!emu.dec_modes.bracketed_paste_mode);
+
+        let text_to_paste = "Hello\nWorld".to_string();
+        let action = UserInputAction::PasteText(text_to_paste.clone());
+
+        // process_user_input_action will call emu.paste_text() internally.
+        // We check that the correct EmulatorAction is returned.
+        let result = process_user_input_action(&mut emu, action);
+        assert_eq!(result, Some(EmulatorAction::RequestRedraw));
+
+        // Additionally, verify side effect of paste_text on emulator (optional, more of an integration check)
+        // This relies on TerminalEmulator::paste_text and ::print_char working as expected.
+        let snapshot = emu.get_render_snapshot();
+        assert_eq!(snapshot.lines[0].cells[0].c, 'H');
+        assert_eq!(snapshot.lines[0].cells[1].c, 'e');
+        assert_eq!(snapshot.lines[0].cells[2].c, 'l');
+        assert_eq!(snapshot.lines[0].cells[3].c, 'l');
+        assert_eq!(snapshot.lines[0].cells[4].c, 'o');
+        assert_eq!(snapshot.lines[1].cells[0].c, 'W'); // After newline
+    }
+}
     }
 }

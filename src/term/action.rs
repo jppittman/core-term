@@ -8,33 +8,6 @@ use crate::platform::backends::{KeySymbol, Modifiers}; // Assuming these are re-
 
 // --- User Input Actions ---
 
-/// Represents the buttons on a mouse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseButton {
-    /// The left mouse button.
-    Left,
-    /// The middle mouse button.
-    Middle,
-    /// The right mouse button.
-    Right,
-    /// Mouse wheel scrolled up.
-    ScrollUp,
-    /// Mouse wheel scrolled down.
-    ScrollDown,
-    // Add other buttons if necessary (e.g., Forward, Back)
-    // Example: Forward, Back
-}
-
-/// Represents the type of a mouse event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseEventType {
-    /// A mouse button was pressed.
-    Press,
-    /// A mouse button was released.
-    Release,
-    Move,
-}
-
 /// Represents user-initiated actions that serve as input to the terminal emulator.
 /// This corresponds to `EmulatorInput::User(UserInputAction)`.
 #[derive(Debug, Clone, PartialEq)] // Eq might be tricky if text is String
@@ -44,19 +17,27 @@ pub enum UserInputAction {
         modifiers: Modifiers,
         text: Option<String>, // Text from IME or key press, if any
     },
-    MouseInput {
-        col: usize, // 0-based cell column
-        row: usize, // 0-based cell row
-        event_type: MouseEventType,
-        button: MouseButton,
-        modifiers: Modifiers,
-    },
-    InitiateCopy,
-    InitiatePaste,
+    // MouseInput variant removed as per new design for selection actions
+    InitiateCopy, // This might be used for explicit copy commands (e.g., Ctrl+Shift+C)
+    // InitiatePaste, // This will be replaced by RequestClipboardPaste / RequestPrimaryPaste
     FocusGained,
     FocusLost,
-    PasteText(String), // Content from clipboard to be pasted
-                       // Other user-driven actions can be added here.
+    PasteText(String), // Content from clipboard to be pasted by orchestrator
+
+    // New selection-related actions
+    /// Starts a selection at the given cell coordinates (e.g., mouse button press).
+    StartSelection { x: usize, y: usize },
+    /// Extends an ongoing selection to the given cell coordinates (e.g., mouse drag).
+    ExtendSelection { x: usize, y: usize },
+    /// Finalizes a selection (e.g., mouse button release).
+    /// If the selection start and end are the same (a click without drag),
+    /// it might clear any existing selection or perform other click-based actions.
+    ApplySelectionClear,
+    /// Requests the orchestrator to paste content from the system clipboard.
+    RequestClipboardPaste,
+    /// Requests the orchestrator to paste content from the primary selection (X11 specific).
+    RequestPrimaryPaste,
+    // Other user-driven actions can be added here.
 }
 
 // --- Emulator Control Events ---
