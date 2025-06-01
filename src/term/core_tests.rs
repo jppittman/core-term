@@ -1,5 +1,5 @@
 use crate::glyph::{AttrFlags, Glyph, Attributes};
-use crate::term::{TerminalEmulator, RenderSnapshot, EmulatorInput, DecModeConstant, CursorShape, action::EmulatorAction};
+use crate::term::{TerminalEmulator, RenderSnapshot, EmulatorInput, DecModeConstant, CursorShape, action::EmulatorAction, ControlEvent};
 use crate::ansi::commands::{AnsiCommand, CsiCommand, C0Control, Attribute};
 use crate::color::{Color, NamedColor};
 
@@ -418,7 +418,7 @@ fn it_should_scroll_up_and_move_cursor_down_keeping_column_on_line_feed_at_botto
 fn it_should_move_cursor_down_and_to_col_0_on_line_feed_if_lnm_is_on() {
     let mut term = create_test_emulator(10, 3);
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(20))));
-    assert!(term.dec_modes.lnm_testing_flag, "LNM mode should be on");
+    assert!(term.dec_modes.linefeed_newline_mode, "LNM mode should be on");
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorForward(3))));
@@ -440,7 +440,7 @@ fn it_should_move_cursor_down_and_to_col_0_on_line_feed_if_lnm_is_on() {
 fn it_should_scroll_and_move_to_col_0_on_line_feed_at_bottom_if_lnm_is_on() {
     let mut term = create_test_emulator(5, 2);
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(20))));
-    assert!(term.dec_modes.lnm_testing_flag, "LNM mode should be on");
+    assert!(term.dec_modes.linefeed_newline_mode, "LNM mode should be on");
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
@@ -1107,6 +1107,249 @@ fn it_should_not_change_cursor_position_on_csi_s_or_csi_t() {
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ScrollDown(1))));
     assert_eq!(term.get_render_snapshot().cursor_state.map(|cs| (cs.y, cs.x, cs.shape)), initial_cursor_state_sd_tuple, "Cursor state changed after SD");
+}
+
+// --- Resize Event Tests ---
+
+#[test]
+fn it_should_resize_to_larger_dimensions_preserving_content_and_cursor() {
+    let mut term = create_test_emulator(5, 2);
+    setup_ed_el_screen(&mut term, 5, 2); // L0:ABCAB, L1:BCDBC. Cursor set to (1,2) by setup_ed_el_screen for 5x2.
+    // Initial state check
+    assert_screen_state(&term.get_render_snapshot(), &["ABCAB", "BCDBC"], Some((1,2)));
+
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize{ cols: 7, rows: 4 }));
+    let snapshot = term.get_render_snapshot();
+
+    // Expected: Original content in top-left. New areas blank. Cursor should remain (1,2).
+    // L0: ABCAB
+    // L1: BCDBC
+    // L2:
+    // L3:
+    assert_eq!(snapshot.dimensions, (7,4), "Dimensions mismatch after resize larger");
+    assert_screen_state(&snapshot, &[
+        "ABCAB  ", // Note: Trailing spaces to fill new width
+        "BCDBC  ",
+        "       ",
+        "       "
+    ], Some((1,2)));
+}
+
+#[test]
+fn it_should_resize_to_smaller_dimensions_truncating_content_and_clamping_cursor() {
+    let mut term = create_test_emulator(5, 3);
+    setup_ed_el_screen(&mut term, 5, 3); // L0:ABCAB, L1:BCDBC, L2:CDECD, Cursor (1,2)
+    // Initial state check
+    assert_screen_state(&term.get_render_snapshot(), &["ABCAB", "BCDBC", "CDECD"], Some((1,2)));
+
+    // Resize smaller, cursor was at (1,2) which is (row 2, col 3)
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize{ cols: 3, rows: 2 }));
+    let snapshot = term.get_render_snapshot();
+
+    // Expected: Content truncated. Cursor clamped.
+    // Original cursor (1,2) is now outside new bounds (cols:0-2, rows:0-1).
+    // Emulator's resize clamps cursor: min(cursor_y, new_rows-1), min(cursor_x, new_cols-1)
+    // So, cursor becomes (min(1, 1), min(2, 2)) = (1,2)
+    assert_eq!(snapshot.dimensions, (3,2), "Dimensions mismatch after resize smaller");
+    assert_screen_state(&snapshot, &[
+        "ABC",
+        "BCD"
+    ], Some((1,2)));
+}
+
+#[test]
+fn it_should_clamp_cursor_to_new_bottom_right_if_cursor_was_beyond_after_shrink() {
+    let mut term = create_test_emulator(5, 3);
+    // Place cursor at bottom right (2,4)
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(3,5))));
+    assert_screen_state(&term.get_render_snapshot(), &["     ","     ","     "], Some((2,4)));
+
+    // Resize much smaller, cursor (2,4) is way out.
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize{ cols: 2, rows: 1 }));
+    let snapshot = term.get_render_snapshot();
+    // Expected: Cursor clamped to new bottom-right (0,1)
+    assert_eq!(snapshot.dimensions, (2,1), "Dimensions mismatch after resize smaller");
+    assert_screen_state(&snapshot, &["  "], Some((0,1)));
+}
+
+
+#[test]
+fn it_should_preserve_scrollback_on_resize() {
+    let mut term = create_test_emulator(5, 2); // scrollback_limit is TEST_SCROLLBACK_LIMIT
+    setup_ed_el_screen(&mut term, 5, 2); // L0:ABCAB, L1:BCDBC, Cursor (0,2)
+
+    // Scroll L0 ("ABCAB") into scrollback
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2,1)))); // Cursor to L1 (1,0)
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+    // Screen: L0="BCDBC", L1="     ". Scrollback has "ABCAB".
+    assert_eq!(term.screen.scrollback.len(), 1, "Scrollback should have 1 line");
+    if !term.screen.scrollback.is_empty() {
+        let line_str: String = term.screen.scrollback[0].iter().map(|g| g.c).collect();
+        assert_eq!(line_str.trim_end(), "ABCAB", "Scrollback content check before resize");
+    }
+
+    // Resize
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize{ cols: 3, rows: 1 }));
+    let snapshot = term.get_render_snapshot();
+    assert_eq!(snapshot.dimensions, (3,1), "Dimensions mismatch after resize");
+    assert_screen_state(&snapshot, &["BCD"], Some((0,0))); // Cursor clamped to (0,0) from (1,0)
+
+    // Check scrollback again
+    assert_eq!(term.screen.scrollback.len(), 1, "Scrollback should still have 1 line after resize");
+    if !term.screen.scrollback.is_empty() {
+        // Scrollback lines should also be resized (truncated/padded)
+        let line_str_after: String = term.screen.scrollback[0].iter().map(|g| g.c).collect();
+        assert_eq!(line_str_after.trim_end(), "ABC", "Scrollback content should be resized/truncated");
+    }
+}
+
+#[test]
+fn it_should_handle_resize_with_content_and_cursor_at_edges() {
+    let mut term = create_test_emulator(3, 2);
+    // Fill screen and place cursor at bottom right (1,2)
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('3'))); // L0: "123"
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // to L1, (1,0)
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('4')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('5')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('6'))); // L1: "456", cursor (1,3) (just off screen edge)
+                                                                    // Let's put cursor exactly at (1,2)
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2,3)))); // Cursor to (1,2)
+    assert_screen_state(&term.get_render_snapshot(), &["123", "456"], Some((1,2)));
+
+    // Resize larger
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize{ cols: 5, rows: 3 }));
+    let snapshot_larger = term.get_render_snapshot();
+    assert_eq!(snapshot_larger.dimensions, (5,3));
+    assert_screen_state(&snapshot_larger, &["123  ", "456  ", "     "], Some((1,2)));
+
+    // Resize smaller than original, larger than content
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize{ cols: 4, rows: 2 }));
+    let snapshot_medium = term.get_render_snapshot();
+    assert_eq!(snapshot_medium.dimensions, (4,2));
+    assert_screen_state(&snapshot_medium, &["123 ", "456 "], Some((1,2)));
+
+    // Resize smaller, truncating content and clamping cursor
+    // Cursor (1,2)
+    term.interpret_input(EmulatorInput::Control(ControlEvent::Resize{ cols: 2, rows: 1 }));
+    let snapshot_smaller = term.get_render_snapshot();
+    assert_eq!(snapshot_smaller.dimensions, (2,1));
+    // Original L0 "123" -> "12". Cursor (1,2) clamps to (0,1)
+    assert_screen_state(&snapshot_smaller, &["12"], Some((0,1)));
+}
+
+// --- DEC Private Mode tests ---
+
+// DECTCEM - Text Cursor Enable Mode (CSI ? 25 h/l)
+#[test]
+fn it_should_show_and_hide_cursor_on_dectcem() {
+    let mut term = create_test_emulator(5, 3);
+
+    // Cursor should be visible by default (DECTCEM is typically on by default)
+    // The `TerminalEmulator::new` sets `dec_modes.text_cursor_enable_mode = true;`
+    assert!(term.dec_modes.text_cursor_enable_mode, "DECTCEM should be ON by default in emulator state");
+    let snapshot_default = term.get_render_snapshot();
+    assert!(snapshot_default.cursor_state.is_some(), "Cursor should be visible by default in snapshot");
+
+    // Hide cursor: CSI ? 25 l
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(DecModeConstant::TextCursorEnable as u16))));
+    assert!(!term.dec_modes.text_cursor_enable_mode, "DECTCEM should be OFF after 25l");
+    let snapshot_hidden = term.get_render_snapshot();
+    assert!(snapshot_hidden.cursor_state.is_none(), "Cursor should be hidden after CSI ? 25 l");
+
+    // Show cursor: CSI ? 25 h
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(DecModeConstant::TextCursorEnable as u16))));
+    assert!(term.dec_modes.text_cursor_enable_mode, "DECTCEM should be ON after 25h");
+    let snapshot_shown = term.get_render_snapshot();
+    assert!(snapshot_shown.cursor_state.is_some(), "Cursor should be visible again after CSI ? 25 h");
+    // Ensure shape is restored (assuming Block is default)
+    assert_eq!(snapshot_shown.cursor_state.unwrap().shape, CursorShape::Block);
+}
+
+// Alternate Screen Buffer (ASB) (CSI ? 47 h/l or ?1049 h/l)
+// The emulator's mode_handler.rs uses specific constants for ASB.
+// DecModeConstant::AltScreenBufferSaveRestore (1049)
+// DecModeConstant::AltScreenBuffer (47)
+// Let's test 1049 as it's more common for full save/restore/clear behavior.
+#[test]
+fn it_should_switch_to_alternate_screen_buffer_and_back_on_csi_1049() {
+    let mut term = create_test_emulator(5, 2);
+    setup_ed_el_screen(&mut term, 5, 2); // L0: ABCAB, L1: BCDBC, Cursor (0,2)
+    let original_snapshot = term.get_render_snapshot();
+    let original_cursor_pos = original_snapshot.cursor_state.as_ref().map(|cs| (cs.y, cs.x));
+    // setup_ed_el_screen with 5,2 will place cursor at row (2/2)+1=2, col (5/2)+1=3 (1-based) -> (1,2) (0-based)
+    assert_eq!(original_cursor_pos, Some((1,2)));
+
+
+    // Switch to Alternate Screen Buffer (ASB): CSI ? 1049 h
+    // This typically saves cursor, switches to ASB, and clears ASB.
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16))));
+    assert!(term.screen.alt_screen_active, "Should be on alternate screen after 1049h");
+
+    let snapshot_asb = term.get_render_snapshot();
+    // ASB should be cleared. Content is all spaces.
+    assert_screen_state(&snapshot_asb, &["     ", "     "], Some((0,0))); // Cursor usually resets to (0,0) on ASB
+
+    // Print something on ASB
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Y')));
+    let snapshot_asb_content = term.get_render_snapshot();
+    assert_screen_state(&snapshot_asb_content, &["XY   ", "     "], Some((0,2)));
+
+    // Switch back to Normal Screen Buffer (NSB): CSI ? 1049 l
+    // This typically restores cursor, switches to NSB, and restores its content.
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16))));
+    assert!(!term.screen.alt_screen_active, "Should be back on normal screen after 1049l");
+
+    let snapshot_nsb_restored = term.get_render_snapshot();
+    // Screen content should be restored
+    assert_screen_state(&snapshot_nsb_restored, &["ABCAB", "BCDBC"], original_cursor_pos); // Cursor pos restored
+}
+
+// Auto Wrap Mode (DECAWM) (CSI ? 7 h/l)
+#[test]
+fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
+    let mut term = create_test_emulator(3, 2); // Small width to test wrap easily
+
+    // DECAWM is on by default in emulator
+    assert!(term.dec_modes.autowrap_mode, "Autowrap should be ON by default");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('3'))); // Fills line 0: "123"
+    assert_eq!(term.cursor_controller.logical_pos(), (3,0)); // Corrected: logical_pos is (x,y) -> (3,0)
+    assert!(term.cursor_wrap_next, "cursor_wrap_next should be true after filling line with autowrap on");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('4'))); // Wraps to line 1
+    assert_screen_state(&term.get_render_snapshot(), &["123", "4  "], Some((1,1)));
+
+    // Disable Autowrap: CSI ? 7 l
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetModePrivate(DecModeConstant::AutoWrapMode as u16))));
+    assert!(!term.dec_modes.autowrap_mode, "Autowrap should be OFF after 7l");
+    // Move to end of line 1
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(2,3)))); // Cursor to (1,2) on line "4  "
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('5'))); // Prints '5' at (1,2). Line "4 5". Cursor (1,3).
+    assert_eq!(term.cursor_controller.logical_pos(), (3,1)); // Corrected: logical_pos is (x,y) -> (3,1)
+    assert!(!term.cursor_wrap_next, "cursor_wrap_next should be false with autowrap off");
+
+    // Try to print past end of line with autowrap off
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('6')));
+    // Character '6' should overwrite '5' at the last column (1,2). Cursor stays at (1,3) (or clamps to last char).
+    // Current `char_processor.rs` `print_char` logic: if `cursor.x >= screen_width` and `!autowrap` and `!wrap_next`, it sets `cursor.x = screen_width -1`.
+    // So '6' is printed at (1,2) over '5'. Cursor logical (3,1). Physical (2,1) for snapshot.
+    assert_screen_state(&term.get_render_snapshot(), &["123", "4 6"], Some((1,2)));
+    assert!(!term.cursor_wrap_next, "cursor_wrap_next should still be false");
+
+
+    // Enable Autowrap again: CSI ? 7 h
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetModePrivate(DecModeConstant::AutoWrapMode as u16))));
+    assert!(term.dec_modes.autowrap_mode, "Autowrap should be ON again after 7h");
+    // Cursor is at (1,3) on line "4 6". Line is full.
+    assert!(term.cursor_wrap_next, "cursor_wrap_next should now be true");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('7'))); // Should wrap to next line (scroll if needed)
+                                                                      // We have 2 lines. (0,1). This will scroll.
+                                                                      // L0 "123" scrolls off. L1 "4 6" becomes L0. L2 "7  " becomes L1.
+    assert_screen_state(&term.get_render_snapshot(), &["4 6", "7  "], Some((1,1)));
 }
 
 // --- OSC (Operating System Command) Tests ---
