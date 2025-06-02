@@ -187,11 +187,15 @@ fn test_simple_char_input() {
 #[test]
 fn test_newline_input() {
     let mut term = create_test_emulator(10, 2);
+    // Enable Linefeed/Newline Mode (LNM)
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(20))));
+    assert!(term.dec_modes.linefeed_newline_mode, "LNM should be enabled for this test");
+
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
     let snapshot = term.get_render_snapshot();
-    // LF moves to next line, performs carriage return. 'B' prints at (1,0), cursor moves to (1,1)
+    // With LNM ON, LF moves to next line AND performs carriage return. 'B' prints at (1,0), cursor moves to (1,1)
     assert_screen_state(&snapshot, &["A         ", "B         "], Some((1, 1)));
 }
 
@@ -1069,7 +1073,7 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
             "          ",
             "          ",
         ],
-        Some((3, 0)),
+        Some((3, 2)),
     );
 }
 #[test]
