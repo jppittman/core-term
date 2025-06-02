@@ -28,7 +28,6 @@ use crate::{
             RenderSnapshot,
             SelectionMode, // Unused
             SnapshotLine,
-            SelectionRange, // Added SelectionRange
         },
         EmulatorInput, // Added EmulatorInput
     },

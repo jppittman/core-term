@@ -3,11 +3,8 @@ use crate::term::{TerminalEmulator, RenderSnapshot, EmulatorInput, DecModeConsta
 use crate::ansi::commands::{AnsiCommand, CsiCommand, C0Control, Attribute};
 use crate::color::{Color, NamedColor};
 
-// Default scrollback for tests, can be adjusted.
-const TEST_SCROLLBACK_LIMIT: usize = 100;
-
 fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
-    TerminalEmulator::new(cols, rows, TEST_SCROLLBACK_LIMIT)
+    TerminalEmulator::new(cols, rows)
 }
 
 // Helper to get a Glyph from the snapshot.

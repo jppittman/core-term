@@ -239,10 +239,9 @@ pub(super) fn process_control_event(
 mod tests {
     use super::*;
     use crate::term::emulator::TerminalEmulator;
-    use crate::term::DecPrivateModes;
 
     fn create_test_emu_for_input() -> TerminalEmulator {
-        TerminalEmulator::new(80, 24, 100)
+        TerminalEmulator::new(80, 24)
     }
 
     #[test]

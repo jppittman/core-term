@@ -2,10 +2,11 @@
 
 // Imports from the main crate
 use crate::color::Color;
+use crate::config;
 use crate::platform::backends::{CellCoords, CellRect, CursorVisibility, Driver, FocusState, TextRunStyle, PlatformState, BackendEvent, RenderCommand as ActualRenderCommand}; // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
                                                                              // FontDesc is now FontConfig
 use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
-use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG};
+use crate::renderer::Renderer;
 use crate::term::{
     CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine, // Changed SelectionRenderState
 };
@@ -144,11 +145,7 @@ fn create_test_snapshot(
 }
 
 fn default_attrs() -> Attributes {
-    Attributes {
-        fg: RENDERER_DEFAULT_FG,
-        bg: RENDERER_DEFAULT_BG,
-        flags: AttrFlags::empty(),
-    }
+    Attributes::default()
 }
 
 #[test]
@@ -196,7 +193,7 @@ fn test_render_empty_screen_with_cursor() {
         y: 0,
         width: num_cols,
         height: 1,
-        color: RENDERER_DEFAULT_BG,
+        color: config::CONFIG.colors.background,
         is_selection_bg: false,
     };
     let expected_bg_fill_line1 = ActualRenderCommand::FillRect {
@@ -204,7 +201,7 @@ fn test_render_empty_screen_with_cursor() {
         y: 1,
         width: num_cols,
         height: 1,
-        color: RENDERER_DEFAULT_BG,
+        color: config::CONFIG.colors.background,
         is_selection_bg: false,
     };
 
@@ -220,8 +217,8 @@ fn test_render_empty_screen_with_cursor() {
     );
 
     let cursor_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_BG,
-        bg: RENDERER_DEFAULT_FG,
+        fg: config::CONFIG.colors.foreground,
+        bg: config::CONFIG.colors.background,
         flags: AttrFlags::empty(),
     };
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
@@ -295,8 +292,8 @@ fn test_render_simple_text() {
     let commands = driver.commands();
 
     let default_text_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_FG,
-        bg: RENDERER_DEFAULT_BG,
+        fg: config::CONFIG.colors.foreground,
+        bg: config::CONFIG.colors.background,
         flags: AttrFlags::empty(),
     };
 
@@ -320,7 +317,7 @@ fn test_render_simple_text() {
         y: 0,
         width: num_cols - 2,
         height: 1,
-        color: RENDERER_DEFAULT_BG,
+        color: config::CONFIG.colors.background,
         is_selection_bg: false,
     };
     assert!(
@@ -330,8 +327,8 @@ fn test_render_simple_text() {
     );
 
     let cursor_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_BG,
-        bg: RENDERER_DEFAULT_FG,
+        fg: config::CONFIG.colors.foreground,
+        bg: config::CONFIG.colors.background,
         flags: AttrFlags::empty(),
     };
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
@@ -419,8 +416,8 @@ fn test_dirty_line_processing() {
     let commands = driver.commands();
 
     let default_text_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_FG,
-        bg: RENDERER_DEFAULT_BG,
+        fg: config::CONFIG.colors.foreground,
+        bg: config::CONFIG.colors.background,
         flags: AttrFlags::empty(),
     };
 
@@ -465,8 +462,8 @@ fn test_dirty_line_processing() {
     );
 
     let cursor_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_BG,
-        bg: RENDERER_DEFAULT_FG,
+        fg: config::CONFIG.colors.foreground,
+        bg: config::CONFIG.colors.background,
         flags: AttrFlags::empty(),
     };
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {

@@ -1,38 +1,13 @@
 // src/orchestrator/tests.rs
 
-// Updated imports based on current crate structure
-use crate::color::Color;
-use crate::platform::backends::{CellCoords, CellRect, CursorVisibility, Driver, FocusState, TextRunStyle, PlatformState, BackendEvent, RenderCommand}; // Driver was RenderAdapter, TextRunStyle was ResolvedCellAttrs
-use crate::renderer::{Renderer, RENDERER_DEFAULT_BG, RENDERER_DEFAULT_FG}; // Rgb is now a variant Color::Rgb(...). Colors struct removed.
-                                                                           // FontDesc is now FontConfig. Using ColorScheme for palette.
-use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
-use crate::term::{
-    CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine, // Changed SelectionRenderState to Selection
-}; // CursorStyle removed, SelectionRange -> SelectionRenderState
+use crate::config;
+use crate::platform::backends::{CursorVisibility, Driver, FocusState, TextRunStyle, PlatformState, BackendEvent, RenderCommand};
+use crate::renderer::Renderer;
+use crate::glyph::{AttrFlags, Attributes, Glyph};
+use crate::term::{CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine};
 
 use std::sync::Mutex;
 use anyhow::Result;
-// Rc is not used for colors directly in the renderer anymore, but might be useful for shared config.
-// For simplicity here, we'll manage colors more directly or via Config.
-
-// Mocking structures for testing the renderer's interaction with a Driver.
-#[derive(Debug, Clone, PartialEq)]
-enum DrawCommand {
-    ClearAll(Color), // Represents Driver::clear_all
-    FillRect {
-        rect: CellRect,
-        color: Color,
-    }, // Represents Driver::fill_rect
-    DrawTextRun {
-        coords: CellCoords,
-        text: String,
-        style: TextRunStyle,
-    }, // Represents Driver::draw_text_run
-    Present,
-}
-
-// Helper for float comparisons (if needed for pixel calculations, though tests focus on cell ops)
-// fn float_eq(a: f32, b: f32) -> bool { (a - b).abs() < 0.001 }
 
 // Mock Driver implementation
 struct MockDriver {
@@ -136,8 +111,8 @@ fn create_test_snapshot(
 // Helper to create default attributes
 fn default_attrs() -> Attributes {
     Attributes {
-        fg: RENDERER_DEFAULT_FG,
-        bg: RENDERER_DEFAULT_BG,
+        fg: config::CONFIG.colors.foreground,
+        bg: config::CONFIG.colors.background,
         flags: AttrFlags::empty(),
     }
 }
@@ -174,31 +149,31 @@ fn test_render_empty_screen_with_cursor() {
         cell_attributes_underneath: default_attrs(),
     });
 
-    let snapshot = create_test_snapshot(lines, cursor_render_state, num_cols, num_rows, Selection::default()); // Pass Selection::default()
+    let snapshot = create_test_snapshot(lines, cursor_render_state, num_cols, num_rows, Selection::default()); 
     let render_commands = renderer // Changed variable name
         .draw(snapshot) // Removed adapter from draw call
         .expect("Render draw failed");
-    adapter.execute_render_commands(render_commands).expect("Execute render commands failed"); // Execute commands
-    adapter.present().expect("Adapter present failed"); // Call present
+    adapter.execute_render_commands(render_commands).expect("Execute render commands failed");
+    adapter.present().expect("Adapter present failed");
 
     let commands = adapter.commands();
     assert!(!commands.is_empty(), "Should have drawing commands");
 
-    let expected_bg_fill_for_line0 = RenderCommand::FillRect { // Changed to RenderCommand
+    let expected_bg_fill_for_line0 = RenderCommand::FillRect {
         x: 0,
         y: 0,
         width: num_cols,
         height: 1,
-        color: RENDERER_DEFAULT_BG,
-        is_selection_bg: false, // Added is_selection_bg
+        color: config::CONFIG.colors.background,
+        is_selection_bg: false,
     };
-    let expected_bg_fill_for_line1 = RenderCommand::FillRect { // Changed to RenderCommand
+    let expected_bg_fill_for_line1 = RenderCommand::FillRect {
         x: 0,
         y: 1,
         width: num_cols,
         height: 1,
-        color: RENDERER_DEFAULT_BG,
-        is_selection_bg: false, // Added is_selection_bg
+        color: config::CONFIG.colors.background,
+        is_selection_bg: false,
     };
 
     assert!(
@@ -211,8 +186,8 @@ fn test_render_empty_screen_with_cursor() {
     );
 
     let cursor_draw_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_BG,
-        bg: RENDERER_DEFAULT_FG,
+        fg: config::CONFIG.colors.background,
+        bg: config::CONFIG.colors.foreground,
         flags: AttrFlags::empty(),
     };
     let expected_cursor_draw = RenderCommand::DrawTextRun { // Changed to RenderCommand
@@ -288,8 +263,8 @@ fn test_render_simple_text() {
     let commands = adapter.commands();
 
     let text_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_FG,
-        bg: RENDERER_DEFAULT_BG,
+        fg: config::CONFIG.colors.foreground,
+        bg: config::CONFIG.colors.background,
         flags: AttrFlags::empty(),
     };
 
@@ -313,7 +288,7 @@ fn test_render_simple_text() {
         y: 0,
         width: num_cols - 2,
         height: 1,
-        color: RENDERER_DEFAULT_BG,
+        color: config::CONFIG.colors.background,
         is_selection_bg: false, // Added is_selection_bg
     };
     assert!(
@@ -323,8 +298,8 @@ fn test_render_simple_text() {
     );
 
     let cursor_draw_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_BG,
-        bg: RENDERER_DEFAULT_FG,
+        fg: config::CONFIG.colors.background,
+        bg: config::CONFIG.colors.foreground,
         flags: AttrFlags::empty(),
     };
     let expected_cursor_draw = RenderCommand::DrawTextRun { // Changed to RenderCommand
@@ -458,8 +433,8 @@ fn test_render_dirty_line_only() {
     let commands_frame2 = adapter.commands();
 
     let text_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_FG,
-        bg: RENDERER_DEFAULT_BG,
+        fg: config::CONFIG.colors.foreground,
+        bg: config::CONFIG.colors.background,
         flags: AttrFlags::empty(),
     };
 
@@ -494,8 +469,8 @@ fn test_render_dirty_line_only() {
     );
 
     let cursor_draw_style = TextRunStyle {
-        fg: RENDERER_DEFAULT_BG,
-        bg: RENDERER_DEFAULT_FG,
+        fg: config::CONFIG.colors.background,
+        bg: config::CONFIG.colors.foreground,
         flags: AttrFlags::empty(),
     };
     let expected_cursor_draw = RenderCommand::DrawTextRun { // Changed to RenderCommand

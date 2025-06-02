@@ -89,7 +89,7 @@ fn load_config_from_file_or_defaults() -> anyhow::Result<Config> {
 // --- Configuration Structures ---
 
 /// Represents the complete configuration for the terminal emulator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub appearance: AppearanceConfig,
@@ -98,19 +98,6 @@ pub struct Config {
     pub colors: ColorScheme,
     pub shell: ShellConfig,
     pub mouse: MouseConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            appearance: AppearanceConfig::default(),
-            behavior: BehaviorConfig::default(),
-            performance: PerformanceConfig::default(),
-            colors: ColorScheme::default(),
-            shell: ShellConfig::default(),
-            mouse: MouseConfig::default(),
-        }
-    }
 }
 
 /// Defines settings related to the visual appearance of the terminal.
