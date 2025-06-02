@@ -72,12 +72,6 @@ bitflags! {
         // Flags related to wide character handling, primarily for `ContentCell` within `Glyph::WidePrimary`.
         // The `Glyph` enum variant (`Glyph::WidePrimary` or `Glyph::WideSpacer`) is the primary
         // determinant of a glyph's role in a wide character sequence.
-        const WIDE_CHAR_PRIMARY = 1 << 14; // Indicates that the `ContentCell` (within `Glyph::WidePrimary`)
-                                           // contains a character that occupies two cells.
-        const WIDE_CHAR_SPACER  = 1 << 15; // Historically indicated the second cell of a wide character.
-                                           // With the `Glyph::WideSpacer` enum variant, this flag on a
-                                           // `ContentCell` is largely redundant or only for specific legacy contexts.
-                                           // `Glyph::WideSpacer` itself signifies this role.
 
         // Placeholder for future or less common attributes, if needed.
         // const WRAP          = 1 << 8; // Example: Line wrap indicator (if stored per-glyph).
