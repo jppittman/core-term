@@ -14,7 +14,7 @@ use std::cmp::min;
 use std::cmp::{max, min as std_min}; // For local min/max, renamed from std::cmp::min
 use std::collections::VecDeque;
 
-use crate::glyph::{AttrFlags, Attributes, Glyph}; // Added AttrFlags
+use crate::glyph::{AttrFlags, Attributes, Glyph, ContentCell}; // Added AttrFlags
 use crate::term::snapshot::{Point, Selection, SelectionMode, SelectionRange};
 use crate::config::CONFIG;
 use log::{trace, warn};
@@ -185,10 +185,10 @@ impl Screen {
 
     /// Helper to get the glyph used for filling cleared areas.
     fn get_default_fill_glyph(&self) -> Glyph {
-        Glyph {
+        Glyph::Single(ContentCell{
             c: ' ',
             attr: self.default_attributes,
-        }
+        })
     }
 
     pub fn fill_region_with_glyph(

@@ -2,7 +2,7 @@
 
 use super::TerminalEmulator;
 use crate::{
-    glyph::{AttrFlags, Attributes, Glyph, WIDE_CHAR_PLACEHOLDER},
+    glyph::{AttrFlags, Attributes, Glyph, ContentCell},
     term::{
         charset::{map_to_dec_line_drawing, CharacterSet}, // For map_char_to_active_charset
         unicode::get_char_display_width,
@@ -33,7 +33,7 @@ impl TerminalEmulator {
     /// Handles character width, line wrapping, and updates cursor position.
     // Called from ansi_handler.rs, so pub(super) or pub.
     // pub(super) is fine as ansi_handler is a sibling module.
-    pub fn print_char(&mut self, ch: char) {
+    pub(super) fn print_char(&mut self, ch: char) {
         if ch == '\n' {
             self.carriage_return();
             self.move_down_one_line_and_dirty();
@@ -80,12 +80,8 @@ impl TerminalEmulator {
             // If a wide char (width 2) is at the very last column (e.g. col 79 of 80), it can't fit.
             // Standard behavior: print a space in the last cell, then wrap.
             if char_width == 2 && physical_x == screen_ctx.width.saturating_sub(1) {
-                let fill_glyph = Glyph {
-                    c: ' ', // Fill with a space
-                    attr: Attributes {
-                        flags: AttrFlags::empty(),
-                        ..self.cursor_controller.attributes()
-                    }, // Ensure flags are clean for the space
+                let fill_glyph = Glyph::WideSpacer{
+                    primary_column_on_line: physical_x as u16,
                 };
                 if physical_y < self.screen.height {
                     // Bounds check
