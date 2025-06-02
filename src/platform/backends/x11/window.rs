@@ -1,6 +1,7 @@
 // src/platform/backends/x11/window.rs
 #![allow(non_snake_case)] // Allow non-snake case for X11 types
 
+use crate::config::CONFIG; // Added for global config access
 use super::connection::Connection;
 use anyhow::{anyhow, Context, Result}; // Combined anyhow
 use log::{debug, info, trace, warn}; // Removed error
@@ -242,7 +243,7 @@ impl Window {
 
             // Set initial window title.
             let title_cstr =
-                CString::new("core-term").context("Failed to create CString for initial title")?;
+                CString::new(CONFIG.appearance.default_title.as_str()).context("Failed to create CString for initial title")?;
             xlib::XStoreName(display, self.safe_id.raw_id(), title_cstr.as_ptr() as *mut c_char);
 
             // Set _NET_WM_NAME for UTF-8 titles, preferred by modern WMs.

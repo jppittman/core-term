@@ -2,7 +2,8 @@
 #![allow(non_snake_case)] // Allow non-snake case for X11 types
 
 use super::connection::Connection;
-use crate::color::{Color, NamedColor};
+use crate::color::{Color, NamedColor}; // NamedColor might be needed for fallback or if CONFIG itself uses it.
+use crate::config::CONFIG; // Added for global config access
 use crate::glyph::AttrFlags;
 use crate::platform::backends::{CellCoords, CellRect, TextRunStyle};
 
@@ -199,8 +200,7 @@ impl Drop for SafeXftColor {
 
 // --- Constants ---
 
-/// Default font name and size to use if not otherwise specified.
-const DEFAULT_FONT_NAME: &str = "Inconsolata:size=10";
+// DEFAULT_FONT_NAME is now sourced from CONFIG.appearance.font.normal
 /// Minimum acceptable width for a loaded font's character cell in pixels.
 const MIN_FONT_WIDTH: u32 = 1;
 /// Minimum acceptable height for a loaded font's character cell in pixels.
@@ -273,11 +273,14 @@ impl Graphics {
         info!("Graphics: Loading font and pre-allocating colors.");
         let display = connection.display();
         let screen = connection.screen();
+        let visual = connection.visual(); // Needed earlier for background color
+        let colormap = connection.colormap(); // Needed earlier for background color
 
         // 1. Load Font & Metrics
-        debug!("Loading font: {}", DEFAULT_FONT_NAME);
+        let font_name_from_config = CONFIG.appearance.font.normal.as_str();
+        debug!("Loading font: {}", font_name_from_config);
         let font_name_cstr =
-            CString::new(DEFAULT_FONT_NAME).context("Failed to create CString for font name")?;
+            CString::new(font_name_from_config).context("Failed to create CString for font name")?;
 
         // SAFETY: Xlib/Xft FFI call. `display` and `screen` must be valid.
         let xft_font_raw_ptr =
@@ -285,14 +288,14 @@ impl Graphics {
         if xft_font_raw_ptr.is_null() {
             return Err(anyhow!(
                 "XftFontOpenName failed for font: '{}'. Ensure font is installed and accessible.",
-                DEFAULT_FONT_NAME
+                font_name_from_config
             ));
         }
         // Wrap immediately in SafeXftFont. If later stages fail, its Drop will handle cleanup.
         let xft_font = SafeXftFont::new(xft_font_raw_ptr, display);
         debug!(
             "Font '{}' loaded successfully: {:p}",
-            DEFAULT_FONT_NAME,
+            font_name_from_config,
             xft_font.raw()
         );
 
@@ -331,8 +334,7 @@ impl Graphics {
 
         // 2. Initialize ANSI Colors
         let mut xft_ansi_colors = Vec::with_capacity(ANSI_COLOR_COUNT);
-        let visual = connection.visual();
-        let colormap = connection.colormap();
+        // visual and colormap fetched earlier
 
         for i in 0..ANSI_COLOR_COUNT {
             let named_color_enum = NamedColor::from_index(i as u8);
@@ -390,11 +392,52 @@ impl Graphics {
         }
         debug!("Preallocated ANSI Xft colors initialized.");
 
-        // Determine default background pixel value from the pre-allocated black.
-        // Accessing .color.pixel directly on SafeXftColor via cloned_color().
-        let default_bg_pixel_value = xft_ansi_colors[NamedColor::Black as usize].cloned_color().pixel;
+        // Determine default background pixel value from CONFIG.colors.background
+        let default_bg_pixel_value = {
+            let effective_bg_rgb = match crate::color::convert_to_rgb_color(CONFIG.colors.background) {
+                Color::Rgb(r, g, b) => (r, g, b),
+                _ => {
+                    warn!("CONFIG.colors.background ({:?}) did not resolve to RGB. Defaulting to black for initial window background.", CONFIG.colors.background);
+                    (0,0,0) // Default to black
+                }
+            };
+            let (r_u8, g_u8, b_u8) = effective_bg_rgb;
+
+            let bg_render_color = XRenderColor {
+                red: ((r_u8 as u16) << 8) | (r_u8 as u16),
+                green: ((g_u8 as u16) << 8) | (g_u8 as u16),
+                blue: ((b_u8 as u16) << 8) | (b_u8 as u16),
+                alpha: XRENDER_ALPHA_OPAQUE,
+            };
+
+            let mut bg_xft_color_data: xft::XftColor = unsafe { mem::zeroed() };
+            // SAFETY: FFI call. display, visual, colormap must be valid.
+            let success = unsafe {
+                xft::XftColorAllocValue(
+                    display,
+                    visual,
+                    colormap,
+                    &bg_render_color,
+                    &mut bg_xft_color_data,
+                ) != 0
+            };
+
+            if !success {
+                // xft_font's Drop will be called automatically.
+                // SafeXftColors in xft_ansi_colors will also be dropped.
+                return Err(anyhow!("Failed to allocate XftColor for CONFIG.colors.background ({:?})", CONFIG.colors.background));
+            }
+
+            // Manage the allocated color with SafeXftColor so it gets freed.
+            // We only need the pixel value for PreGraphicsData.
+            let temp_safe_bg_color = SafeXftColor::new(bg_xft_color_data, display, visual, colormap, true);
+            let pixel_val = temp_safe_bg_color.cloned_color().pixel;
+            // temp_safe_bg_color will be dropped at the end of this scope, freeing the Xft color.
+            // This is correct as PreGraphicsData only needs the pixel value, not the XftColor struct.
+            pixel_val
+        };
         info!(
-            "Default background pixel value (from Black ANSI color): {}",
+            "Default background pixel value (from CONFIG.colors.background): {}",
             default_bg_pixel_value
         );
 
