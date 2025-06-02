@@ -38,8 +38,8 @@ pub enum TabClearMode {
 impl From<u16> for TabClearMode {
     fn from(value: u16) -> Self {
         match value {
-            0 => TabClearMode::CurrentColumn,
-            2 | 5 => TabClearMode::All, // Mode 5 is often treated as "All"
+            0 => TabClearMode::CurrentColumn, // CSI Ps = 0 => Clear Current Column Tab Stop
+            2 | 5 => TabClearMode::All,       // CSI Ps = 2 or 5 => Clear All Tab Stops. Mode 5 is common.
             _ => {
                 warn!("Unsupported tab clear mode value: {}", value);
                 TabClearMode::Unsupported
@@ -108,10 +108,10 @@ impl Screen {
             bg: CONFIG.colors.background,
             flags: AttrFlags::empty(),
         };
-        let default_fill_char = Glyph {
+        let default_fill_char = Glyph::Single(ContentCell {
             c: ' ',
             attr: default_attributes,
-        };
+        });
 
         let scrollback_limit_from_config = CONFIG.behavior.scrollback_lines;
         trace!(
@@ -723,41 +723,52 @@ impl Screen {
         let raw_end = range.end;
 
         match self.selection.mode {
-            SelectionMode::Cell => { // Replaced Normal with Cell
-                let (box_start_y, box_end_y) = if raw_start.y <= raw_end.y {
+            SelectionMode::Cell => {
+                // Normalize selection points: (start_y, start_x) should be top-left of the virtual box.
+                // However, for 'Cell' (normal) selection, the actual start/end points matter for line-wise logic.
+                let (sel_start_y, sel_end_y) = if raw_start.y <= raw_end.y {
                     (raw_start.y, raw_end.y)
                 } else {
                     (raw_end.y, raw_start.y)
                 };
 
-                if point.y < box_start_y || point.y > box_end_y {
+                // Point is outside the vertical span of the selection.
+                if point.y < sel_start_y || point.y > sel_end_y {
                     return false;
                 }
 
+                // Single-line selection
                 if raw_start.y == raw_end.y {
                     let line_min_x = std_min(raw_start.x, raw_end.x);
                     let line_max_x = max(raw_start.x, raw_end.x);
                     return point.x >= line_min_x && point.x <= line_max_x;
                 }
 
+                // Multi-line selection:
+                // Check if the point is on the start line of the selection.
                 if point.y == raw_start.y {
-                    return if raw_start.y < raw_end.y {
+                    return if raw_start.y < raw_end.y { // Selection goes downwards
                         point.x >= raw_start.x
-                    } else {
+                    } else { // Selection goes upwards (raw_start_y > raw_end_y)
                         point.x <= raw_start.x
                     };
-                } else if point.y == raw_end.y {
-                    return if raw_start.y < raw_end.y {
+                }
+                // Check if the point is on the end line of the selection.
+                if point.y == raw_end.y {
+                    return if raw_start.y < raw_end.y { // Selection goes downwards
                         point.x <= raw_end.x
-                    } else {
+                    } else { // Selection goes upwards
                         point.x >= raw_end.x
                     };
-                } else {
-                    return true;
                 }
+                // Point is on a line between the start and end lines.
+                // In 'Cell' mode, this means the entire line is selected.
+                return true;
             }
-            // Commenting out Block, SemanticLine, SemanticWord as they are not defined in SelectionMode
-            // SelectionMode::Block => {
+            // TODO: Implement other selection modes like Block if they are added.
+            // For now, Block, SemanticLine, SemanticWord are commented out or not present
+            // in the SelectionMode enum used by this logic.
+            // e.g., SelectionMode::Block => {
             //     let min_x = std_min(raw_start.x, raw_end.x);
             //     let max_x = max(raw_start.x, raw_end.x);
             //     let min_y = std_min(raw_start.y, raw_end.y);
@@ -795,72 +806,89 @@ impl Screen {
 
     /// Retrieves the text content of the current selection.
     ///
-    /// Handles `Normal` and `Block` selection modes.
-    /// Text is ordered logically from the selection start to end (top-left to bottom-right
-    /// after normalization).
+    /// This method currently primarily handles `SelectionMode::Cell` (similar to typical
+    /// terminal "normal" or "stream" selection). Text is ordered logically from the
+    /// selection start to end (top-left to bottom-right after normalization).
     ///
-    /// For `Normal` mode, it attempts to replicate common terminal behavior regarding
-    /// line endings and trimming of trailing whitespace from lines that are not the
-    /// last line of the selection if they extend to the end of the line.
-    /// For `Block` mode, it extracts a rectangular region of text, padding with spaces
-    /// if the selection extends beyond the content of any given line.
+    /// For `SelectionMode::Cell`, it attempts to replicate common terminal behavior regarding
+    /// line endings and the trimming of trailing whitespace from lines that are fully selected
+    /// but are not the last line of the selection.
+    ///
+    /// Other modes like `Block` selection are not implemented in this function.
     ///
     /// # Returns
     /// An `Option<String>` containing the selected text, or `None` if there's
     /// no valid selection or the selection is empty.
     pub fn get_selected_text(&self) -> Option<String> {
         let Some(range) = &self.selection.range else {
-            return None;
+            return None; // No active selection range.
         };
 
-        let start_point = range.start;
-        let end_point = range.end;
-
-        let (norm_start_point, norm_end_point) = if start_point.y > end_point.y || (start_point.y == end_point.y && start_point.x > end_point.x) {
-            (end_point, start_point)
+        // Normalize selection points so norm_start_point is visually above or to the left of norm_end_point.
+        let (norm_start_point, norm_end_point) = if range.start.y > range.end.y || 
+                                                   (range.start.y == range.end.y && range.start.x > range.end.x) {
+            (range.end, range.start)
         } else {
-            (start_point, end_point)
+            (range.start, range.end)
         };
 
         let mut selected_text_buffer = String::new();
         let grid_to_use = self.active_grid();
 
         match self.selection.mode {
-            SelectionMode::Cell => { // Replaced Normal, SemanticLine, SemanticWord with Cell
-                for y in norm_start_point.y..=norm_end_point.y {
-                    if y >= grid_to_use.len() { continue; }
+            SelectionMode::Cell => {
+                for y_abs in norm_start_point.y..=norm_end_point.y {
+                    if y_abs >= grid_to_use.len() { continue; } // Should not happen with valid points
 
-                    let current_row_glyphs = &grid_to_use[y];
+                    let current_row_glyphs = &grid_to_use[y_abs];
                     let mut current_line_text = String::new();
 
-                    let iter_col_start = if y == norm_start_point.y { norm_start_point.x } else { 0 };
-                    let iter_col_end = if y == norm_end_point.y { norm_end_point.x } else { self.width - 1 };
+                    // Determine the start and end columns for text extraction on the current line.
+                    let line_col_start = if y_abs == norm_start_point.y { norm_start_point.x } else { 0 };
+                    let line_col_end = if y_abs == norm_end_point.y { norm_end_point.x } else { self.width.saturating_sub(1) };
+                    
+                    // Ensure line_col_end does not exceed grid width for safety, though std_min handles this too.
+                    let effective_line_col_end = std_min(line_col_end, self.width.saturating_sub(1));
 
-                    for x in iter_col_start..=std_min(iter_col_end, self.width - 1) {
-                        if x < current_row_glyphs.len() {
-                            current_line_text.push(current_row_glyphs[x].c);
+                    if line_col_start > effective_line_col_end && !(line_col_start == 0 && effective_line_col_end == 0 && self.width == 0) { 
+                        // This handles cases like zero-width selection or start beyond end on a line.
+                        // If it's a multi-line selection, we still need the newline.
+                        if y_abs < norm_end_point.y {
+                             selected_text_buffer.push('\n');
+                        }
+                        continue;
+                    }
+                    
+                    for x_abs in line_col_start..=effective_line_col_end {
+                        if x_abs < current_row_glyphs.len() {
+                            current_line_text.push(current_row_glyphs[x_abs].display_char());
                         } else {
+                            // If selection extends beyond available glyphs on the line, append space.
                             current_line_text.push(' ');
                         }
                     }
 
-                    if norm_start_point.y != norm_end_point.y && y < norm_end_point.y {
-                        if iter_col_end == self.width - 1 {
+                    // Trim trailing whitespace if:
+                    // 1. It's a multi-line selection (norm_start_point.y != norm_end_point.y)
+                    // 2. This is NOT the last line of the multi-line selection (y_abs < norm_end_point.y)
+                    // 3. The selection on this line went all the way to the end of the screen width (line_col_end included self.width - 1)
+                    if norm_start_point.y != norm_end_point.y && y_abs < norm_end_point.y {
+                        if line_col_end >= self.width.saturating_sub(1) { // Check if selection extended to line end
                             if let Some(last_char_idx) = current_line_text.rfind(|c: char| c != ' ') {
                                 current_line_text.truncate(last_char_idx + 1);
                             } else {
-                                current_line_text.clear();
+                                current_line_text.clear(); // Line was all spaces
                             }
                         }
                     }
 
                     selected_text_buffer.push_str(&current_line_text);
-                    if y < norm_end_point.y {
+                    if y_abs < norm_end_point.y {
                         selected_text_buffer.push('\n');
                     }
                 }
             }
-            // Commenting out Block as it's not defined in SelectionMode
+            // TODO: Implement Block selection text retrieval if/when that mode is fully supported.
             // SelectionMode::Block => {
             //     let min_x = std_min(start_point.x, end_point.x);
             //     let max_x = max(start_point.x, end_point.x);
@@ -930,10 +958,10 @@ mod tests {
             for c in 0..screen.width {
                 let char_val =
                     char::from_u32(('a' as u32) + (c % 26) as u32 + (r % 3) as u32).unwrap_or('?');
-                screen.grid[r][c] = Glyph {
+                screen.grid[r][c] = Glyph::Single(ContentCell {
                     c: char_val,
                     attr: Attributes::default(),
-                };
+                });
             }
         }
     }
@@ -1160,16 +1188,16 @@ mod tests {
     #[test]
     fn test_get_selected_text_normal_trailing_spaces_behavior() {
         let mut screen = create_test_screen(5, 2);
-        screen.grid[0][0] = Glyph { c: 'a', attr: Attributes::default() };
-        screen.grid[0][1] = Glyph { c: 'a', attr: Attributes::default() };
-        screen.grid[0][2] = Glyph { c: ' ', attr: Attributes::default() };
-        screen.grid[0][3] = Glyph { c: ' ', attr: Attributes::default() };
-        screen.grid[0][4] = Glyph { c: ' ', attr: Attributes::default() };
-        screen.grid[1][0] = Glyph { c: 'b', attr: Attributes::default() };
-        screen.grid[1][1] = Glyph { c: 'b', attr: Attributes::default() };
-        screen.grid[1][2] = Glyph { c: ' ', attr: Attributes::default() };
-        screen.grid[1][3] = Glyph { c: ' ', attr: Attributes::default() };
-        screen.grid[1][4] = Glyph { c: ' ', attr: Attributes::default() };
+        screen.grid[0][0] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
+        screen.grid[0][1] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
+        screen.grid[0][2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        screen.grid[0][3] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        screen.grid[0][4] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        screen.grid[1][0] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
+        screen.grid[1][1] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
+        screen.grid[1][2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        screen.grid[1][3] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        screen.grid[1][4] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
 
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 4, y: 0 });
@@ -1227,12 +1255,12 @@ mod tests {
     // #[test]
     // fn test_get_selected_text_block_beyond_line_length() {
     //     let mut screen = create_test_screen(3, 2);
-    //     screen.grid[0][0] = Glyph { c: 'a', attr: Attributes::default() };
-    //     screen.grid[0][1] = Glyph { c: ' ', attr: Attributes::default() };
-    //     screen.grid[0][2] = Glyph { c: ' ', attr: Attributes::default() };
-    //     screen.grid[1][0] = Glyph { c: 'b', attr: Attributes::default() };
-    //     screen.grid[1][1] = Glyph { c: ' ', attr: Attributes::default() };
-    //     screen.grid[1][2] = Glyph { c: ' ', attr: Attributes::default() };
+    //     screen.grid[0][0] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
+    //     screen.grid[0][1] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+    //     screen.grid[0][2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+    //     screen.grid[1][0] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
+    //     screen.grid[1][1] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+    //     screen.grid[1][2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
     //     screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
     //     screen.update_selection(Point { x: 1, y: 1 });
     //     assert_eq!(screen.get_selected_text(), Some("a \nb ".to_string()));

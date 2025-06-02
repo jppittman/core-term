@@ -10,26 +10,46 @@
 use crate::color::Color;
 use bitflags::bitflags; // For creating flag enums like AttrFlags
 
+/// Represents a glyph in a terminal grid cell.
+///
+/// A `Glyph` can be a single standard-width character, the primary (first cell)
+/// of a double-width character, or the spacer (second cell) of a double-width character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Glyph {
+    /// A standard-width character, occupying a single cell.
     Single(ContentCell),
+    /// The primary part of a double-width character, occupying the first cell.
+    /// The character in `ContentCell` is the wide character itself.
     WidePrimary(ContentCell),
+    /// The spacer part of a double-width character, occupying the second cell.
+    /// This variant does not store its own character or attributes directly;
+    /// it typically inherits appearance from its `WidePrimary` counterpart.
+    /// `primary_column_on_line` stores the column index of the `WidePrimary`
+    /// glyph this spacer belongs to, which can be useful for context.
     WideSpacer{
+        // TODO: Consider if `primary_column_on_line` is truly needed here or if
+        // the renderer can manage this context. For now, it's kept from previous design.
         primary_column_on_line: u16,
     },
 }
 
-/// Represents a single character cell on the screen.
+/// Holds the actual character and its attributes for a `Glyph::Single` or `Glyph::WidePrimary`.
+///
+/// This struct contains the concrete visual information for a cell that displays content.
+/// `Glyph::WideSpacer` does not directly contain a `ContentCell` as its appearance is
+/// derived from its corresponding `Glyph::WidePrimary`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContentCell {
-    /// The character displayed in the cell.
-    /// A `\0` (null character) often signifies the second part of a wide character.
+    /// The character to be displayed. For `Glyph::WidePrimary`, this is the wide character itself.
     pub c: char,
     /// The visual attributes of the character (foreground/background color, flags).
     pub attr: Attributes,
 }
 
-/// Placeholder character for the second cell of a double-width character.
+/// Placeholder character used by `Glyph::display_char()` for `WideSpacer` variants.
+///
+/// This helps in scenarios where a single char representation is needed for a cell,
+/// indicating that it's part of a wide character but not the primary content-bearing part.
 pub const WIDE_CHAR_PLACEHOLDER: char = '\0';
 
 bitflags! {
@@ -49,10 +69,15 @@ bitflags! {
         const HIDDEN        = 1 << 6; // Makes text invisible (aka Conceal).
         const STRIKETHROUGH = 1 << 7; // Puts a line through the text.
 
-        // Flags for wide character handling
-        const WIDE_CHAR_PRIMARY = 1 << 14; // Indicates the first cell of a double-width character.
-        const WIDE_CHAR_SPACER  = 1 << 15; // Indicates the second cell of a double-width character (placeholder).
-
+        // Flags related to wide character handling, primarily for `ContentCell` within `Glyph::WidePrimary`.
+        // The `Glyph` enum variant (`Glyph::WidePrimary` or `Glyph::WideSpacer`) is the primary
+        // determinant of a glyph's role in a wide character sequence.
+        const WIDE_CHAR_PRIMARY = 1 << 14; // Indicates that the `ContentCell` (within `Glyph::WidePrimary`)
+                                           // contains a character that occupies two cells.
+        const WIDE_CHAR_SPACER  = 1 << 15; // Historically indicated the second cell of a wide character.
+                                           // With the `Glyph::WideSpacer` enum variant, this flag on a
+                                           // `ContentCell` is largely redundant or only for specific legacy contexts.
+                                           // `Glyph::WideSpacer` itself signifies this role.
 
         // Placeholder for future or less common attributes, if needed.
         // const WRAP          = 1 << 8; // Example: Line wrap indicator (if stored per-glyph).
@@ -90,6 +115,7 @@ impl Glyph {
 }
 
 impl ContentCell {
+    /// Creates a default `ContentCell` representing a blank space with default attributes.
     pub fn default_space() -> Self {
         ContentCell {
             c: ' ', 
