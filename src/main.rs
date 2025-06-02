@@ -110,7 +110,7 @@ fn main() -> anyhow::Result<()> {
     let mut term_emulator = TerminalEmulator::new(
         initial_cols as usize, // These might be default, orchestrator will resize
         initial_rows as usize, // These might be default, orchestrator will resize
-        // DEFAULT_SCROLLBACK_LIMIT, // Removed, TerminalEmulator::new now gets it from CONFIG
+                               // DEFAULT_SCROLLBACK_LIMIT, // Removed, TerminalEmulator::new now gets it from CONFIG
     );
     let mut ansi_parser = AnsiProcessor::new();
     let renderer = Renderer::new();

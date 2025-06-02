@@ -42,7 +42,8 @@ fn horizontal_tab(emulator: &mut TerminalEmulator) {
 fn perform_line_feed(emulator: &mut TerminalEmulator) {
     log::trace!("perform_line_feed called in ansi_handler");
     emulator.move_down_one_line_and_dirty(); // Call as method
-    if emulator.dec_modes.linefeed_newline_mode { // Check LNM mode
+    if emulator.dec_modes.linefeed_newline_mode {
+        // Check LNM mode
         emulator.carriage_return(); // Call as method
     }
 }

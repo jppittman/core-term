@@ -23,20 +23,20 @@ use crate::platform::backends::{
     BackendEvent, CellCoords, CellRect, Driver, PlatformState, RenderCommand, TextRunStyle,
 }; // Added PlatformState, RenderCommand
 use anyhow::Result;
-use log::{debug, error, warn, info, trace};
+use log::{debug, error, info, trace, warn};
 use std::os::unix::io::RawFd;
 
 // Declare submodules. These contain the specialized logic for different aspects of X11 handling.
 pub mod connection;
 pub mod event;
 pub mod graphics;
-pub mod window;
-pub mod selection; // Added selection module
+pub mod selection;
+pub mod window; // Added selection module
 
+use crate::platform::backends::x11::selection::SelectionAtoms; // For XDriver field
 use connection::Connection;
 use graphics::Graphics;
 use window::{CursorVisibility, Window}; // Import CursorVisibility enum
-use crate::platform::backends::x11::selection::SelectionAtoms; // For XDriver field
 use x11::xlib; // Added import
 
 /// Represents the focus state of the window.
@@ -177,8 +177,11 @@ impl XDriver {
         // It's good to log which selection we attempted to own.
         // For more robust atom-to-name, we'd need XGetAtomName, but that's another round trip.
         // For now, just use the atom value.
-        info!("Attempted to own selection (atom ID: {}). Stored text length: {}.",
-              selection_name_atom, self.selection_text.as_ref().map_or(0, |s| s.len()));
+        info!(
+            "Attempted to own selection (atom ID: {}). Stored text length: {}.",
+            selection_name_atom,
+            self.selection_text.as_ref().map_or(0, |s| s.len())
+        );
     }
 
     /// Requests data from the current owner of a specified X11 selection.
@@ -188,7 +191,11 @@ impl XDriver {
     /// # Arguments
     /// * `selection_name_atom`: The atom identifying the selection to request (e.g., `self.selection_atoms.clipboard`).
     /// * `target_atom`: The desired format of the data (e.g., `self.selection_atoms.utf8_string`).
-    fn request_selection_data_internal(&mut self, selection_name_atom: xlib::Atom, target_atom: xlib::Atom) {
+    fn request_selection_data_internal(
+        &mut self,
+        selection_name_atom: xlib::Atom,
+        target_atom: xlib::Atom,
+    ) {
         // Property atom where the selection owner should place the data.
         // Using the selection name atom itself for the property is a common convention,
         // or a dedicated atom like "XSEL_DATA". Let's use the selection name atom for simplicity here.
@@ -202,7 +209,7 @@ impl XDriver {
                 self.connection.display(),
                 selection_name_atom,
                 target_atom,
-                property_to_set, // Property on our window for the result
+                property_to_set,  // Property on our window for the result
                 self.window.id(), // Our window is the requestor
                 xlib::CurrentTime,
             );
@@ -284,12 +291,12 @@ impl Driver for XDriver {
                     // this might not clear correctly or use placeholder dimensions.
                     // Or, we can use fill_rect to clear the whole window.
                     let (w, h) = self.window.current_dimensions_pixels();
-                     // self.graphics.clear_all(&self.connection, bg)?; // if clear_all is updated
-                     // Using fill_rect_absolute_px to clear the entire area.
-                     // The calculation for full_window_rect in cell terms is not needed here
-                     // as fill_rect_absolute_px takes pixel dimensions.
-                    self.graphics.fill_rect_absolute_px(&self.connection, 0,0, w, h, bg)?;
-
+                    // self.graphics.clear_all(&self.connection, bg)?; // if clear_all is updated
+                    // Using fill_rect_absolute_px to clear the entire area.
+                    // The calculation for full_window_rect in cell terms is not needed here
+                    // as fill_rect_absolute_px takes pixel dimensions.
+                    self.graphics
+                        .fill_rect_absolute_px(&self.connection, 0, 0, w, h, bg)?;
                 }
                 RenderCommand::DrawTextRun {
                     x,
@@ -322,7 +329,12 @@ impl Driver for XDriver {
                     color,
                     is_selection_bg: _, // Currently not changing color based on is_selection_bg, assuming `color` is final.
                 } => {
-                    let rect = CellRect { x, y, width, height };
+                    let rect = CellRect {
+                        x,
+                        y,
+                        width,
+                        height,
+                    };
                     self.graphics.fill_rect(&self.connection, rect, color)?;
                 }
                 RenderCommand::SetCursorVisibility { visible } => {
@@ -386,7 +398,8 @@ impl Driver for XDriver {
     /// Sets the visibility of the native X11 mouse pointer over the window.
     ///
     /// Adapts the boolean `visible` to the `CursorVisibility` enum required by the `Window` module.
-    fn set_cursor_visibility(&mut self, visibility: CursorVisibility) { // Changed parameter
+    fn set_cursor_visibility(&mut self, visibility: CursorVisibility) {
+        // Changed parameter
         self.window
             .set_native_cursor_visibility(&self.connection, visibility);
     }
@@ -396,12 +409,14 @@ impl Driver for XDriver {
     /// The X11 driver also detects focus changes via `FocusIn`/`FocusOut` events
     /// in `event::process_pending_events`, which directly updates `self.has_focus`.
     /// This method allows external setting of focus state if needed.
-    fn set_focus(&mut self, focus_state: FocusState) { // Changed parameter
+    fn set_focus(&mut self, focus_state: FocusState) {
+        // Changed parameter
         info!(
             "XDriver::set_focus called by application core with: {:?}", // Updated log
             focus_state
         );
-        self.has_focus = match focus_state { // Updated logic
+        self.has_focus = match focus_state {
+            // Updated logic
             FocusState::Focused => true,
             FocusState::Unfocused => false,
         };
@@ -430,7 +445,10 @@ impl Driver for XDriver {
             TRAIT_ATOM_ID_PRIMARY => self.selection_atoms.primary,
             TRAIT_ATOM_ID_CLIPBOARD => self.selection_atoms.clipboard,
             _ => {
-                warn!("XDriver::own_selection (trait): Received unknown abstract atom ID: {}", selection_name_atom_u64);
+                warn!(
+                    "XDriver::own_selection (trait): Received unknown abstract atom ID: {}",
+                    selection_name_atom_u64
+                );
                 return;
             }
         };

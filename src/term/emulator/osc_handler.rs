@@ -17,7 +17,10 @@ impl TerminalEmulator {
             ps_str = parts[0];
             content_str = "";
             // Log a debug message for this case, as it might be an implicit expectation
-            debug!("OSC sequence without semicolon: '{}'. Interpreting Ps='{}', Pt='{}'", osc_str, ps_str, content_str);
+            debug!(
+                "OSC sequence without semicolon: '{}'. Interpreting Ps='{}', Pt='{}'",
+                osc_str, ps_str, content_str
+            );
         } else if parts.len() == 2 {
             // Semicolon found, standard case
             ps_str = parts[0];
@@ -25,7 +28,11 @@ impl TerminalEmulator {
         } else {
             // This case should ideally not be reached with splitn(2, ';')
             // but handle defensively.
-            warn!("Malformed OSC sequence (unexpected parts count for {}): {}", parts.len(), osc_str);
+            warn!(
+                "Malformed OSC sequence (unexpected parts count for {}): {}",
+                parts.len(),
+                osc_str
+            );
             return None;
         }
 
@@ -44,7 +51,10 @@ impl TerminalEmulator {
                 Some(EmulatorAction::SetTitle(content_str.to_string()))
             }
             _ => {
-                debug!("Unhandled OSC command code: Ps={}, Pt='{}'", ps, content_str);
+                debug!(
+                    "Unhandled OSC command code: Ps={}, Pt='{}'",
+                    ps, content_str
+                );
                 None
             }
         }

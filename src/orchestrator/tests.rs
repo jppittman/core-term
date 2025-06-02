@@ -1,13 +1,15 @@
 // src/orchestrator/tests.rs
 
 use crate::config;
-use crate::platform::backends::{CursorVisibility, Driver, FocusState, TextRunStyle, PlatformState, BackendEvent, RenderCommand};
+use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
+use crate::platform::backends::{
+    BackendEvent, CursorVisibility, Driver, FocusState, PlatformState, RenderCommand, TextRunStyle,
+};
 use crate::renderer::Renderer;
-use crate::glyph::{AttrFlags, Attributes, Glyph, ContentCell};
 use crate::term::{CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine};
 
-use std::sync::Mutex;
 use anyhow::Result;
+use std::sync::Mutex;
 
 // Mock Driver implementation
 struct MockDriver {
@@ -34,7 +36,8 @@ impl MockDriver {
         }
     }
 
-    fn commands(&self) -> Vec<RenderCommand> { // Changed from DrawCommand to RenderCommand
+    fn commands(&self) -> Vec<RenderCommand> {
+        // Changed from DrawCommand to RenderCommand
         self.commands.lock().unwrap().clone()
     }
 
@@ -58,7 +61,8 @@ impl Driver for MockDriver {
         Ok(Vec::new())
     }
 
-    fn get_platform_state(&self) -> PlatformState { // Added implementation
+    fn get_platform_state(&self) -> PlatformState {
+        // Added implementation
         PlatformState {
             event_fd: None,
             font_cell_width_px: self.font_width,
@@ -69,20 +73,23 @@ impl Driver for MockDriver {
         }
     }
 
-    fn execute_render_commands(&mut self, commands: Vec<RenderCommand>) -> Result<()> { // Added implementation
+    fn execute_render_commands(&mut self, commands: Vec<RenderCommand>) -> Result<()> {
+        // Added implementation
         self.commands.lock().unwrap().extend(commands);
         Ok(())
     }
 
     fn present(&mut self) -> anyhow::Result<()> {
-        self.commands.lock().unwrap().push(RenderCommand::PresentFrame); // Changed to PresentFrame
+        self.commands
+            .lock()
+            .unwrap()
+            .push(RenderCommand::PresentFrame); // Changed to PresentFrame
         Ok(())
     }
 
     fn set_title(&mut self, _title: &str) {}
     fn bell(&mut self) {}
-    fn set_cursor_visibility(&mut self, _visibility: CursorVisibility) {
-    }
+    fn set_cursor_visibility(&mut self, _visibility: CursorVisibility) {}
     fn set_focus(&mut self, _focus_state: FocusState) { // Changed parameter name
     }
     fn cleanup(&mut self) -> anyhow::Result<()> {
@@ -149,11 +156,19 @@ fn test_render_empty_screen_with_cursor() {
         cell_attributes_underneath: default_attrs(),
     });
 
-    let snapshot = create_test_snapshot(lines, cursor_render_state, num_cols, num_rows, Selection::default()); 
+    let snapshot = create_test_snapshot(
+        lines,
+        cursor_render_state,
+        num_cols,
+        num_rows,
+        Selection::default(),
+    );
     let render_commands = renderer // Changed variable name
         .draw(snapshot) // Removed adapter from draw call
         .expect("Render draw failed");
-    adapter.execute_render_commands(render_commands).expect("Execute render commands failed");
+    adapter
+        .execute_render_commands(render_commands)
+        .expect("Execute render commands failed");
     adapter.present().expect("Adapter present failed");
 
     let commands = adapter.commands();
@@ -190,7 +205,8 @@ fn test_render_empty_screen_with_cursor() {
         bg: config::CONFIG.colors.foreground,
         flags: AttrFlags::empty(),
     };
-    let expected_cursor_draw = RenderCommand::DrawTextRun { // Changed to RenderCommand
+    let expected_cursor_draw = RenderCommand::DrawTextRun {
+        // Changed to RenderCommand
         x: 0,
         y: 0,
         text: " ".to_string(),
@@ -253,11 +269,19 @@ fn test_render_simple_text() {
         cell_attributes_underneath: default_attrs(),
     });
 
-    let snapshot = create_test_snapshot(lines, cursor_render_state, num_cols, num_rows, Selection::default()); // Pass Selection::default()
+    let snapshot = create_test_snapshot(
+        lines,
+        cursor_render_state,
+        num_cols,
+        num_rows,
+        Selection::default(),
+    ); // Pass Selection::default()
     let render_commands = renderer // Changed variable name
         .draw(snapshot) // Removed adapter from draw call
         .expect("Render draw failed");
-    adapter.execute_render_commands(render_commands).expect("Execute render commands failed"); // Execute commands
+    adapter
+        .execute_render_commands(render_commands)
+        .expect("Execute render commands failed"); // Execute commands
     adapter.present().expect("Adapter present failed"); // Call present
 
     let commands = adapter.commands();
@@ -268,7 +292,8 @@ fn test_render_simple_text() {
         flags: AttrFlags::empty(),
     };
 
-    let expected_text_hi = RenderCommand::DrawTextRun { // Changed to RenderCommand
+    let expected_text_hi = RenderCommand::DrawTextRun {
+        // Changed to RenderCommand
         x: 0,
         y: 0,
         text: "Hi".to_string(),
@@ -283,7 +308,8 @@ fn test_render_simple_text() {
         commands
     );
 
-    let expected_fill_spaces = RenderCommand::FillRect { // Changed to RenderCommand
+    let expected_fill_spaces = RenderCommand::FillRect {
+        // Changed to RenderCommand
         x: 2,
         y: 0,
         width: num_cols - 2,
@@ -302,7 +328,8 @@ fn test_render_simple_text() {
         bg: config::CONFIG.colors.foreground,
         flags: AttrFlags::empty(),
     };
-    let expected_cursor_draw = RenderCommand::DrawTextRun { // Changed to RenderCommand
+    let expected_cursor_draw = RenderCommand::DrawTextRun {
+        // Changed to RenderCommand
         x: 2,
         y: 0,
         text: " ".to_string(),
@@ -378,7 +405,9 @@ fn test_render_dirty_line_only() {
     let render_commands1 = renderer // Changed variable name
         .draw(snapshot1) // Removed adapter from draw call
         .expect("Render draw failed");
-    adapter.execute_render_commands(render_commands1).expect("Execute render commands failed"); // Execute commands
+    adapter
+        .execute_render_commands(render_commands1)
+        .expect("Execute render commands failed"); // Execute commands
     adapter.clear_commands();
 
     let mut line0_cells_frame2 = vec![
@@ -423,12 +452,19 @@ fn test_render_dirty_line_only() {
         cell_attributes_underneath: default_attrs(),
     });
 
-    let snapshot2 =
-        create_test_snapshot(lines_frame2, cursor_state_frame2, num_cols, num_rows, Selection::default()); // Pass Selection::default()
+    let snapshot2 = create_test_snapshot(
+        lines_frame2,
+        cursor_state_frame2,
+        num_cols,
+        num_rows,
+        Selection::default(),
+    ); // Pass Selection::default()
     let render_commands2 = renderer // Changed variable name
         .draw(snapshot2) // Removed adapter from draw call
         .expect("Render draw failed");
-    adapter.execute_render_commands(render_commands2).expect("Execute render commands failed"); // Execute commands
+    adapter
+        .execute_render_commands(render_commands2)
+        .expect("Execute render commands failed"); // Execute commands
     adapter.present().expect("Adapter present failed"); // Call present
     let commands_frame2 = adapter.commands();
 
@@ -438,7 +474,8 @@ fn test_render_dirty_line_only() {
         flags: AttrFlags::empty(),
     };
 
-    let draw_a_cmd = RenderCommand::DrawTextRun { // Changed to RenderCommand
+    let draw_a_cmd = RenderCommand::DrawTextRun {
+        // Changed to RenderCommand
         x: 0,
         y: 0,
         text: "A".to_string(),
@@ -453,7 +490,8 @@ fn test_render_dirty_line_only() {
         commands_frame2
     );
 
-    let draw_c_cmd = RenderCommand::DrawTextRun { // Changed to RenderCommand
+    let draw_c_cmd = RenderCommand::DrawTextRun {
+        // Changed to RenderCommand
         x: 0,
         y: 1,
         text: "C".to_string(),
@@ -473,7 +511,8 @@ fn test_render_dirty_line_only() {
         bg: config::CONFIG.colors.foreground,
         flags: AttrFlags::empty(),
     };
-    let expected_cursor_draw = RenderCommand::DrawTextRun { // Changed to RenderCommand
+    let expected_cursor_draw = RenderCommand::DrawTextRun {
+        // Changed to RenderCommand
         x: 0,
         y: 1,
         text: "C".to_string(),
@@ -488,5 +527,8 @@ fn test_render_dirty_line_only() {
         commands_frame2
     );
 
-    assert_eq!(commands_frame2.last().unwrap(), &RenderCommand::PresentFrame); // Changed to PresentFrame
+    assert_eq!(
+        commands_frame2.last().unwrap(),
+        &RenderCommand::PresentFrame
+    ); // Changed to PresentFrame
 }

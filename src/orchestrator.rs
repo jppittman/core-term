@@ -59,8 +59,10 @@ impl<'a> AppOrchestrator<'a> {
         let font_cell_height_px = initial_platform_state.font_cell_height_px.max(1); // Ensure not zero
 
         // Calculate initial dimensions for the terminal
-        let initial_cols = (initial_platform_state.display_width_px as usize / font_cell_width_px).max(1);
-        let initial_rows = (initial_platform_state.display_height_px as usize / font_cell_height_px).max(1);
+        let initial_cols =
+            (initial_platform_state.display_width_px as usize / font_cell_width_px).max(1);
+        let initial_rows =
+            (initial_platform_state.display_height_px as usize / font_cell_height_px).max(1);
 
         // Inform the terminal about its initial size and cell pixel size
         term.interpret_input(EmulatorInput::Control(ControlEvent::Resize {
@@ -74,10 +76,7 @@ impl<'a> AppOrchestrator<'a> {
         // term.update_cell_pixel_size(font_cell_width_px, font_cell_height_px);
 
         // Inform the PTY of its initial size (cells only)
-        if let Err(e) = pty_channel.resize(
-            initial_cols as u16,
-            initial_rows as u16
-        ) {
+        if let Err(e) = pty_channel.resize(initial_cols as u16, initial_rows as u16) {
             log::warn!("Orchestrator: Failed to set initial PTY size: {}", e);
         }
 
@@ -120,7 +119,12 @@ impl<'a> AppOrchestrator<'a> {
     }
 
     fn interpret_pty_bytes_mut_access(&mut self, pty_data_slice: &[u8]) {
-        for command_input in self.parser.process_bytes(pty_data_slice).into_iter().map(EmulatorInput::Ansi) {
+        for command_input in self
+            .parser
+            .process_bytes(pty_data_slice)
+            .into_iter()
+            .map(EmulatorInput::Ansi)
+        {
             if let Some(action) = self.term.interpret_input(command_input) {
                 if matches!(action, EmulatorAction::WritePty(_)) {
                     // WritePty is handled immediately and does not generate render commands.
@@ -179,7 +183,8 @@ impl<'a> AppOrchestrator<'a> {
                     }
                 }
             }
-            BackendEvent::Resize { .. } => { // width_px, height_px from event are noted but platform_state is source of truth
+            BackendEvent::Resize { .. } => {
+                // width_px, height_px from event are noted but platform_state is source of truth
                 let platform_state = self.driver.get_platform_state();
 
                 // Update stored font dimensions, they might change (e.g. DPI change on X11)
@@ -187,8 +192,10 @@ impl<'a> AppOrchestrator<'a> {
                 self.font_cell_height_px = platform_state.font_cell_height_px.max(1);
 
                 // Use dimensions from platform_state as it's the most current from the driver after resize
-                let new_cols = (platform_state.display_width_px as usize / self.font_cell_width_px).max(1);
-                let new_rows = (platform_state.display_height_px as usize / self.font_cell_height_px).max(1);
+                let new_cols =
+                    (platform_state.display_width_px as usize / self.font_cell_width_px).max(1);
+                let new_rows =
+                    (platform_state.display_height_px as usize / self.font_cell_height_px).max(1);
 
                 log::info!(
                     "Orchestrator: Resizing to {}x{} cells ({}x{} px, char_size: {}x{})",
@@ -201,10 +208,7 @@ impl<'a> AppOrchestrator<'a> {
                 );
 
                 // Resize PTY (cells only)
-                if let Err(e) = self.pty_channel.resize(
-                    new_cols as u16,
-                    new_rows as u16
-                ) {
+                if let Err(e) = self.pty_channel.resize(new_cols as u16, new_rows as u16) {
                     log::warn!("Orchestrator: Failed to resize PTY: {}", e);
                 }
 
@@ -226,8 +230,12 @@ impl<'a> AppOrchestrator<'a> {
             }
             BackendEvent::FocusGained => {
                 log::debug!("Orchestrator: FocusGained event.");
-                self.driver.set_focus(crate::platform::backends::FocusState::Focused); // Corrected FocusState path
-                if let Some(action) = self.term.interpret_input(EmulatorInput::User(UserInputAction::FocusGained)) {
+                self.driver
+                    .set_focus(crate::platform::backends::FocusState::Focused); // Corrected FocusState path
+                if let Some(action) = self
+                    .term
+                    .interpret_input(EmulatorInput::User(UserInputAction::FocusGained))
+                {
                     if matches!(action, EmulatorAction::WritePty(_)) {
                         self.handle_emulator_action(action, &mut Vec::new());
                     } else {
@@ -237,8 +245,12 @@ impl<'a> AppOrchestrator<'a> {
             }
             BackendEvent::FocusLost => {
                 log::debug!("Orchestrator: FocusLost event.");
-                self.driver.set_focus(crate::platform::backends::FocusState::Unfocused); // Corrected FocusState path
-                 if let Some(action) = self.term.interpret_input(EmulatorInput::User(UserInputAction::FocusLost)) {
+                self.driver
+                    .set_focus(crate::platform::backends::FocusState::Unfocused); // Corrected FocusState path
+                if let Some(action) = self
+                    .term
+                    .interpret_input(EmulatorInput::User(UserInputAction::FocusLost))
+                {
                     if matches!(action, EmulatorAction::WritePty(_)) {
                         self.handle_emulator_action(action, &mut Vec::new());
                     } else {
@@ -252,7 +264,10 @@ impl<'a> AppOrchestrator<'a> {
                 );
             }
             BackendEvent::PasteData { text } => {
-                log::debug!("Orchestrator: PasteData event received with text length: {}", text.len());
+                log::debug!(
+                    "Orchestrator: PasteData event received with text length: {}",
+                    text.len()
+                );
                 let paste_input_action = UserInputAction::PasteText(text);
                 let user_input = EmulatorInput::User(paste_input_action);
                 if let Some(action) = self.term.interpret_input(user_input) {
@@ -266,18 +281,33 @@ impl<'a> AppOrchestrator<'a> {
                     }
                 }
             }
-            BackendEvent::MouseButtonPress { button, x, y, modifiers: _ } => {
+            BackendEvent::MouseButtonPress {
+                button,
+                x,
+                y,
+                modifiers: _,
+            } => {
                 if self.font_cell_width_px == 0 || self.font_cell_height_px == 0 {
                     log::warn!("Font dimensions are zero, cannot process mouse click.");
                     return;
                 }
                 let cell_x = (x as usize) / self.font_cell_width_px;
                 let cell_y = (y as usize) / self.font_cell_height_px;
-                log::debug!("MouseButtonPress: {:?} at pixel ({}, {}), cell ({}, {})", button, x, y, cell_x, cell_y);
+                log::debug!(
+                    "MouseButtonPress: {:?} at pixel ({}, {}), cell ({}, {})",
+                    button,
+                    x,
+                    y,
+                    cell_x,
+                    cell_y
+                );
 
                 let user_action = match button {
                     crate::platform::backends::MouseButton::Left => {
-                        Some(UserInputAction::StartSelection { x: cell_x, y: cell_y })
+                        Some(UserInputAction::StartSelection {
+                            x: cell_x,
+                            y: cell_y,
+                        })
                     }
                     crate::platform::backends::MouseButton::Middle => {
                         Some(UserInputAction::RequestPrimaryPaste)
@@ -286,7 +316,9 @@ impl<'a> AppOrchestrator<'a> {
                 };
 
                 if let Some(action) = user_action {
-                    if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(action)) {
+                    if let Some(emulator_action) =
+                        self.term.interpret_input(EmulatorInput::User(action))
+                    {
                         if matches!(emulator_action, EmulatorAction::WritePty(_)) {
                             self.handle_emulator_action(emulator_action, &mut Vec::new());
                         } else {
@@ -295,15 +327,26 @@ impl<'a> AppOrchestrator<'a> {
                     }
                 }
             }
-            BackendEvent::MouseButtonRelease { button, x, y, modifiers: _ } => {
+            BackendEvent::MouseButtonRelease {
+                button,
+                x,
+                y,
+                modifiers: _,
+            } => {
                 if self.font_cell_width_px == 0 || self.font_cell_height_px == 0 {
                     log::warn!("Font dimensions are zero, cannot process mouse release.");
                     return;
                 }
                 let cell_x = (x as usize) / self.font_cell_width_px; // Though x,y might not be used for release action itself
                 let cell_y = (y as usize) / self.font_cell_height_px;
-                log::debug!("MouseButtonRelease: {:?} at pixel ({}, {}), cell ({}, {})", button, x, y, cell_x, cell_y);
-
+                log::debug!(
+                    "MouseButtonRelease: {:?} at pixel ({}, {}), cell ({}, {})",
+                    button,
+                    x,
+                    y,
+                    cell_x,
+                    cell_y
+                );
 
                 let user_action = match button {
                     crate::platform::backends::MouseButton::Left => {
@@ -313,8 +356,10 @@ impl<'a> AppOrchestrator<'a> {
                 };
 
                 if let Some(action) = user_action {
-                    if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(action)) {
-                         if matches!(emulator_action, EmulatorAction::WritePty(_)) {
+                    if let Some(emulator_action) =
+                        self.term.interpret_input(EmulatorInput::User(action))
+                    {
+                        if matches!(emulator_action, EmulatorAction::WritePty(_)) {
                             self.handle_emulator_action(emulator_action, &mut Vec::new());
                         } else {
                             self.pending_render_actions.push(emulator_action);
@@ -329,11 +374,21 @@ impl<'a> AppOrchestrator<'a> {
                 }
                 let cell_x = (x as usize) / self.font_cell_width_px;
                 let cell_y = (y as usize) / self.font_cell_height_px;
-                log::trace!("MouseMove: at pixel ({}, {}), cell ({}, {})", x, y, cell_x, cell_y);
+                log::trace!(
+                    "MouseMove: at pixel ({}, {}), cell ({}, {})",
+                    x,
+                    y,
+                    cell_x,
+                    cell_y
+                );
 
-
-                let user_action = UserInputAction::ExtendSelection { x: cell_x, y: cell_y };
-                if let Some(emulator_action) = self.term.interpret_input(EmulatorInput::User(user_action)) {
+                let user_action = UserInputAction::ExtendSelection {
+                    x: cell_x,
+                    y: cell_y,
+                };
+                if let Some(emulator_action) =
+                    self.term.interpret_input(EmulatorInput::User(user_action))
+                {
                     if matches!(emulator_action, EmulatorAction::WritePty(_)) {
                         self.handle_emulator_action(emulator_action, &mut Vec::new());
                     } else {
@@ -347,12 +402,20 @@ impl<'a> AppOrchestrator<'a> {
     /// Handles actions signaled by the `TerminalInterface` implementation.
     /// Some actions are handled immediately (e.g., writing to PTY), while others
     /// that affect rendering are converted to `RenderCommand`s and appended to the given list.
-    fn handle_emulator_action(&mut self, action: EmulatorAction, commands: &mut Vec<RenderCommand>) {
+    fn handle_emulator_action(
+        &mut self,
+        action: EmulatorAction,
+        commands: &mut Vec<RenderCommand>,
+    ) {
         log::debug!("Orchestrator: Handling EmulatorAction: {:?}", action);
         match action {
             EmulatorAction::WritePty(data) => {
                 if let Err(e) = self.pty_channel.write_all(&data) {
-                    log::error!("Orchestrator: Failed to write_all {} bytes to PTY: {}", data.len(), e);
+                    log::error!(
+                        "Orchestrator: Failed to write_all {} bytes to PTY: {}",
+                        data.len(),
+                        e
+                    );
                 } else {
                     log::trace!("Orchestrator: Wrote {} bytes to PTY.", data.len());
                 }
@@ -378,17 +441,23 @@ impl<'a> AppOrchestrator<'a> {
                 const TRAIT_ATOM_ID_PRIMARY: u64 = 1; // Example abstract ID for Primary selection
                 const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard selection
 
-                self.driver.own_selection(TRAIT_ATOM_ID_CLIPBOARD, text.clone());
+                self.driver
+                    .own_selection(TRAIT_ATOM_ID_CLIPBOARD, text.clone());
                 self.driver.own_selection(TRAIT_ATOM_ID_PRIMARY, text);
-                log::info!("Orchestrator: Requested driver to own PRIMARY and CLIPBOARD selections.");
+                log::info!(
+                    "Orchestrator: Requested driver to own PRIMARY and CLIPBOARD selections."
+                );
                 // This action typically does not generate direct render commands.
             }
             EmulatorAction::RequestClipboardContent => {
                 const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2; // Example abstract ID for Clipboard
                 const TRAIT_ATOM_ID_UTF8_STRING: u64 = 10; // Example abstract ID for UTF8_STRING target
 
-                self.driver.request_selection_data(TRAIT_ATOM_ID_CLIPBOARD, TRAIT_ATOM_ID_UTF8_STRING);
-                log::info!("Orchestrator: Requested clipboard content from driver (target UTF8_STRING).");
+                self.driver
+                    .request_selection_data(TRAIT_ATOM_ID_CLIPBOARD, TRAIT_ATOM_ID_UTF8_STRING);
+                log::info!(
+                    "Orchestrator: Requested clipboard content from driver (target UTF8_STRING)."
+                );
                 // This action does not generate direct render commands; data arrives via BackendEvent::PasteData.
             }
         }
@@ -400,7 +469,8 @@ impl<'a> AppOrchestrator<'a> {
         let mut final_render_commands = self.renderer.draw(snapshot)?;
 
         // Process any pending emulator actions that translate to render commands
-        let actions_to_process: Vec<EmulatorAction> = self.pending_render_actions.drain(..).collect();
+        let actions_to_process: Vec<EmulatorAction> =
+            self.pending_render_actions.drain(..).collect();
         for action in actions_to_process {
             // Note: WritePty actions were already handled immediately and won't be in this list.
             self.handle_emulator_action(action, &mut final_render_commands);
@@ -409,7 +479,10 @@ impl<'a> AppOrchestrator<'a> {
         // Always add PresentFrame as the last command for this frame.
         final_render_commands.push(RenderCommand::PresentFrame);
 
-        log::debug!("Orchestrator: Executing {} render commands.", final_render_commands.len());
+        log::debug!(
+            "Orchestrator: Executing {} render commands.",
+            final_render_commands.len()
+        );
         self.driver.execute_render_commands(final_render_commands)?;
 
         // Optionally, notify the terminal that the frame was rendered.

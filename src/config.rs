@@ -143,7 +143,7 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         FontConfig {
-            normal: "Liberation Mono:pixelsize=12:antialias=true:autohint=true".to_string(),
+            normal: "Inconsolatta:pixelsize=12:antialias=true:autohint=true".to_string(),
             cw_scale: 1.0,
             ch_scale: 1.0,
         }

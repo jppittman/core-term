@@ -65,9 +65,10 @@ pub struct TerminalEmulator {
 
 impl TerminalEmulator {
     /// Creates a new `TerminalEmulator`.
-    pub fn new(width: usize, height: usize) -> Self { // Removed scrollback_limit parameter
+    pub fn new(width: usize, height: usize) -> Self {
+        // Removed scrollback_limit parameter
         let initial_attributes = Attributes::default(); // SGR Reset attributes
-        // Screen::new now gets scrollback_limit from CONFIG
+                                                        // Screen::new now gets scrollback_limit from CONFIG
         let mut screen = Screen::new(width, height);
         // Ensure the screen's default_attributes are initialized correctly.
         // This is crucial for clearing operations.
@@ -174,8 +175,11 @@ impl TerminalEmulator {
                     // Use active_grid directly as get_glyph might have side effects or different logic
                     let glyph_wrapper = &active_grid[cursor_y][cursor_x];
                     match glyph_wrapper {
-                        crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => (cell.c, cell.attr),
-                        crate::glyph::Glyph::WideSpacer { .. } => (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default()),
+                        crate::glyph::Glyph::Single(cell)
+                        | crate::glyph::Glyph::WidePrimary(cell) => (cell.c, cell.attr),
+                        crate::glyph::Glyph::WideSpacer { .. } => {
+                            (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default())
+                        }
                     }
                 } else {
                     (' ', Attributes::default()) // Default if cursor is out of bounds
@@ -216,7 +220,10 @@ impl TerminalEmulator {
 
     pub fn start_selection(&mut self, point: Point, mode: SelectionMode) {
         self.screen.start_selection(point, mode);
-        debug!("Selection started at ({}, {}) with mode {:?}", point.x, point.y, mode);
+        debug!(
+            "Selection started at ({}, {}) with mode {:?}",
+            point.x, point.y, mode
+        );
     }
 
     pub fn extend_selection(&mut self, point: Point) {
@@ -232,7 +239,10 @@ impl TerminalEmulator {
                     debug!("Selection applied (was a click): cleared.");
                 } else {
                     self.screen.selection.is_active = false;
-                    debug!("Selection applied (was a drag): finalized at range {:?}.", range);
+                    debug!(
+                        "Selection applied (was a drag): finalized at range {:?}.",
+                        range
+                    );
                 }
             } else {
                 self.screen.selection.is_active = false;
@@ -256,9 +266,11 @@ impl TerminalEmulator {
             for ch in text.chars() {
                 self.print_char(ch);
             }
-
         } else {
-            log::debug!("TerminalEmulator::paste_text - Bracketed Paste Mode OFF. Processing {} chars.", text.len());
+            log::debug!(
+                "TerminalEmulator::paste_text - Bracketed Paste Mode OFF. Processing {} chars.",
+                text.len()
+            );
             for ch in text.chars() {
                 self.print_char(ch);
             }

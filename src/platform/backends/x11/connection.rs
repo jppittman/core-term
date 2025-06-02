@@ -37,7 +37,10 @@ impl ManagedDisplay {
                 "Failed to open X display. Check DISPLAY environment variable or X server status."
             ))
         } else {
-            debug!("X display opened successfully via ManagedDisplay: {:p}", display_ptr);
+            debug!(
+                "X display opened successfully via ManagedDisplay: {:p}",
+                display_ptr
+            );
             Ok(Self { ptr: display_ptr })
         }
     }
@@ -52,7 +55,10 @@ impl ManagedDisplay {
 impl Drop for ManagedDisplay {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            info!("Closing X11 display connection via ManagedDisplay: {:p}", self.ptr);
+            info!(
+                "Closing X11 display connection via ManagedDisplay: {:p}",
+                self.ptr
+            );
             unsafe {
                 let status = xlib::XCloseDisplay(self.ptr);
                 if status != 0 {
@@ -117,7 +123,10 @@ impl Connection {
         // No need to manually XCloseDisplay here if subsequent steps fail,
         // as ManagedDisplay's Drop will handle it.
 
-        debug!("X display opened successfully via ManagedDisplay: {:p}", managed_display.raw());
+        debug!(
+            "X display opened successfully via ManagedDisplay: {:p}",
+            managed_display.raw()
+        );
 
         // Get the default screen number for the display.
         let screen = unsafe { xlib::XDefaultScreen(managed_display.raw()) };
@@ -311,13 +320,21 @@ mod tests {
 
         // Case 1: Cleanup on a connection that is "already cleaned" (managed_display.ptr is null).
         let mut conn_cleaned = Connection {
-            managed_display: ManagedDisplay { ptr: ptr::null_mut() },
+            managed_display: ManagedDisplay {
+                ptr: ptr::null_mut(),
+            },
             screen: 0,
             colormap: 0,
             visual: ptr::null_mut(),
         };
-        assert!(conn_cleaned.cleanup().is_ok(), "cleanup on already null display ptr should be Ok");
-        assert!(conn_cleaned.managed_display.ptr.is_null(), "managed_display.ptr should remain null");
+        assert!(
+            conn_cleaned.cleanup().is_ok(),
+            "cleanup on already null display ptr should be Ok"
+        );
+        assert!(
+            conn_cleaned.managed_display.ptr.is_null(),
+            "managed_display.ptr should remain null"
+        );
 
         // Case 2: Cleanup on a connection that has a "valid" display pointer.
         // We simulate a ManagedDisplay that notionally holds a valid pointer.
@@ -333,19 +350,36 @@ mod tests {
 
         let dummy_display_ptr = 1 as *mut xlib::Display; // Non-null dummy pointer
         let mut conn_with_display = Connection {
-            managed_display: ManagedDisplay { ptr: dummy_display_ptr },
+            managed_display: ManagedDisplay {
+                ptr: dummy_display_ptr,
+            },
             screen: 0,
             colormap: 0,
             visual: ptr::null_mut(),
         };
-        assert!(!conn_with_display.managed_display.ptr.is_null(), "managed_display.ptr should be non-null initially");
+        assert!(
+            !conn_with_display.managed_display.ptr.is_null(),
+            "managed_display.ptr should be non-null initially"
+        );
 
-        assert!(conn_with_display.cleanup().is_ok(), "cleanup on a 'valid' display ptr should be Ok");
-        assert!(conn_with_display.managed_display.ptr.is_null(), "managed_display.ptr should be null after cleanup");
+        assert!(
+            conn_with_display.cleanup().is_ok(),
+            "cleanup on a 'valid' display ptr should be Ok"
+        );
+        assert!(
+            conn_with_display.managed_display.ptr.is_null(),
+            "managed_display.ptr should be null after cleanup"
+        );
 
         // Call cleanup again to ensure it's idempotent
-        assert!(conn_with_display.cleanup().is_ok(), "second cleanup call should also be Ok");
-        assert!(conn_with_display.managed_display.ptr.is_null(), "managed_display.ptr should remain null");
+        assert!(
+            conn_with_display.cleanup().is_ok(),
+            "second cleanup call should also be Ok"
+        );
+        assert!(
+            conn_with_display.managed_display.ptr.is_null(),
+            "managed_display.ptr should remain null"
+        );
 
         // When conn_with_display goes out of scope, ManagedDisplay's Drop will be called.
         // Since ptr is now null, XCloseDisplay will not be called by it, which is correct
@@ -355,7 +389,9 @@ mod tests {
     #[test]
     fn test_get_event_fd_on_closed_display() {
         let conn = Connection {
-            managed_display: ManagedDisplay { ptr: ptr::null_mut() }, // Simulate closed display
+            managed_display: ManagedDisplay {
+                ptr: ptr::null_mut(),
+            }, // Simulate closed display
             screen: 0,
             colormap: 0,
             visual: ptr::null_mut(),

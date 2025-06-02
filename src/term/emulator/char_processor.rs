@@ -2,7 +2,7 @@
 
 use super::TerminalEmulator;
 use crate::{
-    glyph::{AttrFlags, Attributes, Glyph, ContentCell},
+    glyph::{AttrFlags, Attributes, ContentCell, Glyph},
     term::{
         charset::{map_to_dec_line_drawing, CharacterSet}, // For map_char_to_active_charset
         unicode::get_char_display_width,
@@ -96,7 +96,6 @@ impl TerminalEmulator {
                                                         // Get new physical cursor position after this wrap.
             (physical_x, physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
         }
-
         // Place the character glyph on the screen.
         let glyph_attrs = self.cursor_controller.attributes();
         if physical_y < self.screen.height {
@@ -104,10 +103,10 @@ impl TerminalEmulator {
 
             // Before setting the new glyph, check if the old glyph was a WIDE_CHAR_PRIMARY.
             // If so, and the new char is not wide or is different, clear the old spacer.
-            if physical_y < screen_ctx.height && physical_x < screen_ctx.width { // Bounds check for old_glyph_at_pos
-                let old_glyph_at_pos = self.screen.active_grid()[physical_y][physical_x].clone(); // Clone to avoid borrow issues
-                if matches!(old_glyph_at_pos, Glyph::WidePrimary(_))
-                {
+            if physical_y < screen_ctx.height && physical_x < screen_ctx.width {
+                // Bounds check for old_glyph_at_pos
+                let old_glyph_at_pos = self.screen.active_grid()[physical_y][physical_x];
+                if matches!(old_glyph_at_pos, Glyph::WidePrimary(_)) {
                     // If the new char isn't wide, or if it is but we're overwriting,
                     // we must clear the old spacer.
                     // We check old_glyph_at_pos.c by accessing the ContentCell inside WidePrimary variant if needed,
@@ -135,10 +134,23 @@ impl TerminalEmulator {
 
             // If it's a wide character, place a placeholder and set flags.
             if char_width == 2 {
-                self.screen.set_glyph(physical_x, physical_y, Glyph::WidePrimary(ContentCell { c: ch_to_print, attr: glyph_attrs }));
+                self.screen.set_glyph(
+                    physical_x,
+                    physical_y,
+                    Glyph::WidePrimary(ContentCell {
+                        c: ch_to_print,
+                        attr: glyph_attrs,
+                    }),
+                );
 
                 if physical_x + 1 < screen_ctx.width {
-                    self.screen.set_glyph(physical_x + 1, physical_y, Glyph::WideSpacer { primary_column_on_line: physical_x as u16 });
+                    self.screen.set_glyph(
+                        physical_x + 1,
+                        physical_y,
+                        Glyph::WideSpacer {
+                            primary_column_on_line: physical_x as u16,
+                        },
+                    );
                     // Line is already marked dirty from the primary character.
                 } else {
                     // This case implies a wide char was printed at the exact last column.
@@ -149,8 +161,16 @@ impl TerminalEmulator {
                         ch_to_print, physical_x, physical_y, screen_ctx.width
                     );
                 }
-            } else { // char_width == 1
-                self.screen.set_glyph(physical_x, physical_y, Glyph::Single(ContentCell { c: ch_to_print, attr: glyph_attrs }));
+            } else {
+                // char_width == 1
+                self.screen.set_glyph(
+                    physical_x,
+                    physical_y,
+                    Glyph::Single(ContentCell {
+                        c: ch_to_print,
+                        attr: glyph_attrs,
+                    }),
+                );
             }
             self.screen.mark_line_dirty(physical_y); // Mark line dirty via screen method.
         } else {
@@ -169,7 +189,8 @@ impl TerminalEmulator {
         let (final_logical_x, _) = self.cursor_controller.logical_pos();
         // Set cursor_wrap_next if the cursor is exactly at or beyond the width AND autowrap is on.
         self.cursor_wrap_next = final_logical_x >= screen_ctx.width && self.dec_modes.autowrap_mode;
-        if self.cursor_wrap_next { // This logging might be too verbose for normal operation
+        if self.cursor_wrap_next {
+            // This logging might be too verbose for normal operation
             // Consider using trace level or removing if not essential for debugging.
             log::trace!("cursor_wrap_next set to true. final_logical_x: {}, screen_ctx.width: {}, autowrap: {}",
                       final_logical_x, screen_ctx.width, self.dec_modes.autowrap_mode);

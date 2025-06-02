@@ -8,11 +8,16 @@
 use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 use crate::keys::{KeySymbol, Modifiers};
+use crate::platform::backends::x11::window::CursorVisibility;
 use crate::platform::backends::{
-    BackendEvent, Driver, FocusState, PlatformState, RenderCommand, // Updated imports
-    DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
-};
-use crate::platform::backends::x11::window::CursorVisibility; // Added CursorVisibility
+    BackendEvent,
+    Driver,
+    FocusState,
+    PlatformState,
+    RenderCommand, // Updated imports
+    DEFAULT_WINDOW_HEIGHT_CHARS,
+    DEFAULT_WINDOW_WIDTH_CHARS,
+}; // Added CursorVisibility
 
 use anyhow::{Context, Result};
 use libc::{winsize, STDIN_FILENO, TIOCGWINSZ}; // For terminal size and raw mode
@@ -334,7 +339,9 @@ impl Driver for ConsoleDriver {
                     }
                     // Contract: Renderer ensures colors are concrete.
                     if matches!(fg, Color::Default) || matches!(bg, Color::Default) {
-                        error!("ConsoleDriver::DrawTextRun received Color::Default. Bug in Renderer.");
+                        error!(
+                            "ConsoleDriver::DrawTextRun received Color::Default. Bug in Renderer."
+                        );
                         panic!("ConsoleDriver::DrawTextRun received Color::Default. Renderer should resolve defaults.");
                     }
 
@@ -389,10 +396,8 @@ impl Driver for ConsoleDriver {
 
                     let spaces: String = vec![' '; width].into_iter().collect();
                     for row_offset in 0..height {
-                        output_buffer.push_str(&Self::format_cursor_position(
-                            y + row_offset + 1,
-                            x + 1,
-                        ));
+                        output_buffer
+                            .push_str(&Self::format_cursor_position(y + row_offset + 1, x + 1));
                         output_buffer.push_str(&spaces);
                     }
                 }
@@ -419,7 +424,9 @@ impl Driver for ConsoleDriver {
                         print!("{}", output_buffer);
                         output_buffer.clear(); // Clear after printing.
                     }
-                    stdout().flush().context("ConsoleDriver: Failed to flush stdout for PresentFrame command")?;
+                    stdout().flush().context(
+                        "ConsoleDriver: Failed to flush stdout for PresentFrame command",
+                    )?;
                 }
             }
         }

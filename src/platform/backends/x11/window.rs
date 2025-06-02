@@ -1,8 +1,8 @@
 // src/platform/backends/x11/window.rs
 #![allow(non_snake_case)] // Allow non-snake case for X11 types
 
-use crate::config::CONFIG; // Added for global config access
 use super::connection::Connection;
+use crate::config::CONFIG; // Added for global config access
 use anyhow::{anyhow, Context, Result}; // Combined anyhow
 use log::{debug, info, trace, warn}; // Removed error
 use std::ffi::CString;
@@ -28,7 +28,10 @@ impl SafeWindow {
     /// * `id`: The X11 window ID.
     /// * `display_ptr`: A pointer to the X11 display.
     fn new(id: xlib::Window, display_ptr: *mut xlib::Display) -> Self {
-        Self { id, display: display_ptr }
+        Self {
+            id,
+            display: display_ptr,
+        }
     }
 
     /// Returns the raw X11 window ID.
@@ -41,7 +44,10 @@ impl SafeWindow {
 impl Drop for SafeWindow {
     fn drop(&mut self) {
         if self.id != 0 && !self.display.is_null() {
-            info!("Destroying X11 window (ID: {}) via SafeWindow drop.", self.id);
+            info!(
+                "Destroying X11 window (ID: {}) via SafeWindow drop.",
+                self.id
+            );
             // SAFETY: Assumes self.display is still valid and self.id is a valid window ID.
             unsafe {
                 xlib::XDestroyWindow(self.display, self.id);
@@ -55,7 +61,6 @@ impl Drop for SafeWindow {
         }
     }
 }
-
 
 /// Defines the desired visibility state for the native X11 mouse cursor
 /// when it is positioned over the terminal window.
@@ -127,7 +132,8 @@ impl Window {
         let colormap = connection.colormap(); // Needed for XSetWindowAttributes
 
         // SAFETY: Xlib calls involving FFI. Ensure connection and its members are valid.
-        let raw_window_id = unsafe { // Renamed to raw_window_id for clarity
+        let raw_window_id = unsafe {
+            // Renamed to raw_window_id for clarity
             let root_window = xlib::XRootWindow(display, screen);
             let border_width = 0; // No border managed by this window itself
 
@@ -242,9 +248,13 @@ impl Window {
             }
 
             // Set initial window title.
-            let title_cstr =
-                CString::new(CONFIG.appearance.default_title.as_str()).context("Failed to create CString for initial title")?;
-            xlib::XStoreName(display, self.safe_id.raw_id(), title_cstr.as_ptr() as *mut c_char);
+            let title_cstr = CString::new(CONFIG.appearance.default_title.as_str())
+                .context("Failed to create CString for initial title")?;
+            xlib::XStoreName(
+                display,
+                self.safe_id.raw_id(),
+                title_cstr.as_ptr() as *mut c_char,
+            );
 
             // Set _NET_WM_NAME for UTF-8 titles, preferred by modern WMs.
             let net_wm_name_atom = xlib::XInternAtom(
@@ -306,7 +316,10 @@ impl Window {
             warn!("map_and_flush called on an invalid window ID (0).");
             return;
         }
-        info!("Mapping window ID: {} and flushing display.", self.safe_id.raw_id());
+        info!(
+            "Mapping window ID: {} and flushing display.",
+            self.safe_id.raw_id()
+        );
         // SAFETY: Xlib calls. Ensure connection and window ID are valid.
         unsafe {
             xlib::XMapWindow(connection.display(), self.safe_id.raw_id());
@@ -343,7 +356,11 @@ impl Window {
         unsafe {
             let title_c_str = CString::new(title).context("Failed to create CString for title")?;
             // Set standard window title property
-            xlib::XStoreName(display, self.safe_id.raw_id(), title_c_str.as_ptr() as *mut c_char);
+            xlib::XStoreName(
+                display,
+                self.safe_id.raw_id(),
+                title_c_str.as_ptr() as *mut c_char,
+            );
 
             // Also set _NET_WM_NAME for modern window managers (UTF-8)
             let net_wm_name_atom = xlib::XInternAtom(
@@ -473,7 +490,8 @@ impl Window {
     /// This method can be used to explicitly trigger that drop earlier if needed,
     /// or to perform other Window-specific cleanup.
     /// If kept, we can manually drop `safe_id` or nullify its internal ID.
-    pub fn cleanup(&mut self, _connection: &Connection) { // Connection might not be needed
+    pub fn cleanup(&mut self, _connection: &Connection) {
+        // Connection might not be needed
         if self.safe_id.raw_id() != 0 {
             info!("Window::cleanup called for window ID: {}. Actual destruction handled by SafeWindow::drop.", self.safe_id.raw_id());
             // To prevent SafeWindow::drop from re-destroying, we can nullify its ID.
