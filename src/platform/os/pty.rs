@@ -13,6 +13,7 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{execvp, fork, setsid, ForkResult, Pid}; // Added ForkResult
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
+
 #[derive(Debug, Clone)]
 pub struct PtyConfig<'a> {
     pub command_executable: &'a str,
@@ -266,6 +267,9 @@ impl Read for NixPty {
                 );
                 Ok(bytes_read)
             }
+            Err(nix::Error::EIO) => {
+                Ok(0)
+            },
             Err(nix_err) => {
                 if matches!(nix_err, nix::Error::EAGAIN)
                     || matches!(nix_err, nix::Error::EWOULDBLOCK)

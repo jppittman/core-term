@@ -8,7 +8,7 @@
 //! to be backend-agnostic. It defines default foreground and background colors
 //! for resolving `Color::Default` from glyph attributes when rendering.
 
-use crate::color::{Color, NamedColor};
+use crate::color::Color;
 use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::platform::backends::RenderCommand; // Updated import
 use crate::term::snapshot::{Point, RenderSnapshot, Selection};
@@ -495,10 +495,9 @@ impl Renderer {
             return Ok(());
         };
 
-        let physical_cursor_x_for_draw: usize;
         let char_to_draw_at_cursor: char;
         let original_attrs_at_cursor: Attributes;
-        physical_cursor_x_for_draw = cursor_abs_x; // Default to current column
+        let mut physical_cursor_x_for_draw = cursor_abs_x; 
 
         // Determine the character and attributes to use for the cursor overlay.
         // This logic handles cases where the cursor might be on the second half of a wide character.
