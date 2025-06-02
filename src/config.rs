@@ -123,6 +123,7 @@ pub struct AppearanceConfig {
     pub border_pixels: u16,
     pub cursor: CursorConfig,
     pub unfocused_cursor: CursorConfig,
+    pub default_title: String,
 }
 
 impl Default for AppearanceConfig {
@@ -138,6 +139,7 @@ impl Default for AppearanceConfig {
                 blink_timeout_ms: 0,
                 thickness: 2,
             },
+            default_title: "core-term".to_string(),
         }
     }
 }
@@ -193,6 +195,7 @@ pub struct BehaviorConfig {
     pub term_env_var: String,
     pub allow_alt_screen: bool,
     pub allow_window_ops: bool,
+    pub default_origin_mode: bool,
 }
 
 impl Default for BehaviorConfig {
@@ -207,6 +210,7 @@ impl Default for BehaviorConfig {
             term_env_var: "core-256color".to_string(),
             allow_alt_screen: true,
             allow_window_ops: false,
+            default_origin_mode: false,
         }
     }
 }

@@ -14,9 +14,9 @@ use std::cmp::min;
 use std::cmp::{max, min as std_min}; // For local min/max, renamed from std::cmp::min
 use std::collections::VecDeque;
 
-use crate::glyph::{Attributes, Glyph};
+use crate::glyph::{AttrFlags, Attributes, Glyph}; // Added AttrFlags
 use crate::term::snapshot::{Point, Selection, SelectionMode, SelectionRange};
-use crate::term::DEFAULT_TAB_INTERVAL;
+use crate::config::CONFIG;
 use log::{trace, warn};
 
 // Define a type alias for a single row in the grid
@@ -100,29 +100,33 @@ impl Screen {
     /// # Arguments
     /// * `width` - The width of the screen in columns. Clamped to be at least 1.
     /// * `height` - The height of the screen in rows. Clamped to be at least 1.
-    /// * `scrollback_limit` - The maximum number of lines to keep in the scrollback buffer.
-    pub fn new(width: usize, height: usize, scrollback_limit: usize) -> Self {
+    pub fn new(width: usize, height: usize) -> Self {
         let w = width.max(1);
         let h = height.max(1);
-        let default_attributes = Attributes::default();
+        let default_attributes = Attributes {
+            fg: CONFIG.colors.foreground,
+            bg: CONFIG.colors.background,
+            flags: AttrFlags::empty(),
+        };
         let default_fill_char = Glyph {
             c: ' ',
             attr: default_attributes,
         };
 
+        let scrollback_limit_from_config = CONFIG.behavior.scrollback_lines;
         trace!(
             "Creating new Screen: {}x{}, scrollback: {}",
             w,
             h,
-            scrollback_limit
+            scrollback_limit_from_config
         );
 
         let grid = vec![vec![default_fill_char.clone(); w]; h];
         let alt_grid = vec![vec![default_fill_char.clone(); w]; h];
-        let scrollback = VecDeque::with_capacity(scrollback_limit);
+        let scrollback = VecDeque::with_capacity(scrollback_limit_from_config);
 
         let mut tabs = vec![false; w];
-        for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize) {
+        for i in (CONFIG.behavior.tabspaces as usize..w).step_by(CONFIG.behavior.tabspaces as usize) {
             if i < tabs.len() {
                 tabs[i] = true;
             }
@@ -132,7 +136,7 @@ impl Screen {
             grid,
             alt_grid,
             scrollback,
-            scrollback_limit,
+            scrollback_limit: scrollback_limit_from_config,
             alt_screen_active: false,
             width: w,
             height: h,
@@ -141,7 +145,7 @@ impl Screen {
             tabs,
             dirty: vec![1; h],
             default_attributes,
-            origin_mode: false,
+            origin_mode: CONFIG.behavior.default_origin_mode,
             selection: Selection::default(),
         }
     }
@@ -392,12 +396,13 @@ impl Screen {
         self.mark_line_dirty(y);
     }
 
-    pub fn resize(&mut self, new_width: usize, new_height: usize, new_scrollback_limit: usize) {
+    pub fn resize(&mut self, new_width: usize, new_height: usize) {
         let nw = new_width.max(1);
         let nh = new_height.max(1);
+        let scrollback_limit_from_config = CONFIG.behavior.scrollback_lines;
         warn!(
             "Screen resize from {}x{} (scrollback: {}) to {}x{} (scrollback: {})",
-            self.width, self.height, self.scrollback_limit, nw, nh, new_scrollback_limit
+            self.width, self.height, self.scrollback_limit, nw, nh, scrollback_limit_from_config
         );
 
         self.clear_selection(); // Clear selection on resize
@@ -405,7 +410,7 @@ impl Screen {
         let old_width = self.width;
         self.width = nw;
         self.height = nh;
-        self.scrollback_limit = new_scrollback_limit;
+        self.scrollback_limit = scrollback_limit_from_config;
 
         let fill_glyph = self.get_default_fill_glyph();
 
@@ -435,7 +440,7 @@ impl Screen {
         self.scroll_bot = nh.saturating_sub(1);
 
         self.tabs = vec![false; nw];
-        for i in (DEFAULT_TAB_INTERVAL as usize..nw).step_by(DEFAULT_TAB_INTERVAL as usize) {
+        for i in (CONFIG.behavior.tabspaces as usize..nw).step_by(CONFIG.behavior.tabspaces as usize) {
             if i < self.tabs.len() {
                 self.tabs[i] = true;
             }
@@ -892,11 +897,33 @@ const SOME_REASONABLE_SLACK: usize = 20;
 
 #[cfg(test)]
 mod tests {
-    use super::{Attributes, Glyph, Point, Screen, Selection, SelectionMode, SelectionRange};
+    use super::{AttrFlags, Attributes, Glyph, Point, Screen, Selection, SelectionMode, SelectionRange}; // Added AttrFlags
+
+    // Helper function for tests, using a fixed scrollback for test predictability
+    // or allowing tests to specify if some need to test scrollback behavior explicitly.
+    fn create_test_screen_with_scrollback(width: usize, height: usize, scrollback: usize) -> Screen {
+        // Temporarily override config for consistent tests if Screen::new now solely relies on CONFIG
+        // This is tricky. For now, let's assume tests might need to adapt or Screen::new might need
+        // a test-specific constructor or tests mock CONFIG (which is hard with static Lazy).
+        // For now, let's assume Screen::new is adapted and we pass what's needed.
+        // The current Screen::new was changed to NOT take scrollback_limit.
+        // So, test utility must change.
+        let mut screen = Screen::new(width, height);
+        // If tests need to check scrollback functionality with specific limits,
+        // they might need to manipulate CONFIG or this helper needs to be very creative.
+        // For simplicity, we'll let it use the default from CONFIG for now,
+        // meaning scrollback related tests might become less predictable if CONFIG changes.
+        // OR, we acknowledge that create_test_screen was passing 0, so we can try to
+        // preserve that behavior if it's critical for existing tests not focusing on scrollback.
+        screen.scrollback_limit = scrollback; // Manually set for test purposes if needed.
+        screen
+    }
 
     fn create_test_screen(width: usize, height: usize) -> Screen {
-        Screen::new(width, height, 0)
+        // Most tests used 0, implying scrollback wasn't their focus or they expected no scrollback.
+        create_test_screen_with_scrollback(width, height, 0)
     }
+
 
     fn fill_screen_with_pattern(screen: &mut Screen) {
         for r in 0..screen.height {
@@ -1220,7 +1247,7 @@ mod tests {
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 5, y: 2 });
         assert!(screen.selection.range.is_some());
-        screen.resize(20, 10, 0);
+        screen.resize(20, 10); // Removed scrollback limit argument
         assert_eq!(screen.selection, Selection::default());
     }
 }
