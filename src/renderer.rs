@@ -13,15 +13,13 @@ use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::platform::backends::RenderCommand; // Updated import
 use crate::term::snapshot::{Point, RenderSnapshot, Selection};
 use crate::term::unicode::get_char_display_width;
+use crate::config::CONFIG; // Added import
 
 
 use anyhow::Result; // For error handling.
 use log::{trace, warn}; // For logging.
 
-/// Default foreground color used by the renderer when a glyph specifies `Color::Default`.
-pub const RENDERER_DEFAULT_FG: Color = Color::Named(NamedColor::White);
-/// Default background color used by the renderer when a glyph specifies `Color::Default`.
-pub const RENDERER_DEFAULT_BG: Color = Color::Named(NamedColor::Black);
+// Default colors are now sourced from CONFIG.colors.foreground and CONFIG.colors.background
 
 /// Constant representing a single terminal cell consumed by a drawing operation.
 const SINGLE_CELL_CONSUMED: usize = 1;
@@ -49,11 +47,11 @@ impl Renderer {
         cell_flags: AttrFlags,
     ) -> (Color, Color, AttrFlags) {
         let mut resolved_fg = match cell_fg {
-            Color::Default => RENDERER_DEFAULT_FG,
+            Color::Default => CONFIG.colors.foreground,
             c => c,
         };
         let mut resolved_bg = match cell_bg {
-            Color::Default => RENDERER_DEFAULT_BG,
+            Color::Default => CONFIG.colors.background,
             c => c,
         };
         let mut effective_flags = cell_flags;
@@ -158,7 +156,7 @@ impl Renderer {
                         y: y_abs,
                         width: term_width - current_col,
                         height: 1,
-                        color: RENDERER_DEFAULT_BG,
+                        color: CONFIG.colors.background,
                         is_selection_bg: false,
                     });
                 }
@@ -190,19 +188,19 @@ impl Renderer {
     ) -> Result<usize> {
         if current_col == 0 {
             warn!("Placeholder found at column 0 on line {}. This is unexpected. Using default background.", y_abs);
-            self.draw_placeholder_cell(current_col, y_abs, RENDERER_DEFAULT_BG, commands)?;
+            self.draw_placeholder_cell(current_col, y_abs, CONFIG.colors.background, commands)?;
             return Ok(SINGLE_CELL_CONSUMED);
         }
 
         let Some(prev_glyph) = line_glyphs.get(current_col - 1) else {
             warn!("Placeholder at ({},{}) with current_col > 0 but no previous glyph. Using default BG.", current_col, y_abs);
-            self.draw_placeholder_cell(current_col, y_abs, RENDERER_DEFAULT_BG, commands)?;
+            self.draw_placeholder_cell(current_col, y_abs, CONFIG.colors.background, commands)?;
             return Ok(SINGLE_CELL_CONSUMED);
         };
 
         if !(prev_glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_PRIMARY) || get_char_display_width(prev_glyph.c) == 2) {
             warn!("Placeholder at ({},{}) but previous char ('{}') is not WIDE_CHAR_PRIMARY or double-width. Using default BG.", current_col, y_abs, prev_glyph.c);
-            self.draw_placeholder_cell(current_col, y_abs, RENDERER_DEFAULT_BG, commands)?;
+            self.draw_placeholder_cell(current_col, y_abs, CONFIG.colors.background, commands)?;
             return Ok(SINGLE_CELL_CONSUMED);
         }
 

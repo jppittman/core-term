@@ -66,11 +66,15 @@ pub struct TerminalEmulator {
 
 impl TerminalEmulator {
     /// Creates a new `TerminalEmulator`.
-    pub fn new(width: usize, height: usize, scrollback_limit: usize) -> Self {
+    pub fn new(width: usize, height: usize) -> Self { // Removed scrollback_limit parameter
         let initial_attributes = Attributes::default(); // SGR Reset attributes
-        let mut screen = Screen::new(width, height, scrollback_limit);
+        // Screen::new now gets scrollback_limit from CONFIG
+        let mut screen = Screen::new(width, height);
         // Ensure the screen's default_attributes are initialized correctly.
         // This is crucial for clearing operations.
+        // Note: Screen::new now also initializes default_attributes from CONFIG.
+        // This line might be redundant or ensure a specific SGR reset state if different.
+        // For now, keeping it to ensure SGR reset state is applied if it differs from CONFIG's default.
         screen.default_attributes = initial_attributes;
 
         TerminalEmulator {
@@ -107,8 +111,8 @@ impl TerminalEmulator {
     /// Resizes the terminal display grid.
     pub(super) fn resize(&mut self, cols: usize, rows: usize) {
         self.cursor_wrap_next = false;
-        let current_scrollback_limit = self.screen.scrollback_limit();
-        self.screen.resize(cols, rows, current_scrollback_limit);
+        // Screen::resize now gets scrollback_limit from CONFIG
+        self.screen.resize(cols, rows);
         let (log_x, log_y) = self.cursor_controller.logical_pos();
         self.cursor_controller
             .move_to_logical(log_x, log_y, &self.current_screen_context());
