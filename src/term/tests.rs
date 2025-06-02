@@ -291,23 +291,12 @@ fn test_csi_sgr_fg_color() {
 
 // --- Helpers for Selection Integration Tests ---
 // MouseEventType is not defined in term::action, using a placeholder for now
-// This will need to be fixed by finding the correct definition of MouseEventType
-enum PlaceholderMouseEventType { Press, Move, Release }
-
-
 fn send_mouse_input(
     emu: &mut TerminalEmulator,
-    col: usize,
-    row: usize,
-    event_type: PlaceholderMouseEventType, // Using placeholder
-    button: MouseButton,
+    action: UserInputAction,
+    _button: MouseButton, // Marked as unused for now
 ) -> Option<EmulatorAction> {
-    let user_input_action = match event_type {
-        PlaceholderMouseEventType::Press => UserInputAction::StartSelection { x: col, y: row }, // Updated to StartSelection
-        PlaceholderMouseEventType::Move => UserInputAction::ExtendSelection { x: col, y: row }, // Updated to ExtendSelection
-        PlaceholderMouseEventType::Release => UserInputAction::ApplySelectionClear, // Updated to ApplySelectionClear
-    };
-    emu.interpret_input(EmulatorInput::User(user_input_action))
+    emu.interpret_input(EmulatorInput::User(action))
 }
 
 
@@ -329,7 +318,11 @@ fn fill_emulator_screen(emu: &mut TerminalEmulator, text_lines: Vec<String>) {
 #[test]
 fn test_mouse_press_starts_selection() {
     let mut emu = create_test_emulator(10, 5);
-    let action = send_mouse_input(&mut emu, 1, 1, PlaceholderMouseEventType::Press, MouseButton::Left);
+    let action = send_mouse_input(
+        &mut emu,
+        UserInputAction::StartSelection { x: 1, y: 1 },
+        MouseButton::Left,
+    );
 
     assert!(
         emu.screen.selection.is_active,
@@ -360,8 +353,16 @@ fn test_mouse_press_starts_selection() {
 #[test]
 fn test_mouse_drag_updates_selection() {
     let mut emu = create_test_emulator(10, 5);
-    send_mouse_input(&mut emu, 1, 1, PlaceholderMouseEventType::Press, MouseButton::Left);
-    let action = send_mouse_input(&mut emu, 5, 2, PlaceholderMouseEventType::Move, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::StartSelection { x: 1, y: 1 },
+        MouseButton::Left,
+    );
+    let action = send_mouse_input(
+        &mut emu,
+        UserInputAction::ExtendSelection { x: 5, y: 2 },
+        MouseButton::Left,
+    );
 
     assert!(
         emu.screen.selection.is_active,
@@ -387,9 +388,17 @@ fn test_mouse_drag_updates_selection() {
 #[test]
 fn test_mouse_release_ends_selection_activity() {
     let mut emu = create_test_emulator(10, 5);
-    send_mouse_input(&mut emu, 1, 1, PlaceholderMouseEventType::Press, MouseButton::Left);
-    send_mouse_input(&mut emu, 5, 2, PlaceholderMouseEventType::Move, MouseButton::Left);
-    let action = send_mouse_input(&mut emu, 5, 2, PlaceholderMouseEventType::Release, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::StartSelection { x: 1, y: 1 },
+        MouseButton::Left,
+    );
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ExtendSelection { x: 5, y: 2 },
+        MouseButton::Left,
+    );
+    let action = send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
 
     assert!( // ApplySelectionClear now clears the selection if start == end, otherwise just deactivates
         !emu.screen.selection.is_active || emu.screen.selection.range.is_none(),
@@ -429,9 +438,17 @@ fn test_initiate_copy_with_selection() {
     let mut emu = create_test_emulator(10, 2);
     fill_emulator_screen(&mut emu, vec!["Hello".to_string(), "World".to_string()]);
 
-    send_mouse_input(&mut emu, 0, 0, PlaceholderMouseEventType::Press, MouseButton::Left);
-    send_mouse_input(&mut emu, 4, 0, PlaceholderMouseEventType::Move, MouseButton::Left);
-    send_mouse_input(&mut emu, 4, 0, PlaceholderMouseEventType::Release, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::StartSelection { x: 0, y: 0 },
+        MouseButton::Left,
+    );
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ExtendSelection { x: 4, y: 0 },
+        MouseButton::Left,
+    );
+    send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
 
     let action = emu.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
     assert_eq!(
@@ -468,9 +485,17 @@ fn test_initiate_copy_block_selection() {
 fn test_new_mouse_press_clears_old_selection() {
     let mut emu = create_test_emulator(10, 5);
 
-    send_mouse_input(&mut emu, 0, 0, PlaceholderMouseEventType::Press, MouseButton::Left);
-    send_mouse_input(&mut emu, 2, 0, PlaceholderMouseEventType::Move, MouseButton::Left);
-    send_mouse_input(&mut emu, 2, 0, PlaceholderMouseEventType::Release, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::StartSelection { x: 0, y: 0 },
+        MouseButton::Left,
+    );
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ExtendSelection { x: 2, y: 0 },
+        MouseButton::Left,
+    );
+    send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
 
     let old_selection_end = emu.screen.selection.range.map(|r| r.end);
     assert_eq!(
@@ -480,7 +505,11 @@ fn test_new_mouse_press_clears_old_selection() {
     );
     assert!(!emu.screen.selection.is_active);
 
-    let action = send_mouse_input(&mut emu, 1, 1, PlaceholderMouseEventType::Press, MouseButton::Left);
+    let action = send_mouse_input(
+        &mut emu,
+        UserInputAction::StartSelection { x: 1, y: 1 },
+        MouseButton::Left,
+    );
 
     assert!(
         emu.screen.selection.is_active,
@@ -517,9 +546,17 @@ fn test_selection_coordinates_adjust_on_scroll() {
         ],
     );
 
-    send_mouse_input(&mut emu, 0, 1, PlaceholderMouseEventType::Press, MouseButton::Left);
-    send_mouse_input(&mut emu, 4, 1, PlaceholderMouseEventType::Move, MouseButton::Left);
-    send_mouse_input(&mut emu, 4, 1, PlaceholderMouseEventType::Release, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::StartSelection { x: 0, y: 1 },
+        MouseButton::Left,
+    );
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ExtendSelection { x: 4, y: 1 },
+        MouseButton::Left,
+    );
+    send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
 
     assert_eq!(emu.screen.selection.range.map(|r| r.start), Some(Point { x: 0, y: 1 }));
     assert_eq!(emu.screen.selection.range.map(|r| r.end), Some(Point { x: 4, y: 1 }));
@@ -564,9 +601,17 @@ fn test_selection_on_alt_screen_then_exit() {
     )));
     fill_emulator_screen(&mut emu, vec!["Alt1".to_string(), "Alt2".to_string()]);
 
-    send_mouse_input(&mut emu, 0, 0, PlaceholderMouseEventType::Press, MouseButton::Left);
-    send_mouse_input(&mut emu, 3, 0, PlaceholderMouseEventType::Move, MouseButton::Left);
-    send_mouse_input(&mut emu, 3, 0, PlaceholderMouseEventType::Release, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::StartSelection { x: 0, y: 0 },
+        MouseButton::Left,
+    );
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ExtendSelection { x: 3, y: 0 },
+        MouseButton::Left,
+    );
+    send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
 
     assert!(emu.screen.alt_screen_active, "Should be on alt screen.");
     assert_eq!(

@@ -193,7 +193,7 @@ fn test_render_empty_screen_with_cursor() {
         y: 0,
         width: num_cols,
         height: 1,
-        color: config::CONFIG.colors.background,
+        color: config::CONFIG.colors.background, // Ensure this uses config::CONFIG.colors.background
         is_selection_bg: false,
     };
     let expected_bg_fill_line1 = ActualRenderCommand::FillRect {
@@ -201,7 +201,7 @@ fn test_render_empty_screen_with_cursor() {
         y: 1,
         width: num_cols,
         height: 1,
-        color: config::CONFIG.colors.background,
+        color: config::CONFIG.colors.background, // Ensure this uses config::CONFIG.colors.background
         is_selection_bg: false,
     };
 
@@ -216,19 +216,14 @@ fn test_render_empty_screen_with_cursor() {
         commands
     );
 
-    let cursor_style = TextRunStyle {
-        fg: config::CONFIG.colors.foreground,
-        bg: config::CONFIG.colors.background,
-        flags: AttrFlags::empty(),
-    };
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
         x: 0,
         y: 0,
-        text: " ".to_string(),
-        fg: cursor_style.fg,
-        bg: cursor_style.bg,
-        flags: cursor_style.flags,
-        is_selected: false,
+        text: " ".to_string(), // Set text to " "
+        fg: config::CONFIG.colors.background, // Set fg to background (cursor inversion)
+        bg: config::CONFIG.colors.foreground, // Set bg to foreground (cursor inversion)
+        flags: AttrFlags::empty(), // Set flags to empty
+        is_selected: false, // Set is_selected to false
     };
 
     assert!(
@@ -291,20 +286,14 @@ fn test_render_simple_text() {
 
     let commands = driver.commands();
 
-    let default_text_style = TextRunStyle {
-        fg: config::CONFIG.colors.foreground,
-        bg: config::CONFIG.colors.background,
-        flags: AttrFlags::empty(),
-    };
-
     let expected_text_hi = ActualRenderCommand::DrawTextRun {
         x: 0,
         y: 0,
         text: "Hi".to_string(),
-        fg: default_text_style.fg,
-        bg: default_text_style.bg,
-        flags: default_text_style.flags,
-        is_selected: false,
+        fg: config::CONFIG.colors.foreground, // Set fg to foreground
+        bg: config::CONFIG.colors.background, // Set bg to background
+        flags: AttrFlags::empty(), // Set flags to empty
+        is_selected: false, // Set is_selected to false
     };
     assert!(
         commands.contains(&expected_text_hi),
@@ -315,10 +304,10 @@ fn test_render_simple_text() {
     let expected_fill_spaces = ActualRenderCommand::FillRect {
         x: 2,
         y: 0,
-        width: num_cols - 2,
+        width: num_cols - 2, // width is correct as num_cols - 2 (5 - 2 = 3)
         height: 1,
-        color: config::CONFIG.colors.background,
-        is_selection_bg: false,
+        color: config::CONFIG.colors.background, // Set color to background
+        is_selection_bg: false, // Set is_selection_bg to false
     };
     assert!(
         commands.contains(&expected_fill_spaces),
@@ -326,19 +315,14 @@ fn test_render_simple_text() {
         commands
     );
 
-    let cursor_style = TextRunStyle {
-        fg: config::CONFIG.colors.foreground,
-        bg: config::CONFIG.colors.background,
-        flags: AttrFlags::empty(),
-    };
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
-        x: 2,
+        x: 2, // Cursor is at column 2
         y: 0,
-        text: " ".to_string(),
-        fg: cursor_style.fg,
-        bg: cursor_style.bg,
-        flags: cursor_style.flags,
-        is_selected: false,
+        text: " ".to_string(), // Set text to " "
+        fg: config::CONFIG.colors.background, // Set fg to background (cursor inversion)
+        bg: config::CONFIG.colors.foreground, // Set bg to foreground (cursor inversion)
+        flags: AttrFlags::empty(), // Set flags to empty
+        is_selected: false, // Set is_selected to false
     };
     assert!(
         commands.contains(&expected_cursor_draw),
@@ -415,20 +399,14 @@ fn test_dirty_line_processing() {
 
     let commands = driver.commands();
 
-    let default_text_style = TextRunStyle {
-        fg: config::CONFIG.colors.foreground,
-        bg: config::CONFIG.colors.background,
-        flags: AttrFlags::empty(),
-    };
-
     let expected_text_abc = ActualRenderCommand::DrawTextRun {
         x: 0,
         y: 0,
         text: "ABC".to_string(),
-        fg: default_text_style.fg,
-        bg: default_text_style.bg,
-        flags: default_text_style.flags,
-        is_selected: false,
+        fg: config::CONFIG.colors.foreground, // Set fg to foreground
+        bg: config::CONFIG.colors.background, // Set bg to background
+        flags: AttrFlags::empty(), // Set flags to empty
+        is_selected: false, // Set is_selected to false
     };
     assert!(
         commands.contains(&expected_text_abc),
@@ -436,13 +414,15 @@ fn test_dirty_line_processing() {
         commands
     );
 
+    // Check that XYZ from the clean line is NOT drawn
+    // (No FillRect for line 1 implies it wasn't redrawn, which is correct for a clean line)
     let non_expected_text_xyz = ActualRenderCommand::DrawTextRun {
         x: 0,
         y: 1,
         text: "XYZ".to_string(),
-        fg: default_text_style.fg,
-        bg: default_text_style.bg,
-        flags: default_text_style.flags,
+        fg: config::CONFIG.colors.foreground, // Assuming default style if it were drawn
+        bg: config::CONFIG.colors.background,
+        flags: AttrFlags::empty(),
         is_selected: false,
     };
     assert!(
@@ -452,7 +432,7 @@ fn test_dirty_line_processing() {
     );
 
     let fill_rect_line1_found = commands.iter().any(|cmd| match cmd {
-        ActualRenderCommand::FillRect { y, .. } => *y == 1, // Corrected destructuring
+        ActualRenderCommand::FillRect { y, height, .. } => *y == 1 && *height == 1,
         _ => false,
     });
     assert!(
@@ -461,19 +441,14 @@ fn test_dirty_line_processing() {
         commands
     );
 
-    let cursor_style = TextRunStyle {
-        fg: config::CONFIG.colors.foreground,
-        bg: config::CONFIG.colors.background,
-        flags: AttrFlags::empty(),
-    };
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
-        x: 1,
+        x: 1, // Cursor is at column 1 on line 0
         y: 0,
-        text: "B".to_string(),
-        fg: cursor_style.fg,
-        bg: cursor_style.bg,
-        flags: cursor_style.flags,
-        is_selected: false,
+        text: "B".to_string(), // Character underneath the cursor
+        fg: config::CONFIG.colors.background, // Set fg to background (cursor inversion)
+        bg: config::CONFIG.colors.foreground, // Set bg to foreground (cursor inversion)
+        flags: AttrFlags::empty(), // Set flags to empty
+        is_selected: false, // Set is_selected to false
     };
     assert!(
         commands.contains(&expected_cursor_draw),
