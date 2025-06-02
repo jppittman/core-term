@@ -30,7 +30,7 @@ use crate::term::{
 const TEST_SCROLLBACK_LIMIT: usize = 100;
 
 fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
-    TerminalEmulator::new(cols, rows, TEST_SCROLLBACK_LIMIT)
+    TerminalEmulator::new(cols, rows)
 }
 
 // Helper to get a Glyph from the snapshot.
@@ -1183,7 +1183,7 @@ mod get_selected_text_tests {
 
     #[test]
     fn test_get_selected_text_no_selection() {
-        let mut emu = create_test_emulator(10, 5);
+        let emu = create_test_emulator(10, 5);
         assert_eq!(emu.get_selected_text(), None);
     }
 
