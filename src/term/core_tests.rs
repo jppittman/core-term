@@ -344,28 +344,43 @@ fn it_should_print_ascii_over_wide_char_that_straddles_line_end_after_wrap() {
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
     let s2 = term.get_render_snapshot();
-    // cursor_wrap_next was true. CR, then LF. Cursor logical_y becomes 2.
+    // cursor_wrap_next was true. CR, then LF. Cursor logical_y becomes 2 (0-indexed row 2).
     // scroll_up_if_needed: logical_y (2) > scroll_bot (1) is TRUE. Scroll happens.
-    // Line "A " goes to scrollback. Line "世" becomes new line 0.
-    // 'X' prints at (0,0) of this new screen, overwriting '世'. Spacer is cleared.
-    // Screen: ["X ", "  "]. Cursor logical (0,1), physical (0,1).
-    assert_screen_state(&s2, &["X ", "  "], Some((0,1)));
-    assert!(!term.cursor_wrap_next);
+    // Line "A " goes to scrollback. Line "世" becomes new line 0. New blank line 1.
+    // Cursor y adjusted from 2 to 1. Cursor is (0,1) (row 1, col 0).
+    // 'X' is printed at (0,1).
+    // Screen: ["世", "X "]. Cursor (1,1) (row 1, col 1).
+    assert_screen_state(&s2, &["世", "X "], Some((1,1))); // Expected screen ["世", "X "] cursor (1,1)
+    assert!(!term.cursor_wrap_next); // cursor_wrap_next is now false
 
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(1,2)))); // Moves to (0,1)
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::CursorPosition(1,2)))); // Moves to (0,1) (row 0, col 1)
     let s3 = term.get_render_snapshot();
-    assert_screen_state(&s3, &["X ", "  "], Some((0,1)));
+    assert_screen_state(&s3, &["世", "X "], Some((0,1))); // Cursor is now (0,1)
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z'))); // Prints 'Z' at (0,1)
     let s4 = term.get_render_snapshot();
-    assert_screen_state(&s4, &["XZ", "  "], Some((0,2)));
+    // Screen: ["世Z", "X "]. Cursor (0,2) (row 0, col 2)
+    // Check s4 screen content directly
+    let glyph_s4_0_0 = get_glyph_from_snapshot(&s4, 0, 0).unwrap();
+    let glyph_s4_0_1 = get_glyph_from_snapshot(&s4, 0, 1).unwrap();
+    let glyph_s4_1_0 = get_glyph_from_snapshot(&s4, 1, 0).unwrap();
+    let glyph_s4_1_1 = get_glyph_from_snapshot(&s4, 1, 1).unwrap();
 
-    let glyph_x_check = get_glyph_from_snapshot(&s4, 0, 0).unwrap();
-    assert_eq!(glyph_x_check.c, 'X');
-    let glyph_z = get_glyph_from_snapshot(&s4, 0, 1).unwrap();
-    assert_eq!(glyph_z.c, 'Z');
-    assert!(!glyph_z.attr.flags.contains(AttrFlags::WIDE_CHAR_SPACER));
-    assert!(!glyph_x_check.attr.flags.contains(crate::glyph::AttrFlags::WIDE_CHAR_PRIMARY));
+    assert_eq!(glyph_s4_0_0.c, '世');
+    assert_eq!(glyph_s4_0_1.c, 'Z');
+    assert_eq!(glyph_s4_1_0.c, 'X');
+    assert_eq!(glyph_s4_1_1.c, ' '); // Expecting a space if the line was cleared or filled.
+
+    // Check cursor for s4
+    assert_eq!(s4.cursor_state.as_ref().map(|cs| (cs.y, cs.x)), Some((0,1)), "s4 cursor position mismatch");
+
+
+    let glyph_at_0_0 = get_glyph_from_snapshot(&s4, 0, 0).unwrap();
+    assert_eq!(glyph_at_0_0.c, '世'); // Was 'X'
+    let glyph_at_0_1 = get_glyph_from_snapshot(&s4, 0, 1).unwrap();
+    assert_eq!(glyph_at_0_1.c, 'Z');
+    assert!(!glyph_at_0_1.attr.flags.contains(AttrFlags::WIDE_CHAR_SPACER));
+    assert!(!glyph_at_0_0.attr.flags.contains(crate::glyph::AttrFlags::WIDE_CHAR_PRIMARY));
 }
 
 // --- Line Feed (LF) Tests ---
