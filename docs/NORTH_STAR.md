@@ -1,7 +1,7 @@
 # core Terminal Design Document - Target Architecture
 
-**Version:** 1.9.15
-**Date:** 2025-05-31
+**Version:** 1.9.16
+**Date:** 2025-06-02
 **Status:** Active
 
 ## 1. Introduction & Vision
@@ -32,125 +32,113 @@ Following the suckless philosophy, features explicitly out of scope, in line wit
     * `UserInputAction`: Abstracted user interactions like `KeyInput`, `MouseInput` (with cell-based coordinates), `InitiateCopy`, `PasteText(String)`. These are typically derived from `BackendEvent`s.
     * `ControlEvent`: Internal signals like `Resize { cols, rows }` or `FrameRendered`.
 
-* **Parser Pipeline:** Consists of `AnsiLexer` (byte stream to `AnsiToken`, handling UTF-8) and `AnsiParser` (`AnsiToken` stream to structured `AnsiCommand`). This pipeline is used by the `Platform` facade when it processes data read from the primary I/O channel (PTY), isolating the `AppOrchestrator` and `TerminalEmulator` from raw byte streams.
+* **Parser Pipeline:** Consists of `AnsiLexer` (byte stream to `AnsiToken`, handling UTF-8) and `AnsiParser` (`AnsiToken` stream to structured `AnsiCommand`). This pipeline is used by the `AppOrchestrator` when it processes data read from the primary I/O channel (PTY), isolating the `TerminalEmulator` from raw byte streams.
 
-* **Emulator Action (Side-Effect Request):** `enum EmulatorAction` defines requests from the `TerminalEmulator` for the `AppOrchestrator` (acting via the `Platform` facade) to perform. Examples: `WritePty(Vec<u8>)` (for responses or echoed input), `SetTitle(String)`, `RingBell`, `CopyToClipboard(String)`.
+* **Emulator Action (Side-Effect Request):** `enum EmulatorAction` defines requests from the `TerminalEmulator` for the `AppOrchestrator` to perform. Examples: `WritePty(Vec<u8>)` (for responses or echoed input), `SetTitle(String)`, `RingBell`, `CopyToClipboard(String)`.
 
-* **`platform::Platform` Trait (Central Facade):**
-    * This is the single, unified abstraction layer through which the `AppOrchestrator` interacts with all platform-specific services. Concrete implementations (e.g., `platform::native::NativePlatform` for Unix-like systems using X11 or console, or a future `platform::web::WasmPlatform`) encapsulate the "how" of platform interaction.
-    * **Responsibilities of Concrete Implementations:** Internally, a concrete `Platform` implementation (like `NativePlatform`) owns and manages the lower-level platform components: the `PtyChannel` (for shell communication), the `Driver` (for UI rendering and input event handling), and an `EventInformer` (for polling or receiving event notifications from these sources).
-    * **Methods Exposed:** The trait defines methods for:
-        * Event Polling: `poll_system_events() -> Result<Vec<SystemEvent>>` (abstracts the actual polling mechanism like epoll, kqueue, or JS callbacks).
-        * Primary I/O: `primary_io_read()`, `primary_io_write_all()`, `primary_io_resize()`.
-        * UI Driver Event Processing: `driver_process_ui_events() -> Result<Vec<BackendEvent>>` (called when `UiInputReady` is signaled).
-        * Platform Action Execution: `driver_execute_actions(Vec<PlatformActionCommand>)` (for batched rendering and UI updates).
-        * State Querying: `driver_get_platform_state() -> PlatformState` (for metrics like font size, display dimensions, scale factor).
-    * **Benefit:** The `AppOrchestrator` remains agnostic to how these services are implemented across different operating systems or environments (e.g., native vs. web).
+* **Concrete Platform Struct (e.g., `LinuxX11Platform`, `WasmPlatform`):**
+    * This is an RAII-compliant struct responsible for managing all platform-specific resources for a given target (e.g., Linux with X11, or WebAssembly). It can be referred to simply as "the `Platform`" in general discussion.
+    * **Initialization (`new()`):** Its constructor (e.g., `LinuxX11Platform::new() -> Result<(Self, PlatformState)>`) sets up all necessary components:
+        * The PTY channel (e.g., `NixPty` for Unix, WebSocket for WASM).
+        * The UI `Driver` (e.g., `XDriver`, `ConsoleDriver`, or a Canvas-based driver for WASM).
+        * Internal communication channels (e.g., `std::sync::mpsc`) for passing events from platform sources (PTY, UI driver) to the `AppOrchestrator` and for passing actions from the `AppOrchestrator` back to the platform components.
+        * Internal event production mechanisms (e.g., an `epoll` loop, potentially in a dedicated thread, or JS event listener bridges for WASM). These mechanisms read from raw platform sources and send structured events (like `Vec<u8>` from PTY or `BackendEvent` from UI) over the internal channels.
+        * It returns itself and the initial `PlatformState` (font metrics, display size).
+    * **Interaction API for `AppOrchestrator`:** It provides methods for the `AppOrchestrator` to:
+        * Poll for events: e.g., `poll_pty_data(&self) -> Result<Option<Vec<u8>>>`, `poll_ui_event(&self) -> Result<Option<BackendEvent>>`. These methods would typically perform a non-blocking check (e.g., `try_recv()`) on the internal receiver channels.
+        * Dispatch actions: e.g., `dispatch_pty_action(&self, PtyActionCommand)`, `dispatch_ui_action(&self, UiActionCommand)`. These methods would send commands over internal sender channels to the PTY handler or UI driver.
+        * Query current state: `get_current_platform_state(&self) -> PlatformState`.
+    * **Cleanup (`Drop`):** Its `Drop` implementation ensures graceful shutdown of all owned resources, including signaling internal event producer tasks to terminate, joining threads, closing the PTY, and cleaning up UI driver resources.
+    * **Selection:** Platform selection is done at compile time using `#[cfg]` attributes in `main.rs` to choose which concrete `Platform` struct (e.g., `LinuxX11Platform`) is instantiated.
 
-* **`SystemEvent` Enum (in `platform` module or `platform::events`):**
-    * This enum is yielded by `Platform::poll_system_events()` and signals to the `AppOrchestrator` what kind of event source is ready or if a system-level event occurred.
-        * `PrimaryIoReady`: The main I/O channel (PTY) has data. Orchestrator will call `Platform.primary_io_read()`.
-        * `UiInputReady`: The UI `Driver` has platform events. Orchestrator will call `Platform.driver_process_ui_events()`.
-        * `Tick`: For periodic tasks (cursor blinking, application timeouts).
-        * `Error(anyhow::Error)`: A critical error from the event polling mechanism.
-        * `ShutdownAdvised`: A signal that the application should terminate.
-    * This abstraction allows the `AppOrchestrator`'s event loop to be generic.
-
-* **AppOrchestrator (`orchestrator.rs`):**
-    * The central coordinator, taking a `Box<dyn Platform>` for all external interactions, plus references to `TerminalEmulator`, `AnsiParser`, and `Renderer`.
+* **`AppOrchestrator` (`orchestrator.rs`):**
+    * The central coordinator. It takes a reference to the concrete `Platform` struct (e.g., `&'a LinuxX11Platform`), references to `TerminalEmulator`, `AnsiParser`, and owns the `Renderer`.
     * Its main `process_event_cycle()` method drives the application:
-        1.  Calls `platform.poll_system_events()` to get `SystemEvent`s.
-        2.  Dispatches based on `SystemEvent`:
-            * `PrimaryIoReady` -> calls `platform.primary_io_read()`, passes data through its `AnsiParser`, gets `AnsiCommand`s, wraps as `EmulatorInput::Ansi`, then feeds to `TerminalEmulator`.
-            * `UiInputReady` -> calls `platform.driver_process_ui_events()` to get `BackendEvent`s, translates them to `EmulatorInput::User` or `EmulatorInput::Control`, then feeds to `TerminalEmulator`.
+        1.  Calls methods on the `Platform` reference (e.g., `platform.poll_pty_data()`, `platform.poll_ui_event()`) to get events.
+        2.  Processes these events:
+            * PTY data is passed through its `AnsiParser` to get `AnsiCommand`s, wrapped as `EmulatorInput::Ansi`, then fed to `TerminalEmulator`.
+            * `BackendEvent`s from the UI are translated to `EmulatorInput::User` or `EmulatorInput::Control`, then fed to `TerminalEmulator`.
         3.  Collects `EmulatorAction`s from `TerminalEmulator`.
-        4.  Translates `EmulatorAction`s into calls to `platform.primary_io_write_all()` or into `PlatformActionCommand`s.
-        5.  Orchestrates rendering: Gets `RenderSnapshot` from `TerminalEmulator`, uses `Renderer` to get drawing-related `PlatformActionCommand`s, combines with other commands, and sends the batch to `platform.driver_execute_actions()`.
+        4.  Translates `EmulatorAction`s into calls to `platform.dispatch_pty_action()` or into `UiActionCommand`s for `platform.dispatch_ui_action()`.
+        5.  Orchestrates rendering: Gets `RenderSnapshot` from `TerminalEmulator`, uses `Renderer` to get drawing-related `RenderCommand`s. These, along with other UI-related `EmulatorAction`s (like setting title), are packaged into `UiActionCommand`s and sent via `platform.dispatch_ui_action()`.
 
-* **`PlatformActionCommand` Enum (in `platform::backends`):**
-    * This is the command language for the `AppOrchestrator` and `Renderer` to instruct the `Platform` facade (and its internal `Driver`) on UI operations.
-    * It includes rendering primitives (`ClearAll`, `DrawTextRun`, `FillRect`), frame control (`PresentFrame`), and window management tasks (`SetWindowTitle`, `RingBell`, `SetNativeCursorVisibility`, `SetFocus`).
-    * Batching these commands via `Platform.driver_execute_actions()` allows for potentially optimized execution by the `Driver`.
+* **`UiActionCommand` / `PtyActionCommand` Enums:**
+    * These define the command languages for the `AppOrchestrator` to instruct the concrete `Platform` struct (and its internal PTY handler or UI `Driver`) on operations to perform.
+    * `UiActionCommand` would include rendering commands (`Render(Vec<RenderCommand>)`), window management (`SetTitle`), etc.
+    * `PtyActionCommand` would include `Write(Vec<u8>)`, `ResizePty { cols, rows }`.
+    *(Note: `PlatformActionCommand` from previous versions is conceptually absorbed/represented by `UiActionCommand` or directly by `RenderCommand` within it).*
 
-* **Rendering Driver (`Driver` Trait - Simplified, in `platform::backends`):**
-    * This trait defines the contract for specific UI backends (e.g., X11, Console, macOS Cocoa, Wayland client). It is an *internal component* used by concrete `Platform` implementations (e.g., `NativePlatform` owns a `Box<dyn Driver>`).
-    * **Simplified Operational Methods:**
-        1.  `process_ui_events(&mut self) -> Result<Vec<BackendEvent>>`: Polls or processes native UI events and translates them into abstract `BackendEvent`s.
-        2.  `execute_platform_actions(&mut self, actions: Vec<PlatformActionCommand>) -> Result<()>`: Takes a batch of abstract commands and executes them using platform-specific APIs (e.g., Xlib calls, Cocoa drawing).
-    * **Lifecycle/State Methods:** Includes `new()`, `cleanup()`, `get_event_fd()` (for native event informers to monitor if the driver uses an FD, e.g., Wayland or X11 connection FD), and `get_platform_state()` (for metrics like font/display dimensions).
-    * This lean interface ensures the `Driver` is focused on translation and execution, not complex logic.
+* **Rendering Driver (`Driver` Trait - in `platform::backends`):**
+    * This trait defines the contract for specific UI backends (e.g., X11, Console). It is an *internal component* used and owned by concrete `Platform` struct implementations (e.g., `LinuxX11Platform` owns an `XDriver`).
+    * **Responsibilities:**
+        1.  Translating native platform UI events (keyboard, mouse, resize) into abstract `BackendEvent`s. The concrete `Platform` struct's internal event loop/poller would call a method on the `Driver` to get these events, which are then sent over an internal channel to the `AppOrchestrator`.
+        2.  Executing abstract `RenderCommand`s (and other UI-related commands like `SetTitle`) received from the concrete `Platform` struct (which got them via an internal channel from the `AppOrchestrator`).
+        3.  Managing platform-specific graphics resources (fonts, colors, drawing contexts).
+        4.  Providing font and display metrics via a `get_platform_state()` method.
+    * The `Driver` interacts with the OS/display system directly. Its lifecycle (`new`, `cleanup`/`Drop`) is managed by the owning concrete `Platform` struct.
 
-* **BackendEvent (Abstract Platform Input):** (Defined in `platform::backends`). These are platform-agnostic representations of user/system interactions (e.g., `Key { symbol: KeySymbol::Enter, ... }`, `Mouse { ... }`, `Resize { width_px, height_px }`) generated by `Driver::process_ui_events()`. The `AppOrchestrator` receives these (via the `Platform` facade) and translates them into `EmulatorInput`.
+* **BackendEvent (Abstract Platform Input):** (Defined in `platform::backends`). Platform-agnostic representations of user/system interactions generated by the `Driver` and passed (via the concrete `Platform` struct's internal channels) to the `AppOrchestrator`.
 
-* **Renderer (`Renderer` Struct):** A backend-agnostic component. It takes a `RenderSnapshot` from the `TerminalEmulator` and translates the terminal's visual state (dirty lines, selection, cursor) into a `Vec<PlatformActionCommand>` containing drawing operations. It handles visual logic like reversing colors for selections.
+* **Renderer (`Renderer` Struct):** A backend-agnostic component. It takes a `RenderSnapshot` from the `TerminalEmulator` and translates the terminal's visual state into a `Vec<RenderCommand>`.
 
-* **(Other concepts like `PlatformState` remain structurally similar but are accessed/used via the `Platform` facade, providing crucial metrics for layout and resizing decisions by the `AppOrchestrator`.)**
+### 2.1. Event Handling Architecture
 
-### 2.1. Event Handling Architecture: Discussion of Approaches
+The architecture employs a consistent event-passing model for the `AppOrchestrator`. The `AppOrchestrator` interacts with a concrete `Platform` struct (e.g., `LinuxX11Platform`, `WasmPlatform`) by calling methods on it to poll for events and dispatch actions.
 
-The way the `AppOrchestrator` receives and processes events is critical for simplicity, cross-platform compatibility, and responsiveness. Two main architectural approaches are considered:
+* **Event Production (Internal to the concrete `Platform` struct):**
+    * Each concrete `Platform` struct is responsible for setting up and managing its own internal mechanisms for producing events from the PTY and the UI `Driver`.
+    * **Native Platforms (e.g., Linux/X11):** This typically involves an `epoll` (or similar I/O multiplexing) loop, potentially running in a dedicated thread. This loop monitors file descriptors for the PTY and the X11 connection (or other UI event sources). When activity is detected, data is read, processed (e.g., PTY bytes to `Vec<u8>`, X11 events to `BackendEvent`), and then sent to internal channels, the receiving ends of which are polled by the `AppOrchestrator` via methods on the `Platform` struct.
+    * **WebAssembly (WASM):** JavaScript event listeners (for keyboard, mouse, WebSocket messages for PTY) would trigger Rust/WASM callback functions. These callbacks would translate the JS events/data into the appropriate Rust types (`Vec<u8>` or `BackendEvent`) and send them to internal channels, similarly polled by the `AppOrchestrator`.
+    * **Single-Threaded Polling Variation for Native Platforms:** If a dedicated event-producing thread is not desired (to keep the application strictly single-threaded in its main logic), the `Platform` struct could expose a `pump_platform_events()` method. The `AppOrchestrator` would then call this method periodically in its main loop. This `pump` method would perform non-blocking checks on its event sources (e.g., non-blocking `epoll_wait`, non-blocking PTY read) and push any discovered events onto the internal channels that the `AppOrchestrator` polls.
 
-**Approach A: Synchronous Polling Facade (Current Model in v1.9.14)**
+* **Event Consumption (by `AppOrchestrator`):**
+    * The `AppOrchestrator`'s main loop calls polling methods on its `Platform` reference (e.g., `platform.poll_pty_data()`, `platform.poll_ui_event()`).
+    * These methods perform non-blocking reads (e.g., `try_recv()`) from the internal channels managed by the `Platform` struct.
+    * This ensures that the `AppOrchestrator` always interacts with the platform layer via a consistent, message-based API, regardless of how the `Platform` struct internally sources and queues its events.
 
-* **Mechanism:** The `AppOrchestrator` calls `platform.poll_system_events(timeout)`, which is a synchronous (blocking or timed-out) call from the orchestrator's perspective.
-    * A concrete `Platform` implementation (e.g., `NativePlatform`) uses an internal `EventInformer` (like `EpollEventInformer`) that blocks on OS-level I/O multiplexing calls (e.g., `epoll_wait`).
-    * For platforms with inherently asynchronous event models (like WebAssembly with JavaScript callbacks, or GUI toolkits like macOS Cocoa with its own run loop), their `Platform::poll_system_events()` method would need to *simulate* this synchronous poll. This typically involves the `Platform` implementation checking internal queues populated by the asynchronous/callback mechanisms. The `poll()` call itself would then be non-blocking or have a very short timeout.
-* **Pros:**
-    * The `AppOrchestrator`'s main loop logic can be straightforward and synchronous.
-    * For native platforms where FDs can be multiplexed efficiently with calls like `epoll` (e.g., PTY FDs, X11/Wayland connection FDs), this model maps quite directly and can be very efficient without introducing application-level threading for basic event multiplexing.
-* **Cons:**
-    * Can create an "impedance mismatch" for platforms with fundamentally asynchronous, callback-driven event systems (e.g., WASM, macOS/Cocoa). The `Platform` implementation for these systems needs to bridge their native async model to the synchronous `poll()` interface, which can add complexity or lead to less idiomatic platform integration (e.g., the `poll()` might effectively become a quick check of queues rather than a true blocking wait).
-    * If not carefully managed, a blocking `poll()` could make the application less responsive if long timeouts are used and other non-FD based events (e.g., from internal timers not integrated into the poller) need timely processing.
-* **"Suckless" / Simplicity Angle:** Simple for the orchestrator's direct logic. For native *nix, it leverages OS capabilities well. Complexity is pushed into the `Platform` implementations for async-native environments.
+* **Action Dispatch (from `AppOrchestrator`):**
+    * The `AppOrchestrator` sends commands to the PTY or UI driver by calling methods on its `Platform` reference (e.g., `platform.dispatch_pty_action(...)`, `platform.dispatch_ui_action(...)`).
+    * These methods, in turn, send messages over internal channels to the tasks/components within the `Platform` struct that are responsible for handling PTY writes or UI rendering/window management.
 
-**Approach B: Asynchronous Channel-Based (Event Bus) Model**
-
-* **Mechanism:**
-    * The `platform::create_platform_services()` function (or the concrete `Platform` constructor) would be responsible for setting up event *producer tasks*. These tasks run somewhat independently (e.g., a dedicated thread for PTY reading on native, or JavaScript event handlers for WASM).
-    * These producers, when they detect an event or receive data, process it to a certain stage (e.g., PTY reader + parser yielding `AnsiCommand`s; UI driver translating platform events to `BackendEvent`s) and send the result over channels (e.g., `std::sync::mpsc` channels or async channels if an async runtime is used).
-    * `platform::create_platform_services()` would return a structure to `main.rs` containing the *receiving ends* of these input channels, alongside handles or senders for dispatching actions *back* to the platform (e.g., for writing to PTY or executing UI commands).
-    * The `AppOrchestrator` would be constructed with these channel receivers and action dispatchers. Its `run()` method would then use a `select!`-like mechanism (from an async runtime, or a loop with non-blocking `try_recv` calls) to react to messages arriving on these channels.
-* **Pros:**
-    * **Better Decoupling:** Event production is cleanly separated from consumption. Each platform aspect (PTY I/O, UI event handling) can manage its event loop or blocking operations independently without stalling the `AppOrchestrator`.
-    * **Natural Fit for Asynchronous Platforms:** This model aligns very well with WASM/JavaScript (JS callbacks send to channels) and GUI toolkits like Cocoa (toolkit's run loop processes UI events and sends results to a channel). There's less need to "force" an async model to look synchronous.
-    * **Reactive Orchestrator:** The `AppOrchestrator` becomes purely reactive, processing inputs as they arrive on channels. Its main loop can be very declarative.
-    * **Simplified Individual Components:** The event producer tasks can be simpler as they focus on one job (e.g., read PTY, parse, send). The `Platform` trait itself might even dissolve into a collection of channel endpoints and action dispatchers.
-* **Cons:**
-    * **Concurrency Complexity:** Introduces concurrency (threads for native, or an async runtime). This requires careful management of `Send`/`Sync`, lifetimes, and potential synchronization primitives if state needs to be shared beyond what channels provide (though channels are excellent for avoiding shared mutable state).
-    * **Async Runtime Dependency:** For ergonomic `select!` and task management, an async runtime (like Tokio or async-std) is often chosen, adding a significant dependency if the project aims for absolute minimality. `std::sync::mpsc` with manual non-blocking polling is an alternative but less powerful for complex scenarios.
-    * **Channel Management:** Setting up and managing the lifecycle of channels and producer tasks adds initial structural complexity.
-* **"Suckless" / Simplicity Angle:**
-    * An async runtime can be seen as "not suckless." However, if the alternative is significantly more complex adapter code within each `Platform` implementation to bridge async to sync, then channels might lead to *overall simpler and more maintainable platform-specific code*. The core logic in the `AppOrchestrator` reacting to message streams can be very simple.
-    * The existing architecture already involves significant message passing (`EmulatorInput`, `EmulatorAction`, `SystemEvent`, `BackendEvent`, `PlatformActionCommand`), so a channel-based flow for some of these is a natural extension. As noted, shared mutable state across threads can be minimized with careful channel design.
-
-**Decision Point:** The choice between these two primary event handling models (Approach A: Synchronous Poll Facade vs. Approach B: Async Channel-Based) is a key architectural decision. Approach A is currently embodied in the document. Approach B represents a shift towards a more explicitly asynchronous/concurrent internal design, which could offer benefits for certain platforms and simplify the "impedance matching" task. The project does not have to commit to one exclusively; a hybrid approach or an evolution towards channels could be considered. For now, v1.9.14 proceeds with the Synchronous Polling Facade (Approach A) due to its more straightforward initial implementation for native targets that map well to `epoll`/`kqueue`.
+This unified approach ensures that the `AppOrchestrator`'s logic remains clean and consistent, interacting with the platform layer through a well-defined set of event polling and action dispatching methods, while the complexities of actual event generation and action execution are encapsulated within each concrete `Platform` implementation.
 
 ## 4. Data & Control Flow
-(Based on Approach A - Synchronous Polling Facade)
-The flow is now:
-`main` -> (selects & creates concrete `Platform` impl like `platform::native::NativePlatform::new()`, then boxes it) -> `AppOrchestrator` gets `Box<dyn Platform>`.
-`run_application` loop calls `orchestrator.process_event_cycle()`.
-`orchestrator` uses `Platform.poll_system_events()` -> `SystemEvent`.
-Based on `SystemEvent`:
-  -> `Platform.primary_io_read()` -> `AnsiParser` -> `EmulatorInput::Ansi` -> `TerminalEmulator`
-  -> `Platform.driver_process_ui_events()` -> `BackendEvent` -> `EmulatorInput::User/Control` -> `TerminalEmulator`
-`TerminalEmulator` -> `EmulatorAction`.
-`AppOrchestrator` translates `EmulatorAction` to `PlatformActionCommand` (if for UI/Driver) or calls direct `Platform` methods (like `primary_io_write_all`).
-Rendering involves `Renderer` producing `PlatformActionCommand`s.
-All `PlatformActionCommand`s are sent via `Platform.driver_execute_actions()`.
+
+The primary data and control flow is as follows:
+
+1.  **Initialization (`main.rs`):**
+    * Selects (via `#[cfg]`) and instantiates the appropriate concrete `Platform` struct (e.g., `LinuxX11Platform::new()`). This `Platform` struct initializes its internal PTY channel, UI `Driver`, internal communication channels, and event production mechanisms. It returns itself (the `Platform` instance) and the initial `PlatformState`.
+    * Creates the `TerminalEmulator`, `AnsiParser`, and `Renderer`.
+    * Creates the `AppOrchestrator`, providing it with a reference to the concrete `Platform` struct, the initial `PlatformState`, and other components.
+
+2.  **Main Event Loop (`AppOrchestrator`):**
+    * The `AppOrchestrator` calls methods on the `Platform` reference to poll for events:
+        * `platform.poll_pty_data()`: Retrieves data from the PTY (sourced from an internal channel fed by the PTY reader).
+        * `platform.poll_ui_event()`: Retrieves UI events from the `Driver` (sourced from an internal channel fed by the UI event handler).
+    * **PTY Data Processing:** PTY data is fed to the `AnsiParser`, which produces `AnsiCommand`s. These are wrapped into `EmulatorInput::Ansi` and passed to the `TerminalEmulator`.
+    * **UI Event Processing:** `BackendEvent`s are translated into `EmulatorInput::User` or `EmulatorInput::Control` and passed to the `TerminalEmulator`.
+    * **Emulator State Update:** The `TerminalEmulator` processes `EmulatorInput`s, updates its internal state, and may produce `EmulatorAction`s.
+    * **Action Handling:** The `AppOrchestrator` processes `EmulatorAction`s:
+        * `WritePty`: Translated to a `PtyActionCommand` and sent via `platform.dispatch_pty_action()`.
+        * UI-related actions (e.g., `SetTitle`, `RingBell`, `SetCursorVisibility`, `CopyToClipboard`): Translated into `UiActionCommand`s and sent via `platform.dispatch_ui_action()`.
+    * **Rendering:**
+        * The `AppOrchestrator` gets a `RenderSnapshot` from the `TerminalEmulator`.
+        * The `Renderer` processes the snapshot and generates a `Vec<RenderCommand>`.
+        * These render commands are packaged into a `UiActionCommand::Render(...)` and sent via `platform.dispatch_ui_action()`. The internal `Driver` within the `Platform` struct executes these commands.
 
 ## 5. Benefits of this Architecture
-(Based on Approach A - Synchronous Polling Facade)
-* **Maximal `main.rs` Simplicity:** `main.rs` delegates all platform-specific instantiation to the chosen concrete `Platform` type's constructor, selected via `#[cfg]`.
-* **Strong Platform Encapsulation:** The `Platform` trait provides a single facade. Concrete platform implementations (`NativePlatform`, etc.) manage their internal components (PTY, Driver, EventInformer) and bridge platform-specific event models to the synchronous `poll_system_events()` interface.
-* **Simplified `Driver` Trait:** The underlying `Driver` (used by concrete `Platform` implementers) has a lean interface, primarily focused on processing UI input and executing batched platform actions.
-* **Clear `AppOrchestrator` Role:** Works with the abstract `Platform` facade and `SystemEvent`s, maintaining a synchronous event processing loop.
+
+* **Strong Platform Encapsulation & RAII:** Each concrete `Platform` struct (e.g., `LinuxX11Platform`) is an RAII object that fully manages its own resources (PTY, UI `Driver`, internal event sources, communication channels). Cleanup is handled by its `Drop` implementation.
+* **Clear `AppOrchestrator` Role:** The `AppOrchestrator` interacts with a consistent set of methods on the `Platform` reference for event polling and action dispatching, remaining agnostic to the internal implementation details of each platform.
+* **Testability:** The `TerminalEmulator` and `Renderer` remain highly testable due to their pure-logic nature. Concrete `Platform` implementations can be tested by mocking their interactions with the OS or display system. The `AppOrchestrator` can be tested by providing a mock `Platform` struct (if a common `PlatformAccess` trait is used for its methods) or by testing against a controlled platform setup.
+* **Flexible Event Production:** The internal event production mechanism within each `Platform` struct can be tailored to the target environment (e.g., threaded `epoll` for native, JS callbacks for WASM, or a pumped single-threaded poller) without changing the API exposed to the `AppOrchestrator`.
 
 ## 6. Future Considerations
-* **Platform Support (Wayland, macOS, WebAssembly):**
-    * New concrete implementations of the `platform::Platform` trait would be created for each new target (e.g., `platform::macos::MacosPlatform`, `platform::web::WasmPlatform`).
-    * These implementations would encapsulate all platform-specifics: PTY-like communication (e.g., WebSockets for WASM), UI driver (`WasmDriver` rendering to Canvas), and event informing mechanisms (e.g., JS callbacks bridging to the `poll_system_events()` interface for WASM, or `NSRunLoop` integration for macOS).
-    * The `AppOrchestrator`'s core logic would remain unchanged, as it consumes the `Box<dyn Platform>`.
-* **Adopting Asynchronous Model (Approach B):** The channel-based model (Approach B) remains a viable alternative for future evolution, especially if the complexities of adapting highly asynchronous platforms (like Web or GUI toolkits) to the synchronous `poll_system_events()` interface of Approach A become too burdensome, or if more fine-grained concurrency within the application is desired. This would involve a more significant refactoring of the `AppOrchestrator`'s main loop and the `Platform` trait's event delivery mechanism.
-* **(Other future considerations from previous versions remain relevant).**
 
+* **Platform Support (Wayland, macOS, WebAssembly):**
+    * New platform support involves creating new concrete `Platform` structs (e.g., `WaylandPlatform`, `MacosPlatform`, `WasmPlatform`).
+    * Each new `Platform` struct will implement its own `new()` constructor to set up its specific PTY-like communication (e.g., Wayland protocols, macOS PTY utilities, WebSockets for WASM), its UI `Driver` (e.g., Wayland client, Cocoa view, Canvas renderer), internal channels, and event production logic.
+    * The `Drop` implementation for each new `Platform` struct will handle its specific resource cleanup.
+    * The `AppOrchestrator`'s core logic remains largely unchanged, as it interacts with the `Platform` struct via the defined polling and dispatch methods.
+* **`PlatformAccess` Trait (Optional):** If direct compile-time selection via `#[cfg]` and passing a concrete `&PlatformType` to the `AppOrchestrator` becomes cumbersome for testing across different platforms within the same test suite, or if a slim abstraction over the `poll_*` and `dispatch_*` methods is desired for the orchestrator's generics, a minimal `PlatformAccess` trait could be defined. Concrete `Platform` structs would implement this trait. For initial development, direct use of the concrete `Platform` type (selected by `#[cfg]`) in `AppOrchestrator` (or making `AppOrchestrator` generic over it) is likely simpler.
+* **(Other future considerations from previous versions remain relevant).**
