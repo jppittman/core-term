@@ -3,7 +3,7 @@
 use crate::config;
 use crate::platform::backends::{CursorVisibility, Driver, FocusState, TextRunStyle, PlatformState, BackendEvent, RenderCommand};
 use crate::renderer::Renderer;
-use crate::glyph::{AttrFlags, Attributes, Glyph};
+use crate::glyph::{AttrFlags, Attributes, Glyph, ContentCell};
 use crate::term::{CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine};
 
 use std::sync::Mutex;
@@ -129,14 +129,14 @@ fn test_render_empty_screen_with_cursor() {
     let renderer = Renderer::new();
     let mut adapter = MockDriver::new(font_width, font_height, display_w_px, display_h_px);
 
-    let default_glyph = Glyph {
+    let default_glyph = Glyph::Single(ContentCell {
         c: ' ',
         attr: default_attrs(),
-    };
+    });
     let lines = vec![
         SnapshotLine {
             is_dirty: true,
-            cells: vec![default_glyph; num_cols]
+            cells: vec![default_glyph.clone(); num_cols]
         };
         num_rows
     ];
@@ -225,20 +225,20 @@ fn test_render_simple_text() {
     let mut adapter = MockDriver::new(font_width, font_height, display_w_px, display_h_px);
 
     let mut line_cells = vec![
-        Glyph {
+        Glyph::Single(ContentCell {
             c: ' ',
             attr: default_attrs()
-        };
+        });
         num_cols
     ];
-    line_cells[0] = Glyph {
+    line_cells[0] = Glyph::Single(ContentCell {
         c: 'H',
         attr: default_attrs(),
-    };
-    line_cells[1] = Glyph {
+    });
+    line_cells[1] = Glyph::Single(ContentCell {
         c: 'i',
         attr: default_attrs(),
-    };
+    });
 
     let lines = vec![SnapshotLine {
         is_dirty: true,
@@ -332,22 +332,22 @@ fn test_render_dirty_line_only() {
     let mut adapter = MockDriver::new(font_width, font_height, display_w_px, display_h_px);
 
     let mut line0_cells = vec![
-        Glyph {
+        Glyph::Single(ContentCell {
             c: ' ',
             attr: default_attrs()
-        };
+        });
         num_cols
     ];
-    line0_cells[0] = Glyph {
+    line0_cells[0] = Glyph::Single(ContentCell {
         c: 'A',
         attr: default_attrs(),
-    };
+    });
 
     let line1_cells = vec![
-        Glyph {
+        Glyph::Single(ContentCell {
             c: 'B',
             attr: default_attrs()
-        };
+        });
         num_cols
     ];
 
@@ -382,28 +382,28 @@ fn test_render_dirty_line_only() {
     adapter.clear_commands();
 
     let mut line0_cells_frame2 = vec![
-        Glyph {
+        Glyph::Single(ContentCell {
             c: ' ',
             attr: default_attrs()
-        };
+        });
         num_cols
     ];
-    line0_cells_frame2[0] = Glyph {
+    line0_cells_frame2[0] = Glyph::Single(ContentCell {
         c: 'A',
         attr: default_attrs(),
-    };
+    });
 
     let mut line1_cells_frame2 = vec![
-        Glyph {
+        Glyph::Single(ContentCell {
             c: ' ',
             attr: default_attrs()
-        };
+        });
         num_cols
     ];
-    line1_cells_frame2[0] = Glyph {
+    line1_cells_frame2[0] = Glyph::Single(ContentCell {
         c: 'C',
         attr: default_attrs(),
-    };
+    });
 
     let lines_frame2 = vec![
         SnapshotLine {

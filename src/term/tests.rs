@@ -2,7 +2,7 @@
 
 use crate::ansi::commands::{Attribute, C0Control, CsiCommand};
 use crate::color::{Color, NamedColor};
-use crate::glyph::{AttrFlags, Attributes, Glyph};
+use crate::glyph::{AttrFlags, Attributes, Glyph, ContentCell};
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::platform::backends::MouseButton; // Correct import for MouseButton
@@ -91,25 +91,32 @@ fn assert_screen_state(
                 );
             }
 
-            let glyph = get_glyph_from_snapshot(snapshot, r, s_col).unwrap_or_else(|| {
+            let glyph_wrapper = get_glyph_from_snapshot(snapshot, r, s_col).unwrap_or_else(|| {
                 panic!(
                     "Glyph ({}, {}) not found in snapshot. Expected char: '{}'",
                     r, s_col, expected_char
                 )
             });
 
+            let (cell_char, cell_attrs) = match glyph_wrapper {
+                Glyph::Single(cell) => (cell.c, cell.attr),
+                Glyph::WidePrimary(cell) => (cell.c, cell.attr),
+                Glyph::WideSpacer { .. } => (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default()),
+            };
+
             assert_eq!(
-                glyph.c, expected_char,
+                cell_char, expected_char,
                 "Char mismatch at (row {}, snapshot_col {}). Expected '{}', got '{}'. Full expected row: '{}', Full actual row: '{:?}'",
-                r, s_col, expected_char, glyph.c, expected_row_str, snapshot.lines.get(r).map(|l| &l.cells)
+                r, s_col, expected_char, cell_char, expected_row_str, snapshot.lines.get(r).map(|l| &l.cells)
             );
 
             let char_width = crate::term::unicode::get_char_display_width(expected_char).max(1);
 
             // If it's a wide char, check the spacer cell
             if char_width == 2 {
+                assert!(matches!(glyph_wrapper, Glyph::WidePrimary(_)), "Expected WidePrimary for char '{}' at ({}, {})", expected_char, r, s_col);
                 if s_col + 1 < snapshot.dimensions.0 {
-                    let spacer_glyph = get_glyph_from_snapshot(snapshot, r, s_col + 1)
+                    let spacer_glyph_wrapper = get_glyph_from_snapshot(snapshot, r, s_col + 1)
                         .unwrap_or_else(|| {
                             panic!(
                                 "Wide char spacer glyph ({}, {}) not found. Primary char: '{}'",
@@ -118,25 +125,7 @@ fn assert_screen_state(
                                 expected_char
                             )
                         });
-                    assert_eq!(
-                        spacer_glyph.c,
-                        crate::glyph::WIDE_CHAR_PLACEHOLDER,
-                        "Expected wide char placeholder at ({}, {}) for char '{}'",
-                        r,
-                        s_col + 1,
-                        expected_char
-                    );
-                    assert!(
-                        spacer_glyph
-                            .attr
-                            .flags
-                            .contains(AttrFlags::WIDE_CHAR_SPACER),
-                        "Spacer glyph at ({},{}) should have WIDE_CHAR_SPACER flag",
-                        r,
-                        s_col + 1
-                    );
-                } else {
-                    // This means a wide character was expected at the very last column, which is valid if it's the primary part.
+                    assert!(matches!(spacer_glyph_wrapper, Glyph::WideSpacer { .. }), "Expected WideSpacer for char '{}' at ({}, {})", expected_char, r, s_col + 1);
                 }
             }
             s_col += char_width;
@@ -144,12 +133,17 @@ fn assert_screen_state(
 
         // Check that remaining cells in the row are spaces (default fill)
         for c_fill in s_col..snapshot.dimensions.0 {
-            let glyph = get_glyph_from_snapshot(snapshot, r, c_fill)
+            let glyph_wrapper = get_glyph_from_snapshot(snapshot, r, c_fill)
                 .unwrap_or_else(|| panic!("Glyph ({}, {}) not found for fill check", r, c_fill));
+            let cell_char = match glyph_wrapper {
+                Glyph::Single(cell) => cell.c,
+                Glyph::WidePrimary(cell) => cell.c, // Should not happen for fill (wide chars imply non-space)
+                Glyph::WideSpacer { .. } => crate::glyph::WIDE_CHAR_PLACEHOLDER, // Should not happen for fill
+            };
             assert_eq!(
-                glyph.c, ' ',
+                cell_char, ' ',
                 "Expected empty char ' ' for fill at ({}, {}), got '{}'",
-                r, c_fill, glyph.c
+                r, c_fill, cell_char
             );
         }
     }
@@ -265,14 +259,19 @@ fn test_csi_sgr_fg_color() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
 
     let snapshot = term.get_render_snapshot();
-    let glyph_a = get_glyph_from_snapshot(&snapshot, 0, 0).unwrap();
+    let glyph_a_wrapper = get_glyph_from_snapshot(&snapshot, 0, 0).unwrap();
 
-    assert_eq!(glyph_a.c, 'A');
-    assert_eq!(
-        glyph_a.attr.fg,
-        Color::Named(NamedColor::Red),
-        "Foreground color should be Red"
-    );
+    match glyph_a_wrapper {
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => {
+            assert_eq!(cell.c, 'A');
+            assert_eq!(
+                cell.attr.fg,
+                Color::Named(NamedColor::Red),
+                "Foreground color should be Red"
+            );
+        }
+        other => panic!("Expected Single or WidePrimary for glyph A, got {:?}", other),
+    }
 
     // Reset SGR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -281,12 +280,17 @@ fn test_csi_sgr_fg_color() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
     let snapshot_b = term.get_render_snapshot();
     assert_screen_state(&snapshot_b, &["AB   "], Some((0, 2))); // A is red, B is default
-    let glyph_b = get_glyph_from_snapshot(&snapshot_b, 0, 1).unwrap();
-    assert_eq!(
-        glyph_b.attr.fg,
-        Attributes::default().fg,
-        "Foreground color should have reset to default"
-    );
+    let glyph_b_wrapper = get_glyph_from_snapshot(&snapshot_b, 0, 1).unwrap();
+    match glyph_b_wrapper {
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => {
+            assert_eq!(
+                cell.attr.fg,
+                Attributes::default().fg,
+                "Foreground color should have reset to default"
+            );
+        }
+        other => panic!("Expected Single or WidePrimary for glyph B, got {:?}", other),
+    }
 }
 
 // --- Helpers for Selection Integration Tests ---
@@ -640,7 +644,10 @@ fn test_selection_on_alt_screen_then_exit() {
     );
 
     let snapshot = emu.get_render_snapshot();
-    assert_eq!(snapshot.lines[0].cells[0].c, 'P');
+    match snapshot.lines[0].cells[0] {
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.c, 'P'),
+        other => panic!("Expected char P, got {:?}", other),
+    }
 }
 // --- End of Selection with Alternate Screen Test ---
 
@@ -751,15 +758,15 @@ fn test_key_event_arrow_up() {
 fn test_snapshot_with_selection() {
     let num_cols = 10;
     let num_rows = 2;
-    let default_glyph = Glyph {
+    let default_glyph = Glyph::Single(ContentCell {
         c: ' ',
         attr: Attributes::default(),
-    };
+    });
 
     let lines = vec![
         SnapshotLine {
             is_dirty: true,
-            cells: vec![default_glyph; num_cols]
+            cells: vec![default_glyph.clone(); num_cols]
         };
         num_rows
     ];
@@ -1027,24 +1034,32 @@ fn test_ps1_multiline_with_sgr_at_bottom_scrolls() {
     let snapshot = term.get_render_snapshot();
     assert_screen_state(&snapshot, &["P1   ", "$    "], Some((1, 2)));
 
-    let glyph_p = get_glyph_from_snapshot(&snapshot, 0, 0).unwrap();
-    let glyph_1 = get_glyph_from_snapshot(&snapshot, 0, 1).unwrap();
-    let glyph_dollar = get_glyph_from_snapshot(&snapshot, 1, 0).unwrap();
-    let glyph_space_after_dollar = get_glyph_from_snapshot(&snapshot, 1, 1).unwrap();
-    let glyph_final_cursor_cell = get_glyph_from_snapshot(&snapshot, 1, 2).unwrap();
+    let glyph_p_wrapper = get_glyph_from_snapshot(&snapshot, 0, 0).unwrap();
+    let glyph_1_wrapper = get_glyph_from_snapshot(&snapshot, 0, 1).unwrap();
+    let glyph_dollar_wrapper = get_glyph_from_snapshot(&snapshot, 1, 0).unwrap();
+    let glyph_space_after_dollar_wrapper = get_glyph_from_snapshot(&snapshot, 1, 1).unwrap();
+    let glyph_final_cursor_cell_wrapper = get_glyph_from_snapshot(&snapshot, 1, 2).unwrap();
 
-    assert_eq!(glyph_p.attr.fg, Color::Named(NamedColor::Red));
-    assert_eq!(glyph_1.attr.fg, Color::Named(NamedColor::Red));
-    assert_eq!(glyph_dollar.attr.fg, Color::Named(NamedColor::Green));
-    assert_eq!(
-        glyph_space_after_dollar.attr.fg,
-        Color::Named(NamedColor::Green)
-    );
-    assert_eq!(
-        glyph_final_cursor_cell.attr.fg,
-        Attributes::default().fg,
-        "Cursor cell attributes should be reset"
-    );
+    match glyph_p_wrapper {
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Color::Named(NamedColor::Red)),
+        other => panic!("Expected Single or WidePrimary for P, got {:?}", other),
+    }
+    match glyph_1_wrapper {
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Color::Named(NamedColor::Red)),
+        other => panic!("Expected Single or WidePrimary for 1, got {:?}", other),
+    }
+    match glyph_dollar_wrapper {
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Color::Named(NamedColor::Green)),
+        other => panic!("Expected Single or WidePrimary for $, got {:?}", other),
+    }
+    match glyph_space_after_dollar_wrapper {
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Color::Named(NamedColor::Green)),
+        other => panic!("Expected Single or WidePrimary for space after $, got {:?}", other),
+    }
+    match glyph_final_cursor_cell_wrapper {
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Attributes::default().fg, "Cursor cell attributes should be reset"),
+        other => panic!("Expected Single or WidePrimary for final cursor cell, got {:?}", other),
+    }
 }
 
 #[test]
@@ -1219,7 +1234,7 @@ mod get_selected_text_tests {
             for (x, char_val) in line_str.chars().enumerate() {
                 if x < emu.screen.width && y < emu.screen.height {
                     let grid = if emu.screen.alt_screen_active { &mut emu.screen.alt_grid } else { &mut emu.screen.grid };
-                    grid[y][x] = Glyph { c: char_val, attr: Attributes::default() };
+                    grid[y][x] = Glyph::Single(ContentCell { c: char_val, attr: Attributes::default() });
                 }
             }
         }
@@ -1299,8 +1314,8 @@ mod get_selected_text_tests {
     fn test_get_selected_text_empty_cells_within_grid() {
         let mut emu = create_test_emulator(5, 1);
         let grid = if emu.screen.alt_screen_active { &mut emu.screen.alt_grid } else { &mut emu.screen.grid };
-        grid[0][0] = Glyph { c: 'A', attr: Attributes::default() };
-        grid[0][4] = Glyph { c: 'E', attr: Attributes::default() };
+        grid[0][0] = Glyph::Single(ContentCell { c: 'A', attr: Attributes::default() });
+        grid[0][4] = Glyph::Single(ContentCell { c: 'E', attr: Attributes::default() });
 
         emu.screen.selection.range = Some(SelectionRange {
             start: Point { x: 0, y: 0 },
