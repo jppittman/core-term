@@ -925,7 +925,7 @@ const SOME_REASONABLE_SLACK: usize = 20;
 
 #[cfg(test)]
 mod tests {
-    use super::{AttrFlags, Attributes, Glyph, Point, Screen, Selection, SelectionMode, SelectionRange}; // Added AttrFlags
+    use super::{AttrFlags, Attributes, Glyph, Point, Screen, Selection, SelectionMode, SelectionRange, ContentCell}; // Added ContentCell
 
     // Helper function for tests, using a fixed scrollback for test predictability
     // or allowing tests to specify if some need to test scrollback behavior explicitly.

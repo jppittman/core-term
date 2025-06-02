@@ -217,8 +217,8 @@ impl Renderer {
             }
         }
 
-        if !(prev_attr_for_flags_check.flags.contains(AttrFlags::WIDE_CHAR_PRIMARY) || get_char_display_width(prev_char_for_width_check) == 2) {
-            warn!("Placeholder at ({},{}) but previous char ('{}') is not WIDE_CHAR_PRIMARY or double-width. Using default BG.", current_col, y_abs, prev_glyph.display_char());
+        if !(matches!(prev_glyph, Glyph::WidePrimary(_)) || get_char_display_width(prev_char_for_width_check) == 2) {
+            warn!("Placeholder at ({},{}) but previous char ('{}') is not WidePrimary or double-width. Using default BG.", current_col, y_abs, prev_glyph.display_char());
             self.draw_placeholder_cell(current_col, y_abs, CONFIG.colors.background, commands)?;
             return Ok(SINGLE_CELL_CONSUMED);
         }

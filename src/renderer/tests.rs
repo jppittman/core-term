@@ -5,7 +5,7 @@ use crate::color::Color;
 use crate::config;
 use crate::platform::backends::{CellCoords, CellRect, CursorVisibility, Driver, FocusState, TextRunStyle, PlatformState, BackendEvent, RenderCommand as ActualRenderCommand}; // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
                                                                              // FontDesc is now FontConfig
-use crate::glyph::{AttrFlags, Attributes, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
+use crate::glyph::{AttrFlags, Attributes, Glyph, ContentCell}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
 use crate::renderer::Renderer;
 use crate::term::{
     CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine, // Changed SelectionRenderState
@@ -158,14 +158,14 @@ fn test_render_empty_screen_with_cursor() {
     let (renderer, mut driver) =
         create_test_renderer_and_driver(num_cols, num_rows, font_width, font_height);
 
-    let default_glyph = Glyph {
+    let default_glyph = Glyph::Single(ContentCell {
         c: ' ',
         attr: default_attrs(),
-    };
+    });
     let lines = vec![
         SnapshotLine {
             is_dirty: true,
-            cells: vec![default_glyph; num_cols]
+            cells: vec![default_glyph.clone(); num_cols]
         };
         num_rows
     ];
@@ -249,20 +249,20 @@ fn test_render_simple_text() {
         create_test_renderer_and_driver(num_cols, num_rows, font_width, font_height);
 
     let mut line_cells = vec![
-        Glyph {
+        Glyph::Single(ContentCell {
             c: ' ',
             attr: default_attrs()
-        };
+        });
         num_cols
     ];
-    line_cells[0] = Glyph {
+    line_cells[0] = Glyph::Single(ContentCell {
         c: 'H',
         attr: default_attrs(),
-    };
-    line_cells[1] = Glyph {
+    });
+    line_cells[1] = Glyph::Single(ContentCell {
         c: 'i',
         attr: default_attrs(),
-    };
+    });
 
     let lines_data = vec![SnapshotLine {
         is_dirty: true,
@@ -343,32 +343,32 @@ fn test_dirty_line_processing() {
         create_test_renderer_and_driver(num_cols, num_rows, font_width, font_height);
 
     let line0_dirty_cells = vec![
-        Glyph {
+        Glyph::Single(ContentCell {
             c: 'A',
             attr: default_attrs(),
-        },
-        Glyph {
+        }),
+        Glyph::Single(ContentCell {
             c: 'B',
             attr: default_attrs(),
-        },
-        Glyph {
+        }),
+        Glyph::Single(ContentCell {
             c: 'C',
             attr: default_attrs(),
-        },
+        }),
     ];
     let line1_clean_cells = vec![
-        Glyph {
+        Glyph::Single(ContentCell {
             c: 'X',
             attr: default_attrs(),
-        },
-        Glyph {
+        }),
+        Glyph::Single(ContentCell {
             c: 'Y',
             attr: default_attrs(),
-        },
-        Glyph {
+        }),
+        Glyph::Single(ContentCell {
             c: 'Z',
             attr: default_attrs(),
-        },
+        }),
     ];
 
     let lines_data = vec![

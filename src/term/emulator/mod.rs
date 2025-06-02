@@ -172,8 +172,11 @@ impl TerminalEmulator {
             let (cell_char_underneath, cell_attributes_underneath) =
                 if cursor_y < height && cursor_x < width {
                     // Use active_grid directly as get_glyph might have side effects or different logic
-                    let glyph = &active_grid[cursor_y][cursor_x];
-                    (glyph.c, glyph.attr)
+                    let glyph_wrapper = &active_grid[cursor_y][cursor_x];
+                    match glyph_wrapper {
+                        crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => (cell.c, cell.attr),
+                        crate::glyph::Glyph::WideSpacer { .. } => (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default()),
+                    }
                 } else {
                     (' ', Attributes::default()) // Default if cursor is out of bounds
                 };

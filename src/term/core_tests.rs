@@ -1,4 +1,4 @@
-use crate::glyph::{AttrFlags, Glyph, Attributes};
+use crate::glyph::{AttrFlags, Glyph, Attributes, ContentCell};
 use crate::term::{TerminalEmulator, RenderSnapshot, EmulatorInput, DecModeConstant, CursorShape, action::EmulatorAction, ControlEvent};
 use crate::ansi::commands::{AnsiCommand, CsiCommand, C0Control, Attribute};
 use crate::color::{Color, NamedColor};
@@ -61,67 +61,61 @@ fn assert_screen_state(
                 );
             }
 
-            let actual_glyph = get_glyph_from_snapshot(snapshot, r, s_col).unwrap_or_else(|| {
+            let actual_glyph_wrapper = get_glyph_from_snapshot(snapshot, r, s_col).unwrap_or_else(|| {
                 panic!("Glyph ({}, {}) not found in snapshot. Expected char: '{}'", r, s_col, expected_char)
             });
 
+            let (actual_char, _actual_attrs) = match actual_glyph_wrapper {
+                Glyph::Single(cell) => (cell.c, Some(cell.attr)),
+                Glyph::WidePrimary(cell) => (cell.c, Some(cell.attr)),
+                Glyph::WideSpacer { .. } => (crate::glyph::WIDE_CHAR_PLACEHOLDER, None),
+            };
+
             assert_eq!(
-                actual_glyph.c, expected_char,
+                actual_char, expected_char,
                 "Char mismatch at (row {}, snapshot_col {}). Expected '{}', got '{}'. Full expected row: '{}', Full actual row: '{:?}'",
-                r, s_col, expected_char, actual_glyph.c, expected_row_str, snapshot.lines.get(r).map(|l| &l.cells)
+                r, s_col, expected_char, actual_char, expected_row_str, snapshot.lines.get(r).map(|l| &l.cells)
             );
 
             let expected_char_width = crate::term::unicode::get_char_display_width(expected_char).max(1);
 
             if expected_char_width == 2 {
-                // Check primary cell for WIDE_CHAR_PRIMARY flag
-                assert!(actual_glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_PRIMARY),
-                    "Expected wide char '{}' at ({},{}) to have WIDE_CHAR_PRIMARY flag. Actual: {:?}", expected_char, r, s_col, actual_glyph);
+                assert!(matches!(actual_glyph_wrapper, Glyph::WidePrimary(_)),
+                    "Expected wide char '{}' at ({},{}) to be WidePrimary. Actual: {:?}", expected_char, r, s_col, actual_glyph_wrapper);
 
                 if s_col + 1 < snapshot.dimensions.0 {
-                    let spacer_glyph = get_glyph_from_snapshot(snapshot, r, s_col + 1)
+                    let spacer_glyph_wrapper = get_glyph_from_snapshot(snapshot, r, s_col + 1)
                         .unwrap_or_else(|| {
                             panic!(
                                 "Wide char spacer glyph ({}, {}) not found. Primary char: '{}'",
                                 r, s_col + 1, expected_char
                             )
                         });
-                    // If the char from expected_screen string (expected_char) is wide,
-                    // then the actual cell (s_col+1) must be its spacer.
-                    // However, if that spacer cell was overwritten by a different character,
-                    // this assertion will fail. This means the expected_row_str must be carefully crafted.
-                    // If expected_row_str is "世Y", this code expects '世' at s_col, then its placeholder at s_col+1.
-                    // The 'Y' is then expected at s_col+2.
-                    // The fix from turn 17: if spacer_glyph.c is not placeholder, don't check flags.
-                    if spacer_glyph.c == crate::glyph::WIDE_CHAR_PLACEHOLDER {
-                         assert!(
-                            spacer_glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_SPACER),
-                            "Spacer glyph at ({},{}) should have WIDE_CHAR_SPACER flag for char '{}', but it does not. Actual glyph: {:?}",
-                            r, s_col + 1, expected_char, spacer_glyph
-                        );
-                    }
-                    // If spacer_glyph.c is NOT a placeholder, it means it was overwritten.
-                    // The next iteration of the outer loop (for expected_chars_iter) should handle
-                    // what's expected in that (s_col+1) cell based on expected_row_str.
-                    // This implies s_col should advance by 1 if the spacer was overwritten by a narrow char.
-                    // This version of assert_screen_state advances s_col by expected_char_width.
+                    assert!(matches!(spacer_glyph_wrapper, Glyph::WideSpacer { .. }),
+                        "Spacer glyph at ({},{}) should be WideSpacer for char '{}', but it is not. Actual glyph: {:?}",
+                        r, s_col + 1, expected_char, spacer_glyph_wrapper
+                    );
                 }
                 s_col += expected_char_width;
             } else { // expected_char is narrow
-                 assert!(!actual_glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_PRIMARY) && !actual_glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_SPACER),
-                    "Narrow char '{}' at ({},{}) should not have WIDE flags. Actual: {:?}", expected_char, r, s_col, actual_glyph);
+                 assert!(matches!(actual_glyph_wrapper, Glyph::Single(_)),
+                    "Narrow char '{}' at ({},{}) should be Single. Actual: {:?}", expected_char, r, s_col, actual_glyph_wrapper);
                 s_col += expected_char_width; // which is 1
             }
         }
 
         // After all expected_chars are consumed, remaining cells in snapshot row must be spaces
         for fill_col in s_col..snapshot.dimensions.0 {
-            let glyph = get_glyph_from_snapshot(snapshot, r, fill_col)
+            let glyph_wrapper = get_glyph_from_snapshot(snapshot, r, fill_col)
                 .unwrap_or_else(|| panic!("Glyph ({}, {}) not found for fill check", r, fill_col));
-            assert_eq!(glyph.c, ' ',
-                "Expected empty char ' ' for fill at ({}, {}), got '{}'", r, fill_col, glyph.c);
-            assert!(!glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_PRIMARY) && !glyph.attr.flags.contains(AttrFlags::WIDE_CHAR_SPACER),
-                "Fill char at ({},{}) should not have WIDE flags. Actual: {:?}", r, fill_col, glyph);
+            match glyph_wrapper {
+                Glyph::Single(cell) => {
+                    assert_eq!(cell.c, ' ',
+                        "Expected empty char ' ' for fill at ({}, {}), got '{}'", r, fill_col, cell.c);
+                    // No need to check WIDE flags for Single cells, they won't have them by definition.
+                },
+                other => panic!("Expected Single space for fill char at ({},{}), got {:?}", r, fill_col, other),
+            }
         }
     }
 
@@ -196,11 +190,17 @@ fn it_should_print_a_single_multibyte_unicode_character() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('世')));
     let snapshot = term.get_render_snapshot();
     assert_screen_state(&snapshot, &["世        "], Some((0, 2)));
-    let glyph_1 = get_glyph_from_snapshot(&snapshot, 0, 0).unwrap();
-    let glyph_2 = get_glyph_from_snapshot(&snapshot, 0, 1).unwrap();
-    assert_eq!(glyph_1.c, '世');
-    assert_eq!(glyph_2.c, crate::glyph::WIDE_CHAR_PLACEHOLDER);
-    assert!(glyph_2.attr.flags.contains(AttrFlags::WIDE_CHAR_SPACER));
+    let glyph_1_wrapper = get_glyph_from_snapshot(&snapshot, 0, 0).unwrap();
+    let glyph_2_wrapper = get_glyph_from_snapshot(&snapshot, 0, 1).unwrap();
+    match glyph_1_wrapper {
+        Glyph::WidePrimary(cell) => assert_eq!(cell.c, '世'),
+        other => panic!("Expected WidePrimary '世' at (0,0), got {:?}", other),
+    }
+    // For glyph_2, we expect it to be a WideSpacer.
+    // The character of a WideSpacer is not directly WIDE_CHAR_PLACEHOLDER, 
+    // but its nature as a spacer is checked by the matches macro.
+    // The assert_screen_state function already verifies its displayed char if needed.
+    assert!(matches!(glyph_2_wrapper, Glyph::WideSpacer { .. }), "Expected WideSpacer at (0,1), got {:?}", glyph_2_wrapper);
 }
 
 #[test]
