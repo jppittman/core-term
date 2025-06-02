@@ -6,9 +6,9 @@
 #![allow(non_snake_case)] // For X11 types
 
 use super::connection::Connection; // To access XInternAtom
-use x11::xlib;
+use anyhow::{Context, Result};
 use libc::c_char;
-use anyhow::{Result, Context}; // For error handling in `new`
+use x11::xlib; // For error handling in `new`
 
 /// Holds commonly used X11 atoms for selection handling.
 #[derive(Debug, Clone, Copy)]
@@ -20,10 +20,10 @@ pub struct SelectionAtoms {
     // Target types
     pub targets: xlib::Atom,
     pub utf8_string: xlib::Atom,
-    pub text: xlib::Atom,        // Older, less specific text type
+    pub text: xlib::Atom, // Older, less specific text type
     pub compound_text: xlib::Atom, // Another text representation
 
-    // Add other atoms as needed, e.g., INCR for incremental transfers
+                          // Add other atoms as needed, e.g., INCR for incremental transfers
 }
 
 impl SelectionAtoms {
@@ -48,9 +48,14 @@ impl SelectionAtoms {
             let atom_name_cstr = std::ffi::CString::new(name)
                 .with_context(|| format!("Failed to create CString for atom name '{}'", name))?;
             let atom = unsafe {
-                xlib::XInternAtom(display, atom_name_cstr.as_ptr() as *const c_char, xlib::False)
+                xlib::XInternAtom(
+                    display,
+                    atom_name_cstr.as_ptr() as *const c_char,
+                    xlib::False,
+                )
             };
-            if atom == 0 { // xlib::NONE is typically 0
+            if atom == 0 {
+                // xlib::NONE is typically 0
                 Err(anyhow::anyhow!("Failed to intern X11 atom: {}", name))
             } else {
                 Ok(atom)

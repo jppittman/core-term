@@ -2,11 +2,12 @@
 
 use crate::ansi::commands::{Attribute, C0Control, CsiCommand};
 use crate::color::{Color, NamedColor};
-use crate::glyph::{AttrFlags, Attributes, Glyph, ContentCell};
+use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::platform::backends::MouseButton; // Correct import for MouseButton
 use crate::term::{
+    snapshot::SelectionRange, // Corrected import for SelectionRange
     AnsiCommand,
     ControlEvent,
     CursorRenderState,
@@ -17,9 +18,8 @@ use crate::term::{
     // Imports for new tests:
     Point, // From snapshot
     RenderSnapshot,
-    SelectionMode,
     Selection, // Added missing import
-    snapshot::SelectionRange, // Corrected import for SelectionRange
+    SelectionMode,
     // SelectionRenderState, // This was the old name, replaced by snapshot::Selection
     SnapshotLine,
     TerminalEmulator,
@@ -101,7 +101,9 @@ fn assert_screen_state(
             let (cell_char, cell_attrs) = match glyph_wrapper {
                 Glyph::Single(cell) => (cell.c, cell.attr),
                 Glyph::WidePrimary(cell) => (cell.c, cell.attr),
-                Glyph::WideSpacer { .. } => (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default()),
+                Glyph::WideSpacer { .. } => {
+                    (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default())
+                }
             };
 
             assert_eq!(
@@ -114,7 +116,13 @@ fn assert_screen_state(
 
             // If it's a wide char, check the spacer cell
             if char_width == 2 {
-                assert!(matches!(glyph_wrapper, Glyph::WidePrimary(_)), "Expected WidePrimary for char '{}' at ({}, {})", expected_char, r, s_col);
+                assert!(
+                    matches!(glyph_wrapper, Glyph::WidePrimary(_)),
+                    "Expected WidePrimary for char '{}' at ({}, {})",
+                    expected_char,
+                    r,
+                    s_col
+                );
                 if s_col + 1 < snapshot.dimensions.0 {
                     let spacer_glyph_wrapper = get_glyph_from_snapshot(snapshot, r, s_col + 1)
                         .unwrap_or_else(|| {
@@ -125,7 +133,13 @@ fn assert_screen_state(
                                 expected_char
                             )
                         });
-                    assert!(matches!(spacer_glyph_wrapper, Glyph::WideSpacer { .. }), "Expected WideSpacer for char '{}' at ({}, {})", expected_char, r, s_col + 1);
+                    assert!(
+                        matches!(spacer_glyph_wrapper, Glyph::WideSpacer { .. }),
+                        "Expected WideSpacer for char '{}' at ({}, {})",
+                        expected_char,
+                        r,
+                        s_col + 1
+                    );
                 }
             }
             s_col += char_width;
@@ -182,8 +196,13 @@ fn test_simple_char_input() {
 fn test_newline_input() {
     let mut term = create_test_emulator(10, 2);
     // Enable Linefeed/Newline Mode (LNM)
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(20))));
-    assert!(term.dec_modes.linefeed_newline_mode, "LNM should be enabled for this test");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
+        20,
+    ))));
+    assert!(
+        term.dec_modes.linefeed_newline_mode,
+        "LNM should be enabled for this test"
+    );
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
@@ -270,7 +289,10 @@ fn test_csi_sgr_fg_color() {
                 "Foreground color should be Red"
             );
         }
-        other => panic!("Expected Single or WidePrimary for glyph A, got {:?}", other),
+        other => panic!(
+            "Expected Single or WidePrimary for glyph A, got {:?}",
+            other
+        ),
     }
 
     // Reset SGR
@@ -289,7 +311,10 @@ fn test_csi_sgr_fg_color() {
                 "Foreground color should have reset to default"
             );
         }
-        other => panic!("Expected Single or WidePrimary for glyph B, got {:?}", other),
+        other => panic!(
+            "Expected Single or WidePrimary for glyph B, got {:?}",
+            other
+        ),
     }
 }
 
@@ -302,7 +327,6 @@ fn send_mouse_input(
 ) -> Option<EmulatorAction> {
     emu.interpret_input(EmulatorInput::User(action))
 }
-
 
 fn fill_emulator_screen(emu: &mut TerminalEmulator, text_lines: Vec<String>) {
     for (r, line) in text_lines.iter().enumerate() {
@@ -402,13 +426,19 @@ fn test_mouse_release_ends_selection_activity() {
         UserInputAction::ExtendSelection { x: 5, y: 2 },
         MouseButton::Left,
     );
-    let action = send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
+    let action = send_mouse_input(
+        &mut emu,
+        UserInputAction::ApplySelectionClear,
+        MouseButton::Left,
+    );
 
-    assert!( // ApplySelectionClear now clears the selection if start == end, otherwise just deactivates
+    assert!(
+        // ApplySelectionClear now clears the selection if start == end, otherwise just deactivates
         !emu.screen.selection.is_active || emu.screen.selection.range.is_none(),
         "Selection should be inactive or cleared after release."
     );
-    if emu.screen.selection.range.is_some() { // If not cleared (was a drag)
+    if emu.screen.selection.range.is_some() {
+        // If not cleared (was a drag)
         assert_eq!(
             emu.screen.selection.range.map(|r| r.start),
             Some(Point { x: 1, y: 1 }),
@@ -452,7 +482,11 @@ fn test_initiate_copy_with_selection() {
         UserInputAction::ExtendSelection { x: 4, y: 0 },
         MouseButton::Left,
     );
-    send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ApplySelectionClear,
+        MouseButton::Left,
+    );
 
     let action = emu.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
     assert_eq!(
@@ -471,7 +505,8 @@ fn test_initiate_copy_block_selection() {
     );
 
     emu.screen.clear_selection();
-    emu.screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Using Cell for now
+    emu.screen
+        .start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Using Cell for now
     emu.screen.update_selection(Point { x: 1, y: 1 });
     emu.screen.end_selection();
 
@@ -499,7 +534,11 @@ fn test_new_mouse_press_clears_old_selection() {
         UserInputAction::ExtendSelection { x: 2, y: 0 },
         MouseButton::Left,
     );
-    send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ApplySelectionClear,
+        MouseButton::Left,
+    );
 
     let old_selection_end = emu.screen.selection.range.map(|r| r.end);
     assert_eq!(
@@ -530,7 +569,8 @@ fn test_new_mouse_press_clears_old_selection() {
         "New selection end point should be same as new start."
     );
     assert_ne!(
-        emu.screen.selection.range.map(|r| r.end), old_selection_end,
+        emu.screen.selection.range.map(|r| r.end),
+        old_selection_end,
         "New selection should differ from old one."
     );
     assert_eq!(action, Some(EmulatorAction::RequestRedraw));
@@ -560,13 +600,24 @@ fn test_selection_coordinates_adjust_on_scroll() {
         UserInputAction::ExtendSelection { x: 4, y: 1 },
         MouseButton::Left,
     );
-    send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ApplySelectionClear,
+        MouseButton::Left,
+    );
 
-    assert_eq!(emu.screen.selection.range.map(|r| r.start), Some(Point { x: 0, y: 1 }));
-    assert_eq!(emu.screen.selection.range.map(|r| r.end), Some(Point { x: 4, y: 1 }));
+    assert_eq!(
+        emu.screen.selection.range.map(|r| r.start),
+        Some(Point { x: 0, y: 1 })
+    );
+    assert_eq!(
+        emu.screen.selection.range.map(|r| r.end),
+        Some(Point { x: 4, y: 1 })
+    );
     assert!(!emu.screen.selection.is_active);
 
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi( // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        // Changed from term to emu
         CsiCommand::CursorPosition(3, 1),
     )));
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // Changed from term to emu
@@ -615,7 +666,11 @@ fn test_selection_on_alt_screen_then_exit() {
         UserInputAction::ExtendSelection { x: 3, y: 0 },
         MouseButton::Left,
     );
-    send_mouse_input(&mut emu, UserInputAction::ApplySelectionClear, MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ApplySelectionClear,
+        MouseButton::Left,
+    );
 
     assert!(emu.screen.alt_screen_active, "Should be on alt screen.");
     assert_eq!(
@@ -1041,24 +1096,42 @@ fn test_ps1_multiline_with_sgr_at_bottom_scrolls() {
     let glyph_final_cursor_cell_wrapper = get_glyph_from_snapshot(&snapshot, 1, 2).unwrap();
 
     match glyph_p_wrapper {
-        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Color::Named(NamedColor::Red)),
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => {
+            assert_eq!(cell.attr.fg, Color::Named(NamedColor::Red))
+        }
         other => panic!("Expected Single or WidePrimary for P, got {:?}", other),
     }
     match glyph_1_wrapper {
-        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Color::Named(NamedColor::Red)),
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => {
+            assert_eq!(cell.attr.fg, Color::Named(NamedColor::Red))
+        }
         other => panic!("Expected Single or WidePrimary for 1, got {:?}", other),
     }
     match glyph_dollar_wrapper {
-        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Color::Named(NamedColor::Green)),
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => {
+            assert_eq!(cell.attr.fg, Color::Named(NamedColor::Green))
+        }
         other => panic!("Expected Single or WidePrimary for $, got {:?}", other),
     }
     match glyph_space_after_dollar_wrapper {
-        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Color::Named(NamedColor::Green)),
-        other => panic!("Expected Single or WidePrimary for space after $, got {:?}", other),
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => {
+            assert_eq!(cell.attr.fg, Color::Named(NamedColor::Green))
+        }
+        other => panic!(
+            "Expected Single or WidePrimary for space after $, got {:?}",
+            other
+        ),
     }
     match glyph_final_cursor_cell_wrapper {
-        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.attr.fg, Attributes::default().fg, "Cursor cell attributes should be reset"),
-        other => panic!("Expected Single or WidePrimary for final cursor cell, got {:?}", other),
+        Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(
+            cell.attr.fg,
+            Attributes::default().fg,
+            "Cursor cell attributes should be reset"
+        ),
+        other => panic!(
+            "Expected Single or WidePrimary for final cursor cell, got {:?}",
+            other
+        ),
     }
 }
 
@@ -1068,41 +1141,53 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     let rows = 5;
     let mut emu = create_test_emulator(cols, rows); // Changed from term to emu
 
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi( // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        // Changed from term to emu
         CsiCommand::ResetModePrivate(DecModeConstant::Origin as u16),
     )));
 
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi( // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        // Changed from term to emu
         CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
     )));
 
     let snap_after_stbm = emu.get_render_snapshot(); // Changed from term to emu
     assert_screen_state(
         &snap_after_stbm,
-        &["          ", "          ", "          ", "          ", "          "],
+        &[
+            "          ",
+            "          ",
+            "          ",
+            "          ",
+            "          ",
+        ],
         Some((0, 0)),
     );
 
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi( // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        // Changed from term to emu
         CsiCommand::CursorPosition(1, 1),
     )));
     for _ in 0..5 {
         emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X'))); // Changed from term to emu
     }
 
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi( // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        // Changed from term to emu
         CsiCommand::CursorPosition(2, 1),
     )));
     for _ in 0..5 {
         emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X'))); // Changed from term to emu
     }
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi( // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        // Changed from term to emu
         CsiCommand::CursorPosition(3, 1),
     )));
     for _ in 0..5 {
         emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Y'))); // Changed from term to emu
     }
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi( // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        // Changed from term to emu
         CsiCommand::CursorPosition(4, 1),
     )));
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z'))); // Changed from term to emu
@@ -1164,7 +1249,13 @@ mod selection_logic_tests {
         let point = Point { x: 2, y: 1 };
         emu.start_selection(point, SelectionMode::Cell);
 
-        assert_eq!(emu.screen.selection.range, Some(SelectionRange { start: point, end: point }));
+        assert_eq!(
+            emu.screen.selection.range,
+            Some(SelectionRange {
+                start: point,
+                end: point
+            })
+        );
         assert!(emu.screen.selection.is_active);
         assert_eq!(emu.screen.selection.mode, SelectionMode::Cell);
     }
@@ -1181,7 +1272,13 @@ mod selection_logic_tests {
 
         emu.start_selection(start_point, SelectionMode::Cell);
         emu.extend_selection(extend_point);
-        assert_eq!(emu.screen.selection.range, Some(SelectionRange { start: start_point, end: extend_point }));
+        assert_eq!(
+            emu.screen.selection.range,
+            Some(SelectionRange {
+                start: start_point,
+                end: extend_point
+            })
+        );
         assert!(emu.screen.selection.is_active);
     }
 
@@ -1194,15 +1291,31 @@ mod selection_logic_tests {
         emu.start_selection(point1, SelectionMode::Cell);
         assert!(emu.screen.selection.is_active);
         emu.apply_selection_clear();
-        assert_eq!(emu.screen.selection.range, None, "Selection should be cleared on click");
-        assert!(!emu.screen.selection.is_active, "Selection should be inactive after click");
+        assert_eq!(
+            emu.screen.selection.range, None,
+            "Selection should be cleared on click"
+        );
+        assert!(
+            !emu.screen.selection.is_active,
+            "Selection should be inactive after click"
+        );
 
         emu.start_selection(point1, SelectionMode::Cell);
         emu.extend_selection(point2);
         assert!(emu.screen.selection.is_active);
         emu.apply_selection_clear();
-        assert_eq!(emu.screen.selection.range, Some(SelectionRange { start: point1, end: point2 }), "Selection range should be maintained after drag");
-        assert!(!emu.screen.selection.is_active, "Selection should be inactive after drag");
+        assert_eq!(
+            emu.screen.selection.range,
+            Some(SelectionRange {
+                start: point1,
+                end: point2
+            }),
+            "Selection range should be maintained after drag"
+        );
+        assert!(
+            !emu.screen.selection.is_active,
+            "Selection should be inactive after drag"
+        );
     }
 
     #[test]
@@ -1233,13 +1346,19 @@ mod get_selected_text_tests {
         for (y, line_str) in lines.iter().enumerate() {
             for (x, char_val) in line_str.chars().enumerate() {
                 if x < emu.screen.width && y < emu.screen.height {
-                    let grid = if emu.screen.alt_screen_active { &mut emu.screen.alt_grid } else { &mut emu.screen.grid };
-                    grid[y][x] = Glyph::Single(ContentCell { c: char_val, attr: Attributes::default() });
+                    let grid = if emu.screen.alt_screen_active {
+                        &mut emu.screen.alt_grid
+                    } else {
+                        &mut emu.screen.grid
+                    };
+                    grid[y][x] = Glyph::Single(ContentCell {
+                        c: char_val,
+                        attr: Attributes::default(),
+                    });
                 }
             }
         }
     }
-
 
     #[test]
     fn test_get_selected_text_no_selection() {
@@ -1264,11 +1383,10 @@ mod get_selected_text_tests {
         set_screen_content(&mut emu, &["Hi   "]);
         emu.screen.selection.range = Some(SelectionRange {
             start: Point { x: 0, y: 0 },
-            end: Point { x: 4, y: 0 }
+            end: Point { x: 4, y: 0 },
         });
         assert_eq!(emu.get_selected_text(), Some("Hi   ".to_string()));
     }
-
 
     #[test]
     fn test_get_selected_text_multi_line() {
@@ -1295,9 +1413,11 @@ mod get_selected_text_tests {
             start: Point { x: 0, y: 0 },
             end: Point { x: 7, y: 1 },
         });
-        assert_eq!(emu.get_selected_text(), Some("Line One\nLine Two".to_string()));
+        assert_eq!(
+            emu.get_selected_text(),
+            Some("Line One\nLine Two".to_string())
+        );
     }
-
 
     #[test]
     fn test_get_selected_text_line_boundaries() {
@@ -1313,9 +1433,19 @@ mod get_selected_text_tests {
     #[test]
     fn test_get_selected_text_empty_cells_within_grid() {
         let mut emu = create_test_emulator(5, 1);
-        let grid = if emu.screen.alt_screen_active { &mut emu.screen.alt_grid } else { &mut emu.screen.grid };
-        grid[0][0] = Glyph::Single(ContentCell { c: 'A', attr: Attributes::default() });
-        grid[0][4] = Glyph::Single(ContentCell { c: 'E', attr: Attributes::default() });
+        let grid = if emu.screen.alt_screen_active {
+            &mut emu.screen.alt_grid
+        } else {
+            &mut emu.screen.grid
+        };
+        grid[0][0] = Glyph::Single(ContentCell {
+            c: 'A',
+            attr: Attributes::default(),
+        });
+        grid[0][4] = Glyph::Single(ContentCell {
+            c: 'E',
+            attr: Attributes::default(),
+        });
 
         emu.screen.selection.range = Some(SelectionRange {
             start: Point { x: 0, y: 0 },
@@ -1361,7 +1491,11 @@ mod paste_text_tests {
 
         let snapshot = emu.get_render_snapshot();
         let expected_cursor_x = text_to_paste.chars().count();
-        assert_screen_state(&snapshot, &["Pasted text.        "], Some((0, expected_cursor_x)));
+        assert_screen_state(
+            &snapshot,
+            &["Pasted text.        "],
+            Some((0, expected_cursor_x)),
+        );
     }
 
     #[test]
@@ -1373,10 +1507,7 @@ mod paste_text_tests {
         emu.paste_text(text_to_paste.to_string());
 
         let snapshot = emu.get_render_snapshot();
-        let expected_screen = [
-            "Line1               ",
-            "Line2               ",
-        ];
+        let expected_screen = ["Line1               ", "Line2               "];
         let expected_cursor_x = "Line2".chars().count();
         assert_screen_state(&snapshot, &expected_screen, Some((1, expected_cursor_x)));
     }
@@ -1407,6 +1538,10 @@ mod paste_text_tests {
 
         let snapshot = emu.get_render_snapshot();
         let expected_cursor_x = text_to_paste.chars().count();
-        assert_screen_state(&snapshot, &["Pasted              "], Some((0, expected_cursor_x)));
+        assert_screen_state(
+            &snapshot,
+            &["Pasted              "],
+            Some((0, expected_cursor_x)),
+        );
     }
 }

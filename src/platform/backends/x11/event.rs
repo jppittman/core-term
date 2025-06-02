@@ -2,17 +2,17 @@
 #![allow(non_snake_case)] // Allow non-snake case for X11 types
 
 use super::connection::Connection;
+use super::selection::SelectionAtoms;
 use super::window::Window;
 use crate::keys::{KeySymbol, Modifiers};
-use crate::platform::backends::{BackendEvent, MouseButton}; // Import MouseButton
-use super::selection::SelectionAtoms; // Added for selection handling
+use crate::platform::backends::{BackendEvent, MouseButton}; // Import MouseButton // Added for selection handling
 
 use anyhow::Result; // Context not used directly, anyhow for Result
-use std::ffi::c_void; // For XGetWindowProperty
 use log::{debug, info, trace, warn};
+use std::ffi::c_void; // For XGetWindowProperty
 use std::mem;
-use std::ptr;
-use std::os::raw::{c_ulong, c_long}; // Added c_ulong and c_long
+use std::os::raw::{c_long, c_ulong};
+use std::ptr; // Added c_ulong and c_long
 
 // X11 library imports
 use libc::{c_char, c_int};
@@ -54,8 +54,8 @@ pub fn process_pending_events(
     connection: &Connection,
     window: &mut Window,
     xdriver_has_focus: &mut bool,
-    selection_atoms: &SelectionAtoms,    // Added
-    selection_text: Option<&String>, // Added
+    selection_atoms: &SelectionAtoms, // Added
+    selection_text: Option<&String>,  // Added
 ) -> Result<Vec<BackendEvent>> {
     let mut backend_events = Vec::new();
     let display = connection.display();
@@ -334,7 +334,10 @@ pub fn process_pending_events(
 
                 trace!(
                     "XEvent: MotionNotify (x: {}, y: {}, modifiers: {:?}) on window {}",
-                    motion_event.x, motion_event.y, modifiers, motion_event.window
+                    motion_event.x,
+                    motion_event.y,
+                    modifiers,
+                    motion_event.window
                 );
                 backend_events.push(BackendEvent::MouseMove {
                     x: motion_event.x as u16,
@@ -361,9 +364,11 @@ pub fn process_pending_events(
 
                 if req.owner == window.id() {
                     if let Some(owned_text_str) = selection_text {
-                        if req.target == selection_atoms.utf8_string ||
-                           req.target == selection_atoms.text ||
-                           req.target == xlib::XA_STRING { // XA_STRING is often used for basic text
+                        if req.target == selection_atoms.utf8_string
+                            || req.target == selection_atoms.text
+                            || req.target == xlib::XA_STRING
+                        {
+                            // XA_STRING is often used for basic text
                             // SAFETY: FFI call.
                             unsafe {
                                 xlib::XChangeProperty(
@@ -371,7 +376,7 @@ pub fn process_pending_events(
                                     req.requestor,
                                     req.property,
                                     req.target, // Use the requested target type as the property type
-                                    8, // format 8 for UTF-8 text
+                                    8,          // format 8 for UTF-8 text
                                     xlib::PropModeReplace,
                                     owned_text_str.as_ptr() as *const u8,
                                     owned_text_str.len() as c_int,
@@ -395,14 +400,17 @@ pub fn process_pending_events(
                                     req.requestor,
                                     req.property,
                                     xlib::XA_ATOM, // Property type is ATOM for TARGETS
-                                    32, // format 32 for atoms
+                                    32,            // format 32 for atoms
                                     xlib::PropModeReplace,
                                     supported_targets.as_mut_ptr() as *mut u8, // Pointer to atom data
-                                    supported_targets.len() as c_int,    // Number of items
+                                    supported_targets.len() as c_int,          // Number of items
                                 );
                             }
                             response_event.property = req.property; // Signal success
-                            debug!("SelectionRequest: Responded with TARGETS for selection atom {}", req.selection);
+                            debug!(
+                                "SelectionRequest: Responded with TARGETS for selection atom {}",
+                                req.selection
+                            );
                         } else {
                             warn!(
                                 "SelectionRequest: Unsupported target type {} for selection atom {}",
@@ -432,7 +440,7 @@ pub fn process_pending_events(
                     xlib::XSendEvent(
                         display,
                         req.requestor,
-                        xlib::False, // Don't propagate
+                        xlib::False,       // Don't propagate
                         xlib::NoEventMask, // No event mask
                         &mut response_event as *mut xlib::XSelectionEvent as *mut xlib::XEvent,
                     );
@@ -450,7 +458,8 @@ pub fn process_pending_events(
 
                 // We are the requestor, so sel_event.requestor should be our window.
                 if sel_event.requestor == window.id() {
-                    if sel_event.property != 0 { // Property is not None (0)
+                    if sel_event.property != 0 {
+                        // Property is not None (0)
                         // Property is set, data should be available.
                         let mut actual_type_return: xlib::Atom = 0;
                         let mut actual_format_return: c_int = 0;
@@ -462,11 +471,11 @@ pub fn process_pending_events(
                         let status = unsafe {
                             xlib::XGetWindowProperty(
                                 display,
-                                sel_event.requestor, // Our window
-                                sel_event.property,  // Property where data is stored
-                                0,                   // offset
-                                i32::MAX as c_long,  // length (request as much as possible)
-                                xlib::True,          // delete property after fetching
+                                sel_event.requestor,          // Our window
+                                sel_event.property,           // Property where data is stored
+                                0,                            // offset
+                                i32::MAX as c_long, // length (request as much as possible)
+                                xlib::True,         // delete property after fetching
                                 xlib::AnyPropertyType as u64, // requested type (AnyPropertyType allows server to choose)
                                 &mut actual_type_return,
                                 &mut actual_format_return,
@@ -476,15 +485,22 @@ pub fn process_pending_events(
                             )
                         };
 
-                        if status == xlib::Success as i32 && !prop_return_ptr.is_null() && nitems_return > 0 {
-                            if actual_type_return == selection_atoms.utf8_string ||
-                               actual_type_return == selection_atoms.text ||
-                               actual_type_return == xlib::XA_STRING {
+                        if status == xlib::Success as i32
+                            && !prop_return_ptr.is_null()
+                            && nitems_return > 0
+                        {
+                            if actual_type_return == selection_atoms.utf8_string
+                                || actual_type_return == selection_atoms.text
+                                || actual_type_return == xlib::XA_STRING
+                            {
                                 // Assume 8-bit format for text data.
                                 if actual_format_return == 8 {
                                     // SAFETY: Create slice from raw pointer.
                                     let data_slice = unsafe {
-                                        std::slice::from_raw_parts(prop_return_ptr, nitems_return as usize)
+                                        std::slice::from_raw_parts(
+                                            prop_return_ptr,
+                                            nitems_return as usize,
+                                        )
                                     };
                                     match String::from_utf8(data_slice.to_vec()) {
                                         Ok(text) => {

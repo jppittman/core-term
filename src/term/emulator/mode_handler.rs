@@ -182,7 +182,8 @@ impl TerminalEmulator {
                         // Re-evaluate cursor_wrap_next based on new autowrap_mode state
                         let (logical_x, _) = self.cursor_controller.logical_pos();
                         let screen_ctx = self.current_screen_context();
-                        self.cursor_wrap_next = logical_x >= screen_ctx.width && self.dec_modes.autowrap_mode;
+                        self.cursor_wrap_next =
+                            logical_x >= screen_ctx.width && self.dec_modes.autowrap_mode;
                         trace!("DEC Private Mode 7 (DECAWM Autowrap) set to {}, cursor_wrap_next is now {}", enable, self.cursor_wrap_next);
                     }
                     Some(DecModeConstant::Unknown7727) => {

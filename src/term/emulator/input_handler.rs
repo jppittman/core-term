@@ -178,7 +178,9 @@ pub(super) fn process_user_input_action(
             return Some(EmulatorAction::RequestRedraw);
         }
         UserInputAction::RequestClipboardPaste => {
-            debug!("UserInputAction: RequestClipboardPaste received. Requesting clipboard content.");
+            debug!(
+                "UserInputAction: RequestClipboardPaste received. Requesting clipboard content."
+            );
             return Some(EmulatorAction::RequestClipboardContent);
         }
         UserInputAction::RequestPrimaryPaste => {
@@ -203,7 +205,8 @@ pub(super) fn process_user_input_action(
                 return Some(EmulatorAction::WritePty(pasted_bytes));
             } else {
                 log::debug!("InputHandler: Bracketed paste mode OFF. Calling emulator.paste_text.");
-                for char_val in text_to_paste.chars() { // Iterate over chars and process them
+                for char_val in text_to_paste.chars() {
+                    // Iterate over chars and process them
                     emulator.print_char(char_val);
                 }
                 return Some(EmulatorAction::RequestRedraw);
@@ -272,38 +275,57 @@ mod tests {
         let snapshot = emu.get_render_snapshot();
         // Print the actual screen content for debugging
         for (r, line) in snapshot.lines.iter().enumerate() {
-            let line_str: String = line.cells.iter().map(|glyph_wrapper| {
-                match glyph_wrapper {
-                    crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => cell.c,
+            let line_str: String = line
+                .cells
+                .iter()
+                .map(|glyph_wrapper| match glyph_wrapper {
+                    crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
+                        cell.c
+                    }
                     crate::glyph::Glyph::WideSpacer { .. } => crate::glyph::WIDE_CHAR_PLACEHOLDER,
-                }
-            }).collect();
+                })
+                .collect();
             println!("Actual line {}: '{}'", r, line_str);
         }
-        println!("Actual cursor pos: {:?}", snapshot.cursor_state.map(|cs| (cs.y, cs.x)));
+        println!(
+            "Actual cursor pos: {:?}",
+            snapshot.cursor_state.map(|cs| (cs.y, cs.x))
+        );
 
         match snapshot.lines[0].cells[0] {
-            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => assert_eq!(cell.c, 'H'),
+            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
+                assert_eq!(cell.c, 'H')
+            }
             _ => panic!("Expected H at [0][0]"),
         }
         match snapshot.lines[0].cells[1] {
-            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => assert_eq!(cell.c, 'e'),
+            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
+                assert_eq!(cell.c, 'e')
+            }
             _ => panic!("Expected e at [0][1]"),
         }
         match snapshot.lines[0].cells[2] {
-            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => assert_eq!(cell.c, 'l'),
+            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
+                assert_eq!(cell.c, 'l')
+            }
             _ => panic!("Expected l at [0][2]"),
         }
         match snapshot.lines[0].cells[3] {
-            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => assert_eq!(cell.c, 'l'),
+            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
+                assert_eq!(cell.c, 'l')
+            }
             _ => panic!("Expected l at [0][3]"),
         }
         match snapshot.lines[0].cells[4] {
-            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => assert_eq!(cell.c, 'o'),
+            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
+                assert_eq!(cell.c, 'o')
+            }
             _ => panic!("Expected o at [0][4]"),
         }
         match snapshot.lines[1].cells[0] {
-            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => assert_eq!(cell.c, 'W'),
+            crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
+                assert_eq!(cell.c, 'W')
+            }
             _ => panic!("Expected W at [1][0]"),
         }
     }

@@ -14,9 +14,9 @@ use std::cmp::min;
 use std::cmp::{max, min as std_min}; // For local min/max, renamed from std::cmp::min
 use std::collections::VecDeque;
 
-use crate::glyph::{AttrFlags, Attributes, Glyph, ContentCell}; // Added AttrFlags
-use crate::term::snapshot::{Point, Selection, SelectionMode, SelectionRange};
 use crate::config::CONFIG;
+use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph}; // Added AttrFlags
+use crate::term::snapshot::{Point, Selection, SelectionMode, SelectionRange};
 use log::{trace, warn};
 
 // Define a type alias for a single row in the grid
@@ -39,7 +39,7 @@ impl From<u16> for TabClearMode {
     fn from(value: u16) -> Self {
         match value {
             0 => TabClearMode::CurrentColumn, // CSI Ps = 0 => Clear Current Column Tab Stop
-            2 | 5 => TabClearMode::All,       // CSI Ps = 2 or 5 => Clear All Tab Stops. Mode 5 is common.
+            2 | 5 => TabClearMode::All, // CSI Ps = 2 or 5 => Clear All Tab Stops. Mode 5 is common.
             _ => {
                 warn!("Unsupported tab clear mode value: {}", value);
                 TabClearMode::Unsupported
@@ -126,7 +126,8 @@ impl Screen {
         let scrollback = VecDeque::with_capacity(scrollback_limit_from_config);
 
         let mut tabs = vec![false; w];
-        for i in (CONFIG.behavior.tabspaces as usize..w).step_by(CONFIG.behavior.tabspaces as usize) {
+        for i in (CONFIG.behavior.tabspaces as usize..w).step_by(CONFIG.behavior.tabspaces as usize)
+        {
             if i < tabs.len() {
                 tabs[i] = true;
             }
@@ -185,7 +186,7 @@ impl Screen {
 
     /// Helper to get the glyph used for filling cleared areas.
     fn get_default_fill_glyph(&self) -> Glyph {
-        Glyph::Single(ContentCell{
+        Glyph::Single(ContentCell {
             c: ' ',
             attr: self.default_attributes,
         })
@@ -230,6 +231,9 @@ impl Screen {
         self.mark_line_dirty(y);
     }
 
+    /// Scrolls lines within the defined scrolling region upwards by `n` lines.
+    /// New lines at the bottom of the region are filled with the default fill glyph.
+    /// Lines scrolled off the top of the region are discarded (no scrollback).
     pub fn scroll_up_serial(&mut self, n: usize) {
         let fill_glyph = self.get_default_fill_glyph();
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
@@ -239,12 +243,13 @@ impl Screen {
             );
             return;
         }
+        // Determine the actual number of lines to scroll, capped by region height
         let n_val = n.min(self.scroll_bot.saturating_sub(self.scroll_top) + 1);
         if n_val == 0 {
-            return;
+            return; // No scrolling needed
         }
         trace!(
-            "Scrolling up by {} lines in region ({}, {}) with default fill",
+            "Scrolling up by {} lines in region ({}, {}) with default fill (NO SCROLLBACK)",
             n_val,
             self.scroll_top,
             self.scroll_bot
@@ -253,31 +258,37 @@ impl Screen {
         let top = self.scroll_top;
         let bot = self.scroll_bot;
 
-        if !self.alt_screen_active && top == 0 {
-            for i in 0..n_val {
-                if self.scrollback.len() >= self.scrollback_limit && self.scrollback_limit > 0 {
-                    self.scrollback.pop_front();
-                }
-                if self.scrollback_limit > 0 && i < self.grid.len() {
-                    self.scrollback.push_back(self.grid[i].clone());
-                }
-            }
-        }
-
+        // Get a mutable reference to the currently active grid
         let active_grid = self.active_grid_mut();
+
+        // Perform the rotation: lines from `top + n_val` to `bot` move to `top` to `bot - n_val`.
+        // The `rotate_left` method on a slice shifts elements to the left,
+        // and elements shifted off the beginning are wrapped around to the end.
         active_grid[top..=bot].rotate_left(n_val);
 
+        // Fill the newly vacated lines at the bottom of the scrolling region
+        // The lines that were wrapped around by rotate_left are now at the end of the slice.
+        // These are the lines that need to be cleared.
         for y_idx in (bot.saturating_sub(n_val) + 1)..=bot {
             if let Some(row_to_fill) = active_grid.get_mut(y_idx) {
                 row_to_fill.fill(fill_glyph.clone());
+            } else {
+                // This should ideally not happen if bounds are correct
+                warn!(
+                    "scroll_up_serial: Attempted to fill non-existent row {} during scroll.",
+                    y_idx
+                );
             }
         }
 
+        // Mark all lines within the scrolled region as dirty
         for y_idx in top..=bot {
             self.mark_line_dirty(y_idx);
         }
     }
 
+    /// Scrolls lines within the defined scrolling region downwards by `n` lines.
+    /// New lines at the top of the region are filled with the default fill glyph.
     pub fn scroll_down_serial(&mut self, n: usize) {
         let fill_glyph = self.get_default_fill_glyph();
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
@@ -287,9 +298,10 @@ impl Screen {
             );
             return;
         }
+        // Determine the actual number of lines to scroll, capped by region height
         let n_val = n.min(self.scroll_bot.saturating_sub(self.scroll_top) + 1);
         if n_val == 0 {
-            return;
+            return; // No scrolling needed
         }
         trace!(
             "Scrolling down by {} lines in region ({}, {}) with default fill",
@@ -301,15 +313,29 @@ impl Screen {
         let top = self.scroll_top;
         let bot = self.scroll_bot;
 
+        // Get a mutable reference to the currently active grid
         let active_grid = self.active_grid_mut();
+
+        // Perform the rotation: lines from `top` to `bot - n_val` move to `top + n_val` to `bot`.
+        // The `rotate_right` method on a slice shifts elements to the right,
+        // and elements shifted off the end are wrapped around to the beginning.
         active_grid[top..=bot].rotate_right(n_val);
 
+        // Fill the newly vacated lines at the top of the scrolling region.
+        // These are the lines that were wrapped around by rotate_right.
         for y_idx in top..(top + n_val) {
             if let Some(row_to_fill) = active_grid.get_mut(y_idx) {
                 row_to_fill.fill(fill_glyph.clone());
+            } else {
+                // This should ideally not happen if bounds are correct
+                warn!(
+                    "scroll_down_serial: Attempted to fill non-existent row {} during scroll.",
+                    y_idx
+                );
             }
         }
 
+        // Mark all lines within the scrolled region as dirty
         for y_idx in top..=bot {
             self.mark_line_dirty(y_idx);
         }
@@ -397,58 +423,104 @@ impl Screen {
     }
 
     pub fn resize(&mut self, new_width: usize, new_height: usize) {
-        let nw = new_width.max(1);
-        let nh = new_height.max(1);
-        let scrollback_limit_from_config = CONFIG.behavior.scrollback_lines;
+        let nw = new_width.max(1); // Ensure new width is at least 1
+        let nh = new_height.max(1); // Ensure new height is at least 1
+
+        // Log the resize operation
         warn!(
-            "Screen resize from {}x{} (scrollback: {}) to {}x{} (scrollback: {})",
-            self.width, self.height, self.scrollback_limit, nw, nh, scrollback_limit_from_config
+            "Screen resize from {}x{} to {}x{} (scrollback is NOT handled by this resize function)",
+            self.width, self.height, nw, nh
         );
 
-        self.clear_selection(); // Clear selection on resize
+        // 1. Clear selection before any structural changes
+        self.clear_selection();
 
-        let old_width = self.width;
-        self.width = nw;
-        self.height = nh;
-        self.scrollback_limit = scrollback_limit_from_config;
-
+        let old_height = self.height;
+        // let old_width = self.width; // Not strictly needed if only copying row by row and then resizing rows
         let fill_glyph = self.get_default_fill_glyph();
 
-        self.grid.resize_with(nh, || vec![fill_glyph.clone(); nw]);
-        for row_ref in self.grid.iter_mut() {
-            row_ref.resize(nw, fill_glyph.clone());
-        }
-        self.alt_grid
-            .resize_with(nh, || vec![fill_glyph.clone(); nw]);
-        for row_ref in self.alt_grid.iter_mut() {
-            row_ref.resize(nw, fill_glyph.clone());
-        }
-
-        if old_width != nw {
-            for row_ref in self.scrollback.iter_mut() {
-                row_ref.resize(nw, fill_glyph.clone());
+        // 2. If scrollback field exists but is unsupported, ensure it's managed minimally.
+        //    If st-like behavior means no scrollback AT ALL, this field might be vestigial.
+        //    For now, we just ensure it doesn't interfere with resize.
+        //    If CONFIG.behavior.scrollback_lines is 0, this should be fine.
+        self.scrollback_limit = CONFIG.behavior.scrollback_lines; // Or explicitly 0 if always unsupported
+        if self.scrollback_limit == 0 {
+            if !self.scrollback.is_empty() {
+                self.scrollback.clear();
+                self.scrollback.shrink_to_fit(); // Free memory if it was used
+            }
+        } else {
+            // If scrollback_limit > 0 but we are emulating st (no scrollback during resize)
+            // we still might want to adjust width of existing scrollback lines if any exist
+            // for consistency, though they wouldn't be populated by this resize.
+            // This part is a bit ambiguous if scrollback is "unsupported" but the field exists.
+            // For st-like resize, scrollback isn't part of the visible screen change.
+            // Let's assume if scrollback_limit is > 0, we still resize its lines for width.
+            if nw != self.width {
+                // self.width is still old_width here
+                for row_ref in self.scrollback.iter_mut() {
+                    row_ref.resize(nw, fill_glyph.clone());
+                }
+            }
+            while self.scrollback.len() > self.scrollback_limit {
+                self.scrollback.pop_front();
             }
         }
-        while self.scrollback.len() > self.scrollback_limit {
-            self.scrollback.pop_front();
-        }
-        if self.scrollback.capacity() > self.scrollback_limit + SOME_REASONABLE_SLACK {
-            self.scrollback.shrink_to_fit();
-        }
 
+        // 3. Create new primary grid and copy content
+        //    Content is anchored to the top-left.
+        let mut new_primary_grid = vec![vec![fill_glyph.clone(); nw]; nh];
+        for y in 0..std_min(old_height, nh) {
+            // Check if the row y exists in the old grid
+            if let Some(old_row_content) = self.grid.get(y) {
+                let mut new_row = vec![fill_glyph.clone(); nw];
+                for x in 0..std_min(old_row_content.len(), nw) {
+                    new_row[x] = old_row_content[x].clone();
+                }
+                // new_primary_grid[y] is guaranteed to exist due to initialization size
+                new_primary_grid[y] = new_row;
+            }
+            // If old_height > nh, lines beyond nh-1 are truncated.
+            // If old_height < nh, new lines at the bottom remain as fill_glyph.
+        }
+        self.grid = new_primary_grid;
+
+        // 4. Create new alternate grid and copy content (similarly)
+        let mut new_alt_grid = vec![vec![fill_glyph.clone(); nw]; nh];
+        for y in 0..std_min(old_height, nh) {
+            if let Some(old_row_content) = self.alt_grid.get(y) {
+                let mut new_row = vec![fill_glyph.clone(); nw];
+                for x in 0..std_min(old_row_content.len(), nw) {
+                    new_row[x] = old_row_content[x].clone();
+                }
+                new_alt_grid[y] = new_row;
+            }
+        }
+        self.alt_grid = new_alt_grid;
+
+        // 5. Update screen dimensions and related properties
+        self.width = nw;
+        self.height = nh;
+
+        // Reset scrolling region to full screen (typical for st-like behavior on resize)
         self.scroll_top = 0;
         self.scroll_bot = nh.saturating_sub(1);
 
+        // Reinitialize tab stops for the new width
         self.tabs = vec![false; nw];
-        for i in (CONFIG.behavior.tabspaces as usize..nw).step_by(CONFIG.behavior.tabspaces as usize) {
+        for i in
+            (CONFIG.behavior.tabspaces as usize..nw).step_by(CONFIG.behavior.tabspaces as usize)
+        {
             if i < self.tabs.len() {
                 self.tabs[i] = true;
             }
         }
 
+        // Mark all lines in the new grid as dirty
         self.dirty = vec![1; nh];
+
         trace!(
-            "Screen resized. New dimensions: {}x{}. All lines marked dirty.",
+            "Screen resized (st-like, no scrollback handling in resize). New dimensions: {}x{}. All lines marked dirty.",
             nw,
             nh
         );
@@ -629,7 +701,10 @@ impl Screen {
         }
 
         self.selection = Selection {
-            range: Some(SelectionRange { start: point, end: point }),
+            range: Some(SelectionRange {
+                start: point,
+                end: point,
+            }),
             mode,
             is_active: true,
         };
@@ -747,62 +822,64 @@ impl Screen {
                 // Multi-line selection:
                 // Check if the point is on the start line of the selection.
                 if point.y == raw_start.y {
-                    return if raw_start.y < raw_end.y { // Selection goes downwards
+                    return if raw_start.y < raw_end.y {
+                        // Selection goes downwards
                         point.x >= raw_start.x
-                    } else { // Selection goes upwards (raw_start_y > raw_end_y)
+                    } else {
+                        // Selection goes upwards (raw_start_y > raw_end_y)
                         point.x <= raw_start.x
                     };
                 }
                 // Check if the point is on the end line of the selection.
                 if point.y == raw_end.y {
-                    return if raw_start.y < raw_end.y { // Selection goes downwards
+                    return if raw_start.y < raw_end.y {
+                        // Selection goes downwards
                         point.x <= raw_end.x
-                    } else { // Selection goes upwards
+                    } else {
+                        // Selection goes upwards
                         point.x >= raw_end.x
                     };
                 }
                 // Point is on a line between the start and end lines.
                 // In 'Cell' mode, this means the entire line is selected.
                 return true;
-            }
-            // TODO: Implement other selection modes like Block if they are added.
-            // For now, Block, SemanticLine, SemanticWord are commented out or not present
-            // in the SelectionMode enum used by this logic.
-            // e.g., SelectionMode::Block => {
-            //     let min_x = std_min(raw_start.x, raw_end.x);
-            //     let max_x = max(raw_start.x, raw_end.x);
-            //     let min_y = std_min(raw_start.y, raw_end.y);
-            //     let max_y = max(raw_start.y, raw_end.y);
-            //     return point.x >= min_x
-            //         && point.x <= max_x
-            //         && point.y >= min_y
-            //         && point.y <= max_y;
-            // }
-            // SelectionMode::SemanticLine | SelectionMode::SemanticWord => {
-            //     // For semantic selections, is_selected might behave like Normal or Block
-            //     // depending on how the range was defined by the semantic logic.
-            //     // Assuming for now it behaves like Normal for highlighting purposes.
-            //     let (box_start_y, box_end_y) = if raw_start.y <= raw_end.y {
-            //         (raw_start.y, raw_end.y)
-            //     } else {
-            //         (raw_end.y, raw_start.y)
-            //     };
+            } // TODO: Implement other selection modes like Block if they are added.
+              // For now, Block, SemanticLine, SemanticWord are commented out or not present
+              // in the SelectionMode enum used by this logic.
+              // e.g., SelectionMode::Block => {
+              //     let min_x = std_min(raw_start.x, raw_end.x);
+              //     let max_x = max(raw_start.x, raw_end.x);
+              //     let min_y = std_min(raw_start.y, raw_end.y);
+              //     let max_y = max(raw_start.y, raw_end.y);
+              //     return point.x >= min_x
+              //         && point.x <= max_x
+              //         && point.y >= min_y
+              //         && point.y <= max_y;
+              // }
+              // SelectionMode::SemanticLine | SelectionMode::SemanticWord => {
+              //     // For semantic selections, is_selected might behave like Normal or Block
+              //     // depending on how the range was defined by the semantic logic.
+              //     // Assuming for now it behaves like Normal for highlighting purposes.
+              //     let (box_start_y, box_end_y) = if raw_start.y <= raw_end.y {
+              //         (raw_start.y, raw_end.y)
+              //     } else {
+              //         (raw_end.y, raw_start.y)
+              //     };
 
-            //     if point.y < box_start_y || point.y > box_end_y {
-            //         return false;
-            //     }
+              //     if point.y < box_start_y || point.y > box_end_y {
+              //         return false;
+              //     }
 
-            //     if raw_start.y == raw_end.y {
-            //         let line_min_x = std_min(raw_start.x, raw_end.x);
-            //         let line_max_x = max(raw_start.x, raw_end.x);
-            //         return point.x >= line_min_x && point.x <= line_max_x;
-            //     }
-            //      // For multi-line semantic (like line selection), assume full lines are selected
-            //     return true;
-            // }
+              //     if raw_start.y == raw_end.y {
+              //         let line_min_x = std_min(raw_start.x, raw_end.x);
+              //         let line_max_x = max(raw_start.x, raw_end.x);
+              //         return point.x >= line_min_x && point.x <= line_max_x;
+              //     }
+              //      // For multi-line semantic (like line selection), assume full lines are selected
+              //     return true;
+              // }
         }
     }
-
 
     /// Retrieves the text content of the current selection.
     ///
@@ -825,8 +902,9 @@ impl Screen {
         };
 
         // Normalize selection points so norm_start_point is visually above or to the left of norm_end_point.
-        let (norm_start_point, norm_end_point) = if range.start.y > range.end.y || 
-                                                   (range.start.y == range.end.y && range.start.x > range.end.x) {
+        let (norm_start_point, norm_end_point) = if range.start.y > range.end.y
+            || (range.start.y == range.end.y && range.start.x > range.end.x)
+        {
             (range.end, range.start)
         } else {
             (range.start, range.end)
@@ -838,27 +916,40 @@ impl Screen {
         match self.selection.mode {
             SelectionMode::Cell => {
                 for y_abs in norm_start_point.y..=norm_end_point.y {
-                    if y_abs >= grid_to_use.len() { continue; } // Should not happen with valid points
+                    if y_abs >= grid_to_use.len() {
+                        continue;
+                    } // Should not happen with valid points
 
                     let current_row_glyphs = &grid_to_use[y_abs];
                     let mut current_line_text = String::new();
 
                     // Determine the start and end columns for text extraction on the current line.
-                    let line_col_start = if y_abs == norm_start_point.y { norm_start_point.x } else { 0 };
-                    let line_col_end = if y_abs == norm_end_point.y { norm_end_point.x } else { self.width.saturating_sub(1) };
-                    
-                    // Ensure line_col_end does not exceed grid width for safety, though std_min handles this too.
-                    let effective_line_col_end = std_min(line_col_end, self.width.saturating_sub(1));
+                    let line_col_start = if y_abs == norm_start_point.y {
+                        norm_start_point.x
+                    } else {
+                        0
+                    };
+                    let line_col_end = if y_abs == norm_end_point.y {
+                        norm_end_point.x
+                    } else {
+                        self.width.saturating_sub(1)
+                    };
 
-                    if line_col_start > effective_line_col_end && !(line_col_start == 0 && effective_line_col_end == 0 && self.width == 0) { 
+                    // Ensure line_col_end does not exceed grid width for safety, though std_min handles this too.
+                    let effective_line_col_end =
+                        std_min(line_col_end, self.width.saturating_sub(1));
+
+                    if line_col_start > effective_line_col_end
+                        && !(line_col_start == 0 && effective_line_col_end == 0 && self.width == 0)
+                    {
                         // This handles cases like zero-width selection or start beyond end on a line.
                         // If it's a multi-line selection, we still need the newline.
                         if y_abs < norm_end_point.y {
-                             selected_text_buffer.push('\n');
+                            selected_text_buffer.push('\n');
                         }
                         continue;
                     }
-                    
+
                     for x_abs in line_col_start..=effective_line_col_end {
                         if x_abs < current_row_glyphs.len() {
                             current_line_text.push(current_row_glyphs[x_abs].display_char());
@@ -873,8 +964,10 @@ impl Screen {
                     // 2. This is NOT the last line of the multi-line selection (y_abs < norm_end_point.y)
                     // 3. The selection on this line went all the way to the end of the screen width (line_col_end included self.width - 1)
                     if norm_start_point.y != norm_end_point.y && y_abs < norm_end_point.y {
-                        if line_col_end >= self.width.saturating_sub(1) { // Check if selection extended to line end
-                            if let Some(last_char_idx) = current_line_text.rfind(|c: char| c != ' ') {
+                        if line_col_end >= self.width.saturating_sub(1) {
+                            // Check if selection extended to line end
+                            if let Some(last_char_idx) = current_line_text.rfind(|c: char| c != ' ')
+                            {
                                 current_line_text.truncate(last_char_idx + 1);
                             } else {
                                 current_line_text.clear(); // Line was all spaces
@@ -887,30 +980,29 @@ impl Screen {
                         selected_text_buffer.push('\n');
                     }
                 }
-            }
-            // TODO: Implement Block selection text retrieval if/when that mode is fully supported.
-            // SelectionMode::Block => {
-            //     let min_x = std_min(start_point.x, end_point.x);
-            //     let max_x = max(start_point.x, end_point.x);
+            } // TODO: Implement Block selection text retrieval if/when that mode is fully supported.
+              // SelectionMode::Block => {
+              //     let min_x = std_min(start_point.x, end_point.x);
+              //     let max_x = max(start_point.x, end_point.x);
 
-            //     for y in norm_start_point.y..=norm_end_point.y {
-            //         if y >= grid_to_use.len() { continue; }
-            //         let current_row_glyphs = &grid_to_use[y];
-            //         let mut current_line_text = String::new();
+              //     for y in norm_start_point.y..=norm_end_point.y {
+              //         if y >= grid_to_use.len() { continue; }
+              //         let current_row_glyphs = &grid_to_use[y];
+              //         let mut current_line_text = String::new();
 
-            //         for x in min_x..=max_x {
-            //             if x < current_row_glyphs.len() {
-            //                 current_line_text.push(current_row_glyphs[x].c);
-            //             } else {
-            //                 current_line_text.push(' ');
-            //             }
-            //         }
-            //         selected_text_buffer.push_str(&current_line_text);
-            //         if y < norm_end_point.y {
-            //             selected_text_buffer.push('\n');
-            //         }
-            //     }
-            // }
+              //         for x in min_x..=max_x {
+              //             if x < current_row_glyphs.len() {
+              //                 current_line_text.push(current_row_glyphs[x].c);
+              //             } else {
+              //                 current_line_text.push(' ');
+              //             }
+              //         }
+              //         selected_text_buffer.push_str(&current_line_text);
+              //         if y < norm_end_point.y {
+              //             selected_text_buffer.push('\n');
+              //         }
+              //     }
+              // }
         }
 
         if selected_text_buffer.is_empty() {
@@ -925,11 +1017,18 @@ const SOME_REASONABLE_SLACK: usize = 20;
 
 #[cfg(test)]
 mod tests {
-    use super::{AttrFlags, Attributes, Glyph, Point, Screen, Selection, SelectionMode, SelectionRange, ContentCell}; // Added ContentCell
+    use super::{
+        AttrFlags, Attributes, ContentCell, Glyph, Point, Screen, Selection, SelectionMode,
+        SelectionRange,
+    }; // Added ContentCell
 
     // Helper function for tests, using a fixed scrollback for test predictability
     // or allowing tests to specify if some need to test scrollback behavior explicitly.
-    fn create_test_screen_with_scrollback(width: usize, height: usize, scrollback: usize) -> Screen {
+    fn create_test_screen_with_scrollback(
+        width: usize,
+        height: usize,
+        scrollback: usize,
+    ) -> Screen {
         // Temporarily override config for consistent tests if Screen::new now solely relies on CONFIG
         // This is tricky. For now, let's assume tests might need to adapt or Screen::new might need
         // a test-specific constructor or tests mock CONFIG (which is hard with static Lazy).
@@ -951,7 +1050,6 @@ mod tests {
         // Most tests used 0, implying scrollback wasn't their focus or they expected no scrollback.
         create_test_screen_with_scrollback(width, height, 0)
     }
-
 
     fn fill_screen_with_pattern(screen: &mut Screen) {
         for r in 0..screen.height {
@@ -978,7 +1076,13 @@ mod tests {
         let start_point = Point { x: 1, y: 1 };
         screen.dirty.fill(0);
         screen.start_selection(start_point, SelectionMode::Cell); // Replaced Normal with Cell
-        assert_eq!(screen.selection.range, Some(SelectionRange { start: start_point, end: start_point }));
+        assert_eq!(
+            screen.selection.range,
+            Some(SelectionRange {
+                start: start_point,
+                end: start_point
+            })
+        );
         assert!(screen.selection.is_active);
         assert_eq!(screen.dirty[start_point.y], 1);
     }
@@ -1072,11 +1176,11 @@ mod tests {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 8, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 2, y: 2 });
-        assert!(screen.is_selected(Point{x: 9, y:0}));
-        assert!(screen.is_selected(Point{x: 0, y:1}));
-        assert!(screen.is_selected(Point{x: 9, y:1}));
-        assert!(screen.is_selected(Point{x: 0, y:2}));
-        assert!(screen.is_selected(Point{x: 2, y:2}));
+        assert!(screen.is_selected(Point { x: 9, y: 0 }));
+        assert!(screen.is_selected(Point { x: 0, y: 1 }));
+        assert!(screen.is_selected(Point { x: 9, y: 1 }));
+        assert!(screen.is_selected(Point { x: 0, y: 2 }));
+        assert!(screen.is_selected(Point { x: 2, y: 2 }));
     }
 
     #[test]
@@ -1106,9 +1210,18 @@ mod tests {
     fn test_is_selected_out_of_bounds_point() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
-        screen.update_selection(Point { x: screen.width - 1, y: screen.height - 1 });
-        assert!(!screen.is_selected(Point { x: screen.width, y: 0 }));
-        assert!(!screen.is_selected(Point { x: 0, y: screen.height }));
+        screen.update_selection(Point {
+            x: screen.width - 1,
+            y: screen.height - 1,
+        });
+        assert!(!screen.is_selected(Point {
+            x: screen.width,
+            y: 0
+        }));
+        assert!(!screen.is_selected(Point {
+            x: 0,
+            y: screen.height
+        }));
     }
 
     // Commenting out Block tests as Block mode is not defined
@@ -1163,7 +1276,10 @@ mod tests {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
-        screen.update_selection(Point { x: screen.width - 1, y: 0 });
+        screen.update_selection(Point {
+            x: screen.width - 1,
+            y: 0,
+        });
         assert_eq!(screen.get_selected_text(), Some("abcde".to_string()));
     }
 
@@ -1188,16 +1304,46 @@ mod tests {
     #[test]
     fn test_get_selected_text_normal_trailing_spaces_behavior() {
         let mut screen = create_test_screen(5, 2);
-        screen.grid[0][0] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
-        screen.grid[0][1] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
-        screen.grid[0][2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-        screen.grid[0][3] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-        screen.grid[0][4] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-        screen.grid[1][0] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
-        screen.grid[1][1] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
-        screen.grid[1][2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-        screen.grid[1][3] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-        screen.grid[1][4] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        screen.grid[0][0] = Glyph::Single(ContentCell {
+            c: 'a',
+            attr: Attributes::default(),
+        });
+        screen.grid[0][1] = Glyph::Single(ContentCell {
+            c: 'a',
+            attr: Attributes::default(),
+        });
+        screen.grid[0][2] = Glyph::Single(ContentCell {
+            c: ' ',
+            attr: Attributes::default(),
+        });
+        screen.grid[0][3] = Glyph::Single(ContentCell {
+            c: ' ',
+            attr: Attributes::default(),
+        });
+        screen.grid[0][4] = Glyph::Single(ContentCell {
+            c: ' ',
+            attr: Attributes::default(),
+        });
+        screen.grid[1][0] = Glyph::Single(ContentCell {
+            c: 'b',
+            attr: Attributes::default(),
+        });
+        screen.grid[1][1] = Glyph::Single(ContentCell {
+            c: 'b',
+            attr: Attributes::default(),
+        });
+        screen.grid[1][2] = Glyph::Single(ContentCell {
+            c: ' ',
+            attr: Attributes::default(),
+        });
+        screen.grid[1][3] = Glyph::Single(ContentCell {
+            c: ' ',
+            attr: Attributes::default(),
+        });
+        screen.grid[1][4] = Glyph::Single(ContentCell {
+            c: ' ',
+            attr: Attributes::default(),
+        });
 
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 4, y: 0 });

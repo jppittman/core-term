@@ -26,9 +26,15 @@ pub enum UserInputAction {
 
     // New selection-related actions
     /// Starts a selection at the given cell coordinates (e.g., mouse button press).
-    StartSelection { x: usize, y: usize },
+    StartSelection {
+        x: usize,
+        y: usize,
+    },
     /// Extends an ongoing selection to the given cell coordinates (e.g., mouse drag).
-    ExtendSelection { x: usize, y: usize },
+    ExtendSelection {
+        x: usize,
+        y: usize,
+    },
     /// Finalizes a selection (e.g., mouse button release).
     /// If the selection start and end are the same (a click without drag),
     /// it might clear any existing selection or perform other click-based actions.

@@ -23,7 +23,8 @@ use x11::{xft, xlib};
 
 /// Wraps an `XftFont` pointer to ensure it's closed via `XftFontClose` on drop.
 #[derive(Debug)]
-pub(super) struct SafeXftFont { // Made pub(super)
+pub(super) struct SafeXftFont {
+    // Made pub(super)
     ptr: *mut xft::XftFont,
     display: *mut xlib::Display, // Needed for XftFontClose
 }
@@ -74,7 +75,8 @@ impl Drop for SafeXftFont {
 
 /// Wraps an `XftDraw` pointer to ensure it's destroyed via `XftDrawDestroy` on drop.
 #[derive(Debug)]
-pub(super) struct SafeXftDraw { // Made pub(super)
+pub(super) struct SafeXftDraw {
+    // Made pub(super)
     ptr: *mut xft::XftDraw,
 }
 
@@ -101,7 +103,8 @@ impl Drop for SafeXftDraw {
 
 /// Wraps an X11 `GC` (Graphics Context) to ensure it's freed via `XFreeGC` on drop.
 #[derive(Debug)]
-pub(super) struct SafeGc { // Made pub(super)
+pub(super) struct SafeGc {
+    // Made pub(super)
     gc: xlib::GC, // This is an XID (typically ulong), not a pointer.
     display: *mut xlib::Display,
     is_valid: bool, // To track if GC is valid and needs freeing.
@@ -118,7 +121,11 @@ impl SafeGc {
 
     #[inline]
     fn raw(&self) -> xlib::GC {
-        if self.is_valid { self.gc } else { ptr::null_mut() } // Or handle error
+        if self.is_valid {
+            self.gc
+        } else {
+            ptr::null_mut()
+        } // Or handle error
     }
 }
 
@@ -139,7 +146,8 @@ impl Drop for SafeGc {
 
 /// Wraps an `XftColor` structure to ensure it's freed via `XftColorFree` on drop.
 #[derive(Debug, Clone)] // Removed Copy
-pub(super) struct SafeXftColor { // Made pub(super)
+pub(super) struct SafeXftColor {
+    // Made pub(super)
     color: xft::XftColor,
     display: *mut xlib::Display,
     visual: *mut xlib::Visual,
@@ -165,7 +173,8 @@ impl SafeXftColor {
     }
 
     #[inline]
-    fn cloned_color(&self) -> xft::XftColor { // Changed from raw() to cloned_color()
+    fn cloned_color(&self) -> xft::XftColor {
+        // Changed from raw() to cloned_color()
         self.color // xft::XftColor is Copy
     }
 
@@ -245,8 +254,8 @@ pub(super) struct PreGraphicsData {
 /// cleanup was not performed.
 #[derive(Debug)]
 pub struct Graphics {
-    xft_font: SafeXftFont, // Owns the XftFont resource
-    xft_draw: SafeXftDraw, // Owns the XftDraw resource
+    xft_font: SafeXftFont,              // Owns the XftFont resource
+    xft_draw: SafeXftDraw,              // Owns the XftDraw resource
     xft_ansi_colors: Vec<SafeXftColor>, // Owns the pre-allocated ANSI XftColors
     xft_color_cache_rgb: HashMap<(u8, u8, u8), SafeXftColor>, // Owns cached XftColors
     font_width_px: u32,
@@ -279,8 +288,8 @@ impl Graphics {
         // 1. Load Font & Metrics
         let font_name_from_config = CONFIG.appearance.font.normal.as_str();
         debug!("Loading font: {}", font_name_from_config);
-        let font_name_cstr =
-            CString::new(font_name_from_config).context("Failed to create CString for font name")?;
+        let font_name_cstr = CString::new(font_name_from_config)
+            .context("Failed to create CString for font name")?;
 
         // SAFETY: Xlib/Xft FFI call. `display` and `screen` must be valid.
         let xft_font_raw_ptr =
@@ -394,11 +403,13 @@ impl Graphics {
 
         // Determine default background pixel value from CONFIG.colors.background
         let default_bg_pixel_value = {
-            let effective_bg_rgb = match crate::color::convert_to_rgb_color(CONFIG.colors.background) {
+            let effective_bg_rgb = match crate::color::convert_to_rgb_color(
+                CONFIG.colors.background,
+            ) {
                 Color::Rgb(r, g, b) => (r, g, b),
                 _ => {
                     warn!("CONFIG.colors.background ({:?}) did not resolve to RGB. Defaulting to black for initial window background.", CONFIG.colors.background);
-                    (0,0,0) // Default to black
+                    (0, 0, 0) // Default to black
                 }
             };
             let (r_u8, g_u8, b_u8) = effective_bg_rgb;
@@ -425,12 +436,16 @@ impl Graphics {
             if !success {
                 // xft_font's Drop will be called automatically.
                 // SafeXftColors in xft_ansi_colors will also be dropped.
-                return Err(anyhow!("Failed to allocate XftColor for CONFIG.colors.background ({:?})", CONFIG.colors.background));
+                return Err(anyhow!(
+                    "Failed to allocate XftColor for CONFIG.colors.background ({:?})",
+                    CONFIG.colors.background
+                ));
             }
 
             // Manage the allocated color with SafeXftColor so it gets freed.
             // We only need the pixel value for PreGraphicsData.
-            let temp_safe_bg_color = SafeXftColor::new(bg_xft_color_data, display, visual, colormap, true);
+            let temp_safe_bg_color =
+                SafeXftColor::new(bg_xft_color_data, display, visual, colormap, true);
             let pixel_val = temp_safe_bg_color.cloned_color().pixel;
             // temp_safe_bg_color will be dropped at the end of this scope, freeing the Xft color.
             // This is correct as PreGraphicsData only needs the pixel value, not the XftColor struct.
@@ -480,8 +495,7 @@ impl Graphics {
 
         // 1. Create XftDraw object for the window.
         // SAFETY: FFI call. display, window_id, visual, colormap must be valid.
-        let xft_draw_raw_ptr =
-            unsafe { xft::XftDrawCreate(display, window_id, visual, colormap) };
+        let xft_draw_raw_ptr = unsafe { xft::XftDrawCreate(display, window_id, visual, colormap) };
 
         if xft_draw_raw_ptr.is_null() {
             // If this fails, pre_data (including its SafeXftFont and Vec<SafeXftColor>)
@@ -509,8 +523,8 @@ impl Graphics {
         debug!("Clear GC created: {:p}", clear_gc.raw());
 
         Ok(Self {
-            xft_font: pre_data.xft_font, // Moved from pre_data
-            xft_draw,                    // Newly created SafeXftDraw
+            xft_font: pre_data.xft_font,               // Moved from pre_data
+            xft_draw,                                  // Newly created SafeXftDraw
             xft_ansi_colors: pre_data.xft_ansi_colors, // Moved from pre_data
             xft_color_cache_rgb: HashMap::new(),
             font_width_px: pre_data.font_width_px,
@@ -533,7 +547,8 @@ impl Graphics {
         &mut self,
         connection: &Connection,
         color: Color,
-    ) -> Result<xft::XftColor> { // Returns an owned XftColor
+    ) -> Result<xft::XftColor> {
+        // Returns an owned XftColor
         match color {
             Color::Default => {
                 error!("Graphics::resolve_concrete_xft_color received Color::Default. This is a bug in the Renderer.");
@@ -548,7 +563,7 @@ impl Graphics {
                 let rgb_equivalent = crate::color::convert_to_rgb_color(Color::Indexed(idx));
                 if let Color::Rgb(r, g, b) = rgb_equivalent {
                     self.cached_rgb_to_xft_color(connection, r, g, b)
-                        // .map(|safe_color| safe_color.cloned_color())
+                    // .map(|safe_color| safe_color.cloned_color())
                 } else {
                     error!(
                         "Failed to convert Indexed({}) to RGB. Defaulting to black.",
@@ -559,9 +574,8 @@ impl Graphics {
                         .context("Fallback to black failed after Indexed color conversion error")
                 }
             }
-            Color::Rgb(r, g, b) => self
-                .cached_rgb_to_xft_color(connection, r, g, b),
-                // .map(|safe_color| safe_color.cloned_color()),
+            Color::Rgb(r, g, b) => self.cached_rgb_to_xft_color(connection, r, g, b),
+            // .map(|safe_color| safe_color.cloned_color()),
         }
     }
 
@@ -579,7 +593,8 @@ impl Graphics {
         r_u8: u8,
         g_u8: u8,
         b_u8: u8,
-    ) -> Result<xft::XftColor> { // Returns an owned XftColor
+    ) -> Result<xft::XftColor> {
+        // Returns an owned XftColor
         // Check cache first.
         // Using entry API to avoid double hash lookup and handle borrowing correctly.
         if !self.xft_color_cache_rgb.contains_key(&(r_u8, g_u8, b_u8)) {
@@ -615,7 +630,8 @@ impl Graphics {
                     colormap,
                     true, // Mark as allocated
                 );
-                self.xft_color_cache_rgb.insert((r_u8, g_u8, b_u8), safe_color);
+                self.xft_color_cache_rgb
+                    .insert((r_u8, g_u8, b_u8), safe_color);
             } else {
                 return Err(anyhow!(
                     "XftColorAllocValue failed for RGB({},{},{})",
@@ -627,7 +643,11 @@ impl Graphics {
         }
         // Return a clone of the inner XftColor from the cached SafeXftColor.
         // .unwrap() is safe here because we've just inserted it if it wasn't there.
-        Ok(self.xft_color_cache_rgb.get(&(r_u8, g_u8, b_u8)).unwrap().cloned_color())
+        Ok(self
+            .xft_color_cache_rgb
+            .get(&(r_u8, g_u8, b_u8))
+            .unwrap()
+            .cloned_color())
     }
 
     /// Clears the entire drawable area (associated with `self.xft_draw.raw()`) with a specified background color.
@@ -699,8 +719,8 @@ impl Graphics {
         unsafe {
             xft::XftDrawStringUtf8(
                 self.xft_draw.raw(),
-                &xft_fg,              // Pass a reference to the owned XftColor
-                self.xft_font.raw(),  // Use raw pointer from SafeXftFont
+                &xft_fg,             // Pass a reference to the owned XftColor
+                self.xft_font.raw(), // Use raw pointer from SafeXftFont
                 x_pixel,
                 baseline_y_pixel,
                 c_text.as_ptr() as *const u8,
@@ -823,7 +843,6 @@ impl Graphics {
         }
         Ok(())
     }
-
 
     /// Cleans up graphics resources.
     ///

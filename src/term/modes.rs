@@ -185,8 +185,8 @@ impl Default for DecPrivateModes {
             allow_alt_screen: true,        // Default: allow alt screen
             cursor_blink_mode: true,       // Default: blinking enabled (visuals TBD)
             insert_mode: false,            // Default: replace mode
-            linefeed_newline_mode: false,  // Default: LF is just LF
-            autowrap_mode: true,        // Default: Autowrap ON
+            linefeed_newline_mode: true,   // Default: LF is just LF
+            autowrap_mode: true,           // Default: Autowrap ON
         }
     }
 }

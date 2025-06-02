@@ -26,7 +26,7 @@ pub enum Glyph {
     /// it typically inherits appearance from its `WidePrimary` counterpart.
     /// `primary_column_on_line` stores the column index of the `WidePrimary`
     /// glyph this spacer belongs to, which can be useful for context.
-    WideSpacer{
+    WideSpacer {
         // TODO: Consider if `primary_column_on_line` is truly needed here or if
         // the renderer can manage this context. For now, it's kept from previous design.
         primary_column_on_line: u16,
@@ -112,7 +112,7 @@ impl ContentCell {
     /// Creates a default `ContentCell` representing a blank space with default attributes.
     pub fn default_space() -> Self {
         ContentCell {
-            c: ' ', 
+            c: ' ',
             attr: Attributes::default(),
         }
     }
