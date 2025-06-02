@@ -9,11 +9,19 @@
 
 use crate::color::Color;
 use bitflags::bitflags; // For creating flag enums like AttrFlags
-use std::fmt; // Import Color directly for use in Attributes
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Glyph {
+    Single(ContentCell),
+    WidePrimary(ContentCell),
+    WideSpacer{
+        primary_column_on_line: u16,
+    },
+}
 
 /// Represents a single character cell on the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Glyph {
+pub struct ContentCell {
     /// The character displayed in the cell.
     /// A `\0` (null character) often signifies the second part of a wide character.
     pub c: char,
@@ -65,27 +73,27 @@ pub struct Attributes {
     pub flags: AttrFlags,
 }
 
-// Optional: Implement Display for Glyph for easier debugging or direct printing if needed.
-// This will print only the character, not its attributes.
-impl fmt::Display for Glyph {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.c)
+impl Glyph {
+    /// Provides a default Glyph instance, representing a cleared/empty cell.
+    pub fn default_cell() -> Self {
+        Glyph::Single(ContentCell::default_space())
+    }
+
+    /// Helper to get the displayable character of the cell, if applicable.
+    /// For spacers, this might be the placeholder.
+    pub fn display_char(&self) -> char {
+        match self {
+            Glyph::Single(cc) | Glyph::WidePrimary(cc) => cc.c,
+            Glyph::WideSpacer { .. } => WIDE_CHAR_PLACEHOLDER,
+        }
     }
 }
 
-// Implementation for creating a default Glyph, typically using colors from config.
-// This replaces the old `DEFAULT_GLYPH` constant.
-impl Glyph {
-    /// Creates a new glyph with default attributes, typically used for empty cells.
-    /// It's recommended to pass default foreground and background colors from configuration.
-    pub fn new_default(default_fg: Color, default_bg: Color) -> Self {
-        Glyph {
-            c: ' ', // Default character is a space
-            attr: Attributes {
-                fg: default_fg,
-                bg: default_bg,
-                flags: AttrFlags::empty(), // No special attribute flags by default
-            },
+impl ContentCell {
+    pub fn default_space() -> Self {
+        ContentCell {
+            c: ' ', 
+            attr: Attributes::default(),
         }
     }
 }
