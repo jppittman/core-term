@@ -1,23 +1,26 @@
 // src/orchestrator/tests.rs
 
-use crate::config::{self, Config, Keybinding, KeybindingsConfig};
+use crate::config::{self}; // Config, Keybinding, KeybindingsConfig removed as unused for these tests
 use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
-use crate::keys::{KeySymbol, Modifiers}; // Added for KeySymbol, Modifiers
+use crate::keys::{KeySymbol, Modifiers};
 use crate::platform::backends::{
     BackendEvent, CursorVisibility, Driver, FocusState, PlatformState, RenderCommand, TextRunStyle,
 };
-use crate::platform::os::pty::PtyChannel; // Added for PtyChannel trait
+use crate::platform::os::pty::PtyChannel;
 use crate::renderer::Renderer;
-use crate::term::{
-    AnsiCommand, CursorRenderState, CursorShape, EmulatorAction, EmulatorInput, RenderSnapshot,
-    Selection, SnapshotLine, TerminalInterface, UserInputAction,
-}; // Added for TerminalInterface, UserInputAction, EmulatorInput, AnsiCommand, EmulatorAction
-use crate::ansi::AnsiParser; // Added for AnsiParser trait
-use crate::orchestrator::AppOrchestrator; // Added for AppOrchestrator
+use crate::term::{ // AnsiCommand removed from here
+    CursorRenderState, CursorShape, EmulatorAction, EmulatorInput, RenderSnapshot, Selection,
+    SnapshotLine, TerminalInterface, UserInputAction,
+};
+use crate::ansi::commands::AnsiCommand; // Corrected import for AnsiCommand
+use crate::ansi::AnsiParser;
+use crate::orchestrator::AppOrchestrator;
 
 use anyhow::Result;
-use std::io;
-use std::sync::{Arc, Mutex}; // Added Arc
+use std::io::{self, Read, Write}; // Added Read, Write for impl
+use std::os::unix::io::AsRawFd; // Added for impl
+use nix::unistd::Pid; // Added for child_pid
+use std::sync::{Arc, Mutex};
 
 // --- Mock Implementations ---
 
@@ -36,7 +39,7 @@ impl MockPtyChannel {
     }
 }
 
-impl PtyChannel for MockPtyChannel {
+impl Read for MockPtyChannel {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut read_data_guard = self.read_data.lock().unwrap();
         if read_data_guard.is_empty() {
@@ -44,20 +47,36 @@ impl PtyChannel for MockPtyChannel {
         }
         let len = std::cmp::min(buf.len(), read_data_guard.len());
         buf[..len].copy_from_slice(&read_data_guard[..len]);
-        *read_data_guard = read_data_guard[len..].to_vec(); // Consume data
+        read_data_guard.drain(..len); // Consume data
         Ok(len)
     }
+}
 
-    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+impl Write for MockPtyChannel {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.written_data.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-    fn resize(&mut self, _cols: u16, _rows: u16) -> io::Result<()> {
+}
+
+impl AsRawFd for MockPtyChannel {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        -1 // Dummy FD for testing
+    }
+}
+
+impl PtyChannel for MockPtyChannel {
+    fn resize(&self, _cols: u16, _rows: u16) -> anyhow::Result<()> { // Corrected signature: &self, anyhow::Result
         Ok(())
-    } // Minimal implementation
-    fn get_reader_fd(&self) -> Option<std::os::unix::io::RawFd> {
-        None
-    } // Minimal implementation
+    }
+    fn child_pid(&self) -> Pid { // Added child_pid
+        Pid::from_raw(0) // Dummy PID
+    }
+    // get_reader_fd removed as it's not in the trait
 }
 
 // Mock TerminalInterface
@@ -195,66 +214,47 @@ impl Driver for MockDriver {
 
 // --- Test Setup Helper ---
 
-// Helper structure to hold mocks for convenience in tests
-struct TestMocks {
-    pty: MockPtyChannel,
-    term: MockTerminalInterface,
-    parser: MockAnsiParser,
-    driver: MockDriver,
-}
+// Commenting out unused/problematic TestMocks and setup_orchestrator_with_mocks
+// struct TestMocks {
+//     pty: MockPtyChannel,
+//     term: MockTerminalInterface,
+//     parser: MockAnsiParser,
+//     driver: MockDriver,
+// }
 
-fn setup_orchestrator_with_mocks() -> (AppOrchestrator<'static>, TestMocks) {
-    // Leak the mocks to get 'static references. This is common in test setups
-    // where actual cleanup isn't critical.
-    let pty = Box::leak(Box::new(MockPtyChannel::new()));
-    let term = Box::leak(Box::new(MockTerminalInterface::new()));
-    let parser = Box::leak(Box::new(MockAnsiParser));
-    let driver = Box::leak(Box::new(MockDriver::new(8, 16, 800, 600))); // Default dimensions
+// fn setup_orchestrator_with_mocks() -> (AppOrchestrator<'static>, TestMocks) {
+//     // Leak the mocks to get 'static references. This is common in test setups
+//     // where actual cleanup isn't critical.
+//     let pty = Box::leak(Box::new(MockPtyChannel::new()));
+//     let term = Box::leak(Box::new(MockTerminalInterface::new()));
+//     let parser = Box::leak(Box::new(MockAnsiParser));
+//     let driver = Box::leak(Box::new(MockDriver::new(8, 16, 800, 600))); // Default dimensions
+//
+//     let renderer = Renderer::new(); // Real renderer
+//     let orchestrator = AppOrchestrator::new(pty, term, parser, renderer, driver);
+//
+//     (
+//         orchestrator,
+//         TestMocks {
+//             pty: pty,
+//             term: term.clone(),
+//             parser: MockAnsiParser,
+//             driver: MockDriver::new(1,1,1,1),
+//         },
+//     )
+// }
 
-    let renderer = Renderer::new(); // Real renderer
-    let orchestrator = AppOrchestrator::new(pty, term, parser, renderer, driver);
-
-    (
-        orchestrator,
-        TestMocks {
-            pty: pty, // This is problematic, we pass &mut to orchestrator.
-                      // We need a way to inspect these after they are moved or borrowed.
-                      // For now, MockTerminalInterface uses Arc<Mutex> for last_input,
-                      // which works around this for checking terminal inputs.
-                      // If we need to inspect pty or driver, they'd need similar Arc<Mutex> fields.
-                      // Let's refine TestMocks or how we access them.
-                      // For now, we'll primarily rely on MockTerminalInterface's Arc for assertions.
-            // The leaked boxes are fine, but direct access to their fields after passing &mut
-            // to AppOrchestrator::new is not.
-            // The solution is to have the test setup return the orchestrator AND the means to inspect.
-            // The MockTerminalInterface is already designed for this with its Arc<Mutex<Option<EmulatorInput>>>.
-            // So, we actually need to return the Arc<Mutex<Option<EmulatorInput>>> or the MockTerminalInterface clone.
-            // Let's simplify: setup will return the orchestrator and the inspectable parts of mocks.
-            // We don't need to return the whole TestMocks struct if we return inspectable parts.
-            // For now, we'll just return the orchestrator and the term's inspectable field.
-            // This part of the helper needs careful thought on what tests need to assert.
-            // Let's assume tests will primarily check terminal input for these keybinding tests.
-
-            // This TestMocks struct is not really usable as is because AppOrchestrator takes mutable borrows.
-            // The important part is that the mocks given to AppOrchestrator are the ones we can later inspect.
-            // The `term` mock is designed for this.
-            pty: MockPtyChannel::new(), // Placeholder, not the one used by orchestrator
-            term: term.clone(), // Clone the interface that has the Arc, so we can inspect it.
-            parser: MockAnsiParser, // Placeholder
-            driver: MockDriver::new(1,1,1,1), // Placeholder
-        },
-    )
-}
-// Revised setup to return the inspectable mock part directly
+// Revised setup to return the inspectable mock part directly (used by keybinding tests)
 fn setup_orchestrator_for_key_tests() -> (AppOrchestrator<'static>, Arc<Mutex<Option<EmulatorInput>>>) {
     let pty = Box::leak(Box::new(MockPtyChannel::new()));
-    let term_mock = Box::leak(Box::new(MockTerminalInterface::new()));
+    let term_mock_instance = Box::leak(Box::new(MockTerminalInterface::new()));
+    let last_input_arc = term_mock_instance.last_input.clone(); // Clone the Arc before mutable borrow
     let parser = Box::leak(Box::new(MockAnsiParser));
     let driver = Box::leak(Box::new(MockDriver::new(8, 16, 800, 600)));
 
     let renderer = Renderer::new();
-    let orchestrator = AppOrchestrator::new(pty, term_mock, parser, renderer, driver);
-    (orchestrator, term_mock.last_input.clone())
+    let orchestrator = AppOrchestrator::new(pty, term_mock_instance, parser, renderer, driver);
+    (orchestrator, last_input_arc)
 }
 
 
