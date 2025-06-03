@@ -247,7 +247,8 @@ fn test_csi_ed_clear_below_csi_j() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('C')));
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // Cursor to (1,0) after LF
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // Now correctly results in cursor at (1,0)
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('D')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('E')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('F'))); // Screen: ABC, DEF. Cursor at (1,3)
@@ -331,6 +332,9 @@ fn send_mouse_input(
 fn fill_emulator_screen(emu: &mut TerminalEmulator, text_lines: Vec<String>) {
     for (r, line) in text_lines.iter().enumerate() {
         if r > 0 {
+            // If not the first line, and the line isn't empty (to avoid CR LF for empty lines if that's not desired)
+            // However, fill_emulator_screen is usually used to set up a known state,
+            // so CR+LF is generally the safer bet to ensure cursor is at start of next line.
             emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
             emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
         }
@@ -714,6 +718,7 @@ fn test_resize_larger() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('3')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('4')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('5')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
@@ -741,6 +746,7 @@ fn test_resize_smaller_content_truncation() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('l')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('l')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('o')));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('W')));
 
@@ -907,10 +913,12 @@ fn test_ps1_multiline_prompt_at_bottom_causes_scroll() {
     for _ in 0..5 {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     for _ in 0..5 {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
     }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('P')));
@@ -918,6 +926,7 @@ fn test_ps1_multiline_prompt_at_bottom_causes_scroll() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('>')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(' ')));
 
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('$')));
@@ -934,11 +943,13 @@ fn test_ps1_multiline_prompt_ends_on_last_line_no_scroll_by_prompt() {
     for _ in 0..5 {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
 
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('$')));
@@ -955,10 +966,12 @@ fn test_ps1_multiline_prompt_last_line_fills_screen_then_input() {
     for _ in 0..3 {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
 
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('C')));
@@ -989,16 +1002,19 @@ fn test_ps1_prompt_causes_multiple_scrolls() {
     for _ in 0..3 {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
 
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
 
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('$')));
@@ -1014,6 +1030,7 @@ fn test_ps1_prompt_with_internal_wrapping_and_scrolling() {
     for _ in 0..3 {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
@@ -1025,7 +1042,14 @@ fn test_ps1_prompt_with_internal_wrapping_and_scrolling() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('n')));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('g')));
-
+    // This LF is after 'g' which is the last char on the line and causes a wrap.
+    // The wrap itself moves to the next line, column 0.
+    // So, only an LF is needed here, not CR+LF, if the intent is just to move down.
+    // However, if the prompt logic implies "end of this line of prompt, start next",
+    // then CR+LF might be what the original test author would do if LNM was false.
+    // Let's assume the intent is to mimic typical shell prompt behavior where each
+    // "line" of the prompt ends with a newline that positions for the next segment.
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
@@ -1042,11 +1066,13 @@ fn test_ps1_multiline_exact_fill_then_scroll_on_final_lf() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('P')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
 
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('P')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
 
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     let snapshot = term.get_render_snapshot();
@@ -1060,6 +1086,7 @@ fn test_ps1_multiline_with_sgr_at_bottom_scrolls() {
     for _ in 0..5 {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     }
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -1073,6 +1100,7 @@ fn test_ps1_multiline_with_sgr_at_bottom_scrolls() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Reset]),
     )));
 
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -1140,6 +1168,8 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     let cols = 10;
     let rows = 5;
     let mut emu = create_test_emulator(cols, rows); // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetMode(20))));
+    assert!(!emu.dec_modes.linefeed_newline_mode, "LNM should be explicitly turned OFF for this test");
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         // Changed from term to emu
