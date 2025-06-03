@@ -10,7 +10,8 @@ use crate::{
     keys::map_key_event_to_action, // Added for keybinding mapping function
     // KeySymbol and Modifiers from platform::backends will be used directly with map_key_event_to_action
     // Removed: use crate::keys::{KeySymbol as ConfigKeySymbol, Modifiers as ConfigModifiers};
-    platform::backends::{BackendEvent, Driver, KeySymbol, Modifiers, RenderCommand},
+    // Removing KeySymbol, Modifiers from this line as per compiler warning
+    platform::backends::{BackendEvent, Driver, RenderCommand},
     platform::os::pty::PtyChannel,
     renderer::Renderer,
     term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction},
