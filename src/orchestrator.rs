@@ -6,7 +6,11 @@
 
 use crate::{
     ansi::AnsiParser,
-    platform::backends::{BackendEvent, Driver, RenderCommand}, // Removed PlatformState
+    config, // Added for global CONFIG access
+    keys::map_key_event_to_action, // Added for keybinding mapping function
+    // KeySymbol and Modifiers from platform::backends will be used directly with map_key_event_to_action
+    // Removed: use crate::keys::{KeySymbol as ConfigKeySymbol, Modifiers as ConfigModifiers};
+    platform::backends::{BackendEvent, Driver, KeySymbol, Modifiers, RenderCommand},
     platform::os::pty::PtyChannel,
     renderer::Renderer,
     term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction},
@@ -163,23 +167,92 @@ impl<'a> AppOrchestrator<'a> {
     fn handle_specific_driver_event(&mut self, event: BackendEvent) {
         match event {
             BackendEvent::Key {
-                symbol,
-                modifiers,
+                symbol,    // This is platform::backends::KeySymbol
+                modifiers, // This is platform::backends::Modifiers
                 text,
             } => {
-                // New signature
-                // Translate BackendEvent::Key to UserInputAction::KeyInput
-                let key_input_action = UserInputAction::KeyInput {
-                    symbol,                                                // from BackendEvent
-                    modifiers,                                             // from BackendEvent
-                    text: if text.is_empty() { None } else { Some(text) }, // Convert String to Option<String>
-                };
-                let user_input = EmulatorInput::User(key_input_action);
-                if let Some(action) = self.term.interpret_input(user_input) {
-                    if matches!(action, EmulatorAction::WritePty(_)) {
-                        self.handle_emulator_action(action, &mut Vec::new());
-                    } else {
-                        self.pending_render_actions.push(action);
+                // Use map_key_event_to_action to find a matching binding
+                match map_key_event_to_action(symbol, modifiers, &config::CONFIG) {
+                    Some(action_to_perform) => {
+                        // A binding was found
+                        log::debug!("Keybinding matched via map_key_event_to_action: {:?} + {:?} -> {:?}", symbol, modifiers, action_to_perform);
+                        // Handle the action (this is the existing logic from the `if found_binding` block)
+                        match action_to_perform {
+                            UserInputAction::RequestQuit => {
+                                log::info!("Keybinding: RequestQuit triggered.");
+                                // Actual quit logic would involve signaling OrchestratorStatus::Shutdown
+                            }
+                            UserInputAction::RequestZoomIn => {
+                                log::info!("Keybinding: RequestZoomIn triggered.");
+                                self.handle_zoom_in();
+                            }
+                            UserInputAction::RequestZoomOut => {
+                                log::info!("Keybinding: RequestZoomOut triggered.");
+                                self.handle_zoom_out();
+                            }
+                            UserInputAction::RequestZoomReset => {
+                                log::info!("Keybinding: RequestZoomReset triggered.");
+                                self.handle_zoom_reset();
+                            }
+                            UserInputAction::RequestToggleFullscreen => {
+                                log::info!("Keybinding: RequestToggleFullscreen triggered.");
+                                self.handle_toggle_fullscreen();
+                            }
+                            UserInputAction::RequestScrollLineUp => {
+                                log::info!("Keybinding: RequestScrollLineUp triggered.");
+                                self.handle_scroll_line_up();
+                            }
+                            UserInputAction::RequestScrollLineDown => {
+                                log::info!("Keybinding: RequestScrollLineDown triggered.");
+                                self.handle_scroll_line_down();
+                            }
+                            UserInputAction::RequestScrollPageUp => {
+                                log::info!("Keybinding: RequestScrollPageUp triggered.");
+                                self.handle_scroll_page_up();
+                            }
+                            UserInputAction::RequestScrollPageDown => {
+                                log::info!("Keybinding: RequestScrollPageDown triggered.");
+                                self.handle_scroll_page_down();
+                            }
+                            UserInputAction::RequestScrollToTop => {
+                                log::info!("Keybinding: RequestScrollToTop triggered.");
+                                self.handle_scroll_to_top();
+                            }
+                            UserInputAction::RequestScrollToBottom => {
+                                log::info!("Keybinding: RequestScrollToBottom triggered.");
+                                self.handle_scroll_to_bottom(); // Corrected typo: removed extra underscore
+                            }
+                            // Emulator actions (e.g., InitiateCopy, RequestClipboardPaste)
+                            // and any other actions not explicitly handled above (like KeyInput if bound)
+                            _ => {
+                                log::debug!("Passing bound action to emulator: {:?}", action_to_perform);
+                                let user_input = EmulatorInput::User(action_to_perform);
+                                if let Some(emulator_action) = self.term.interpret_input(user_input) {
+                                    if matches!(emulator_action, EmulatorAction::WritePty(_)) {
+                                        self.handle_emulator_action(emulator_action, &mut Vec::new());
+                                    } else {
+                                        self.pending_render_actions.push(emulator_action);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // No binding found, execute original fallback logic
+                        log::trace!("No specific keybinding found for {:?} + {:?}, using default KeyInput.", symbol, modifiers);
+                        let key_input_action = UserInputAction::KeyInput {
+                            symbol,
+                            modifiers,
+                            text: if text.is_empty() { None } else { Some(text) },
+                        };
+                        let user_input = EmulatorInput::User(key_input_action);
+                        if let Some(action) = self.term.interpret_input(user_input) {
+                            if matches!(action, EmulatorAction::WritePty(_)) {
+                                self.handle_emulator_action(action, &mut Vec::new());
+                            } else {
+                                self.pending_render_actions.push(action);
+                            }
+                        }
                     }
                 }
             }
@@ -491,6 +564,18 @@ impl<'a> AppOrchestrator<'a> {
 
         Ok(())
     }
+
+    // --- Placeholder private helper methods for application-level actions ---
+    fn handle_zoom_in(&mut self) { log::info!("AppOrchestrator: handle_zoom_in called"); }
+    fn handle_zoom_out(&mut self) { log::info!("AppOrchestrator: handle_zoom_out called"); }
+    fn handle_zoom_reset(&mut self) { log::info!("AppOrchestrator: handle_zoom_reset called"); }
+    fn handle_toggle_fullscreen(&mut self) { log::info!("AppOrchestrator: handle_toggle_fullscreen called"); }
+    fn handle_scroll_line_up(&mut self) { log::info!("AppOrchestrator: handle_scroll_line_up called"); }
+    fn handle_scroll_line_down(&mut self) { log::info!("AppOrchestrator: handle_scroll_line_down called"); }
+    fn handle_scroll_page_up(&mut self) { log::info!("AppOrchestrator: handle_scroll_page_up called"); }
+    fn handle_scroll_page_down(&mut self) { log::info!("AppOrchestrator: handle_scroll_page_down called"); }
+    fn handle_scroll_to_top(&mut self) { log::info!("AppOrchestrator: handle_scroll_to_top called"); }
+    fn handle_scroll_to_bottom(&mut self) { log::info!("AppOrchestrator: handle_scroll_to_bottom called"); }
 }
 
 #[cfg(test)]
