@@ -1,7 +1,7 @@
 # core Terminal Design Document - Target Architecture
 
-**Version:** 1.9.16
-**Date:** 2025-06-02
+**Version:** 1.9.17
+**Date:** 2025-06-03
 **Status:** Active
 
 ## 1. Introduction & Vision
@@ -23,13 +23,13 @@ Following the suckless philosophy, features explicitly out of scope, in line wit
 
 ## 2. Core Concepts & Design Principles
 
-* **Configuration (`Config`):** Loaded once at startup (typically in `main.rs`) and made globally accessible via a mechanism like `std::sync::OnceLock` or `std::lazy::SyncLazy` (e.g., `static CONFIG: OnceLock<Config>`). This provides easy read-only access to settings like appearance, behavior, and keybindings throughout the application. The loading mechanism aims for robustness, with clear fallbacks to default values.
+* **Configuration (`Config`):** Loaded once at startup (typically in `main.rs`) and made globally accessible via a mechanism like `std::sync::OnceLock` or `std::lazy::SyncLazy` (e.g., `static CONFIG: OnceLock<Config>`). This provides easy read-only access to settings like appearance, behavior, and keybindings throughout the application. The loading mechanism aims for robustness, with clear fallbacks to default values. Keybindings are defined as a mapping from key combinations (`KeySymbol`, `Modifiers`) directly to `UserInputAction`s, allowing for both compile-time defaults ("suckless-style") and runtime overrides via a configuration file.
 
 * **Terminal Emulator (Interpreter/VM):** The `TerminalEmulator` struct is the core state machine. It functions like a specialized interpreter or virtual machine where `EmulatorInput`s are its "opcodes." It manages the terminal's logical state (grid, cursor, modes, selection, character sets, per-line dirty flags) and, upon processing an input, updates this state and may produce `EmulatorAction`s, which are requests for external side-effects. It operates purely on its state and inputs, performing no direct I/O, which greatly enhances its testability and predictability. It consults the global `CONFIG` for behavioral rules (e.g., auto-wrap).
 
 * **Emulator Input (Instruction Set):** The `enum EmulatorInput` is the comprehensive set of instructions for the `TerminalEmulator`. It wraps:
     * `AnsiCommand`: Parsed sequences from the primary I/O (PTY) like `CSI...m` (SGR) or `CSI...J` (Erase).
-    * `UserInputAction`: Abstracted user interactions like `KeyInput`, `MouseInput` (with cell-based coordinates), `InitiateCopy`, `PasteText(String)`. These are typically derived from `BackendEvent`s.
+    * `UserInputAction`: Abstracted user interactions like `KeyInput`, `MouseInput` (with cell-based coordinates), `InitiateCopy`, `PasteText(String)`, or application-level requests like `RequestZoom`. These are typically derived from `BackendEvent`s, potentially after processing through the keybinding system.
     * `ControlEvent`: Internal signals like `Resize { cols, rows }` or `FrameRendered`.
 
 * **Parser Pipeline:** Consists of `AnsiLexer` (byte stream to `AnsiToken`, handling UTF-8) and `AnsiParser` (`AnsiToken` stream to structured `AnsiCommand`). This pipeline is used by the `AppOrchestrator` when it processes data read from the primary I/O channel (PTY), isolating the `TerminalEmulator` from raw byte streams.
@@ -57,7 +57,11 @@ Following the suckless philosophy, features explicitly out of scope, in line wit
         1.  Calls methods on the `Platform` reference (e.g., `platform.poll_pty_data()`, `platform.poll_ui_event()`) to get events.
         2.  Processes these events:
             * PTY data is passed through its `AnsiParser` to get `AnsiCommand`s, wrapped as `EmulatorInput::Ansi`, then fed to `TerminalEmulator`.
-            * `BackendEvent`s from the UI are translated to `EmulatorInput::User` or `EmulatorInput::Control`, then fed to `TerminalEmulator`.
+            * `BackendEvent::Key` events are first mapped against configured keybindings (defined in `Config`). This mapping yields a `UserInputAction`.
+            * The `AppOrchestrator` then inspects the resulting `UserInputAction`:
+                * If it's an application-level command (e.g., `RequestZoom`), the orchestrator handles it directly, potentially by interacting with the `Driver` (via the `Platform` reference) or modifying application state.
+                * Otherwise (e.g., for `KeyInput`, `InitiateCopy`), the `UserInputAction` is wrapped as `EmulatorInput::User` and sent to the `TerminalEmulator`.
+            * Other `BackendEvent`s (mouse, resize, focus) are translated into `EmulatorInput::User` or `EmulatorInput::Control` as appropriate and typically sent to the `TerminalEmulator`.
         3.  Collects `EmulatorAction`s from `TerminalEmulator`.
         4.  Translates `EmulatorAction`s into calls to `platform.dispatch_pty_action()` or into `UiActionCommand`s for `platform.dispatch_ui_action()`.
         5.  Orchestrates rendering: Gets `RenderSnapshot` from `TerminalEmulator`, uses `Renderer` to get drawing-related `RenderCommand`s. These, along with other UI-related `EmulatorAction`s (like setting title), are packaged into `UiActionCommand`s and sent via `platform.dispatch_ui_action()`.
@@ -116,7 +120,13 @@ The primary data and control flow is as follows:
         * `platform.poll_pty_data()`: Retrieves data from the PTY (sourced from an internal channel fed by the PTY reader).
         * `platform.poll_ui_event()`: Retrieves UI events from the `Driver` (sourced from an internal channel fed by the UI event handler).
     * **PTY Data Processing:** PTY data is fed to the `AnsiParser`, which produces `AnsiCommand`s. These are wrapped into `EmulatorInput::Ansi` and passed to the `TerminalEmulator`.
-    * **UI Event Processing:** `BackendEvent`s are translated into `EmulatorInput::User` or `EmulatorInput::Control` and passed to the `TerminalEmulator`.
+    * **UI Event Processing:**
+        * `BackendEvent::Key` events are first mapped against configured keybindings (from `Config.keybindings`). This mapping function (`map_key_event_to_action`) returns an `Option<UserInputAction>`.
+        * If a binding matches (`Some(action)`), the `AppOrchestrator` inspects this `UserInputAction`.
+            * If it's an application-level command (e.g., `RequestZoom`), the orchestrator handles it directly (e.g., by adjusting font scale and triggering a resize/redraw sequence).
+            * Otherwise, the mapped `UserInputAction` is wrapped into `EmulatorInput::User` and sent to the `TerminalEmulator`.
+        * If no binding matches (`None`), the original `BackendEvent::Key` details are used to construct a default `UserInputAction::KeyInput`, which is then wrapped into `EmulatorInput::User` and sent to the `TerminalEmulator`.
+        * Other `BackendEvent`s (mouse, resize, focus) are translated into `EmulatorInput::User` or `EmulatorInput::Control` and typically sent to the `TerminalEmulator`.
     * **Emulator State Update:** The `TerminalEmulator` processes `EmulatorInput`s, updates its internal state, and may produce `EmulatorAction`s.
     * **Action Handling:** The `AppOrchestrator` processes `EmulatorAction`s:
         * `WritePty`: Translated to a `PtyActionCommand` and sent via `platform.dispatch_pty_action()`.
@@ -132,6 +142,7 @@ The primary data and control flow is as follows:
 * **Clear `AppOrchestrator` Role:** The `AppOrchestrator` interacts with a consistent set of methods on the `Platform` reference for event polling and action dispatching, remaining agnostic to the internal implementation details of each platform.
 * **Testability:** The `TerminalEmulator` and `Renderer` remain highly testable due to their pure-logic nature. Concrete `Platform` implementations can be tested by mocking their interactions with the OS or display system. The `AppOrchestrator` can be tested by providing a mock `Platform` struct (if a common `PlatformAccess` trait is used for its methods) or by testing against a controlled platform setup.
 * **Flexible Event Production:** The internal event production mechanism within each `Platform` struct can be tailored to the target environment (e.g., threaded `epoll` for native, JS callbacks for WASM, or a pumped single-threaded poller) without changing the API exposed to the `AppOrchestrator`.
+* **Configurable Keybindings:** A clear system for mapping key events to actions, supporting both compile-time defaults and runtime user configuration, with intelligent dispatch by the orchestrator.
 
 ## 6. Future Considerations
 
