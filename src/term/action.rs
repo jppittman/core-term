@@ -5,12 +5,13 @@
 //! the emulator signals to the orchestrator.
 
 use crate::platform::backends::{KeySymbol, Modifiers}; // Assuming these are re-exported via backends
+use serde::{Deserialize, Serialize};
 
 // --- User Input Actions ---
 
 /// Represents user-initiated actions that serve as input to the terminal emulator.
 /// This corresponds to `EmulatorInput::User(UserInputAction)`.
-#[derive(Debug, Clone, PartialEq)] // Eq might be tricky if text is String
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] // Eq might be tricky if text is String
 pub enum UserInputAction {
     KeyInput {
         symbol: KeySymbol,
@@ -43,6 +44,19 @@ pub enum UserInputAction {
     RequestClipboardPaste,
     /// Requests the orchestrator to paste content from the primary selection (X11 specific).
     RequestPrimaryPaste,
+
+    // Application-level actions
+    RequestQuit,
+    RequestZoomIn,
+    RequestZoomOut,
+    RequestZoomReset,
+    RequestToggleFullscreen,
+    RequestScrollLineUp,
+    RequestScrollLineDown,
+    RequestScrollPageUp,
+    RequestScrollPageDown,
+    RequestScrollToTop,
+    RequestScrollToBottom,
     // Other user-driven actions can be added here.
 }
 

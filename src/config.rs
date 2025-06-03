@@ -8,6 +8,8 @@
 // --- Crates and Modules ---
 use crate::{
     color::{Color, NamedColor},
+    keys::{KeySymbol, Modifiers},
+    term::action::UserInputAction,
     term::cursor::CursorShape, // Assumes CursorShape is in `crate::term::modes`
 };
 use log::{error, info}; // Added warn, info
@@ -88,8 +90,41 @@ fn load_config_from_file_or_defaults() -> anyhow::Result<Config> {
 
 // --- Configuration Structures ---
 
+/// Defines a single keybinding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Keybinding {
+    pub key: KeySymbol,
+    pub mods: Modifiers,
+    pub action: UserInputAction,
+}
+
+/// Defines the configuration for all keybindings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeybindingsConfig {
+    pub bindings: Vec<Keybinding>,
+}
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        KeybindingsConfig {
+            bindings: vec![
+                Keybinding {
+                    key: KeySymbol::Char('C'),
+                    mods: Modifiers::CONTROL | Modifiers::SHIFT,
+                    action: UserInputAction::InitiateCopy,
+                },
+                Keybinding {
+                    key: KeySymbol::Char('V'),
+                    mods: Modifiers::CONTROL | Modifiers::SHIFT,
+                    action: UserInputAction::RequestClipboardPaste,
+                },
+            ],
+        }
+    }
+}
+
 /// Represents the complete configuration for the terminal emulator.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub appearance: AppearanceConfig,
@@ -98,6 +133,21 @@ pub struct Config {
     pub colors: ColorScheme,
     pub shell: ShellConfig,
     pub mouse: MouseConfig,
+    pub keybindings: KeybindingsConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            appearance: AppearanceConfig::default(),
+            behavior: BehaviorConfig::default(),
+            performance: PerformanceConfig::default(),
+            colors: ColorScheme::default(),
+            shell: ShellConfig::default(),
+            mouse: MouseConfig::default(),
+            keybindings: KeybindingsConfig::default(),
+        }
+    }
 }
 
 /// Defines settings related to the visual appearance of the terminal.

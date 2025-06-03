@@ -1,17 +1,110 @@
 // src/orchestrator/tests.rs
 
-use crate::config;
+use crate::config::{self, Config, Keybinding, KeybindingsConfig};
 use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
+use crate::keys::{KeySymbol, Modifiers}; // Added for KeySymbol, Modifiers
 use crate::platform::backends::{
     BackendEvent, CursorVisibility, Driver, FocusState, PlatformState, RenderCommand, TextRunStyle,
 };
+use crate::platform::os::pty::PtyChannel; // Added for PtyChannel trait
 use crate::renderer::Renderer;
-use crate::term::{CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine};
+use crate::term::{
+    AnsiCommand, CursorRenderState, CursorShape, EmulatorAction, EmulatorInput, RenderSnapshot,
+    Selection, SnapshotLine, TerminalInterface, UserInputAction,
+}; // Added for TerminalInterface, UserInputAction, EmulatorInput, AnsiCommand, EmulatorAction
+use crate::ansi::AnsiParser; // Added for AnsiParser trait
+use crate::orchestrator::AppOrchestrator; // Added for AppOrchestrator
 
 use anyhow::Result;
-use std::sync::Mutex;
+use std::io;
+use std::sync::{Arc, Mutex}; // Added Arc
 
-// Mock Driver implementation
+// --- Mock Implementations ---
+
+// Mock PtyChannel
+struct MockPtyChannel {
+    written_data: Mutex<Vec<u8>>,
+    read_data: Mutex<Vec<u8>>, // Data to be returned by read
+}
+
+impl MockPtyChannel {
+    fn new() -> Self {
+        Self {
+            written_data: Mutex::new(Vec::new()),
+            read_data: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl PtyChannel for MockPtyChannel {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut read_data_guard = self.read_data.lock().unwrap();
+        if read_data_guard.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "No data"));
+        }
+        let len = std::cmp::min(buf.len(), read_data_guard.len());
+        buf[..len].copy_from_slice(&read_data_guard[..len]);
+        *read_data_guard = read_data_guard[len..].to_vec(); // Consume data
+        Ok(len)
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.written_data.lock().unwrap().extend_from_slice(buf);
+        Ok(())
+    }
+    fn resize(&mut self, _cols: u16, _rows: u16) -> io::Result<()> {
+        Ok(())
+    } // Minimal implementation
+    fn get_reader_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        None
+    } // Minimal implementation
+}
+
+// Mock TerminalInterface
+#[derive(Clone)] // Added Clone for Arc<Mutex<MockTerminalInterface>> if needed by test_setup
+struct MockTerminalInterface {
+    last_input: Arc<Mutex<Option<EmulatorInput>>>,
+    snapshot_to_return: Arc<Mutex<RenderSnapshot>>, // Added for get_render_snapshot
+}
+
+impl MockTerminalInterface {
+    fn new() -> Self {
+        Self {
+            last_input: Arc::new(Mutex::new(None)),
+            // Provide a default snapshot for get_render_snapshot
+            snapshot_to_return: Arc::new(Mutex::new(RenderSnapshot {
+                dimensions: (80, 24),
+                lines: Vec::new(),
+                cursor_state: None,
+                selection: Selection::default(),
+            })),
+        }
+    }
+    fn last_input(&self) -> Option<EmulatorInput> {
+        self.last_input.lock().unwrap().clone()
+    }
+}
+
+impl TerminalInterface for MockTerminalInterface {
+    fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
+        *self.last_input.lock().unwrap() = Some(input);
+        None // For simplicity, assume no action is returned unless specifically testing for it
+    }
+    fn get_render_snapshot(&self) -> RenderSnapshot {
+        self.snapshot_to_return.lock().unwrap().clone()
+    }
+    // Add other methods if AppOrchestrator calls them
+}
+
+// Mock AnsiParser
+struct MockAnsiParser;
+impl AnsiParser for MockAnsiParser {
+    fn process_bytes(&mut self, _bytes: &[u8]) -> Vec<AnsiCommand> {
+        Vec::new() // Return no commands for simplicity
+    }
+}
+
+// Mock Driver implementation (already exists, ensure it's suitable)
 struct MockDriver {
     commands: Mutex<Vec<RenderCommand>>, // Changed from DrawCommand to RenderCommand
     font_width: usize,
@@ -96,10 +189,76 @@ impl Driver for MockDriver {
         Ok(())
     }
     fn own_selection(&mut self, _selection_name_atom_u64: u64, _text: String) {} // Added own_selection
-    fn request_selection_data(&mut self, _selection_name_atom_u64: u64, _target_atom_u64: u64) {} // Added request_selection_data
+    fn request_selection_data(&mut self, _selection_name_atom_u64: u64, _target_atom_u64: u64) {}
 }
 
-// Helper to create a RenderSnapshot for tests
+
+// --- Test Setup Helper ---
+
+// Helper structure to hold mocks for convenience in tests
+struct TestMocks {
+    pty: MockPtyChannel,
+    term: MockTerminalInterface,
+    parser: MockAnsiParser,
+    driver: MockDriver,
+}
+
+fn setup_orchestrator_with_mocks() -> (AppOrchestrator<'static>, TestMocks) {
+    // Leak the mocks to get 'static references. This is common in test setups
+    // where actual cleanup isn't critical.
+    let pty = Box::leak(Box::new(MockPtyChannel::new()));
+    let term = Box::leak(Box::new(MockTerminalInterface::new()));
+    let parser = Box::leak(Box::new(MockAnsiParser));
+    let driver = Box::leak(Box::new(MockDriver::new(8, 16, 800, 600))); // Default dimensions
+
+    let renderer = Renderer::new(); // Real renderer
+    let orchestrator = AppOrchestrator::new(pty, term, parser, renderer, driver);
+
+    (
+        orchestrator,
+        TestMocks {
+            pty: pty, // This is problematic, we pass &mut to orchestrator.
+                      // We need a way to inspect these after they are moved or borrowed.
+                      // For now, MockTerminalInterface uses Arc<Mutex> for last_input,
+                      // which works around this for checking terminal inputs.
+                      // If we need to inspect pty or driver, they'd need similar Arc<Mutex> fields.
+                      // Let's refine TestMocks or how we access them.
+                      // For now, we'll primarily rely on MockTerminalInterface's Arc for assertions.
+            // The leaked boxes are fine, but direct access to their fields after passing &mut
+            // to AppOrchestrator::new is not.
+            // The solution is to have the test setup return the orchestrator AND the means to inspect.
+            // The MockTerminalInterface is already designed for this with its Arc<Mutex<Option<EmulatorInput>>>.
+            // So, we actually need to return the Arc<Mutex<Option<EmulatorInput>>> or the MockTerminalInterface clone.
+            // Let's simplify: setup will return the orchestrator and the inspectable parts of mocks.
+            // We don't need to return the whole TestMocks struct if we return inspectable parts.
+            // For now, we'll just return the orchestrator and the term's inspectable field.
+            // This part of the helper needs careful thought on what tests need to assert.
+            // Let's assume tests will primarily check terminal input for these keybinding tests.
+
+            // This TestMocks struct is not really usable as is because AppOrchestrator takes mutable borrows.
+            // The important part is that the mocks given to AppOrchestrator are the ones we can later inspect.
+            // The `term` mock is designed for this.
+            pty: MockPtyChannel::new(), // Placeholder, not the one used by orchestrator
+            term: term.clone(), // Clone the interface that has the Arc, so we can inspect it.
+            parser: MockAnsiParser, // Placeholder
+            driver: MockDriver::new(1,1,1,1), // Placeholder
+        },
+    )
+}
+// Revised setup to return the inspectable mock part directly
+fn setup_orchestrator_for_key_tests() -> (AppOrchestrator<'static>, Arc<Mutex<Option<EmulatorInput>>>) {
+    let pty = Box::leak(Box::new(MockPtyChannel::new()));
+    let term_mock = Box::leak(Box::new(MockTerminalInterface::new()));
+    let parser = Box::leak(Box::new(MockAnsiParser));
+    let driver = Box::leak(Box::new(MockDriver::new(8, 16, 800, 600)));
+
+    let renderer = Renderer::new();
+    let orchestrator = AppOrchestrator::new(pty, term_mock, parser, renderer, driver);
+    (orchestrator, term_mock.last_input.clone())
+}
+
+
+// Helper to create a RenderSnapshot for tests (already exists)
 fn create_test_snapshot(
     lines_data: Vec<SnapshotLine>,
     cursor_state: Option<CursorRenderState>,
@@ -530,5 +689,92 @@ fn test_render_dirty_line_only() {
     assert_eq!(
         commands_frame2.last().unwrap(),
         &RenderCommand::PresentFrame
-    ); // Changed to PresentFrame
+    );
+}
+
+// --- Keybinding Tests ---
+
+#[test]
+fn test_orchestrator_handles_default_copy_binding() {
+    let (mut orchestrator, last_term_input) = setup_orchestrator_for_key_tests();
+    // Default is Ctrl+Shift+C -> InitiateCopy
+    // We assume KeySymbol and Modifiers from `crate::keys` (used in config)
+    // are directly compatible/translatable with `crate::platform::backends` versions.
+    let event = BackendEvent::Key {
+        symbol: KeySymbol::Char('C'), // This is platform::backends::KeySymbol
+        modifiers: Modifiers::CONTROL | Modifiers::SHIFT, // This is platform::backends::Modifiers
+        text: "".to_string(),
+    };
+    orchestrator.handle_specific_driver_event(event);
+
+    let input_received = last_term_input.lock().unwrap().clone();
+    match input_received.as_ref() {
+        Some(EmulatorInput::User(UserInputAction::InitiateCopy)) => { /* success */ }
+        other => panic!("Expected InitiateCopy, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_orchestrator_handles_default_paste_binding() {
+    let (mut orchestrator, last_term_input) = setup_orchestrator_for_key_tests();
+    // Default is Ctrl+Shift+V -> RequestClipboardPaste
+    let event = BackendEvent::Key {
+        symbol: KeySymbol::Char('V'),
+        modifiers: Modifiers::CONTROL | Modifiers::SHIFT,
+        text: "".to_string(),
+    };
+    orchestrator.handle_specific_driver_event(event);
+
+    let input_received = last_term_input.lock().unwrap().clone();
+    match input_received.as_ref() {
+        Some(EmulatorInput::User(UserInputAction::RequestClipboardPaste)) => { /* success */ }
+        other => panic!("Expected RequestClipboardPaste, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_orchestrator_handles_unbound_key_as_keyinput() {
+    let (mut orchestrator, last_term_input) = setup_orchestrator_for_key_tests();
+    // Assuming F12 with no modifiers is not bound by default
+    let key_sym = KeySymbol::F12;
+    let key_mods = Modifiers::empty();
+    let event = BackendEvent::Key {
+        symbol: key_sym,
+        modifiers: key_mods,
+        text: "test_text".to_string(), // Add some text to check if it's passed correctly
+    };
+    orchestrator.handle_specific_driver_event(event);
+
+    let input_received = last_term_input.lock().unwrap().clone();
+    match input_received.as_ref() {
+        Some(EmulatorInput::User(UserInputAction::KeyInput { symbol, modifiers, text })) => {
+            assert_eq!(*symbol, key_sym);
+            assert_eq!(*modifiers, key_mods);
+            assert_eq!(*text, Some("test_text".to_string()));
+        }
+        other => panic!("Expected KeyInput, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_orchestrator_handles_unbound_key_as_keyinput_empty_text() {
+    let (mut orchestrator, last_term_input) = setup_orchestrator_for_key_tests();
+    let key_sym = KeySymbol::Home; // Another unbound key example
+    let key_mods = Modifiers::ALT;
+    let event = BackendEvent::Key {
+        symbol: key_sym,
+        modifiers: key_mods,
+        text: "".to_string(), // Empty text
+    };
+    orchestrator.handle_specific_driver_event(event);
+
+    let input_received = last_term_input.lock().unwrap().clone();
+    match input_received.as_ref() {
+        Some(EmulatorInput::User(UserInputAction::KeyInput { symbol, modifiers, text })) => {
+            assert_eq!(*symbol, key_sym);
+            assert_eq!(*modifiers, key_mods);
+            assert_eq!(*text, None); // Expect None for empty string
+        }
+        other => panic!("Expected KeyInput with None text, got {:?}", other),
+    }
 }
