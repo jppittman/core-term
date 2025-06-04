@@ -2,20 +2,19 @@
 
 // Imports from the main crate
 use crate::color::Color;
-use crate::config;
+use crate::config::{Config}; // Added Config, removed self
 use crate::platform::backends::{
     BackendEvent, CellCoords, CellRect, CursorVisibility, Driver, FocusState, PlatformState,
     RenderCommand as ActualRenderCommand, TextRunStyle,
-}; // Driver was RenderAdapter // Rgb is now Color::Rgb, Colors struct removed
-   // FontDesc is now FontConfig
-use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph}; // Cell -> Glyph, CellAttrs -> Attributes, Flags -> AttrFlags
+};
+use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
 use crate::renderer::Renderer;
 use crate::term::{
     CursorRenderState,
     CursorShape,
     RenderSnapshot,
     Selection,
-    SnapshotLine, // Changed SelectionRenderState
+    SnapshotLine,
 };
 
 use anyhow::Result;
@@ -30,26 +29,24 @@ enum MockDrawCommand {
     FillRect {
         rect: CellRect,
         color: Color,
-        is_selection_bg: bool, // Added to match RenderCommand
+        is_selection_bg: bool,
     },
     DrawTextRun {
         coords: CellCoords,
         text: String,
         style: TextRunStyle,
-        is_selected: bool, // Added to match RenderCommand
+        is_selected: bool,
     },
     Present,
-    // MockDriver specific commands, if any, or just stick to Driver trait
 }
 
 // Mock Driver implementation
 struct MockDriver {
-    commands: Mutex<Vec<ActualRenderCommand>>, // Changed to ActualRenderCommand
+    commands: Mutex<Vec<ActualRenderCommand>>,
     font_width: usize,
     font_height: usize,
     display_width_px: u16,
     display_height_px: u16,
-    // Add other necessary fields like focus state if Driver expects them
 }
 
 impl MockDriver {
@@ -69,7 +66,6 @@ impl MockDriver {
     }
 
     fn commands(&self) -> Vec<ActualRenderCommand> {
-        // Changed to ActualRenderCommand
         self.commands.lock().unwrap().clone()
     }
 }
@@ -90,7 +86,6 @@ impl Driver for MockDriver {
     }
 
     fn get_platform_state(&self) -> PlatformState {
-        // Added implementation
         PlatformState {
             event_fd: None,
             font_cell_width_px: self.font_width,
@@ -102,7 +97,6 @@ impl Driver for MockDriver {
     }
 
     fn execute_render_commands(&mut self, commands: Vec<ActualRenderCommand>) -> Result<()> {
-        // Added implementation
         self.commands.lock().unwrap().extend(commands);
         Ok(())
     }
@@ -111,19 +105,19 @@ impl Driver for MockDriver {
         self.commands
             .lock()
             .unwrap()
-            .push(ActualRenderCommand::PresentFrame); // Changed to ActualRenderCommand
+            .push(ActualRenderCommand::PresentFrame);
         Ok(())
     }
 
     fn set_title(&mut self, _title: &str) {}
     fn bell(&mut self) {}
-    fn set_cursor_visibility(&mut self, _visible: CursorVisibility) {} // Changed parameter name
-    fn set_focus(&mut self, _focus_state: FocusState) {} // Changed parameter name
+    fn set_cursor_visibility(&mut self, _visible: CursorVisibility) {}
+    fn set_focus(&mut self, _focus_state: FocusState) {}
     fn cleanup(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn own_selection(&mut self, _selection_name_atom_u64: u64, _text: String) {} // Added own_selection
-    fn request_selection_data(&mut self, _selection_name_atom_u64: u64, _target_atom_u64: u64) {} // Added request_selection_data
+    fn own_selection(&mut self, _selection_name_atom_u64: u64, _text: String) {}
+    fn request_selection_data(&mut self, _selection_name_atom_u64: u64, _target_atom_u64: u64) {}
 }
 
 // Helper to create a Renderer and MockDriver
@@ -152,7 +146,7 @@ fn create_test_snapshot(
         dimensions: (num_cols, num_rows),
         lines: lines_data,
         cursor_state,
-        selection, // Changed from selection_state
+        selection,
     }
 }
 
@@ -169,6 +163,9 @@ fn test_render_empty_screen_with_cursor() {
 
     let (renderer, mut driver) =
         create_test_renderer_and_driver(num_cols, num_rows, font_width, font_height);
+
+    let test_config = Config::default();
+    let test_platform_state = driver.get_platform_state(); // Use platform state from mock driver
 
     let default_glyph = Glyph::Single(ContentCell {
         c: ' ',
@@ -197,7 +194,7 @@ fn test_render_empty_screen_with_cursor() {
         num_rows,
         Selection::default(),
     );
-    let render_commands = renderer.draw(snapshot).expect("Render draw failed");
+    let render_commands = renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
     driver
         .execute_render_commands(render_commands)
         .expect("Execute render commands failed");
@@ -211,7 +208,7 @@ fn test_render_empty_screen_with_cursor() {
         y: 0,
         width: num_cols,
         height: 1,
-        color: config::CONFIG.colors.background, // Ensure this uses config::CONFIG.colors.background
+        color: test_config.colors.background,
         is_selection_bg: false,
     };
     let expected_bg_fill_line1 = ActualRenderCommand::FillRect {
@@ -219,7 +216,7 @@ fn test_render_empty_screen_with_cursor() {
         y: 1,
         width: num_cols,
         height: 1,
-        color: config::CONFIG.colors.background, // Ensure this uses config::CONFIG.colors.background
+        color: test_config.colors.background,
         is_selection_bg: false,
     };
 
@@ -237,11 +234,11 @@ fn test_render_empty_screen_with_cursor() {
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
         x: 0,
         y: 0,
-        text: " ".to_string(),                // Set text to " "
-        fg: config::CONFIG.colors.background, // Set fg to background (cursor inversion)
-        bg: config::CONFIG.colors.foreground, // Set bg to foreground (cursor inversion)
-        flags: AttrFlags::empty(),            // Set flags to empty
-        is_selected: false,                   // Set is_selected to false
+        text: " ".to_string(),
+        fg: test_config.colors.background,
+        bg: test_config.colors.foreground,
+        flags: AttrFlags::empty(),
+        is_selected: false,
     };
 
     assert!(
@@ -265,6 +262,9 @@ fn test_render_simple_text() {
 
     let (renderer, mut driver) =
         create_test_renderer_and_driver(num_cols, num_rows, font_width, font_height);
+
+    let test_config = Config::default();
+    let test_platform_state = driver.get_platform_state();
 
     let mut line_cells = vec![
         Glyph::Single(ContentCell {
@@ -302,7 +302,7 @@ fn test_render_simple_text() {
         num_rows,
         Selection::default(),
     );
-    let render_commands = renderer.draw(snapshot).expect("Render draw failed");
+    let render_commands = renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
     driver
         .execute_render_commands(render_commands)
         .expect("Execute render commands failed");
@@ -314,10 +314,10 @@ fn test_render_simple_text() {
         x: 0,
         y: 0,
         text: "Hi".to_string(),
-        fg: config::CONFIG.colors.foreground, // Set fg to foreground
-        bg: config::CONFIG.colors.background, // Set bg to background
-        flags: AttrFlags::empty(),            // Set flags to empty
-        is_selected: false,                   // Set is_selected to false
+        fg: test_config.colors.foreground,
+        bg: test_config.colors.background,
+        flags: AttrFlags::empty(),
+        is_selected: false,
     };
     assert!(
         commands.contains(&expected_text_hi),
@@ -328,10 +328,10 @@ fn test_render_simple_text() {
     let expected_fill_spaces = ActualRenderCommand::FillRect {
         x: 2,
         y: 0,
-        width: num_cols - 2, // width is correct as num_cols - 2 (5 - 2 = 3)
+        width: num_cols - 2,
         height: 1,
-        color: config::CONFIG.colors.background, // Set color to background
-        is_selection_bg: false,                  // Set is_selection_bg to false
+        color: test_config.colors.background,
+        is_selection_bg: false,
     };
     assert!(
         commands.contains(&expected_fill_spaces),
@@ -340,13 +340,13 @@ fn test_render_simple_text() {
     );
 
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
-        x: 2, // Cursor is at column 2
+        x: 2,
         y: 0,
-        text: " ".to_string(),                // Set text to " "
-        fg: config::CONFIG.colors.background, // Set fg to background (cursor inversion)
-        bg: config::CONFIG.colors.foreground, // Set bg to foreground (cursor inversion)
-        flags: AttrFlags::empty(),            // Set flags to empty
-        is_selected: false,                   // Set is_selected to false
+        text: " ".to_string(),
+        fg: test_config.colors.background,
+        bg: test_config.colors.foreground,
+        flags: AttrFlags::empty(),
+        is_selected: false,
     };
     assert!(
         commands.contains(&expected_cursor_draw),
@@ -365,6 +365,9 @@ fn test_dirty_line_processing() {
 
     let (renderer, mut driver) =
         create_test_renderer_and_driver(num_cols, num_rows, font_width, font_height);
+
+    let test_config = Config::default();
+    let test_platform_state = driver.get_platform_state();
 
     let line0_dirty_cells = vec![
         Glyph::Single(ContentCell {
@@ -421,7 +424,7 @@ fn test_dirty_line_processing() {
         num_rows,
         Selection::default(),
     );
-    let render_commands = renderer.draw(snapshot).expect("Render draw failed");
+    let render_commands = renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
     driver
         .execute_render_commands(render_commands)
         .expect("Execute render commands failed");
@@ -433,10 +436,10 @@ fn test_dirty_line_processing() {
         x: 0,
         y: 0,
         text: "ABC".to_string(),
-        fg: config::CONFIG.colors.foreground, // Set fg to foreground
-        bg: config::CONFIG.colors.background, // Set bg to background
-        flags: AttrFlags::empty(),            // Set flags to empty
-        is_selected: false,                   // Set is_selected to false
+        fg: test_config.colors.foreground,
+        bg: test_config.colors.background,
+        flags: AttrFlags::empty(),
+        is_selected: false,
     };
     assert!(
         commands.contains(&expected_text_abc),
@@ -444,14 +447,12 @@ fn test_dirty_line_processing() {
         commands
     );
 
-    // Check that XYZ from the clean line is NOT drawn
-    // (No FillRect for line 1 implies it wasn't redrawn, which is correct for a clean line)
     let non_expected_text_xyz = ActualRenderCommand::DrawTextRun {
         x: 0,
         y: 1,
         text: "XYZ".to_string(),
-        fg: config::CONFIG.colors.foreground, // Assuming default style if it were drawn
-        bg: config::CONFIG.colors.background,
+        fg: test_config.colors.foreground,
+        bg: test_config.colors.background,
         flags: AttrFlags::empty(),
         is_selected: false,
     };
@@ -472,13 +473,13 @@ fn test_dirty_line_processing() {
     );
 
     let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
-        x: 1, // Cursor is at column 1 on line 0
+        x: 1,
         y: 0,
-        text: "B".to_string(),                // Character underneath the cursor
-        fg: config::CONFIG.colors.background, // Set fg to background (cursor inversion)
-        bg: config::CONFIG.colors.foreground, // Set bg to foreground (cursor inversion)
-        flags: AttrFlags::empty(),            // Set flags to empty
-        is_selected: false,                   // Set is_selected to false
+        text: "B".to_string(),
+        fg: test_config.colors.background,
+        bg: test_config.colors.foreground,
+        flags: AttrFlags::empty(),
+        is_selected: false,
     };
     assert!(
         commands.contains(&expected_cursor_draw),
