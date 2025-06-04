@@ -2,7 +2,7 @@
 
 use crate::ansi::commands::{Attribute, C0Control, CsiCommand};
 use crate::color::{Color, NamedColor};
-use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
+use crate::glyph::{Attributes, ContentCell, Glyph}; // Removed AttrFlags
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::platform::backends::MouseButton; // Correct import for MouseButton
@@ -98,7 +98,7 @@ fn assert_screen_state(
                 )
             });
 
-            let (cell_char, cell_attrs) = match glyph_wrapper {
+            let (cell_char, _cell_attrs) = match glyph_wrapper { // cell_attrs prefixed with _
                 Glyph::Single(cell) => (cell.c, cell.attr),
                 Glyph::WidePrimary(cell) => (cell.c, cell.attr),
                 Glyph::WideSpacer { .. } => {
