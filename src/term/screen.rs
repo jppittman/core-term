@@ -1018,7 +1018,13 @@ const SOME_REASONABLE_SLACK: usize = 20;
 #[cfg(test)]
 mod tests {
     use super::{
-        Attributes, ContentCell, Glyph, Point, Screen, Selection, SelectionMode, // Removed AttrFlags
+        Attributes,
+        ContentCell,
+        Glyph,
+        Point,
+        Screen,
+        Selection,
+        SelectionMode, // Removed AttrFlags
         SelectionRange,
     }; // Added ContentCell
 

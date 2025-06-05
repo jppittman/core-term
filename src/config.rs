@@ -15,7 +15,10 @@ use crate::{
 use log::{error, info}; // Added warn, info
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{self, Duration},
+};
 
 // --- Global Configuration Access ---
 
@@ -256,15 +259,15 @@ impl Default for BehaviorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerformanceConfig {
-    pub min_draw_latency_ms: f64,
-    pub max_draw_latency_ms: f64,
+    pub min_draw_latency_ms: time::Duration,
+    pub max_draw_latency_ms: time::Duration,
 }
 
 impl Default for PerformanceConfig {
     fn default() -> Self {
         PerformanceConfig {
-            min_draw_latency_ms: 2.0,
-            max_draw_latency_ms: 33.0,
+            min_draw_latency_ms: Duration::from_millis(2),
+            max_draw_latency_ms: Duration::from_millis(33),
         }
     }
 }

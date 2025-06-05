@@ -12,7 +12,7 @@ use crate::platform::actions::{PtyActionCommand, UiActionCommand};
 use crate::platform::backends::console::ConsoleDriver;
 use crate::platform::backends::{BackendEvent, Driver, PlatformState};
 use crate::platform::os::epoll::{EpollFlags, EventMonitor};
-use crate::platform::os::pty::{NixPty, PtyConfig, PtyChannel};
+use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
 
 // use libc::epoll_event as LibcEpollEvent; // Removed due to warning
@@ -51,18 +51,26 @@ impl ConsolePlatform {
             initial_rows: initial_pty_rows,
         };
 
-        let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty for ConsolePlatform")?;
+        let pty = NixPty::spawn_with_config(&pty_config)
+            .context("Failed to create NixPty for ConsolePlatform")?;
         let driver = ConsoleDriver::new().context("Failed to create ConsoleDriver")?;
 
-        let event_monitor = EventMonitor::new().context("Failed to create EventMonitor for ConsolePlatform PTY")?;
+        let event_monitor =
+            EventMonitor::new().context("Failed to create EventMonitor for ConsolePlatform PTY")?;
         let pty_fd = pty.as_raw_fd();
         event_monitor
             .add(pty_fd, PTY_EPOLL_TOKEN, EpollFlags::EPOLLIN)
             .context("Failed to add PTY FD to event monitor for ConsolePlatform")?;
-        debug!("PTY FD {} added to event monitor for ConsolePlatform", pty_fd);
+        debug!(
+            "PTY FD {} added to event monitor for ConsolePlatform",
+            pty_fd
+        );
 
         let initial_platform_state = driver.get_platform_state();
-        info!("Initial platform state for ConsolePlatform: {:?}", initial_platform_state);
+        info!(
+            "Initial platform state for ConsolePlatform: {:?}",
+            initial_platform_state
+        );
 
         Ok((
             Self {
@@ -88,7 +96,12 @@ impl Platform for ConsolePlatform {
     where
         Self: Sized,
     {
-        ConsolePlatform::new(initial_pty_cols, initial_pty_rows, shell_command, shell_args)
+        ConsolePlatform::new(
+            initial_pty_cols,
+            initial_pty_rows,
+            shell_command,
+            shell_args,
+        )
     }
 
     fn poll_pty_data(&mut self) -> Result<Option<Vec<u8>>> {
@@ -129,7 +142,8 @@ impl Platform for ConsolePlatform {
                         return Ok(None);
                     }
                 }
-                return Err(e).context("ConsolePlatform: Failed to poll event monitor for PTY data");
+                return Err(e)
+                    .context("ConsolePlatform: Failed to poll event monitor for PTY data");
             }
         }
         Ok(None)
@@ -150,7 +164,10 @@ impl Platform for ConsolePlatform {
         match self.driver.process_events() {
             Ok(driver_events) => {
                 if !driver_events.is_empty() {
-                    trace!("ConsolePlatform: Received {} events from ConsoleDriver", driver_events.len());
+                    trace!(
+                        "ConsolePlatform: Received {} events from ConsoleDriver",
+                        driver_events.len()
+                    );
                     for event_in_vec in &driver_events {
                         if matches!(event_in_vec, BackendEvent::CloseRequested) {
                             info!("ConsolePlatform: CloseRequested event received from driver, requesting shutdown.");
@@ -175,10 +192,14 @@ impl Platform for ConsolePlatform {
         trace!("ConsolePlatform: Dispatching PTY action: {:?}", action);
         match action {
             PtyActionCommand::Write(data) => {
-                self.pty.write_all(&data).context("ConsolePlatform: Failed to write to PTY")?;
+                self.pty
+                    .write_all(&data)
+                    .context("ConsolePlatform: Failed to write to PTY")?;
             }
             PtyActionCommand::ResizePty { cols, rows } => {
-                self.pty.resize(cols, rows).context("ConsolePlatform: Failed to resize PTY")?;
+                self.pty
+                    .resize(cols, rows)
+                    .context("ConsolePlatform: Failed to resize PTY")?;
             }
         }
         Ok(())
@@ -188,8 +209,12 @@ impl Platform for ConsolePlatform {
         trace!("ConsolePlatform: Dispatching UI action: {:?}", action);
         match action {
             UiActionCommand::Render(commands) => {
-                self.driver.execute_render_commands(commands).context("ConsolePlatform: Failed to execute render commands")?;
-                self.driver.present().context("ConsolePlatform: Failed to present frame via ConsoleDriver")?;
+                self.driver
+                    .execute_render_commands(commands)
+                    .context("ConsolePlatform: Failed to execute render commands")?;
+                self.driver
+                    .present()
+                    .context("ConsolePlatform: Failed to present frame via ConsoleDriver")?;
             }
             UiActionCommand::SetTitle(title) => {
                 self.driver.set_title(&title);
@@ -217,7 +242,9 @@ impl Platform for ConsolePlatform {
             return Ok(());
         }
         info!("ConsolePlatform: Shutting down...");
-        self.driver.cleanup().context("ConsolePlatform: Failed to cleanup ConsoleDriver")?;
+        self.driver
+            .cleanup()
+            .context("ConsolePlatform: Failed to cleanup ConsoleDriver")?;
         self.shutdown_requested = true;
         info!("ConsolePlatform: Shutdown complete.");
         Ok(())

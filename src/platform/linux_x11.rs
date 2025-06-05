@@ -8,16 +8,17 @@ use std::os::unix::io::AsRawFd; // Added for NixPty.as_raw_fd()
 use anyhow::{Context, Result};
 use log::*;
 
-use crate::platform::actions::{PtyActionCommand, UiActionCommand};
+use crate::config::CONFIG;
+use crate::platform::actions::PlatformAction;
 use crate::platform::backends::x11::window::CursorVisibility; // Used for converting bool
+use crate::platform::backends::x11::XDriver;
 use crate::platform::backends::{BackendEvent, Driver, PlatformState};
 use crate::platform::os::epoll::{EpollFlags, EventMonitor};
-use crate::platform::os::pty::{NixPty, PtyConfig, PtyChannel};
+use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
-use crate::platform::backends::x11::XDriver;
+use crate::platform::PlatformEvent;
 
 // use libc::epoll_event as LibcEpollEvent; // Removed due to warning
-
 
 /// EPOLL token for PTY events.
 const PTY_EPOLL_TOKEN: u64 = 1;
@@ -28,7 +29,6 @@ pub struct LinuxX11Platform {
     pty: NixPty,
     driver: XDriver,
     event_monitor: EventMonitor,
-    event_buffer: Vec<BackendEvent>,
     shutdown_requested: bool,
 }
 
@@ -41,7 +41,7 @@ impl LinuxX11Platform {
         shell_command: String,
         shell_args: Vec<String>,
     ) -> Result<(Self, PlatformState)>
-    // No `where Self: Sized` needed for inherent methods like this.
+// No `where Self: Sized` needed for inherent methods like this.
     {
         info!(
             "Initializing LinuxX11Platform with PTY size {}x{}",
@@ -85,11 +85,23 @@ impl LinuxX11Platform {
                 pty,
                 driver,
                 event_monitor,
-                event_buffer: Vec::new(),
                 shutdown_requested: false,
             },
             initial_platform_state,
         ))
+    }
+
+
+    fn shutdown(&mut self) -> Result<()> {
+        if self.shutdown_requested {
+            info!("Shutdown already requested or in progress.");
+            return Ok(());
+        }
+        info!("Shutting down LinuxX11Platform...");
+        self.driver.cleanup().context("Failed to cleanup XDriver")?;
+        self.shutdown_requested = true;
+        info!("LinuxX11Platform shutdown complete.");
+        Ok(())
     }
 }
 
@@ -105,135 +117,121 @@ impl Platform for LinuxX11Platform {
         Self: Sized,
     {
         // Call the inherent new method
-        LinuxX11Platform::new(initial_pty_cols, initial_pty_rows, shell_command, shell_args)
+        LinuxX11Platform::new(
+            initial_pty_cols,
+            initial_pty_rows,
+            shell_command,
+            shell_args,
+        )
     }
 
-    fn poll_pty_data(&mut self) -> Result<Option<Vec<u8>>> {
-        if self.shutdown_requested {
-            return Ok(None);
-        }
-
-        match self.event_monitor.events(0) {
-            Ok(events_slice) => {
-                for event_ref in events_slice {
-                    let event_data_token = event_ref.u64;
-                    if event_data_token == PTY_EPOLL_TOKEN {
-                        let mut buf = [0u8; 4096];
-                        match self.pty.read(&mut buf) {
-                            Ok(0) => {
-                                info!("PTY read EOF, requesting shutdown.");
-                                self.shutdown_requested = true;
-                                return Ok(None);
-                            }
-                            Ok(count) => {
-                                trace!("Read {} bytes from PTY", count);
-                                return Ok(Some(buf[..count].to_vec()));
-                            }
-                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                return Ok(None);
-                            }
-                            Err(e) => {
-                                return Err(e).context("Failed to read from PTY");
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                 if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
-                    if *nix_err == nix::Error::EINTR {
-                        debug!("Event monitor poll interrupted by EINTR, retrying.");
-                        return Ok(None);
-                    }
-                }
-                return Err(e).context("Failed to poll event monitor for PTY data");
-            }
-        }
-        Ok(None)
-    }
-
-    fn poll_ui_event(&mut self) -> Result<Option<BackendEvent>> {
-        if let Some(event) = self.event_buffer.pop() {
-            trace!("Popped event from buffer: {:?}", event);
-            return Ok(Some(event));
-        }
-
+    fn poll_events(&mut self) -> Result<Vec<super::PlatformEvent>> {
         if self.shutdown_requested {
             info!("Shutdown requested, returning CloseRequested event.");
-            self.event_buffer.push(BackendEvent::CloseRequested);
-            return Ok(self.event_buffer.pop());
+            return Ok(vec![BackendEvent::CloseRequested.into()])
         }
 
-        match self.event_monitor.events(0) {
+        let timeout = (CONFIG.performance.max_draw_latency_ms
+            - CONFIG.performance.min_draw_latency_ms)
+            .as_millis() as u8;
+        match self.event_monitor.events(timeout.into()) {
             Ok(events_slice) => {
                 for event_ref in events_slice {
-                    let event_data_token = event_ref.u64;
-                    if event_data_token == DRIVER_EPOLL_TOKEN {
-                        trace!("Processing X11 driver events");
-                        let driver_events = self.driver.process_events().context("Failed to process X11 driver events")?;
-                        for driver_event in &driver_events {
-                            if matches!(driver_event, BackendEvent::CloseRequested) {
-                                info!("CloseRequested event received from driver, requesting shutdown.");
-                                self.shutdown_requested = true;
+                    match event_ref.u64 {
+                        DRIVER_EPOLL_TOKEN => {
+                            trace!("Processing X11 driver events");
+                            let driver_events = self
+                                .driver
+                                .process_events()
+                                .context("Failed to process X11 driver events")?;
+                            for driver_event in &driver_events {
+                                if matches!(driver_event, BackendEvent::CloseRequested) {
+                                    info!("CloseRequested event received from driver, requesting shutdown.");
+                                    self.shutdown_requested = true;
+                                    return Ok(vec![BackendEvent::CloseRequested.into()]);
+                                }
+                            }
+                            return Ok(driver_events.into_iter().map(|e| PlatformEvent::from(e)).collect())
+                        }
+                        PTY_EPOLL_TOKEN => {
+                            const ST_BUFFER: usize = 4096;
+                            // magic number: arbitrary. More than st. Should be plenty. Maybe this
+                            // belongs in config?
+                            let mut buf = [0u8; 4 * ST_BUFFER];
+                            match self.pty.read(&mut buf) {
+                                Ok(0) => {
+                                    info!("PTY read EOF, requesting shutdown.");
+                                    self.shutdown_requested = true;
+                                    return Ok(vec![BackendEvent::CloseRequested.into()]);
+                                }
+                                Ok(count) => {
+                                    trace!("Read {} bytes from PTY", count);
+                                    return Ok(vec![PlatformEvent::IOEvent {
+                                        data: buf[..count].to_vec(),
+                                    }]);
+                                }
+                                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                    return Ok(vec![]);
+                                }
+                                Err(e) => {
+                                    return Err(e).context("Failed to read from PTY");
+                                }
                             }
                         }
-                        self.event_buffer.extend(driver_events.into_iter().rev());
-                        if let Some(event) = self.event_buffer.pop() {
-                             trace!("Popped event from buffer after processing driver events: {:?}", event);
-                            return Ok(Some(event));
+                        _ => {
+                            unimplemented!("unrecognized event type: {:?}", event_ref);
                         }
                     }
                 }
+                return Ok(vec![]);
             }
-             Err(e) => {
-                 if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
+            Err(e) => {
+                if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
                     if *nix_err == nix::Error::EINTR {
                         debug!("Event monitor poll interrupted by EINTR, retrying.");
-                        return Ok(None);
+                        return Ok(vec![]);
                     }
                 }
                 return Err(e).context("Failed to poll event monitor for UI events");
             }
         }
-        Ok(None)
     }
 
-    fn dispatch_pty_action(&mut self, action: PtyActionCommand) -> Result<()> {
-        trace!("Dispatching PTY action: {:?}", action);
-        match action {
-            PtyActionCommand::Write(data) => {
-                self.pty.write_all(&data).context("Failed to write to PTY")?;
-            }
-            PtyActionCommand::ResizePty { cols, rows } => {
-                self.pty.resize(cols, rows).context("Failed to resize PTY")?;
-            }
-        }
-        Ok(())
-    }
-
-    fn dispatch_ui_action(&mut self, action: UiActionCommand) -> Result<()> {
-        trace!("Dispatching UI action: {:?}", action);
-        match action {
-            UiActionCommand::Render(commands) => {
-                self.driver.execute_render_commands(commands.clone()).context("Failed to execute render commands")?;
-                self.driver.present().context("Failed to present frame")?;
-            }
-            UiActionCommand::SetTitle(title) => {
-                self.driver.set_title(&title);
-            }
-            UiActionCommand::RingBell => {
-                self.driver.bell();
-            }
-            UiActionCommand::CopyToClipboard(text) => {
-                self.driver.own_selection(2, text);
-            }
-            UiActionCommand::SetCursorVisibility(visible) => {
-                let cursor_visibility = if visible {
-                    CursorVisibility::Shown
-                } else {
-                    CursorVisibility::Hidden
-                };
-                self.driver.set_cursor_visibility(cursor_visibility);
+    fn dispatch_actions(&mut self, actions: Vec<PlatformAction>) -> Result<()> {
+        for action in actions {
+            match action {
+                PlatformAction::Write(data) => self
+                    .pty
+                    .write_all(&data)
+                    .context("Failed to write to PTY")?,
+                PlatformAction::ResizePty { cols, rows } => {
+                    self.pty
+                        .resize(cols, rows)
+                        .context("Failed to resize PTY")?;
+                }
+                PlatformAction::Render(commands) => {
+                    self.driver
+                        .execute_render_commands(commands.clone())
+                        .context("Failed to execute render commands")?;
+                    self.driver.present().context("Failed to present frame")?;
+                }
+                PlatformAction::SetTitle(title) => {
+                    self.driver.set_title(&title);
+                }
+                PlatformAction::RingBell => {
+                    self.driver.bell();
+                }
+                PlatformAction::CopyToClipboard(text) => {
+                    self.driver.own_selection(2, text);
+                }
+                PlatformAction::SetCursorVisibility(visible) => {
+                    let cursor_visibility = if visible {
+                        CursorVisibility::Shown
+                    } else {
+                        CursorVisibility::Hidden
+                    };
+                    self.driver.set_cursor_visibility(cursor_visibility);
+                }
             }
         }
         Ok(())
@@ -241,18 +239,6 @@ impl Platform for LinuxX11Platform {
 
     fn get_current_platform_state(&self) -> PlatformState {
         self.driver.get_platform_state()
-    }
-
-    fn shutdown(&mut self) -> Result<()> {
-        if self.shutdown_requested {
-            info!("Shutdown already requested or in progress.");
-            return Ok(());
-        }
-        info!("Shutting down LinuxX11Platform...");
-        self.driver.cleanup().context("Failed to cleanup XDriver")?;
-        self.shutdown_requested = true;
-        info!("LinuxX11Platform shutdown complete.");
-        Ok(())
     }
 }
 

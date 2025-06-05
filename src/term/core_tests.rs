@@ -523,8 +523,13 @@ fn it_should_print_ascii_over_wide_char_that_straddles_line_end_after_wrap() {
 #[test]
 fn it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off() {
     let mut term = create_test_emulator(10, 3); // LNM is off by default
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetMode(20))));
-    assert!(!term.dec_modes.linefeed_newline_mode, "LNM should be explicitly turned OFF for this test");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetMode(20),
+    )));
+    assert!(
+        !term.dec_modes.linefeed_newline_mode,
+        "LNM should be explicitly turned OFF for this test"
+    );
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); // Char 'A' at (0,0). Cursor at (0,1).
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorForward(3),
@@ -559,8 +564,13 @@ fn it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off() {
 #[test]
 fn it_should_scroll_up_and_move_cursor_down_keeping_column_on_line_feed_at_bottom_if_lnm_is_off() {
     let mut term = create_test_emulator(5, 2); // LNM is off by default
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetMode(20))));
-    assert!(!term.dec_modes.linefeed_newline_mode, "LNM should be explicitly turned OFF for this test");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetMode(20),
+    )));
+    assert!(
+        !term.dec_modes.linefeed_newline_mode,
+        "LNM should be explicitly turned OFF for this test"
+    );
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('3'))); // Line 0: "123", cursor (0,3)
@@ -693,8 +703,13 @@ fn it_should_move_cursor_left_on_backspace() {
 #[test]
 fn it_should_not_wrap_cursor_on_backspace_at_start_of_line() {
     let mut term = create_test_emulator(10, 2);
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetMode(20))));
-    assert!(!term.dec_modes.linefeed_newline_mode, "LNM should be explicitly turned OFF for this test");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetMode(20),
+    )));
+    assert!(
+        !term.dec_modes.linefeed_newline_mode,
+        "LNM should be explicitly turned OFF for this test"
+    );
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
 

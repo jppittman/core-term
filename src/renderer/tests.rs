@@ -2,20 +2,14 @@
 
 // Imports from the main crate
 use crate::color::Color;
-use crate::config::{Config}; // Added Config, removed self
+use crate::config::Config; // Added Config, removed self
+use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
 use crate::platform::backends::{
     BackendEvent, CellCoords, CellRect, CursorVisibility, Driver, FocusState, PlatformState,
     RenderCommand as ActualRenderCommand, TextRunStyle,
 };
-use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
 use crate::renderer::Renderer;
-use crate::term::{
-    CursorRenderState,
-    CursorShape,
-    RenderSnapshot,
-    Selection,
-    SnapshotLine,
-};
+use crate::term::{CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine};
 
 use anyhow::Result;
 use std::sync::Mutex;
@@ -194,7 +188,8 @@ fn test_render_empty_screen_with_cursor() {
         num_rows,
         Selection::default(),
     );
-    let render_commands = renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
+    let render_commands =
+        renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
     driver
         .execute_render_commands(render_commands)
         .expect("Execute render commands failed");
@@ -302,7 +297,8 @@ fn test_render_simple_text() {
         num_rows,
         Selection::default(),
     );
-    let render_commands = renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
+    let render_commands =
+        renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
     driver
         .execute_render_commands(render_commands)
         .expect("Execute render commands failed");
@@ -424,7 +420,8 @@ fn test_dirty_line_processing() {
         num_rows,
         Selection::default(),
     );
-    let render_commands = renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
+    let render_commands =
+        renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
     driver
         .execute_render_commands(render_commands)
         .expect("Execute render commands failed");

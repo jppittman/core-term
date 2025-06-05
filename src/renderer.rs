@@ -12,8 +12,8 @@ use crate::color::Color;
 // use crate::config::CONFIG; // Will use passed config parameter
 use crate::config::Config; // For the config parameter
 use crate::glyph::{AttrFlags, Attributes, Glyph};
-use crate::platform::backends::RenderCommand;
 use crate::platform::backends::PlatformState; // Added for PlatformState
+use crate::platform::backends::RenderCommand;
 use crate::term::snapshot::{Point, RenderSnapshot, Selection};
 use crate::term::unicode::get_char_display_width;
 
@@ -90,8 +90,10 @@ impl Renderer {
         // let term_rows = (platform_state.display_height_px / platform_state.font_cell_height_px.max(1)).max(1);
         // However, RenderSnapshot is typically already in cell coordinates.
         // We'll log platform_state for now to show it's available.
-        trace!("Renderer::prepare_render_commands called with platform_state: {:?}", platform_state);
-
+        trace!(
+            "Renderer::prepare_render_commands called with platform_state: {:?}",
+            platform_state
+        );
 
         if term_width == 0 || term_height == 0 {
             trace!("Renderer::prepare_render_commands: Terminal dimensions zero, skipping draw.");
@@ -129,7 +131,10 @@ impl Renderer {
             }
 
             let Some(line_data) = snapshot.lines.get(y_abs) else {
-                warn!("Renderer::prepare_render_commands: Snapshot missing line data for y={}", y_abs);
+                warn!(
+                    "Renderer::prepare_render_commands: Snapshot missing line data for y={}",
+                    y_abs
+                );
                 continue;
             };
 
@@ -187,7 +192,8 @@ impl Renderer {
         selection: &Option<Selection>,
         config: &Config, // Added config
         commands: &mut Vec<RenderCommand>,
-    ) { // Removed Result<()>
+    ) {
+        // Removed Result<()>
         let mut current_col: usize = 0;
 
         while current_col < term_width {
@@ -208,7 +214,13 @@ impl Renderer {
 
             let cells_consumed = match start_glyph {
                 Glyph::WideSpacer { .. } => {
-                    self.handle_wide_char_placeholder(current_col, y_abs, line_glyphs, config, commands) // Pass config
+                    self.handle_wide_char_placeholder(
+                        current_col,
+                        y_abs,
+                        line_glyphs,
+                        config,
+                        commands,
+                    ) // Pass config
                 }
                 Glyph::Single(cc) if cc.c == ' ' => self.draw_space_run_from_slice(
                     current_col,
@@ -235,11 +247,15 @@ impl Renderer {
             // If any helper returns an error (now they don't return Result, so this needs rethink if errors were critical)
             // For now, assuming they handle errors by logging and we continue.
             let Ok(cells_consumed_val) = cells_consumed else {
-                 warn!("A draw segment failed at ({}, {}), char '{}'. Advancing by 1 to prevent loop.", current_col, y_abs, start_glyph.display_char());
-                 current_col +=1;
-                 continue;
+                warn!(
+                    "A draw segment failed at ({}, {}), char '{}'. Advancing by 1 to prevent loop.",
+                    current_col,
+                    y_abs,
+                    start_glyph.display_char()
+                );
+                current_col += 1;
+                continue;
             };
-
 
             if cells_consumed_val == 0 {
                 warn!("A draw segment reported consuming 0 cells at ({}, {}), char '{}'. Advancing by 1 to prevent loop.", current_col, y_abs, start_glyph.display_char());
@@ -258,7 +274,8 @@ impl Renderer {
         line_glyphs: &[Glyph],
         config: &Config, // Added config
         commands: &mut Vec<RenderCommand>,
-    ) -> Result<usize, ()> { // Changed to dummy error type for now
+    ) -> Result<usize, ()> {
+        // Changed to dummy error type for now
         if current_col == 0 {
             warn!("Placeholder found at column 0 on line {}. This is unexpected. Using default background.", y_abs);
             self.draw_placeholder_cell(current_col, y_abs, config.colors.background, commands); // Pass config
@@ -318,7 +335,8 @@ impl Renderer {
         selection: &Option<Selection>,
         config: &Config, // Added config
         commands: &mut Vec<RenderCommand>,
-    ) -> Result<usize, ()> { // Changed to dummy error type
+    ) -> Result<usize, ()> {
+        // Changed to dummy error type
         let cells_consumed_by_text_run = self.draw_text_segment_from_slice(
             current_col,
             y_abs,
@@ -347,7 +365,7 @@ impl Renderer {
 
         if placeholder_col >= term_width {
             if cells_consumed_by_text_run != SINGLE_CELL_CONSUMED {
-                 warn!("    Line {}, Col {}: Wide char '{}' at end of line, but text_segment consumed {} cells (expected 1).", y_abs, current_col, start_glyph.display_char(), cells_consumed_by_text_run);
+                warn!("    Line {}, Col {}: Wide char '{}' at end of line, but text_segment consumed {} cells (expected 1).", y_abs, current_col, start_glyph.display_char(), cells_consumed_by_text_run);
             }
             return Ok(cells_consumed_by_text_run);
         }
@@ -410,7 +428,8 @@ impl Renderer {
         y: usize,
         effective_bg: Color,
         commands: &mut Vec<RenderCommand>,
-    ) { // Removed Result<()>
+    ) {
+        // Removed Result<()>
         trace!(
             "    Line {}, Col {}: Placeholder. FillRect with bg={:?}",
             y,
@@ -438,11 +457,15 @@ impl Renderer {
         selection: &Option<Selection>,
         config: &Config, // Added config
         commands: &mut Vec<RenderCommand>,
-    ) -> Result<usize, ()> { // Changed to dummy error type
+    ) -> Result<usize, ()> {
+        // Changed to dummy error type
         let start_glyph_cc = match start_glyph {
             Glyph::Single(cc) => cc,
             _ => {
-                debug_assert!(false, "draw_space_run_from_slice called with non-Single glyph");
+                debug_assert!(
+                    false,
+                    "draw_space_run_from_slice called with non-Single glyph"
+                );
                 commands.push(RenderCommand::FillRect {
                     x: start_col,
                     y,
@@ -454,7 +477,10 @@ impl Renderer {
                 return Ok(SINGLE_CELL_CONSUMED);
             }
         };
-        debug_assert!(start_glyph_cc.c == ' ', "draw_space_run_from_slice called with non-space char");
+        debug_assert!(
+            start_glyph_cc.c == ' ',
+            "draw_space_run_from_slice called with non-space char"
+        );
 
         let (_, start_eff_bg, start_eff_flags) = self.get_effective_colors_and_flags(
             start_glyph_cc.attr.fg,
@@ -472,8 +498,13 @@ impl Renderer {
 
             match glyph_at_scan {
                 Glyph::Single(cc) if cc.c == ' ' => {
-                    let (_, current_scan_eff_bg, current_scan_flags) =
-                        self.get_effective_colors_and_flags(cc.attr.fg, cc.attr.bg, cc.attr.flags, config); // Pass config
+                    let (_, current_scan_eff_bg, current_scan_flags) = self
+                        .get_effective_colors_and_flags(
+                            cc.attr.fg,
+                            cc.attr.bg,
+                            cc.attr.flags,
+                            config,
+                        ); // Pass config
                     if current_scan_eff_bg != start_eff_bg || current_scan_flags != start_eff_flags
                     {
                         break;
@@ -523,7 +554,8 @@ impl Renderer {
         selection: &Option<Selection>,
         config: &Config, // Added config
         commands: &mut Vec<RenderCommand>,
-    ) -> Result<usize, ()> { // Changed to dummy error type
+    ) -> Result<usize, ()> {
+        // Changed to dummy error type
         let start_glyph_cc = match start_glyph {
             Glyph::Single(cc) | Glyph::WidePrimary(cc) => cc,
             Glyph::WideSpacer { .. } => {
@@ -531,7 +563,10 @@ impl Renderer {
                 return Ok(SINGLE_CELL_CONSUMED);
             }
         };
-        debug_assert!(start_glyph_cc.c != ' ' && start_glyph_cc.c != '\0', "draw_text_segment_from_slice called with space or placeholder");
+        debug_assert!(
+            start_glyph_cc.c != ' ' && start_glyph_cc.c != '\0',
+            "draw_text_segment_from_slice called with space or placeholder"
+        );
 
         let (start_eff_fg, start_eff_bg, start_eff_flags) = self.get_effective_colors_and_flags(
             start_glyph_cc.attr.fg,
@@ -554,7 +589,9 @@ impl Renderer {
                 Glyph::WideSpacer { .. } => break,
             };
 
-            if current_glyph_cc.c == ' ' { break; }
+            if current_glyph_cc.c == ' ' {
+                break;
+            }
 
             let (current_glyph_eff_fg, current_glyph_eff_bg, current_glyph_flags) = self
                 .get_effective_colors_and_flags(
@@ -573,7 +610,12 @@ impl Renderer {
 
             let char_display_width = get_char_display_width(current_glyph_cc.c);
             if char_display_width == 0 {
-                trace!("    Line {}, Col {}: Appending zero-width char '{}'.", y, current_scan_col, current_glyph_cc.c);
+                trace!(
+                    "    Line {}, Col {}: Appending zero-width char '{}'.",
+                    y,
+                    current_scan_col,
+                    current_glyph_cc.c
+                );
                 run_text.push(current_glyph_cc.c);
                 current_scan_col += SINGLE_CELL_CONSUMED;
                 continue;
@@ -589,7 +631,14 @@ impl Renderer {
 
         if run_text.is_empty() {
             let initial_char_width = get_char_display_width(start_glyph_cc.c);
-            warn!("    Line {}, Col {}: Text run for char '{}' (width {}) was empty. Consumed: {}", y, start_col, start_glyph.display_char(), initial_char_width, initial_char_width.max(SINGLE_CELL_CONSUMED));
+            warn!(
+                "    Line {}, Col {}: Text run for char '{}' (width {}) was empty. Consumed: {}",
+                y,
+                start_col,
+                start_glyph.display_char(),
+                initial_char_width,
+                initial_char_width.max(SINGLE_CELL_CONSUMED)
+            );
             return Ok(initial_char_width.max(SINGLE_CELL_CONSUMED));
         }
 
@@ -613,7 +662,8 @@ impl Renderer {
         snapshot: &RenderSnapshot,
         config: &Config, // Added config
         commands: &mut Vec<RenderCommand>,
-    ) { // Removed Result<()>
+    ) {
+        // Removed Result<()>
         let Some(cursor_state) = &snapshot.cursor_state else {
             // return Ok(()); // Removed
             return;
@@ -623,7 +673,10 @@ impl Renderer {
         let cursor_abs_y = cursor_state.y;
 
         if !(cursor_abs_x < term_width && cursor_abs_y < term_height) {
-            warn!("Cursor at ({}, {}) is out of bounds ({}x{}). Not drawing.", cursor_abs_x, cursor_abs_y, term_width, term_height);
+            warn!(
+                "Cursor at ({}, {}) is out of bounds ({}x{}). Not drawing.",
+                cursor_abs_x, cursor_abs_y, term_width, term_height
+            );
             // return Ok(()); // Removed
             return;
         }
@@ -632,7 +685,10 @@ impl Renderer {
             x: cursor_abs_x,
             y: cursor_abs_y,
         }) else {
-            warn!("Could not get glyph under cursor at ({}, {}) from snapshot. Not drawing cursor.", cursor_abs_x, cursor_abs_y);
+            warn!(
+                "Could not get glyph under cursor at ({}, {}) from snapshot. Not drawing cursor.",
+                cursor_abs_x, cursor_abs_y
+            );
             // return Ok(()); // Removed
             return;
         };
@@ -689,7 +745,12 @@ impl Renderer {
                 original_attrs_at_cursor.flags,
                 config, // Pass config
             );
-        trace!("    Original cell effective attrs for cursor: fg={:?}, bg={:?}, flags={:?}", resolved_original_fg, resolved_original_bg, resolved_original_flags);
+        trace!(
+            "    Original cell effective attrs for cursor: fg={:?}, bg={:?}, flags={:?}",
+            resolved_original_fg,
+            resolved_original_bg,
+            resolved_original_flags
+        );
 
         let cursor_char_fg = resolved_original_bg;
         let cursor_cell_bg = resolved_original_fg;
