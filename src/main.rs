@@ -14,11 +14,11 @@ pub mod term;
 // Use statements for items needed in main.rs
 use crate::{
     ansi::AnsiProcessor,
-    config::Config, // Using Config directly
+    config::CONFIG, // Using Config directly
     orchestrator::{AppOrchestrator, OrchestratorStatus},
     platform::actions::PtyActionCommand, // For initial PTY resize
     platform::linux_x11::LinuxX11Platform, // Specific platform implementation
-    platform::platform_trait::Platform, // Trait needed for platform methods
+    platform::platform_trait::Platform,  // Trait needed for platform methods
     renderer::Renderer,
     term::TerminalEmulator,
 };
@@ -43,7 +43,6 @@ fn main() -> anyhow::Result<()> {
     // --- Configuration ---
     // Load application config (using default for now as per plan)
     // In future, this might be: let config = Config::load_or_default();
-    let _config = Config::default(); // Renamed to _config as it's not used directly after this
     info!("Configuration loaded (using default).");
 
     let shell_command = std::env::var("SHELL").unwrap_or_else(|_| {
@@ -52,10 +51,7 @@ fn main() -> anyhow::Result<()> {
     });
     let shell_args: Vec<String> = Vec::new(); // No specific args by default for now
 
-    info!(
-        "Shell command: '{}', args: {:?}",
-        shell_command, shell_args
-    );
+    info!("Shell command: '{}', args: {:?}", shell_command, shell_args);
 
     // --- Instantiate Concrete Platform ---
     // These are hints for the platform's PTY initialization.
@@ -107,7 +103,6 @@ fn main() -> anyhow::Result<()> {
     let renderer = Renderer::new();
     info!("Renderer initialized.");
 
-
     // --- Initial Resize Synchronization ---
     // Ensure the PTY's dimensions match the TerminalEmulator's calculated dimensions.
     platform
@@ -120,7 +115,6 @@ fn main() -> anyhow::Result<()> {
         "Dispatched initial PTY resize to {}x{}",
         term_cols, term_rows
     );
-
 
     // --- Instantiate AppOrchestrator ---
     let mut orchestrator = AppOrchestrator::new(
@@ -137,7 +131,9 @@ fn main() -> anyhow::Result<()> {
     loop {
         match orchestrator.process_event_cycle() {
             Ok(OrchestratorStatus::Running) => {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(
+                    CONFIG.performance.min_draw_latency_ms as u64,
+                ));
             }
             Ok(OrchestratorStatus::Shutdown) => {
                 info!("Orchestrator requested shutdown. Exiting main loop.");

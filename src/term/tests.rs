@@ -98,7 +98,8 @@ fn assert_screen_state(
                 )
             });
 
-            let (cell_char, _cell_attrs) = match glyph_wrapper { // cell_attrs prefixed with _
+            let (cell_char, _cell_attrs) = match glyph_wrapper {
+                // cell_attrs prefixed with _
                 Glyph::Single(cell) => (cell.c, cell.attr),
                 Glyph::WidePrimary(cell) => (cell.c, cell.attr),
                 Glyph::WideSpacer { .. } => {
@@ -1168,8 +1169,13 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     let cols = 10;
     let rows = 5;
     let mut emu = create_test_emulator(cols, rows); // Changed from term to emu
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ResetMode(20))));
-    assert!(!emu.dec_modes.linefeed_newline_mode, "LNM should be explicitly turned OFF for this test");
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetMode(20),
+    )));
+    assert!(
+        !emu.dec_modes.linefeed_newline_mode,
+        "LNM should be explicitly turned OFF for this test"
+    );
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         // Changed from term to emu
