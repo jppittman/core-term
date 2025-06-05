@@ -18,7 +18,7 @@ use crate::{
     orchestrator::{AppOrchestrator, OrchestratorStatus},
     platform::actions::PlatformAction, // Updated for initial PTY resize
     platform::linux_x11::LinuxX11Platform, // Specific platform implementation
-    platform::platform_trait::Platform,  // Trait needed for platform methods
+    platform::platform_trait::Platform, // Trait needed for platform methods
     renderer::Renderer,
     term::TerminalEmulator,
 };
