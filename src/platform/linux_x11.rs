@@ -164,10 +164,6 @@ impl Platform for LinuxX11Platform {
                                 }
                                 collected_events.push(backend_event.into());
                             }
-                            // If driver events were processed, return them.
-                            if !collected_events.is_empty() {
-                                return Ok(collected_events);
-                            }
                         }
                         PTY_EPOLL_TOKEN => {
                             trace!("Processing PTY events (EPOLL token: {})", PTY_EPOLL_TOKEN);
@@ -184,11 +180,8 @@ impl Platform for LinuxX11Platform {
                                     collected_events.push(PlatformEvent::IOEvent {
                                         data: buf[..count].to_vec(),
                                     });
-                                    // If PTY data was read, return it.
-                                    return Ok(collected_events);
                                 }
                                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                    // No data available from PTY at this moment, effectively an empty event.
                                     trace!(
                                         "PTY read would block, no PTY event generated this time."
                                     );
