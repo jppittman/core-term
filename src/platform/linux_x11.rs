@@ -146,7 +146,10 @@ impl Platform for LinuxX11Platform {
                     // This means if both PTY and Driver have events, only one set will be processed in this call.
                     match event_ref.u64 {
                         DRIVER_EPOLL_TOKEN => {
-                            trace!("Processing X11 driver events (EPOLL token: {})", DRIVER_EPOLL_TOKEN);
+                            trace!(
+                                "Processing X11 driver events (EPOLL token: {})",
+                                DRIVER_EPOLL_TOKEN
+                            );
                             let driver_backend_events = self
                                 .driver
                                 .process_events()
@@ -186,7 +189,9 @@ impl Platform for LinuxX11Platform {
                                 }
                                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
                                     // No data available from PTY at this moment, effectively an empty event.
-                                    trace!("PTY read would block, no PTY event generated this time.");
+                                    trace!(
+                                        "PTY read would block, no PTY event generated this time."
+                                    );
                                 }
                                 Err(e) => {
                                     return Err(e).context("Failed to read from PTY");
@@ -245,7 +250,8 @@ impl Platform for LinuxX11Platform {
                 PlatformAction::CopyToClipboard(text) => {
                     // Log length before text is moved to own_selection
                     debug!("LinuxX11Platform: CopyToClipboard action, text length: {}. Dispatching to XDriver.", text.len());
-                    self.driver.own_selection(CLIPBOARD_SELECTION_INDEX.into(), text); // Cast to u64
+                    self.driver
+                        .own_selection(CLIPBOARD_SELECTION_INDEX.into(), text); // Cast to u64
                 }
                 PlatformAction::SetCursorVisibility(visible) => {
                     let cursor_visibility = if visible {

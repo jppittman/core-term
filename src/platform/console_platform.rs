@@ -11,10 +11,10 @@ use log::{debug, error, info, trace};
 use crate::platform::actions::PlatformAction;
 use crate::platform::backends::console::ConsoleDriver;
 use crate::platform::backends::{BackendEvent, Driver, PlatformState};
-use crate::platform::PlatformEvent;
 use crate::platform::os::epoll::{EpollFlags, EventMonitor};
 use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
+use crate::platform::PlatformEvent;
 
 const PTY_EPOLL_TOKEN: u64 = 1;
 // Buffer size for reading from PTY to align with common page sizes and buffer practices.
@@ -176,8 +176,9 @@ impl Platform for ConsolePlatform {
                         );
                     }
                 } else {
-                    return Err(e)
-                        .context("ConsolePlatform: Error polling PTY event monitor (Non-Nix error)");
+                    return Err(e).context(
+                        "ConsolePlatform: Error polling PTY event monitor (Non-Nix error)",
+                    );
                 }
             }
         }
@@ -243,7 +244,8 @@ impl Platform for ConsolePlatform {
                     // in the same way GUI environments do. CLIPBOARD_SELECTION_INDEX is based on
                     // conventions from X11 (PRIMARY selection), passed for trait compatibility.
                     let text_len = text.len(); // Get length before moving
-                    self.driver.own_selection(CLIPBOARD_SELECTION_INDEX.into(), text); // text is moved here
+                    self.driver
+                        .own_selection(CLIPBOARD_SELECTION_INDEX.into(), text); // text is moved here
                     debug!("ConsolePlatform: CopyToClipboard action processed (expected no-op for ConsoleDriver). Text length: {}", text_len);
                 }
                 PlatformAction::SetCursorVisibility(visible) => {
