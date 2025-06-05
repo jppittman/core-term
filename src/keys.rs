@@ -153,7 +153,7 @@ mod tests {
     // Helper to create a default config with specific keybindings for testing
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
         let mut cfg = Config::default(); // Get a default config
-        // Config has keybindings: KeybindingsConfig, and KeybindingsConfig has bindings: Vec<Keybinding>
+                                         // Config has keybindings: KeybindingsConfig, and KeybindingsConfig has bindings: Vec<Keybinding>
         cfg.keybindings = KeybindingsConfig { bindings }; // Assign new KeybindingsConfig
         cfg
     }
@@ -174,10 +174,15 @@ mod tests {
         ];
         let config = config_with_bindings(bindings);
 
-        let result = map_key_event_to_action(KeySymbol::Char('C'), Modifiers::CONTROL | Modifiers::SHIFT, &config);
+        let result = map_key_event_to_action(
+            KeySymbol::Char('C'),
+            Modifiers::CONTROL | Modifiers::SHIFT,
+            &config,
+        );
         assert_eq!(result, Some(UserInputAction::InitiateCopy));
 
-        let result_quit = map_key_event_to_action(KeySymbol::Char('Q'), Modifiers::CONTROL, &config);
+        let result_quit =
+            map_key_event_to_action(KeySymbol::Char('Q'), Modifiers::CONTROL, &config);
         assert_eq!(result_quit, Some(UserInputAction::RequestQuit));
     }
 
@@ -190,7 +195,11 @@ mod tests {
         }];
         let config = config_with_bindings(bindings);
 
-        let result = map_key_event_to_action(KeySymbol::Char('X'), Modifiers::CONTROL | Modifiers::SHIFT, &config);
+        let result = map_key_event_to_action(
+            KeySymbol::Char('X'),
+            Modifiers::CONTROL | Modifiers::SHIFT,
+            &config,
+        );
         assert_eq!(result, None);
     }
 
@@ -210,19 +219,25 @@ mod tests {
     #[test]
     fn test_map_key_not_found_empty_bindings() {
         let config = config_with_bindings(vec![]); // Empty bindings
-        let result = map_key_event_to_action(KeySymbol::Char('C'), Modifiers::CONTROL | Modifiers::SHIFT, &config);
+        let result = map_key_event_to_action(
+            KeySymbol::Char('C'),
+            Modifiers::CONTROL | Modifiers::SHIFT,
+            &config,
+        );
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_map_key_multiple_bindings_first_match() {
         let bindings = vec![
-            Keybinding { // This one should be found first
+            Keybinding {
+                // This one should be found first
                 key: KeySymbol::Char('A'),
                 mods: Modifiers::ALT,
                 action: UserInputAction::RequestZoomIn,
             },
-            Keybinding { // This one also matches but shouldn't be reached if first is found
+            Keybinding {
+                // This one also matches but shouldn't be reached if first is found
                 key: KeySymbol::Char('A'),
                 mods: Modifiers::ALT,
                 action: UserInputAction::RequestZoomOut, // Different action

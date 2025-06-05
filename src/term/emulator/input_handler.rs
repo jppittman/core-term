@@ -214,7 +214,10 @@ pub(super) fn process_user_input_action(
         }
         // Add catch-all for other UserInputAction variants to satisfy exhaustiveness
         _ => {
-            log::debug!("Unhandled UserInputAction variant in input_handler: {:?}", action);
+            log::debug!(
+                "Unhandled UserInputAction variant in input_handler: {:?}",
+                action
+            );
         }
     }
     None
