@@ -16,7 +16,7 @@ use crate::{
     ansi::AnsiProcessor,
     config::CONFIG, // Using Config directly
     orchestrator::{AppOrchestrator, OrchestratorStatus},
-    platform::actions::PtyActionCommand, // For initial PTY resize
+    platform::actions::PlatformAction, // Updated for initial PTY resize
     platform::linux_x11::LinuxX11Platform, // Specific platform implementation
     platform::platform_trait::Platform,  // Trait needed for platform methods
     renderer::Renderer,
@@ -106,10 +106,10 @@ fn main() -> anyhow::Result<()> {
     // --- Initial Resize Synchronization ---
     // Ensure the PTY's dimensions match the TerminalEmulator's calculated dimensions.
     platform
-        .dispatch_pty_action(PtyActionCommand::ResizePty {
+        .dispatch_actions(vec![PlatformAction::ResizePty {
             cols: term_cols as u16,
             rows: term_rows as u16,
-        })
+        }])
         .context("Failed to dispatch initial PTY resize command")?;
     info!(
         "Dispatched initial PTY resize to {}x{}",
@@ -132,7 +132,7 @@ fn main() -> anyhow::Result<()> {
         match orchestrator.process_event_cycle() {
             Ok(OrchestratorStatus::Running) => {
                 std::thread::sleep(std::time::Duration::from_millis(
-                    CONFIG.performance.min_draw_latency_ms as u64,
+                    CONFIG.performance.min_draw_latency_ms.as_millis() as u64,
                 ));
             }
             Ok(OrchestratorStatus::Shutdown) => {

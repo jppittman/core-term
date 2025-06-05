@@ -3,12 +3,11 @@
 // Defines the `Platform` trait, which abstracts over platform-specific
 // functionality for PTY and UI interaction.
 
-use crate::platform::actions::{PtyActionCommand, UiActionCommand};
-use crate::platform::backends::{BackendEvent, PlatformState};
+use crate::platform::backends::PlatformState; // BackendEvent is not directly used by the trait's method signatures
 use anyhow::Result;
 
 use super::actions::PlatformAction;
-use super::PlatformEvent; // Removed RenderCommand
+use super::PlatformEvent;
 
 /// A trait that defines the interface for a platform implementation.
 ///

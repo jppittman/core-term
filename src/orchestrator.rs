@@ -12,11 +12,12 @@ use crate::ansi::AnsiParser; // Trait for AnsiProcessor
 use crate::ansi::AnsiProcessor; // Specific type for Ansi commands
 
 use crate::config::Config;
-use crate::platform::actions::{PtyActionCommand, UiActionCommand};
+use crate::platform::actions::PlatformAction; // Updated import
 use crate::platform::backends::BackendEvent;
 // Assuming MouseButton, KeySymbol, Modifiers are from platform::backends and are compatible with UserInputAction where needed.
 use crate::platform::backends::MouseButton; // KeySymbol, Modifiers, PlatformState removed due to warnings
 use crate::platform::platform_trait::Platform;
+use crate::platform::PlatformEvent; // Added for poll_events
 use crate::renderer::Renderer;
 
 // Updated imports from `term` module
@@ -72,27 +73,27 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
         match action {
             EmulatorAction::WritePty(data) => {
                 self.platform
-                    .dispatch_pty_action(PtyActionCommand::Write(data))
+                    .dispatch_actions(vec![PlatformAction::Write(data)])
                     .context("Failed to dispatch PTY write action")?;
             }
             EmulatorAction::SetTitle(title) => {
                 self.platform
-                    .dispatch_ui_action(UiActionCommand::SetTitle(title))
+                    .dispatch_actions(vec![PlatformAction::SetTitle(title)])
                     .context("Failed to dispatch UI set title action")?;
             }
             EmulatorAction::RingBell => {
                 self.platform
-                    .dispatch_ui_action(UiActionCommand::RingBell)
+                    .dispatch_actions(vec![PlatformAction::RingBell])
                     .context("Failed to dispatch UI ring bell action")?;
             }
             EmulatorAction::CopyToClipboard(text) => {
                 self.platform
-                    .dispatch_ui_action(UiActionCommand::CopyToClipboard(text))
+                    .dispatch_actions(vec![PlatformAction::CopyToClipboard(text)])
                     .context("Failed to dispatch UI copy to clipboard action")?;
             }
             EmulatorAction::SetCursorVisibility(visible) => {
                 self.platform
-                    .dispatch_ui_action(UiActionCommand::SetCursorVisibility(visible))
+                    .dispatch_actions(vec![PlatformAction::SetCursorVisibility(visible)])
                     .context("Failed to dispatch UI set cursor visibility action")?;
             }
             EmulatorAction::RequestRedraw => {
@@ -119,196 +120,193 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
 
         self.pending_emulator_actions.clear();
 
-        // --- Poll for Inputs ---
-        if let Some(pty_data) = self
-            .platform
-            .poll_pty_data()
-            .context("Failed to poll PTY data")?
-        {
-            debug!(
-                "AppOrchestrator: Received {} bytes from PTY.",
-                pty_data.len()
-            );
-            // Use the AnsiParser trait method
-            let ansi_commands: Vec<AnsiCommand> = self.ansi_parser.process_bytes(&pty_data);
-            if !ansi_commands.is_empty() {
-                debug!(
-                    "AppOrchestrator: Parsed {} ANSI commands.",
-                    ansi_commands.len()
-                );
-                for command in ansi_commands {
-                    if let Some(action) = self
-                        .term_emulator
-                        .interpret_input(EmulatorInput::Ansi(command))
-                    {
-                        self.pending_emulator_actions.push(action);
+        // --- Poll for Events ---
+        let events = self.platform.poll_events().context("Failed to poll platform events")?;
+
+        for platform_event in events {
+            match platform_event {
+                PlatformEvent::IOEvent { data: pty_data } => {
+                    debug!(
+                        "AppOrchestrator: Received {} bytes from PTY.",
+                        pty_data.len()
+                    );
+                    // Use the AnsiParser trait method
+                    let ansi_commands: Vec<AnsiCommand> = self.ansi_parser.process_bytes(&pty_data);
+                    if !ansi_commands.is_empty() {
+                        debug!(
+                            "AppOrchestrator: Parsed {} ANSI commands.",
+                            ansi_commands.len()
+                        );
+                        for command in ansi_commands {
+                            if let Some(action) = self
+                                .term_emulator
+                                .interpret_input(EmulatorInput::Ansi(command))
+                            {
+                                self.pending_emulator_actions.push(action);
+                            }
+                        }
                     }
                 }
-            }
-        }
+                PlatformEvent::BackendEvent(backend_event) => {
+                    debug!(
+                        "AppOrchestrator: Received BackendEvent: {:?}",
+                        backend_event
+                    );
+                    let mut emulator_input_to_process: Option<EmulatorInput> = None;
 
-        if let Some(backend_event) = self
-            .platform
-            .poll_ui_event()
-            .context("Failed to poll UI event")?
-        {
-            debug!(
-                "AppOrchestrator: Received BackendEvent: {:?}",
-                backend_event
-            );
-            let mut emulator_input_to_process: Option<EmulatorInput> = None;
-
-            match backend_event {
-                BackendEvent::CloseRequested => {
-                    info!("AppOrchestrator: CloseRequested event received. Signaling shutdown.");
-                    return Ok(OrchestratorStatus::Shutdown);
-                }
-                BackendEvent::Resize {
-                    width_px,
-                    height_px,
-                } => {
-                    let platform_state = self.platform.get_current_platform_state();
-                    if platform_state.font_cell_width_px > 0
-                        && platform_state.font_cell_height_px > 0
-                    {
-                        // width_px, height_px are u16 from BackendEvent.
-                        // platform_state.font_cell_..._px are usize.
-                        let cols =
-                            (width_px as usize / platform_state.font_cell_width_px.max(1)).max(1);
-                        let rows =
-                            (height_px as usize / platform_state.font_cell_height_px.max(1)).max(1);
-                        info!(
-                            "AppOrchestrator: Resizing to {}x{} cells ({}x{} px, char_size: {}x{})",
-                            cols,
-                            rows,
+                    match backend_event {
+                        BackendEvent::CloseRequested => {
+                            info!("AppOrchestrator: CloseRequested event received. Signaling shutdown.");
+                            return Ok(OrchestratorStatus::Shutdown);
+                        }
+                        BackendEvent::Resize {
                             width_px,
                             height_px,
-                            platform_state.font_cell_width_px,
-                            platform_state.font_cell_height_px
-                        );
-                        // Dispatch PTY resize first
-                        self.platform
-                            .dispatch_pty_action(PtyActionCommand::ResizePty {
-                                cols: cols as u16,
-                                rows: rows as u16,
-                            })
-                            .context("Failed to dispatch PTY resize action")?;
-                        // Then inform terminal emulator
-                        emulator_input_to_process =
-                            Some(EmulatorInput::Control(ControlEvent::Resize { cols, rows }));
-                    } else {
-                        warn!("AppOrchestrator: Font dimensions are zero, cannot process resize.");
-                    }
-                }
-                BackendEvent::Key {
-                    symbol,
-                    modifiers,
-                    text,
-                } => {
-                    let key_input_action = UserInputAction::KeyInput {
-                        symbol,
-                        modifiers,
-                        text: if text.is_empty() { None } else { Some(text) },
-                    };
-                    emulator_input_to_process = Some(EmulatorInput::User(key_input_action));
-                }
-                BackendEvent::MouseButtonPress {
-                    button,
-                    x,
-                    y,
-                    modifiers: _,
-                } => {
-                    // Convert pixel to cell coordinates
-                    let platform_state = self.platform.get_current_platform_state();
-                    if platform_state.font_cell_width_px > 0
-                        && platform_state.font_cell_height_px > 0
-                    {
-                        let cell_x =
-                            (x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize;
-                        let cell_y =
-                            (y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize;
-
-                        // Determine action based on button (example)
-                        match button {
-                            MouseButton::Left => {
+                        } => {
+                            let platform_state = self.platform.get_current_platform_state();
+                            if platform_state.font_cell_width_px > 0
+                                && platform_state.font_cell_height_px > 0
+                            {
+                                // width_px, height_px are u16 from BackendEvent.
+                                // platform_state.font_cell_..._px are usize.
+                                let cols =
+                                    (width_px as usize / platform_state.font_cell_width_px.max(1)).max(1);
+                                let rows =
+                                    (height_px as usize / platform_state.font_cell_height_px.max(1)).max(1);
+                                info!(
+                                    "AppOrchestrator: Resizing to {}x{} cells ({}x{} px, char_size: {}x{})",
+                                    cols,
+                                    rows,
+                                    width_px,
+                                    height_px,
+                                    platform_state.font_cell_width_px,
+                                    platform_state.font_cell_height_px
+                                );
+                                // Dispatch PTY resize first
+                                self.platform
+                                    .dispatch_actions(vec![PlatformAction::ResizePty {
+                                        cols: cols as u16,
+                                        rows: rows as u16,
+                                    }])
+                                    .context("Failed to dispatch PTY resize action")?;
+                                // Then inform terminal emulator
                                 emulator_input_to_process =
-                                    Some(EmulatorInput::User(UserInputAction::StartSelection {
+                                    Some(EmulatorInput::Control(ControlEvent::Resize { cols, rows }));
+                            } else {
+                                warn!("AppOrchestrator: Font dimensions are zero, cannot process resize.");
+                            }
+                        }
+                        BackendEvent::Key {
+                            symbol,
+                            modifiers,
+                            text,
+                        } => {
+                            let key_input_action = UserInputAction::KeyInput {
+                                symbol,
+                                modifiers,
+                                text: if text.is_empty() { None } else { Some(text) },
+                            };
+                            emulator_input_to_process = Some(EmulatorInput::User(key_input_action));
+                        }
+                        BackendEvent::MouseButtonPress {
+                            button,
+                            x,
+                            y,
+                            modifiers: _,
+                        } => {
+                            // Convert pixel to cell coordinates
+                            let platform_state = self.platform.get_current_platform_state();
+                            if platform_state.font_cell_width_px > 0
+                                && platform_state.font_cell_height_px > 0
+                            {
+                                let cell_x =
+                                    (x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize;
+                                let cell_y =
+                                    (y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize;
+
+                                // Determine action based on button (example)
+                                match button {
+                                    MouseButton::Left => {
+                                        emulator_input_to_process =
+                                            Some(EmulatorInput::User(UserInputAction::StartSelection {
+                                                x: cell_x,
+                                                y: cell_y,
+                                            }));
+                                    }
+                                    MouseButton::Middle => {
+                                        emulator_input_to_process =
+                                            Some(EmulatorInput::User(UserInputAction::RequestPrimaryPaste));
+                                    }
+                                    // Other buttons could be mapped or ignored
+                                    _ => trace!("Unhandled mouse button press: {:?}", button),
+                                }
+                            } else {
+                                warn!("AppOrchestrator: Font dimensions are zero, cannot process mouse press.");
+                            }
+                        }
+                        BackendEvent::MouseButtonRelease {
+                            button,
+                            x: _x,
+                            y: _y,
+                            modifiers: _,
+                        } => {
+                            let platform_state = self.platform.get_current_platform_state();
+                            if platform_state.font_cell_width_px > 0
+                                && platform_state.font_cell_height_px > 0
+                            {
+                                // let cell_x = (_x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize;
+                                // let cell_y = (_y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize;
+                                if button == MouseButton::Left {
+                                    emulator_input_to_process =
+                                        Some(EmulatorInput::User(UserInputAction::ApplySelectionClear));
+                                }
+                            } else {
+                                warn!("AppOrchestrator: Font dimensions are zero, cannot process mouse release.");
+                            }
+                        }
+                        BackendEvent::MouseMove { x, y, modifiers: _ } => {
+                            // Corrected to MouseMove
+                            let platform_state = self.platform.get_current_platform_state();
+                            if platform_state.font_cell_width_px > 0
+                                && platform_state.font_cell_height_px > 0
+                            {
+                                let cell_x =
+                                    (x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize; // Use x
+                                let cell_y =
+                                    (y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize; // Use y
+                                emulator_input_to_process =
+                                    Some(EmulatorInput::User(UserInputAction::ExtendSelection {
                                         x: cell_x,
                                         y: cell_y,
                                     }));
+                            } else {
+                                warn!(
+                                    "AppOrchestrator: Font dimensions are zero, cannot process mouse move."
+                                );
                             }
-                            MouseButton::Middle => {
-                                emulator_input_to_process =
-                                    Some(EmulatorInput::User(UserInputAction::RequestPrimaryPaste));
-                            }
-                            // Other buttons could be mapped or ignored
-                            _ => trace!("Unhandled mouse button press: {:?}", button),
                         }
-                    } else {
-                        warn!("AppOrchestrator: Font dimensions are zero, cannot process mouse press.");
-                    }
-                }
-                BackendEvent::MouseButtonRelease {
-                    button,
-                    x: _x,
-                    y: _y,
-                    modifiers: _,
-                } => {
-                    let platform_state = self.platform.get_current_platform_state();
-                    if platform_state.font_cell_width_px > 0
-                        && platform_state.font_cell_height_px > 0
-                    {
-                        // let cell_x = (_x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize;
-                        // let cell_y = (_y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize;
-                        if button == MouseButton::Left {
+                        BackendEvent::FocusGained => {
                             emulator_input_to_process =
-                                Some(EmulatorInput::User(UserInputAction::ApplySelectionClear));
+                                Some(EmulatorInput::User(UserInputAction::FocusGained));
                         }
-                    } else {
-                        warn!("AppOrchestrator: Font dimensions are zero, cannot process mouse release.");
+                        BackendEvent::FocusLost => {
+                            emulator_input_to_process =
+                                Some(EmulatorInput::User(UserInputAction::FocusLost));
+                        }
+                        BackendEvent::PasteData { text } => {
+                            emulator_input_to_process =
+                                Some(EmulatorInput::User(UserInputAction::PasteText(text)));
+                        }
                     }
-                }
-                BackendEvent::MouseMove { x, y, modifiers: _ } => {
-                    // Corrected to MouseMove
-                    let platform_state = self.platform.get_current_platform_state();
-                    if platform_state.font_cell_width_px > 0
-                        && platform_state.font_cell_height_px > 0
-                    {
-                        let cell_x =
-                            (x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize; // Use x
-                        let cell_y =
-                            (y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize; // Use y
-                        emulator_input_to_process =
-                            Some(EmulatorInput::User(UserInputAction::ExtendSelection {
-                                x: cell_x,
-                                y: cell_y,
-                            }));
-                    } else {
-                        warn!(
-                            "AppOrchestrator: Font dimensions are zero, cannot process mouse move."
-                        );
-                    }
-                }
-                BackendEvent::FocusGained => {
-                    emulator_input_to_process =
-                        Some(EmulatorInput::User(UserInputAction::FocusGained));
-                }
-                BackendEvent::FocusLost => {
-                    emulator_input_to_process =
-                        Some(EmulatorInput::User(UserInputAction::FocusLost));
-                }
-                BackendEvent::PasteData { text } => {
-                    emulator_input_to_process =
-                        Some(EmulatorInput::User(UserInputAction::PasteText(text)));
-                }
-            }
 
-            if let Some(input) = emulator_input_to_process {
-                if let Some(action) = self.term_emulator.interpret_input(input) {
-                    self.pending_emulator_actions.push(action);
-                }
-            }
-        }
+                    if let Some(input) = emulator_input_to_process {
+                        if let Some(action) = self.term_emulator.interpret_input(input) {
+                            self.pending_emulator_actions.push(action);
+                        }
+                    }
+                } // End of BackendEvent processing
+            } // End of match platform_event
+        } // End of for platform_event in events
 
         // --- Process Emulator Actions ---
         // Iterate over a clone if actions can generate new actions, or use a while loop
@@ -333,7 +331,7 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                 render_commands.len()
             );
             self.platform
-                .dispatch_ui_action(UiActionCommand::Render(render_commands))
+                .dispatch_actions(vec![PlatformAction::Render(render_commands)])
                 .context("Failed to dispatch UI render action")?;
         }
 
