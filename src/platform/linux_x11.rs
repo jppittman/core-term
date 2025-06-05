@@ -3,7 +3,7 @@
 // Linux X11 platform implementation.
 
 use std::io::{ErrorKind, Read, Write};
-use std::os::unix::io::AsRawFd; // Added for NixPty.as_raw_fd()
+use std::os::unix::io::AsRawFd;
 
 use anyhow::{Context, Result};
 use log::*;
@@ -18,12 +18,19 @@ use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
 use crate::platform::PlatformEvent;
 
-// use libc::epoll_event as LibcEpollEvent; // Removed due to warning
-
 /// EPOLL token for PTY events.
 const PTY_EPOLL_TOKEN: u64 = 1;
 /// EPOLL token for X11 driver events.
 const DRIVER_EPOLL_TOKEN: u64 = 2;
+/// Base buffer size for PTY reads, often related to system page sizes.
+const PTY_BASE_BUFFER_SIZE: usize = 4096;
+/// Multiplier for the base PTY buffer size. This is somewhat arbitrary but chosen to be
+/// generous to capture large bursts of PTY output.
+const PTY_READ_BUFFER_SIZE_MULTIPLIER: usize = 4;
+/// Total buffer size for PTY reads.
+const PTY_READ_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE_MULTIPLIER * PTY_BASE_BUFFER_SIZE;
+/// Index for clipboard selection, using 2 for PRIMARY selection, common in X11.
+const CLIPBOARD_SELECTION_INDEX: u32 = 2;
 
 pub struct LinuxX11Platform {
     pty: NixPty,
@@ -32,17 +39,14 @@ pub struct LinuxX11Platform {
     shutdown_requested: bool,
 }
 
-// Inherent implementation block
 impl LinuxX11Platform {
-    // This is the inherent, public `new` method that can be called directly.
     pub fn new(
         initial_pty_cols: u16,
         initial_pty_rows: u16,
         shell_command: String,
         shell_args: Vec<String>,
-    ) -> Result<(Self, PlatformState)>
-// No `where Self: Sized` needed for inherent methods like this.
-    {
+    ) -> Result<(Self, PlatformState)> {
+        // No `where Self: Sized` needed for inherent methods like this.
         info!(
             "Initializing LinuxX11Platform with PTY size {}x{}",
             initial_pty_cols, initial_pty_rows
@@ -91,8 +95,8 @@ impl LinuxX11Platform {
         ))
     }
 
-
-    fn shutdown(&mut self) -> Result<()> {
+    // Made public so it can be called from main.rs
+    pub fn shutdown(&mut self) -> Result<()> {
         if self.shutdown_requested {
             info!("Shutdown already requested or in progress.");
             return Ok(());
@@ -106,7 +110,6 @@ impl LinuxX11Platform {
 }
 
 impl Platform for LinuxX11Platform {
-    // The trait's new method now calls the inherent public new method.
     fn new(
         initial_pty_cols: u16,
         initial_pty_rows: u16,
@@ -125,74 +128,92 @@ impl Platform for LinuxX11Platform {
         )
     }
 
-    fn poll_events(&mut self) -> Result<Vec<super::PlatformEvent>> {
+    fn poll_events(&mut self) -> Result<Vec<PlatformEvent>> {
         if self.shutdown_requested {
-            info!("Shutdown requested, returning CloseRequested event.");
-            return Ok(vec![BackendEvent::CloseRequested.into()])
+            info!("Shutdown requested, returning CloseRequested event immediately.");
+            return Ok(vec![BackendEvent::CloseRequested.into()]);
         }
 
+        let mut collected_events = Vec::new();
         let timeout = (CONFIG.performance.max_draw_latency_ms
             - CONFIG.performance.min_draw_latency_ms)
-            .as_millis() as u8;
+            .as_millis() as u8; // Convert to u8; ensure this calculation is sensible for timeout values.
+
         match self.event_monitor.events(timeout.into()) {
             Ok(events_slice) => {
                 for event_ref in events_slice {
+                    // Process one event source type per poll_events call for now, prioritizing driver events.
+                    // This means if both PTY and Driver have events, only one set will be processed in this call.
                     match event_ref.u64 {
                         DRIVER_EPOLL_TOKEN => {
-                            trace!("Processing X11 driver events");
-                            let driver_events = self
+                            trace!("Processing X11 driver events (EPOLL token: {})", DRIVER_EPOLL_TOKEN);
+                            let driver_backend_events = self
                                 .driver
                                 .process_events()
                                 .context("Failed to process X11 driver events")?;
-                            for driver_event in &driver_events {
-                                if matches!(driver_event, BackendEvent::CloseRequested) {
-                                    info!("CloseRequested event received from driver, requesting shutdown.");
+
+                            for backend_event in driver_backend_events {
+                                if matches!(backend_event, BackendEvent::CloseRequested) {
+                                    info!("CloseRequested event received from driver, initiating shutdown.");
                                     self.shutdown_requested = true;
+                                    // Return immediately with CloseRequested as it's a critical event.
                                     return Ok(vec![BackendEvent::CloseRequested.into()]);
                                 }
+                                collected_events.push(backend_event.into());
                             }
-                            return Ok(driver_events.into_iter().map(|e| PlatformEvent::from(e)).collect())
+                            // If driver events were processed, return them.
+                            if !collected_events.is_empty() {
+                                return Ok(collected_events);
+                            }
                         }
                         PTY_EPOLL_TOKEN => {
-                            const ST_BUFFER: usize = 4096;
-                            // magic number: arbitrary. More than st. Should be plenty. Maybe this
-                            // belongs in config?
-                            let mut buf = [0u8; 4 * ST_BUFFER];
+                            trace!("Processing PTY events (EPOLL token: {})", PTY_EPOLL_TOKEN);
+                            let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
                             match self.pty.read(&mut buf) {
                                 Ok(0) => {
-                                    info!("PTY read EOF, requesting shutdown.");
+                                    info!("PTY read EOF, initiating shutdown.");
                                     self.shutdown_requested = true;
+                                    // Return immediately with CloseRequested.
                                     return Ok(vec![BackendEvent::CloseRequested.into()]);
                                 }
                                 Ok(count) => {
                                     trace!("Read {} bytes from PTY", count);
-                                    return Ok(vec![PlatformEvent::IOEvent {
+                                    collected_events.push(PlatformEvent::IOEvent {
                                         data: buf[..count].to_vec(),
-                                    }]);
+                                    });
+                                    // If PTY data was read, return it.
+                                    return Ok(collected_events);
                                 }
                                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                    return Ok(vec![]);
+                                    // No data available from PTY at this moment, effectively an empty event.
+                                    trace!("PTY read would block, no PTY event generated this time.");
                                 }
                                 Err(e) => {
                                     return Err(e).context("Failed to read from PTY");
                                 }
                             }
                         }
-                        _ => {
-                            unimplemented!("unrecognized event type: {:?}", event_ref);
+                        unknown_token => {
+                            // Use warn! for unexpected but non-fatal issues.
+                            warn!(
+                                "Unrecognized EPOLL event token: {}. This may indicate an issue with event source registration or an unexpected event type.",
+                                unknown_token
+                            );
                         }
                     }
                 }
-                return Ok(vec![]);
+                // If loop completed without returning (e.g. PTY WouldBlock, or no specific token matched),
+                // return any collected events (could be empty if only WouldBlock occurred).
+                Ok(collected_events)
             }
             Err(e) => {
                 if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
                     if *nix_err == nix::Error::EINTR {
-                        debug!("Event monitor poll interrupted by EINTR, retrying.");
-                        return Ok(vec![]);
+                        debug!("Event monitor poll interrupted by EINTR; will retry on next poll cycle.");
+                        return Ok(Vec::new()); // Return empty vec, not an error
                     }
                 }
-                return Err(e).context("Failed to poll event monitor for UI events");
+                Err(e).context("Failed to poll event monitor for UI or PTY events")
             }
         }
     }
@@ -222,7 +243,9 @@ impl Platform for LinuxX11Platform {
                     self.driver.bell();
                 }
                 PlatformAction::CopyToClipboard(text) => {
-                    self.driver.own_selection(2, text);
+                    // Log length before text is moved to own_selection
+                    debug!("LinuxX11Platform: CopyToClipboard action, text length: {}. Dispatching to XDriver.", text.len());
+                    self.driver.own_selection(CLIPBOARD_SELECTION_INDEX.into(), text); // Cast to u64
                 }
                 PlatformAction::SetCursorVisibility(visible) => {
                     let cursor_visibility = if visible {
