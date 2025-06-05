@@ -52,7 +52,7 @@ pub fn epoll_event_flags(event: &libc::epoll_event) -> EpollFlags {
     EpollFlags::from_bits_truncate(event.events)
 }
 
-const MAX_EVENTS_BUFFER_SIZE: usize = 16;
+const MAX_EVENTS_BUFFER_SIZE: usize = 4096;
 
 #[derive(Debug)]
 pub struct EventMonitor {

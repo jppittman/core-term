@@ -121,7 +121,10 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
         self.pending_emulator_actions.clear();
 
         // --- Poll for Events ---
-        let events = self.platform.poll_events().context("Failed to poll platform events")?;
+        let events = self
+            .platform
+            .poll_events()
+            .context("Failed to poll platform events")?;
 
         for platform_event in events {
             match platform_event {
@@ -169,10 +172,12 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                             {
                                 // width_px, height_px are u16 from BackendEvent.
                                 // platform_state.font_cell_..._px are usize.
-                                let cols =
-                                    (width_px as usize / platform_state.font_cell_width_px.max(1)).max(1);
-                                let rows =
-                                    (height_px as usize / platform_state.font_cell_height_px.max(1)).max(1);
+                                let cols = (width_px as usize
+                                    / platform_state.font_cell_width_px.max(1))
+                                .max(1);
+                                let rows = (height_px as usize
+                                    / platform_state.font_cell_height_px.max(1))
+                                .max(1);
                                 info!(
                                     "AppOrchestrator: Resizing to {}x{} cells ({}x{} px, char_size: {}x{})",
                                     cols,
@@ -191,7 +196,10 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                                     .context("Failed to dispatch PTY resize action")?;
                                 // Then inform terminal emulator
                                 emulator_input_to_process =
-                                    Some(EmulatorInput::Control(ControlEvent::Resize { cols, rows }));
+                                    Some(EmulatorInput::Control(ControlEvent::Resize {
+                                        cols,
+                                        rows,
+                                    }));
                             } else {
                                 warn!("AppOrchestrator: Font dimensions are zero, cannot process resize.");
                             }
@@ -219,23 +227,27 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                             if platform_state.font_cell_width_px > 0
                                 && platform_state.font_cell_height_px > 0
                             {
-                                let cell_x =
-                                    (x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize;
-                                let cell_y =
-                                    (y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize;
+                                let cell_x = (x as u32
+                                    / platform_state.font_cell_width_px.max(1) as u32)
+                                    as usize;
+                                let cell_y = (y as u32
+                                    / platform_state.font_cell_height_px.max(1) as u32)
+                                    as usize;
 
                                 // Determine action based on button (example)
                                 match button {
                                     MouseButton::Left => {
-                                        emulator_input_to_process =
-                                            Some(EmulatorInput::User(UserInputAction::StartSelection {
+                                        emulator_input_to_process = Some(EmulatorInput::User(
+                                            UserInputAction::StartSelection {
                                                 x: cell_x,
                                                 y: cell_y,
-                                            }));
+                                            },
+                                        ));
                                     }
                                     MouseButton::Middle => {
-                                        emulator_input_to_process =
-                                            Some(EmulatorInput::User(UserInputAction::RequestPrimaryPaste));
+                                        emulator_input_to_process = Some(EmulatorInput::User(
+                                            UserInputAction::RequestPrimaryPaste,
+                                        ));
                                     }
                                     // Other buttons could be mapped or ignored
                                     _ => trace!("Unhandled mouse button press: {:?}", button),
@@ -257,8 +269,9 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                                 // let cell_x = (_x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize;
                                 // let cell_y = (_y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize;
                                 if button == MouseButton::Left {
-                                    emulator_input_to_process =
-                                        Some(EmulatorInput::User(UserInputAction::ApplySelectionClear));
+                                    emulator_input_to_process = Some(EmulatorInput::User(
+                                        UserInputAction::ApplySelectionClear,
+                                    ));
                                 }
                             } else {
                                 warn!("AppOrchestrator: Font dimensions are zero, cannot process mouse release.");
@@ -270,10 +283,12 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                             if platform_state.font_cell_width_px > 0
                                 && platform_state.font_cell_height_px > 0
                             {
-                                let cell_x =
-                                    (x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize; // Use x
-                                let cell_y =
-                                    (y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize; // Use y
+                                let cell_x = (x as u32
+                                    / platform_state.font_cell_width_px.max(1) as u32)
+                                    as usize; // Use x
+                                let cell_y = (y as u32
+                                    / platform_state.font_cell_height_px.max(1) as u32)
+                                    as usize; // Use y
                                 emulator_input_to_process =
                                     Some(EmulatorInput::User(UserInputAction::ExtendSelection {
                                         x: cell_x,
