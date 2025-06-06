@@ -16,6 +16,8 @@ use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
 use crate::platform::PlatformEvent;
 
+use super::os::epoll;
+
 const PTY_EPOLL_TOKEN: u64 = 1;
 // Buffer size for reading from PTY to align with common page sizes and buffer practices.
 const PTY_READ_BUFFER_SIZE: usize = 4096;
@@ -29,6 +31,7 @@ pub struct ConsolePlatform {
     event_monitor: EventMonitor,
     shutdown_requested: bool,
     event_buffer: Vec<BackendEvent>,
+    pty_event_buffer: Vec<epoll::epoll_event>,
 }
 
 impl ConsolePlatform {
@@ -81,6 +84,7 @@ impl ConsolePlatform {
                 event_monitor,
                 shutdown_requested: false,
                 event_buffer: Vec::new(),
+                pty_event_buffer: Vec::new(),
             },
             initial_platform_state,
         ))
@@ -134,51 +138,48 @@ impl Platform for ConsolePlatform {
             collected_events.push(backend_event.into());
         }
 
+        self.pty_event_buffer.drain(..);
         // PTY Events
         // Poll for PTY events with a non-blocking timeout (0)
-        let pty_events_result = self.event_monitor.events(0);
-        match pty_events_result {
-            Ok(events_slice) => {
-                for event_ref in events_slice {
-                    if event_ref.u64 == PTY_EPOLL_TOKEN {
-                        let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
-                        match self.pty.read(&mut buf) {
-                            Ok(0) => {
-                                info!("ConsolePlatform: PTY read EOF, initiating shutdown.");
-                                self.shutdown_requested = true;
-                                collected_events.push(BackendEvent::CloseRequested.into());
-                            }
-                            Ok(count) => {
-                                trace!("ConsolePlatform: Read {} bytes from PTY", count);
-                                collected_events.push(PlatformEvent::IOEvent {
-                                    data: buf[..count].to_vec(),
-                                });
-                            }
-                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                // No data available from PTY at this moment.
-                            }
-                            Err(e) => {
-                                // An actual error occurred during PTY read.
-                                return Err(e).context("ConsolePlatform: Failed to read from PTY");
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                // Handle errors from polling the event monitor itself.
-                if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
-                    if *nix_err == nix::Error::EINTR {
-                        debug!("ConsolePlatform: PTY event monitor poll interrupted by EINTR; will retry on next poll.");
-                    } else {
-                        return Err(e).context(
-                            "ConsolePlatform: Error polling PTY event monitor (Nix error)",
-                        );
-                    }
+        if let Err(e) = self.event_monitor.events(&mut self.pty_event_buffer, 0) {
+            if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
+                if *nix_err == nix::Error::EINTR {
+                    // It's a recoverable interruption. Log it and continue execution.
+                    // The operation will be retried on the next poll.
+                    debug!("ConsolePlatform: PTY event monitor poll interrupted by EINTR; will retry on next poll.");
                 } else {
-                    return Err(e).context(
-                        "ConsolePlatform: Error polling PTY event monitor (Non-Nix error)",
-                    );
+                    // It's a different, unrecoverable Nix error. Add context and return from the function.
+                    return Err(e)
+                        .context("ConsolePlatform: Error polling PTY event monitor (Nix error)");
+                }
+            } else {
+                // It's a non-Nix, unrecoverable error. Add context and return from the function.
+                return Err(e)
+                    .context("ConsolePlatform: Error polling PTY event monitor (Non-Nix error)");
+            }
+        }
+        for event_ref in &mut self.pty_event_buffer {
+            if event_ref.u64 == PTY_EPOLL_TOKEN {
+                let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
+                match self.pty.read(&mut buf) {
+                    Ok(0) => {
+                        info!("ConsolePlatform: PTY read EOF, initiating shutdown.");
+                        self.shutdown_requested = true;
+                        collected_events.push(BackendEvent::CloseRequested.into());
+                    }
+                    Ok(count) => {
+                        trace!("ConsolePlatform: Read {} bytes from PTY", count);
+                        collected_events.push(PlatformEvent::IOEvent {
+                            data: buf[..count].to_vec(),
+                        });
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        // No data available from PTY at this moment.
+                    }
+                    Err(e) => {
+                        // An actual error occurred during PTY read.
+                        return Err(e).context("ConsolePlatform: Failed to read from PTY");
+                    }
                 }
             }
         }

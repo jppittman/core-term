@@ -126,6 +126,7 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
             .poll_events()
             .context("Failed to poll platform events")?;
 
+        debug!("processing {} events", events.len());
         for platform_event in events {
             match platform_event {
                 PlatformEvent::IOEvent { data: pty_data } => {

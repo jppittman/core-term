@@ -18,6 +18,8 @@ use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
 use crate::platform::PlatformEvent;
 
+use super::os::epoll;
+
 /// EPOLL token for PTY events.
 const PTY_EPOLL_TOKEN: u64 = 1;
 /// EPOLL token for X11 driver events.
@@ -37,6 +39,7 @@ pub struct LinuxX11Platform {
     driver: XDriver,
     event_monitor: EventMonitor,
     shutdown_requested: bool,
+    pty_event_buffer: Vec<epoll::epoll_event>,
 }
 
 impl LinuxX11Platform {
@@ -87,12 +90,113 @@ impl LinuxX11Platform {
         Ok((
             Self {
                 pty,
+                pty_event_buffer: Vec::with_capacity(PTY_BASE_BUFFER_SIZE),
                 driver,
                 event_monitor,
                 shutdown_requested: false,
+                
             },
             initial_platform_state,
         ))
+    }
+
+    /// Processes a batch of epoll events and returns a boolean indicating if polling should continue.
+    ///
+    /// This helper is called after `epoll_wait` returns. It translates kernel-level event readiness
+    /// into `PlatformEvent`s and provides a heuristic signal.
+    ///
+    /// # Returns
+    /// * `Ok(true)`: If significant activity occurred (substantial PTY read or any X11 UI event),
+    ///   suggesting the main polling loop should continue if its budget allows.
+    /// * `Ok(false)`: If activity was minimal (small PTY read with no UI events), if `epoll_wait`
+    ///   timed out (empty `events_slice`), or if a PTY EOF/critical error occurred.
+    fn process_epoll_batch(
+        &mut self,
+        accumulated_pty_data: &mut Vec<u8>,
+        collected_platform_events: &mut Vec<PlatformEvent>,
+    ) -> Result<bool> {
+        if self.pty_event_buffer.is_empty() {
+            // No events from epoll_wait (likely timed out); signal to stop polling for this cycle.
+            return Ok(false);
+        }
+
+        let mut pty_bytes_read_this_batch = 0;
+        let mut had_x11_event_this_batch = false;
+        // PTY reads below this threshold, without other UI events, are considered "small"
+        // and might signal an end to the current polling/coalescing attempt.
+        const SMALL_PTY_READ_THRESHOLD: usize = 16;
+
+        for event_ref in & self.pty_event_buffer {
+            let event_token = unsafe { std::ptr::addr_of!(event_ref.u64).read_unaligned() };
+            match event_token {
+                DRIVER_EPOLL_TOKEN => {
+                    had_x11_event_this_batch = true;
+                    let driver_events = self
+                        .driver
+                        .process_events()
+                        .context("Driver event processing failed during batch")?;
+                    // The orchestrator is responsible for interpreting any CloseRequested events.
+                    collected_platform_events
+                        .extend(driver_events.into_iter().map(PlatformEvent::from));
+                }
+                PTY_EPOLL_TOKEN => {
+                    // Inner loop to attempt to drain the PTY for this specific epoll signal.
+                    // This is useful because level-triggered epoll will keep signaling if data remains.
+                    loop {
+                        let mut pty_read_chunk_buf = [0u8; PTY_READ_BUFFER_SIZE];
+                        match self.pty.read(&mut pty_read_chunk_buf) {
+                            Ok(0) => {
+                                // PTY EOF
+                                collected_platform_events.push(BackendEvent::CloseRequested.into());
+                                // PTY EOF is a definitive reason to stop further polling in this poll_events call.
+                                return Ok(false);
+                            }
+                            Ok(count) => {
+                                if count > 0 {
+                                    accumulated_pty_data
+                                        .extend_from_slice(&pty_read_chunk_buf[..count]);
+                                    pty_bytes_read_this_batch += count;
+                                }
+                                // If we read less than the buffer, assume we've drained for this notification.
+                                if count < pty_read_chunk_buf.len() {
+                                    break;
+                                }
+                                // If a full buffer was read, loop to try and get more immediately.
+                            }
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                // No more data to read *right now* from the PTY for this epoll signal.
+                                break;
+                            }
+                            Err(e) if e.kind() == ErrorKind::Interrupted => {
+                                continue;
+                            }
+                            Err(e) => {
+                                // Any other PTY read error.
+                                log::error!("Critical PTY read error in batch: {:?}. Forwarding as CloseRequested.", e);
+                                collected_platform_events.push(BackendEvent::CloseRequested.into());
+                                // Critical error; stop further polling.
+                                return Ok(false);
+                            }
+                        }
+                    }
+                }
+                _ => unreachable!("unrecognized epoll token"),
+            }
+        }
+
+        // Heuristic: Determine if the main poll_events loop should continue based on this batch.
+        if had_x11_event_this_batch {
+            // Any UI activity suggests a "burst" is ongoing or starting.
+            return Ok(true);
+        }
+        if pty_bytes_read_this_batch >= SMALL_PTY_READ_THRESHOLD {
+            // A significant PTY read also suggests a burst.
+            return Ok(true);
+        }
+
+        // Otherwise (only small/no PTY read, no UI events), it's likely interactive.
+        // Signal to stop polling for this `poll_events` call to prioritize latency.
+        Ok(false)
     }
 
     // Made public so it can be called from main.rs
@@ -129,91 +233,59 @@ impl Platform for LinuxX11Platform {
     }
 
     fn poll_events(&mut self) -> Result<Vec<PlatformEvent>> {
-        if self.shutdown_requested {
-            info!("Shutdown requested, returning CloseRequested event immediately.");
-            return Ok(vec![BackendEvent::CloseRequested.into()]);
-        }
+        let mut collected_platform_events: Vec<PlatformEvent> = Vec::new();
+        let mut accumulated_pty_data: Vec<u8> = Vec::new();
 
-        let mut collected_events = Vec::new();
-        let timeout = (CONFIG.performance.max_draw_latency_ms
-            - CONFIG.performance.min_draw_latency_ms)
-            .as_millis() as u8; // Convert to u8; ensure this calculation is sensible for timeout values.
+        let min_latency = CONFIG.performance.min_draw_latency_ms.as_millis() as isize;
+        let max_latency = CONFIG.performance.max_draw_latency_ms;
 
-        match self.event_monitor.events(timeout.into()) {
-            Ok(events_slice) => {
-                for event_ref in events_slice {
-                    // Process one event source type per poll_events call for now, prioritizing driver events.
-                    // This means if both PTY and Driver have events, only one set will be processed in this call.
-                    match event_ref.u64 {
-                        DRIVER_EPOLL_TOKEN => {
-                            trace!(
-                                "Processing X11 driver events (EPOLL token: {})",
-                                DRIVER_EPOLL_TOKEN
-                            );
-                            let driver_backend_events = self
-                                .driver
-                                .process_events()
-                                .context("Failed to process X11 driver events")?;
+        let burst_start_time = std::time::Instant::now();
+        let remaining_time = max_latency - burst_start_time.elapsed();
+        loop {
+            if remaining_time.is_zero() {
+                break;
+            }
 
-                            for backend_event in driver_backend_events {
-                                if matches!(backend_event, BackendEvent::CloseRequested) {
-                                    info!("CloseRequested event received from driver, initiating shutdown.");
-                                    self.shutdown_requested = true;
-                                    // Return immediately with CloseRequested as it's a critical event.
-                                    return Ok(vec![BackendEvent::CloseRequested.into()]);
-                                }
-                                collected_events.push(backend_event.into());
-                            }
-                        }
-                        PTY_EPOLL_TOKEN => {
-                            trace!("Processing PTY events (EPOLL token: {})", PTY_EPOLL_TOKEN);
-                            let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
-                            match self.pty.read(&mut buf) {
-                                Ok(0) => {
-                                    info!("PTY read EOF, initiating shutdown.");
-                                    self.shutdown_requested = true;
-                                    // Return immediately with CloseRequested.
-                                    return Ok(vec![BackendEvent::CloseRequested.into()]);
-                                }
-                                Ok(count) => {
-                                    trace!("Read {} bytes from PTY", count);
-                                    collected_events.push(PlatformEvent::IOEvent {
-                                        data: buf[..count].to_vec(),
-                                    });
-                                }
-                                Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                    trace!(
-                                        "PTY read would block, no PTY event generated this time."
-                                    );
-                                }
-                                Err(e) => {
-                                    return Err(e).context("Failed to read from PTY");
-                                }
-                            }
-                        }
-                        unknown_token => {
-                            // Use warn! for unexpected but non-fatal issues.
-                            warn!(
-                                "Unrecognized EPOLL event token: {}. This may indicate an issue with event source registration or an unexpected event type.",
-                                unknown_token
-                            );
-                        }
+            match self
+                .event_monitor
+                .events(&mut self.pty_event_buffer, std::cmp::min(min_latency, remaining_time.as_millis() as isize))
+            {
+                Ok(()) => {
+                    // This is the success path, formerly the code after the `?`
+                    let should_continue = self.process_epoll_batch(
+                        &mut accumulated_pty_data,
+                        &mut collected_platform_events,
+                    )?;
+
+                    if !should_continue {
+                        break;
                     }
                 }
-                // If loop completed without returning (e.g. PTY WouldBlock, or no specific token matched),
-                // return any collected events (could be empty if only WouldBlock occurred).
-                Ok(collected_events)
-            }
-            Err(e) => {
-                if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
-                    if *nix_err == nix::Error::EINTR {
-                        debug!("Event monitor poll interrupted by EINTR; will retry on next poll cycle.");
-                        return Ok(Vec::new()); // Return empty vec, not an error
+                Err(e) => {
+                    if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
+                        if *nix_err == nix::Error::EINTR {
+                            // EINTR is a recoverable interruption. Continue the main polling loop.
+                            log::trace!("epoll_wait interrupted (EINTR), continuing poll loop.");
+                            continue;
+                        }
                     }
+
+                    if !accumulated_pty_data.is_empty() {
+                        collected_platform_events.push(PlatformEvent::IOEvent {
+                            data: std::mem::take(&mut accumulated_pty_data),
+                        });
+                    }
+                    return Err(e).context("epoll_wait failed in coalescing loop");
                 }
-                Err(e).context("Failed to poll event monitor for UI or PTY events")
             }
         }
+
+        if !accumulated_pty_data.is_empty() {
+            collected_platform_events.push(PlatformEvent::IOEvent {
+                data: accumulated_pty_data,
+            });
+        }
+        Ok(collected_platform_events)
     }
 
     fn dispatch_actions(&mut self, actions: Vec<PlatformAction>) -> Result<()> {
