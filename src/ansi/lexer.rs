@@ -25,8 +25,6 @@ const C0_CONTROL_PRINTABLE_PART1_RANGE: core::ops::RangeInclusive<u8> = 0x00..=0
 const C0_CONTROL_PRINTABLE_PART2_RANGE: core::ops::RangeInclusive<u8> = 0x1C..=0x1F; // FS to US
 const DEL_BYTE: u8 = 0x7F;
 const ESC_BYTE: u8 = 0x1B;
-const STRING_TERMINATOR: u8 = 0x9C;
-const C1_CONTROL_RANGE: core::ops::RangeInclusive<u8> = 0x80..=0x9F;
 
 // --- Constants for Unicode boundaries ---
 const UNICODE_MAX_CODE_POINT: u32 = 0x10FFFF;
@@ -46,7 +44,6 @@ const UTF8_4_BYTE_MAX: u8 = 0xF4; // Max valid start for 4-byte sequence (RFC 36
 const UTF8_INVALID_AS_START_MIN_RANGE1: u8 = UTF8_CONT_MIN; // 0x80 (can't start with continuation)
 const UTF8_INVALID_AS_START_MAX_RANGE1: u8 = 0xC1; // Up to (and including) overlong 0xC1
 const UTF8_INVALID_AS_START_MIN_RANGE2: u8 = 0xF5; // Invalid byte, per RFC 3629 (can't be > F4)
-                                                   // const UTF8_INVALID_AS_START_MAX_RANGE2: u8 = 0xFF;       // Defined by u8 max
 
 /// Represents a single token identified by the lexer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,8 +52,6 @@ pub enum AnsiToken {
     Print(char),
     /// A C0 control code (0x00 - 0x1F, plus DEL 0x7F).
     C0Control(u8),
-    /// A C1 control code (0x80 - 0x9F).
-    C1Control(u8),
 }
 
 /// Internal state machine for decoding UTF-8 byte streams incrementally.
@@ -194,7 +189,7 @@ impl AnsiLexer {
     /// they are handled by the Utf8Decoder returning InvalidSequence if they break a sequence.
     #[inline]
     fn is_unambiguous_interrupting_control(byte: u8) -> bool {
-        byte == ESC_BYTE || byte == STRING_TERMINATOR ||
+        byte == ESC_BYTE ||
         // Consider which C0s truly interrupt. For now, all except common formatting.
         // Some tests might expect NUL or other C0s to also interrupt.
         // This list should match C0s that are *never* valid data mid-UTF-8.
@@ -207,42 +202,35 @@ impl AnsiLexer {
         }
     }
 
-    /// Determines if a byte is any C0, ESC, C1, or DEL control code.
+    /// Determines if a byte is any C0, ESC, or DEL control code.
     /// Used when processing a byte from a ground state (no active UTF-8 sequence).
     #[inline]
-    fn is_any_control_code(byte: u8) -> bool {
+    fn is_control_code(byte: u8) -> bool {
         (C0_CONTROL_PRINTABLE_PART1_RANGE.contains(&byte))
             || (C0_CONTROL_PRINTABLE_PART2_RANGE.contains(&byte))
             || byte == DEL_BYTE
             || byte == ESC_BYTE
-            || C1_CONTROL_RANGE.contains(&byte)
     }
 
     fn process_byte_as_new_token(&mut self, byte: u8) {
         // This function is called when utf8_decoder.len == 0.
         // It decides if 'byte' is a control code or starts a new UTF-8 sequence.
-        if Self::is_any_control_code(byte) {
-            match byte {
-                ESC_BYTE => self.tokens.push(AnsiToken::C0Control(ESC_BYTE)),
-                b if C1_CONTROL_RANGE.contains(&b) => { /* Do nothing, ignore C1 control per plan */
-                }
-                // All other C0s (including those in C0_CONTROL_PRINTABLE_PART1/2 and DEL_BYTE)
-                b => self.tokens.push(AnsiToken::C0Control(b)), // Catches all remaining C0s and DEL
-            }
-        } else {
-            // Not a control code, so attempt to process as UTF-8 start.
-            // Utf8Decoder is fresh (len == 0).
-            match self.utf8_decoder.decode(byte) {
-                Utf8DecodeResult::Decoded(c) => self.tokens.push(AnsiToken::Print(c)),
-                Utf8DecodeResult::NeedsMoreBytes => { /* Byte buffered, wait for more */ }
-                Utf8DecodeResult::InvalidSequence => {
-                    // This means 'byte' itself was an invalid UTF-8 start (e.g., 0xC0, 0xF5).
-                    warn!(
-                        "invalid utf8 byte: {:X?} printing replacment character",
-                        byte
-                    );
-                    self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER));
-                }
+        if Self::is_control_code(byte) {
+            self.tokens.push(AnsiToken::C0Control(byte));
+            return;
+        }
+        // Not a control code, so attempt to process as UTF-8 start.
+        // Utf8Decoder is fresh (len == 0).
+        match self.utf8_decoder.decode(byte) {
+            Utf8DecodeResult::Decoded(c) => self.tokens.push(AnsiToken::Print(c)),
+            Utf8DecodeResult::NeedsMoreBytes => { /* Byte buffered, wait for more */ }
+            Utf8DecodeResult::InvalidSequence => {
+                // This means 'byte' itself was an invalid UTF-8 start (e.g., 0xC0, 0xF5).
+                warn!(
+                    "invalid utf8 byte: {:X?} printing replacment character",
+                    byte
+                );
+                self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER));
             }
         }
     }
@@ -259,7 +247,6 @@ impl AnsiLexer {
                 return;
             }
 
-            // If `byte` is a C1 code (0x80-0x9F), it was NOT caught by unambiguous_interrupting_control.
             // Let the Utf8Decoder try to process it. If it's not a valid continuation for
             // the current sequence, Utf8Decoder will return InvalidSequence.
             match self.utf8_decoder.decode(byte) {
