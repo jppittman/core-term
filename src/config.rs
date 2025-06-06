@@ -196,7 +196,7 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         FontConfig {
-            normal: "Inconsolata:pixelsize=12:antialias=true:autohint=true".to_string(),
+            normal: "inconsolata:pixelsize=12:antialias=true:autohint=true".to_string(),
             cw_scale: 1.0,
             ch_scale: 1.0,
         }

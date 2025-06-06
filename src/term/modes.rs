@@ -9,7 +9,7 @@ use log::warn; // For logging warnings on unknown mode values
 /// Defines the modes for erase operations (ED - Erase in Display, EL - Erase in Line).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub enum EraseMode {
+pub(super) enum EraseMode {
     /// Erase from the active position to the end of the screen/line.
     ToEnd = 0,
     /// Erase from the start of the screen/line to the active position.
@@ -41,7 +41,7 @@ impl From<u16> for EraseMode {
 /// These are used in CSI ? Pm h (set) / l (reset) sequences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub enum DecModeConstant {
+pub(super) enum DecModeConstant {
     /// Application Cursor Keys (DECCKM). Affects sequences sent by cursor keys.
     CursorKeys = 1,
     /// Origin Mode (DECOM). Changes how cursor coordinates are interpreted relative to scrolling margins.
@@ -84,6 +84,11 @@ pub enum DecModeConstant {
     /// Bracketed Paste Mode. Pasted text is bracketed by special sequences.
     BracketedPaste = 2004,
 
+    /// While the mode is active, the terminal may batch rendering commands instead of drawing them immediately as they are received.
+    /// The application then sends all of its updates for a single "frame."
+    /// Finally, the application disables the mode with CSI ? 2026 l, which signals the terminal to process the batched commands and display the completed frame all at once.
+    SynchronizedOutput = 2026,
+
     // Other modes sometimes encountered
     /// ATT610: Controls cursor blinking (l=stop, h=start).
     Att610CursorBlink = 12,
@@ -116,6 +121,7 @@ impl DecModeConstant {
             1048 => Some(DecModeConstant::SaveRestoreCursor),
             1049 => Some(DecModeConstant::AltScreenBufferSaveRestore),
             2004 => Some(DecModeConstant::BracketedPaste),
+            2026 => Some(DecModeConstant::SynchronizedOutput),
             7727 => Some(DecModeConstant::Unknown7727),
             _ => None,
         }
@@ -124,7 +130,7 @@ impl DecModeConstant {
 
 /// Represents the state of various DEC private modes toggled by sequences like DECSET/DECRST.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DecPrivateModes {
+pub(super) struct DecPrivateModes {
     /// Origin Mode (DECOM - `?6h`/`?6l`).
     /// If true, cursor addressing is relative to the scrolling region's top-left.
     pub origin_mode: bool,
@@ -163,6 +169,7 @@ pub struct DecPrivateModes {
     pub linefeed_newline_mode: bool,
     pub text_cursor_enable_mode: bool,
     pub cursor_blink_mode: bool,
+    pub(super) synchronized_output: bool,
     pub autowrap_mode: bool,
 }
 
@@ -187,6 +194,7 @@ impl Default for DecPrivateModes {
             insert_mode: false,            // Default: replace mode
             linefeed_newline_mode: true,   // Default: LF acts as LF+CR (Newline Mode)
             autowrap_mode: true,           // Default: Autowrap ON
+            synchronized_output: false,
         }
     }
 }

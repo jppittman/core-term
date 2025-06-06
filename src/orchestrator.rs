@@ -334,7 +334,9 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
         // The dirtiness is tracked per line in RenderSnapshot.
         // Renderer::prepare_render_commands will use this. If no lines are dirty, it will return few/no commands.
         // No explicit is_dirty() check on term_emulator is available/needed if snapshot handles it.
-        let snapshot: crate::term::RenderSnapshot = self.term_emulator.get_render_snapshot(); // Use fully qualified path
+        let Some(snapshot) = self.term_emulator.get_render_snapshot() else {
+            return Ok(OrchestratorStatus::Running);
+        };
         let config = Config::default(); // Placeholder for Config access
         let platform_state = self.platform.get_current_platform_state();
         let render_commands =
