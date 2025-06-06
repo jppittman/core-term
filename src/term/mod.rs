@@ -18,7 +18,6 @@ pub mod snapshot; // Add this line to declare the module
 pub use action::{ControlEvent, EmulatorAction, UserInputAction}; // Added UserInputAction, ControlEvent
 pub use charset::{map_to_dec_line_drawing, CharacterSet};
 pub use emulator::TerminalEmulator;
-pub use modes::{DecModeConstant, DecPrivateModes, EraseMode, Mode};
 pub use snapshot::{
     CursorRenderState,
     CursorShape,
@@ -77,7 +76,7 @@ pub trait TerminalInterface {
     /// Creates a snapshot of the terminal's current visible state for rendering.
     /// This method provides all necessary information for the renderer to draw
     /// the terminal screen, including dirty flags, cell data, cursor, and selection.
-    fn get_render_snapshot(&mut self) -> RenderSnapshot;
+    fn get_render_snapshot(&mut self) -> Option<RenderSnapshot>;
 }
 
 impl TerminalInterface for TerminalEmulator {
@@ -88,7 +87,7 @@ impl TerminalInterface for TerminalEmulator {
     }
 
     /// Creates a snapshot of the terminal's current visible state for rendering.
-    fn get_render_snapshot(&mut self) -> RenderSnapshot {
+    fn get_render_snapshot(&mut self) -> Option<RenderSnapshot> {
         // This just calls the inherent method on TerminalEmulator (defined in src/term/emulator/mod.rs)
         self.get_render_snapshot()
     }

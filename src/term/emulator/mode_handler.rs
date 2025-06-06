@@ -177,6 +177,9 @@ impl TerminalEmulator {
                             enable
                         );
                     }
+                    Some(DecModeConstant::SynchronizedOutput) => {
+                        self.dec_modes.synchronized_output = enable;
+                    }
                     Some(DecModeConstant::AutoWrapMode) => {
                         self.dec_modes.autowrap_mode = enable;
                         // Re-evaluate cursor_wrap_next based on new autowrap_mode state
