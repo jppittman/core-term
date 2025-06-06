@@ -13,8 +13,7 @@ pub mod term;
 
 // Use statements for items needed in main.rs
 use crate::{
-    ansi::AnsiProcessor,
-    config::CONFIG, // Using Config directly
+    ansi::AnsiProcessor, // Using Config directly
     orchestrator::{AppOrchestrator, OrchestratorStatus},
     platform::actions::PlatformAction, // Updated for initial PTY resize
     platform::linux_x11::LinuxX11Platform, // Specific platform implementation
@@ -131,9 +130,7 @@ fn main() -> anyhow::Result<()> {
     loop {
         match orchestrator.process_event_cycle() {
             Ok(OrchestratorStatus::Running) => {
-                std::thread::sleep(std::time::Duration::from_millis(
-                    CONFIG.performance.min_draw_latency_ms.as_millis() as u64,
-                ));
+                continue;
             }
             Ok(OrchestratorStatus::Shutdown) => {
                 info!("Orchestrator requested shutdown. Exiting main loop.");

@@ -77,7 +77,7 @@ pub trait TerminalInterface {
     /// Creates a snapshot of the terminal's current visible state for rendering.
     /// This method provides all necessary information for the renderer to draw
     /// the terminal screen, including dirty flags, cell data, cursor, and selection.
-    fn get_render_snapshot(&self) -> RenderSnapshot;
+    fn get_render_snapshot(&mut self) -> RenderSnapshot;
 }
 
 impl TerminalInterface for TerminalEmulator {
@@ -88,7 +88,7 @@ impl TerminalInterface for TerminalEmulator {
     }
 
     /// Creates a snapshot of the terminal's current visible state for rendering.
-    fn get_render_snapshot(&self) -> RenderSnapshot {
+    fn get_render_snapshot(&mut self) -> RenderSnapshot {
         // This just calls the inherent method on TerminalEmulator (defined in src/term/emulator/mod.rs)
         self.get_render_snapshot()
     }
