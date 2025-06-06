@@ -526,7 +526,11 @@ impl Screen {
         );
     }
 
-    pub fn mark_all_dirty(&mut self) {
+    pub(super) fn mark_all_clean(&mut self) {
+        self.dirty.fill(0);
+    }
+
+    pub(super) fn mark_all_dirty(&mut self) {
         self.dirty.fill(1);
     }
 

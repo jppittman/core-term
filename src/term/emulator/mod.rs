@@ -148,7 +148,8 @@ impl TerminalEmulator {
     }
 
     /// Creates a snapshot of the terminal's current visible state for rendering.
-    pub fn get_render_snapshot(&self) -> RenderSnapshot {
+    /// clears dirty line flags
+    pub fn get_render_snapshot(&mut self) -> RenderSnapshot {
         let (width, height) = (self.screen.width, self.screen.height);
         let mut lines = Vec::with_capacity(height);
         let active_grid = self.screen.active_grid();
@@ -208,12 +209,14 @@ impl TerminalEmulator {
             });
         }
 
-        RenderSnapshot {
+        let snapshot = RenderSnapshot {
             dimensions: (width, height),
             lines,
             cursor_state,
             selection: self.screen.selection.clone(),
-        }
+        };
+        self.screen.mark_all_clean();
+        snapshot
     }
 
     // --- Selection Handling Methods ---
