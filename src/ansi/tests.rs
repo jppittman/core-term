@@ -888,10 +888,7 @@ mod unicode_wide_tests {
         let commands = process_bytes_unicode(bytes);
         assert_eq!(
             commands,
-            vec![
-                AnsiCommand::Print('A'),
-                AnsiCommand::Print('B'),
-            ],
+            vec![AnsiCommand::Print('A'), AnsiCommand::Print('B'),],
             "C1 NEL (0x84) should be ignored between A and B"
         );
     }
@@ -930,10 +927,7 @@ mod unicode_wide_tests {
         let commands = process_bytes_unicode(bytes);
         assert_eq!(
             commands,
-            vec![
-                AnsiCommand::Print('€'),
-                AnsiCommand::Print('A'),
-            ],
+            vec![AnsiCommand::Print('€'), AnsiCommand::Print('A'),],
             "Euro sign (E2 82 AC) should decode correctly, followed by A"
         );
     }
@@ -944,10 +938,7 @@ mod unicode_wide_tests {
         let commands = process_bytes_unicode(bytes);
         assert_eq!(
             commands,
-            vec![
-                AnsiCommand::Print('€'),
-                AnsiCommand::Print('A'),
-            ],
+            vec![AnsiCommand::Print('€'), AnsiCommand::Print('A'),],
             "C1 IND (0x85) should be ignored after €"
         );
     }
@@ -958,10 +949,7 @@ mod unicode_wide_tests {
         let commands = process_bytes_unicode(bytes);
         assert_eq!(
             commands,
-            vec![
-                AnsiCommand::Print('A'),
-                AnsiCommand::Print('B'),
-            ],
+            vec![AnsiCommand::Print('A'), AnsiCommand::Print('B'),],
             "Sequence of C1 controls (0x84, 0x85) should be ignored"
         );
     }

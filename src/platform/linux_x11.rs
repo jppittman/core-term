@@ -94,7 +94,6 @@ impl LinuxX11Platform {
                 driver,
                 event_monitor,
                 shutdown_requested: false,
-                
             },
             initial_platform_state,
         ))
@@ -126,7 +125,7 @@ impl LinuxX11Platform {
         // and might signal an end to the current polling/coalescing attempt.
         const SMALL_PTY_READ_THRESHOLD: usize = 16;
 
-        for event_ref in & self.pty_event_buffer {
+        for event_ref in &self.pty_event_buffer {
             let event_token = unsafe { std::ptr::addr_of!(event_ref.u64).read_unaligned() };
             match event_token {
                 DRIVER_EPOLL_TOKEN => {
@@ -241,10 +240,10 @@ impl Platform for LinuxX11Platform {
                 break;
             }
 
-            match self
-                .event_monitor
-                .events(&mut self.pty_event_buffer, std::cmp::min(min_latency, remaining_time.as_millis() as isize))
-            {
+            match self.event_monitor.events(
+                &mut self.pty_event_buffer,
+                std::cmp::min(min_latency, remaining_time.as_millis() as isize),
+            ) {
                 Ok(()) => {
                     // This is the success path, formerly the code after the `?`
                     let should_continue = self.process_epoll_batch(

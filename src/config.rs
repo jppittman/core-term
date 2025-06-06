@@ -266,7 +266,7 @@ pub struct PerformanceConfig {
 impl Default for PerformanceConfig {
     fn default() -> Self {
         PerformanceConfig {
-            min_draw_latency_ms: Duration::from_millis(1),
+            min_draw_latency_ms: Duration::from_millis(2),
             max_draw_latency_ms: Duration::from_millis(33),
         }
     }
