@@ -586,7 +586,7 @@ fn it_should_process_st_in_ground_state() {
 
     let bytes_c1_st = b"\x9C"; // ST (C1 version)
     let commands_c1_st = process_bytes(bytes_c1_st);
-    assert_eq!(commands_c1_st, vec![AnsiCommand::StringTerminator]);
+    assert_eq!(commands_c1_st, vec![], "C1 ST (0x9C) should now be ignored");
 }
 
 #[test]
@@ -769,9 +769,11 @@ mod unicode_wide_tests {
             commands,
             vec![
                 AnsiCommand::Print(char::REPLACEMENT_CHARACTER),
-                AnsiCommand::StringTerminator, // 0x9C is C1 ST
+                // 0x9C (ST_C1_BYTE) is now ignored by process_byte_as_new_token
+                // after the UTF-8 sequence F0 9F 9C fails and 9C is reprocessed.
                 AnsiCommand::Print('A'),
-            ]
+            ],
+            "C1 ST (0x9C) after failed UTF-8 should be ignored, then 'A' printed"
         );
     }
 
@@ -877,6 +879,90 @@ mod unicode_wide_tests {
                 AnsiCommand::C0Control(C0Control::DEL),
                 AnsiCommand::Print('A'),
             ]
+        );
+    }
+
+    #[test]
+    fn it_should_ignore_standalone_c1_nel_between_chars() {
+        let bytes = &[0x41, 0x84, 0x42]; // A, NEL (C1), B
+        let commands = process_bytes_unicode(bytes);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print('A'),
+                AnsiCommand::Print('B'),
+            ],
+            "C1 NEL (0x84) should be ignored between A and B"
+        );
+    }
+
+    #[test]
+    fn it_should_handle_c1_like_byte_as_part_of_invalid_utf8_sequence() {
+        let bytes = &[0xE2, 0x84, 0x41]; // Partial UTF-8 'E2', then 0x84 (C1 NEL), then 'A'
+        let commands = process_bytes_unicode(bytes);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For the invalid E2 84 41 sequence
+                AnsiCommand::Print('A'),
+            ],
+            "0x84, when consumed by Utf8Decoder as part of an invalid sequence, should lead to REPLACEMENT_CHARACTER for the sequence, then 'A'"
+        );
+    }
+
+    #[test]
+    fn it_should_handle_c1_like_byte_in_invalid_4_byte_utf8_sequence() {
+        let bytes = &[0xF0, 0x9F, 0x84, 0x41]; // Partial UTF-8, 0x84 (C1 NEL), 'A'
+        let commands = process_bytes_unicode(bytes);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For the invalid F0 9F 84 41 sequence
+                AnsiCommand::Print('A'),
+            ],
+            "0x84, when consumed by Utf8Decoder as part of an invalid 4-byte sequence, should lead to REPLACEMENT_CHARACTER, then 'A'"
+        );
+    }
+
+    #[test]
+    fn it_should_correctly_decode_euro_sign_followed_by_char() {
+        let bytes = &[0xE2, 0x82, 0xAC, 0x41]; // € then A
+        let commands = process_bytes_unicode(bytes);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print('€'),
+                AnsiCommand::Print('A'),
+            ],
+            "Euro sign (E2 82 AC) should decode correctly, followed by A"
+        );
+    }
+
+    #[test]
+    fn it_should_ignore_standalone_c1_ind_after_valid_utf8() {
+        let bytes = &[0xE2, 0x82, 0xAC, 0x85, 0x41]; // € , IND (C1), A
+        let commands = process_bytes_unicode(bytes);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print('€'),
+                AnsiCommand::Print('A'),
+            ],
+            "C1 IND (0x85) should be ignored after €"
+        );
+    }
+
+    #[test]
+    fn it_should_ignore_sequence_of_standalone_c1_controls() {
+        let bytes = &[0x41, 0x84, 0x85, 0x42]; // A, NEL (C1), IND (C1), B
+        let commands = process_bytes_unicode(bytes);
+        assert_eq!(
+            commands,
+            vec![
+                AnsiCommand::Print('A'),
+                AnsiCommand::Print('B'),
+            ],
+            "Sequence of C1 controls (0x84, 0x85) should be ignored"
         );
     }
 }

@@ -224,7 +224,7 @@ impl AnsiLexer {
         if Self::is_any_control_code(byte) {
             match byte {
                 ESC_BYTE => self.tokens.push(AnsiToken::C0Control(ESC_BYTE)),
-                b if C1_CONTROL_RANGE.contains(&b) => self.tokens.push(AnsiToken::C1Control(b)),
+                b if C1_CONTROL_RANGE.contains(&b) => { /* Do nothing, ignore C1 control per plan */ }
                 // All other C0s (including those in C0_CONTROL_PRINTABLE_PART1/2 and DEL_BYTE)
                 b => self.tokens.push(AnsiToken::C0Control(b)), // Catches all remaining C0s and DEL
             }
