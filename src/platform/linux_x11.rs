@@ -142,8 +142,8 @@ impl LinuxX11Platform {
                 PTY_EPOLL_TOKEN => {
                     // Inner loop to attempt to drain the PTY for this specific epoll signal.
                     // This is useful because level-triggered epoll will keep signaling if data remains.
+                    let mut pty_read_chunk_buf = [0u8; PTY_READ_BUFFER_SIZE];
                     loop {
-                        let mut pty_read_chunk_buf = [0u8; PTY_READ_BUFFER_SIZE];
                         match self.pty.read(&mut pty_read_chunk_buf) {
                             Ok(0) => {
                                 // PTY EOF
@@ -157,11 +157,6 @@ impl LinuxX11Platform {
                                         .extend_from_slice(&pty_read_chunk_buf[..count]);
                                     pty_bytes_read_this_batch += count;
                                 }
-                                // If we read less than the buffer, assume we've drained for this notification.
-                                if count < pty_read_chunk_buf.len() {
-                                    break;
-                                }
-                                // If a full buffer was read, loop to try and get more immediately.
                             }
                             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                                 // No more data to read *right now* from the PTY for this epoll signal.

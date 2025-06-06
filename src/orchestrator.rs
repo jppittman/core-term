@@ -364,8 +364,3 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
         Ok(OrchestratorStatus::Running)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // Tests would need significant updates due to API changes.
-}
