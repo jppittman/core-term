@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use bitflags::bitflags;
+pub use libc::epoll_event;
 use log::{debug, trace, warn};
 use std::io;
 use std::os::unix::io::RawFd;
@@ -52,12 +53,9 @@ pub fn epoll_event_flags(event: &libc::epoll_event) -> EpollFlags {
     EpollFlags::from_bits_truncate(event.events)
 }
 
-const MAX_EVENTS_BUFFER_SIZE: usize = 4096;
-
 #[derive(Debug)]
 pub struct EventMonitor {
     epoll_fd: RawFd,
-    event_buffer: [libc::epoll_event; MAX_EVENTS_BUFFER_SIZE],
 }
 
 impl EventMonitor {
@@ -68,10 +66,7 @@ impl EventMonitor {
                 .context("Failed to create epoll instance (epoll_create1)");
         }
         debug!("EventMonitor created with epoll_fd: {}", epoll_fd);
-        Ok(Self {
-            epoll_fd,
-            event_buffer: [unsafe { std::mem::zeroed() }; MAX_EVENTS_BUFFER_SIZE],
-        })
+        Ok(Self { epoll_fd })
     }
 
     pub fn add(&self, fd: RawFd, token: u64, flags: EpollFlags) -> Result<()> {
@@ -141,18 +136,28 @@ impl EventMonitor {
         Ok(())
     }
 
-    pub fn events(&mut self, timeout_ms: isize) -> Result<&[libc::epoll_event]> {
+    pub fn events(
+        &self, // No longer needs &mut self
+        events_out: &mut Vec<libc::epoll_event>,
+        timeout_ms: isize,
+    ) -> Result<()> {
+        // Returns () on success
         trace!(
             "EventMonitor: polling for events with timeout {}ms on epoll_fd {}",
             timeout_ms,
             self.epoll_fd
         );
 
+        // 1. Clear the vector's length but keep its allocated capacity.
+        events_out.clear();
+
         let num_events = unsafe {
+            // 2. Call epoll_wait directly on the vector's buffer.
+            //    We can write up to `capacity()` events into it.
             libc::epoll_wait(
                 self.epoll_fd,
-                self.event_buffer.as_mut_ptr(),
-                MAX_EVENTS_BUFFER_SIZE as libc::c_int,
+                events_out.as_mut_ptr(),
+                events_out.capacity() as libc::c_int,
                 timeout_ms as libc::c_int,
             )
         };
@@ -160,10 +165,18 @@ impl EventMonitor {
         if num_events == -1 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
-                trace!("EventMonitor: epoll_wait interrupted (EINTR), returning empty slice.");
-                return Ok(&self.event_buffer[0..0]);
+                trace!("EventMonitor: epoll_wait interrupted (EINTR), returning.");
+                return Ok(());
             }
             return Err(err).context("epoll_wait failed in EventMonitor");
+        }
+
+        // 3. UNSAFE: This is the critical part. We are telling Rust that
+        //    the kernel has initialized `num_events` elements in the vector,
+        //    so we can safely set the vector's length to this new value.
+        //    This is safe because epoll_wait guarantees initialization.
+        unsafe {
+            events_out.set_len(num_events as usize);
         }
 
         trace!(
@@ -171,7 +184,7 @@ impl EventMonitor {
             self.epoll_fd,
             num_events
         );
-        Ok(&self.event_buffer[0..num_events as usize])
+        Ok(())
     }
 }
 
