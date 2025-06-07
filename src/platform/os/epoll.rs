@@ -148,9 +148,6 @@ impl EventMonitor {
             self.epoll_fd
         );
 
-        // 1. Clear the vector's length but keep its allocated capacity.
-        events_out.clear();
-
         let num_events = unsafe {
             // 2. Call epoll_wait directly on the vector's buffer.
             //    We can write up to `capacity()` events into it.

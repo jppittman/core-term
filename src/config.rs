@@ -112,12 +112,12 @@ impl Default for KeybindingsConfig {
         KeybindingsConfig {
             bindings: vec![
                 Keybinding {
-                    key: KeySymbol::Char('C'),
+                    key: KeySymbol::Char('\u{3}'),
                     mods: Modifiers::CONTROL | Modifiers::SHIFT,
                     action: UserInputAction::InitiateCopy,
                 },
                 Keybinding {
-                    key: KeySymbol::Char('V'),
+                    key: KeySymbol::Char('\u{16}'),
                     mods: Modifiers::CONTROL | Modifiers::SHIFT,
                     action: UserInputAction::RequestClipboardPaste,
                 },
@@ -196,7 +196,7 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         FontConfig {
-            normal: "inconsolata:pixelsize=12:antialias=true:autohint=true".to_string(),
+            normal: "Noto Sans Mono:pixelsize=12:antialias=true:autohint=true".to_string(),
             cw_scale: 1.0,
             ch_scale: 1.0,
         }
