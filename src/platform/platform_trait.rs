@@ -64,4 +64,10 @@ pub trait Platform {
     ///
     /// The current `PlatformState`.
     fn get_current_platform_state(&self) -> PlatformState;
+
+    /// Shuts down the platform, performing any necessary cleanup.
+    /// This method should be called before the platform instance is dropped
+    /// to ensure graceful termination of resources like PTYs, display connections, etc.
+    /// It should be safe to call multiple times (idempotent).
+    fn shutdown(&mut self) -> anyhow::Result<()>;
 }

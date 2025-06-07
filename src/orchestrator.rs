@@ -37,7 +37,7 @@ pub enum OrchestratorStatus {
     Shutdown,
 }
 
-pub struct AppOrchestrator<'a, P: Platform> {
+pub struct AppOrchestrator<'a, P: Platform + ?Sized> {
     platform: &'a mut P,
     term_emulator: &'a mut TerminalEmulator,
     ansi_parser: &'a mut AnsiProcessor,
@@ -48,7 +48,7 @@ pub struct AppOrchestrator<'a, P: Platform> {
     pending_emulator_actions: Vec<EmulatorAction>,
 }
 
-impl<'a, P: Platform> AppOrchestrator<'a, P> {
+impl<'a, P: Platform + ?Sized> AppOrchestrator<'a, P> {
     pub fn new(
         platform: &'a mut P,
         term_emulator: &'a mut TerminalEmulator,
@@ -151,7 +151,7 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                         }
                     }
                 }
-                PlatformEvent::BackendEvent(backend_event) => {
+                PlatformEvent::Backend(backend_event) => {
                     debug!(
                         "AppOrchestrator: Received BackendEvent: {:?}",
                         backend_event

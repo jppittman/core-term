@@ -13,18 +13,23 @@ pub mod term;
 
 // Use statements for items needed in main.rs
 use crate::{
-    ansi::AnsiProcessor, // Using Config directly
+    ansi::AnsiProcessor,
     orchestrator::{AppOrchestrator, OrchestratorStatus},
-    platform::actions::PlatformAction, // Updated for initial PTY resize
-    platform::linux_x11::LinuxX11Platform, // Specific platform implementation
+    platform::actions::PlatformAction,
     platform::platform_trait::Platform, // Trait needed for platform methods
     renderer::Renderer,
     term::TerminalEmulator,
 };
 
+// Platform-specific imports
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+use crate::platform::linux_wayland::WaylandPlatform;
+#[cfg(all(target_os = "linux", not(feature = "wayland")))]
+use crate::platform::linux_x11::LinuxX11Platform;
+
 // Logging
-use anyhow::Context; // For context on Results
-use log::{error, info, warn}; // Removed trace as it's not used in main
+use anyhow::Context;
+use log::{error, info, warn};
 
 // Default initial PTY dimensions (hints for Platform::new)
 const DEFAULT_INITIAL_PTY_COLS: u16 = 80;
@@ -39,43 +44,61 @@ fn main() -> anyhow::Result<()> {
 
     info!("Starting myterm...");
 
-    // --- Configuration ---
-    // Load application config (using default for now as per plan)
-    // In future, this might be: let config = Config::load_or_default();
     info!("Configuration loaded (using default).");
 
     let shell_command = std::env::var("SHELL").unwrap_or_else(|_| {
         warn!("SHELL environment variable not set, defaulting to /bin/bash");
         "/bin/bash".to_string()
     });
-    let shell_args: Vec<String> = Vec::new(); // No specific args by default for now
+    let shell_args: Vec<String> = Vec::new();
 
     info!("Shell command: '{}', args: {:?}", shell_command, shell_args);
 
     // --- Instantiate Concrete Platform ---
-    // These are hints for the platform's PTY initialization.
-    // The actual terminal dimensions will be derived from PlatformState later.
-    // The Platform::new method is expected to be available via the Platform trait,
-    // so if LinuxX11Platform implements Platform, this should work.
-    // The error "no function or associated item named `new` found for struct `LinuxX11Platform`"
-    // suggests the 'use crate::platform::platform_trait::Platform;' might be needed if calling as Platform::new,
-    // or that the inherent new method on LinuxX11Platform wasn't found due to other issues.
-    // The previous fixes to LinuxX11Platform ensured its `new` method is inherent.
-    let (mut platform, initial_platform_state) = LinuxX11Platform::new(
-        DEFAULT_INITIAL_PTY_COLS,
-        DEFAULT_INITIAL_PTY_ROWS,
-        shell_command,
-        shell_args,
-    )
-    .context("Failed to initialize LinuxX11Platform")?;
+    let (mut platform_instance, initial_platform_state): (Box<dyn Platform>, _) = {
+        #[cfg(all(target_os = "linux", feature = "wayland"))]
+        {
+            info!("Initializing WaylandPlatform...");
+            let (platform, state) = WaylandPlatform::new(
+                DEFAULT_INITIAL_PTY_COLS,
+                DEFAULT_INITIAL_PTY_ROWS,
+                shell_command.clone(),
+                shell_args.clone(),
+            )
+            .context("Failed to initialize WaylandPlatform")?;
+            (Box::new(platform), state)
+        }
+        #[cfg(all(target_os = "linux", not(feature = "wayland")))]
+        {
+            info!("Initializing LinuxX11Platform...");
+            let (platform, state) = LinuxX11Platform::new(
+                DEFAULT_INITIAL_PTY_COLS,
+                DEFAULT_INITIAL_PTY_ROWS,
+                shell_command.clone(),
+                shell_args.clone(),
+            )
+            .context("Failed to initialize LinuxX11Platform")?;
+            (Box::new(platform), state)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Placeholder for other OSes or a compile error
+            panic!("Unsupported OS: This application currently only supports Linux with X11 or Wayland.");
+            // Or, to make it a compile error:
+            // compile_error!("Unsupported OS: This application currently only supports Linux with X11 or Wayland.");
+        }
+    };
+
+    // The `platform_instance` is now a Box<dyn Platform>.
+    // The rest of the code will use `platform_instance` via the `Platform` trait.
+    let platform: &mut dyn Platform = platform_instance.as_mut();
+
 
     info!(
         "Platform initialized. Initial state: {:?}",
         initial_platform_state
     );
 
-    // --- Initialize Core Components ---
-    // Calculate terminal dimensions based on actual font and display metrics from the platform.
     let term_cols = (initial_platform_state.display_width_px as usize
         / initial_platform_state.font_cell_width_px.max(1) as usize)
         .max(1);
@@ -88,22 +111,15 @@ fn main() -> anyhow::Result<()> {
         term_cols, term_rows
     );
 
-    let mut term_emulator = TerminalEmulator::new(
-        term_cols,
-        term_rows,
-        // config.scrollback_limit.unwrap_or(DEFAULT_SCROLLBACK_LIMIT) // Assuming config provides this
-    );
+    let mut term_emulator = TerminalEmulator::new(term_cols, term_rows);
     info!("TerminalEmulator initialized.");
 
     let mut ansi_parser = AnsiProcessor::new();
     info!("AnsiProcessor initialized.");
 
-    // Renderer::new() takes no arguments.
     let renderer = Renderer::new();
     info!("Renderer initialized.");
 
-    // --- Initial Resize Synchronization ---
-    // Ensure the PTY's dimensions match the TerminalEmulator's calculated dimensions.
     platform
         .dispatch_actions(vec![PlatformAction::ResizePty {
             cols: term_cols as u16,
@@ -115,17 +131,14 @@ fn main() -> anyhow::Result<()> {
         term_cols, term_rows
     );
 
-    // --- Instantiate AppOrchestrator ---
     let mut orchestrator = AppOrchestrator::new(
-        &mut platform,
+        platform, // Pass the &mut dyn Platform
         &mut term_emulator,
         &mut ansi_parser,
         renderer,
-        // &config, // If AppOrchestrator takes config directly
     );
     info!("AppOrchestrator created and initialized.");
 
-    // --- Main Event Loop ---
     info!("Starting main event loop...");
     loop {
         match orchestrator.process_event_cycle() {
@@ -147,9 +160,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // --- Cleanup ---
     info!("Shutting down platform...");
-    platform.shutdown().context("Failed to shutdown platform")?;
+    // platform_instance still owns the Box, use it to call shutdown.
+    platform_instance.shutdown().context("Failed to shutdown platform")?;
     info!("myterm exited successfully.");
 
     Ok(())
