@@ -14,6 +14,7 @@ use std::os::unix::io::RawFd;
 // Re-export driver implementations so they can be accessed via `crate::platform::backends::console::ConsoleDriver`, etc.
 pub mod console;
 pub mod x11;
+pub mod cocoa; // Add this line
 
 // Import enums for Driver trait method signatures
 pub use x11::window::CursorVisibility; // For set_cursor_visibility - Made pub
@@ -81,6 +82,17 @@ pub enum BackendEvent {
     },
     /// Paste data received from clipboard or primary selection.
     PasteData { text: String },
+}
+
+/// Specific commands for the UI driver/backend.
+#[derive(Debug, Clone)]
+pub enum UiActionCommand {
+    Render(Vec<RenderCommand>), // A batch of render commands
+    SetWindowTitle(String),
+    RingBell,
+    CopyToClipboard(String),
+    SetCursorVisibility(bool),
+    PresentFrame, // Explicit command to present the frame
 }
 
 /// Represents mouse buttons.

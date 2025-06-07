@@ -16,10 +16,12 @@ use crate::{
     ansi::AnsiProcessor, // Using Config directly
     orchestrator::{AppOrchestrator, OrchestratorStatus},
     platform::actions::PlatformAction, // Updated for initial PTY resize
-    platform::linux_x11::LinuxX11Platform, // Specific platform implementation
+    // Platform-specific imports will be conditional
     platform::platform_trait::Platform, // Trait needed for platform methods
     renderer::Renderer,
     term::TerminalEmulator,
+    // common items used by all platforms if any, e.g. PlatformState
+    platform::backends::PlatformState, // Assuming PlatformState is here or in common
 };
 
 // Logging
@@ -55,19 +57,46 @@ fn main() -> anyhow::Result<()> {
     // --- Instantiate Concrete Platform ---
     // These are hints for the platform's PTY initialization.
     // The actual terminal dimensions will be derived from PlatformState later.
-    // The Platform::new method is expected to be available via the Platform trait,
-    // so if LinuxX11Platform implements Platform, this should work.
-    // The error "no function or associated item named `new` found for struct `LinuxX11Platform`"
-    // suggests the 'use crate::platform::platform_trait::Platform;' might be needed if calling as Platform::new,
-    // or that the inherent new method on LinuxX11Platform wasn't found due to other issues.
-    // The previous fixes to LinuxX11Platform ensured its `new` method is inherent.
-    let (mut platform, initial_platform_state) = LinuxX11Platform::new(
-        DEFAULT_INITIAL_PTY_COLS,
-        DEFAULT_INITIAL_PTY_ROWS,
-        shell_command,
-        shell_args,
-    )
-    .context("Failed to initialize LinuxX11Platform")?;
+    // The Platform::new method is expected to be available via the Platform trait.
+    // We will define platform and initial_platform_state here and assign in cfg blocks.
+    let (mut platform, initial_platform_state): (Box<dyn Platform>, PlatformState);
+
+    #[cfg(target_os = "linux")]
+    {
+        use crate::platform::linux_x11::LinuxX11Platform;
+        info!("Initializing LinuxX11Platform...");
+        let (linux_platform, state) = LinuxX11Platform::new(
+            DEFAULT_INITIAL_PTY_COLS,
+            DEFAULT_INITIAL_PTY_ROWS,
+            shell_command,
+            shell_args,
+        )
+        .context("Failed to initialize LinuxX11Platform")?;
+        platform = Box::new(linux_platform);
+        initial_platform_state = state;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use crate::platform::macos::MacosPlatform;
+        // No longer need to import `channel` here for MacosPlatform instantiation
+
+        info!("Initializing MacosPlatform...");
+        // MacosPlatform::new now conforms to the Platform trait and handles its own channel setup (stubbed)
+        // It takes initial PTY dimensions and shell command/args.
+        let (macos_platform, state) = MacosPlatform::new(
+            DEFAULT_INITIAL_PTY_COLS,
+            DEFAULT_INITIAL_PTY_ROWS,
+            shell_command, // shell_command is already prepared above
+            shell_args,  // shell_args is already prepared above
+        )
+        .context("Failed to initialize MacosPlatform")?;
+        platform = Box::new(macos_platform);
+        initial_platform_state = state;
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        panic!("Unsupported target OS. Only Linux and macOS are currently supported.");
+    }
 
     info!(
         "Platform initialized. Initial state: {:?}",
