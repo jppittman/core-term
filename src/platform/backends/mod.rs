@@ -15,6 +15,9 @@ use std::os::unix::io::RawFd;
 pub mod console;
 pub mod x11;
 
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub mod wayland;
+
 // Import enums for Driver trait method signatures
 pub use x11::window::CursorVisibility; // For set_cursor_visibility - Made pub
 pub use x11::FocusState; // For set_focus - Made pub
@@ -24,6 +27,9 @@ pub use x11::FocusState; // For set_focus - Made pub
 // Example:
 // pub use console::ConsoleDriver;
 // pub use x11::XDriver;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub use wayland::WaylandDriver;
+
 
 // --- Public Constants ---
 // Default character dimensions for the terminal window.

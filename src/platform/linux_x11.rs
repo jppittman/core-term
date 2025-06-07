@@ -328,6 +328,11 @@ impl Platform for LinuxX11Platform {
     fn get_current_platform_state(&self) -> PlatformState {
         self.driver.get_platform_state()
     }
+
+    fn shutdown(&mut self) -> Result<()> {
+        // Call the inherent shutdown method
+        LinuxX11Platform::shutdown(self)
+    }
 }
 
 impl Drop for LinuxX11Platform {
