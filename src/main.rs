@@ -39,12 +39,16 @@ fn main() -> anyhow::Result<()> {
         .format_timestamp_micros()
         .init();
 
-    info!("Starting myterm...");
+    info!("Starting core...");
 
     // --- Configuration ---
     // Load application config (using default for now as per plan)
     // In future, this might be: let config = Config::load_or_default();
     info!("Configuration loaded (using default).");
+
+    if std::env::var_os("TERM").is_none() {
+        std::env::set_var("TERM", "screen-256color");
+    }
 
     let shell_command = std::env::var("SHELL").unwrap_or_else(|_| {
         warn!("SHELL environment variable not set, defaulting to /bin/bash");

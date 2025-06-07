@@ -254,6 +254,9 @@ impl Platform for ConsolePlatform {
                     // This action is a no-op for ConsolePlatform to prevent panics.
                     debug!("ConsolePlatform: SetCursorVisibility action processed (no-op for ConsolePlatform). Visible: {}", visible);
                 }
+                PlatformAction::RequestPaste => {
+                    unimplemented!("paste for console backend unimplemented");
+                }
             }
         }
         Ok(())
