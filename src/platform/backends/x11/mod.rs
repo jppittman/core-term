@@ -45,6 +45,9 @@ pub enum FocusState {
     Focused,
     Unfocused,
 }
+pub const TRAIT_ATOM_ID_PRIMARY: u64 = 1;
+pub const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2;
+pub const TRAIT_ATOM_ID_UTF8_STRING: u64 = 10;
 
 /// Implements the `Driver` trait for the X11 windowing system.
 ///
@@ -458,9 +461,6 @@ impl Driver for XDriver {
 
     fn request_selection_data(&mut self, selection_name_atom_u64: u64, target_atom_u64: u64) {
         // Map abstract u64 IDs from the trait to concrete X11 atoms.
-        const TRAIT_ATOM_ID_PRIMARY: u64 = 1;
-        const TRAIT_ATOM_ID_CLIPBOARD: u64 = 2;
-        const TRAIT_ATOM_ID_UTF8_STRING: u64 = 10;
         // Add more target mappings as needed (e.g., TARGETS)
 
         let actual_selection_atom = match selection_name_atom_u64 {

@@ -11,7 +11,7 @@ use log::*;
 use crate::config::CONFIG;
 use crate::platform::actions::PlatformAction;
 use crate::platform::backends::x11::window::CursorVisibility; // Used for converting bool
-use crate::platform::backends::x11::XDriver;
+use crate::platform::backends::x11::{XDriver, TRAIT_ATOM_ID_CLIPBOARD};
 use crate::platform::backends::{BackendEvent, Driver, PlatformState};
 use crate::platform::os::epoll::{EpollFlags, EventMonitor};
 use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
@@ -40,6 +40,7 @@ pub struct LinuxX11Platform {
     event_monitor: EventMonitor,
     shutdown_requested: bool,
     pty_event_buffer: Vec<epoll::epoll_event>,
+    platform_events: Vec<PlatformEvent>,
 }
 
 impl LinuxX11Platform {
@@ -90,10 +91,11 @@ impl LinuxX11Platform {
         Ok((
             Self {
                 pty,
-                pty_event_buffer: Vec::with_capacity(PTY_BASE_BUFFER_SIZE),
+                pty_event_buffer: Vec::with_capacity(PTY_READ_BUFFER_SIZE),
                 driver,
                 event_monitor,
                 shutdown_requested: false,
+                platform_events: Vec::with_capacity(PTY_READ_BUFFER_SIZE),
             },
             initial_platform_state,
         ))
@@ -112,7 +114,6 @@ impl LinuxX11Platform {
     fn process_epoll_batch(
         &mut self,
         accumulated_pty_data: &mut Vec<u8>,
-        collected_platform_events: &mut Vec<PlatformEvent>,
     ) -> Result<bool> {
         if self.pty_event_buffer.is_empty() {
             // No events from epoll_wait (likely timed out); signal to stop polling for this cycle.
@@ -135,7 +136,7 @@ impl LinuxX11Platform {
                         .process_events()
                         .context("Driver event processing failed during batch")?;
                     // The orchestrator is responsible for interpreting any CloseRequested events.
-                    collected_platform_events
+                   self.platform_events 
                         .extend(driver_events.into_iter().map(PlatformEvent::from));
                 }
                 PTY_EPOLL_TOKEN => {
@@ -146,7 +147,7 @@ impl LinuxX11Platform {
                         match self.pty.read(&mut pty_read_chunk_buf) {
                             Ok(0) => {
                                 // PTY EOF
-                                collected_platform_events.push(BackendEvent::CloseRequested.into());
+                                self.platform_events.push(BackendEvent::CloseRequested.into());
                                 // PTY EOF is a definitive reason to stop further polling in this poll_events call.
                                 return Ok(false);
                             }
@@ -167,7 +168,7 @@ impl LinuxX11Platform {
                             Err(e) => {
                                 // Any other PTY read error.
                                 log::error!("Critical PTY read error in batch: {:?}. Forwarding as CloseRequested.", e);
-                                collected_platform_events.push(BackendEvent::CloseRequested.into());
+                                self.platform_events.push(BackendEvent::CloseRequested.into());
                                 // Critical error; stop further polling.
                                 return Ok(false);
                             }
@@ -227,8 +228,8 @@ impl Platform for LinuxX11Platform {
     }
 
     fn poll_events(&mut self) -> Result<Vec<PlatformEvent>> {
-        let mut collected_platform_events: Vec<PlatformEvent> = Vec::new();
         let mut accumulated_pty_data: Vec<u8> = Vec::new();
+        self.pty_event_buffer.clear();
 
         let min_latency = CONFIG.performance.min_draw_latency_ms.as_millis() as isize;
         let max_latency = CONFIG.performance.max_draw_latency_ms;
@@ -248,7 +249,6 @@ impl Platform for LinuxX11Platform {
                     // This is the success path, formerly the code after the `?`
                     let should_continue = self.process_epoll_batch(
                         &mut accumulated_pty_data,
-                        &mut collected_platform_events,
                     )?;
 
                     if !should_continue {
@@ -265,7 +265,7 @@ impl Platform for LinuxX11Platform {
                     }
 
                     if !accumulated_pty_data.is_empty() {
-                        collected_platform_events.push(PlatformEvent::IOEvent {
+                        self.platform_events.push(PlatformEvent::IOEvent {
                             data: std::mem::take(&mut accumulated_pty_data),
                         });
                     }
@@ -275,11 +275,11 @@ impl Platform for LinuxX11Platform {
         }
 
         if !accumulated_pty_data.is_empty() {
-            collected_platform_events.push(PlatformEvent::IOEvent {
+            self.platform_events.push(PlatformEvent::IOEvent {
                 data: accumulated_pty_data,
             });
         }
-        Ok(collected_platform_events)
+        Ok(std::mem::take(&mut self.platform_events))
     }
 
     fn dispatch_actions(&mut self, actions: Vec<PlatformAction>) -> Result<()> {
@@ -319,6 +319,9 @@ impl Platform for LinuxX11Platform {
                         CursorVisibility::Hidden
                     };
                     self.driver.set_cursor_visibility(cursor_visibility);
+                }
+                PlatformAction::RequestPaste => {
+                    self.driver.request_selection_data(CLIPBOARD_SELECTION_INDEX.into(), TRAIT_ATOM_ID_CLIPBOARD);
                 }
             }
         }

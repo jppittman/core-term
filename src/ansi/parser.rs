@@ -133,7 +133,6 @@ impl AnsiParser {
     }
 
     fn dispatch_print(&mut self, c: char) {
-        trace!("Dispatching Print: '{}'", c);
         self.commands.push(AnsiCommand::Print(c));
         self.clear_esc_state();
         self.state = State::Ground;

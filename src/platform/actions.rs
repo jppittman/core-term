@@ -19,4 +19,6 @@ pub enum PlatformAction {
     CopyToClipboard(String),
     /// Set the visibility of the cursor.
     SetCursorVisibility(bool),
+    /// Request Paste Data from the clipboard.
+    RequestPaste,
 }

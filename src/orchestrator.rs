@@ -12,6 +12,7 @@ use crate::ansi::AnsiParser; // Trait for AnsiProcessor
 use crate::ansi::AnsiProcessor; // Specific type for Ansi commands
 
 use crate::config::Config;
+use crate::keys;
 use crate::platform::actions::PlatformAction; // Updated import
 use crate::platform::backends::BackendEvent;
 // Assuming MouseButton, KeySymbol, Modifiers are from platform::backends and are compatible with UserInputAction where needed.
@@ -103,14 +104,8 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                 trace!("EmulatorAction::RequestRedraw received.");
             }
             EmulatorAction::RequestClipboardContent => {
-                // This is an action for the platform, not directly for UI/PTY dispatch.
-                // The platform itself should handle this if it's about requesting data *from* the system.
-                // Or, it might be a signal to the main loop / platform to initiate a paste.
-                // For now, this is a conceptual gap or needs platform-level handling.
-                warn!("EmulatorAction::RequestClipboardContent received - platform interaction needed.");
-            } // _ => {
-              //     warn!("AppOrchestrator: Unhandled EmulatorAction during immediate processing: {:?}", action);
-              // }
+                self.platform.dispatch_actions(vec![PlatformAction::RequestPaste])?;
+            } 
         }
         Ok(())
     }
@@ -210,11 +205,13 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                             modifiers,
                             text,
                         } => {
-                            let key_input_action = UserInputAction::KeyInput {
+                            
+                            debug!("Key: {:?} + {:?}\nText: {:?}", modifiers, symbol, text);
+                            let key_input_action = keys::map_key_event_to_action(symbol, modifiers).unwrap_or(UserInputAction::KeyInput {
                                 symbol,
                                 modifiers,
                                 text: if text.is_empty() { None } else { Some(text) },
-                            };
+                            });
                             emulator_input_to_process = Some(EmulatorInput::User(key_input_action));
                         }
                         BackendEvent::MouseButtonPress {

@@ -70,7 +70,13 @@ impl LocaleInitializer {
             }
             0 => {
                 trace!("wcwidth returned 0 for char '{}' (U+{:X}).", c, wc);
-                0
+                if c.is_control() {
+                     trace!("wcwidth returned 0 for control char '{}' (U+{:X}).", c, wc);
+                     0
+                } else {
+                     debug!("wcwidth returned 0 for non-control char '{}' (U+{:X}), defaulting to width 1.", c, wc);
+                     1
+                }
             }
             1 => 1,
             2 => 2,

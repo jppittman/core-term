@@ -1,9 +1,10 @@
 // src/keys.rs
 
-use crate::config::Config; // Added for Config type
+use crate::config::CONFIG; // Added for Config type
 use crate::term::action::UserInputAction; // Added for UserInputAction type
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize}; // Import Serialize and Deserialize
+use log::{debug, info};
 
 bitflags! {
     /// Represents a keyboard modifier.
@@ -133,14 +134,14 @@ impl KeySymbol {
 pub fn map_key_event_to_action(
     key_symbol: KeySymbol,
     modifiers: Modifiers,
-    config: &Config,
 ) -> Option<UserInputAction> {
-    for binding in &config.keybindings.bindings {
+    CONFIG.keybindings.bindings.iter().find_map(| binding |  {
         if binding.key == key_symbol && binding.mods == modifiers {
+            debug!("Keybinding: {:?} + {:?} => {:?}", binding.mods, binding.key, &binding.action);
             return Some(binding.action.clone());
         }
-    }
-    None
+        None
+    })
 }
 
 #[cfg(test)]
