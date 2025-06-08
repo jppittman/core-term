@@ -279,7 +279,8 @@ mod tests {
         let result = process_user_input_action(&mut emu, action);
         assert_eq!(result, Some(EmulatorAction::RequestRedraw));
 
-        let snapshot = emu.get_render_snapshot();
+        let snapshot_option = emu.get_render_snapshot();
+        let snapshot = snapshot_option.as_ref().expect("Snapshot was None");
         // Print the actual screen content for debugging
         for (r, line) in snapshot.lines.iter().enumerate() {
             let line_str: String = line
@@ -296,7 +297,7 @@ mod tests {
         }
         println!(
             "Actual cursor pos: {:?}",
-            snapshot.cursor_state.map(|cs| (cs.y, cs.x))
+            snapshot.cursor_state.as_ref().map(|cs| (cs.y, cs.x))
         );
 
         match snapshot.lines[0].cells[0] {

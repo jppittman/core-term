@@ -179,10 +179,12 @@ impl Screen {
         self.scroll_bot
     }
 
+    /*
     /// Returns the current scrollback limit.
     pub fn scrollback_limit(&self) -> usize {
         self.scrollback_limit
     }
+    */
 
     /// Helper to get the glyph used for filling cleared areas.
     fn get_default_fill_glyph(&self) -> Glyph {
@@ -1017,7 +1019,7 @@ impl Screen {
     }
 }
 
-const SOME_REASONABLE_SLACK: usize = 20;
+// const SOME_REASONABLE_SLACK: usize = 20;
 
 #[cfg(test)]
 mod tests {

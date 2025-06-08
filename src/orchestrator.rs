@@ -38,8 +38,8 @@ pub enum OrchestratorStatus {
     Shutdown,
 }
 
-pub struct AppOrchestrator<'a, P: Platform> {
-    platform: &'a mut P,
+pub struct AppOrchestrator<'a> {
+    platform: &'a mut dyn Platform,
     term_emulator: &'a mut TerminalEmulator,
     ansi_parser: &'a mut AnsiProcessor,
     renderer: Renderer,
@@ -49,9 +49,9 @@ pub struct AppOrchestrator<'a, P: Platform> {
     pending_emulator_actions: Vec<EmulatorAction>,
 }
 
-impl<'a, P: Platform> AppOrchestrator<'a, P> {
+impl<'a> AppOrchestrator<'a> {
     pub fn new(
-        platform: &'a mut P,
+        platform: &'a mut dyn Platform,
         term_emulator: &'a mut TerminalEmulator,
         ansi_parser: &'a mut AnsiProcessor,
         renderer: Renderer,
@@ -207,7 +207,7 @@ impl<'a, P: Platform> AppOrchestrator<'a, P> {
                         } => {
                             
                             debug!("Key: {:?} + {:?}\nText: {:?}", modifiers, symbol, text);
-                            let key_input_action = keys::map_key_event_to_action(symbol, modifiers).unwrap_or(UserInputAction::KeyInput {
+                            let key_input_action = keys::map_key_event_to_action(symbol, modifiers, &crate::config::CONFIG).unwrap_or(UserInputAction::KeyInput {
                                 symbol,
                                 modifiers,
                                 text: if text.is_empty() { None } else { Some(text) },

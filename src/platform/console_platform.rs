@@ -265,6 +265,11 @@ impl Platform for ConsolePlatform {
     fn get_current_platform_state(&self) -> PlatformState {
         self.driver.get_platform_state()
     }
+
+    fn cleanup(&mut self) -> Result<()> {
+        log::info!("ConsolePlatform: cleanup() called. Cleaning up ConsoleDriver...");
+        self.driver.cleanup()
+    }
 }
 
 // Inherent methods

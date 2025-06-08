@@ -331,6 +331,11 @@ impl Platform for LinuxX11Platform {
     fn get_current_platform_state(&self) -> PlatformState {
         self.driver.get_platform_state()
     }
+
+    fn cleanup(&mut self) -> Result<()> {
+        log::info!("LinuxX11Platform: cleanup() called. Cleaning up XDriver...");
+        self.driver.cleanup()
+    }
 }
 
 impl Drop for LinuxX11Platform {

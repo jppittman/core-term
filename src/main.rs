@@ -150,7 +150,7 @@ fn main() -> anyhow::Result<()> {
 
     // --- Instantiate AppOrchestrator ---
     let mut orchestrator = AppOrchestrator::new(
-        &mut platform,
+        platform.as_mut(),
         &mut term_emulator,
         &mut ansi_parser,
         renderer,
@@ -182,7 +182,7 @@ fn main() -> anyhow::Result<()> {
 
     // --- Cleanup ---
     info!("Shutting down platform...");
-    platform.shutdown().context("Failed to shutdown platform")?;
+    platform.cleanup().context("Failed to cleanup platform")?;
     info!("myterm exited successfully.");
 
     Ok(())

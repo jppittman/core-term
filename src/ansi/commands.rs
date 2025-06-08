@@ -275,6 +275,7 @@ impl AnsiCommand {
         C0Control::from_byte(byte).map(AnsiCommand::C0Control)
     }
 
+    /*
     pub(crate) fn from_c1(byte: u8) -> Option<Self> {
         match byte {
             0x84 => Some(AnsiCommand::Esc(EscCommand::Index)),
@@ -288,6 +289,7 @@ impl AnsiCommand {
             _ => Some(AnsiCommand::C1Control(byte)),
         }
     }
+    */
 
     pub(crate) fn from_esc(final_char: char) -> Option<Self> {
         match final_char {
