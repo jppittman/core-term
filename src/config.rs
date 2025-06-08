@@ -189,14 +189,21 @@ impl Default for AppearanceConfig {
 #[serde(default)]
 pub struct FontConfig {
     pub normal: String,
+    pub bold: String,
+    pub italic: String,
+    pub bold_italic: String,
     pub cw_scale: f32,
     pub ch_scale: f32,
 }
 
 impl Default for FontConfig {
     fn default() -> Self {
+        let normal = "Noto Sans Mono:pixelsize=12:antialias=true:autohint=true".to_string();
         FontConfig {
-            normal: "Noto Sans Mono:pixelsize=12:antialias=true:autohint=true".to_string(),
+            normal: normal.clone(),
+            bold: format!("{}:style=Bold", normal),
+            italic: format!("{}:style=Italic", normal),
+            bold_italic: format!("{}:style=Bold Italic", normal),
             cw_scale: 1.0,
             ch_scale: 1.0,
         }
