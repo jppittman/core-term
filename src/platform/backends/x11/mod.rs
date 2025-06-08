@@ -29,6 +29,7 @@ use std::os::unix::io::RawFd;
 // Declare submodules. These contain the specialized logic for different aspects of X11 handling.
 pub mod connection;
 pub mod event;
+pub mod font_manager;
 pub mod graphics;
 pub mod selection;
 pub mod window; // Added selection module
