@@ -16,6 +16,7 @@ use std::sync::Mutex;
 
 // Mocking structures for testing the renderer's interaction with a Driver.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // Allow dead code for variants not explicitly constructed in tests
 enum MockDrawCommand {
     ClearAll {
         bg: Color,

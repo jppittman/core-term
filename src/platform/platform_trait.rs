@@ -64,4 +64,9 @@ pub trait Platform {
     ///
     /// The current `PlatformState`.
     fn get_current_platform_state(&self) -> PlatformState;
+
+    /// Performs any necessary cleanup before the platform is dropped.
+    /// This includes releasing platform resources (e.g., closing display connections,
+    /// restoring terminal modes). This method should be idempotent.
+    fn cleanup(&mut self) -> Result<()>;
 }

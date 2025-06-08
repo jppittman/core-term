@@ -1,6 +1,6 @@
 use crate::platform::actions::PlatformAction;
 use crate::platform::backends::{
-    BackendEvent, CocoaDriver, Driver, PlatformState, UiActionCommand,
+    cocoa::CocoaDriver, BackendEvent, CursorVisibility, Driver, PlatformState,
 };
 use crate::platform::os::PtyActionCommand; // Correct path for PtyActionCommand
 use crate::platform::platform_trait::Platform;
@@ -74,12 +74,13 @@ impl Platform for MacosPlatform {
         let mut events: Vec<PlatformEvent> = Vec::new();
 
         // 1. Poll UI Driver for events
-        match self.driver.poll_event() {
-            Ok(Some(ui_event)) => {
-                // println!("MacosPlatform: Received UI event: {:?}", ui_event);
-                events.push(PlatformEvent::BackendEvent(ui_event));
+        match self.driver.process_events() {
+            Ok(mut driver_events) => {
+                for event in driver_events.drain(..) {
+                    // println!("MacosPlatform: Received UI event: {:?}", event);
+                    events.push(PlatformEvent::BackendEvent(event));
+                }
             }
-            Ok(None) => { /* No UI event */ }
             Err(e) => {
                 // Log error or handle critical failure
                 eprintln!("MacosPlatform: Error polling UI driver: {}", e);
@@ -121,33 +122,41 @@ impl Platform for MacosPlatform {
                 }
                 PlatformAction::Render(render_commands) => {
                     self.driver
-                        .dispatch_ui_action(UiActionCommand::Render(render_commands))
+                        .execute_render_commands(render_commands)
                         .context("MacosPlatform: Failed to dispatch Render to driver")?;
                     // As per previous note, PresentFrame might be implicitly handled by driver
                     // or explicitly called. Let's add an explicit PresentFrame after Render.
                     self.driver
-                        .dispatch_ui_action(UiActionCommand::PresentFrame)
+                        .present()
                         .context("MacosPlatform: Failed to dispatch PresentFrame to driver")?;
                 }
                 PlatformAction::SetTitle(title) => {
-                    self.driver
-                        .dispatch_ui_action(UiActionCommand::SetWindowTitle(title))
-                        .context("MacosPlatform: Failed to dispatch SetTitle to driver")?;
+                    self.driver.set_title(&title);
+                    // .context("MacosPlatform: Failed to dispatch SetTitle to driver")?; // set_title doesn't return Result
                 }
                 PlatformAction::RingBell => {
-                    self.driver
-                        .dispatch_ui_action(UiActionCommand::RingBell)
-                        .context("MacosPlatform: Failed to dispatch RingBell to driver")?;
+                    self.driver.bell();
+                    // .context("MacosPlatform: Failed to dispatch RingBell to driver")?; // bell doesn't return Result
                 }
                 PlatformAction::CopyToClipboard(text) => {
-                    self.driver
-                        .dispatch_ui_action(UiActionCommand::CopyToClipboard(text))
-                        .context("MacosPlatform: Failed to dispatch CopyToClipboard to driver")?;
+                    // Using a placeholder atom (0) for now. A real implementation would use a Cocoa-specific way.
+                    self.driver.own_selection(0, text);
+                    // .context("MacosPlatform: Failed to dispatch CopyToClipboard to driver")?; // own_selection doesn't return Result
                 }
                 PlatformAction::SetCursorVisibility(visible) => {
-                    self.driver
-                        .dispatch_ui_action(UiActionCommand::SetCursorVisibility(visible))
-                        .context("MacosPlatform: Failed to dispatch SetCursorVisibility to driver")?;
+                    let visibility = if visible {
+                        CursorVisibility::Shown
+                    } else {
+                        CursorVisibility::Hidden
+                    };
+                    self.driver.set_cursor_visibility(visibility);
+                    // .context("MacosPlatform: Failed to dispatch SetCursorVisibility to driver")?; // set_cursor_visibility doesn't return Result
+                }
+                PlatformAction::RequestPaste => {
+                    // Using placeholder atoms (0, 0) for now.
+                    // A real implementation would use Cocoa-specific APIs for pasteboard interaction.
+                    self.driver.request_selection_data(0, 0);
+                    // .context("MacosPlatform: Failed to dispatch RequestPaste to driver")?; // request_selection_data doesn't return Result
                 }
             }
         }
@@ -157,6 +166,11 @@ impl Platform for MacosPlatform {
     fn get_current_platform_state(&self) -> PlatformState {
         // println!("MacosPlatform: Getting current platform state from driver");
         self.driver.get_platform_state()
+    }
+
+    fn cleanup(&mut self) -> Result<()> {
+        println!("MacosPlatform: cleanup() called. Cleaning up driver...");
+        self.driver.cleanup()
     }
 }
 
