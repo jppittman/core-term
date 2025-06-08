@@ -7,6 +7,7 @@ pub use backends::BackendEvent;
 pub mod actions;
 pub mod backends;
 pub mod console_platform;
+pub mod font_manager;
 pub mod linux_x11;
 pub mod macos; // Add this line
 pub mod os;

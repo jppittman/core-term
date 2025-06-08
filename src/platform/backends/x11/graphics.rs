@@ -2,7 +2,9 @@
 #![allow(non_snake_case)] // Allow non-snake case for X11 types
 
 use super::connection::Connection;
-use crate::color::{Color, NamedColor}; // NamedColor might be needed for fallback or if CONFIG itself uses it.
+use super::font_manager::X11FontManager;
+use crate::platform::font_manager::FontManager; // Added import for the trait
+use crate::color::{Color, NamedColor};
 use crate::config::CONFIG; // Added for global config access
 use crate::glyph::AttrFlags;
 use crate::platform::backends::{CellCoords, CellRect, TextRunStyle};
@@ -30,7 +32,7 @@ pub(super) struct SafeXftFont {
 }
 
 impl SafeXftFont {
-    fn new(font_ptr: *mut xft::XftFont, display_ptr: *mut xlib::Display) -> Self {
+    pub(super) fn new(font_ptr: *mut xft::XftFont, display_ptr: *mut xlib::Display) -> Self { // Changed to pub(super)
         Self {
             ptr: font_ptr,
             display: display_ptr,
@@ -38,7 +40,7 @@ impl SafeXftFont {
     }
 
     #[inline]
-    fn raw(&self) -> *mut xft::XftFont {
+    pub(super) fn raw(&self) -> *mut xft::XftFont { // Changed to pub(super)
         self.ptr
     }
 
@@ -233,7 +235,7 @@ struct Rgb16Components {
 /// and the determined default background pixel value. It's passed to the second stage
 /// of `Graphics::new` once the window is created.
 pub(super) struct PreGraphicsData {
-    pub(super) xft_font: SafeXftFont, // Ownership of the XftFont
+    pub(super) font_manager: X11FontManager,
     pub(super) font_width_px: u32,
     pub(super) font_height_px: u32,
     pub(super) font_ascent_px: u32,
@@ -254,7 +256,7 @@ pub(super) struct PreGraphicsData {
 /// cleanup was not performed.
 #[derive(Debug)]
 pub struct Graphics {
-    xft_font: SafeXftFont,              // Owns the XftFont resource
+    font_manager: X11FontManager,
     xft_draw: SafeXftDraw,              // Owns the XftDraw resource
     xft_ansi_colors: Vec<SafeXftColor>, // Owns the pre-allocated ANSI XftColors
     xft_color_cache_rgb: HashMap<(u8, u8, u8), SafeXftColor>, // Owns cached XftColors
@@ -279,46 +281,58 @@ impl Graphics {
     /// * `Ok(PreGraphicsData)`: Contains the loaded font, metrics, ANSI colors, and default background pixel.
     /// * `Err(anyhow::Error)`: If font loading or color allocation fails.
     pub(super) fn load_font_and_colors(connection: &Connection) -> Result<PreGraphicsData> {
-        info!("Graphics: Loading font and pre-allocating colors.");
+        info!("Graphics: Loading fonts and pre-allocating colors.");
         let display = connection.display();
         let screen = connection.screen();
-        let visual = connection.visual(); // Needed earlier for background color
-        let colormap = connection.colormap(); // Needed earlier for background color
+        let visual = connection.visual();
+        let colormap = connection.colormap();
 
-        // 1. Load Font & Metrics
-        let font_name_from_config = CONFIG.appearance.font.normal.as_str();
-        debug!("Loading font: {}", font_name_from_config);
-        let font_name_cstr = CString::new(font_name_from_config)
-            .context("Failed to create CString for font name")?;
+        // Helper function to load a single XftFont
+        let load_single_font = |font_name: &str| -> Result<SafeXftFont> {
+            debug!("Loading font: {}", font_name);
+            let c_font_name = CString::new(font_name)
+                .with_context(|| format!("Failed to create CString for font name: {}", font_name))?;
 
-        // SAFETY: Xlib/Xft FFI call. `display` and `screen` must be valid.
-        let xft_font_raw_ptr =
-            unsafe { xft::XftFontOpenName(display, screen, font_name_cstr.as_ptr()) };
-        if xft_font_raw_ptr.is_null() {
-            return Err(anyhow!(
-                "XftFontOpenName failed for font: '{}'. Ensure font is installed and accessible.",
-                font_name_from_config
-            ));
-        }
-        // Wrap immediately in SafeXftFont. If later stages fail, its Drop will handle cleanup.
-        let xft_font = SafeXftFont::new(xft_font_raw_ptr, display);
-        debug!(
-            "Font '{}' loaded successfully: {:p}",
-            font_name_from_config,
-            xft_font.raw()
-        );
+            // SAFETY: Xlib/Xft FFI call. `display` and `screen` must be valid.
+            let xft_font_raw_ptr = unsafe {
+                xft::XftFontOpenName(display, screen, c_font_name.as_ptr())
+            };
 
-        // SAFETY: Accessing fields of a valid `xft_font` pointer via helper methods.
-        let font_height_px = unsafe { (xft_font.ascent() + xft_font.descent()) as u32 };
-        let font_ascent_px = unsafe { xft_font.ascent() as u32 };
+            if xft_font_raw_ptr.is_null() {
+                return Err(anyhow!(
+                    "XftFontOpenName failed for font: '{}'. Ensure font is installed and accessible.",
+                    font_name
+                ));
+            }
+            let safe_font = SafeXftFont::new(xft_font_raw_ptr, display);
+            debug!("Font '{}' loaded successfully: {:p}", font_name, safe_font.raw());
+            Ok(safe_font)
+        };
+
+        // 1. Load All Font Styles
+        let font_config = &CONFIG.appearance.font;
+        let xft_font_regular = load_single_font(&font_config.normal)
+            .context("Failed to load regular font")?;
+        let xft_font_bold = load_single_font(&font_config.bold)
+            .context("Failed to load bold font")?;
+        let xft_font_italic = load_single_font(&font_config.italic)
+            .context("Failed to load italic font")?;
+        let xft_font_bold_italic = load_single_font(&font_config.bold_italic)
+            .context("Failed to load bold-italic font")?;
+
+        // 2. Calculate and Validate Font Metrics (based on Regular font for layout consistency)
+        // These metrics are primary for cell layout, regardless of which font style is active.
+        let font_ascent_px = unsafe { xft_font_regular.ascent() as u32 };
+        let font_descent_px = unsafe { xft_font_regular.descent() as u32 };
+        let font_height_px = font_ascent_px + font_descent_px;
 
         let mut extents: XGlyphInfo = unsafe { mem::zeroed() };
         let sample_char_cstr = CString::new("M").expect("CString::new for 'M' should not fail.");
-        // SAFETY: Xlib/Xft FFI call. `display` and `xft_font.raw()` must be valid.
+        // SAFETY: Xlib/Xft FFI call. `display` and `xft_font_regular.raw()` must be valid.
         unsafe {
             xft::XftTextExtentsUtf8(
                 display,
-                xft_font.raw(),
+                xft_font_regular.raw(),
                 sample_char_cstr.as_ptr() as *const u8,
                 sample_char_cstr.as_bytes().len() as c_int,
                 &mut extents,
@@ -327,21 +341,52 @@ impl Graphics {
         let font_width_px = extents.xOff as u32;
 
         if font_width_px < MIN_FONT_WIDTH || font_height_px < MIN_FONT_HEIGHT {
-            // xft_font's Drop will be called automatically when it goes out of scope here.
             return Err(anyhow!(
-                "Font dimensions (W:{}, H:{}) are below minimum requirements (W:{}, H:{}).",
-                font_width_px,
-                font_height_px,
-                MIN_FONT_WIDTH,
-                MIN_FONT_HEIGHT
+                "Regular font dimensions (W:{}, H:{}) are below minimum requirements (W:{}, H:{}).",
+                font_width_px, font_height_px, MIN_FONT_WIDTH, MIN_FONT_HEIGHT
             ));
         }
         info!(
-            "Font metrics determined: Width={}, Height={}, Ascent={}",
+            "Regular font metrics: Width={}, Height={}, Ascent={}",
             font_width_px, font_height_px, font_ascent_px
         );
 
-        // 2. Initialize ANSI Colors
+        // Validate metrics of other font styles
+        for (style_name, font_style) in [
+            ("bold", &xft_font_bold),
+            ("italic", &xft_font_italic),
+            ("bold-italic", &xft_font_bold_italic),
+        ] {
+            let current_ascent = unsafe { font_style.ascent() as u32 };
+            let current_descent = unsafe { font_style.descent() as u32 };
+            let current_height = current_ascent + current_descent;
+
+            if current_height.abs_diff(font_height_px) > 1 {
+                warn!(
+                    "Height of {} font ({}) differs by >1px from regular font height ({}).",
+                    style_name, current_height, font_height_px
+                );
+            }
+            if current_ascent.abs_diff(font_ascent_px) > 1 {
+                warn!(
+                    "Ascent of {} font ({}) differs by >1px from regular font ascent ({}).",
+                    style_name, current_ascent, font_ascent_px
+                );
+            }
+        }
+
+        // 3. Create Font Manager (consumes the loaded primary fonts)
+        let font_manager = X11FontManager::new_internal(
+            display,
+            xft_font_regular, // xft_font_regular is moved here
+            xft_font_bold,    // xft_font_bold is moved here
+            xft_font_italic,  // xft_font_italic is moved here
+            xft_font_bold_italic, // xft_font_bold_italic is moved here
+        );
+        info!("X11FontManager created with primary fonts.");
+
+
+        // 4. Initialize ANSI Colors
         let mut xft_ansi_colors = Vec::with_capacity(ANSI_COLOR_COUNT);
         // visual and colormap fetched earlier
 
@@ -457,11 +502,11 @@ impl Graphics {
         );
 
         Ok(PreGraphicsData {
-            xft_font, // Now a SafeXftFont
+            font_manager, // Store the created font manager
             font_width_px,
             font_height_px,
             font_ascent_px,
-            xft_ansi_colors, // Now a Vec<SafeXftColor>
+            xft_ansi_colors,
             default_bg_pixel_value,
         })
     }
@@ -523,7 +568,7 @@ impl Graphics {
         debug!("Clear GC created: {:p}", clear_gc.raw());
 
         Ok(Self {
-            xft_font: pre_data.xft_font,               // Moved from pre_data
+            font_manager: pre_data.font_manager, // Moved from pre_data
             xft_draw,                                  // Newly created SafeXftDraw
             xft_ansi_colors: pre_data.xft_ansi_colors, // Moved from pre_data
             xft_color_cache_rgb: HashMap::new(),
@@ -673,6 +718,22 @@ impl Graphics {
     ///
     /// # Returns
     /// * `Ok(())` if successful, or an error if color resolution or CString conversion fails.
+    ///
+    /// This method renders a run of text. It performs the following steps:
+    /// 1. Fills the background rectangle for the entire text run.
+    /// 2. For each character in the text:
+    ///    a. Resolves the character to a glyph using the `FontManager`. This involves
+    ///       checking primary fonts, cached fallback fonts, and then querying Fontconfig.
+    ///    b. Handles cases where a glyph might not be found, attempting to use a
+    ///       replacement character (`\u{FFFD}`) and ultimately a default glyph from
+    ///       the regular font if necessary.
+    ///    c. Collects `XftGlyphFontSpec` structures, which pair a glyph ID with its
+    ///       font and its x-offset within the run.
+    /// 3. Draws all collected glyphs in a single call to `XftDrawGlyphFontSpec`.
+    /// 4. Draws underline and strikethrough decorations if specified in the `style`.
+    ///
+    /// The layout (positioning of glyphs) currently assumes a monospaced grid based on
+    /// the metrics of the primary regular font.
     pub(super) fn draw_text_run(
         &mut self,
         connection: &Connection,
@@ -680,17 +741,19 @@ impl Graphics {
         text: &str,
         style: TextRunStyle,
     ) -> Result<()> {
+        const REPLACEMENT_CHAR: char = '\u{FFFD}';
+        const REGULAR_FONT_ID_FOR_FALLBACK: usize = 0; // Assuming 0 is the regular font ID
+
         if text.is_empty() {
-            return Ok(()); // Nothing to draw.
+            return Ok(());
         }
 
-        // Calculate pixel coordinates for the text run's top-left corner.
-        let x_pixel = (coords.x * self.font_width_px as usize) as c_int;
-        let y_pixel = (coords.y * self.font_height_px as usize) as c_int;
-        // Calculate width of the background rectangle for the text run in pixels.
+        // Calculate pixel coordinates for the text run's top-left corner and background.
+        let x_pixel_start_of_run = (coords.x * self.font_width_px as usize) as c_int;
+        let y_pixel_start_of_run = (coords.y * self.font_height_px as usize) as c_int;
         let run_pixel_width = text.chars().count() * self.font_width_px as usize;
 
-        // Resolve foreground and background colors to owned XftColor values.
+        // Resolve colors.
         let xft_fg = self
             .resolve_concrete_xft_color(connection, style.fg)
             .context("Failed to resolve foreground color for text run")?;
@@ -698,44 +761,132 @@ impl Graphics {
             .resolve_concrete_xft_color(connection, style.bg)
             .context("Failed to resolve background color for text run")?;
 
-        // Draw the background rectangle.
+        // 1. Draw the background rectangle for the entire run.
+        // This ensures the entire cell area for the text run is colored appropriately before drawing glyphs.
         // SAFETY: Xft FFI call. `self.xft_draw.raw()` must be valid.
         unsafe {
             xft::XftDrawRect(
                 self.xft_draw.raw(),
-                &xft_bg, // Pass a reference to the owned XftColor
-                x_pixel,
-                y_pixel,
+                &xft_bg,
+                x_pixel_start_of_run,
+                y_pixel_start_of_run,
                 run_pixel_width as u32,
                 self.font_height_px,
             );
         }
 
-        let c_text = CString::new(text).context("Failed to convert text to CString for Xft")?;
-        let baseline_y_pixel = y_pixel + self.font_ascent_px as c_int;
+        // 2. Prepare glyph specifications for XftDrawGlyphFontSpec.
+        // This involves resolving each character to a glyph using the FontManager,
+        // handling fallbacks for unrenderable characters.
+        let mut glyph_specs: Vec<xft::XftGlyphFontSpec> = Vec::with_capacity(text.chars().count());
+        let mut current_x_offset_in_run: i16 = 0; // Relative X position within the current text run.
 
-        // Draw the text string.
-        // SAFETY: Xft FFI call. Raw pointers from safe types must be valid.
-        unsafe {
-            xft::XftDrawStringUtf8(
-                self.xft_draw.raw(),
-                &xft_fg,             // Pass a reference to the owned XftColor
-                self.xft_font.raw(), // Use raw pointer from SafeXftFont
-                x_pixel,
-                baseline_y_pixel,
-                c_text.as_ptr() as *const u8,
-                c_text.as_bytes().len() as c_int,
-            );
+        for character in text.chars() {
+            let mut resolved_glyph_opt = self.font_manager.get_glyph(character, style.flags);
+            let mut char_for_log = character; // Store original char for logging if replacement is used.
+
+            // Stage 1 Fallback: If glyph not found for the original character, try with REPLACEMENT_CHAR.
+            // This handles cases where the primary styled font doesn't have the glyph.
+            if resolved_glyph_opt.is_none() && character != REPLACEMENT_CHAR {
+                warn!(
+                    "Glyph for char '{}' (U+{:X}) not found with flags {:?}. Trying REPLACEMENT_CHAR.",
+                    character, character as u32, style.flags
+                );
+                resolved_glyph_opt = self.font_manager.get_glyph(REPLACEMENT_CHAR, AttrFlags::empty()); // Try replacement with neutral style
+                char_for_log = REPLACEMENT_CHAR; // Log messages will now refer to REPLACEMENT_CHAR
+            }
+
+            let (font_ptr, glyph_id_to_draw) = match resolved_glyph_opt {
+                Some(resolved_glyph) => {
+                    // Successfully found a glyph (either original or replacement).
+                    // Now, get its platform-specific font handle.
+                    let font_handle = self.font_manager.get_font_handle(resolved_glyph.font_id);
+                    if font_handle.is_null() {
+                        // This case means FontManager gave a font_id for which it later returned a null handle.
+                        // This implies an issue with the FontManager's internal state or a problematic font.
+                        error!(
+                            "FontManager returned null handle for font_id {} (char '{}', U+{:X}). Using system default glyph for REPLACEMENT_CHAR.",
+                            resolved_glyph.font_id, char_for_log, char_for_log as u32
+                        );
+                        // Stage 2 Fallback: Try REPLACEMENT_CHAR in the default (regular) font.
+                        let (f, g) = self
+                            .font_manager
+                            .get_glyph(REPLACEMENT_CHAR, AttrFlags::empty()) // Neutral style for replacement
+                            .map_or_else(
+                                || { // Stage 3 Fallback: REPLACEMENT_CHAR not even in default font. This is highly unlikely if a basic font is present.
+                                    warn!("REPLACEMENT_CHAR U+{:X} also not found in default font. Using glyph 0 from default font handle.", REPLACEMENT_CHAR as u32);
+                                    (self.font_manager.get_font_handle(REGULAR_FONT_ID_FOR_FALLBACK), 0) // Glyph 0 (missing)
+                                },
+                                |rg| (self.font_manager.get_font_handle(rg.font_id), rg.glyph_id) // Use resolved replacement.
+                            );
+                        (f, g)
+                    } else {
+                        (font_handle, resolved_glyph.glyph_id) // Use the successfully resolved glyph and its font.
+                    }
+                }
+                None => {
+                    // Glyph not found even for REPLACEMENT_CHAR. This is the ultimate fallback.
+                    // This means the FontManager couldn't find REPLACEMENT_CHAR in any of its attempts.
+                    warn!(
+                        "Glyph for REPLACEMENT_CHAR U+{:X} not found. Using glyph 0 from default font for original char '{}' (U+{:X}).",
+                        REPLACEMENT_CHAR as u32, character, character as u32
+                    );
+                    (self.font_manager.get_font_handle(REGULAR_FONT_ID_FOR_FALLBACK), 0) // Use glyph 0 (missing glyph) from the primary regular font.
+                }
+            };
+
+            // Ensure the font pointer for drawing is not null before adding to specs.
+            if font_ptr.is_null() {
+                error!(
+                    "Default font handle (font_id {}) is null. Cannot render glyph for char '{}' (U+{:X}). Skipping.",
+                    REGULAR_FONT_ID_FOR_FALLBACK, character, character as u32
+                );
+                // Increment offset to maintain spacing for subsequent characters, though this one is skipped.
+                current_x_offset_in_run += self.font_width_px as i16;
+                continue; // Skip this character from being added to glyph_specs.
+            }
+
+            // The XftGlyphFontSpec x and y are absolute screen coordinates.
+            let baseline_y_for_glyph = (y_pixel_start_of_run + self.font_ascent_px as c_int) as i16;
+            glyph_specs.push(xft::XftGlyphFontSpec {
+                font: font_ptr,
+                glyph: glyph_id_to_draw,
+                x: (x_pixel_start_of_run + current_x_offset_in_run as c_int) as i16,
+                y: baseline_y_for_glyph,
+            });
+            current_x_offset_in_run += self.font_width_px as i16; // Assuming monospaced layout for simplicity.
         }
 
+        // 3. Draw the collected glyphs using XftDrawGlyphFontSpec.
+        // This function draws multiple glyphs, potentially from different fonts (due to fallback), in a single call.
+        if !glyph_specs.is_empty() {
+            // The x and y coordinates in XftGlyphFontSpec are absolute for this Xft function.
+            // The XftDrawGlyphFontSpec function itself (from x11 lib) does not take x,y origin for the run.
+            // It expects the coordinates to be absolute within each spec.
+            // SAFETY: Xft FFI call. `self.xft_draw.raw()` must be valid.
+            // `xft_fg` must be a valid XftColor.
+            // `glyph_specs.as_ptr()` and `glyph_specs.len()` provide valid font/glyph specifications.
+            unsafe {
+                xft::XftDrawGlyphFontSpec(
+                    self.xft_draw.raw(),
+                    &xft_fg,
+                    glyph_specs.as_ptr(),
+                    glyph_specs.len() as c_int
+                    // No separate x, y origin for the run; coordinates are absolute in specs.
+                );
+            }
+        }
+
+        // 4. Draw underline and strikethrough if needed.
+        // These are drawn over the entire run width.
         if style.flags.contains(AttrFlags::UNDERLINE) {
-            let underline_y = y_pixel + self.font_height_px as c_int - 2;
+            let underline_y = y_pixel_start_of_run + self.font_height_px as c_int - 2;
             // SAFETY: Xft FFI call.
             unsafe {
                 xft::XftDrawRect(
                     self.xft_draw.raw(),
-                    &xft_fg, // Pass a reference
-                    x_pixel,
+                    &xft_fg,
+                    x_pixel_start_of_run,
                     underline_y,
                     run_pixel_width as u32,
                     1, /* thickness */
@@ -743,13 +894,13 @@ impl Graphics {
             }
         }
         if style.flags.contains(AttrFlags::STRIKETHROUGH) {
-            let strikethrough_y = y_pixel + (self.font_ascent_px / 2) as c_int;
+            let strikethrough_y = y_pixel_start_of_run + (self.font_ascent_px / 2) as c_int;
             // SAFETY: Xft FFI call.
             unsafe {
                 xft::XftDrawRect(
                     self.xft_draw.raw(),
-                    &xft_fg, // Pass a reference
-                    x_pixel,
+                    &xft_fg,
+                    x_pixel_start_of_run,
                     strikethrough_y,
                     run_pixel_width as u32,
                     1, /* thickness */
@@ -912,12 +1063,12 @@ impl Drop for Graphics {
         // This log message confirms that the Graphics object is being dropped.
         // The individual Safe types will log their own cleanup actions if trace logging is enabled.
         info!(
-            "Graphics instance dropped. Font ptr: {:?}, Draw ptr: {:?}, GC valid: {}, ANSI colors len: {}, RGB cache len: {}. Cleanup relies on Drop impls of RAII wrappers.",
-            self.xft_font.raw(),
+            "Graphics instance dropped. Draw ptr: {:?}, GC valid: {}, ANSI colors len: {}, RGB cache len: {}. FontManager also dropped. Cleanup relies on Drop impls of RAII wrappers.",
             self.xft_draw.raw(),
-            self.clear_gc.is_valid, // Use is_valid for SafeGc
+            self.clear_gc.is_valid,
             self.xft_ansi_colors.len(),
             self.xft_color_cache_rgb.len()
         );
+        // self.font_manager will be dropped automatically, and its SafeXftFont fields will call their own drops.
     }
 }
