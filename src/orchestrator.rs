@@ -12,6 +12,7 @@ use crate::ansi::AnsiParser; // Trait for AnsiProcessor
 use crate::ansi::AnsiProcessor; // Specific type for Ansi commands
 
 use crate::config::Config;
+use crate::keys;
 use crate::platform::actions::PlatformAction; // Updated import
 use crate::platform::backends::BackendEvent;
 // Assuming MouseButton, KeySymbol, Modifiers are from platform::backends and are compatible with UserInputAction where needed.
@@ -37,8 +38,8 @@ pub enum OrchestratorStatus {
     Shutdown,
 }
 
-pub struct AppOrchestrator<'a, P: Platform + ?Sized> {
-    platform: &'a mut P,
+pub struct AppOrchestrator<'a> {
+    platform: &'a mut dyn Platform,
     term_emulator: &'a mut TerminalEmulator,
     ansi_parser: &'a mut AnsiProcessor,
     renderer: Renderer,
@@ -48,9 +49,9 @@ pub struct AppOrchestrator<'a, P: Platform + ?Sized> {
     pending_emulator_actions: Vec<EmulatorAction>,
 }
 
-impl<'a, P: Platform + ?Sized> AppOrchestrator<'a, P> {
+impl<'a> AppOrchestrator<'a> {
     pub fn new(
-        platform: &'a mut P,
+        platform: &'a mut dyn Platform,
         term_emulator: &'a mut TerminalEmulator,
         ansi_parser: &'a mut AnsiProcessor,
         renderer: Renderer,
@@ -103,14 +104,8 @@ impl<'a, P: Platform + ?Sized> AppOrchestrator<'a, P> {
                 trace!("EmulatorAction::RequestRedraw received.");
             }
             EmulatorAction::RequestClipboardContent => {
-                // This is an action for the platform, not directly for UI/PTY dispatch.
-                // The platform itself should handle this if it's about requesting data *from* the system.
-                // Or, it might be a signal to the main loop / platform to initiate a paste.
-                // For now, this is a conceptual gap or needs platform-level handling.
-                warn!("EmulatorAction::RequestClipboardContent received - platform interaction needed.");
-            } // _ => {
-              //     warn!("AppOrchestrator: Unhandled EmulatorAction during immediate processing: {:?}", action);
-              // }
+                self.platform.dispatch_actions(vec![PlatformAction::RequestPaste])?;
+            }
         }
         Ok(())
     }
@@ -151,7 +146,7 @@ impl<'a, P: Platform + ?Sized> AppOrchestrator<'a, P> {
                         }
                     }
                 }
-                PlatformEvent::Backend(backend_event) => {
+                PlatformEvent::BackendEvent(backend_event) => {
                     debug!(
                         "AppOrchestrator: Received BackendEvent: {:?}",
                         backend_event
@@ -210,11 +205,13 @@ impl<'a, P: Platform + ?Sized> AppOrchestrator<'a, P> {
                             modifiers,
                             text,
                         } => {
-                            let key_input_action = UserInputAction::KeyInput {
+
+                            debug!("Key: {:?} + {:?}\nText: {:?}", modifiers, symbol, text);
+                            let key_input_action = keys::map_key_event_to_action(symbol, modifiers, &crate::config::CONFIG).unwrap_or(UserInputAction::KeyInput {
                                 symbol,
                                 modifiers,
                                 text: if text.is_empty() { None } else { Some(text) },
-                            };
+                            });
                             emulator_input_to_process = Some(EmulatorInput::User(key_input_action));
                         }
                         BackendEvent::MouseButtonPress {
@@ -334,7 +331,9 @@ impl<'a, P: Platform + ?Sized> AppOrchestrator<'a, P> {
         // The dirtiness is tracked per line in RenderSnapshot.
         // Renderer::prepare_render_commands will use this. If no lines are dirty, it will return few/no commands.
         // No explicit is_dirty() check on term_emulator is available/needed if snapshot handles it.
-        let snapshot: crate::term::RenderSnapshot = self.term_emulator.get_render_snapshot(); // Use fully qualified path
+        let Some(snapshot) = self.term_emulator.get_render_snapshot() else {
+            return Ok(OrchestratorStatus::Running);
+        };
         let config = Config::default(); // Placeholder for Config access
         let platform_state = self.platform.get_current_platform_state();
         let render_commands =

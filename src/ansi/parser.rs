@@ -133,7 +133,6 @@ impl AnsiParser {
     }
 
     fn dispatch_print(&mut self, c: char) {
-        trace!("Dispatching Print: '{}'", c);
         self.commands.push(AnsiCommand::Print(c));
         self.clear_esc_state();
         self.state = State::Ground;
@@ -263,23 +262,6 @@ impl AnsiParser {
                     self.state = State::Escape;
                 }
                 AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
-                AnsiToken::C1Control(0x9B) => {
-                    self.clear_csi_state();
-                    self.state = State::CsiEntry;
-                }
-                AnsiToken::C1Control(0x9D) => self.enter_string_state(State::OscString),
-                AnsiToken::C1Control(0x90) => self.enter_string_state(State::DcsEntry),
-                AnsiToken::C1Control(0x9E) => self.enter_string_state(State::PmString),
-                AnsiToken::C1Control(0x9F) => self.enter_string_state(State::ApcString),
-                AnsiToken::C1Control(0x9C) => self.dispatch_st_standalone(),
-                AnsiToken::C1Control(byte) => {
-                    if let Some(command) = AnsiCommand::from_c1(byte) {
-                        self.commands.push(command);
-                    } else {
-                        self.dispatch_ignore(byte);
-                    }
-                    self.state = State::Ground;
-                }
             },
             State::Escape => match token {
                 AnsiToken::C0Control(0x1B) => self.state = State::Escape,
@@ -307,14 +289,6 @@ impl AnsiParser {
                     self.state = State::Ground; // Ensure state transitions back to Ground
                 }
                 AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
-                AnsiToken::C1Control(byte) => {
-                    if let Some(command) = AnsiCommand::from_c1(byte) {
-                        self.commands.push(command);
-                    } else {
-                        self.dispatch_ignore(byte);
-                    }
-                    self.state = State::Ground;
-                }
             },
             State::EscIntermediate => {
                 if let Some(inter) = self.esc_intermediate {
@@ -333,14 +307,6 @@ impl AnsiParser {
                         AnsiToken::C0Control(byte) => {
                             self.dispatch_ignore(inter as u8);
                             self.dispatch_c0(byte);
-                        }
-                        AnsiToken::C1Control(byte) => {
-                            self.dispatch_ignore(inter as u8);
-                            if let Some(command) = AnsiCommand::from_c1(byte) {
-                                self.commands.push(command);
-                            } else {
-                                self.dispatch_ignore(byte);
-                            }
                         }
                     }
                 } else {
@@ -381,11 +347,6 @@ impl AnsiParser {
                     self.state = State::CsiIntermediate;
                 }
                 AnsiToken::Print(f @ '@'..='~') => self.dispatch_csi(f as u8),
-                AnsiToken::C1Control(_) => {
-                    self.clear_csi_state();
-                    self.clear_esc_state();
-                    self.state = State::Ground;
-                }
                 AnsiToken::Print(c) => {
                     warn!("Unexpected char '{}' in CsiEntry", c);
                     self.dispatch_error(c as u8);
@@ -426,11 +387,6 @@ impl AnsiParser {
                     self.finalize_param();
                     self.dispatch_csi(f as u8);
                 }
-                AnsiToken::C1Control(_) => {
-                    self.clear_csi_state();
-                    self.clear_esc_state();
-                    self.state = State::Ground;
-                }
                 AnsiToken::Print(c) => {
                     warn!("Unexpected char '{}' in CsiParam", c);
                     self.dispatch_error(c as u8);
@@ -449,11 +405,6 @@ impl AnsiParser {
                 }
                 AnsiToken::Print(i @ ' '..='/') => self.add_intermediate(i as u8),
                 AnsiToken::Print(f @ '@'..='~') => self.dispatch_csi(f as u8),
-                AnsiToken::C1Control(_) => {
-                    self.clear_csi_state();
-                    self.clear_esc_state();
-                    self.state = State::Ground;
-                }
                 AnsiToken::Print(c) => {
                     warn!("Unexpected char '{}' in CsiIntermediate", c);
                     self.dispatch_error(c as u8);
@@ -471,14 +422,6 @@ impl AnsiParser {
                         self.state = State::Ground;
                     }
                     AnsiToken::C0Control(byte) => self.add_string_byte(byte),
-                    AnsiToken::C1Control(0x9C) => match self.state {
-                        State::OscString => self.dispatch_osc(true),
-                        State::DcsEntry => self.dispatch_dcs(true),
-                        State::PmString => self.dispatch_pm(true),
-                        State::ApcString => self.dispatch_apc(true),
-                        _ => {}
-                    },
-                    AnsiToken::C1Control(byte) => self.dispatch_ignore(byte),
                     AnsiToken::Print(c) => {
                         let mut buf = [0; 4];
                         c.encode_utf8(&mut buf)
@@ -530,7 +473,6 @@ impl AnsiTokenByte for AnsiToken {
         match self {
             AnsiToken::Print(c) => (*c as u32).try_into().unwrap_or(b'?'),
             AnsiToken::C0Control(b) => *b,
-            AnsiToken::C1Control(b) => *b,
         }
     }
 }

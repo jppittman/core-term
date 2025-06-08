@@ -1,9 +1,10 @@
 // src/keys.rs
 
-use crate::config::Config; // Added for Config type
+use crate::config::Config; // Changed from CONFIG to Config
 use crate::term::action::UserInputAction; // Added for UserInputAction type
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize}; // Import Serialize and Deserialize
+use log::debug; // Removed info
 
 bitflags! {
     /// Represents a keyboard modifier.
@@ -133,28 +134,26 @@ impl KeySymbol {
 pub fn map_key_event_to_action(
     key_symbol: KeySymbol,
     modifiers: Modifiers,
-    config: &Config,
+    config: &Config, // Added config argument back
 ) -> Option<UserInputAction> {
-    for binding in &config.keybindings.bindings {
+    config.keybindings.bindings.iter().find_map(|binding| { // Use the passed config
         if binding.key == key_symbol && binding.mods == modifiers {
+            debug!("Keybinding: {:?} + {:?} => {:?}", binding.mods, binding.key, &binding.action);
             return Some(binding.action.clone());
         }
-    }
-    None
+        None
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*; // To import KeySymbol, Modifiers, map_key_event_to_action
-                  // Also imports Config and UserInputAction if they were in `super` scope, but they are not.
-    use crate::config::{Config, Keybinding, KeybindingsConfig}; // For creating mock Config and Keybinding
-    use crate::term::action::UserInputAction; // For expected actions
+    use super::*;
+    use crate::config::{Config, Keybinding, KeybindingsConfig};
+    use crate::term::action::UserInputAction;
 
-    // Helper to create a default config with specific keybindings for testing
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
-        let mut cfg = Config::default(); // Get a default config
-                                         // Config has keybindings: KeybindingsConfig, and KeybindingsConfig has bindings: Vec<Keybinding>
-        cfg.keybindings = KeybindingsConfig { bindings }; // Assign new KeybindingsConfig
+        let mut cfg = Config::default();
+        cfg.keybindings = KeybindingsConfig { bindings };
         cfg
     }
 
@@ -172,17 +171,17 @@ mod tests {
                 action: UserInputAction::RequestQuit,
             },
         ];
-        let config = config_with_bindings(bindings);
+        let config = config_with_bindings(bindings); // config is now used
 
         let result = map_key_event_to_action(
             KeySymbol::Char('C'),
             Modifiers::CONTROL | Modifiers::SHIFT,
-            &config,
+            &config, // Pass config
         );
         assert_eq!(result, Some(UserInputAction::InitiateCopy));
 
         let result_quit =
-            map_key_event_to_action(KeySymbol::Char('Q'), Modifiers::CONTROL, &config);
+            map_key_event_to_action(KeySymbol::Char('Q'), Modifiers::CONTROL, &config); // Pass config
         assert_eq!(result_quit, Some(UserInputAction::RequestQuit));
     }
 
@@ -193,12 +192,12 @@ mod tests {
             mods: Modifiers::CONTROL | Modifiers::SHIFT,
             action: UserInputAction::InitiateCopy,
         }];
-        let config = config_with_bindings(bindings);
+        let config = config_with_bindings(bindings); // config is now used
 
         let result = map_key_event_to_action(
             KeySymbol::Char('X'),
             Modifiers::CONTROL | Modifiers::SHIFT,
-            &config,
+            &config, // Pass config
         );
         assert_eq!(result, None);
     }
@@ -210,19 +209,19 @@ mod tests {
             mods: Modifiers::CONTROL | Modifiers::SHIFT,
             action: UserInputAction::InitiateCopy,
         }];
-        let config = config_with_bindings(bindings);
+        let config = config_with_bindings(bindings); // config is now used
 
-        let result = map_key_event_to_action(KeySymbol::Char('C'), Modifiers::CONTROL, &config);
+        let result = map_key_event_to_action(KeySymbol::Char('C'), Modifiers::CONTROL, &config); // Pass config
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_map_key_not_found_empty_bindings() {
-        let config = config_with_bindings(vec![]); // Empty bindings
+        let config = config_with_bindings(vec![]); // config is now used
         let result = map_key_event_to_action(
             KeySymbol::Char('C'),
             Modifiers::CONTROL | Modifiers::SHIFT,
-            &config,
+            &config, // Pass config
         );
         assert_eq!(result, None);
     }
@@ -231,20 +230,18 @@ mod tests {
     fn test_map_key_multiple_bindings_first_match() {
         let bindings = vec![
             Keybinding {
-                // This one should be found first
                 key: KeySymbol::Char('A'),
                 mods: Modifiers::ALT,
                 action: UserInputAction::RequestZoomIn,
             },
             Keybinding {
-                // This one also matches but shouldn't be reached if first is found
                 key: KeySymbol::Char('A'),
                 mods: Modifiers::ALT,
-                action: UserInputAction::RequestZoomOut, // Different action
+                action: UserInputAction::RequestZoomOut,
             },
         ];
-        let config = config_with_bindings(bindings);
-        let result = map_key_event_to_action(KeySymbol::Char('A'), Modifiers::ALT, &config);
+        let config = config_with_bindings(bindings); // config is now used
+        let result = map_key_event_to_action(KeySymbol::Char('A'), Modifiers::ALT, &config); // Pass config
         assert_eq!(result, Some(UserInputAction::RequestZoomIn));
     }
 }
