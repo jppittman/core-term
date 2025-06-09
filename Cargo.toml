@@ -14,8 +14,26 @@ nix = { version = "0.30.0", features = ["term", "process", "fs", "ioctl", "signa
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 termios = "0.3.3"
-x11 = "2.21.0"
 yeslogic-fontconfig-sys = "6.0.0"
+
+# Platform-specific dependencies for Linux
+[target.'cfg(all(target_os = "linux", not(feature = "wayland")))'.dependencies]
+x11 = "2.21.0"
+
+[target.'cfg(all(target_os = "linux", feature = "wayland")))'.dependencies]
+smithay-client-toolkit = "0.19.2"
+wayland-client = "0.31.10"
+# Add other Wayland-specific dependencies here if they arise, e.g. xkbcommon, wayland-protocols
+# For now, based on the user's list, these are the primary ones.
+# The build errors indicated wayland-protocols and xkbcommon might be needed by SCTK 0.19.2
+# So, let's proactively add them under the wayland feature.
+wayland-protocols = { version = "0.32.0", features = ["client", "unstable_protocols"] } # Common Wayland protocols
+xkbcommon = { version = "0.8.0", features = ["wayland"] } # For keyboard handling with Wayland
+
+# macOS specific dependencies (if any, currently none listed beyond common ones)
+# [target.'cfg(target_os = "macos")'.dependencies]
+# Example: cocoa = "0.24"
+# Example: core-graphics = "0.22"
 
 [build-dependencies]
 pkg-config = "0.3.32"

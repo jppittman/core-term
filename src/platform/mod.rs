@@ -8,7 +8,10 @@ pub mod actions;
 pub mod backends;
 pub mod console_platform;
 pub mod font_manager;
+#[cfg(all(target_os = "linux", not(feature = "wayland")))]
 pub mod linux_x11;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub mod linux_wayland;
 pub mod macos; // Add this line
 pub mod os;
 pub mod platform_trait;

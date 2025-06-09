@@ -15,6 +15,7 @@ use std::os::unix::io::RawFd;
 pub mod console;
 pub mod x11;
 pub mod cocoa; // Add this line
+pub mod wayland;
 
 // Import enums for Driver trait method signatures
 pub use x11::window::CursorVisibility; // For set_cursor_visibility - Made pub
