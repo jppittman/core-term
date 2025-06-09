@@ -3,13 +3,13 @@
 
 use super::connection::Connection;
 use super::font_manager::X11FontManager;
-use crate::platform::font_manager::FontManager; // Added import for the trait
 use crate::color::{Color, NamedColor};
 use crate::config::CONFIG; // Added for global config access
 use crate::glyph::AttrFlags;
 use crate::platform::backends::{CellCoords, CellRect, TextRunStyle};
+use crate::platform::font_manager::FontManager; // Added import for the trait
 
-use anyhow::{anyhow, Context, Result}; // Combined anyhow
+use anyhow::{Context, Result, anyhow}; // Combined anyhow
 use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -32,7 +32,8 @@ pub(super) struct SafeXftFont {
 }
 
 impl SafeXftFont {
-    pub(super) fn new(font_ptr: *mut xft::XftFont, display_ptr: *mut xlib::Display) -> Self { // Changed to pub(super)
+    pub(super) fn new(font_ptr: *mut xft::XftFont, display_ptr: *mut xlib::Display) -> Self {
+        // Changed to pub(super)
         Self {
             ptr: font_ptr,
             display: display_ptr,
@@ -40,7 +41,8 @@ impl SafeXftFont {
     }
 
     #[inline]
-    pub(super) fn raw(&self) -> *mut xft::XftFont { // Changed to pub(super)
+    pub(super) fn raw(&self) -> *mut xft::XftFont {
+        // Changed to pub(super)
         self.ptr
     }
 
@@ -65,7 +67,10 @@ impl Drop for SafeXftFont {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             if self.display.is_null() {
-                warn!("SafeXftFont::drop called with a null display pointer. Cannot close font: {:p}. This is a bug.", self.ptr);
+                warn!(
+                    "SafeXftFont::drop called with a null display pointer. Cannot close font: {:p}. This is a bug.",
+                    self.ptr
+                );
                 return;
             }
             trace!("Closing XftFont via SafeXftFont drop: {:p}", self.ptr);
@@ -135,7 +140,10 @@ impl Drop for SafeGc {
     fn drop(&mut self) {
         if self.is_valid && !self.gc.is_null() {
             if self.display.is_null() {
-                warn!("SafeGc::drop called with a null display pointer. Cannot free GC: {:p}. This is a bug.", self.gc);
+                warn!(
+                    "SafeGc::drop called with a null display pointer. Cannot free GC: {:p}. This is a bug.",
+                    self.gc
+                );
                 return;
             }
             trace!("Freeing GC via SafeGc drop: {:p}", self.gc);
@@ -189,7 +197,10 @@ impl Drop for SafeXftColor {
     fn drop(&mut self) {
         if self.is_allocated {
             if self.display.is_null() || self.visual.is_null() || self.colormap == 0 {
-                warn!("SafeXftColor::drop called with null display/visual or zero colormap. Color pixel: {}. This may indicate a bug or premature cleanup of Connection.", self.color.pixel);
+                warn!(
+                    "SafeXftColor::drop called with null display/visual or zero colormap. Color pixel: {}. This may indicate a bug or premature cleanup of Connection.",
+                    self.color.pixel
+                );
                 return;
             }
             trace!(
@@ -290,13 +301,13 @@ impl Graphics {
         // Helper function to load a single XftFont
         let load_single_font = |font_name: &str| -> Result<SafeXftFont> {
             debug!("Loading font: {}", font_name);
-            let c_font_name = CString::new(font_name)
-                .with_context(|| format!("Failed to create CString for font name: {}", font_name))?;
+            let c_font_name = CString::new(font_name).with_context(|| {
+                format!("Failed to create CString for font name: {}", font_name)
+            })?;
 
             // SAFETY: Xlib/Xft FFI call. `display` and `screen` must be valid.
-            let xft_font_raw_ptr = unsafe {
-                xft::XftFontOpenName(display, screen, c_font_name.as_ptr())
-            };
+            let xft_font_raw_ptr =
+                unsafe { xft::XftFontOpenName(display, screen, c_font_name.as_ptr()) };
 
             if xft_font_raw_ptr.is_null() {
                 return Err(anyhow!(
@@ -305,18 +316,22 @@ impl Graphics {
                 ));
             }
             let safe_font = SafeXftFont::new(xft_font_raw_ptr, display);
-            debug!("Font '{}' loaded successfully: {:p}", font_name, safe_font.raw());
+            debug!(
+                "Font '{}' loaded successfully: {:p}",
+                font_name,
+                safe_font.raw()
+            );
             Ok(safe_font)
         };
 
         // 1. Load All Font Styles
         let font_config = &CONFIG.appearance.font;
-        let xft_font_regular = load_single_font(&font_config.normal)
-            .context("Failed to load regular font")?;
-        let xft_font_bold = load_single_font(&font_config.bold)
-            .context("Failed to load bold font")?;
-        let xft_font_italic = load_single_font(&font_config.italic)
-            .context("Failed to load italic font")?;
+        let xft_font_regular =
+            load_single_font(&font_config.normal).context("Failed to load regular font")?;
+        let xft_font_bold =
+            load_single_font(&font_config.bold).context("Failed to load bold font")?;
+        let xft_font_italic =
+            load_single_font(&font_config.italic).context("Failed to load italic font")?;
         let xft_font_bold_italic = load_single_font(&font_config.bold_italic)
             .context("Failed to load bold-italic font")?;
 
@@ -343,7 +358,10 @@ impl Graphics {
         if font_width_px < MIN_FONT_WIDTH || font_height_px < MIN_FONT_HEIGHT {
             return Err(anyhow!(
                 "Regular font dimensions (W:{}, H:{}) are below minimum requirements (W:{}, H:{}).",
-                font_width_px, font_height_px, MIN_FONT_WIDTH, MIN_FONT_HEIGHT
+                font_width_px,
+                font_height_px,
+                MIN_FONT_WIDTH,
+                MIN_FONT_HEIGHT
             ));
         }
         info!(
@@ -378,13 +396,12 @@ impl Graphics {
         // 3. Create Font Manager (consumes the loaded primary fonts)
         let font_manager = X11FontManager::new_internal(
             display,
-            xft_font_regular, // xft_font_regular is moved here
-            xft_font_bold,    // xft_font_bold is moved here
-            xft_font_italic,  // xft_font_italic is moved here
+            xft_font_regular,     // xft_font_regular is moved here
+            xft_font_bold,        // xft_font_bold is moved here
+            xft_font_italic,      // xft_font_italic is moved here
             xft_font_bold_italic, // xft_font_bold_italic is moved here
         );
         info!("X11FontManager created with primary fonts.");
-
 
         // 4. Initialize ANSI Colors
         let mut xft_ansi_colors = Vec::with_capacity(ANSI_COLOR_COUNT);
@@ -453,7 +470,10 @@ impl Graphics {
             ) {
                 Color::Rgb(r, g, b) => (r, g, b),
                 _ => {
-                    warn!("CONFIG.colors.background ({:?}) did not resolve to RGB. Defaulting to black for initial window background.", CONFIG.colors.background);
+                    warn!(
+                        "CONFIG.colors.background ({:?}) did not resolve to RGB. Defaulting to black for initial window background.",
+                        CONFIG.colors.background
+                    );
                     (0, 0, 0) // Default to black
                 }
             };
@@ -568,7 +588,7 @@ impl Graphics {
         debug!("Clear GC created: {:p}", clear_gc.raw());
 
         Ok(Self {
-            font_manager: pre_data.font_manager, // Moved from pre_data
+            font_manager: pre_data.font_manager,       // Moved from pre_data
             xft_draw,                                  // Newly created SafeXftDraw
             xft_ansi_colors: pre_data.xft_ansi_colors, // Moved from pre_data
             xft_color_cache_rgb: HashMap::new(),
@@ -596,7 +616,9 @@ impl Graphics {
         // Returns an owned XftColor
         match color {
             Color::Default => {
-                error!("Graphics::resolve_concrete_xft_color received Color::Default. This is a bug in the Renderer.");
+                error!(
+                    "Graphics::resolve_concrete_xft_color received Color::Default. This is a bug in the Renderer."
+                );
                 self.cached_rgb_to_xft_color(connection, 0, 0, 0)
                     // .map(|safe_color| safe_color.cloned_color()) // Already returns XftColor
                     .context("Fallback to black failed after Color::Default error")
@@ -792,7 +814,9 @@ impl Graphics {
                     "Glyph for char '{}' (U+{:X}) not found with flags {:?}. Trying REPLACEMENT_CHAR.",
                     character, character as u32, style.flags
                 );
-                resolved_glyph_opt = self.font_manager.get_glyph(REPLACEMENT_CHAR, AttrFlags::empty()); // Try replacement with neutral style
+                resolved_glyph_opt = self
+                    .font_manager
+                    .get_glyph(REPLACEMENT_CHAR, AttrFlags::empty()); // Try replacement with neutral style
                 char_for_log = REPLACEMENT_CHAR; // Log messages will now refer to REPLACEMENT_CHAR
             }
 
@@ -831,7 +855,11 @@ impl Graphics {
                         "Glyph for REPLACEMENT_CHAR U+{:X} not found. Using glyph 0 from default font for original char '{}' (U+{:X}).",
                         REPLACEMENT_CHAR as u32, character, character as u32
                     );
-                    (self.font_manager.get_font_handle(REGULAR_FONT_ID_FOR_FALLBACK), 0) // Use glyph 0 (missing glyph) from the primary regular font.
+                    (
+                        self.font_manager
+                            .get_font_handle(REGULAR_FONT_ID_FOR_FALLBACK),
+                        0,
+                    ) // Use glyph 0 (missing glyph) from the primary regular font.
                 }
             };
 
@@ -871,8 +899,7 @@ impl Graphics {
                     self.xft_draw.raw(),
                     &xft_fg,
                     glyph_specs.as_ptr(),
-                    glyph_specs.len() as c_int
-                    // No separate x, y origin for the run; coordinates are absolute in specs.
+                    glyph_specs.len() as c_int, // No separate x, y origin for the run; coordinates are absolute in specs.
                 );
             }
         }
@@ -1038,7 +1065,9 @@ impl Graphics {
         // or add flags. For now, the Safe types' Drop impls becoming no-ops after
         // their resources are freed (by nulling ptrs) is key.
 
-        info!("Graphics cleanup of collections complete. Main resources will be cleaned by their own Drop impls when Graphics is dropped (or if already manually cleaned).");
+        info!(
+            "Graphics cleanup of collections complete. Main resources will be cleaned by their own Drop impls when Graphics is dropped (or if already manually cleaned)."
+        );
         Ok(())
     }
 

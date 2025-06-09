@@ -5,8 +5,8 @@
 // Use the AnsiProcessor, which combines lexer and parser
 // Corrected imports using commands submodule path
 use super::{
-    commands::{AnsiCommand, Attribute, C0Control, CsiCommand},
     AnsiParser, AnsiProcessor,
+    commands::{AnsiCommand, Attribute, C0Control, CsiCommand},
 };
 use crate::color::{Color, NamedColor};
 use test_log::test; // Ensure test_log is a dev-dependency for log capturing in tests
@@ -909,7 +909,6 @@ mod unicode_wide_tests {
             commands,
             vec![
                 AnsiCommand::Print(char::REPLACEMENT_CHARACTER), // For the invalid E2 84 41 sequence
-
                 AnsiCommand::Print('A'),
             ],
             "0x84, when consumed by Utf8Decoder as part of an invalid sequence, should lead to REPLACEMENT_CHARACTER for the sequence, then 'A'"

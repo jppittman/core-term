@@ -7,18 +7,18 @@
 use anyhow::{Context, Result};
 use log::{debug, info, trace, warn}; // Removed error
 
-use crate::ansi::commands::AnsiCommand;
 use crate::ansi::AnsiParser; // Trait for AnsiProcessor
-use crate::ansi::AnsiProcessor; // Specific type for Ansi commands
+use crate::ansi::AnsiProcessor;
+use crate::ansi::commands::AnsiCommand; // Specific type for Ansi commands
 
 use crate::config::Config;
 use crate::keys;
 use crate::platform::actions::PlatformAction; // Updated import
 use crate::platform::backends::BackendEvent;
 // Assuming MouseButton, KeySymbol, Modifiers are from platform::backends and are compatible with UserInputAction where needed.
+use crate::platform::PlatformEvent; // Added for poll_events
 use crate::platform::backends::MouseButton; // KeySymbol, Modifiers, PlatformState removed due to warnings
 use crate::platform::platform_trait::Platform;
-use crate::platform::PlatformEvent; // Added for poll_events
 use crate::renderer::Renderer;
 
 // Updated imports from `term` module
@@ -104,8 +104,9 @@ impl<'a> AppOrchestrator<'a> {
                 trace!("EmulatorAction::RequestRedraw received.");
             }
             EmulatorAction::RequestClipboardContent => {
-                self.platform.dispatch_actions(vec![PlatformAction::RequestPaste])?;
-            } 
+                self.platform
+                    .dispatch_actions(vec![PlatformAction::RequestPaste])?;
+            }
         }
         Ok(())
     }
@@ -155,7 +156,9 @@ impl<'a> AppOrchestrator<'a> {
 
                     match backend_event {
                         BackendEvent::CloseRequested => {
-                            info!("AppOrchestrator: CloseRequested event received. Signaling shutdown.");
+                            info!(
+                                "AppOrchestrator: CloseRequested event received. Signaling shutdown."
+                            );
                             return Ok(OrchestratorStatus::Shutdown);
                         }
                         BackendEvent::Resize {
@@ -197,7 +200,9 @@ impl<'a> AppOrchestrator<'a> {
                                         rows,
                                     }));
                             } else {
-                                warn!("AppOrchestrator: Font dimensions are zero, cannot process resize.");
+                                warn!(
+                                    "AppOrchestrator: Font dimensions are zero, cannot process resize."
+                                );
                             }
                         }
                         BackendEvent::Key {
@@ -205,9 +210,13 @@ impl<'a> AppOrchestrator<'a> {
                             modifiers,
                             text,
                         } => {
-                            
                             debug!("Key: {:?} + {:?}\nText: {:?}", modifiers, symbol, text);
-                            let key_input_action = keys::map_key_event_to_action(symbol, modifiers, &crate::config::CONFIG).unwrap_or(UserInputAction::KeyInput {
+                            let key_input_action = keys::map_key_event_to_action(
+                                symbol,
+                                modifiers,
+                                &crate::config::CONFIG,
+                            )
+                            .unwrap_or(UserInputAction::KeyInput {
                                 symbol,
                                 modifiers,
                                 text: if text.is_empty() { None } else { Some(text) },
@@ -251,7 +260,9 @@ impl<'a> AppOrchestrator<'a> {
                                     _ => trace!("Unhandled mouse button press: {:?}", button),
                                 }
                             } else {
-                                warn!("AppOrchestrator: Font dimensions are zero, cannot process mouse press.");
+                                warn!(
+                                    "AppOrchestrator: Font dimensions are zero, cannot process mouse press."
+                                );
                             }
                         }
                         BackendEvent::MouseButtonRelease {
@@ -272,7 +283,9 @@ impl<'a> AppOrchestrator<'a> {
                                     ));
                                 }
                             } else {
-                                warn!("AppOrchestrator: Font dimensions are zero, cannot process mouse release.");
+                                warn!(
+                                    "AppOrchestrator: Font dimensions are zero, cannot process mouse release."
+                                );
                             }
                         }
                         BackendEvent::MouseMove { x, y, modifiers: _ } => {

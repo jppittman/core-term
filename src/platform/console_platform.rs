@@ -8,13 +8,13 @@ use std::os::unix::io::AsRawFd;
 use anyhow::{Context, Result};
 use log::{debug, error, info, trace};
 
+use crate::platform::PlatformEvent;
 use crate::platform::actions::PlatformAction;
 use crate::platform::backends::console::ConsoleDriver;
 use crate::platform::backends::{BackendEvent, Driver, PlatformState};
 use crate::platform::os::epoll::{EpollFlags, EventMonitor};
 use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
-use crate::platform::PlatformEvent;
 
 use super::os::epoll;
 
@@ -132,7 +132,9 @@ impl Platform for ConsolePlatform {
         // Drain buffered events from previous polls
         for backend_event in self.event_buffer.drain(..) {
             if matches!(backend_event, BackendEvent::CloseRequested) {
-                info!("ConsolePlatform: CloseRequested event drained from buffer, initiating shutdown.");
+                info!(
+                    "ConsolePlatform: CloseRequested event drained from buffer, initiating shutdown."
+                );
                 self.shutdown_requested = true;
             }
             collected_events.push(backend_event.into());
@@ -146,7 +148,9 @@ impl Platform for ConsolePlatform {
                 if *nix_err == nix::Error::EINTR {
                     // It's a recoverable interruption. Log it and continue execution.
                     // The operation will be retried on the next poll.
-                    debug!("ConsolePlatform: PTY event monitor poll interrupted by EINTR; will retry on next poll.");
+                    debug!(
+                        "ConsolePlatform: PTY event monitor poll interrupted by EINTR; will retry on next poll."
+                    );
                 } else {
                     // It's a different, unrecoverable Nix error. Add context and return from the function.
                     return Err(e)
@@ -197,7 +201,9 @@ impl Platform for ConsolePlatform {
                 }
                 for backend_event in driver_events {
                     if matches!(backend_event, BackendEvent::CloseRequested) {
-                        info!("ConsolePlatform: CloseRequested event received from driver, initiating shutdown.");
+                        info!(
+                            "ConsolePlatform: CloseRequested event received from driver, initiating shutdown."
+                        );
                         self.shutdown_requested = true;
                     }
                     collected_events.push(backend_event.into());
@@ -247,12 +253,18 @@ impl Platform for ConsolePlatform {
                     let text_len = text.len(); // Get length before moving
                     self.driver
                         .own_selection(CLIPBOARD_SELECTION_INDEX.into(), text); // text is moved here
-                    debug!("ConsolePlatform: CopyToClipboard action processed (expected no-op for ConsoleDriver). Text length: {}", text_len);
+                    debug!(
+                        "ConsolePlatform: CopyToClipboard action processed (expected no-op for ConsoleDriver). Text length: {}",
+                        text_len
+                    );
                 }
                 PlatformAction::SetCursorVisibility(visible) => {
                     // ConsoleDriver currently does not implement cursor visibility control.
                     // This action is a no-op for ConsolePlatform to prevent panics.
-                    debug!("ConsolePlatform: SetCursorVisibility action processed (no-op for ConsolePlatform). Visible: {}", visible);
+                    debug!(
+                        "ConsolePlatform: SetCursorVisibility action processed (no-op for ConsolePlatform). Visible: {}",
+                        visible
+                    );
                 }
                 PlatformAction::RequestPaste => {
                     unimplemented!("paste for console backend unimplemented");

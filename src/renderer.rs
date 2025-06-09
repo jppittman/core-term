@@ -198,7 +198,12 @@ impl Renderer {
 
         while current_col < term_width {
             let Some(start_glyph) = line_glyphs.get(current_col) else {
-                warn!("draw_line_content_from_slice: Column {} reached end of glyph data for line {} (len {}). Filling rest of line.", current_col, y_abs, line_glyphs.len());
+                warn!(
+                    "draw_line_content_from_slice: Column {} reached end of glyph data for line {} (len {}). Filling rest of line.",
+                    current_col,
+                    y_abs,
+                    line_glyphs.len()
+                );
                 if current_col < term_width {
                     commands.push(RenderCommand::FillRect {
                         x: current_col,
@@ -258,7 +263,12 @@ impl Renderer {
             };
 
             if cells_consumed_val == 0 {
-                warn!("A draw segment reported consuming 0 cells at ({}, {}), char '{}'. Advancing by 1 to prevent loop.", current_col, y_abs, start_glyph.display_char());
+                warn!(
+                    "A draw segment reported consuming 0 cells at ({}, {}), char '{}'. Advancing by 1 to prevent loop.",
+                    current_col,
+                    y_abs,
+                    start_glyph.display_char()
+                );
                 current_col += 1;
             } else {
                 current_col += cells_consumed_val;
@@ -277,13 +287,19 @@ impl Renderer {
     ) -> Result<usize, ()> {
         // Changed to dummy error type for now
         if current_col == 0 {
-            warn!("Placeholder found at column 0 on line {}. This is unexpected. Using default background.", y_abs);
+            warn!(
+                "Placeholder found at column 0 on line {}. This is unexpected. Using default background.",
+                y_abs
+            );
             self.draw_placeholder_cell(current_col, y_abs, config.colors.background, commands); // Pass config
             return Ok(SINGLE_CELL_CONSUMED);
         }
 
         let Some(prev_glyph) = line_glyphs.get(current_col - 1) else {
-            warn!("Placeholder at ({},{}) with current_col > 0 but no previous glyph. Using default BG.", current_col, y_abs);
+            warn!(
+                "Placeholder at ({},{}) with current_col > 0 but no previous glyph. Using default BG.",
+                current_col, y_abs
+            );
             self.draw_placeholder_cell(current_col, y_abs, config.colors.background, commands); // Pass config
             return Ok(SINGLE_CELL_CONSUMED);
         };
@@ -301,7 +317,12 @@ impl Renderer {
                 prev_attr_for_flags_check = cc.attr;
             }
             Glyph::WideSpacer { .. } => {
-                warn!("Placeholder at ({},{}) but previous char ('{}') is a WideSpacer. Using default BG.", current_col, y_abs, prev_glyph.display_char());
+                warn!(
+                    "Placeholder at ({},{}) but previous char ('{}') is a WideSpacer. Using default BG.",
+                    current_col,
+                    y_abs,
+                    prev_glyph.display_char()
+                );
                 self.draw_placeholder_cell(current_col, y_abs, config.colors.background, commands); // Pass config
                 return Ok(SINGLE_CELL_CONSUMED);
             }
@@ -310,7 +331,12 @@ impl Renderer {
         if !(matches!(prev_glyph, Glyph::WidePrimary(_))
             || get_char_display_width(prev_char_for_width_check) == 2)
         {
-            warn!("Placeholder at ({},{}) but previous char ('{}') is not WidePrimary or double-width. Using default BG.", current_col, y_abs, prev_glyph.display_char());
+            warn!(
+                "Placeholder at ({},{}) but previous char ('{}') is not WidePrimary or double-width. Using default BG.",
+                current_col,
+                y_abs,
+                prev_glyph.display_char()
+            );
             self.draw_placeholder_cell(current_col, y_abs, config.colors.background, commands); // Pass config
             return Ok(SINGLE_CELL_CONSUMED);
         }
@@ -365,7 +391,13 @@ impl Renderer {
 
         if placeholder_col >= term_width {
             if cells_consumed_by_text_run != SINGLE_CELL_CONSUMED {
-                warn!("    Line {}, Col {}: Wide char '{}' at end of line, but text_segment consumed {} cells (expected 1).", y_abs, current_col, start_glyph.display_char(), cells_consumed_by_text_run);
+                warn!(
+                    "    Line {}, Col {}: Wide char '{}' at end of line, but text_segment consumed {} cells (expected 1).",
+                    y_abs,
+                    current_col,
+                    start_glyph.display_char(),
+                    cells_consumed_by_text_run
+                );
             }
             return Ok(cells_consumed_by_text_run);
         }
@@ -378,7 +410,12 @@ impl Renderer {
         );
 
         let Some(glyph_at_placeholder) = line_glyphs.get(placeholder_col) else {
-            warn!("    Line {}, Col {}: Could not get glyph at placeholder position for wide char '{}'. Forcing fill with primary's bg.", y_abs, placeholder_col, start_glyph.display_char());
+            warn!(
+                "    Line {}, Col {}: Could not get glyph at placeholder position for wide char '{}'. Forcing fill with primary's bg.",
+                y_abs,
+                placeholder_col,
+                start_glyph.display_char()
+            );
             commands.push(RenderCommand::FillRect {
                 x: placeholder_col,
                 y: y_abs,
@@ -407,7 +444,18 @@ impl Renderer {
             is_correct_spacer && current_placeholder_actual_bg == placeholder_expected_bg;
 
         if !placeholder_is_fine {
-            trace!("    Line {}, Col {}: Filling placeholder for wide char '{}' (primary at col {}). Expected bg: {:?}, actual_char: '{}', actual_flags: {:?}, actual_bg: {:?}, is_correct_spacer: {}.", y_abs,placeholder_col,start_glyph.display_char(),current_col,placeholder_expected_bg,glyph_at_placeholder.display_char(),placeholder_attrs.flags,current_placeholder_actual_bg,is_correct_spacer);
+            trace!(
+                "    Line {}, Col {}: Filling placeholder for wide char '{}' (primary at col {}). Expected bg: {:?}, actual_char: '{}', actual_flags: {:?}, actual_bg: {:?}, is_correct_spacer: {}.",
+                y_abs,
+                placeholder_col,
+                start_glyph.display_char(),
+                current_col,
+                placeholder_expected_bg,
+                glyph_at_placeholder.display_char(),
+                placeholder_attrs.flags,
+                current_placeholder_actual_bg,
+                is_correct_spacer
+            );
             commands.push(RenderCommand::FillRect {
                 x: placeholder_col,
                 y: y_abs,
@@ -417,7 +465,14 @@ impl Renderer {
                 is_selection_bg: false,
             });
         } else {
-            trace!("    Line {}, Col {}: WIDE_CHAR_SPACER for '{}' (primary at col {}) already has correct bg ({:?}). No fill needed.", y_abs, placeholder_col, start_glyph.display_char(), current_col, placeholder_expected_bg);
+            trace!(
+                "    Line {}, Col {}: WIDE_CHAR_SPACER for '{}' (primary at col {}) already has correct bg ({:?}). No fill needed.",
+                y_abs,
+                placeholder_col,
+                start_glyph.display_char(),
+                current_col,
+                placeholder_expected_bg
+            );
         }
         Ok(cells_consumed_by_text_run)
     }
@@ -432,9 +487,7 @@ impl Renderer {
         // Removed Result<()>
         trace!(
             "    Line {}, Col {}: Placeholder. FillRect with bg={:?}",
-            y,
-            x,
-            effective_bg
+            y, x, effective_bg
         );
         commands.push(RenderCommand::FillRect {
             x,
@@ -517,7 +570,10 @@ impl Renderer {
 
         if space_run_len == 0 {
             // space_run_len = 1; // Removed as its value was not used before returning SINGLE_CELL_CONSUMED
-            warn!("Renderer::draw_space_run_from_slice: space_run_len ended up as 0 (or 1 by force) at ({},{}). Drawing single space.", start_col, y);
+            warn!(
+                "Renderer::draw_space_run_from_slice: space_run_len ended up as 0 (or 1 by force) at ({},{}). Drawing single space.",
+                start_col, y
+            );
             let is_selected = self.is_cell_selected(start_col, y, term_width, selection);
             commands.push(RenderCommand::FillRect {
                 x: start_col,
@@ -532,7 +588,10 @@ impl Renderer {
 
         let is_run_selected = self.is_cell_selected(start_col, y, term_width, selection);
 
-        trace!("    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}, selected: {}", y, start_col, space_run_len, start_eff_bg, start_eff_flags, is_run_selected);
+        trace!(
+            "    Line {}, Col {}: Space run (len {}). FillRect with bg={:?}, flags={:?}, selected: {}",
+            y, start_col, space_run_len, start_eff_bg, start_eff_flags, is_run_selected
+        );
         commands.push(RenderCommand::FillRect {
             x: start_col,
             y,
@@ -612,9 +671,7 @@ impl Renderer {
             if char_display_width == 0 {
                 trace!(
                     "    Line {}, Col {}: Appending zero-width char '{}'.",
-                    y,
-                    current_scan_col,
-                    current_glyph_cc.c
+                    y, current_scan_col, current_glyph_cc.c
                 );
                 run_text.push(current_glyph_cc.c);
                 current_scan_col += SINGLE_CELL_CONSUMED;
@@ -644,7 +701,17 @@ impl Renderer {
 
         let is_run_selected = self.is_cell_selected(start_col, y, term_width, selection);
 
-        trace!("    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style=fg:{:?},bg:{:?},flags:{:?},selected:{}", y, start_col, run_text, run_total_cell_width, start_eff_fg, start_eff_bg, start_eff_flags, is_run_selected);
+        trace!(
+            "    Line {}, Col {}: Text run: '{}' ({} cells). DrawTextRun with style=fg:{:?},bg:{:?},flags:{:?},selected:{}",
+            y,
+            start_col,
+            run_text,
+            run_total_cell_width,
+            start_eff_fg,
+            start_eff_bg,
+            start_eff_flags,
+            is_run_selected
+        );
         commands.push(RenderCommand::DrawTextRun {
             x: start_col,
             y,
@@ -708,7 +775,10 @@ impl Renderer {
             }
             Glyph::WideSpacer { .. } => {
                 if cursor_abs_x == 0 {
-                    warn!("Cursor on WideSpacer at column 0 ({}, {}). This is unexpected. Not drawing cursor.", cursor_abs_x, cursor_abs_y);
+                    warn!(
+                        "Cursor on WideSpacer at column 0 ({}, {}). This is unexpected. Not drawing cursor.",
+                        cursor_abs_x, cursor_abs_y
+                    );
                     // return Ok(()); // Removed
                     return;
                 }
@@ -718,7 +788,10 @@ impl Renderer {
                     x: physical_cursor_x_for_draw,
                     y: cursor_abs_y,
                 }) else {
-                    warn!("Could not get primary part of wide char at ({},{}) for cursor on spacer. Not drawing.", physical_cursor_x_for_draw, cursor_abs_y);
+                    warn!(
+                        "Could not get primary part of wide char at ({},{}) for cursor on spacer. Not drawing.",
+                        physical_cursor_x_for_draw, cursor_abs_y
+                    );
                     // return Ok(()); // Removed
                     return;
                 };
@@ -727,10 +800,16 @@ impl Renderer {
                     Glyph::WidePrimary(cc) => {
                         char_to_draw_at_cursor = cc.c;
                         original_attrs_at_cursor = cc.attr;
-                        trace!("    Cursor on placeholder at ({},{}), using primary char '{}' from col {}", cursor_abs_x, cursor_abs_y, cc.c, physical_cursor_x_for_draw);
+                        trace!(
+                            "    Cursor on placeholder at ({},{}), using primary char '{}' from col {}",
+                            cursor_abs_x, cursor_abs_y, cc.c, physical_cursor_x_for_draw
+                        );
                     }
                     _ => {
-                        warn!("Expected WidePrimary at ({},{}) for cursor on spacer, but found {:?}. Not drawing.", physical_cursor_x_for_draw, cursor_abs_y, primary_glyph_enum);
+                        warn!(
+                            "Expected WidePrimary at ({},{}) for cursor on spacer, but found {:?}. Not drawing.",
+                            physical_cursor_x_for_draw, cursor_abs_y, primary_glyph_enum
+                        );
                         // return Ok(()); // Removed
                         return;
                     }
@@ -747,9 +826,7 @@ impl Renderer {
             );
         trace!(
             "    Original cell effective attrs for cursor: fg={:?}, bg={:?}, flags={:?}",
-            resolved_original_fg,
-            resolved_original_bg,
-            resolved_original_flags
+            resolved_original_fg, resolved_original_bg, resolved_original_flags
         );
 
         let cursor_char_fg = resolved_original_bg;
@@ -771,7 +848,16 @@ impl Renderer {
             &Some(snapshot.selection.clone()),
         );
 
-        trace!("    Drawing cursor overlay: char='{}' at physical ({},{}) with style: fg:{:?},bg:{:?},flags:{:?},selected:{}", final_char_to_draw_for_cursor, physical_cursor_x_for_draw, cursor_abs_y, cursor_char_fg, cursor_cell_bg, cursor_display_flags, is_cursor_pos_selected);
+        trace!(
+            "    Drawing cursor overlay: char='{}' at physical ({},{}) with style: fg:{:?},bg:{:?},flags:{:?},selected:{}",
+            final_char_to_draw_for_cursor,
+            physical_cursor_x_for_draw,
+            cursor_abs_y,
+            cursor_char_fg,
+            cursor_cell_bg,
+            cursor_display_flags,
+            is_cursor_pos_selected
+        );
         commands.push(RenderCommand::DrawTextRun {
             x: physical_cursor_x_for_draw,
             y: cursor_abs_y,

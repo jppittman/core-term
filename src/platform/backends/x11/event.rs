@@ -88,7 +88,11 @@ pub fn process_pending_events(
                 if expose_event.count == 0 {
                     trace!(
                         "XEvent: Expose (win: {}, x:{}, y:{}, w:{}, h:{}) - redraw will be handled by renderer",
-                        expose_event.window, expose_event.x, expose_event.y, expose_event.width, expose_event.height
+                        expose_event.window,
+                        expose_event.x,
+                        expose_event.y,
+                        expose_event.width,
+                        expose_event.height
                     );
                 }
             }
@@ -334,10 +338,7 @@ pub fn process_pending_events(
 
                 trace!(
                     "XEvent: MotionNotify (x: {}, y: {}, modifiers: {:?}) on window {}",
-                    motion_event.x,
-                    motion_event.y,
-                    modifiers,
-                    motion_event.window
+                    motion_event.x, motion_event.y, modifiers, motion_event.window
                 );
                 backend_events.push(BackendEvent::MouseMove {
                     x: motion_event.x as u16,
@@ -383,7 +384,10 @@ pub fn process_pending_events(
                                 );
                             }
                             response_event.property = req.property; // Signal success
-                            debug!("SelectionRequest: Responded with UTF8_STRING for selection atom {}", req.selection);
+                            debug!(
+                                "SelectionRequest: Responded with UTF8_STRING for selection atom {}",
+                                req.selection
+                            );
                         } else if req.target == selection_atoms.targets {
                             // Respond with a list of supported targets.
                             let mut supported_targets: Vec<xlib::Atom> = vec![
@@ -421,7 +425,10 @@ pub fn process_pending_events(
                     } else {
                         // We are the owner, but selection_text is None. This shouldn't typically happen
                         // if we correctly set selection_text when calling XSetSelectionOwner.
-                        warn!("SelectionRequest: Owner but no selection text available for selection atom {}.", req.selection);
+                        warn!(
+                            "SelectionRequest: Owner but no selection text available for selection atom {}.",
+                            req.selection
+                        );
                         // Property remains None.
                     }
                 } else {
@@ -508,7 +515,10 @@ pub fn process_pending_events(
                                             backend_events.push(BackendEvent::PasteData { text });
                                         }
                                         Err(e) => {
-                                            warn!("SelectionNotify: Failed to decode UTF-8 string: {}", e);
+                                            warn!(
+                                                "SelectionNotify: Failed to decode UTF-8 string: {}",
+                                                e
+                                            );
                                         }
                                     }
                                 } else {
@@ -521,7 +531,10 @@ pub fn process_pending_events(
                                 // We requested TARGETS, this would be a list of atoms.
                                 // This case is less common for a typical paste operation, usually we ask for text directly.
                                 // If we were to handle it, we'd parse the list of atoms.
-                                info!("SelectionNotify: Received TARGETS (type atom: {}). Data items: {}.", actual_type_return, nitems_return);
+                                info!(
+                                    "SelectionNotify: Received TARGETS (type atom: {}). Data items: {}.",
+                                    actual_type_return, nitems_return
+                                );
                             } else {
                                 warn!(
                                     "SelectionNotify: Received data in unexpected type (atom: {}). Format: {}. Items: {}.",
@@ -534,7 +547,9 @@ pub fn process_pending_events(
                         } else {
                             warn!(
                                 "SelectionNotify: XGetWindowProperty failed or returned no data. Status: {}, nitems: {}, ptr_is_null: {}",
-                                status, nitems_return, prop_return_ptr.is_null()
+                                status,
+                                nitems_return,
+                                prop_return_ptr.is_null()
                             );
                         }
                         // Property should have been deleted by XGetWindowProperty if delete was True.
@@ -550,7 +565,8 @@ pub fn process_pending_events(
                 } else {
                     warn!(
                         "SelectionNotify: Received event for unexpected window (expected our window ID {}, got {}).",
-                        window.id(), sel_event.requestor
+                        window.id(),
+                        sel_event.requestor
                     );
                 }
             }
@@ -731,8 +747,7 @@ fn xkeysym_to_keysymbol<T: IntoXKeySym>(keysym_val_in: T, text: &str) -> KeySymb
             // or the keysym is for a non-char key not explicitly mapped.
             trace!(
                 "Unhandled u32 keysym 0x{:X} with text '{}', mapping to KeySymbol::Unknown",
-                keysym_u32,
-                text
+                keysym_u32, text
             );
             KeySymbol::Unknown
         }

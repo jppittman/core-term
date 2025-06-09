@@ -116,9 +116,7 @@ impl Screen {
         let scrollback_limit_from_config = CONFIG.behavior.scrollback_lines;
         trace!(
             "Creating new Screen: {}x{}, scrollback: {}",
-            w,
-            h,
-            scrollback_limit_from_config
+            w, h, scrollback_limit_from_config
         );
 
         let grid = vec![vec![default_fill_char.clone(); w]; h];
@@ -252,9 +250,7 @@ impl Screen {
         }
         trace!(
             "Scrolling up by {} lines in region ({}, {}) with default fill (NO SCROLLBACK)",
-            n_val,
-            self.scroll_top,
-            self.scroll_bot
+            n_val, self.scroll_top, self.scroll_bot
         );
 
         let top = self.scroll_top;
@@ -307,9 +303,7 @@ impl Screen {
         }
         trace!(
             "Scrolling down by {} lines in region ({}, {}) with default fill",
-            n_val,
-            self.scroll_top,
-            self.scroll_bot
+            n_val, self.scroll_top, self.scroll_bot
         );
 
         let top = self.scroll_top;
@@ -523,8 +517,7 @@ impl Screen {
 
         trace!(
             "Screen resized (st-like, no scrollback handling in resize). New dimensions: {}x{}. All lines marked dirty.",
-            nw,
-            nh
+            nw, nh
         );
     }
 
@@ -593,8 +586,7 @@ impl Screen {
         }
         trace!(
             "Scrolling region set to (0-based: {}, {}).",
-            self.scroll_top,
-            self.scroll_bot
+            self.scroll_top, self.scroll_bot
         );
     }
 
@@ -717,10 +709,7 @@ impl Screen {
         self.mark_dirty_for_selection();
         trace!(
             "Selection started at ({}, {}) with mode {:?}. Active: {}",
-            point.x,
-            point.y,
-            mode,
-            self.selection.is_active
+            point.x, point.y, mode, self.selection.is_active
         );
     }
 
@@ -746,9 +735,7 @@ impl Screen {
         if let Some(range) = &self.selection.range {
             trace!(
                 "Selection updated. End point: ({}, {}). Active: {}",
-                range.end.x,
-                range.end.y,
-                self.selection.is_active
+                range.end.x, range.end.y, self.selection.is_active
             );
         }
     }

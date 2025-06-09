@@ -5,13 +5,13 @@ use crate::{
     ansi::commands::{AnsiCommand, C0Control, CsiCommand, EscCommand},
     glyph::Attributes,
     term::{
+        DEFAULT_TAB_INTERVAL,
         action::EmulatorAction,
         charset::CharacterSet,
         cursor::CursorShape,
         emulator::FocusState,
         modes::{DecPrivateModes, EraseMode, Mode},
         screen::TabClearMode,
-        DEFAULT_TAB_INTERVAL,
     }, // For Attributes::default() in ResetToInitialState
 };
 

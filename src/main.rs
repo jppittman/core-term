@@ -16,10 +16,10 @@ use crate::{
     ansi::AnsiProcessor,
     orchestrator::{AppOrchestrator, OrchestratorStatus},
     platform::actions::PlatformAction,
+    platform::backends::PlatformState,
     platform::platform_trait::Platform,
     renderer::Renderer,
     term::TerminalEmulator,
-    platform::backends::PlatformState,
 };
 
 // Logging
@@ -92,13 +92,19 @@ fn main() -> anyhow::Result<()> {
         platform = Box::new(macos_platform);
         initial_platform_state = state;
     }
-    #[cfg(not(any(all(target_os = "linux", not(feature = "wayland")), all(target_os = "linux", feature = "wayland"), target_os = "macos")))]
+    #[cfg(not(any(
+        all(target_os = "linux", not(feature = "wayland")),
+        all(target_os = "linux", feature = "wayland"),
+        target_os = "macos"
+    )))]
     {
         // This will cause a compile error if no platform is selected,
         // which is good because we need `platform` and `initial_platform_state` to be initialized.
         // However, to be more explicit and avoid "use of uninitialized variable" errors
         // in some analysis tools, we can panic here.
-        panic!("Unsupported target OS or feature combination. Only Linux (X11/Wayland with 'wayland' feature) and macOS are currently supported.");
+        panic!(
+            "Unsupported target OS or feature combination. Only Linux (X11/Wayland with 'wayland' feature) and macOS are currently supported."
+        );
     }
 
     info!(

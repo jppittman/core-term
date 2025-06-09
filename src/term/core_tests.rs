@@ -2,8 +2,8 @@ use crate::ansi::commands::{AnsiCommand, Attribute, C0Control, CsiCommand};
 use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::term::{
-    action::EmulatorAction, modes::DecModeConstant, ControlEvent, CursorShape, EmulatorInput,
-    RenderSnapshot, TerminalEmulator,
+    ControlEvent, CursorShape, EmulatorInput, RenderSnapshot, TerminalEmulator,
+    action::EmulatorAction, modes::DecModeConstant,
 };
 
 fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
@@ -60,7 +60,12 @@ fn assert_screen_state(
                 let remaining_expected: String = expected_chars_iter.collect();
                 panic!(
                     "Snapshot row {} (len {}) is shorter than expected string '{}'. Expected char '{}' (and potentially '{}') at snapshot col {} would exceed width.",
-                    r, snapshot.dimensions.0, expected_row_str, expected_char, remaining_expected, s_col
+                    r,
+                    snapshot.dimensions.0,
+                    expected_row_str,
+                    expected_char,
+                    remaining_expected,
+                    s_col
                 );
             }
 
@@ -79,9 +84,15 @@ fn assert_screen_state(
             };
 
             assert_eq!(
-                actual_char, expected_char,
+                actual_char,
+                expected_char,
                 "Char mismatch at (row {}, snapshot_col {}). Expected '{}', got '{}'. Full expected row: '{}', Full actual row: '{:?}'",
-                r, s_col, expected_char, actual_char, expected_row_str, snapshot.lines.get(r).map(|l| &l.cells)
+                r,
+                s_col,
+                expected_char,
+                actual_char,
+                expected_row_str,
+                snapshot.lines.get(r).map(|l| &l.cells)
             );
 
             let expected_char_width =
@@ -107,9 +118,13 @@ fn assert_screen_state(
                                 expected_char
                             )
                         });
-                    assert!(matches!(spacer_glyph_wrapper, Glyph::WideSpacer { .. }),
+                    assert!(
+                        matches!(spacer_glyph_wrapper, Glyph::WideSpacer { .. }),
                         "Spacer glyph at ({},{}) should be WideSpacer for char '{}', but it is not. Actual glyph: {:?}",
-                        r, s_col + 1, expected_char, spacer_glyph_wrapper
+                        r,
+                        s_col + 1,
+                        expected_char,
+                        spacer_glyph_wrapper
                     );
                 }
                 s_col += expected_char_width;
@@ -1412,7 +1427,8 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
     let mut term = create_test_emulator(5, 3);
     setup_ed_el_screen(&mut term, 5, 3);
     let initial_cursor_state_tuple = term
-        .get_render_snapshot().expect("Snapshot was None")
+        .get_render_snapshot()
+        .expect("Snapshot was None")
         .cursor_state
         .map(|cs| (cs.y, cs.x, cs.shape));
 
@@ -1426,7 +1442,8 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
         CsiCommand::EraseInDisplay(0),
     )));
     assert_eq!(
-        term.get_render_snapshot().expect("Snapshot was None")
+        term.get_render_snapshot()
+            .expect("Snapshot was None")
             .cursor_state
             .map(|cs| (cs.y, cs.x, cs.shape)),
         initial_cursor_state_tuple,
@@ -1437,7 +1454,8 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
         CsiCommand::EraseInDisplay(1),
     )));
     assert_eq!(
-        term.get_render_snapshot().expect("Snapshot was None")
+        term.get_render_snapshot()
+            .expect("Snapshot was None")
             .cursor_state
             .map(|cs| (cs.y, cs.x, cs.shape)),
         initial_cursor_state_tuple,
@@ -1448,7 +1466,8 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
         CsiCommand::EraseInDisplay(2),
     )));
     assert_eq!(
-        term.get_render_snapshot().expect("Snapshot was None")
+        term.get_render_snapshot()
+            .expect("Snapshot was None")
             .cursor_state
             .map(|cs| (cs.y, cs.x, cs.shape)),
         initial_cursor_state_tuple,
@@ -1457,7 +1476,8 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
 
     setup_ed_el_screen(&mut term, 5, 3);
     let initial_cursor_state_el_tuple = term
-        .get_render_snapshot().expect("Snapshot was None")
+        .get_render_snapshot()
+        .expect("Snapshot was None")
         .cursor_state
         .map(|cs| (cs.y, cs.x, cs.shape));
     assert_eq!(
@@ -1470,7 +1490,8 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
         CsiCommand::EraseInLine(0),
     )));
     assert_eq!(
-        term.get_render_snapshot().expect("Snapshot was None")
+        term.get_render_snapshot()
+            .expect("Snapshot was None")
             .cursor_state
             .map(|cs| (cs.y, cs.x, cs.shape)),
         initial_cursor_state_el_tuple,
@@ -1481,7 +1502,8 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
         CsiCommand::EraseInLine(1),
     )));
     assert_eq!(
-        term.get_render_snapshot().expect("Snapshot was None")
+        term.get_render_snapshot()
+            .expect("Snapshot was None")
             .cursor_state
             .map(|cs| (cs.y, cs.x, cs.shape)),
         initial_cursor_state_el_tuple,
@@ -1492,7 +1514,8 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
         CsiCommand::EraseInLine(2),
     )));
     assert_eq!(
-        term.get_render_snapshot().expect("Snapshot was None")
+        term.get_render_snapshot()
+            .expect("Snapshot was None")
             .cursor_state
             .map(|cs| (cs.y, cs.x, cs.shape)),
         initial_cursor_state_el_tuple,
@@ -1505,7 +1528,7 @@ fn it_should_not_change_cursor_position_after_ed_or_el() {
 fn it_should_scroll_up_entire_screen_by_n_lines_on_csi_s() {
     let mut term = create_test_emulator(5, 3);
     setup_ed_el_screen(&mut term, 5, 3); // Cursor at (1,2)
-                                         // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD
+    // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ScrollUp(
         1,
@@ -1528,9 +1551,13 @@ fn it_should_scroll_up_entire_screen_by_n_lines_on_csi_s() {
 fn it_should_scroll_up_entire_screen_by_1_line_on_csi_s_with_param_0_or_1() {
     let mut term = create_test_emulator(5, 3);
     setup_ed_el_screen(&mut term, 5, 3); // Cursor at (1,2)
-    let initial_screen_line0_char0 = get_glyph_from_snapshot(&term.get_render_snapshot().expect("Snapshot was None"), 0, 0)
-        .unwrap()
-        .display_char();
+    let initial_screen_line0_char0 = get_glyph_from_snapshot(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        0,
+        0,
+    )
+    .unwrap()
+    .display_char();
     assert_eq!(initial_screen_line0_char0, 'A');
 
     // Test with param 1
@@ -1559,15 +1586,16 @@ fn it_should_scroll_up_entire_screen_by_1_line_on_csi_s_with_param_0_or_1() {
 fn it_should_scroll_up_within_scrolling_region_on_csi_s() {
     let mut term = create_test_emulator(5, 4); // L0, L1, L2, L3
     setup_ed_el_screen(&mut term, 5, 4); // Cursor at (1,2) (0-idx for row 1)
-                                         // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD, L3:DEFDE
-                                         // Set scrolling region to rows 2-3 (1-based), which is 0-indexed rows 1-2
+    // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD, L3:DEFDE
+    // Set scrolling region to rows 2-3 (1-based), which is 0-indexed rows 1-2
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::SetScrollingRegion { top: 2, bottom: 3 },
     )));
     // Cursor is at (1,2), which is within the new region [1,2].
     // However, SetScrollingRegion moves cursor to (0,0) of screen (as origin_mode is false).
     let cursor_after_stbm = term
-        .get_render_snapshot().expect("Snapshot was None")
+        .get_render_snapshot()
+        .expect("Snapshot was None")
         .cursor_state
         .map(|cs| (cs.y, cs.x))
         .unwrap();
@@ -1608,7 +1636,7 @@ fn it_should_scroll_up_within_scrolling_region_on_csi_s() {
 fn it_should_scroll_down_entire_screen_by_n_lines_on_csi_t() {
     let mut term = create_test_emulator(5, 3);
     setup_ed_el_screen(&mut term, 5, 3); // Cursor at (1,2)
-                                         // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD
+    // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ScrollDown(1),
@@ -1658,14 +1686,15 @@ fn it_should_scroll_down_entire_screen_by_1_line_on_csi_t_with_param_0_or_1() {
 fn it_should_scroll_down_within_scrolling_region_on_csi_t() {
     let mut term = create_test_emulator(5, 4);
     setup_ed_el_screen(&mut term, 5, 4); // Cursor at (1,2)
-                                         // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD, L3:DEFDE
-                                         // Set scrolling region to rows 2-3 (0-indexed rows 1-2)
+    // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD, L3:DEFDE
+    // Set scrolling region to rows 2-3 (0-indexed rows 1-2)
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::SetScrollingRegion { top: 2, bottom: 3 },
     )));
     // Cursor is at (1,2), but SetScrollingRegion moves it to (0,0) of screen.
     let cursor_after_stbm = term
-        .get_render_snapshot().expect("Snapshot was None")
+        .get_render_snapshot()
+        .expect("Snapshot was None")
         .cursor_state
         .map(|cs| (cs.y, cs.x))
         .unwrap();
@@ -1675,9 +1704,9 @@ fn it_should_scroll_down_within_scrolling_region_on_csi_t() {
         "Cursor should be at (0,0) after STBM w/o origin mode"
     );
 
-    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ScrollDown(
-        1,
-    ))));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ScrollDown(1),
+    )));
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
     // Expected: L0 unchanged. Region L1-L2 scrolls down. L2("CDECD") scrolls off. L1("BCDBC") becomes L2. New L1 is blank. L3 unchanged.
     // Screen: L0:ABCAB, L1(region):     , L2(region):BCDBC, L3:DEFDE
@@ -1706,7 +1735,8 @@ fn it_should_not_change_cursor_position_on_csi_s_or_csi_t() {
     let mut term = create_test_emulator(5, 3);
     setup_ed_el_screen(&mut term, 5, 3); // Cursor (1,2)
     let initial_cursor_state_tuple = term
-        .get_render_snapshot().expect("Snapshot was None")
+        .get_render_snapshot()
+        .expect("Snapshot was None")
         .cursor_state
         .map(|cs| (cs.y, cs.x, cs.shape));
     assert_eq!(initial_cursor_state_tuple, Some((1, 2, CursorShape::Block)));
@@ -1715,7 +1745,8 @@ fn it_should_not_change_cursor_position_on_csi_s_or_csi_t() {
         1,
     ))));
     assert_eq!(
-        term.get_render_snapshot().expect("Snapshot was None")
+        term.get_render_snapshot()
+            .expect("Snapshot was None")
             .cursor_state
             .map(|cs| (cs.y, cs.x, cs.shape)),
         initial_cursor_state_tuple,
@@ -1725,7 +1756,8 @@ fn it_should_not_change_cursor_position_on_csi_s_or_csi_t() {
     // Reset screen and cursor for SD test
     setup_ed_el_screen(&mut term, 5, 3);
     let initial_cursor_state_sd_tuple = term
-        .get_render_snapshot().expect("Snapshot was None")
+        .get_render_snapshot()
+        .expect("Snapshot was None")
         .cursor_state
         .map(|cs| (cs.y, cs.x, cs.shape));
     assert_eq!(
@@ -1737,7 +1769,8 @@ fn it_should_not_change_cursor_position_on_csi_s_or_csi_t() {
         CsiCommand::ScrollDown(1),
     )));
     assert_eq!(
-        term.get_render_snapshot().expect("Snapshot was None")
+        term.get_render_snapshot()
+            .expect("Snapshot was None")
             .cursor_state
             .map(|cs| (cs.y, cs.x, cs.shape)),
         initial_cursor_state_sd_tuple,
@@ -1751,7 +1784,7 @@ fn it_should_not_change_cursor_position_on_csi_s_or_csi_t() {
 fn it_should_resize_to_larger_dimensions_preserving_content_and_cursor() {
     let mut term = create_test_emulator(5, 2);
     setup_ed_el_screen(&mut term, 5, 2); // L0:ABCAB, L1:BCDBC. Cursor set to (1,2) by setup_ed_el_screen for 5x2.
-                                         // Initial state check
+    // Initial state check
     assert_screen_state(
         &term.get_render_snapshot().expect("Snapshot was None"),
         &["ABCAB", "BCDBC"],
@@ -1788,7 +1821,7 @@ fn it_should_resize_to_larger_dimensions_preserving_content_and_cursor() {
 fn it_should_resize_to_smaller_dimensions_truncating_content_and_clamping_cursor() {
     let mut term = create_test_emulator(5, 3);
     setup_ed_el_screen(&mut term, 5, 3); // L0:ABCAB, L1:BCDBC, L2:CDECD, Cursor (1,2)
-                                         // Initial state check
+    // Initial state check
     assert_screen_state(
         &term.get_render_snapshot().expect("Snapshot was None"),
         &["ABCAB", "BCDBC", "CDECD"],
@@ -1854,11 +1887,15 @@ fn it_should_handle_resize_with_content_and_cursor_at_edges() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('4')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('5')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('6'))); // L1: "456", cursor (1,3) (just off screen edge)
-                                                                        // Let's put cursor exactly at (1,2)
+    // Let's put cursor exactly at (1,2)
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorPosition(2, 3),
     ))); // Cursor to (1,2)
-    assert_screen_state(&term.get_render_snapshot().expect("Snapshot was None"), &["123", "456"], Some((1, 2)));
+    assert_screen_state(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        &["123", "456"],
+        Some((1, 2)),
+    );
 
     // Resize larger
     term.interpret_input(EmulatorInput::Control(ControlEvent::Resize {
@@ -2018,7 +2055,11 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
         "cursor_wrap_next should be true after filling line with autowrap on"
     );
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('4'))); // Wraps to line 1
-    assert_screen_state(&term.get_render_snapshot().expect("Snapshot was None"), &["123", "4  "], Some((1, 1)));
+    assert_screen_state(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        &["123", "4  "],
+        Some((1, 1)),
+    );
 
     // Disable Autowrap: CSI ? 7 l
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -2044,7 +2085,11 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
     // Character '6' should overwrite '5' at the last column (1,2). Cursor stays at (1,3) (or clamps to last char).
     // Current `char_processor.rs` `print_char` logic: if `cursor.x >= screen_width` and `!autowrap` and `!wrap_next`, it sets `cursor.x = screen_width -1`.
     // So '6' is printed at (1,2) over '5'. Cursor logical (3,1). Physical (2,1) for snapshot.
-    assert_screen_state(&term.get_render_snapshot().expect("Snapshot was None"), &["123", "4 6"], Some((1, 2)));
+    assert_screen_state(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        &["123", "4 6"],
+        Some((1, 2)),
+    );
     assert!(
         !term.cursor_wrap_next,
         "cursor_wrap_next should still be false"
@@ -2061,9 +2106,13 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
     // Cursor is at (1,3) on line "4 6". Line is full.
     assert!(term.cursor_wrap_next, "cursor_wrap_next should now be true");
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('7'))); // Should wrap to next line (scroll if needed)
-                                                                        // We have 2 lines. (0,1). This will scroll.
-                                                                        // L0 "123" scrolls off. L1 "4 6" becomes L0. L2 "7  " becomes L1.
-    assert_screen_state(&term.get_render_snapshot().expect("Snapshot was None"), &["4 6", "7  "], Some((1, 1)));
+    // We have 2 lines. (0,1). This will scroll.
+    // L0 "123" scrolls off. L1 "4 6" becomes L0. L2 "7  " becomes L1.
+    assert_screen_state(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        &["4 6", "7  "],
+        Some((1, 1)),
+    );
 }
 
 // --- OSC (Operating System Command) Tests ---
@@ -2464,7 +2513,13 @@ fn it_should_set_indexed_foreground_color_sgr_38_5_n() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Indexed(123))]),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
-    let attr = match get_glyph_from_snapshot(&term.get_render_snapshot().expect("Snapshot was None"), 0, 0).unwrap() {
+    let attr = match get_glyph_from_snapshot(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        0,
+        0,
+    )
+    .unwrap()
+    {
         Glyph::Single(c) => c.attr,
         _ => panic!("Expected Single"),
     };
@@ -2478,7 +2533,13 @@ fn it_should_set_rgb_foreground_color_sgr_38_2_r_g_b() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Rgb(10, 20, 30))]),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
-    let attr = match get_glyph_from_snapshot(&term.get_render_snapshot().expect("Snapshot was None"), 0, 0).unwrap() {
+    let attr = match get_glyph_from_snapshot(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        0,
+        0,
+    )
+    .unwrap()
+    {
         Glyph::Single(c) => c.attr,
         _ => panic!("Expected Single"),
     };
@@ -2602,7 +2663,13 @@ fn it_should_set_indexed_background_color_sgr_48_5_n() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Background(Color::Indexed(201))]),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
-    let attr = match get_glyph_from_snapshot(&term.get_render_snapshot().expect("Snapshot was None"), 0, 0).unwrap() {
+    let attr = match get_glyph_from_snapshot(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        0,
+        0,
+    )
+    .unwrap()
+    {
         Glyph::Single(c) => c.attr,
         _ => panic!("Expected Single"),
     };
@@ -2616,7 +2683,13 @@ fn it_should_set_rgb_background_color_sgr_48_2_r_g_b() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Background(Color::Rgb(40, 50, 60))]),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
-    let attr = match get_glyph_from_snapshot(&term.get_render_snapshot().expect("Snapshot was None"), 0, 0).unwrap() {
+    let attr = match get_glyph_from_snapshot(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        0,
+        0,
+    )
+    .unwrap()
+    {
         Glyph::Single(c) => c.attr,
         _ => panic!("Expected Single"),
     };
@@ -2716,7 +2789,13 @@ fn it_should_set_multiple_attributes_in_one_sgr_sequence() {
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
 
-    let attr_x = match get_glyph_from_snapshot(&term.get_render_snapshot().expect("Snapshot was None"), 0, 0).unwrap() {
+    let attr_x = match get_glyph_from_snapshot(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        0,
+        0,
+    )
+    .unwrap()
+    {
         Glyph::Single(c) => c.attr,
         _ => panic!("Expected Single"),
     };

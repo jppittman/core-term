@@ -1,7 +1,7 @@
 // src/platform/backends/x11/connection.rs
 #![allow(non_snake_case)] // Allow non-snake case for X11 types
 
-use anyhow::{anyhow, Result}; // Combined anyhow imports
+use anyhow::{Result, anyhow}; // Combined anyhow imports
 use log::{debug, info, warn}; // Removed 'error'
 use std::os::unix::io::RawFd;
 use std::ptr;
@@ -170,13 +170,18 @@ impl Connection {
     /// * `Ok(())`: Always.
     pub fn cleanup(&mut self) -> Result<()> {
         if !self.managed_display.ptr.is_null() {
-            info!("Preparing to close X11 display connection (will be handled by ManagedDisplay drop): {:p}", self.managed_display.ptr);
+            info!(
+                "Preparing to close X11 display connection (will be handled by ManagedDisplay drop): {:p}",
+                self.managed_display.ptr
+            );
             // The actual xlib::XCloseDisplay is called by ManagedDisplay's Drop.
             // We set the pointer to null here to prevent ManagedDisplay's Drop
             // from attempting to close an already (conceptually) closed display if cleanup is called manually.
             // It also marks the connection as "cleaned" for the purpose of Connection's own logic.
             self.managed_display.ptr = ptr::null_mut();
-            debug!("X display connection marked as cleaned up. Actual close deferred to ManagedDisplay drop.");
+            debug!(
+                "X display connection marked as cleaned up. Actual close deferred to ManagedDisplay drop."
+            );
         } else {
             info!("X11 display connection already closed or was never opened. Cleanup skipped.");
         }

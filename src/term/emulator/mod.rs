@@ -11,6 +11,7 @@
 use crate::{
     glyph::Attributes, // Ensure Glyph and Attributes are imported
     term::{
+        EmulatorInput, // Added EmulatorInput
         action::{
             EmulatorAction,
             // MouseButton, // Unused
@@ -29,7 +30,6 @@ use crate::{
             SelectionMode, // Unused
             SnapshotLine,
         },
-        EmulatorInput, // Added EmulatorInput
     },
 };
 
@@ -68,7 +68,7 @@ impl TerminalEmulator {
     pub fn new(width: usize, height: usize) -> Self {
         // Removed scrollback_limit parameter
         let initial_attributes = Attributes::default(); // SGR Reset attributes
-                                                        // Screen::new now gets scrollback_limit from CONFIG
+        // Screen::new now gets scrollback_limit from CONFIG
         let mut screen = Screen::new(width, height);
         // Ensure the screen's default_attributes are initialized correctly.
         // This is crucial for clearing operations.
@@ -268,7 +268,9 @@ impl TerminalEmulator {
 
     pub fn paste_text(&mut self, text: String) {
         if self.dec_modes.bracketed_paste_mode {
-            log::warn!("TerminalEmulator::paste_text called with bracketed paste mode ON. This mode should be handled by the caller (input_handler) by wrapping the text and sending it as WritePty. Processing char by char as fallback.");
+            log::warn!(
+                "TerminalEmulator::paste_text called with bracketed paste mode ON. This mode should be handled by the caller (input_handler) by wrapping the text and sending it as WritePty. Processing char by char as fallback."
+            );
             for ch in text.chars() {
                 self.print_char(ch);
             }

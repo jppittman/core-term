@@ -6,8 +6,8 @@
 use crate::platform::backends::PlatformState; // BackendEvent is not directly used by the trait's method signatures
 use anyhow::Result;
 
-use super::actions::PlatformAction;
 use super::PlatformEvent;
+use super::actions::PlatformAction;
 
 /// A trait that defines the interface for a platform implementation.
 ///

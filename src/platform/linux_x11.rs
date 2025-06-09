@@ -9,14 +9,14 @@ use anyhow::{Context, Result};
 use log::*;
 
 use crate::config::CONFIG;
+use crate::platform::PlatformEvent;
 use crate::platform::actions::PlatformAction;
 use crate::platform::backends::x11::window::CursorVisibility; // Used for converting bool
-use crate::platform::backends::x11::{XDriver, TRAIT_ATOM_ID_CLIPBOARD};
+use crate::platform::backends::x11::{TRAIT_ATOM_ID_CLIPBOARD, XDriver};
 use crate::platform::backends::{BackendEvent, Driver, PlatformState};
 use crate::platform::os::epoll::{EpollFlags, EventMonitor};
 use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
-use crate::platform::PlatformEvent;
 
 use super::os::epoll;
 
@@ -111,10 +111,7 @@ impl LinuxX11Platform {
     ///   suggesting the main polling loop should continue if its budget allows.
     /// * `Ok(false)`: If activity was minimal (small PTY read with no UI events), if `epoll_wait`
     ///   timed out (empty `events_slice`), or if a PTY EOF/critical error occurred.
-    fn process_epoll_batch(
-        &mut self,
-        accumulated_pty_data: &mut Vec<u8>,
-    ) -> Result<bool> {
+    fn process_epoll_batch(&mut self, accumulated_pty_data: &mut Vec<u8>) -> Result<bool> {
         if self.pty_event_buffer.is_empty() {
             // No events from epoll_wait (likely timed out); signal to stop polling for this cycle.
             return Ok(false);
@@ -136,7 +133,7 @@ impl LinuxX11Platform {
                         .process_events()
                         .context("Driver event processing failed during batch")?;
                     // The orchestrator is responsible for interpreting any CloseRequested events.
-                   self.platform_events 
+                    self.platform_events
                         .extend(driver_events.into_iter().map(PlatformEvent::from));
                 }
                 PTY_EPOLL_TOKEN => {
@@ -147,7 +144,8 @@ impl LinuxX11Platform {
                         match self.pty.read(&mut pty_read_chunk_buf) {
                             Ok(0) => {
                                 // PTY EOF
-                                self.platform_events.push(BackendEvent::CloseRequested.into());
+                                self.platform_events
+                                    .push(BackendEvent::CloseRequested.into());
                                 // PTY EOF is a definitive reason to stop further polling in this poll_events call.
                                 return Ok(false);
                             }
@@ -167,8 +165,12 @@ impl LinuxX11Platform {
                             }
                             Err(e) => {
                                 // Any other PTY read error.
-                                log::error!("Critical PTY read error in batch: {:?}. Forwarding as CloseRequested.", e);
-                                self.platform_events.push(BackendEvent::CloseRequested.into());
+                                log::error!(
+                                    "Critical PTY read error in batch: {:?}. Forwarding as CloseRequested.",
+                                    e
+                                );
+                                self.platform_events
+                                    .push(BackendEvent::CloseRequested.into());
                                 // Critical error; stop further polling.
                                 return Ok(false);
                             }
@@ -247,9 +249,7 @@ impl Platform for LinuxX11Platform {
             ) {
                 Ok(()) => {
                     // This is the success path, formerly the code after the `?`
-                    let should_continue = self.process_epoll_batch(
-                        &mut accumulated_pty_data,
-                    )?;
+                    let should_continue = self.process_epoll_batch(&mut accumulated_pty_data)?;
 
                     if !should_continue {
                         break;
@@ -308,7 +308,10 @@ impl Platform for LinuxX11Platform {
                 }
                 PlatformAction::CopyToClipboard(text) => {
                     // Log length before text is moved to own_selection
-                    debug!("LinuxX11Platform: CopyToClipboard action, text length: {}. Dispatching to XDriver.", text.len());
+                    debug!(
+                        "LinuxX11Platform: CopyToClipboard action, text length: {}. Dispatching to XDriver.",
+                        text.len()
+                    );
                     self.driver
                         .own_selection(CLIPBOARD_SELECTION_INDEX.into(), text); // Cast to u64
                 }
@@ -321,7 +324,10 @@ impl Platform for LinuxX11Platform {
                     self.driver.set_cursor_visibility(cursor_visibility);
                 }
                 PlatformAction::RequestPaste => {
-                    self.driver.request_selection_data(CLIPBOARD_SELECTION_INDEX.into(), TRAIT_ATOM_ID_CLIPBOARD);
+                    self.driver.request_selection_data(
+                        CLIPBOARD_SELECTION_INDEX.into(),
+                        TRAIT_ATOM_ID_CLIPBOARD,
+                    );
                 }
             }
         }

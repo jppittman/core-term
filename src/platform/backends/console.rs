@@ -11,20 +11,20 @@ use crate::keys::{KeySymbol, Modifiers};
 use crate::platform::backends::x11::window::CursorVisibility;
 use crate::platform::backends::{
     BackendEvent,
+    DEFAULT_WINDOW_HEIGHT_CHARS,
+    DEFAULT_WINDOW_WIDTH_CHARS,
     Driver,
     FocusState,
     PlatformState,
     RenderCommand, // Updated imports
-    DEFAULT_WINDOW_HEIGHT_CHARS,
-    DEFAULT_WINDOW_WIDTH_CHARS,
 }; // Added CursorVisibility
 
 use anyhow::{Context, Result};
-use libc::{winsize, STDIN_FILENO, TIOCGWINSZ}; // For terminal size and raw mode
-use std::io::{self, stdin, stdout, Read, Write};
+use libc::{STDIN_FILENO, TIOCGWINSZ, winsize}; // For terminal size and raw mode
+use std::io::{self, Read, Write, stdin, stdout};
 use std::mem;
 use std::os::unix::io::RawFd;
-use termios::{tcsetattr, Termios, ECHO, ICANON, ISIG, TCSANOW, VMIN, VTIME}; // For raw mode
+use termios::{ECHO, ICANON, ISIG, TCSANOW, Termios, VMIN, VTIME, tcsetattr}; // For raw mode
 
 // Logging
 use log::{debug, error, info, trace, warn};
@@ -308,7 +308,9 @@ impl Driver for ConsoleDriver {
                     if matches!(bg, Color::Default) {
                         error!("ConsoleDriver::ClearAll received Color::Default. Bug in Renderer.");
                         // This panic is consistent with previous behavior for contract violations.
-                        panic!("ConsoleDriver::ClearAll received Color::Default. Renderer should resolve defaults.");
+                        panic!(
+                            "ConsoleDriver::ClearAll received Color::Default. Renderer should resolve defaults."
+                        );
                     }
                     let mut sgr_codes = Vec::new();
                     Self::sgr_append_concrete_bg_color(&mut sgr_codes, bg);
@@ -342,7 +344,9 @@ impl Driver for ConsoleDriver {
                         error!(
                             "ConsoleDriver::DrawTextRun received Color::Default. Bug in Renderer."
                         );
-                        panic!("ConsoleDriver::DrawTextRun received Color::Default. Renderer should resolve defaults.");
+                        panic!(
+                            "ConsoleDriver::DrawTextRun received Color::Default. Renderer should resolve defaults."
+                        );
                     }
 
                     output_buffer.push_str(&Self::format_cursor_position(y + 1, x + 1));
@@ -376,7 +380,9 @@ impl Driver for ConsoleDriver {
                     // Contract: Renderer ensures color is concrete.
                     if matches!(color, Color::Default) {
                         error!("ConsoleDriver::FillRect received Color::Default. Bug in Renderer.");
-                        panic!("ConsoleDriver::FillRect received Color::Default. Renderer should resolve defaults.");
+                        panic!(
+                            "ConsoleDriver::FillRect received Color::Default. Renderer should resolve defaults."
+                        );
                     }
 
                     let mut sgr_codes = Vec::new();
@@ -456,7 +462,7 @@ impl Driver for ConsoleDriver {
         // OSC 0 sets icon name and window title. OSC 2 sets window title only.
         // Using OSC 0 for wider compatibility.
         print!("\x1b]0;{}\x07", title); // \x07 is the BEL character, often used as ST for OSC
-                                        // No flush here, assume present() will be called.
+        // No flush here, assume present() will be called.
         trace!("ConsoleDriver: Set window title to '{}'", title);
     }
 
@@ -475,8 +481,7 @@ impl Driver for ConsoleDriver {
         };
         trace!(
             "ConsoleDriver: Setting native cursor visibility to: {} ({:?})",
-            visible,
-            visibility
+            visible, visibility
         );
         if visible {
             print!("{}", CURSOR_SHOW);

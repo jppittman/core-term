@@ -3,7 +3,7 @@
 
 use super::connection::Connection;
 use crate::config::CONFIG; // Added for global config access
-use anyhow::{anyhow, Context, Result}; // Combined anyhow
+use anyhow::{Context, Result, anyhow}; // Combined anyhow
 use log::{debug, info, trace, warn}; // Removed error
 use std::ffi::CString;
 use std::mem;
@@ -57,7 +57,10 @@ impl Drop for SafeWindow {
             // self.id = 0; // Not strictly necessary as the struct is being dropped.
         } else if self.id != 0 {
             // This case (valid ID but null display) would be problematic.
-            warn!("SafeWindow (ID: {}) drop called with a null display pointer. Cannot destroy window. This is a bug.", self.id);
+            warn!(
+                "SafeWindow (ID: {}) drop called with a null display pointer. Cannot destroy window. This is a bug.",
+                self.id
+            );
         }
     }
 }
@@ -244,7 +247,9 @@ impl Window {
                 debug!("WM_PROTOCOLS (WM_DELETE_WINDOW) registered.");
             } else {
                 // This is not fatal but may mean the window close button doesn't work as expected.
-                warn!("Failed to get WM_DELETE_WINDOW or WM_PROTOCOLS atom. Window close events might not be received.");
+                warn!(
+                    "Failed to get WM_DELETE_WINDOW or WM_PROTOCOLS atom. Window close events might not be received."
+                );
             }
 
             // Set initial window title.
@@ -281,7 +286,9 @@ impl Window {
                 );
                 debug!("Initial window title also set via _NET_WM_NAME (UTF-8).");
             } else {
-                debug!("Initial window title set via XStoreName only (_NET_WM_NAME or UTF8_STRING atom not found).");
+                debug!(
+                    "Initial window title set via XStoreName only (_NET_WM_NAME or UTF8_STRING atom not found)."
+                );
             }
 
             // Provide size hints to the window manager if font dimensions are valid.
@@ -298,7 +305,10 @@ impl Window {
                     font_char_width, font_char_height, font_char_width, font_char_height
                 );
             } else {
-                warn!("Font dimensions are zero ({}, {}), skipping WM size hints based on character cells.", font_char_width, font_char_height);
+                warn!(
+                    "Font dimensions are zero ({}, {}), skipping WM size hints based on character cells.",
+                    font_char_width, font_char_height
+                );
             }
         }
         Ok(())
@@ -493,7 +503,10 @@ impl Window {
     pub fn cleanup(&mut self, _connection: &Connection) {
         // Connection might not be needed
         if self.safe_id.raw_id() != 0 {
-            info!("Window::cleanup called for window ID: {}. Actual destruction handled by SafeWindow::drop.", self.safe_id.raw_id());
+            info!(
+                "Window::cleanup called for window ID: {}. Actual destruction handled by SafeWindow::drop.",
+                self.safe_id.raw_id()
+            );
             // To prevent SafeWindow::drop from re-destroying, we can nullify its ID.
             // This requires SafeWindow to have a method to set its ID or for `id` to be pub.
             // For now, let's assume SafeWindow's Drop is idempotent or this cleanup
@@ -552,12 +565,17 @@ impl Window {
             // triggering `SafeWindow::drop`. Or, it can force an early drop.
             // Let's simplify `Window::cleanup` to be a conceptual no-op for resource destruction,
             // as Drop handles it.
-            info!("Window::cleanup called for window ID: {}. Actual destruction is handled by SafeWindow's Drop implementation.", self.safe_id.raw_id());
+            info!(
+                "Window::cleanup called for window ID: {}. Actual destruction is handled by SafeWindow's Drop implementation.",
+                self.safe_id.raw_id()
+            );
             // If we wanted to mark it as "cleaned up" for the Window::drop log:
             // self.safe_id.id = 0; // Requires safe_id.id to be mutable and SafeWindow to handle this.
             // For this refactor, we assume Window will be dropped after cleanup.
         } else {
-            info!("Window::cleanup: Window already destroyed or connection is invalid; cleanup skipped.");
+            info!(
+                "Window::cleanup: Window already destroyed or connection is invalid; cleanup skipped."
+            );
         }
     }
 

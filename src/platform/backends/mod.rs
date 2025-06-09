@@ -12,14 +12,14 @@ use anyhow::Result;
 use std::os::unix::io::RawFd;
 
 // Re-export driver implementations so they can be accessed via `crate::platform::backends::console::ConsoleDriver`, etc.
-pub mod console;
-pub mod x11;
 pub mod cocoa; // Add this line
+pub mod console;
 pub mod wayland;
+pub mod x11;
 
 // Import enums for Driver trait method signatures
-pub use x11::window::CursorVisibility; // For set_cursor_visibility - Made pub
-pub use x11::FocusState; // For set_focus - Made pub
+pub use x11::FocusState;
+pub use x11::window::CursorVisibility; // For set_cursor_visibility - Made pub // For set_focus - Made pub
 
 // It can be useful to re-export concrete driver types if they are frequently
 // used directly by `main.rs` or other high-level modules, though this is optional.

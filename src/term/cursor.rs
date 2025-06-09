@@ -7,11 +7,11 @@
 //! from the main terminal emulation logic.
 
 use crate::{config, glyph::Attributes};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use log::{trace, warn};
 use serde::{
-    de::{self, Deserializer, Visitor},
     Deserialize, Serialize, Serializer,
+    de::{self, Deserializer, Visitor},
 };
 use std::{cmp::min, fmt};
 
@@ -382,8 +382,7 @@ impl CursorController {
         self.cursor.logical_y = min(self.cursor.logical_y, max_y_logical);
         trace!(
             "Cursor state restored to: {:?}. Context: {:?}",
-            self.cursor,
-            context
+            self.cursor, context
         );
     }
     pub fn reset(&mut self) {

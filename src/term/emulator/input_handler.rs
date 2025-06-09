@@ -3,9 +3,9 @@
 use super::{FocusState, TerminalEmulator};
 use crate::keys::{KeySymbol, Modifiers};
 use crate::term::{
+    ControlEvent,
     action::{EmulatorAction, UserInputAction}, // Removed MouseButton, MouseEventType
     snapshot::{Point, SelectionMode}, // Removed SelectionMode as it's handled in TerminalEmulator methods
-    ControlEvent,
 };
 use log::{debug, trace}; // Added debug log
 
@@ -154,8 +154,7 @@ pub(super) fn process_user_input_action(
                     _ => {
                         trace!(
                             "Unhandled KeySymbol (with no text): {:?}, Modifiers: {:?}",
-                            symbol,
-                            modifiers
+                            symbol, modifiers
                         );
                     }
                 }
@@ -184,7 +183,9 @@ pub(super) fn process_user_input_action(
             return Some(EmulatorAction::RequestClipboardContent);
         }
         UserInputAction::RequestPrimaryPaste => {
-            debug!("UserInputAction: RequestPrimaryPaste received. (Currently not fully implemented, forwarding to RequestClipboardContent)");
+            debug!(
+                "UserInputAction: RequestPrimaryPaste received. (Currently not fully implemented, forwarding to RequestClipboardContent)"
+            );
             return Some(EmulatorAction::RequestClipboardContent);
         }
         UserInputAction::InitiateCopy => {
@@ -236,8 +237,7 @@ pub(super) fn process_control_event(
         ControlEvent::Resize { cols, rows } => {
             trace!(
                 "TerminalEmulator: ControlEvent::Resize to {}x{} received.",
-                cols,
-                rows
+                cols, rows
             );
             emulator.resize(cols, rows);
             None

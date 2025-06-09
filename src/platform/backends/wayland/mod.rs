@@ -3,14 +3,20 @@ use std::os::unix::io::RawFd;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer,
-    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
+    delegate_compositor,
+    delegate_keyboard,
+    delegate_output,
+    delegate_pointer,
+    delegate_seat,
+    delegate_shm,
+    delegate_xdg_shell,
+    delegate_xdg_window,
     output::{OutputHandler, OutputState},
     registry::RegistryState,
     seat::{
-        keyboard::{KeyEvent, KeyboardHandler, keysyms, Modifiers as SctkModifiers},
+        Capability as SeatCapability, SeatError, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Modifiers as SctkModifiers, keysyms},
         pointer::{PointerEvent, PointerHandler},
-        SeatHandler, SeatState, Capability as SeatCapability, SeatError,
     },
     // Explicitly import only what's directly used or needed for clarity
     shell::xdg::window::{Window, WindowConfigure, WindowHandler, WindowState},
@@ -18,23 +24,23 @@ use smithay_client_toolkit::{
     shm::ShmHandler, // ShmState and SimplePool will be fully qualified
 };
 use wayland_client::{
-    globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface::{self, WlSurface}},
     Connection, QueueHandle,
+    globals::registry_queue_init,
+    protocol::{
+        wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm,
+        wl_surface::{self, WlSurface},
+    },
 };
 use wayland_protocols::xdg::shell::client::xdg_wm_base; // This is fine if used for xdg_wm_base.ping etc.
 use xkbcommon::xkb::Keysym as XkbKeysym; // For KeyboardHandler keysyms type
 
-
-use crate::platform::backends::{
-    BackendEvent, Driver, FocusState, KeySymbol, Modifiers, MouseButton,
-    PlatformState, RenderCommand, CursorVisibility,
-    DEFAULT_WINDOW_WIDTH_CHARS, DEFAULT_WINDOW_HEIGHT_CHARS,
-};
-use crate::config::CONFIG;
 use crate::color::Color;
+use crate::config::CONFIG;
 use crate::glyph::AttrFlags;
-
+use crate::platform::backends::{
+    BackendEvent, CursorVisibility, DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
+    Driver, FocusState, KeySymbol, Modifiers, MouseButton, PlatformState, RenderCommand,
+};
 
 // Define a simple struct for our Wayland driver
 pub struct WaylandDriver {
@@ -60,7 +66,7 @@ struct WaylandState {
     shm_state: smithay_client_toolkit::shm::ShmState, // Fully qualified
     compositor_state: CompositorState,
     xdg_shell_state: smithay_client_toolkit::shell::xdg::XdgShellState, // Fully qualified
-    xdg_window_state: WindowState,  // Uses imported WindowState from shell::xdg::window
+    xdg_window_state: WindowState, // Uses imported WindowState from shell::xdg::window
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
     // TODO: Add fields for keyboard state, pointer state, etc.
@@ -81,18 +87,30 @@ impl WaylandDriver {
         let width_px = (DEFAULT_WINDOW_WIDTH_CHARS * font_cell_width_px) as u16;
         let height_px = (DEFAULT_WINDOW_HEIGHT_CHARS * font_cell_height_px) as u16;
         let scale_factor = 1.0; // Default scale factor
-        (width_px, height_px, font_cell_width_px, font_cell_height_px, scale_factor)
+        (
+            width_px,
+            height_px,
+            font_cell_width_px,
+            font_cell_height_px,
+            scale_factor,
+        )
     }
 }
 
 impl Driver for WaylandDriver {
     fn new() -> Result<Self> {
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland display")?;
-        let (globals, event_queue) = registry_queue_init::<WaylandState>(&conn).context("Failed to initialize registry queue")?;
+        let (globals, event_queue) = registry_queue_init::<WaylandState>(&conn)
+            .context("Failed to initialize registry queue")?;
         let queue_handle = event_queue.handle();
 
-        let (initial_width_px, initial_height_px, font_cell_width_px, font_cell_height_px, scale_factor) =
-            WaylandDriver::calculate_initial_dimensions();
+        let (
+            initial_width_px,
+            initial_height_px,
+            font_cell_width_px,
+            font_cell_height_px,
+            scale_factor,
+        ) = WaylandDriver::calculate_initial_dimensions();
 
         let mut wayland_state = WaylandState {
             registry_state: RegistryState::new(&globals),
@@ -101,8 +119,11 @@ impl Driver for WaylandDriver {
             shm_state: smithay_client_toolkit::shm::ShmState::new(&globals, &queue_handle), // Fully qualified
             compositor_state: CompositorState::bind(&globals, &queue_handle)
                 .context("Failed to bind CompositorState")?,
-            xdg_shell_state: smithay_client_toolkit::shell::xdg::XdgShellState::new(&globals, &queue_handle) // Fully qualified
-                .context("Failed to create XdgShellState")?,
+            xdg_shell_state: smithay_client_toolkit::shell::xdg::XdgShellState::new(
+                &globals,
+                &queue_handle,
+            ) // Fully qualified
+            .context("Failed to create XdgShellState")?,
             xdg_window_state: WindowState::default(),
             keyboard: None,
             pointer: None,
@@ -139,7 +160,8 @@ impl Driver for WaylandDriver {
 
     fn process_events(&mut self) -> Result<Vec<BackendEvent>> {
         // Dispatch pending events
-        self.event_queue.dispatch_pending(&mut self.wayland_state)
+        self.event_queue
+            .dispatch_pending(&mut self.wayland_state)
             .context("Failed to dispatch Wayland event queue")?;
 
         let mut events = Vec::new();
@@ -154,11 +176,20 @@ impl Driver for WaylandDriver {
         // Handle pending resize
         if let Some((new_width, new_height)) = self.wayland_state.pending_resize.take() {
             if self.width_px != new_width || self.height_px != new_height {
-                log::info!("WaylandDriver: Applying pending resize from {}x{} to {}x{}", self.width_px, self.height_px, new_width, new_height);
+                log::info!(
+                    "WaylandDriver: Applying pending resize from {}x{} to {}x{}",
+                    self.width_px,
+                    self.height_px,
+                    new_width,
+                    new_height
+                );
                 self.width_px = new_width;
                 self.height_px = new_height;
                 self.current_buffer = None; // Force buffer recreation on next render
-                events.push(BackendEvent::Resize { width_px: self.width_px, height_px: self.height_px });
+                events.push(BackendEvent::Resize {
+                    width_px: self.width_px,
+                    height_px: self.height_px,
+                });
             }
         }
         // Remove old self.wayland_state.resized logic if fully replaced by pending_resize
@@ -183,7 +214,10 @@ impl Driver for WaylandDriver {
 
     fn execute_render_commands(&mut self, commands: Vec<RenderCommand>) -> Result<()> {
         if self.window.is_none() {
-            let surface = self.wayland_state.compositor_state.create_surface(&self.queue_handle);
+            let surface = self
+                .wayland_state
+                .compositor_state
+                .create_surface(&self.queue_handle);
             let window = self.wayland_state.xdg_shell_state.create_window(
                 surface.clone(), // Clone surface for the window state
                 self.wayland_state.xdg_window_state.clone(),
@@ -195,13 +229,24 @@ impl Driver for WaylandDriver {
             );
             self.window = Some(window.context("Failed to create XDG window")?);
             self.surface_contents = Some(surface); // Store the WlSurface for drawing
-            log::info!("Wayland window and surface created. Dimensions: {}x{}", self.width_px, self.height_px);
+            log::info!(
+                "Wayland window and surface created. Dimensions: {}x{}",
+                self.width_px,
+                self.height_px
+            );
         }
 
-        let surface = self.surface_contents.as_ref().context("Surface not initialized for rendering")?;
+        let surface = self
+            .surface_contents
+            .as_ref()
+            .context("Surface not initialized for rendering")?;
 
         if self.width_px == 0 || self.height_px == 0 {
-            log::warn!("Skipping rendering due to zero width ({}) or height ({}).", self.width_px, self.height_px);
+            log::warn!(
+                "Skipping rendering due to zero width ({}) or height ({}).",
+                self.width_px,
+                self.height_px
+            );
             return Ok(());
         }
 
@@ -210,32 +255,44 @@ impl Driver for WaylandDriver {
         // let buffer_size = stride * self.height_px as i32;
 
         if self.current_buffer.is_none() {
-            log::debug!("Creating new SHM pool for rendering. Dimensions: {}x{}", self.width_px, self.height_px);
+            log::debug!(
+                "Creating new SHM pool for rendering. Dimensions: {}x{}",
+                self.width_px,
+                self.height_px
+            );
             // The size passed to create_simple_pool is a hint or minimum,
             // SCTK will manage actual allocations.
             // A reasonable size would be for one buffer.
             // let pool_size = (stride * self.height_px as i32) as usize; // Not directly used by create_simple_pool
-            let pool = self.wayland_state.shm_state.create_simple_pool(|fd, size| { // shm_state is now fully qualified type
-                let mem = unsafe {
-                    libc::mmap(
-                        std::ptr::null_mut(),
-                        size, // size is provided by SCTK based on needs
-                        libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_SHARED,
-                        fd,
-                        0,
-                    )
-                };
-                if mem == libc::MAP_FAILED {
-                    // It's critical to handle mmap failure.
-                    let error_msg = format!("mmap failed with error: {}", std::io::Error::last_os_error());
-                    log::error!("{}", error_msg);
-                    // panic!("{}", error_msg); // Panicking in a callback can be risky.
-                                            // Consider a way to signal this error back to the main loop.
-                    return (std::ptr::null_mut(), 0); // Return invalid mapping
-                }
-                (mem as *mut u8, size)
-            }).context("Failed to create SHM pool")?;
+            let pool = self
+                .wayland_state
+                .shm_state
+                .create_simple_pool(|fd, size| {
+                    // shm_state is now fully qualified type
+                    let mem = unsafe {
+                        libc::mmap(
+                            std::ptr::null_mut(),
+                            size, // size is provided by SCTK based on needs
+                            libc::PROT_READ | libc::PROT_WRITE,
+                            libc::MAP_SHARED,
+                            fd,
+                            0,
+                        )
+                    };
+                    if mem == libc::MAP_FAILED {
+                        // It's critical to handle mmap failure.
+                        let error_msg = format!(
+                            "mmap failed with error: {}",
+                            std::io::Error::last_os_error()
+                        );
+                        log::error!("{}", error_msg);
+                        // panic!("{}", error_msg); // Panicking in a callback can be risky.
+                        // Consider a way to signal this error back to the main loop.
+                        return (std::ptr::null_mut(), 0); // Return invalid mapping
+                    }
+                    (mem as *mut u8, size)
+                })
+                .context("Failed to create SHM pool")?;
             self.current_buffer = Some(pool);
         }
 
@@ -243,7 +300,8 @@ impl Driver for WaylandDriver {
 
         // Create the buffer for the current frame.
         // The `create_buffer` method from `SimplePool` handles the actual memory allocation from the mmapped area.
-        let (buffer, canvas) = match buffer_pool.create_buffer( // SimplePool is smithay_client_toolkit::shm::pool::SimplePool
+        let (buffer, canvas) = match buffer_pool.create_buffer(
+            // SimplePool is smithay_client_toolkit::shm::pool::SimplePool
             self.width_px as i32,
             self.height_px as i32,
             stride,
@@ -253,22 +311,47 @@ impl Driver for WaylandDriver {
             Err(e) => {
                 // This can happen if the pool is exhausted or dimensions are too large.
                 // Attempt to recreate the pool once if this fails.
-                log::warn!("Failed to create buffer, attempting to recreate pool: {:?}", e);
+                log::warn!(
+                    "Failed to create buffer, attempting to recreate pool: {:?}",
+                    e
+                );
                 self.current_buffer = None; // Clear current pool
                 // Re-create pool
                 // let pool_size = (stride * self.height_px as i32) as usize; // Not directly used
-                 let new_pool = self.wayland_state.shm_state.create_simple_pool(|fd, size| {
-                    let mem = unsafe { libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0) };
-                    if mem == libc::MAP_FAILED { (std::ptr::null_mut(), 0) } else { (mem as *mut u8, size) }
-                }).context("Failed to recreate SHM pool after buffer creation failure")?;
+                let new_pool = self
+                    .wayland_state
+                    .shm_state
+                    .create_simple_pool(|fd, size| {
+                        let mem = unsafe {
+                            libc::mmap(
+                                std::ptr::null_mut(),
+                                size,
+                                libc::PROT_READ | libc::PROT_WRITE,
+                                libc::MAP_SHARED,
+                                fd,
+                                0,
+                            )
+                        };
+                        if mem == libc::MAP_FAILED {
+                            (std::ptr::null_mut(), 0)
+                        } else {
+                            (mem as *mut u8, size)
+                        }
+                    })
+                    .context("Failed to recreate SHM pool after buffer creation failure")?;
                 self.current_buffer = Some(new_pool);
                 // Try creating buffer again
-                self.current_buffer.as_mut().unwrap().create_buffer( // SimplePool is smithay_client_toolkit::shm::pool::SimplePool
-                    self.width_px as i32,
-                    self.height_px as i32,
-                    stride,
-                    wl_shm::Format::Argb8888,
-                ).context("Failed to create buffer even after pool recreation")?
+                self.current_buffer
+                    .as_mut()
+                    .unwrap()
+                    .create_buffer(
+                        // SimplePool is smithay_client_toolkit::shm::pool::SimplePool
+                        self.width_px as i32,
+                        self.height_px as i32,
+                        stride,
+                        wl_shm::Format::Argb8888,
+                    )
+                    .context("Failed to create buffer even after pool recreation")?
             }
         };
 
@@ -302,7 +385,14 @@ impl Driver for WaylandDriver {
                     initial_clear_done = true;
                     log::trace!("RenderCommand: ClearAll with color {:?}", bg);
                 }
-                RenderCommand::FillRect { x, y, width, height, color, .. } => {
+                RenderCommand::FillRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    color,
+                    ..
+                } => {
                     let px_x = x * font_width;
                     let px_y = y * font_height;
                     let px_width = width * font_width;
@@ -313,9 +403,23 @@ impl Driver for WaylandDriver {
                             set_pixel(canvas, cur_x, cur_y, color);
                         }
                     }
-                    log::trace!("RenderCommand: FillRect at ({},{}) size {}x{} with color {:?}", x,y,width,height,color);
+                    log::trace!(
+                        "RenderCommand: FillRect at ({},{}) size {}x{} with color {:?}",
+                        x,
+                        y,
+                        width,
+                        height,
+                        color
+                    );
                 }
-                RenderCommand::DrawTextRun { x, y, text, fg: _fg, bg, .. } => {
+                RenderCommand::DrawTextRun {
+                    x,
+                    y,
+                    text,
+                    fg: _fg,
+                    bg,
+                    ..
+                } => {
                     // Simplified: Treat as FillRect with background color
                     let cell_width = text.chars().count(); // Simple char count for now
                     let px_x = x * font_width;
@@ -328,7 +432,13 @@ impl Driver for WaylandDriver {
                             set_pixel(canvas, cur_x, cur_y, bg);
                         }
                     }
-                    log::trace!("RenderCommand: DrawTextRun (simplified) at ({},{}) text '{}' with bg {:?}", x,y,text,bg);
+                    log::trace!(
+                        "RenderCommand: DrawTextRun (simplified) at ({},{}) text '{}' with bg {:?}",
+                        x,
+                        y,
+                        text,
+                        bg
+                    );
                     // TODO: Actual text rendering using fg color and font.
                 }
                 // Other RenderCommand variants would be handled here
@@ -359,14 +469,17 @@ impl Driver for WaylandDriver {
         if let Some(surface) = &self.surface_contents {
             surface.commit();
             // Flushing ensures that the commit request is sent to the compositor promptly.
-            self.conn.flush().context("Failed to flush Wayland connection post-commit")?;
+            self.conn
+                .flush()
+                .context("Failed to flush Wayland connection post-commit")?;
 
             // Dispatching events after commit allows processing frame callbacks, etc.
             // This helps synchronize rendering with the compositor.
             // Use a read with timeout to prevent blocking indefinitely if no events arrive.
             if self.conn.prepare_read().is_some() {
-                 // Timeout is important here to avoid blocking if the compositor is slow or unresponsive
-                self.event_queue.dispatch_pending(&mut self.wayland_state) // Consider using .read_events() and then .dispatch() for more control
+                // Timeout is important here to avoid blocking if the compositor is slow or unresponsive
+                self.event_queue
+                    .dispatch_pending(&mut self.wayland_state) // Consider using .read_events() and then .dispatch() for more control
                     .context("Failed to dispatch Wayland event queue post-commit")?;
             }
             log::trace!("WaylandDriver: present - surface committed and events dispatched.");
@@ -475,7 +588,8 @@ impl OutputHandler for WaylandState {
 }
 
 impl XdgShellHandler for WaylandState {
-    fn xdg_shell_state(&mut self) -> &mut smithay_client_toolkit::shell::xdg::XdgShellState { // Fully qualified
+    fn xdg_shell_state(&mut self) -> &mut smithay_client_toolkit::shell::xdg::XdgShellState {
+        // Fully qualified
         &mut self.xdg_shell_state
     }
 
@@ -520,11 +634,18 @@ impl WindowHandler for WaylandState {
     ) {
         // Apply new size if provided
         if let Some(size) = configure.new_size {
-            if size.0 > 0 && size.1 > 0 { // Ensure valid dimensions
+            if size.0 > 0 && size.1 > 0 {
+                // Ensure valid dimensions
                 self.pending_resize = Some((size.0 as u16, size.1 as u16));
-                log::debug!("WindowHandler: configure event received, new_size: {:?}, pending_resize set.", size);
+                log::debug!(
+                    "WindowHandler: configure event received, new_size: {:?}, pending_resize set.",
+                    size
+                );
             } else {
-                log::warn!("WindowHandler: configure event received invalid size {:?}", size);
+                log::warn!(
+                    "WindowHandler: configure event received invalid size {:?}",
+                    size
+                );
             }
         }
         // Acknowledge the configure event. This is important for XDG shell.
@@ -532,14 +653,16 @@ impl WindowHandler for WaylandState {
         // However, for a single window app, this should be fine.
         if let Some(window) = _window {
             window.configure_ack(configure.serial);
-            log::trace!("WindowHandler: Acknowledged configure serial: {}", configure.serial);
+            log::trace!(
+                "WindowHandler: Acknowledged configure serial: {}",
+                configure.serial
+            );
         } else {
             log::warn!("WindowHandler: configure called without a window reference to ack.");
         }
         // TODO: Handle other configure states (maximized, fullscreen, etc.)
     }
 }
-
 
 impl SeatHandler for WaylandState {
     fn seat_state(&mut self) -> &mut SeatState {
@@ -559,7 +682,8 @@ impl SeatHandler for WaylandState {
     ) -> Result<(), SeatError> {
         match capability {
             SeatCapability::Keyboard => {
-                let keyboard = self.seat_state
+                let keyboard = self
+                    .seat_state
                     .get_keyboard_with_repeat(
                         qh,
                         seat, // Pass seat by reference
@@ -571,7 +695,9 @@ impl SeatHandler for WaylandState {
                 log::info!("Keyboard capability added.");
             }
             SeatCapability::Pointer => {
-                let pointer = self.seat_state.get_pointer(qh, seat) // Pass seat by reference
+                let pointer = self
+                    .seat_state
+                    .get_pointer(qh, seat) // Pass seat by reference
                     .map_err(|_| SeatError::Other("Failed to create pointer".to_string()))?; // Handle error appropriately
                 self.pointer = Some(pointer);
                 log::info!("Pointer capability added.");
@@ -611,7 +737,10 @@ impl SeatHandler for WaylandState {
                 log::info!("Touch capability removed but was not handled.");
             }
             _unknown => {
-                 log::warn!("Attempting to remove unknown seat capability: {:?}", _unknown);
+                log::warn!(
+                    "Attempting to remove unknown seat capability: {:?}",
+                    _unknown
+                );
             }
         }
         Ok(())
@@ -625,7 +754,6 @@ impl SeatHandler for WaylandState {
     }
 }
 
-
 impl KeyboardHandler for WaylandState {
     fn enter(
         &mut self,
@@ -634,11 +762,15 @@ impl KeyboardHandler for WaylandState {
         _: &wl_keyboard::WlKeyboard,
         _surface: &wl_surface::WlSurface,
         _serial: u32,
-        _raw: &[u32], // Raw keycodes
+        _raw: &[u32],          // Raw keycodes
         keysyms: &[XkbKeysym], // Corrected type to xkbcommon::xkb::Keysym
     ) {
         // TODO: Handle keyboard focus enter
-        log::debug!("Keyboard focus entered. Raw: {:?}, Keysyms: {:?}", _raw, keysyms);
+        log::debug!(
+            "Keyboard focus entered. Raw: {:?}, Keysyms: {:?}",
+            _raw,
+            keysyms
+        );
     }
 
     fn leave(
@@ -762,7 +894,6 @@ fn sctk_modifiers_to_modifiers(sctk_mods: SctkModifiers) -> Modifiers {
     mods
 }
 
-
 impl PointerHandler for WaylandState {
     fn pointer_frame(
         &mut self,
@@ -783,10 +914,12 @@ impl PointerHandler for WaylandState {
                     // We could generate MouseMove events here if needed,
                     // but terminals often only care about button presses with coordinates.
                 }
-                smithay_client_toolkit::seat::pointer::PointerEventKind::Press { button, .. } => {
+                smithay_client_toolkit::seat::pointer::PointerEventKind::Press {
+                    button, ..
+                } => {
                     let btn = match button {
-                        0x110 => MouseButton::Left, // BTN_LEFT
-                        0x111 => MouseButton::Right, // BTN_RIGHT
+                        0x110 => MouseButton::Left,   // BTN_LEFT
+                        0x111 => MouseButton::Right,  // BTN_RIGHT
                         0x112 => MouseButton::Middle, // BTN_MIDDLE
                         _ => MouseButton::Other(button as u8),
                     };
@@ -797,10 +930,12 @@ impl PointerHandler for WaylandState {
                         modifiers: sctk_modifiers_to_modifiers(self.current_modifiers),
                     });
                 }
-                smithay_client_toolkit::seat::pointer::PointerEventKind::Release { button, .. } => {
-                     let btn = match button {
-                        0x110 => MouseButton::Left, // BTN_LEFT
-                        0x111 => MouseButton::Right, // BTN_RIGHT
+                smithay_client_toolkit::seat::pointer::PointerEventKind::Release {
+                    button, ..
+                } => {
+                    let btn = match button {
+                        0x110 => MouseButton::Left,   // BTN_LEFT
+                        0x111 => MouseButton::Right,  // BTN_RIGHT
                         0x112 => MouseButton::Middle, // BTN_MIDDLE
                         _ => MouseButton::Other(button as u8),
                     };
@@ -820,7 +955,8 @@ impl PointerHandler for WaylandState {
 }
 
 impl ShmHandler for WaylandState {
-    fn shm_state(&mut self) -> &mut smithay_client_toolkit::shm::ShmState { // Fully qualified
+    fn shm_state(&mut self) -> &mut smithay_client_toolkit::shm::ShmState {
+        // Fully qualified
         &mut self.shm_state
     }
 }

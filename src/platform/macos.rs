@@ -1,12 +1,12 @@
+use crate::platform::PlatformEvent;
 use crate::platform::actions::PlatformAction;
 use crate::platform::backends::{
-    cocoa::CocoaDriver, BackendEvent, CursorVisibility, Driver, PlatformState,
+    BackendEvent, CursorVisibility, Driver, PlatformState, cocoa::CocoaDriver,
 };
 use crate::platform::os::PtyActionCommand; // Correct path for PtyActionCommand
 use crate::platform::platform_trait::Platform;
-use crate::platform::PlatformEvent;
 use anyhow::{Context, Result};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub struct MacosPlatform {
     driver: CocoaDriver,

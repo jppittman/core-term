@@ -220,8 +220,10 @@ impl XDriver {
             // XFlush might be needed to ensure the request is sent promptly.
             xlib::XFlush(self.connection.display());
         }
-        info!("Requested selection data (selection atom ID: {}, target atom ID: {}) for property atom ID: {}",
-              selection_name_atom, target_atom, property_to_set);
+        info!(
+            "Requested selection data (selection atom ID: {}, target atom ID: {}) for property atom ID: {}",
+            selection_name_atom, target_atom, property_to_set
+        );
     }
 }
 
@@ -468,7 +470,10 @@ impl Driver for XDriver {
             TRAIT_ATOM_ID_PRIMARY => self.selection_atoms.primary,
             TRAIT_ATOM_ID_CLIPBOARD => self.selection_atoms.clipboard,
             _ => {
-                warn!("XDriver::request_selection_data (trait): Received unknown abstract selection atom ID: {}", selection_name_atom_u64);
+                warn!(
+                    "XDriver::request_selection_data (trait): Received unknown abstract selection atom ID: {}",
+                    selection_name_atom_u64
+                );
                 return;
             }
         };
@@ -479,7 +484,10 @@ impl Driver for XDriver {
             // const TRAIT_ATOM_ID_TARGETS: u64 = 11;
             // TRAIT_ATOM_ID_TARGETS => self.selection_atoms.targets,
             _ => {
-                warn!("XDriver::request_selection_data (trait): Received unknown abstract target atom ID: {}", target_atom_u64);
+                warn!(
+                    "XDriver::request_selection_data (trait): Received unknown abstract target atom ID: {}",
+                    target_atom_u64
+                );
                 return;
             }
         };
