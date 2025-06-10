@@ -13,7 +13,10 @@ use crate::color::Color;
 use crate::config::Config; // For the config parameter
 use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::platform::backends::PlatformState; // Added for PlatformState
-use crate::platform::backends::RenderCommand;
+// use crate::platform::backends::RenderCommand;
+// Corrected: Import RenderCommand from crate::renderer::render_command
+use crate::renderer::optimizer::Optimizer; // Added for Optimizer
+use crate::renderer::render_command::RenderCommand;
 use crate::term::snapshot::{Point, RenderSnapshot, Selection};
 use crate::term::unicode::get_char_display_width;
 
@@ -21,6 +24,9 @@ use crate::term::unicode::get_char_display_width;
 use log::{trace, warn};
 
 // Default colors are now sourced from the passed `config`.
+
+// Added module for optimizer
+mod optimizer;
 
 /// Constant representing a single terminal cell consumed by a drawing operation.
 const SINGLE_CELL_CONSUMED: usize = 1;
@@ -151,7 +157,11 @@ impl Renderer {
 
         self.draw_cursor_overlay(snapshot, config, &mut commands); // Pass config
 
-        commands
+        // Optimize the commands before returning
+        let optimizer = Optimizer;
+        let optimized_commands = optimizer.optimize(commands);
+
+        optimized_commands
     }
 
     /// Helper to check if a cell (x,y) is within the selection range.
