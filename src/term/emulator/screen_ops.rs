@@ -8,6 +8,27 @@ use std::cmp::min; // For erase_chars
 use log::warn;
 
 impl TerminalEmulator {
+    pub(super) fn reverse_index(&mut self) {
+        self.cursor_wrap_next = false;
+        let screen_ctx = self.current_screen_context();
+        let (_, current_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
+
+        if current_physical_y == screen_ctx.scroll_top {
+            self.screen.scroll_down_serial(1);
+        } else if current_physical_y > 0 {
+            self.cursor_controller.move_up(1);
+        }
+        if current_physical_y < self.screen.height {
+            self.screen.mark_line_dirty(current_physical_y);
+        }
+        let (_, new_physical_y) = self
+            .cursor_controller
+            .physical_screen_pos(&self.current_screen_context());
+        if current_physical_y != new_physical_y && new_physical_y < self.screen.height {
+            self.screen.mark_line_dirty(new_physical_y);
+        }
+    }
+
     pub(super) fn erase_in_display(&mut self, mode: EraseMode) {
         self.cursor_wrap_next = false;
         let screen_ctx = self.current_screen_context();
