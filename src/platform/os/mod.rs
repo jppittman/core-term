@@ -1,8 +1,10 @@
-pub mod epoll;
+// src/platform/os/mod.rs
 pub mod pty;
 
-#[cfg(test)]
-mod pty_tests;
+#[cfg(target_os = "linux")]
+pub mod epoll;
+#[cfg(target_os = "linux")]
+pub use epoll as event;
 
 #[derive(Debug, Clone)]
 pub enum PtyActionCommand {
