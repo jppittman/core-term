@@ -40,6 +40,7 @@ mod ansi_handler;
 mod char_processor;
 mod cursor_handler;
 mod input_handler;
+mod key_translator;
 mod methods;
 mod mode_handler;
 mod osc_handler;

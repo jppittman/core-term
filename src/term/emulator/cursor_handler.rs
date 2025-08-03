@@ -5,6 +5,23 @@ use crate::term::action::EmulatorAction; // For dimensions
 use log::warn; // For WindowManipulation
 
 impl TerminalEmulator {
+    pub(super) fn backspace(&mut self) {
+        self.cursor_wrap_next = false;
+        self.cursor_controller.move_left(1);
+    }
+
+    pub(super) fn horizontal_tab(&mut self) {
+        self.cursor_wrap_next = false;
+        let (current_x, _) = self.cursor_controller.logical_pos();
+        let screen_ctx = self.current_screen_context();
+        let next_stop = self
+            .screen
+            .get_next_tabstop(current_x)
+            .unwrap_or(screen_ctx.width.saturating_sub(1).max(current_x));
+        self.cursor_controller
+            .move_to_logical_col(next_stop, &screen_ctx);
+    }
+
     pub(super) fn cursor_up(&mut self, n: usize) {
         self.cursor_wrap_next = false;
         self.cursor_controller.move_up(n);
