@@ -6,8 +6,10 @@ pub use backends::BackendEvent;
 
 pub mod actions;
 pub mod backends;
+#[cfg(target_os = "linux")]
 pub mod console_platform;
 pub mod font_manager;
+#[cfg(target_os = "linux")]
 pub mod linux_x11;
 pub mod macos; // Add this line
 pub mod os;
