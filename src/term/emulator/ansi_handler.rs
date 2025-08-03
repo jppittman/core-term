@@ -3,132 +3,17 @@
 use super::TerminalEmulator;
 use crate::{
     ansi::commands::{AnsiCommand, C0Control, CsiCommand, EscCommand},
-    glyph::Attributes,
     term::{
         action::EmulatorAction,
         charset::CharacterSet,
         cursor::CursorShape,
         emulator::FocusState,
-        modes::{DecPrivateModes, EraseMode, Mode},
+        modes::{EraseMode, Mode},
         screen::TabClearMode,
-        DEFAULT_TAB_INTERVAL,
-    }, // For Attributes::default() in ResetToInitialState
+    },
 };
 
-use log::{debug, trace, warn}; // Assuming logging is still desired
-
-// --- Helper functions moved from TerminalEmulator ---
-// These are now private to the ansi_handler module, or are methods on TerminalEmulator called via `emulator.`
-// They take `emulator: &mut TerminalEmulator` as their first argument if they are local helpers.
-
-fn backspace(emulator: &mut TerminalEmulator) {
-    emulator.cursor_wrap_next = false;
-    emulator.cursor_controller.move_left(1);
-}
-
-fn horizontal_tab(emulator: &mut TerminalEmulator) {
-    emulator.cursor_wrap_next = false;
-    let (current_x, _) = emulator.cursor_controller.logical_pos();
-    let screen_ctx = emulator.current_screen_context();
-    let next_stop = emulator
-        .screen
-        .get_next_tabstop(current_x)
-        .unwrap_or(screen_ctx.width.saturating_sub(1).max(current_x));
-    emulator
-        .cursor_controller
-        .move_to_logical_col(next_stop, &screen_ctx);
-}
-
-fn perform_line_feed(emulator: &mut TerminalEmulator) {
-    log::trace!("perform_line_feed called in ansi_handler");
-    emulator.move_down_one_line_and_dirty(); // Call as method
-    if emulator.dec_modes.linefeed_newline_mode {
-        // Check LNM mode
-        emulator.carriage_return(); // Call as method
-    }
-}
-
-// move_down_one_line_and_dirty is now a method on TerminalEmulator in methods.rs
-// carriage_return is now a method on TerminalEmulator in methods.rs
-
-fn set_g_level(emulator: &mut TerminalEmulator, g_level: usize) {
-    if g_level < emulator.active_charsets.len() {
-        emulator.active_charset_g_level = g_level;
-        trace!("Switched to G{} character set mapping.", g_level);
-    } else {
-        warn!("Attempted to set invalid G-level: {}", g_level);
-    }
-}
-
-// index is now a method on TerminalEmulator in methods.rs
-
-fn reverse_index(emulator: &mut TerminalEmulator) {
-    emulator.cursor_wrap_next = false;
-    let screen_ctx = emulator.current_screen_context();
-    let (_, current_physical_y) = emulator.cursor_controller.physical_screen_pos(&screen_ctx);
-
-    if current_physical_y == screen_ctx.scroll_top {
-        emulator.screen.scroll_down_serial(1);
-    } else if current_physical_y > 0 {
-        emulator.cursor_controller.move_up(1);
-    }
-    if current_physical_y < emulator.screen.height {
-        emulator.screen.mark_line_dirty(current_physical_y);
-    }
-    let (_, new_physical_y) = emulator
-        .cursor_controller
-        .physical_screen_pos(&emulator.current_screen_context());
-    if current_physical_y != new_physical_y && new_physical_y < emulator.screen.height {
-        emulator.screen.mark_line_dirty(new_physical_y);
-    }
-}
-
-// save_cursor_dec is now a method on TerminalEmulator in methods.rs
-// restore_cursor_dec is now a method on TerminalEmulator in methods.rs
-
-fn designate_character_set(
-    emulator: &mut TerminalEmulator,
-    g_set_index: usize,
-    charset: CharacterSet,
-) {
-    if g_set_index < emulator.active_charsets.len() {
-        emulator.active_charsets[g_set_index] = charset;
-        trace!("Designated G{} to {:?}", g_set_index, charset);
-    } else {
-        warn!("Invalid G-set index for designate charset: {}", g_set_index);
-    }
-}
-
-// --- CSI Handler Small Helpers ---
-// These functions (cursor_up, cursor_down, cursor_forward, cursor_backward,
-// cursor_to_column, cursor_to_pos) have been moved to cursor_handler.rs
-// and are now methods on TerminalEmulator.
-
-fn reset(emulator: &mut TerminalEmulator) -> Option<EmulatorAction> {
-    if emulator.screen.alt_screen_active {
-        emulator.screen.exit_alt_screen();
-    }
-    let default_attrs = Attributes::default();
-    emulator.cursor_controller.reset();
-    emulator.screen.default_attributes = default_attrs;
-    emulator.erase_in_display(EraseMode::All); // Call as method on emulator
-    emulator.dec_modes = DecPrivateModes::default();
-    emulator.screen.origin_mode = emulator.dec_modes.origin_mode;
-    let (_, h) = emulator.dimensions();
-    emulator.screen.set_scrolling_region(1, h);
-    emulator.active_charsets = [CharacterSet::Ascii; 4];
-    emulator.active_charset_g_level = 0;
-    emulator.screen.clear_tabstops(0, TabClearMode::All);
-    let (w, _) = emulator.dimensions();
-    for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize) {
-        emulator.screen.set_tabstop(i);
-    }
-    emulator.cursor_wrap_next = false;
-    if emulator.dec_modes.text_cursor_enable_mode {
-        return Some(EmulatorAction::SetCursorVisibility(true));
-    }
-    None
-}
+use log::{debug, warn}; // Assuming logging is still desired
 
 // The main ANSI command processing function
 #[allow(clippy::too_many_lines)] // To be addressed by further refactoring if needed
@@ -143,27 +28,27 @@ pub(super) fn process_ansi_command(
     match command {
         AnsiCommand::C0Control(c0) => match c0 {
             C0Control::BS => {
-                backspace(emulator);
+                emulator.backspace();
                 None
             }
             C0Control::HT => {
-                horizontal_tab(emulator);
+                emulator.horizontal_tab();
                 None
             }
             C0Control::LF | C0Control::VT | C0Control::FF => {
-                perform_line_feed(emulator); // This local fn calls emulator.methods
+                emulator.line_feed();
                 None
             }
             C0Control::CR => {
-                emulator.carriage_return(); // Call as method
+                emulator.carriage_return();
                 None
             }
             C0Control::SO => {
-                set_g_level(emulator, 1);
+                emulator.set_g_level(1);
                 None
             }
             C0Control::SI => {
-                set_g_level(emulator, 0);
+                emulator.set_g_level(0);
                 None
             }
             C0Control::BEL => Some(EmulatorAction::RingBell),
@@ -179,24 +64,24 @@ pub(super) fn process_ansi_command(
                 None
             }
             EscCommand::Index => {
-                emulator.index(); // Call as method
+                emulator.index();
                 None
             }
             EscCommand::NextLine => {
-                emulator.carriage_return(); // Call as method
-                perform_line_feed(emulator); // This local fn calls emulator.methods
+                emulator.carriage_return();
+                emulator.line_feed();
                 None
             }
             EscCommand::ReverseIndex => {
-                reverse_index(emulator); // This local fn can stay if only used here
+                emulator.reverse_index();
                 None
             }
             EscCommand::SaveCursor => {
-                emulator.save_cursor(); // Call as method
+                emulator.save_cursor();
                 None
             }
             EscCommand::RestoreCursor => {
-                emulator.restore_cursor(); // Call as method
+                emulator.restore_cursor();
                 None
             }
             EscCommand::SelectCharacterSet(intermediate_char, final_char) => {
@@ -213,10 +98,10 @@ pub(super) fn process_ansi_command(
                         0
                     }
                 };
-                designate_character_set(emulator, g_idx, CharacterSet::from_char(final_char));
+                emulator.designate_character_set(g_idx, CharacterSet::from_char(final_char));
                 None
             }
-            EscCommand::ResetToInitialState => reset(emulator),
+            EscCommand::ResetToInitialState => emulator.reset(),
             _ => {
                 debug!("Unhandled Esc command: {:?}", esc_cmd);
                 None
@@ -371,7 +256,7 @@ pub(super) fn process_ansi_command(
             CsiCommand::SetTabStop => {
                 todo!("ansi set tabstop");
             }
-            CsiCommand::Reset => reset(emulator),
+            CsiCommand::Reset => emulator.reset(),
             CsiCommand::Unsupported(intermediates, final_byte_opt) => {
                 warn!(
                     "TerminalEmulator received CsiCommand::Unsupported: intermediates={:?}, final={:?}. This is usually an error from the parser.",
