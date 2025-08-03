@@ -69,8 +69,9 @@ impl NixPty {
                 Self::set_pty_size_internal(&master_fd, config.initial_cols, config.initial_rows)
                     .with_context(|| "Parent: Failed to set initial PTY size")?;
 
-                Self::set_fd_nonblocking(&master_fd)
+                Self::_set_fd_nonblocking(&master_fd, true)
                     .with_context(|| "Parent: Failed to set master PTY to non-blocking")?;
+
                 child
             }
             ForkResult::Child => {
@@ -168,16 +169,25 @@ impl NixPty {
         unimplemented!("spawn_shell_command is not fully implemented with OwnedFd yet.");
     }
 
-    fn set_fd_nonblocking<Fd: AsFd>(fd: Fd) -> Result<()> {
+    fn _set_fd_nonblocking<Fd: AsFd>(fd: Fd, nonblocking: bool) -> Result<()> {
         let raw_fd = fd.as_fd().as_raw_fd();
         let flags = fcntl(fd.as_fd(), FcntlArg::F_GETFL)
             .with_context(|| format!("Failed to get FD flags for fd {}", raw_fd))?;
-        let mut non_blocking_flags = OFlag::from_bits_truncate(flags);
-        non_blocking_flags.insert(OFlag::O_NONBLOCK);
-        fcntl(fd.as_fd(), FcntlArg::F_SETFL(non_blocking_flags))
-            .with_context(|| format!("Failed to set FD {} to non-blocking", raw_fd))?;
-        log::trace!("NixPty: Set FD {} to non-blocking", raw_fd);
+        let mut current_flags = OFlag::from_bits_truncate(flags);
+        if nonblocking {
+            current_flags.insert(OFlag::O_NONBLOCK);
+        } else {
+            current_flags.remove(OFlag::O_NONBLOCK);
+        }
+        fcntl(fd.as_fd(), FcntlArg::F_SETFL(current_flags))
+            .with_context(|| format!("Failed to set FD {} non-blocking to {}", raw_fd, nonblocking))?;
+        log::trace!("NixPty: Set FD {} non-blocking to {}", raw_fd, nonblocking);
         Ok(())
+    }
+
+    /// Sets the non-blocking mode for the PTY's master file descriptor.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> Result<()> {
+        Self::_set_fd_nonblocking(&self.master_fd, nonblocking)
     }
 
     #[allow(dead_code)]

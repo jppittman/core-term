@@ -1,0 +1,13 @@
+[2025-08-03T02:08:29.430965Z INFO  core_term] Starting core...
+[2025-08-03T02:08:29.431102Z INFO  core_term] Configuration loaded (using default).
+[2025-08-03T02:08:29.431136Z INFO  core_term] Shell command: '/bin/bash', args: []
+[2025-08-03T02:08:29.431237Z INFO  core_term] Initializing LinuxX11Platform...
+[2025-08-03T02:08:29.431268Z INFO  core_term::platform::linux_x11] Initializing LinuxX11Platform with hybrid threading model.
+[2025-08-03T02:08:29.432341Z INFO  core_term::platform::backends::x11] XDriver::new() called - initializing X11 driver components.
+[2025-08-03T02:08:29.432419Z INFO  core_term::platform::backends::x11::connection] Establishing X11 server connection.
+[2025-08-03T02:08:29.432621Z ERROR core_term::platform::backends::x11] Failed to establish X11 connection: Failed to open X display. Check DISPLAY environment variable or X server status.
+Error: Failed to initialize LinuxX11Platform
+
+Caused by:
+    0: Failed to create XDriver
+    1: Failed to open X display. Check DISPLAY environment variable or X server status.
