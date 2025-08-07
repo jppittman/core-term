@@ -47,7 +47,9 @@ impl LocaleInitializer {
     /// Internal method to calculate character display width.
     fn char_display_width_internal(&self, c: char) -> usize {
         // Explicitly handle Zero-Width Joiner (U+200D) and other known zero-width characters first.
-        if c == '\u{200D}' || c == '\u{200B}' /* Zero Width Space */ {
+        if c == '\u{200D}' || c == '\u{200B}'
+        /* Zero Width Space */
+        {
             return 0;
         }
 
@@ -62,18 +64,30 @@ impl LocaleInitializer {
                 // If it's a printable char for which wcwidth returns -1 (unlikely for common cases),
                 // defaulting to 1 might be an option, but 0 is safer for unhandled non-printables.
                 if c.is_control() {
-                    trace!("wcwidth returned -1 for control char '{}' (U+{:X}), width is 0.", c, wc);
+                    trace!(
+                        "wcwidth returned -1 for control char '{}' (U+{:X}), width is 0.",
+                        c,
+                        wc
+                    );
                     0
                 } else {
                     // This case is ambiguous: wcwidth says "not printable" but it's not a C0/C1 control char.
                     // Could be other format effectors or unassigned. Defaulting to 0 is safer than 1.
-                    trace!("wcwidth returned -1 for non-control char '{}' (U+{:X}), width is 0.", c, wc);
+                    trace!(
+                        "wcwidth returned -1 for non-control char '{}' (U+{:X}), width is 0.",
+                        c,
+                        wc
+                    );
                     0
                 }
             }
             0 => {
                 // wcwidth returning 0 typically means a non-spacing character (e.g., combining mark).
-                trace!("wcwidth returned 0 for char '{}' (U+{:X}), width is 0.", c, wc);
+                trace!(
+                    "wcwidth returned 0 for char '{}' (U+{:X}), width is 0.",
+                    c,
+                    wc
+                );
                 0
             }
             1 => 1,

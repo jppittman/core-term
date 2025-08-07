@@ -16,12 +16,12 @@ use crate::{
     ansi::AnsiProcessor, // Using Config directly
     orchestrator::{AppOrchestrator, OrchestratorStatus},
     platform::actions::PlatformAction, // Updated for initial PTY resize
+    // common items used by all platforms if any, e.g. PlatformState
+    platform::backends::PlatformState, // Assuming PlatformState is here or in common
     // Platform-specific imports will be conditional
     platform::platform_trait::Platform, // Trait needed for platform methods
     renderer::Renderer,
     term::TerminalEmulator,
-    // common items used by all platforms if any, e.g. PlatformState
-    platform::backends::PlatformState, // Assuming PlatformState is here or in common
 };
 
 // Logging
@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
             DEFAULT_INITIAL_PTY_COLS,
             DEFAULT_INITIAL_PTY_ROWS,
             shell_command, // shell_command is already prepared above
-            shell_args,  // shell_args is already prepared above
+            shell_args,    // shell_args is already prepared above
         )
         .context("Failed to initialize MacosPlatform")?;
         platform = Box::new(macos_platform);
