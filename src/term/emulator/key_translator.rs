@@ -154,7 +154,12 @@ mod tests {
     fn test_simple_chars() {
         let modes = DecPrivateModes::default();
         assert_eq!(
-            translate_key_input(KeySymbol::Char('a'), Modifiers::empty(), Some("a".to_string()), &modes),
+            translate_key_input(
+                KeySymbol::Char('a'),
+                Modifiers::empty(),
+                Some("a".to_string()),
+                &modes
+            ),
             vec![b'a']
         );
         assert_eq!(

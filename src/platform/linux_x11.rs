@@ -111,10 +111,7 @@ impl<D: Driver> LinuxX11Platform<D> {
     ///   suggesting the main polling loop should continue if its budget allows.
     /// * `Ok(false)`: If activity was minimal (small PTY read with no UI events), if `epoll_wait`
     ///   timed out (empty `events_slice`), or if a PTY EOF/critical error occurred.
-    fn process_epoll_batch(
-        &mut self,
-        accumulated_pty_data: &mut Vec<u8>,
-    ) -> Result<bool> {
+    fn process_epoll_batch(&mut self, accumulated_pty_data: &mut Vec<u8>) -> Result<bool> {
         if self.pty_event_buffer.is_empty() {
             // No events from epoll_wait (likely timed out); signal to stop polling for this cycle.
             return Ok(false);
@@ -136,7 +133,7 @@ impl<D: Driver> LinuxX11Platform<D> {
                         .process_events()
                         .context("Driver event processing failed during batch")?;
                     // The orchestrator is responsible for interpreting any CloseRequested events.
-                   self.platform_events 
+                    self.platform_events
                         .extend(driver_events.into_iter().map(PlatformEvent::from));
                 }
                 PTY_EPOLL_TOKEN => {
@@ -147,7 +144,8 @@ impl<D: Driver> LinuxX11Platform<D> {
                         match self.pty.read(&mut pty_read_chunk_buf) {
                             Ok(0) => {
                                 // PTY EOF
-                                self.platform_events.push(BackendEvent::CloseRequested.into());
+                                self.platform_events
+                                    .push(BackendEvent::CloseRequested.into());
                                 // PTY EOF is a definitive reason to stop further polling in this poll_events call.
                                 return Ok(false);
                             }
@@ -168,7 +166,8 @@ impl<D: Driver> LinuxX11Platform<D> {
                             Err(e) => {
                                 // Any other PTY read error.
                                 log::error!("Critical PTY read error in batch: {:?}. Forwarding as CloseRequested.", e);
-                                self.platform_events.push(BackendEvent::CloseRequested.into());
+                                self.platform_events
+                                    .push(BackendEvent::CloseRequested.into());
                                 // Critical error; stop further polling.
                                 return Ok(false);
                             }
@@ -247,9 +246,7 @@ impl<D: Driver> Platform for LinuxX11Platform<D> {
             ) {
                 Ok(()) => {
                     // This is the success path, formerly the code after the `?`
-                    let should_continue = self.process_epoll_batch(
-                        &mut accumulated_pty_data,
-                    )?;
+                    let should_continue = self.process_epoll_batch(&mut accumulated_pty_data)?;
 
                     if !should_continue {
                         break;
@@ -321,7 +318,10 @@ impl<D: Driver> Platform for LinuxX11Platform<D> {
                     self.driver.set_cursor_visibility(cursor_visibility);
                 }
                 PlatformAction::RequestPaste => {
-                    self.driver.request_selection_data(CLIPBOARD_SELECTION_INDEX.into(), TRAIT_ATOM_ID_CLIPBOARD);
+                    self.driver.request_selection_data(
+                        CLIPBOARD_SELECTION_INDEX.into(),
+                        TRAIT_ATOM_ID_CLIPBOARD,
+                    );
                 }
             }
         }

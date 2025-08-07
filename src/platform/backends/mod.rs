@@ -12,12 +12,12 @@ use anyhow::Result;
 use std::os::unix::io::RawFd;
 
 // Re-export driver implementations so they can be accessed via `crate::platform::backends::console::ConsoleDriver`, etc.
+pub mod cocoa; // Add this line
+pub mod console;
 #[cfg(test)]
 pub mod mock;
-pub mod console;
-pub mod x11;
-pub mod cocoa; // Add this line
 pub mod wayland;
+pub mod x11;
 
 // Import enums for Driver trait method signatures
 pub use x11::window::CursorVisibility; // For set_cursor_visibility - Made pub

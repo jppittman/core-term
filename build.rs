@@ -37,7 +37,10 @@ fn main() {
                 if let Err(e) = pkg_config::probe_library(lib) {
                     // Panicking here is the correct behavior, as these are
                     // required dependencies for the build to succeed on Linux.
-                    panic!("Failed to find required library `{}` using pkg-config: {}", lib, e);
+                    panic!(
+                        "Failed to find required library `{}` using pkg-config: {}",
+                        lib, e
+                    );
                 }
             }
         }

@@ -57,10 +57,10 @@ impl Driver for WaylandDriver {
         warn!("WaylandDriver::get_platform_state() is not fully implemented.");
         PlatformState {
             event_fd: self.get_event_fd(),
-            font_cell_width_px: 10, // Placeholder
+            font_cell_width_px: 10,  // Placeholder
             font_cell_height_px: 20, // Placeholder
             scale_factor: 1.0,
-            display_width_px: 800, // Placeholder
+            display_width_px: 800,  // Placeholder
             display_height_px: 600, // Placeholder
         }
     }
@@ -82,7 +82,10 @@ impl Driver for WaylandDriver {
     }
 
     fn set_title(&mut self, title: &str) {
-        warn!("WaylandDriver::set_title() is not implemented: title={}", title);
+        warn!(
+            "WaylandDriver::set_title() is not implemented: title={}",
+            title
+        );
     }
 
     fn bell(&mut self) {
