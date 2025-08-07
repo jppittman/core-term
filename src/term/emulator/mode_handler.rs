@@ -22,11 +22,7 @@ impl TerminalEmulator {
         }
     }
 
-    pub(super) fn designate_character_set(
-        &mut self,
-        g_set_index: usize,
-        charset: CharacterSet,
-    ) {
+    pub(super) fn designate_character_set(&mut self, g_set_index: usize, charset: CharacterSet) {
         if g_set_index < self.active_charsets.len() {
             self.active_charsets[g_set_index] = charset;
             trace!("Designated G{} to {:?}", g_set_index, charset);

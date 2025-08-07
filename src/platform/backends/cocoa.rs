@@ -77,10 +77,13 @@ impl Driver for CocoaDriver {
                 }
                 RenderCommand::SetCursorVisibility { visible } => {
                     // This is part of RenderCommand enum, distinct from Driver::set_cursor_visibility
-                    println!("CocoaDriver: RenderCommand::SetCursorVisibility - {}", visible);
+                    println!(
+                        "CocoaDriver: RenderCommand::SetCursorVisibility - {}",
+                        visible
+                    );
                 }
                 RenderCommand::SetWindowTitle { title } => {
-                     // This is part of RenderCommand enum, distinct from Driver::set_title
+                    // This is part of RenderCommand enum, distinct from Driver::set_title
                     println!("CocoaDriver: RenderCommand::SetWindowTitle - {}", title);
                 }
                 RenderCommand::RingBell => {
@@ -88,7 +91,7 @@ impl Driver for CocoaDriver {
                     println!("CocoaDriver: RenderCommand::RingBell");
                 }
                 RenderCommand::PresentFrame => {
-                     // This is part of RenderCommand enum, distinct from Driver::present
+                    // This is part of RenderCommand enum, distinct from Driver::present
                     println!("CocoaDriver: RenderCommand::PresentFrame");
                 }
             }

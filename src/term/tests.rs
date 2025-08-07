@@ -7,12 +7,12 @@ use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::platform::backends::MouseButton; // Correct import for MouseButton
 use crate::term::{
+    modes::DecModeConstant,   // For DECTCEM test
     snapshot::SelectionRange, // Corrected import for SelectionRange
     AnsiCommand,
     ControlEvent,
     CursorRenderState,
     CursorShape,
-    modes::DecModeConstant, // For DECTCEM test
     EmulatorAction,
     EmulatorInput,
     // Imports for new tests:

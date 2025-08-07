@@ -104,8 +104,9 @@ impl<'a> AppOrchestrator<'a> {
                 trace!("EmulatorAction::RequestRedraw received.");
             }
             EmulatorAction::RequestClipboardContent => {
-                self.platform.dispatch_actions(vec![PlatformAction::RequestPaste])?;
-            } 
+                self.platform
+                    .dispatch_actions(vec![PlatformAction::RequestPaste])?;
+            }
         }
         Ok(())
     }
@@ -205,9 +206,13 @@ impl<'a> AppOrchestrator<'a> {
                             modifiers,
                             text,
                         } => {
-                            
                             debug!("Key: {:?} + {:?}\nText: {:?}", modifiers, symbol, text);
-                            let key_input_action = keys::map_key_event_to_action(symbol, modifiers, &crate::config::CONFIG).unwrap_or(UserInputAction::KeyInput {
+                            let key_input_action = keys::map_key_event_to_action(
+                                symbol,
+                                modifiers,
+                                &crate::config::CONFIG,
+                            )
+                            .unwrap_or(UserInputAction::KeyInput {
                                 symbol,
                                 modifiers,
                                 text: if text.is_empty() { None } else { Some(text) },
