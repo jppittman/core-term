@@ -487,3 +487,106 @@ fn test_dirty_line_processing() {
 
     assert_eq!(commands.last().unwrap(), &ActualRenderCommand::PresentFrame);
 }
+
+#[test]
+fn test_render_wide_character() {
+    let font_width = 8;
+    let font_height = 16;
+    let num_cols = 5;
+    let num_rows = 1;
+
+    let (renderer, mut driver) =
+        create_test_renderer_and_driver(num_cols, num_rows, font_width, font_height);
+
+    let test_config = Config::default();
+    let test_platform_state = driver.get_platform_state();
+
+    let mut line_cells = vec![
+        Glyph::Single(ContentCell {
+            c: ' ',
+            attr: default_attrs()
+        });
+        num_cols
+    ];
+    line_cells[0] = Glyph::WidePrimary(ContentCell {
+        c: '世',
+        attr: default_attrs(),
+    });
+    line_cells[1] = Glyph::WideSpacer {
+        primary_column_on_line: 0,
+    };
+
+    let lines_data = vec![SnapshotLine {
+        is_dirty: true,
+        cells: line_cells,
+    }];
+
+    let cursor_render_state = Some(CursorRenderState {
+        x: 2,
+        y: 0,
+        shape: CursorShape::Block,
+        cell_char_underneath: ' ',
+        cell_attributes_underneath: default_attrs(),
+    });
+
+    let snapshot = create_test_snapshot(
+        lines_data,
+        cursor_render_state,
+        num_cols,
+        num_rows,
+        Selection::default(),
+    );
+    let render_commands =
+        renderer.prepare_render_commands(&snapshot, &test_config, &test_platform_state);
+    driver
+        .execute_render_commands(render_commands)
+        .expect("Execute render commands failed");
+    driver.present().expect("Driver present failed");
+
+    let commands = driver.commands();
+
+    let expected_text_wide = ActualRenderCommand::DrawTextRun {
+        x: 0,
+        y: 0,
+        text: "世".to_string(),
+        fg: test_config.colors.foreground,
+        bg: test_config.colors.background,
+        flags: AttrFlags::empty(),
+        is_selected: false,
+    };
+    assert!(
+        commands.contains(&expected_text_wide),
+        "Missing wide char text. Commands: {:?}",
+        commands
+    );
+
+    let expected_fill_spaces = ActualRenderCommand::FillRect {
+        x: 2,
+        y: 0,
+        width: num_cols - 2,
+        height: 1,
+        color: test_config.colors.background,
+        is_selection_bg: false,
+    };
+    assert!(
+        commands.contains(&expected_fill_spaces),
+        "Missing fill for remaining spaces. Commands: {:?}",
+        commands
+    );
+
+    let expected_cursor_draw = ActualRenderCommand::DrawTextRun {
+        x: 2,
+        y: 0,
+        text: " ".to_string(),
+        fg: test_config.colors.background,
+        bg: test_config.colors.foreground,
+        flags: AttrFlags::empty(),
+        is_selected: false,
+    };
+    assert!(
+        commands.contains(&expected_cursor_draw),
+        "Missing cursor draw. Commands: {:?}",
+        commands
+    );
+    assert_eq!(commands.last().unwrap(), &ActualRenderCommand::PresentFrame);
+}

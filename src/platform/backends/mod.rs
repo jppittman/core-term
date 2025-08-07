@@ -12,6 +12,8 @@ use anyhow::Result;
 use std::os::unix::io::RawFd;
 
 // Re-export driver implementations so they can be accessed via `crate::platform::backends::console::ConsoleDriver`, etc.
+#[cfg(test)]
+pub mod mock;
 pub mod console;
 pub mod x11;
 pub mod cocoa; // Add this line
