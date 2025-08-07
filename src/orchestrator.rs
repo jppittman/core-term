@@ -363,3 +363,6 @@ impl<'a> AppOrchestrator<'a> {
         Ok(OrchestratorStatus::Running)
     }
 }
+
+#[cfg(test)]
+mod tests;
