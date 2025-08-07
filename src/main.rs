@@ -67,9 +67,10 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(target_os = "linux")]
     {
+        use crate::platform::backends::x11::XDriver;
         use crate::platform::linux_x11::LinuxX11Platform;
         info!("Initializing LinuxX11Platform...");
-        let (linux_platform, state) = LinuxX11Platform::new(
+        let (linux_platform, state) = LinuxX11Platform::<XDriver>::new(
             DEFAULT_INITIAL_PTY_COLS,
             DEFAULT_INITIAL_PTY_ROWS,
             shell_command,

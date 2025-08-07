@@ -34,16 +34,16 @@ const PTY_READ_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE_MULTIPLIER * PTY_BASE_B
 /// Index for clipboard selection, using 2 for PRIMARY selection, common in X11.
 const CLIPBOARD_SELECTION_INDEX: u32 = 2;
 
-pub struct LinuxX11Platform {
+pub struct LinuxX11Platform<D: Driver> {
     pty: NixPty,
-    driver: XDriver,
+    driver: D,
     event_monitor: EventMonitor,
     shutdown_requested: bool,
     pty_event_buffer: Vec<epoll::epoll_event>,
     platform_events: Vec<PlatformEvent>,
 }
 
-impl LinuxX11Platform {
+impl<D: Driver> LinuxX11Platform<D> {
     pub fn new(
         initial_pty_cols: u16,
         initial_pty_rows: u16,
@@ -67,7 +67,7 @@ impl LinuxX11Platform {
         };
 
         let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
-        let driver = XDriver::new().context("Failed to create XDriver")?;
+        let driver = D::new().context("Failed to create Driver")?;
         let event_monitor = EventMonitor::new().context("Failed to create EventMonitor")?;
 
         let pty_fd = pty.as_raw_fd();
@@ -208,7 +208,7 @@ impl LinuxX11Platform {
     }
 }
 
-impl Platform for LinuxX11Platform {
+impl<D: Driver> Platform for LinuxX11Platform<D> {
     fn new(
         initial_pty_cols: u16,
         initial_pty_rows: u16,
@@ -219,7 +219,7 @@ impl Platform for LinuxX11Platform {
         Self: Sized,
     {
         // Call the inherent new method
-        LinuxX11Platform::new(
+        LinuxX11Platform::<D>::new(
             initial_pty_cols,
             initial_pty_rows,
             shell_command,
@@ -338,7 +338,7 @@ impl Platform for LinuxX11Platform {
     }
 }
 
-impl Drop for LinuxX11Platform {
+impl<D: Driver> Drop for LinuxX11Platform<D> {
     fn drop(&mut self) {
         info!("Dropping LinuxX11Platform...");
         if let Err(e) = self.shutdown() {
@@ -347,3 +347,6 @@ impl Drop for LinuxX11Platform {
         info!("LinuxX11Platform dropped.");
     }
 }
+
+#[cfg(test)]
+mod tests;
