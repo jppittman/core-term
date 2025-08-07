@@ -30,15 +30,9 @@ pub use snapshot::{
 
 // Crate-level imports (adjust paths based on where items are moved)
 use crate::ansi::commands::AnsiCommand;
-// Explicitly import Color and NamedColor if they are used directly in this module's functions,
-// though they are mostly encapsulated within other types like Attributes.
-
-// Logging
 
 /// Default tab interval.
 pub const DEFAULT_TAB_INTERVAL: u8 = 8;
-
-// ControlEvent is now defined in and re-exported from action.rs
 
 /// Inputs that the terminal emulator processes.
 ///
@@ -47,48 +41,59 @@ pub const DEFAULT_TAB_INTERVAL: u8 = 8;
 /// primary "instruction set" for the terminal's internal state machine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EmulatorInput {
-    /// An ANSI command or sequence parsed from the output of the
-    /// program running in the PTY (Pseudo-Terminal).
+    /// An ANSI command parsed from the output of the attached PTY.
     Ansi(AnsiCommand),
 
-    /// An event originating from the user (e.g., keyboard input) or the
-    /// backend system (e.g., window resize, focus change), as reported
-    /// by the `Driver` and translated by the `AppOrchestrator`.
+    /// A user-initiated event, such as a keypress or mouse action.
     User(UserInputAction),
-    /// An internal control event, such as a resize notification from the orchestrator.
-    Control(ControlEvent), // Uses ControlEvent from action.rs
 
-    /// A single raw character. This variant might be used for scenarios
-    /// where direct character printing is intended without full ANSI
-    /// processing, or for specific unhandled cases. (Consider if this
-    /// should always be wrapped in an AnsiCommand::Print for consistency).
+    /// An internal control event, such as a resize notification from the orchestrator.
+    Control(ControlEvent),
+
+    /// A single raw character.
+    ///
+    /// This is typically used for direct character input that doesn't involve
+    /// full ANSI processing.
     RawChar(char),
 }
 
 /// Defines the essential public interface for a terminal emulator.
-/// This interface is used by components like the `AppOrchestrator` and `Renderer`.
+///
+/// This trait abstracts the core functionality of a terminal emulator, allowing
+/// components like the `AppOrchestrator` and `Renderer` to interact with it
+/// without being tied to a specific implementation. It handles state updates
+/// from inputs and provides snapshots of its state for rendering.
 pub trait TerminalInterface {
-    /// Interprets an `EmulatorInput` and updates the terminal state.
-    /// Returns an `Option<EmulatorAction>` if the input results in an action
-    /// that needs to be handled externally.
+    /// Interprets an `EmulatorInput`, updates the terminal's state accordingly,
+    /// and returns an optional `EmulatorAction` for external handling.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The `EmulatorInput` to be processed.
+    ///
+    /// # Returns
+    ///
+    /// An `Option<EmulatorAction>` if the input triggers an action that the
+    /// caller (e.g., the `AppOrchestrator`) needs to handle, such as writing
+    /// output to the PTY. Returns `None` if the input is fully handled internally.
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction>;
 
-    /// Creates a snapshot of the terminal's current visible state for rendering.
-    /// This method provides all necessary information for the renderer to draw
-    /// the terminal screen, including dirty flags, cell data, cursor, and selection.
+    /// Creates a `RenderSnapshot` of the terminal's current visible state.
+    ///
+    /// This method provides all necessary information for the `Renderer` to draw the
+    /// terminal screen, including cell data, dirty flags, cursor state, and selection.
+    ///
+    /// It returns `None` if no snapshot is generated, for example, if the terminal
+    /// is not in a renderable state.
     fn get_render_snapshot(&mut self) -> Option<RenderSnapshot>;
 }
 
 impl TerminalInterface for TerminalEmulator {
-    /// Interprets an `EmulatorInput` and updates the terminal state.
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
-        // This just calls the inherent method on TerminalEmulator (defined in src/term/emulator/mod.rs)
         self.interpret_input(input)
     }
 
-    /// Creates a snapshot of the terminal's current visible state for rendering.
     fn get_render_snapshot(&mut self) -> Option<RenderSnapshot> {
-        // This just calls the inherent method on TerminalEmulator (defined in src/term/emulator/mod.rs)
         self.get_render_snapshot()
     }
 }

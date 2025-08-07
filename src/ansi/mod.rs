@@ -1,24 +1,43 @@
 // src/ansi/mod.rs
 
-//! Handles ANSI escape sequence parsing.
+//! Provides a parser for ANSI escape sequences.
+//!
+//! This module contains the `AnsiParser` trait, which defines the core interface
+//! for parsing byte streams into `AnsiCommand`s, and its primary implementation,
+//! `AnsiProcessor`. The parser is designed to be stateful and can process
+//! input incrementally.
 
-// Make submodules public so their contents can be used elsewhere
 pub mod commands;
 mod lexer;
 mod parser;
-// Re-export necessary items for public API
-pub use commands::AnsiCommand;
 
-// Keep internal components private to this module unless needed outside
+pub use commands::AnsiCommand;
 use lexer::AnsiLexer;
 use parser::AnsiParser as ParserImpl;
 
+/// A trait for stateful ANSI escape sequence parsers.
+///
+/// This trait defines the essential functionality for a parser that consumes
+/// bytes and produces a sequence of `AnsiCommand`s.
 pub trait AnsiParser {
+    /// Processes a byte slice and returns any newly parsed commands.
+    ///
+    /// This method feeds the given bytes into the parser's state machine.
+    /// The parser will consume the bytes, update its internal state, and return
+    /// a vector of any `AnsiCommand`s that were completed during this chunk
+    /// of processing.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - A slice of bytes to be processed.
     fn process_bytes(&mut self, bytes: &[u8]) -> Vec<AnsiCommand>;
 }
 
-/// The main processor that combines the lexer and parser.
-/// It takes byte slices as input and provides parsed commands.
+/// A stateful processor that parses a stream of bytes into `AnsiCommand`s.
+///
+/// This struct implements the `AnsiParser` trait and serves as the main
+/// entry point for ANSI parsing. It internally uses a lexer and a parser
+/// to transform the raw byte stream into structured commands.
 #[derive(Debug, Default)]
 pub struct AnsiProcessor {
     pub(super) lexer: AnsiLexer,
@@ -26,7 +45,7 @@ pub struct AnsiProcessor {
 }
 
 impl AnsiProcessor {
-    /// Creates a new `AnsiProcessor`.
+    /// Creates a new, default `AnsiProcessor`.
     pub fn new() -> Self {
         AnsiProcessor {
             lexer: AnsiLexer::new(),
@@ -36,10 +55,6 @@ impl AnsiProcessor {
 }
 
 impl AnsiParser for AnsiProcessor {
-    /// Processes a slice of bytes.
-    ///
-    /// Bytes are lexed into tokens, and tokens are processed by the parser.
-    /// Call `take_commands` on the `parser` field to retrieve results.
     fn process_bytes(&mut self, bytes: &[u8]) -> Vec<AnsiCommand> {
         for byte in bytes {
             self.lexer.process_byte(*byte);
