@@ -19,6 +19,9 @@ pub use macos::MacosPlatform; // Add this line
 #[cfg(test)]
 pub mod mock;
 
+#[cfg(test)]
+mod tests;
+
 pub enum PlatformEvent {
     BackendEvent(BackendEvent),
     IOEvent { data: Vec<u8> },
