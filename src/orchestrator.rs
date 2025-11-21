@@ -5,6 +5,8 @@
 //! of the terminal application. It is responsible for coordinating the other
 //! major components: `platform`, `term_emulator`, `ansi_parser`, and `renderer`.
 
+pub mod actor;
+
 use anyhow::{Context, Result};
 use log::{debug, info, trace, warn};
 
@@ -15,9 +17,7 @@ use crate::platform::actions::PlatformAction;
 use crate::platform::backends::{BackendEvent, MouseButton};
 use crate::platform::{platform_trait::Platform, PlatformEvent};
 use crate::renderer::Renderer;
-use crate::term::{
-    ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction,
-};
+use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
 
 /// Represents the status of the application after an event cycle.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -97,10 +97,9 @@ impl<'a> AppOrchestrator<'a> {
                 trace!("EmulatorAction::RequestRedraw received.");
                 Ok(())
             }
-            EmulatorAction::RequestClipboardContent => {
-                self.platform
-                    .dispatch_actions(vec![PlatformAction::RequestPaste])
-            }
+            EmulatorAction::RequestClipboardContent => self
+                .platform
+                .dispatch_actions(vec![PlatformAction::RequestPaste]),
         }
     }
 

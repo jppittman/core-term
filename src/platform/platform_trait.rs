@@ -71,6 +71,20 @@ pub trait Platform {
     /// The current `PlatformState`, including window dimensions and font metrics.
     fn get_current_platform_state(&self) -> PlatformState;
 
+    /// Runs the platform's native event loop, blocking until shutdown.
+    ///
+    /// This method consumes `self` and runs the platform-specific event loop:
+    /// - macOS: `NSApp.run()` - blocks in Cocoa event loop
+    /// - Linux: X11/Wayland event loop
+    ///
+    /// Events are forwarded to the Orchestrator actor via channels.
+    /// Returns when the application shuts down (window closed, quit requested, etc.).
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on clean shutdown, or an error if the event loop fails.
+    fn run(self) -> Result<()>;
+
     /// Performs any necessary cleanup before the platform is dropped.
     ///
     /// This includes releasing platform resources (e.g., closing display

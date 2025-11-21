@@ -11,16 +11,16 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use x11::{keysym, xcursor, xlib, xft};
+use x11::{keysym, xcursor, xft, xlib};
 
 // Re-export common X11 types for convenience within the adapter and its users.
 // These are opaque types or type aliases from the x11-rs crates.
-pub use x11::xlib::{
-    Atom, Bool, Display, KeyCode, KeySym, Screen, Visual, Window, XClassHint, XEvent, XIC, XIM,
-    XPoint, XRectangle, XSetWindowAttributes, XSizeHints, XStandardColormap, XTextProperty,
-    XWMHints,
-};
 pub use x11::xft::{XftColor, XftDraw, XftFont};
+pub use x11::xlib::{
+    Atom, Bool, Display, KeyCode, KeySym, Screen, Visual, Window, XClassHint, XEvent, XPoint,
+    XRectangle, XSetWindowAttributes, XSizeHints, XStandardColormap, XTextProperty, XWMHints, XIC,
+    XIM,
+};
 
 /// Represents an error that can occur within the XAdapter system.
 #[derive(Debug, thiserror::Error)]
@@ -163,20 +163,56 @@ pub enum MockXConcreteEvent {
 #[derive(Debug, Clone)]
 pub enum RecordedCall {
     // Display and Connection
-    OpenDisplay { name: Option<String> },
-    CloseDisplay { dpy: *mut Display },
-    Flush { dpy: *mut Display },
-    Sync { dpy: *mut Display, discard: Bool },
-    Pending { dpy: *mut Display },
-    NextEvent { dpy: *mut Display },
-    ConnectionNumber { dpy: *mut Display },
-    DefaultScreen { dpy: *mut Display },
-    RootWindow { dpy: *mut Display, screen_number: i32 },
-    DefaultDepth { dpy: *mut Display, screen_number: i32 },
-    DefaultVisual { dpy: *mut Display, screen_number: i32 },
-    DefaultColormap { dpy: *mut Display, screen_number: i32 },
-    InternAtom { dpy: *mut Display, name: String, only_if_exists: Bool },
-    GetAtomName { dpy: *mut Display, atom: Atom },
+    OpenDisplay {
+        name: Option<String>,
+    },
+    CloseDisplay {
+        dpy: *mut Display,
+    },
+    Flush {
+        dpy: *mut Display,
+    },
+    Sync {
+        dpy: *mut Display,
+        discard: Bool,
+    },
+    Pending {
+        dpy: *mut Display,
+    },
+    NextEvent {
+        dpy: *mut Display,
+    },
+    ConnectionNumber {
+        dpy: *mut Display,
+    },
+    DefaultScreen {
+        dpy: *mut Display,
+    },
+    RootWindow {
+        dpy: *mut Display,
+        screen_number: i32,
+    },
+    DefaultDepth {
+        dpy: *mut Display,
+        screen_number: i32,
+    },
+    DefaultVisual {
+        dpy: *mut Display,
+        screen_number: i32,
+    },
+    DefaultColormap {
+        dpy: *mut Display,
+        screen_number: i32,
+    },
+    InternAtom {
+        dpy: *mut Display,
+        name: String,
+        only_if_exists: Bool,
+    },
+    GetAtomName {
+        dpy: *mut Display,
+        atom: Atom,
+    },
 
     // Window Management
     CreateSimpleWindow {
@@ -187,13 +223,27 @@ pub enum RecordedCall {
         width: u32,
         height: u32,
         border_width: u32,
-        border: u64, // unsigned long
+        border: u64,     // unsigned long
         background: u64, // unsigned long
     },
-    DestroyWindow { dpy: *mut Display, w: Window },
-    MapWindow { dpy: *mut Display, w: Window },
-    SelectInput { dpy: *mut Display, w: Window, event_mask: libc::c_long },
-    StoreName { dpy: *mut Display, w: Window, name: String },
+    DestroyWindow {
+        dpy: *mut Display,
+        w: Window,
+    },
+    MapWindow {
+        dpy: *mut Display,
+        w: Window,
+    },
+    SelectInput {
+        dpy: *mut Display,
+        w: Window,
+        event_mask: libc::c_long,
+    },
+    StoreName {
+        dpy: *mut Display,
+        w: Window,
+        name: String,
+    },
     ChangeProperty {
         dpy: *mut Display,
         w: Window,
@@ -204,17 +254,40 @@ pub enum RecordedCall {
         data: Vec<u8>, // Store a copy of the data
         nelements: i32,
     },
-    SetWMProtocols { dpy: *mut Display, w: Window, protocols: Vec<Atom>, count: i32 },
+    SetWMProtocols {
+        dpy: *mut Display,
+        w: Window,
+        protocols: Vec<Atom>,
+        count: i32,
+    },
 
     // Hints
     AllocSizeHints, // No params for XAllocSizeHints itself
-    SetWMNormalHints { dpy: *mut Display, w: Window, hints: Box<XSizeHints> }, // Box to own it
+    SetWMNormalHints {
+        dpy: *mut Display,
+        w: Window,
+        hints: Box<XSizeHints>,
+    }, // Box to own it
 
     // Xft Font & Drawing
-    XftFontOpenName { dpy: *mut Display, screen: i32, name: String },
-    XftFontClose { dpy: *mut Display, font: *mut XftFont },
-    XftDrawCreate { dpy: *mut Display, drawable: Window, visual: *mut Visual, colormap: Atom },
-    XftDrawDestroy { draw: *mut XftDraw },
+    XftFontOpenName {
+        dpy: *mut Display,
+        screen: i32,
+        name: String,
+    },
+    XftFontClose {
+        dpy: *mut Display,
+        font: *mut XftFont,
+    },
+    XftDrawCreate {
+        dpy: *mut Display,
+        drawable: Window,
+        visual: *mut Visual,
+        colormap: Atom,
+    },
+    XftDrawDestroy {
+        draw: *mut XftDraw,
+    },
     XftDrawStringUtf8 {
         draw: *mut XftDraw,
         color: Box<XftColor>, // Box to own it
@@ -224,32 +297,79 @@ pub enum RecordedCall {
         text: String,
         len: i32,
     },
-    XftDrawRect { draw: *mut XftDraw, color: Box<XftColor>, x: i32, y: i32, width: u32, height: u32 },
+    XftDrawRect {
+        draw: *mut XftDraw,
+        color: Box<XftColor>,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    },
     XftColorAllocName {
         dpy: *mut Display,
         visual: *mut Visual,
         colormap: Atom,
         name: String,
     },
-    XftColorFree { dpy: *mut Display, visual: *mut Visual, colormap: Atom, color: Box<XftColor> },
+    XftColorFree {
+        dpy: *mut Display,
+        visual: *mut Visual,
+        colormap: Atom,
+        color: Box<XftColor>,
+    },
 
     // XIM
-    OpenIM { dpy: *mut Display /* ... other args ... */ },
-    CloseIM { im: XIM },
-    CreateIC { im: XIM /* ... varargs ... */ },
-    DestroyIC { ic: XIC },
-    SetICFocus { ic: XIC },
-    UnsetICFocus { ic: XIC },
-    LookupString { ic: XIC, event: Box<XEvent>, buffer: Vec<u8>, nbytes: i32 },
+    OpenIM {
+        dpy: *mut Display, /* ... other args ... */
+    },
+    CloseIM {
+        im: XIM,
+    },
+    CreateIC {
+        im: XIM, /* ... varargs ... */
+    },
+    DestroyIC {
+        ic: XIC,
+    },
+    SetICFocus {
+        ic: XIC,
+    },
+    UnsetICFocus {
+        ic: XIC,
+    },
+    LookupString {
+        ic: XIC,
+        event: Box<XEvent>,
+        buffer: Vec<u8>,
+        nbytes: i32,
+    },
 
     // Cursor
-    CursorLibraryLoadCursor { dpy: *mut Display, name: String },
-    DefineCursor { dpy: *mut Display, w: Window, cursor: xlib::Cursor },
-    FreeCursor { dpy: *mut Display, cursor: xlib::Cursor },
+    CursorLibraryLoadCursor {
+        dpy: *mut Display,
+        name: String,
+    },
+    DefineCursor {
+        dpy: *mut Display,
+        w: Window,
+        cursor: xlib::Cursor,
+    },
+    FreeCursor {
+        dpy: *mut Display,
+        cursor: xlib::Cursor,
+    },
 
     // Selections (Clipboard/DND)
-    SetSelectionOwner { dpy: *mut Display, selection: Atom, owner: Window, time: u64 },
-    GetSelectionOwner { dpy: *mut Display, selection: Atom },
+    SetSelectionOwner {
+        dpy: *mut Display,
+        selection: Atom,
+        owner: Window,
+        time: u64,
+    },
+    GetSelectionOwner {
+        dpy: *mut Display,
+        selection: Atom,
+    },
     ConvertSelection {
         dpy: *mut Display,
         selection: Atom,
@@ -298,7 +418,7 @@ pub trait XAdapter: Send + Sync + fmt::Debug + 'static {
         width: u32,
         height: u32,
         border_width: u32,
-        border: u64, // unsigned long
+        border: u64,     // unsigned long
         background: u64, // unsigned long
     ) -> Result<Window>;
     fn destroy_window(&self, dpy: *mut Display, w: Window) -> Result<()>;
@@ -326,7 +446,12 @@ pub trait XAdapter: Send + Sync + fmt::Debug + 'static {
 
     // Hints
     fn alloc_size_hints(&self) -> Result<*mut XSizeHints>;
-    fn set_wm_normal_hints(&self, dpy: *mut Display, w: Window, hints: *mut XSizeHints) -> Result<()>;
+    fn set_wm_normal_hints(
+        &self,
+        dpy: *mut Display,
+        w: Window,
+        hints: *mut XSizeHints,
+    ) -> Result<()>;
     // Add XAllocWMHints, XSetWMHints, XAllocClassHint, XSetClassHint similarly
 
     // Xft Font & Drawing
@@ -392,7 +517,7 @@ pub trait XAdapter: Send + Sync + fmt::Debug + 'static {
     ) -> Result<XIM>; // Can return null
     fn close_im(&self, im: XIM) -> Result<()>; // Returns Status
     fn create_ic(&self, im: XIM /*, ... va_list ... */) -> Result<XIC>; // Variadic, tricky to mock perfectly.
-                                                                      // For mocking, might simplify signature or expect specific va_list patterns.
+                                                                        // For mocking, might simplify signature or expect specific va_list patterns.
     fn destroy_ic(&self, ic: XIC) -> Result<()>;
     fn set_ic_focus(&self, ic: XIC) -> Result<()>;
     fn unset_ic_focus(&self, ic: XIC) -> Result<()>;
@@ -652,7 +777,11 @@ impl XAdapter for MockXAdapter {
     }
 
     fn store_name(&self, dpy: *mut Display, w: Window, name: &CStr) -> Result<()> {
-        self.record_call(RecordedCall::StoreName { dpy, w, name: name.to_string_lossy().into_owned() });
+        self.record_call(RecordedCall::StoreName {
+            dpy,
+            w,
+            name: name.to_string_lossy().into_owned(),
+        });
         Ok(())
     }
 
@@ -679,7 +808,14 @@ impl XAdapter for MockXAdapter {
             Vec::new()
         };
         self.record_call(RecordedCall::ChangeProperty {
-            dpy, w, property, target_type: property_type, format, mode, data: data_slice, nelements,
+            dpy,
+            w,
+            property,
+            target_type: property_type,
+            format,
+            mode,
+            data: data_slice,
+            nelements,
         });
         Ok(())
     }
@@ -691,15 +827,19 @@ impl XAdapter for MockXAdapter {
         protocols: *mut Atom,
         count: i32,
     ) -> Result<Bool> {
-         let protocols_slice = if !protocols.is_null() && count > 0 {
+        let protocols_slice = if !protocols.is_null() && count > 0 {
             unsafe { std::slice::from_raw_parts(protocols, count as usize).to_vec() }
         } else {
             Vec::new()
         };
-        self.record_call(RecordedCall::SetWMProtocols { dpy, w, protocols: protocols_slice, count });
+        self.record_call(RecordedCall::SetWMProtocols {
+            dpy,
+            w,
+            protocols: protocols_slice,
+            count,
+        });
         Ok(1) // Success
     }
-
 
     // --- Hints (Subset) ---
     fn alloc_size_hints(&self) -> Result<*mut XSizeHints> {
@@ -711,22 +851,34 @@ impl XAdapter for MockXAdapter {
         // A simpler mock might just return a dangling pointer if XDriver is known not to misuse it,
         // or if tests can verify calls without needing to inspect the written values.
         // For now, let's assume tests will verify the XSetWMNormalHints call instead.
-        Ok(Box::into_raw(Box::new(unsafe{std::mem::zeroed::<XSizeHints>()})))
+        Ok(Box::into_raw(Box::new(unsafe {
+            std::mem::zeroed::<XSizeHints>()
+        })))
     }
 
-    fn set_wm_normal_hints(&self, dpy: *mut Display, w: Window, hints: *mut XSizeHints) -> Result<()> {
+    fn set_wm_normal_hints(
+        &self,
+        dpy: *mut Display,
+        w: Window,
+        hints: *mut XSizeHints,
+    ) -> Result<()> {
         // To properly record, we'd need to dereference hints and clone it.
         // Ensure hints is not null before dereferencing.
         let hints_box = if !hints.is_null() {
             unsafe { Box::new(*hints) } // Clone the content
         } else {
             // Or handle as an error/panic depending on expected XDriver behavior
-             return Err(anyhow!(XAdapterError::MockInvalidParams("NULL hints pointer".to_string())));
+            return Err(anyhow!(XAdapterError::MockInvalidParams(
+                "NULL hints pointer".to_string()
+            )));
         };
-        self.record_call(RecordedCall::SetWMNormalHints { dpy, w, hints: hints_box });
+        self.record_call(RecordedCall::SetWMNormalHints {
+            dpy,
+            w,
+            hints: hints_box,
+        });
         Ok(())
     }
-
 
     // --- Xft Font & Drawing (Subset) ---
     fn xft_font_open_name(
@@ -736,7 +888,11 @@ impl XAdapter for MockXAdapter {
         name: &CStr,
     ) -> Result<*mut XftFont> {
         let name_str = name.to_string_lossy().into_owned();
-        self.record_call(RecordedCall::XftFontOpenName { dpy, screen, name: name_str });
+        self.record_call(RecordedCall::XftFontOpenName {
+            dpy,
+            screen,
+            name: name_str,
+        });
         Ok(self.new_mock_xid() as *mut XftFont) // Dummy font pointer
     }
 
@@ -752,7 +908,12 @@ impl XAdapter for MockXAdapter {
         visual: *mut Visual,
         colormap: Atom,
     ) -> Result<*mut XftDraw> {
-        self.record_call(RecordedCall::XftDrawCreate { dpy, drawable, visual, colormap });
+        self.record_call(RecordedCall::XftDrawCreate {
+            dpy,
+            drawable,
+            visual,
+            colormap,
+        });
         Ok(self.new_mock_xid() as *mut XftDraw) // Dummy draw pointer
     }
 
@@ -779,9 +940,19 @@ impl XAdapter for MockXAdapter {
         } else {
             String::new()
         };
-        let color_box = if !color.is_null() { unsafe {Box::new(*color)} } else { Box::new(unsafe{std::mem::zeroed()}) };
+        let color_box = if !color.is_null() {
+            unsafe { Box::new(*color) }
+        } else {
+            Box::new(unsafe { std::mem::zeroed() })
+        };
         self.record_call(RecordedCall::XftDrawStringUtf8 {
-            draw, color: color_box, font, x, y, text: text_str, len,
+            draw,
+            color: color_box,
+            font,
+            x,
+            y,
+            text: text_str,
+            len,
         });
         Ok(())
     }
@@ -795,8 +966,19 @@ impl XAdapter for MockXAdapter {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        let color_box = if !color.is_null() { unsafe {Box::new(*color)} } else { Box::new(unsafe{std::mem::zeroed()}) };
-        self.record_call(RecordedCall::XftDrawRect{ draw, color: color_box, x, y, width, height});
+        let color_box = if !color.is_null() {
+            unsafe { Box::new(*color) }
+        } else {
+            Box::new(unsafe { std::mem::zeroed() })
+        };
+        self.record_call(RecordedCall::XftDrawRect {
+            draw,
+            color: color_box,
+            x,
+            y,
+            width,
+            height,
+        });
         Ok(())
     }
 
@@ -809,9 +991,16 @@ impl XAdapter for MockXAdapter {
         result: *mut XftColor,
     ) -> Result<Bool> {
         let name_str = name.to_string_lossy().into_owned();
-        self.record_call(RecordedCall::XftColorAllocName { dpy, visual, colormap, name: name_str.clone() });
+        self.record_call(RecordedCall::XftColorAllocName {
+            dpy,
+            visual,
+            colormap,
+            name: name_str.clone(),
+        });
         if result.is_null() {
-             return Err(anyhow!(XAdapterError::MockInvalidParams("NULL result pointer for XftColorAllocName".to_string())));
+            return Err(anyhow!(XAdapterError::MockInvalidParams(
+                "NULL result pointer for XftColorAllocName".to_string()
+            )));
         }
         unsafe {
             *result = self.mock_xft_color_from_name(name);
@@ -826,8 +1015,17 @@ impl XAdapter for MockXAdapter {
         colormap: Atom,
         color: *mut XftColor,
     ) -> Result<()> {
-        let color_box = if !color.is_null() { unsafe {Box::new(*color)} } else { Box::new(unsafe{std::mem::zeroed()}) };
-        self.record_call(RecordedCall::XftColorFree { dpy, visual, colormap, color: color_box });
+        let color_box = if !color.is_null() {
+            unsafe { Box::new(*color) }
+        } else {
+            Box::new(unsafe { std::mem::zeroed() })
+        };
+        self.record_call(RecordedCall::XftColorFree {
+            dpy,
+            visual,
+            colormap,
+            color: color_box,
+        });
         Ok(())
     }
 
@@ -874,7 +1072,11 @@ impl XAdapter for MockXAdapter {
         // This is a complex one to mock accurately.
         // A simple mock might return 0 (no chars) and set status to XLookupNone.
         // Tests would need to configure specific lookup results.
-        let event_box = if !event.is_null() { unsafe {Box::new(*event)}} else { Box::new(unsafe{std::mem::zeroed()}) };
+        let event_box = if !event.is_null() {
+            unsafe { Box::new(*event) }
+        } else {
+            Box::new(unsafe { std::mem::zeroed() })
+        };
         self.record_call(RecordedCall::LookupString {
             ic,
             event: event_box,
@@ -882,10 +1084,12 @@ impl XAdapter for MockXAdapter {
             nbytes: bytes_buffer,
         });
         if !status_return.is_null() {
-            unsafe { *status_return = xlib::XLookupNone; }
+            unsafe {
+                *status_return = xlib::XLookupNone;
+            }
         }
         if !keysym_return.is_null() && !event.is_null() {
-             // Simplistic: try to extract keysym from the event if it's a KeyPress
+            // Simplistic: try to extract keysym from the event if it's a KeyPress
             unsafe {
                 if (*event).type_ == xlib::KeyPress {
                     let key_event = &(*event).key;
@@ -897,7 +1101,7 @@ impl XAdapter for MockXAdapter {
                     // It's assumed XFilterEvent and XLookupString on XIM provides the primary text and possibly keysym.
                     // If raw XLookupString on KeyEvents is used, it would need a keysym map.
                     // For XIM, the keysym is often less important than the composed string.
-                     *keysym_return = key_event.keycode as KeySym; // Very naive, just to have a value
+                    *keysym_return = key_event.keycode as KeySym; // Very naive, just to have a value
                 } else {
                     *keysym_return = keysym::XK_VoidSymbol as KeySym;
                 }
@@ -906,11 +1110,13 @@ impl XAdapter for MockXAdapter {
         Ok(0) // No characters composed
     }
 
-
     // --- Cursor (Subset) ---
     fn cursor_library_load_cursor(&self, dpy: *mut Display, name: &CStr) -> Result<xlib::Cursor> {
         let name_str = name.to_string_lossy().into_owned();
-        self.record_call(RecordedCall::CursorLibraryLoadCursor { dpy, name: name_str });
+        self.record_call(RecordedCall::CursorLibraryLoadCursor {
+            dpy,
+            name: name_str,
+        });
         Ok(self.new_mock_xid()) // Dummy cursor ID
     }
     fn define_cursor(&self, dpy: *mut Display, w: Window, cursor: xlib::Cursor) -> Result<()> {
@@ -930,7 +1136,12 @@ impl XAdapter for MockXAdapter {
         owner: Window,
         time: u64,
     ) -> Result<()> {
-        self.record_call(RecordedCall::SetSelectionOwner { dpy, selection, owner, time });
+        self.record_call(RecordedCall::SetSelectionOwner {
+            dpy,
+            selection,
+            owner,
+            time,
+        });
         Ok(())
     }
     fn get_selection_owner(&self, dpy: *mut Display, selection: Atom) -> Result<Window> {
@@ -946,11 +1157,17 @@ impl XAdapter for MockXAdapter {
         requestor: Window,
         time: u64,
     ) -> Result<()> {
-        self.record_call(RecordedCall::ConvertSelection { dpy, selection, target, property, requestor, time });
+        self.record_call(RecordedCall::ConvertSelection {
+            dpy,
+            selection,
+            target,
+            property,
+            requestor,
+            time,
+        });
         Ok(())
     }
 }
-
 
 /// A live implementation of `XAdapter` that calls actual X11 functions.
 /// This is what would be used in production.
@@ -980,7 +1197,11 @@ impl XAdapter for LiveXAdapter {
 
     fn close_display(&self, dpy: *mut Display) -> Result<()> {
         let status = unsafe { xlib::XCloseDisplay(dpy) };
-        if status == 0 { Ok(()) } else { Err(anyhow!("XCloseDisplay error: {}", status)) }
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!("XCloseDisplay error: {}", status))
+        }
     }
 
     fn flush(&self, dpy: *mut Display) -> Result<()> {
@@ -1044,20 +1265,34 @@ impl XAdapter for LiveXAdapter {
         background: u64,
     ) -> Result<Window> {
         Ok(unsafe {
-            xlib::XCreateSimpleWindow(dpy, parent, x, y, width, height, border_width, border, background)
+            xlib::XCreateSimpleWindow(
+                dpy,
+                parent,
+                x,
+                y,
+                width,
+                height,
+                border_width,
+                border,
+                background,
+            )
         })
     }
     fn destroy_window(&self, dpy: *mut Display, w: Window) -> Result<()> {
-        unsafe { xlib::XDestroyWindow(dpy, w) }; Ok(())
+        unsafe { xlib::XDestroyWindow(dpy, w) };
+        Ok(())
     }
     fn map_window(&self, dpy: *mut Display, w: Window) -> Result<()> {
-        unsafe { xlib::XMapWindow(dpy, w) }; Ok(())
+        unsafe { xlib::XMapWindow(dpy, w) };
+        Ok(())
     }
     fn select_input(&self, dpy: *mut Display, w: Window, event_mask: libc::c_long) -> Result<()> {
-        unsafe { xlib::XSelectInput(dpy, w, event_mask) }; Ok(())
+        unsafe { xlib::XSelectInput(dpy, w, event_mask) };
+        Ok(())
     }
     fn store_name(&self, dpy: *mut Display, w: Window, name: &CStr) -> Result<()> {
-        unsafe { xlib::XStoreName(dpy, w, name.as_ptr() as *mut libc::c_char) }; Ok(())
+        unsafe { xlib::XStoreName(dpy, w, name.as_ptr() as *mut libc::c_char) };
+        Ok(())
     }
     fn change_property(
         &self,
@@ -1071,7 +1306,16 @@ impl XAdapter for LiveXAdapter {
         nelements: i32,
     ) -> Result<()> {
         unsafe {
-            xlib::XChangeProperty(dpy, w, property, property_type, format, mode, data, nelements);
+            xlib::XChangeProperty(
+                dpy,
+                w,
+                property,
+                property_type,
+                format,
+                mode,
+                data,
+                nelements,
+            );
         }
         Ok(())
     }
@@ -1089,10 +1333,15 @@ impl XAdapter for LiveXAdapter {
     fn alloc_size_hints(&self) -> Result<*mut XSizeHints> {
         Ok(unsafe { xlib::XAllocSizeHints() })
     }
-    fn set_wm_normal_hints(&self, dpy: *mut Display, w: Window, hints: *mut XSizeHints) -> Result<()> {
-        unsafe { xlib::XSetWMNormalHints(dpy, w, hints) }; Ok(())
+    fn set_wm_normal_hints(
+        &self,
+        dpy: *mut Display,
+        w: Window,
+        hints: *mut XSizeHints,
+    ) -> Result<()> {
+        unsafe { xlib::XSetWMNormalHints(dpy, w, hints) };
+        Ok(())
     }
-
 
     // --- Xft Font & Drawing (Subset) ---
     fn xft_font_open_name(
@@ -1102,11 +1351,18 @@ impl XAdapter for LiveXAdapter {
         name: &CStr,
     ) -> Result<*mut XftFont> {
         let font = unsafe { xft::XftFontOpenName(dpy, screen, name.as_ptr()) };
-        if font.is_null() { Err(anyhow!("XftFontOpenName failed for: {}", name.to_string_lossy())) }
-        else { Ok(font) }
+        if font.is_null() {
+            Err(anyhow!(
+                "XftFontOpenName failed for: {}",
+                name.to_string_lossy()
+            ))
+        } else {
+            Ok(font)
+        }
     }
     fn xft_font_close(&self, dpy: *mut Display, font: *mut XftFont) -> Result<()> {
-        unsafe { xft::XftFontClose(dpy, font) }; Ok(())
+        unsafe { xft::XftFontClose(dpy, font) };
+        Ok(())
     }
     fn xft_draw_create(
         &self,
@@ -1116,10 +1372,15 @@ impl XAdapter for LiveXAdapter {
         colormap: Atom,
     ) -> Result<*mut XftDraw> {
         let draw = unsafe { xft::XftDrawCreate(dpy, drawable, visual, colormap) };
-        if draw.is_null() { Err(anyhow!("XftDrawCreate failed")) } else { Ok(draw) }
+        if draw.is_null() {
+            Err(anyhow!("XftDrawCreate failed"))
+        } else {
+            Ok(draw)
+        }
     }
     fn xft_draw_destroy(&self, draw: *mut XftDraw) -> Result<()> {
-        unsafe { xft::XftDrawDestroy(draw) }; Ok(())
+        unsafe { xft::XftDrawDestroy(draw) };
+        Ok(())
     }
     fn xft_draw_string_utf8(
         &self,
@@ -1131,7 +1392,8 @@ impl XAdapter for LiveXAdapter {
         text: *const u8,
         len: i32,
     ) -> Result<()> {
-        unsafe { xft::XftDrawStringUtf8(draw, color, font, x, y, text, len) }; Ok(())
+        unsafe { xft::XftDrawStringUtf8(draw, color, font, x, y, text, len) };
+        Ok(())
     }
     fn xft_draw_rect(
         &self,
@@ -1142,7 +1404,8 @@ impl XAdapter for LiveXAdapter {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        unsafe { xft::XftDrawRect(draw, color, x, y, width, height) }; Ok(())
+        unsafe { xft::XftDrawRect(draw, color, x, y, width, height) };
+        Ok(())
     }
     fn xft_color_alloc_name(
         &self,
@@ -1161,7 +1424,8 @@ impl XAdapter for LiveXAdapter {
         colormap: Atom,
         color: *mut XftColor,
     ) -> Result<()> {
-        unsafe { xft::XftColorFree(dpy, visual, colormap, color) }; Ok(())
+        unsafe { xft::XftColorFree(dpy, visual, colormap, color) };
+        Ok(())
     }
 
     // --- XIM (Subset) ---
@@ -1173,11 +1437,19 @@ impl XAdapter for LiveXAdapter {
         res_class: *mut libc::c_char,
     ) -> Result<XIM> {
         let im = unsafe { xlib::XOpenIM(dpy, rdb, res_name, res_class) };
-        if im.is_null() { Err(anyhow!("XOpenIM failed")) } else { Ok(im) }
+        if im.is_null() {
+            Err(anyhow!("XOpenIM failed"))
+        } else {
+            Ok(im)
+        }
     }
     fn close_im(&self, im: XIM) -> Result<()> {
         let status = unsafe { xlib::XCloseIM(im) };
-         if status == 0 { Ok(()) } else { Err(anyhow!("XCloseIM error: {}", status)) }
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!("XCloseIM error: {}", status))
+        }
     }
     fn create_ic(&self, im: XIM /*, ... */) -> Result<XIC> {
         // Live version needs to handle varargs. This requires careful FFI or limiting what's supported.
@@ -1186,16 +1458,21 @@ impl XAdapter for LiveXAdapter {
         // This is highly simplified and likely incorrect for general use.
         // Proper variadic FFI is complex. The actual x11.rs uses a helper for this.
         // For now, this is a placeholder.
-        Err(anyhow!(XAdapterError::MockNotImplemented("LiveXAdapter::create_ic with varargs".to_string())))
+        Err(anyhow!(XAdapterError::MockNotImplemented(
+            "LiveXAdapter::create_ic with varargs".to_string()
+        )))
     }
     fn destroy_ic(&self, ic: XIC) -> Result<()> {
-        unsafe { xlib::XDestroyIC(ic) }; Ok(())
+        unsafe { xlib::XDestroyIC(ic) };
+        Ok(())
     }
     fn set_ic_focus(&self, ic: XIC) -> Result<()> {
-        unsafe { xlib::XSetICFocus(ic) }; Ok(())
+        unsafe { xlib::XSetICFocus(ic) };
+        Ok(())
     }
     fn unset_ic_focus(&self, ic: XIC) -> Result<()> {
-        unsafe { xlib::XUnsetICFocus(ic) }; Ok(())
+        unsafe { xlib::XUnsetICFocus(ic) };
+        Ok(())
     }
     fn lookup_string(
         &self,
@@ -1207,7 +1484,14 @@ impl XAdapter for LiveXAdapter {
         status_return: *mut i32,
     ) -> Result<i32> {
         Ok(unsafe {
-            xlib::XmbLookupString(ic, event as *mut xlib::XKeyPressedEvent, buffer_return, bytes_buffer, keysym_return, status_return)
+            xlib::XmbLookupString(
+                ic,
+                event as *mut xlib::XKeyPressedEvent,
+                buffer_return,
+                bytes_buffer,
+                keysym_return,
+                status_return,
+            )
         })
     }
 
@@ -1216,10 +1500,12 @@ impl XAdapter for LiveXAdapter {
         Ok(unsafe { xcursor::XcursorLibraryLoadCursor(dpy, name.as_ptr()) })
     }
     fn define_cursor(&self, dpy: *mut Display, w: Window, cursor: xlib::Cursor) -> Result<()> {
-        unsafe { xlib::XDefineCursor(dpy, w, cursor) }; Ok(())
+        unsafe { xlib::XDefineCursor(dpy, w, cursor) };
+        Ok(())
     }
     fn free_cursor(&self, dpy: *mut Display, cursor: xlib::Cursor) -> Result<()> {
-        unsafe { xlib::XFreeCursor(dpy, cursor) }; Ok(())
+        unsafe { xlib::XFreeCursor(dpy, cursor) };
+        Ok(())
     }
 
     // --- Selections (Subset) ---
@@ -1230,7 +1516,8 @@ impl XAdapter for LiveXAdapter {
         owner: Window,
         time: u64,
     ) -> Result<()> {
-        unsafe { xlib::XSetSelectionOwner(dpy, selection, owner, time) }; Ok(())
+        unsafe { xlib::XSetSelectionOwner(dpy, selection, owner, time) };
+        Ok(())
     }
     fn get_selection_owner(&self, dpy: *mut Display, selection: Atom) -> Result<Window> {
         Ok(unsafe { xlib::XGetSelectionOwner(dpy, selection) })
@@ -1244,7 +1531,7 @@ impl XAdapter for LiveXAdapter {
         requestor: Window,
         time: u64,
     ) -> Result<()> {
-        unsafe { xlib::XConvertSelection(dpy, selection, target, property, requestor, time) }; Ok(())
+        unsafe { xlib::XConvertSelection(dpy, selection, target, property, requestor, time) };
+        Ok(())
     }
 }
-

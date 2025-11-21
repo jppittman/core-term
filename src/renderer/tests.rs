@@ -122,7 +122,10 @@ impl Driver for MockDriver {
     }
 
     fn get_framebuffer_size(&self) -> (usize, usize) {
-        (self.display_width_px as usize, self.display_height_px as usize)
+        (
+            self.display_width_px as usize,
+            self.display_height_px as usize,
+        )
     }
 }
 

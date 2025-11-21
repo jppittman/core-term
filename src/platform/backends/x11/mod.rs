@@ -62,7 +62,7 @@ pub struct XDriver {
     has_focus: bool, // Tracks if the application window currently has input focus.
     selection_atoms: SelectionAtoms,
     selection_text: Option<String>, // Stores text if we own a selection
-    framebuffer: Vec<u8>, // Dummy framebuffer (X11 uses Xft rendering currently)
+    framebuffer: Vec<u8>,           // Dummy framebuffer (X11 uses Xft rendering currently)
 }
 
 impl XDriver {

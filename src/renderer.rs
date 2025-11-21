@@ -207,9 +207,13 @@ impl Renderer {
             };
 
             let cells_consumed = match start_glyph {
-                Glyph::WideSpacer { .. } => {
-                    self.handle_wide_char_placeholder(current_col, y_abs, line_glyphs, config, commands)
-                }
+                Glyph::WideSpacer { .. } => self.handle_wide_char_placeholder(
+                    current_col,
+                    y_abs,
+                    line_glyphs,
+                    config,
+                    commands,
+                ),
                 Glyph::Single(cc) if cc.c == ' ' => self.draw_space_run_from_slice(
                     current_col,
                     y_abs,

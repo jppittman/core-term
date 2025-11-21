@@ -9,14 +9,8 @@ use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 use crate::keys::{KeySymbol, Modifiers};
 use crate::platform::backends::{
-    BackendEvent,
-    CursorVisibility,
-    Driver,
-    FocusState,
-    PlatformState,
-    RenderCommand,
-    DEFAULT_WINDOW_HEIGHT_CHARS,
-    DEFAULT_WINDOW_WIDTH_CHARS,
+    BackendEvent, CursorVisibility, Driver, FocusState, PlatformState, RenderCommand,
+    DEFAULT_WINDOW_HEIGHT_CHARS, DEFAULT_WINDOW_WIDTH_CHARS,
 };
 
 use anyhow::{Context, Result};
@@ -142,7 +136,7 @@ impl Driver for ConsoleDriver {
             font_height_px: DEFAULT_CONSOLE_FONT_HEIGHT_PX,
             input_buffer: [0u8; 128],           // Initialize buffer
             is_cursor_logically_visible: false, // Start hidden, orchestrator will set.
-            framebuffer: vec![0u8; 4],         // Minimal dummy buffer (console doesn't use pixels)
+            framebuffer: vec![0u8; 4],          // Minimal dummy buffer (console doesn't use pixels)
         })
     }
 

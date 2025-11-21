@@ -1,32 +1,28 @@
+use crate::ansi::AnsiProcessor;
+use crate::orchestrator::actor::OrchestratorActor;
 use crate::platform::actions::PlatformAction;
 use crate::platform::backends::{
-    cocoa::CocoaDriver, BackendEvent, CursorVisibility, Driver, PlatformState,
+    cocoa::CocoaDriver, CursorVisibility, Driver, PlatformState,
 };
-use crate::platform::os::event::{EventMonitor, KqueueEvent, KqueueFlags};
-use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
+use crate::platform::os::event_monitor_actor::EventMonitorActor;
+use crate::platform::os::pty::{NixPty, PtyConfig};
 use crate::platform::platform_trait::Platform;
 use crate::platform::PlatformEvent;
+use crate::renderer::Renderer;
+use crate::term::TerminalEmulator;
 use anyhow::{Context, Result};
 use log::*;
-use std::io::{ErrorKind, Read, Write};
-use std::os::unix::io::AsRawFd;
-
-/// kqueue token for PTY events.
-const PTY_TOKEN: u64 = 1;
-/// kqueue token for Cocoa driver events.
-const DRIVER_TOKEN: u64 = 2;
-/// Base buffer size for PTY reads
-const PTY_BASE_BUFFER_SIZE: usize = 4096;
-const PTY_READ_BUFFER_SIZE_MULTIPLIER: usize = 4;
-const PTY_READ_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE_MULTIPLIER * PTY_BASE_BUFFER_SIZE;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 pub struct MacosPlatform {
-    pty: NixPty,
     driver: CocoaDriver,
-    event_monitor: EventMonitor,
-    shutdown_requested: bool,
-    event_buffer: Vec<KqueueEvent>,
-    platform_events: Vec<PlatformEvent>,
+    event_monitor_actor: EventMonitorActor,
+    orchestrator_actor: OrchestratorActor,
+    // Channels to Orchestrator
+    orchestrator_event_tx: Sender<PlatformEvent>, // Display sends events here
+    orchestrator_display_action_rx: Receiver<PlatformAction>, // Display receives actions from Orchestrator
+    // Channel to PTY
+    pty_action_tx: Sender<PlatformAction>, // Forward PTY actions from Orchestrator to PTY
 }
 
 impl Platform for MacosPlatform {
@@ -40,13 +36,33 @@ impl Platform for MacosPlatform {
         Self: Sized,
     {
         info!(
-            "Initializing MacosPlatform with PTY size {}x{}",
+            "MacosPlatform::new() - Initializing with PTY size {}x{}",
             initial_pty_cols, initial_pty_rows
         );
         info!("Shell command: '{}', args: {:?}", shell_command, shell_args);
 
-        let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
+        // Step 1: Create CocoaDriver
+        let driver = CocoaDriver::new().context("Failed to create CocoaDriver")?;
+        let initial_platform_state = driver.get_platform_state();
+        info!("Initial platform state: {:?}", initial_platform_state);
 
+        // Step 2: Calculate terminal dimensions
+        let term_cols = (initial_platform_state.display_width_px as usize
+            / initial_platform_state.font_cell_width_px.max(1))
+        .max(1);
+        let term_rows = (initial_platform_state.display_height_px as usize
+            / initial_platform_state.font_cell_height_px.max(1))
+        .max(1);
+        info!(
+            "Calculated terminal dimensions: {}x{} cells",
+            term_cols, term_rows
+        );
+
+        // Step 3: Create unified event channel for Orchestrator
+        let (orchestrator_event_tx, orchestrator_event_rx) = mpsc::channel();
+
+        // Step 4: Create PTY and EventMonitorActor
+        let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
         let pty_config = PtyConfig {
             command_executable: &shell_command,
             args: &shell_args_refs,
@@ -55,168 +71,168 @@ impl Platform for MacosPlatform {
         };
 
         let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
-        let driver = CocoaDriver::new().context("Failed to create CocoaDriver")?;
-        let event_monitor = EventMonitor::new().context("Failed to create EventMonitor")?;
+        info!("Spawned PTY");
 
-        let pty_fd = pty.as_raw_fd();
-        event_monitor
-            .add(pty_fd, PTY_TOKEN, KqueueFlags::EPOLLIN)
-            .context("Failed to add PTY FD to event monitor")?;
-        debug!("PTY FD {} added to event monitor", pty_fd);
+        // PTY sends events to the unified Orchestrator event channel
+        let (pty_action_tx, event_monitor_actor) =
+            EventMonitorActor::spawn(pty, orchestrator_event_tx.clone())
+                .context("Failed to spawn EventMonitorActor")?;
+        info!("EventMonitorActor spawned successfully");
 
-        if let Some(driver_fd) = driver.get_event_fd() {
-            event_monitor
-                .add(driver_fd, DRIVER_TOKEN, KqueueFlags::EPOLLIN)
-                .context("Failed to add Cocoa driver FD to event monitor")?;
-            debug!("Cocoa Driver FD {} added to event monitor", driver_fd);
-        } else {
-            info!("Cocoa Driver does not provide an event FD for polling.");
-        }
+        // Step 5: Create channels for Orchestrator <-> Display communication
+        let (orchestrator_display_action_tx, orchestrator_display_action_rx) = mpsc::channel();
 
-        let initial_platform_state = driver.get_platform_state();
-        info!("Initial platform state: {:?}", initial_platform_state);
+        // Step 6: Create core components for Orchestrator
+        let term_emulator = TerminalEmulator::new(term_cols, term_rows);
+        let ansi_parser = AnsiProcessor::new();
+        let renderer = Renderer::new();
+
+        // Step 7: Spawn Orchestrator Actor
+        let orchestrator_actor = OrchestratorActor::spawn(
+            term_emulator,
+            ansi_parser,
+            renderer,
+            orchestrator_event_rx,
+            orchestrator_display_action_tx,
+            pty_action_tx.clone(),
+            initial_platform_state.clone(),
+        )
+        .context("Failed to spawn OrchestratorActor")?;
+        info!("OrchestratorActor spawned successfully");
 
         Ok((
             Self {
-                pty,
-                event_buffer: Vec::with_capacity(PTY_READ_BUFFER_SIZE),
                 driver,
-                event_monitor,
-                shutdown_requested: false,
-                platform_events: Vec::with_capacity(PTY_READ_BUFFER_SIZE),
+                event_monitor_actor,
+                orchestrator_actor,
+                orchestrator_event_tx,
+                orchestrator_display_action_rx,
+                pty_action_tx,
             },
             initial_platform_state,
         ))
     }
 
     fn poll_events(&mut self) -> Result<Vec<PlatformEvent>> {
-        self.platform_events.clear();
-
-        // Poll for events with a small timeout
-        self.event_monitor
-            .events(&mut self.event_buffer, 10)
-            .context("Failed to poll events")?;
-
-        let mut accumulated_pty_data = Vec::new();
-
-        for event in &self.event_buffer {
-            match event.token {
-                DRIVER_TOKEN => {
-                    let driver_events = self
-                        .driver
-                        .process_events()
-                        .context("Driver event processing failed")?;
-                    self.platform_events
-                        .extend(driver_events.into_iter().map(PlatformEvent::from));
-                }
-                PTY_TOKEN => {
-                    // Read from PTY
-                    let mut pty_read_buf = [0u8; PTY_READ_BUFFER_SIZE];
-                    loop {
-                        match self.pty.read(&mut pty_read_buf) {
-                            Ok(0) => {
-                                // PTY EOF
-                                self.platform_events
-                                    .push(BackendEvent::CloseRequested.into());
-                                return Ok(std::mem::take(&mut self.platform_events));
-                            }
-                            Ok(n) => {
-                                accumulated_pty_data.extend_from_slice(&pty_read_buf[..n]);
-                            }
-                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                break;
-                            }
-                            Err(e) => {
-                                return Err(e).context("Failed to read from PTY");
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    warn!("Unknown event token: {}", event.token);
-                }
-            }
-        }
-
-        // If we read any PTY data, generate an IOEvent
-        if !accumulated_pty_data.is_empty() {
-            self.platform_events
-                .push(PlatformEvent::IOEvent { data: accumulated_pty_data });
-        }
-
-        Ok(std::mem::take(&mut self.platform_events))
+        // This method is no longer used in the three-thread architecture
+        // The Display thread forwards events directly via channels in run()
+        warn!("MacosPlatform::poll_events() called but not used in three-thread architecture");
+        Ok(vec![])
     }
 
     fn dispatch_actions(&mut self, actions: Vec<PlatformAction>) -> Result<()> {
-        for action in actions {
-            match action {
-                PlatformAction::Write(data) => {
-                    self.pty
-                        .write_all(&data)
-                        .context("Failed to write to PTY")?;
-                }
-                PlatformAction::ResizePty { cols, rows } => {
-                    self.pty
-                        .resize(cols, rows)
-                        .context("Failed to resize PTY")?;
-                }
-                PlatformAction::Render(render_commands) => {
-                    self.driver
-                        .execute_render_commands(render_commands)
-                        .context("MacosPlatform: Failed to dispatch Render to driver")?;
-                    // As per previous note, PresentFrame might be implicitly handled by driver
-                    // or explicitly called. Let's add an explicit PresentFrame after Render.
-                    self.driver
-                        .present()
-                        .context("MacosPlatform: Failed to dispatch PresentFrame to driver")?;
-                }
-                PlatformAction::SetTitle(title) => {
-                    self.driver.set_title(&title);
-                    // .context("MacosPlatform: Failed to dispatch SetTitle to driver")?; // set_title doesn't return Result
-                }
-                PlatformAction::RingBell => {
-                    self.driver.bell();
-                    // .context("MacosPlatform: Failed to dispatch RingBell to driver")?; // bell doesn't return Result
-                }
-                PlatformAction::CopyToClipboard(text) => {
-                    // Using a placeholder atom (0) for now. A real implementation would use a Cocoa-specific way.
-                    self.driver.own_selection(0, text);
-                    // .context("MacosPlatform: Failed to dispatch CopyToClipboard to driver")?; // own_selection doesn't return Result
-                }
-                PlatformAction::SetCursorVisibility(visible) => {
-                    let visibility = if visible {
-                        CursorVisibility::Shown
-                    } else {
-                        CursorVisibility::Hidden
-                    };
-                    self.driver.set_cursor_visibility(visibility);
-                    // .context("MacosPlatform: Failed to dispatch SetCursorVisibility to driver")?; // set_cursor_visibility doesn't return Result
-                }
-                PlatformAction::RequestPaste => {
-                    // Using placeholder atoms (0, 0) for now.
-                    // A real implementation would use Cocoa-specific APIs for pasteboard interaction.
-                    self.driver.request_selection_data(0, 0);
-                    // .context("MacosPlatform: Failed to dispatch RequestPaste to driver")?; // request_selection_data doesn't return Result
-                }
-            }
-        }
+        // This method is no longer used in the three-thread architecture
+        // Actions are dispatched directly in run() loop
+        warn!("MacosPlatform::dispatch_actions() called but not used in three-thread architecture");
         Ok(())
     }
 
     fn get_current_platform_state(&self) -> PlatformState {
-        // println!("MacosPlatform: Getting current platform state from driver");
         self.driver.get_platform_state()
     }
 
+    fn run(mut self) -> Result<()> {
+        info!("MacosPlatform::run() - Starting main event loop");
+
+        // Main event loop: process Cocoa events and handle Orchestrator actions
+        loop {
+            // Step 1: Process Cocoa UI events (non-blocking)
+            let cocoa_events = self
+                .driver
+                .process_events()
+                .context("CocoaDriver event processing failed")?;
+
+            // Step 2: Forward Cocoa events to Orchestrator
+            for backend_event in cocoa_events {
+                let platform_event = PlatformEvent::BackendEvent(backend_event);
+                if let Err(e) = self.orchestrator_event_tx.send(platform_event) {
+                    warn!("Failed to send Cocoa event to Orchestrator: {}", e);
+                    // Orchestrator channel closed - time to shut down
+                    info!("Orchestrator channel closed, shutting down");
+                    return Ok(());
+                }
+            }
+
+            // Step 3: Process actions from Orchestrator (non-blocking)
+            loop {
+                match self.orchestrator_display_action_rx.try_recv() {
+                    Ok(action) => {
+                        self.handle_display_action(action)?;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        info!("Orchestrator action channel closed, shutting down");
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Small sleep to avoid spinning (Cocoa will handle timing via NSApp.run() later)
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     fn cleanup(&mut self) -> Result<()> {
-        println!("MacosPlatform: cleanup() called. Cleaning up driver...");
+        info!("MacosPlatform: cleanup() called");
         self.driver.cleanup()
+    }
+}
+
+impl MacosPlatform {
+    /// Handle a display action from the Orchestrator.
+    fn handle_display_action(&mut self, action: PlatformAction) -> Result<()> {
+        match action {
+            PlatformAction::Render(render_commands) => {
+                use crate::rasterizer::compile_into_buffer;
+
+                let (width_px, height_px) = self.driver.get_framebuffer_size();
+                let platform_state = self.driver.get_platform_state();
+                let framebuffer = self.driver.get_framebuffer_mut();
+
+                let driver_commands = compile_into_buffer(
+                    render_commands,
+                    framebuffer,
+                    width_px,
+                    height_px,
+                    platform_state.font_cell_width_px,
+                    platform_state.font_cell_height_px,
+                );
+
+                self.driver
+                    .execute_driver_commands(driver_commands)
+                    .context("Failed to execute driver commands")?;
+            }
+            PlatformAction::SetTitle(title) => {
+                self.driver.set_title(&title);
+            }
+            PlatformAction::RingBell => {
+                self.driver.bell();
+            }
+            PlatformAction::CopyToClipboard(text) => {
+                self.driver.own_selection(0, text);
+            }
+            PlatformAction::SetCursorVisibility(visible) => {
+                let visibility = if visible {
+                    CursorVisibility::Shown
+                } else {
+                    CursorVisibility::Hidden
+                };
+                self.driver.set_cursor_visibility(visibility);
+            }
+            PlatformAction::RequestPaste => {
+                self.driver.request_selection_data(0, 0);
+            }
+            // PTY actions should go to PTY thread, not here
+            PlatformAction::Write(_) | PlatformAction::ResizePty { .. } => {
+                warn!("MacosPlatform received PTY action - this should go to PTY thread!");
+            }
+        }
+        Ok(())
     }
 }
 
 impl Drop for MacosPlatform {
     fn drop(&mut self) {
         debug!("MacosPlatform dropped");
-        // NixPty will handle PTY cleanup in its own Drop implementation
     }
 }
