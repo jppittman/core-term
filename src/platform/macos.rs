@@ -2,29 +2,31 @@ use crate::platform::actions::PlatformAction;
 use crate::platform::backends::{
     cocoa::CocoaDriver, BackendEvent, CursorVisibility, Driver, PlatformState,
 };
-use crate::platform::os::PtyActionCommand; // Correct path for PtyActionCommand
+use crate::platform::os::event::{EventMonitor, KqueueEvent, KqueueFlags};
+use crate::platform::os::pty::{NixPty, PtyChannel, PtyConfig};
 use crate::platform::platform_trait::Platform;
 use crate::platform::PlatformEvent;
 use anyhow::{Context, Result};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use log::*;
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::io::AsRawFd;
+
+/// kqueue token for PTY events.
+const PTY_TOKEN: u64 = 1;
+/// kqueue token for Cocoa driver events.
+const DRIVER_TOKEN: u64 = 2;
+/// Base buffer size for PTY reads
+const PTY_BASE_BUFFER_SIZE: usize = 4096;
+const PTY_READ_BUFFER_SIZE_MULTIPLIER: usize = 4;
+const PTY_READ_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE_MULTIPLIER * PTY_BASE_BUFFER_SIZE;
 
 pub struct MacosPlatform {
+    pty: NixPty,
     driver: CocoaDriver,
-    // Channels for PTY interaction (example names)
-    // pty_event_receiver receives events from the PTY backend (e.g., data output)
-    pty_event_receiver: Receiver<BackendEvent>, // Assuming PTY generates BackendEvents directly for now
-    // pty_action_sender sends commands to the PTY backend (e.g., write input, resize)
-    pty_action_sender: Sender<PtyActionCommand>,
-
-    // Channels for UI interaction (example names)
-    // ui_action_sender sends commands to the UI Driver (CocoaDriver)
-    // MacosPlatform itself is the client of CocoaDriver, so it calls methods on driver directly.
-    // However, if CocoaDriver needed to send events back to MacosPlatform *asynchronously*,
-    // a channel like ui_event_receiver would be needed. For now, driver.poll_event() is synchronous.
-
-    // Shell command and args, stored if needed for PTY backend re-creation or management
-    _shell_command: String,
-    _shell_args: Vec<String>,
+    event_monitor: EventMonitor,
+    shutdown_requested: bool,
+    event_buffer: Vec<KqueueEvent>,
+    platform_events: Vec<PlatformEvent>,
 }
 
 impl Platform for MacosPlatform {
@@ -37,88 +39,126 @@ impl Platform for MacosPlatform {
     where
         Self: Sized,
     {
-        println!(
-            "MacosPlatform: Initializing with PTY cols={}, rows={}, command='{}', args='{:?}'",
-            initial_pty_cols, initial_pty_rows, &shell_command, &shell_args
+        info!(
+            "Initializing MacosPlatform with PTY size {}x{}",
+            initial_pty_cols, initial_pty_rows
         );
+        info!("Shell command: '{}', args: {:?}", shell_command, shell_args);
 
-        let driver = CocoaDriver::new().context("Failed to initialize CocoaDriver")?;
+        let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
+
+        let pty_config = PtyConfig {
+            command_executable: &shell_command,
+            args: &shell_args_refs,
+            initial_cols: initial_pty_cols,
+            initial_rows: initial_pty_rows,
+        };
+
+        let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
+        let driver = CocoaDriver::new().context("Failed to create CocoaDriver")?;
+        let event_monitor = EventMonitor::new().context("Failed to create EventMonitor")?;
+
+        let pty_fd = pty.as_raw_fd();
+        event_monitor
+            .add(pty_fd, PTY_TOKEN, KqueueFlags::EPOLLIN)
+            .context("Failed to add PTY FD to event monitor")?;
+        debug!("PTY FD {} added to event monitor", pty_fd);
+
+        if let Some(driver_fd) = driver.get_event_fd() {
+            event_monitor
+                .add(driver_fd, DRIVER_TOKEN, KqueueFlags::EPOLLIN)
+                .context("Failed to add Cocoa driver FD to event monitor")?;
+            debug!("Cocoa Driver FD {} added to event monitor", driver_fd);
+        } else {
+            info!("Cocoa Driver does not provide an event FD for polling.");
+        }
+
         let initial_platform_state = driver.get_platform_state();
-
-        // --- PTY Channel Setup (Placeholders) ---
-        // In a real scenario, a PTY backend (e.g., using forkpty) would be created here.
-        // It would get one end of pty_action_channel and pty_event_channel.
-        let (pty_action_sender_to_backend, _pty_action_receiver_in_backend) =
-            channel::<PtyActionCommand>();
-        let (_pty_event_sender_from_backend, pty_event_receiver_for_platform) =
-            channel::<BackendEvent>();
-        // TODO: Spawn PTY backend thread/task, passing shell_command, shell_args,
-        //       initial_pty_cols, initial_pty_rows, _pty_action_receiver_in_backend,
-        //       and _pty_event_sender_from_backend.
-
-        println!("MacosPlatform: CocoaDriver initialized, PTY channels created (placeholders).");
+        info!("Initial platform state: {:?}", initial_platform_state);
 
         Ok((
-            MacosPlatform {
+            Self {
+                pty,
+                event_buffer: Vec::with_capacity(PTY_READ_BUFFER_SIZE),
                 driver,
-                pty_event_receiver: pty_event_receiver_for_platform,
-                pty_action_sender: pty_action_sender_to_backend,
-                _shell_command: shell_command,
-                _shell_args: shell_args,
+                event_monitor,
+                shutdown_requested: false,
+                platform_events: Vec::with_capacity(PTY_READ_BUFFER_SIZE),
             },
             initial_platform_state,
         ))
     }
 
     fn poll_events(&mut self) -> Result<Vec<PlatformEvent>> {
-        let mut events: Vec<PlatformEvent> = Vec::new();
+        self.platform_events.clear();
 
-        // 1. Poll UI Driver for events
-        match self.driver.process_events() {
-            Ok(mut driver_events) => {
-                for event in driver_events.drain(..) {
-                    // println!("MacosPlatform: Received UI event: {:?}", event);
-                    events.push(PlatformEvent::BackendEvent(event));
+        // Poll for events with a small timeout
+        self.event_monitor
+            .events(&mut self.event_buffer, 10)
+            .context("Failed to poll events")?;
+
+        let mut accumulated_pty_data = Vec::new();
+
+        for event in &self.event_buffer {
+            match event.token {
+                DRIVER_TOKEN => {
+                    let driver_events = self
+                        .driver
+                        .process_events()
+                        .context("Driver event processing failed")?;
+                    self.platform_events
+                        .extend(driver_events.into_iter().map(PlatformEvent::from));
+                }
+                PTY_TOKEN => {
+                    // Read from PTY
+                    let mut pty_read_buf = [0u8; PTY_READ_BUFFER_SIZE];
+                    loop {
+                        match self.pty.read(&mut pty_read_buf) {
+                            Ok(0) => {
+                                // PTY EOF
+                                self.platform_events
+                                    .push(BackendEvent::CloseRequested.into());
+                                return Ok(std::mem::take(&mut self.platform_events));
+                            }
+                            Ok(n) => {
+                                accumulated_pty_data.extend_from_slice(&pty_read_buf[..n]);
+                            }
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                break;
+                            }
+                            Err(e) => {
+                                return Err(e).context("Failed to read from PTY");
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    warn!("Unknown event token: {}", event.token);
                 }
             }
-            Err(e) => {
-                // Log error or handle critical failure
-                eprintln!("MacosPlatform: Error polling UI driver: {}", e);
-                // Depending on error type, might propagate or attempt recovery
-            }
         }
 
-        // 2. Poll PTY for events (e.g., data from shell)
-        match self.pty_event_receiver.try_recv() {
-            Ok(pty_event) => {
-                // println!("MacosPlatform: Received PTY event: {:?}", pty_event);
-                events.push(PlatformEvent::BackendEvent(pty_event));
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => { /* No PTY event */ }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                // PTY backend might have exited. This could be a shutdown signal.
-                println!("MacosPlatform: PTY event channel disconnected.");
-                // Consider generating a specific PlatformEvent::Shutdown or similar
-                // Or propagate error to signal AppOrchestrator to stop
-                return Err(anyhow::anyhow!("PTY backend disconnected"));
-            }
+        // If we read any PTY data, generate an IOEvent
+        if !accumulated_pty_data.is_empty() {
+            self.platform_events
+                .push(PlatformEvent::IOEvent { data: accumulated_pty_data });
         }
-        Ok(events)
+
+        Ok(std::mem::take(&mut self.platform_events))
     }
 
     fn dispatch_actions(&mut self, actions: Vec<PlatformAction>) -> Result<()> {
-        // println!("MacosPlatform: dispatch_actions({:?})", actions);
         for action in actions {
             match action {
                 PlatformAction::Write(data) => {
-                    self.pty_action_sender
-                        .send(PtyActionCommand::Write(data))
-                        .context("Failed to send Write command to PTY")?;
+                    self.pty
+                        .write_all(&data)
+                        .context("Failed to write to PTY")?;
                 }
                 PlatformAction::ResizePty { cols, rows } => {
-                    self.pty_action_sender
-                        .send(PtyActionCommand::Resize { cols, rows })
-                        .context("Failed to send Resize command to PTY")?;
+                    self.pty
+                        .resize(cols, rows)
+                        .context("Failed to resize PTY")?;
                 }
                 PlatformAction::Render(render_commands) => {
                     self.driver
@@ -174,11 +214,9 @@ impl Platform for MacosPlatform {
     }
 }
 
-// Keep the Drop trait for cleanup if MacosPlatform ever holds resources
 impl Drop for MacosPlatform {
     fn drop(&mut self) {
-        // Placeholder cleanup logic
-        println!("MacosPlatform dropped. Shell: '{}'", self._shell_command);
-        // Consider sending a shutdown command to PTY backend if it's running.
+        debug!("MacosPlatform dropped");
+        // NixPty will handle PTY cleanup in its own Drop implementation
     }
 }

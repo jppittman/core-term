@@ -42,6 +42,7 @@ struct MockDriver {
     font_height: usize,
     display_width_px: u16,
     display_height_px: u16,
+    framebuffer: Vec<u8>,
 }
 
 impl MockDriver {
@@ -51,12 +52,14 @@ impl MockDriver {
         display_width_px: u16,
         display_height_px: u16,
     ) -> Self {
+        let buffer_size = (display_width_px as usize) * (display_height_px as usize) * 4;
         Self {
             commands: Mutex::new(Vec::new()),
             font_width,
             font_height,
             display_width_px,
             display_height_px,
+            framebuffer: vec![0u8; buffer_size],
         }
     }
 
@@ -113,6 +116,14 @@ impl Driver for MockDriver {
     }
     fn own_selection(&mut self, _selection_name_atom_u64: u64, _text: String) {}
     fn request_selection_data(&mut self, _selection_name_atom_u64: u64, _target_atom_u64: u64) {}
+
+    fn get_framebuffer_mut(&mut self) -> &mut [u8] {
+        &mut self.framebuffer
+    }
+
+    fn get_framebuffer_size(&self) -> (usize, usize) {
+        (self.display_width_px as usize, self.display_height_px as usize)
+    }
 }
 
 // Helper to create a Renderer and MockDriver
