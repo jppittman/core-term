@@ -68,6 +68,11 @@ impl Platform for MockPlatform {
         }
     }
 
+    fn run(self) -> Result<()> {
+        // Mock implementation - immediately return Ok
+        Ok(())
+    }
+
     fn cleanup(&mut self) -> Result<()> {
         Ok(())
     }
