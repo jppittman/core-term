@@ -18,7 +18,9 @@ termios = "0.3.3"
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
+core-foundation = "0.9"
 core-graphics = "0.24"
+core-text = "20.1"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 x11 = "2.21.0"
@@ -30,3 +32,4 @@ pkg-config = "0.3.32"
 [dev-dependencies]
 test-log = "0.2.17"
 rexpect = "0.6.1"
+

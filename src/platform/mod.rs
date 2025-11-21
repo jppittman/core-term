@@ -22,6 +22,7 @@ pub mod mock;
 pub enum PlatformEvent {
     BackendEvent(BackendEvent),
     IOEvent { data: Vec<u8> },
+    RequestFrame, // Vsync signal to request a new frame render
 }
 
 impl From<BackendEvent> for PlatformEvent {

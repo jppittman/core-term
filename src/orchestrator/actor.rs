@@ -8,7 +8,7 @@ use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use crate::config::Config;
 use crate::keys;
 use crate::platform::actions::PlatformAction;
-use crate::platform::backends::{BackendEvent, MouseButton, PlatformState};
+use crate::platform::backends::{BackendEvent, MouseButton, PlatformState, RenderCommand};
 use crate::platform::PlatformEvent;
 use crate::renderer::Renderer;
 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
@@ -105,9 +105,15 @@ impl OrchestratorActor {
             };
 
             pending_emulator_actions.clear();
+            let mut should_present_frame = false;
 
             // Process the event
             match event {
+                PlatformEvent::RequestFrame => {
+                    // Vsync is requesting a frame presentation
+                    debug!("OrchestratorActor: Received RequestFrame from Vsync");
+                    should_present_frame = true;
+                }
                 PlatformEvent::IOEvent { data: pty_data } => {
                     debug!(
                         "OrchestratorActor: Received {} bytes from PTY",
@@ -147,6 +153,9 @@ impl OrchestratorActor {
                             pending_emulator_actions.push(action);
                         }
                     }
+
+                    // User input should be immediately visible
+                    should_present_frame = true;
                 }
             }
 
@@ -161,8 +170,13 @@ impl OrchestratorActor {
             };
 
             let config = Config::default();
-            let render_commands =
+            let mut render_commands =
                 renderer.prepare_render_commands(&snapshot, &config, &platform_state);
+
+            // Append PresentFrame only when vsync requests it (rate-limited to 60 FPS)
+            if should_present_frame {
+                render_commands.push(RenderCommand::PresentFrame);
+            }
 
             if !render_commands.is_empty() {
                 debug!(

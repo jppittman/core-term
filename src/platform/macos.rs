@@ -6,8 +6,10 @@ use crate::platform::backends::{
 };
 use crate::platform::os::event_monitor_actor::EventMonitorActor;
 use crate::platform::os::pty::{NixPty, PtyConfig};
+use crate::platform::os::vsync_actor::VsyncActor;
 use crate::platform::platform_trait::Platform;
 use crate::platform::PlatformEvent;
+use crate::rasterizer::SoftwareRasterizer;
 use crate::renderer::Renderer;
 use crate::term::TerminalEmulator;
 use anyhow::{Context, Result};
@@ -18,6 +20,8 @@ pub struct MacosPlatform {
     driver: CocoaDriver,
     event_monitor_actor: EventMonitorActor,
     orchestrator_actor: OrchestratorActor,
+    vsync_actor: VsyncActor,
+    rasterizer: SoftwareRasterizer,
     // Channels to Orchestrator
     orchestrator_event_tx: Sender<PlatformEvent>, // Display sends events here
     orchestrator_display_action_rx: Receiver<PlatformAction>, // Display receives actions from Orchestrator
@@ -100,11 +104,24 @@ impl Platform for MacosPlatform {
         .context("Failed to spawn OrchestratorActor")?;
         info!("OrchestratorActor spawned successfully");
 
+        // Step 8: Spawn vsync actor for frame presentation
+        let target_fps = crate::config::CONFIG.performance.target_fps;
+        let vsync_actor = VsyncActor::spawn(orchestrator_event_tx.clone(), target_fps)
+            .context("Failed to spawn VsyncActor")?;
+
+        // Create persistent rasterizer (not recreated every frame)
+        let rasterizer = SoftwareRasterizer::new(
+            initial_platform_state.font_cell_width_px,
+            initial_platform_state.font_cell_height_px,
+        );
+
         Ok((
             Self {
                 driver,
                 event_monitor_actor,
                 orchestrator_actor,
+                vsync_actor,
+                rasterizer,
                 orchestrator_event_tx,
                 orchestrator_display_action_rx,
                 pty_action_tx,
@@ -185,11 +202,18 @@ impl MacosPlatform {
             PlatformAction::Render(render_commands) => {
                 use crate::rasterizer::compile_into_buffer;
 
+                debug!(
+                    "MacosPlatform: Received PlatformAction::Render with {} commands.",
+                    render_commands.len()
+                );
+                trace!("Render commands: {:?}", render_commands);
+
                 let (width_px, height_px) = self.driver.get_framebuffer_size();
                 let platform_state = self.driver.get_platform_state();
                 let framebuffer = self.driver.get_framebuffer_mut();
 
                 let driver_commands = compile_into_buffer(
+                    &mut self.rasterizer,
                     render_commands,
                     framebuffer,
                     width_px,
@@ -198,9 +222,16 @@ impl MacosPlatform {
                     platform_state.font_cell_height_px,
                 );
 
+                trace!(
+                    "MacosPlatform: Compiled into {} driver commands",
+                    driver_commands.len()
+                );
+
                 self.driver
                     .execute_driver_commands(driver_commands)
                     .context("Failed to execute driver commands")?;
+
+                trace!("MacosPlatform: Driver commands executed successfully");
             }
             PlatformAction::SetTitle(title) => {
                 self.driver.set_title(&title);
@@ -234,5 +265,6 @@ impl MacosPlatform {
 impl Drop for MacosPlatform {
     fn drop(&mut self) {
         debug!("MacosPlatform dropped");
+        // VsyncActor, EventMonitorActor, and OrchestratorActor will clean up their threads
     }
 }

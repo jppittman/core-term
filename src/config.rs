@@ -268,6 +268,10 @@ impl Default for BehaviorConfig {
 pub struct PerformanceConfig {
     pub min_draw_latency_ms: time::Duration,
     pub max_draw_latency_ms: time::Duration,
+    /// Target frames per second for display refresh.
+    /// The vsync thread will attempt to present frames at this rate.
+    /// Default: 60 FPS (16.67ms per frame)
+    pub target_fps: u32,
 }
 
 impl Default for PerformanceConfig {
@@ -275,6 +279,7 @@ impl Default for PerformanceConfig {
         PerformanceConfig {
             min_draw_latency_ms: Duration::from_millis(2),
             max_draw_latency_ms: Duration::from_millis(33),
+            target_fps: 60,
         }
     }
 }
