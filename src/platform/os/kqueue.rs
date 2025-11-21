@@ -37,8 +37,7 @@ impl EventMonitor {
     pub fn new() -> Result<Self> {
         let kqueue_fd = unsafe { libc::kqueue() };
         if kqueue_fd == -1 {
-            return Err(io::Error::last_os_error())
-                .context("Failed to create kqueue instance");
+            return Err(io::Error::last_os_error()).context("Failed to create kqueue instance");
         }
         debug!("EventMonitor created with kqueue_fd: {}", kqueue_fd);
         Ok(Self { kqueue_fd })
@@ -79,8 +78,9 @@ impl EventMonitor {
                 )
             };
             if ret == -1 {
-                return Err(io::Error::last_os_error())
-                    .with_context(|| format!("Failed to add fd {} to kqueue (token: {})", fd, token));
+                return Err(io::Error::last_os_error()).with_context(|| {
+                    format!("Failed to add fd {} to kqueue (token: {})", fd, token)
+                });
             }
         }
 
@@ -128,8 +128,7 @@ impl EventMonitor {
             let err = io::Error::last_os_error();
             // ENOENT means the event wasn't registered, which is fine
             if err.raw_os_error() != Some(libc::ENOENT) {
-                return Err(err)
-                    .with_context(|| format!("Failed to delete fd {} from kqueue", fd));
+                return Err(err).with_context(|| format!("Failed to delete fd {} from kqueue", fd));
             }
         }
 
@@ -137,11 +136,7 @@ impl EventMonitor {
         Ok(())
     }
 
-    pub fn events(
-        &self,
-        events_out: &mut Vec<KqueueEvent>,
-        timeout_ms: isize,
-    ) -> Result<()> {
+    pub fn events(&self, events_out: &mut Vec<KqueueEvent>, timeout_ms: isize) -> Result<()> {
         trace!(
             "EventMonitor: polling for events with timeout {}ms on kqueue_fd {}",
             timeout_ms,
@@ -152,16 +147,22 @@ impl EventMonitor {
         const MAX_EVENTS: usize = 32;
         let mut kevents: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
 
-        // Convert timeout
-        let timeout = if timeout_ms < 0 {
-            std::ptr::null()
+        // RAII: Keep timespec alive for entire scope
+        // Using Option to represent "no timeout" (None) vs "timeout" (Some)
+        let timeout_spec = if timeout_ms < 0 {
+            None
         } else {
-            let ts = libc::timespec {
+            Some(libc::timespec {
                 tv_sec: (timeout_ms / 1000) as libc::time_t,
                 tv_nsec: ((timeout_ms % 1000) * 1_000_000) as libc::c_long,
-            };
-            &ts as *const libc::timespec
+            })
         };
+
+        // Safe: timeout_spec owns the data, reference lives as long as timeout_spec
+        let timeout = timeout_spec
+            .as_ref()
+            .map(|ts| ts as *const libc::timespec)
+            .unwrap_or(std::ptr::null());
 
         let nev = unsafe {
             libc::kevent(

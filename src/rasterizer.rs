@@ -241,6 +241,11 @@ pub fn compile_into_buffer(
     let mut rasterizer = SoftwareRasterizer::new(cell_width_px, cell_height_px);
     let mut driver_commands = Vec::new();
 
+    // TODO(performance): Add software prefetching for dirty lines
+    // When processing DrawTextRun commands, could use std::intrinsics::prefetch_read_data
+    // to hint the CPU to load the next line's data into cache while processing current line.
+    // Could reduce cache misses by 10-20% for large terminal repaints. Profile first!
+
     for cmd in commands {
         match cmd {
             RenderCommand::ClearAll { bg } => {
@@ -340,6 +345,11 @@ fn blit_to_framebuffer(
     src_width_px: usize,
     src_height_px: usize,
 ) {
+    // TODO(performance): Add SIMD acceleration for pixel copying
+    // Could use portable_simd or wide crate for 4-8x speedup on alpha blending operations.
+    // Currently relying on memcpy optimization and auto-vectorization, which works well for
+    // simple copy_from_slice but may not vectorize complex blending. Benchmark first!
+
     for row in 0..src_height_px {
         let dest_y = dest_y_px + row;
         if dest_y >= dest_height_px {
@@ -350,8 +360,9 @@ fn blit_to_framebuffer(
         let dest_row_start = (dest_y * dest_width_px + dest_x_px) * 4;
         let copy_width = src_width_px.min(dest_width_px.saturating_sub(dest_x_px));
 
-        if dest_row_start + copy_width * 4 <= dest.len() &&
-           src_row_start + copy_width * 4 <= src.len() {
+        if dest_row_start + copy_width * 4 <= dest.len()
+            && src_row_start + copy_width * 4 <= src.len()
+        {
             dest[dest_row_start..dest_row_start + copy_width * 4]
                 .copy_from_slice(&src[src_row_start..src_row_start + copy_width * 4]);
         }
@@ -461,7 +472,7 @@ mod tests {
         for y in 0..32 {
             for x in 0..16 {
                 let idx = (y * 100 + x) * 4;
-                assert_eq!(&buffer[idx..idx+4], &[205, 49, 49, 255]); // Red
+                assert_eq!(&buffer[idx..idx + 4], &[205, 49, 49, 255]); // Red
             }
         }
     }
