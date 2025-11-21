@@ -8,16 +8,16 @@
 use crate::color::Color;
 use crate::glyph::AttrFlags; // NamedColor is still useful here for panic messages
 use crate::keys::{KeySymbol, Modifiers};
-use crate::platform::backends::x11::window::CursorVisibility;
 use crate::platform::backends::{
     BackendEvent,
+    CursorVisibility,
     Driver,
     FocusState,
     PlatformState,
-    RenderCommand, // Updated imports
+    RenderCommand,
     DEFAULT_WINDOW_HEIGHT_CHARS,
     DEFAULT_WINDOW_WIDTH_CHARS,
-}; // Added CursorVisibility
+};
 
 use anyhow::{Context, Result};
 use libc::{winsize, STDIN_FILENO, TIOCGWINSZ}; // For terminal size and raw mode
@@ -65,6 +65,8 @@ pub struct ConsoleDriver {
     input_buffer: [u8; 128], // Small buffer for typical key press sequences
     /// Tracks if the cursor is intended to be visible.
     is_cursor_logically_visible: bool,
+    /// Dummy framebuffer (console doesn't use pixel rendering)
+    framebuffer: Vec<u8>,
 }
 
 impl Driver for ConsoleDriver {
@@ -140,6 +142,7 @@ impl Driver for ConsoleDriver {
             font_height_px: DEFAULT_CONSOLE_FONT_HEIGHT_PX,
             input_buffer: [0u8; 128],           // Initialize buffer
             is_cursor_logically_visible: false, // Start hidden, orchestrator will set.
+            framebuffer: vec![0u8; 4],         // Minimal dummy buffer (console doesn't use pixels)
         })
     }
 
@@ -520,6 +523,16 @@ impl Driver for ConsoleDriver {
         }
         info!("ConsoleDriver: Cleanup complete.");
         Ok(())
+    }
+
+    fn get_framebuffer_mut(&mut self) -> &mut [u8] {
+        // Console doesn't use framebuffer (uses ANSI codes), so return dummy buffer
+        &mut self.framebuffer
+    }
+
+    fn get_framebuffer_size(&self) -> (usize, usize) {
+        // Console doesn't use framebuffer
+        (0, 0)
     }
 }
 

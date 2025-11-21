@@ -23,6 +23,7 @@ pub struct WaylandDriver {
     // event_queue: wayland_client::EventQueue,
     // display: wayland_client::protocol::wl_display::WlDisplay,
     // ... other Wayland objects
+    framebuffer: Vec<u8>, // Dummy framebuffer for trait compliance
 }
 
 impl Driver for WaylandDriver {
@@ -110,6 +111,16 @@ impl Driver for WaylandDriver {
         info!("WaylandDriver::cleanup() called.");
         // TODO: Disconnect from Wayland, clean up resources.
         Ok(())
+    }
+
+    fn get_framebuffer_mut(&mut self) -> &mut [u8] {
+        // Wayland driver not implemented yet, return dummy buffer
+        &mut self.framebuffer
+    }
+
+    fn get_framebuffer_size(&self) -> (usize, usize) {
+        // Wayland driver not implemented yet
+        (0, 0)
     }
 }
 

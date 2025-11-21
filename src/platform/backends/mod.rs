@@ -17,11 +17,26 @@ pub mod console;
 #[cfg(test)]
 pub mod mock;
 pub mod wayland;
+#[cfg(not(target_os = "macos"))]
 pub mod x11;
+#[cfg(not(target_os = "macos"))]
+pub mod xadapter;
 
-// Import enums for Driver trait method signatures
-pub use x11::window::CursorVisibility; // For set_cursor_visibility - Made pub
-pub use x11::FocusState; // For set_focus - Made pub
+/// Represents the visibility state of the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorVisibility {
+    /// The native mouse cursor should be visible.
+    Shown,
+    /// The native mouse cursor should be hidden (invisible).
+    Hidden,
+}
+
+/// Represents the focus state of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusState {
+    Focused,
+    Unfocused,
+}
 
 // It can be useful to re-export concrete driver types if they are frequently
 // used directly by `main.rs` or other high-level modules, though this is optional.
@@ -110,6 +125,9 @@ pub enum MouseButton {
 }
 
 /// Commands for the renderer to execute.
+///
+/// NOTE: This is the intermediate representation used by the Renderer.
+/// Drivers will eventually receive `DriverCommand` which is pixel-based.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderCommand {
     /// Clears the entire display area with the specified background color.
@@ -141,6 +159,28 @@ pub enum RenderCommand {
     RingBell,
     /// Presents the composed frame to the display.
     PresentFrame,
+}
+
+/// Minimal RISC-like driver commands.
+///
+/// This is the minimal command set that platform drivers must implement.
+/// The rasterizer writes directly to the driver's framebuffer, and these
+/// commands are just metadata and display control.
+///
+/// Benefits:
+/// - Drivers are trivial to implement (~100 lines)
+/// - Zero-copy rendering (rasterizer writes directly to driver's buffer)
+/// - Tiny messages (no pixel data in commands)
+/// - Easy to send across threads/async
+/// - All optimizations benefit all platforms
+#[derive(Debug, Clone)]
+pub enum DriverCommand {
+    /// Present the framebuffer to the screen
+    Present,
+    /// Set window title
+    SetTitle { title: String },
+    /// Ring bell
+    Bell,
 }
 
 /// Holds the current state of the platform, including display metrics and event sources.
@@ -302,4 +342,24 @@ pub trait Driver {
         // Default implementation: no-op for backends that don't support requesting selection data.
         log::trace!("Driver::request_selection_data called but not implemented for this backend.");
     }
+
+    // --- Framebuffer API (for zero-copy rendering) ---
+
+    /// Returns a mutable reference to the driver's framebuffer.
+    ///
+    /// The framebuffer is a linear array of RGBA pixels (4 bytes per pixel),
+    /// laid out row-major: `[R, G, B, A, R, G, B, A, ...]`
+    ///
+    /// The rasterizer writes directly to this buffer, eliminating copies.
+    /// After writing, call `present()` to display it.
+    ///
+    /// # Returns
+    /// * A mutable slice of RGBA pixel data
+    fn get_framebuffer_mut(&mut self) -> &mut [u8];
+
+    /// Returns the dimensions of the framebuffer in pixels.
+    ///
+    /// # Returns
+    /// * `(width_px, height_px)` - The framebuffer dimensions
+    fn get_framebuffer_size(&self) -> (usize, usize);
 }

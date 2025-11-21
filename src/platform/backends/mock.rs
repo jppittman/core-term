@@ -9,6 +9,7 @@ use std::os::unix::io::RawFd;
 pub struct MockDriver {
     events: Vec<BackendEvent>,
     render_commands: Vec<RenderCommand>,
+    framebuffer: Vec<u8>,
 }
 
 impl MockDriver {
@@ -16,6 +17,7 @@ impl MockDriver {
         Self {
             events: Vec::new(),
             render_commands: Vec::new(),
+            framebuffer: vec![0u8; 800 * 600 * 4], // Default 800x600 RGBA
         }
     }
 
@@ -71,5 +73,13 @@ impl Driver for MockDriver {
 
     fn cleanup(&mut self) -> Result<()> {
         Ok(())
+    }
+
+    fn get_framebuffer_mut(&mut self) -> &mut [u8] {
+        &mut self.framebuffer
+    }
+
+    fn get_framebuffer_size(&self) -> (usize, usize) {
+        (800, 600)
     }
 }

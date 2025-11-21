@@ -62,6 +62,7 @@ pub struct XDriver {
     has_focus: bool, // Tracks if the application window currently has input focus.
     selection_atoms: SelectionAtoms,
     selection_text: Option<String>, // Stores text if we own a selection
+    framebuffer: Vec<u8>, // Dummy framebuffer (X11 uses Xft rendering currently)
 }
 
 impl XDriver {
@@ -154,6 +155,7 @@ impl XDriver {
             has_focus: true, // Assume window has focus initially. Event processing will update this.
             selection_atoms,
             selection_text: None,
+            framebuffer: vec![0u8; 4], // Minimal dummy buffer (X11 uses Xft, not framebuffer yet)
         })
     }
 
@@ -501,6 +503,17 @@ impl Driver for XDriver {
             error!("Error during XDriver's connection cleanup: {}", e);
             e
         })
+    }
+
+    fn get_framebuffer_mut(&mut self) -> &mut [u8] {
+        // X11 currently uses Xft for rendering, not framebuffer
+        // Return dummy buffer for trait compliance
+        &mut self.framebuffer
+    }
+
+    fn get_framebuffer_size(&self) -> (usize, usize) {
+        // X11 doesn't use framebuffer yet
+        (0, 0)
     }
 }
 
