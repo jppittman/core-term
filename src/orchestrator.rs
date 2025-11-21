@@ -131,6 +131,9 @@ impl<'a> AppOrchestrator<'a> {
         debug!("processing {} events", events.len());
         for platform_event in events {
             match platform_event {
+                PlatformEvent::RequestFrame => {
+                    // Handled by actor-based architecture, not used in single-threaded orchestrator
+                }
                 PlatformEvent::IOEvent { data: pty_data } => {
                     debug!(
                         "AppOrchestrator: Received {} bytes from PTY.",

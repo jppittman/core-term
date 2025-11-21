@@ -286,6 +286,11 @@ impl Driver for CocoaDriver {
             let mut backend_events = Vec::new();
             let app = NSApp();
 
+            // CRITICAL: We must call sendEvent for ALL events we process, not just unhandled ones.
+            // macOS window management (close button, resize, move, etc.) depends on events being
+            // dispatched through NSApp even if we also handle them for terminal input.
+            // Without this, the window freezes and becomes unresponsive.
+
             // Use distantPast for non-blocking poll (returns immediately if no events)
             let distant_past: id = msg_send![class!(NSDate), distantPast];
 
@@ -303,6 +308,9 @@ impl Driver for CocoaDriver {
                 }
 
                 let event_type: u64 = msg_send![event, type];
+
+                // Log event receipt for debugging window responsiveness issues
+                trace!("cocoa: Received NSEvent type={}", event_type);
 
                 match event_type {
                     t if t == NSEventType::NSKeyDown as u64 => {
@@ -380,10 +388,15 @@ impl Driver for CocoaDriver {
                             modifiers,
                         });
                     }
-                    _ => {
-                        let () = msg_send![app, sendEvent: event];
-                    }
+                    _ => {}
                 }
+
+                // CRITICAL: Forward ALL events to NSApp for window management.
+                // Without this, macOS never processes window close/resize/move operations,
+                // causing the window to freeze (symptom: can't click red X button).
+                // See: https://developer.apple.com/documentation/appkit/nsapplication/1428359-sendevent
+                trace!("cocoa: Dispatching event type={} to NSApp via sendEvent", event_type);
+                let () = msg_send![app, sendEvent: event];
             }
 
             Ok(backend_events)
@@ -416,11 +429,26 @@ impl Driver for CocoaDriver {
     }
 
     fn present(&mut self) -> Result<()> {
+        // Sample framebuffer to check if we have actual color data
+        let has_non_black = self.framebuffer.chunks_exact(4).take(100).any(|p| {
+            p[0] > 0 || p[1] > 0 || p[2] > 0 || p[3] > 0
+        });
+
+        debug!(
+            "CocoaDriver::present() - framebuffer size={} bytes ({}x{} px), has_non_black_pixels={}",
+            self.framebuffer.len(),
+            self.window_width_px,
+            self.window_height_px,
+            has_non_black
+        );
+
         #[cfg(target_os = "macos")]
         unsafe {
             self.draw_framebuffer_to_view()
                 .context("Failed to draw framebuffer to view")?;
         }
+
+        debug!("CocoaDriver::present() completed successfully");
         Ok(())
     }
 
@@ -468,6 +496,8 @@ impl CocoaDriver {
     unsafe fn draw_framebuffer_to_view(&mut self) -> Result<()> {
         use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 
+        debug!("draw_framebuffer_to_view: Starting ({}x{} px)", self.window_width_px, self.window_height_px);
+
         // Create CGImage from framebuffer
         // The framebuffer is RGBA, 8 bits per component, 32 bits per pixel
         let width = self.window_width_px;
@@ -478,6 +508,17 @@ impl CocoaDriver {
         // TODO(performance): This copies the entire framebuffer. Consider using
         // a double-buffer strategy or CALayer for better performance
         let data = Arc::new(self.framebuffer.clone());
+
+        // Log first few pixels for debugging
+        if self.framebuffer.len() >= 16 {
+            debug!(
+                "draw_framebuffer_to_view: First 4 pixels (RGBA): [{},{},{},{}] [{},{},{},{}] [{},{},{},{}] [{},{},{},{}]",
+                self.framebuffer[0], self.framebuffer[1], self.framebuffer[2], self.framebuffer[3],
+                self.framebuffer[4], self.framebuffer[5], self.framebuffer[6], self.framebuffer[7],
+                self.framebuffer[8], self.framebuffer[9], self.framebuffer[10], self.framebuffer[11],
+                self.framebuffer[12], self.framebuffer[13], self.framebuffer[14], self.framebuffer[15]
+            );
+        }
 
         let provider = CGDataProvider::from_buffer(data);
         let color_space = CGColorSpace::create_device_rgb();
@@ -532,6 +573,7 @@ impl CocoaDriver {
 
         let context = core_graphics::context::CGContext::from_existing_context_ptr(cg_context);
         context.draw_image(rect, &image);
+        debug!("draw_framebuffer_to_view: Image drawn to context");
 
         // Flush and unlock
         let _: () = msg_send![ns_context, flushGraphics];
@@ -539,6 +581,7 @@ impl CocoaDriver {
 
         // Tell the window to display
         let _: () = msg_send![self.window, display];
+        debug!("draw_framebuffer_to_view: Completed successfully");
 
         Ok(())
     }
