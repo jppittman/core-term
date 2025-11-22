@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-//! Minimal CocoaDriver using raw Cocoa bindings.
+//! Minimal CocoaDriver using raw Cocoa bindings with CALayer, HiDPI, and proper coordinate system.
 //!
 //! This implements the RISC philosophy: the driver is dumb and minimal,
 //! it just pushes pixels to the screen. All text rendering, styling, etc.
@@ -11,9 +11,38 @@ use crate::platform::backends::{
     RenderCommand,
 };
 use anyhow::{Context, Result};
-use log::*;
+use log::{debug, info, trace, warn};
 use std::os::unix::io::RawFd;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
+
+// Default window dimensions
+const DEFAULT_WINDOW_WIDTH_PX: usize = 800;
+const DEFAULT_WINDOW_HEIGHT_PX: usize = 600;
+const DEFAULT_WINDOW_X: f64 = 100.0;
+const DEFAULT_WINDOW_Y: f64 = 100.0;
+
+// Default cell (character) dimensions
+const DEFAULT_CELL_WIDTH_PX: usize = 8;
+const DEFAULT_CELL_HEIGHT_PX: usize = 16;
+
+// RGBA pixel format constants
+const BYTES_PER_PIXEL: usize = 4;
+const BITS_PER_COMPONENT: usize = 8;
+const BITS_PER_PIXEL: usize = 32;
+
+// CGImageAlphaInfo values for bitmap format specification
+// These determine how Core Graphics interprets RGBA pixel data
+const CG_IMAGE_ALPHA_NONE: u32 = 0;
+const CG_IMAGE_ALPHA_PREMULTIPLIED_LAST: u32 = 1;  // RGBA, premultiplied
+const CG_IMAGE_ALPHA_PREMULTIPLIED_FIRST: u32 = 2; // ARGB, premultiplied
+const CG_IMAGE_ALPHA_LAST: u32 = 3;                // RGBA, straight alpha
+const CG_IMAGE_ALPHA_NONE_SKIP_LAST: u32 = 6;      // RGB_, ignore alpha
+
+// NSView autoresizing mask: width sizable (2) | height sizable (16)
+const NS_VIEW_AUTORESIZE_MASK: u64 = 18;
+
+// Custom NSView subclass name
+const VIEW_CLASS_NAME: &str = "CoreTermView";
 
 #[cfg(target_os = "macos")]
 use cocoa::appkit::{
@@ -21,7 +50,7 @@ use cocoa::appkit::{
     NSWindow, NSWindowStyleMask,
 };
 #[cfg(target_os = "macos")]
-use cocoa::base::{id, nil, YES};
+use cocoa::base::{id, nil, YES, NO};
 #[cfg(target_os = "macos")]
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 #[cfg(target_os = "macos")]
@@ -33,6 +62,10 @@ use core_graphics::data_provider::CGDataProvider;
 #[cfg(target_os = "macos")]
 use core_graphics::image::CGImage;
 #[cfg(target_os = "macos")]
+use objc::declare::ClassDecl;
+#[cfg(target_os = "macos")]
+use objc::runtime::{Class, Object, Sel, BOOL};
+#[cfg(target_os = "macos")]
 use objc::{class, msg_send, sel, sel_impl};
 
 pub struct CocoaDriver {
@@ -42,15 +75,67 @@ pub struct CocoaDriver {
     window: id,
     #[cfg(target_os = "macos")]
     _view: id,
-    window_width_px: usize,
-    window_height_px: usize,
+    window_width_pts: f64,  // Logical size in points
+    window_height_pts: f64, // Logical size in points
+    backing_scale: f64,     // Retina scale factor (1.0 or 2.0)
     cell_width_px: usize,
     cell_height_px: usize,
-    framebuffer: Vec<u8>, // RGBA pixels
+    framebuffer: Vec<u8>, // RGBA pixels at physical resolution
 }
 
 #[cfg(target_os = "macos")]
 impl CocoaDriver {
+    /// Registers a custom NSView subclass that handles coordinate flipping and keyboard focus.
+    /// This runs only once using Once for thread safety.
+    fn register_view_class() {
+        static REGISTER_ONCE: Once = Once::new();
+        REGISTER_ONCE.call_once(|| {
+            unsafe {
+                let superclass = Class::get("NSView").unwrap();
+                let mut decl = ClassDecl::new(VIEW_CLASS_NAME, superclass).unwrap();
+
+                // Override isFlipped to return YES
+                // This makes the coordinate system top-left (0,0), matching our terminal grid
+                // and eliminating the need for manual Y-axis flipping
+                extern "C" fn is_flipped(_this: &Object, _sel: Sel) -> BOOL {
+                    use log::trace;
+                    trace!("CoreTermView::isFlipped called - returning YES");
+                    YES
+                }
+                decl.add_method(
+                    sel!(isFlipped),
+                    is_flipped as extern "C" fn(&Object, Sel) -> BOOL,
+                );
+
+                // Override acceptsFirstResponder to return YES
+                // This allows the view to receive keyboard events
+                extern "C" fn accepts_first_responder(_this: &Object, _sel: Sel) -> BOOL {
+                    use log::debug;
+                    debug!("CoreTermView::acceptsFirstResponder called - returning YES");
+                    YES
+                }
+                decl.add_method(
+                    sel!(acceptsFirstResponder),
+                    accepts_first_responder as extern "C" fn(&Object, Sel) -> BOOL,
+                );
+
+                // Override becomeFirstResponder to log when we gain focus
+                extern "C" fn become_first_responder(_this: &mut Object, _sel: Sel) -> BOOL {
+                    use log::info;
+                    info!("CoreTermView::becomeFirstResponder called - view gained focus");
+                    YES
+                }
+                decl.add_method(
+                    sel!(becomeFirstResponder),
+                    become_first_responder as extern "C" fn(&mut Object, Sel) -> BOOL,
+                );
+
+                decl.register();
+                debug!("Registered custom NSView subclass: {}", VIEW_CLASS_NAME);
+            }
+        });
+    }
+
     /// Create the NSApplication singleton
     fn init_app() -> Result<id> {
         unsafe {
@@ -163,7 +248,7 @@ impl CocoaDriver {
     fn create_window(width: usize, height: usize) -> Result<id> {
         unsafe {
             let window_rect = NSRect::new(
-                NSPoint::new(100.0, 100.0),
+                NSPoint::new(DEFAULT_WINDOW_X, DEFAULT_WINDOW_Y),
                 NSSize::new(width as CGFloat, height as CGFloat),
             );
 
@@ -196,22 +281,32 @@ impl CocoaDriver {
         }
     }
 
-    /// Create an NSView for rendering
-    fn create_view(width: usize, height: usize) -> Result<id> {
+    /// Create an NSView for rendering with CALayer backing
+    /// Uses our custom CoreTermView subclass for proper coordinate system and keyboard handling
+    fn create_view(width: f64, height: f64) -> Result<id> {
         unsafe {
-            use cocoa::appkit::NSView;
+            // Register the custom view class (runs once)
+            Self::register_view_class();
 
+            let class = Class::get(VIEW_CLASS_NAME).unwrap();
             let view_rect = NSRect::new(
                 NSPoint::new(0.0, 0.0),
                 NSSize::new(width as CGFloat, height as CGFloat),
             );
 
-            let view = NSView::alloc(nil).initWithFrame_(view_rect);
+            // Allocate our CUSTOM view subclass
+            let view: id = msg_send![class, alloc];
+            let view: id = msg_send![view, initWithFrame: view_rect];
+
             if view == nil {
-                return Err(anyhow::anyhow!("Failed to create NSView"));
+                return Err(anyhow::anyhow!("Failed to create custom view"));
             }
 
-            let () = msg_send![view, setAutoresizingMask: 18u64];
+            let () = msg_send![view, setAutoresizingMask: NS_VIEW_AUTORESIZE_MASK];
+
+            // CRITICAL: Enable layer-backing for modern rendering
+            // This makes the view use a CALayer, which is the proper way to render on macOS
+            let () = msg_send![view, setWantsLayer: YES];
 
             Ok(view)
         }
@@ -225,43 +320,75 @@ impl Driver for CocoaDriver {
     {
         #[cfg(target_os = "macos")]
         {
-            info!("CocoaDriver: Initializing minimal driver with real Cocoa window");
+            info!("CocoaDriver: Initializing with CALayer, HiDPI support, and custom view");
 
             unsafe {
                 let pool = NSAutoreleasePool::new(nil);
-                let window_width_px = 800;
-                let window_height_px = 600;
-                let cell_width_px = 8;
-                let cell_height_px = 16;
+
+                // Logical dimensions in points (not pixels)
+                let window_width_pts = DEFAULT_WINDOW_WIDTH_PX as f64;
+                let window_height_pts = DEFAULT_WINDOW_HEIGHT_PX as f64;
 
                 Self::init_app().context("Failed to initialize NSApplication")?;
-                let window = Self::create_window(window_width_px, window_height_px)
+                let window = Self::create_window(window_width_pts as usize, window_height_pts as usize)
                     .context("Failed to create window")?;
-                let view = Self::create_view(window_width_px, window_height_px)
+                let view = Self::create_view(window_width_pts, window_height_pts)
                     .context("Failed to create view")?;
 
                 let () = msg_send![window, setContentView: view];
 
-                // Create framebuffer (initialized to black)
-                let framebuffer = vec![0u8; window_width_px * window_height_px * 4];
+                // Query the backing scale factor for HiDPI/Retina support
+                let backing_scale: CGFloat = msg_send![window, backingScaleFactor];
+                info!("CocoaDriver: Backing scale factor = {}", backing_scale);
+
+                // Calculate PHYSICAL pixel size for framebuffer
+                let buffer_width_px = (window_width_pts * backing_scale) as usize;
+                let buffer_height_px = (window_height_pts * backing_scale) as usize;
+
+                // Scale font cell size to physical resolution for Retina displays
+                let cell_width_px = (DEFAULT_CELL_WIDTH_PX as f64 * backing_scale) as usize;
+                let cell_height_px = (DEFAULT_CELL_HEIGHT_PX as f64 * backing_scale) as usize;
 
                 info!(
-                    "CocoaDriver: Window created at {}x{}",
-                    window_width_px, window_height_px
+                    "CocoaDriver: Window {} x {} points ({} x {} physical px), font cells {} x {} px",
+                    window_width_pts, window_height_pts, buffer_width_px, buffer_height_px,
+                    cell_width_px, cell_height_px
                 );
+
+                // Create framebuffer at physical resolution
+                let framebuffer = vec![0u8; buffer_width_px * buffer_height_px * BYTES_PER_PIXEL];
 
                 let mut driver = Self {
                     _pool: pool,
                     window,
                     _view: view,
-                    window_width_px,
-                    window_height_px,
+                    window_width_pts,
+                    window_height_pts,
+                    backing_scale,
                     cell_width_px,
                     cell_height_px,
                     framebuffer,
                 };
 
                 driver.present().context("Failed initial present")?;
+
+                // Force the application and window to the front and capture keyboard focus
+                // Make the view the first responder to receive keyboard events
+                let app = NSApp();
+                let () = msg_send![app, activateIgnoringOtherApps: YES];
+                let () = msg_send![window, makeKeyAndOrderFront: nil];
+
+                info!("Attempting to make view the first responder...");
+                let success: BOOL = msg_send![window, makeFirstResponder: view];
+                info!("makeFirstResponder returned: {}", if success == YES { "YES" } else { "NO" });
+
+                // Verify which view is actually the first responder
+                let first_responder: id = msg_send![window, firstResponder];
+                if first_responder == view {
+                    info!("SUCCESS: View is now the first responder");
+                } else {
+                    warn!("WARNING: First responder is NOT our view (it's {:?})", first_responder);
+                }
 
                 Ok(driver)
             }
@@ -291,14 +418,16 @@ impl Driver for CocoaDriver {
             // dispatched through NSApp even if we also handle them for terminal input.
             // Without this, the window freezes and becomes unresponsive.
 
-            // Use distantPast for non-blocking poll (returns immediately if no events)
-            let distant_past: id = msg_send![class!(NSDate), distantPast];
+            // CRITICAL FIX: Use a very short timeout instead of distantPast
+            // Cocoa's event system needs the app to actually WAIT for events, not just poll
+            // A 1ms timeout allows events to be delivered while keeping the loop responsive
+            let timeout: id = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: 0.001];
 
             loop {
                 let event: id = msg_send![
                     app,
                     nextEventMatchingMask: NSEventMask::NSAnyEventMask.bits()
-                    untilDate: distant_past
+                    untilDate: timeout
                     inMode: cocoa::foundation::NSDefaultRunLoopMode
                     dequeue: YES
                 ];
@@ -309,11 +438,12 @@ impl Driver for CocoaDriver {
 
                 let event_type: u64 = msg_send![event, type];
 
-                // Log event receipt for debugging window responsiveness issues
-                trace!("cocoa: Received NSEvent type={}", event_type);
+                // Log ALL events to see what we're actually receiving
+                debug!("cocoa: Received NSEvent type={}", event_type);
 
                 match event_type {
                     t if t == NSEventType::NSKeyDown as u64 => {
+                        debug!("cocoa: Received NSKeyDown event");
                         let chars: id = msg_send![event, characters];
                         let text = if chars != nil {
                             let s = cocoa::foundation::NSString::UTF8String(chars);
@@ -330,6 +460,8 @@ impl Driver for CocoaDriver {
                         let symbol = Self::map_keycode_to_symbol(key_code);
                         let modifiers = Self::extract_modifiers(event);
 
+                        debug!("cocoa: KeyDown - keyCode={}, text='{}', symbol={:?}", key_code, text, symbol);
+
                         backend_events.push(BackendEvent::Key {
                             symbol,
                             modifiers,
@@ -342,7 +474,7 @@ impl Driver for CocoaDriver {
                         backend_events.push(BackendEvent::MouseButtonPress {
                             button: MouseButton::Left,
                             x: location.x as u16,
-                            y: (self.window_height_px as f64 - location.y) as u16,
+                            y: (self.window_height_pts - location.y) as u16,
                             modifiers,
                         });
                     }
@@ -352,7 +484,7 @@ impl Driver for CocoaDriver {
                         backend_events.push(BackendEvent::MouseButtonPress {
                             button: MouseButton::Right,
                             x: location.x as u16,
-                            y: (self.window_height_px as f64 - location.y) as u16,
+                            y: (self.window_height_pts - location.y) as u16,
                             modifiers,
                         });
                     }
@@ -362,7 +494,7 @@ impl Driver for CocoaDriver {
                         backend_events.push(BackendEvent::MouseButtonRelease {
                             button: MouseButton::Left,
                             x: location.x as u16,
-                            y: (self.window_height_px as f64 - location.y) as u16,
+                            y: (self.window_height_pts - location.y) as u16,
                             modifiers,
                         });
                     }
@@ -372,7 +504,7 @@ impl Driver for CocoaDriver {
                         backend_events.push(BackendEvent::MouseButtonRelease {
                             button: MouseButton::Right,
                             x: location.x as u16,
-                            y: (self.window_height_px as f64 - location.y) as u16,
+                            y: (self.window_height_pts - location.y) as u16,
                             modifiers,
                         });
                     }
@@ -384,7 +516,7 @@ impl Driver for CocoaDriver {
                         let modifiers = Self::extract_modifiers(event);
                         backend_events.push(BackendEvent::MouseMove {
                             x: location.x as u16,
-                            y: (self.window_height_px as f64 - location.y) as u16,
+                            y: (self.window_height_pts - location.y) as u16,
                             modifiers,
                         });
                     }
@@ -409,13 +541,17 @@ impl Driver for CocoaDriver {
     }
 
     fn get_platform_state(&self) -> PlatformState {
+        // Return PHYSICAL pixel dimensions for the rasterizer
+        let physical_width = (self.window_width_pts * self.backing_scale) as u16;
+        let physical_height = (self.window_height_pts * self.backing_scale) as u16;
+
         PlatformState {
             event_fd: None,
             font_cell_width_px: self.cell_width_px,
             font_cell_height_px: self.cell_height_px,
-            scale_factor: 1.0, // TODO: Get actual scale from NSScreen
-            display_width_px: self.window_width_px as u16,
-            display_height_px: self.window_height_px as u16,
+            scale_factor: self.backing_scale,
+            display_width_px: physical_width,
+            display_height_px: physical_height,
         }
     }
 
@@ -434,11 +570,15 @@ impl Driver for CocoaDriver {
             p[0] > 0 || p[1] > 0 || p[2] > 0 || p[3] > 0
         });
 
+        let physical_width = (self.window_width_pts * self.backing_scale) as usize;
+        let physical_height = (self.window_height_pts * self.backing_scale) as usize;
+
         debug!(
-            "CocoaDriver::present() - framebuffer size={} bytes ({}x{} px), has_non_black_pixels={}",
+            "CocoaDriver::present() - framebuffer size={} bytes ({}x{} physical px, scale={}), has_non_black_pixels={}",
             self.framebuffer.len(),
-            self.window_width_px,
-            self.window_height_px,
+            physical_width,
+            physical_height,
+            self.backing_scale,
             has_non_black
         );
 
@@ -485,58 +625,44 @@ impl Driver for CocoaDriver {
     }
 
     fn get_framebuffer_size(&self) -> (usize, usize) {
-        (self.window_width_px, self.window_height_px)
+        // Return PHYSICAL pixel dimensions
+        (
+            (self.window_width_pts * self.backing_scale) as usize,
+            (self.window_height_pts * self.backing_scale) as usize,
+        )
     }
 }
 
 // New minimal driver interface
 #[cfg(target_os = "macos")]
 impl CocoaDriver {
-    /// Converts the framebuffer to a CGImage and draws it to the NSView
+    /// Converts the framebuffer to a CGImage and sets it as the CALayer contents
     unsafe fn draw_framebuffer_to_view(&mut self) -> Result<()> {
-        use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+        // Calculate physical pixel dimensions
+        let width = (self.window_width_pts * self.backing_scale) as usize;
+        let height = (self.window_height_pts * self.backing_scale) as usize;
 
-        debug!("draw_framebuffer_to_view: Starting ({}x{} px)", self.window_width_px, self.window_height_px);
+        debug!(
+            "draw_framebuffer_to_view: {} x {} physical pixels (scale={})",
+            width, height, self.backing_scale
+        );
 
-        // Create CGImage from framebuffer
-        // The framebuffer is RGBA, 8 bits per component, 32 bits per pixel
-        let width = self.window_width_px;
-        let height = self.window_height_px;
-        let bytes_per_row = width * 4;
+        let bytes_per_row = width * BYTES_PER_PIXEL;
 
         // CGDataProvider needs Arc<Vec<u8>> for shared ownership
-        // TODO(performance): This copies the entire framebuffer. Consider using
-        // a double-buffer strategy or CALayer for better performance
         let data = Arc::new(self.framebuffer.clone());
-
-        // Log first few pixels for debugging
-        if self.framebuffer.len() >= 16 {
-            debug!(
-                "draw_framebuffer_to_view: First 4 pixels (RGBA): [{},{},{},{}] [{},{},{},{}] [{},{},{},{}] [{},{},{},{}]",
-                self.framebuffer[0], self.framebuffer[1], self.framebuffer[2], self.framebuffer[3],
-                self.framebuffer[4], self.framebuffer[5], self.framebuffer[6], self.framebuffer[7],
-                self.framebuffer[8], self.framebuffer[9], self.framebuffer[10], self.framebuffer[11],
-                self.framebuffer[12], self.framebuffer[13], self.framebuffer[14], self.framebuffer[15]
-            );
-        }
 
         let provider = CGDataProvider::from_buffer(data);
         let color_space = CGColorSpace::create_device_rgb();
 
-        // Create CGImage from raw pixel data
-        // CGImageAlphaInfo values:
-        // kCGImageAlphaNone = 0
-        // kCGImageAlphaPremultipliedLast = 1  (RGBA, alpha premultiplied)
-        // kCGImageAlphaLast = 2  (RGBA, straight alpha)
-        // kCGImageAlphaNoneSkipLast = 6  (RGB_, ignore A)
-        // For RGBA with straight alpha: use 2
-        let bitmap_info = 2u32; // kCGImageAlphaLast = RGBA with straight alpha
+        // Use kCGImageAlphaPremultipliedLast (1) for best CALayer compatibility
+        let bitmap_info = 1u32;
 
         let image = CGImage::new(
             width,
             height,
-            8,  // bits per component (RGBA = 8 bits each)
-            32, // bits per pixel (RGBA = 4 * 8 = 32)
+            BITS_PER_COMPONENT,
+            BITS_PER_PIXEL,
             bytes_per_row,
             &color_space,
             bitmap_info,
@@ -545,43 +671,24 @@ impl CocoaDriver {
             0,     // rendering_intent (0 = default)
         );
 
-        // Get the view's graphics context and draw the image
-        // lockFocus makes the view the current drawing context
-        let _: () = msg_send![self._view, lockFocus];
-
-        // Get the current NSGraphicsContext
-        let ns_context: id = msg_send![class!(NSGraphicsContext), currentContext];
-        if ns_context == nil {
-            let _: () = msg_send![self._view, unlockFocus];
-            return Err(anyhow::anyhow!("Failed to get NSGraphicsContext"));
+        // Get the view's CALayer
+        let layer: id = msg_send![self._view, layer];
+        if layer == nil {
+            return Err(anyhow::anyhow!("View has no layer - did setWantsLayer: YES fail?"));
         }
 
-        // Get the CGContext from NSGraphicsContext
-        let cg_context: *mut core_graphics::sys::CGContext = msg_send![ns_context, CGContext];
-        if cg_context.is_null() {
-            let _: () = msg_send![self._view, unlockFocus];
-            return Err(anyhow::anyhow!(
-                "Failed to get CGContext from NSGraphicsContext"
-            ));
-        }
+        // Extract the raw CGImageRef pointer from the wrapper
+        // SAFETY: CGImage is repr(transparent) over *mut sys::CGImage
+        let image_ref: *mut core_graphics::sys::CGImage = std::mem::transmute_copy(&image);
 
-        // Draw the image to fill the entire view
-        let rect = CGRect::new(
-            &CGPoint::new(0.0, 0.0),
-            &CGSize::new(width as CGFloat, height as CGFloat),
-        );
+        // Set the layer's contents
+        let _: () = msg_send![layer, setContents: image_ref];
 
-        let context = core_graphics::context::CGContext::from_existing_context_ptr(cg_context);
-        context.draw_image(rect, &image);
-        debug!("draw_framebuffer_to_view: Image drawn to context");
+        // CRITICAL: Set the contentsScale to match the backing scale
+        // Without this, the layer assumes 1x content and stretches it (fuzziness)
+        let _: () = msg_send![layer, setContentsScale: self.backing_scale];
 
-        // Flush and unlock
-        let _: () = msg_send![ns_context, flushGraphics];
-        let _: () = msg_send![self._view, unlockFocus];
-
-        // Tell the window to display
-        let _: () = msg_send![self.window, display];
-        debug!("draw_framebuffer_to_view: Completed successfully");
+        debug!("draw_framebuffer_to_view: CGImage set (scale={})", self.backing_scale);
 
         Ok(())
     }
