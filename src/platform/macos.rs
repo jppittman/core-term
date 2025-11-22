@@ -152,6 +152,7 @@ impl Platform for MacosPlatform {
         info!("MacosPlatform::run() - Starting main event loop");
 
         // Main event loop: process Cocoa events and handle Orchestrator actions
+        let mut shutdown_complete = false;
         loop {
             // Step 1: Process Cocoa UI events (non-blocking)
             let cocoa_events = self
@@ -165,8 +166,8 @@ impl Platform for MacosPlatform {
                 if let Err(e) = self.orchestrator_event_tx.send(platform_event) {
                     warn!("Failed to send Cocoa event to Orchestrator: {}", e);
                     // Orchestrator channel closed - time to shut down
-                    info!("Orchestrator channel closed, shutting down");
-                    return Ok(());
+                    info!("Orchestrator event channel closed, shutting down");
+                    break;
                 }
             }
 
@@ -174,19 +175,33 @@ impl Platform for MacosPlatform {
             loop {
                 match self.orchestrator_display_action_rx.try_recv() {
                     Ok(action) => {
+                        // Check for ShutdownComplete before handling action
+                        if matches!(action, PlatformAction::ShutdownComplete) {
+                            info!("MacosPlatform: Received ShutdownComplete - exiting event loop");
+                            shutdown_complete = true;
+                        }
                         self.handle_display_action(action)?;
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
                         info!("Orchestrator action channel closed, shutting down");
-                        return Ok(());
+                        shutdown_complete = true;
+                        break;
                     }
                 }
+            }
+
+            if shutdown_complete {
+                break;
             }
 
             // Small sleep to avoid spinning (Cocoa will handle timing via NSApp.run() later)
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+
+        // Normal shutdown: return and let Drop handle cleanup (Once ensures it runs exactly once)
+        info!("MacosPlatform::run() - Exiting normally, Drop will handle cleanup");
+        Ok(())
     }
 
     fn cleanup(&mut self) -> Result<()> {
@@ -253,6 +268,10 @@ impl MacosPlatform {
             PlatformAction::RequestPaste => {
                 self.driver.request_selection_data(0, 0);
             }
+            PlatformAction::ShutdownComplete => {
+                // This is handled in the run() loop
+                info!("MacosPlatform: Received ShutdownComplete action");
+            }
             // PTY actions should go to PTY thread, not here
             PlatformAction::Write(_) | PlatformAction::ResizePty { .. } => {
                 warn!("MacosPlatform received PTY action - this should go to PTY thread!");
@@ -264,7 +283,12 @@ impl MacosPlatform {
 
 impl Drop for MacosPlatform {
     fn drop(&mut self) {
-        debug!("MacosPlatform dropped");
-        // VsyncActor, EventMonitorActor, and OrchestratorActor will clean up their threads
+        info!("MacosPlatform::drop() - Dropping, calling cleanup");
+        // Call cleanup (Once ensures it runs exactly once, even if called multiple times)
+        // This happens AFTER run() returns, so we're not inside the event loop
+        let _ = self.driver.cleanup();
+        // The actor threads (VsyncActor, EventMonitorActor, OrchestratorActor)
+        // will clean up automatically when their channels close and they're dropped
+        info!("MacosPlatform::drop() - Drop complete");
     }
 }

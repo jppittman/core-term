@@ -25,9 +25,21 @@ const DEFAULT_INITIAL_PTY_ROWS: u16 = 24;
 
 /// Main entry point for the `myterm` application.
 fn main() -> anyhow::Result<()> {
-    // Initialize the logger. Default filter is "info" if RUST_LOG is not set.
+    // Initialize the logger to write to /tmp/core-term.log
+    // Default filter is "info" if RUST_LOG is not set.
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let log_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open("/tmp/core-term.log")
+        .expect("Failed to open log file");
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_micros()
+        .target(env_logger::Target::Pipe(Box::new(log_file)))
         .init();
 
     info!("Starting core-term...");
