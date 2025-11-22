@@ -81,6 +81,7 @@ pub struct CocoaDriver {
     cell_width_px: usize,
     cell_height_px: usize,
     framebuffer: Vec<u8>, // RGBA pixels at physical resolution
+    cleanup_once: Once,     // Ensures cleanup runs exactly once
 }
 
 #[cfg(target_os = "macos")]
@@ -130,8 +131,63 @@ impl CocoaDriver {
                     become_first_responder as extern "C" fn(&mut Object, Sel) -> BOOL,
                 );
 
+                // Override keyDown: to handle keyboard events WITHOUT calling [super keyDown:]
+                // This prevents the system beep when we handle keys ourselves
+                extern "C" fn key_down(_this: &Object, _sel: Sel, _event: id) {
+                    use log::trace;
+                    trace!("CoreTermView::keyDown: called - event handled, NOT calling super");
+                    // Explicitly do NOT call [super keyDown:event] to silence the beep
+                    // The event will be processed via process_events() polling instead
+                }
+                decl.add_method(
+                    sel!(keyDown:),
+                    key_down as extern "C" fn(&Object, Sel, id),
+                );
+
                 decl.register();
                 debug!("Registered custom NSView subclass: {}", VIEW_CLASS_NAME);
+            }
+        });
+    }
+
+    /// Registers a custom NSWindowDelegate that handles window close events.
+    /// This runs only once using Once for thread safety.
+    fn register_window_delegate_class() {
+        static REGISTER_ONCE: Once = Once::new();
+        REGISTER_ONCE.call_once(|| {
+            unsafe {
+                let superclass = Class::get("NSObject").unwrap();
+                let mut decl = ClassDecl::new("CoreTermWindowDelegate", superclass).unwrap();
+
+                // windowShouldClose: - called when user clicks the red X close button
+                // Return YES to allow the window to close, NO to prevent it
+                extern "C" fn window_should_close(_this: &Object, _sel: Sel, _sender: id) -> BOOL {
+                    use log::info;
+                    info!("CoreTermWindowDelegate::windowShouldClose: - allowing window to close");
+                    YES
+                }
+                decl.add_method(
+                    sel!(windowShouldClose:),
+                    window_should_close as extern "C" fn(&Object, Sel, id) -> BOOL,
+                );
+
+                // windowWillClose: - called just before window closes
+                // This is where we terminate the app when the window closes
+                extern "C" fn window_will_close(_this: &Object, _sel: Sel, _notification: id) {
+                    use log::info;
+                    info!("CoreTermWindowDelegate::windowWillClose: - terminating application");
+                    unsafe {
+                        let app = NSApp();
+                        let _: () = msg_send![app, terminate: nil];
+                    }
+                }
+                decl.add_method(
+                    sel!(windowWillClose:),
+                    window_will_close as extern "C" fn(&Object, Sel, id),
+                );
+
+                decl.register();
+                debug!("Registered NSWindowDelegate subclass: CoreTermWindowDelegate");
             }
         });
     }
@@ -273,6 +329,13 @@ impl CocoaDriver {
             let () = msg_send![window, setOpaque: YES];
             let black_color: id = msg_send![class!(NSColor), blackColor];
             let () = msg_send![window, setBackgroundColor: black_color];
+
+            // Register and set the window delegate to handle close button
+            Self::register_window_delegate_class();
+            let delegate_class = Class::get("CoreTermWindowDelegate").unwrap();
+            let delegate: id = msg_send![delegate_class, new];
+            let () = msg_send![window, setDelegate: delegate];
+
             window.center();
             window.makeKeyAndOrderFront_(nil);
             let () = msg_send![window, orderFrontRegardless];
@@ -368,6 +431,7 @@ impl Driver for CocoaDriver {
                     cell_width_px,
                     cell_height_px,
                     framebuffer,
+                    cleanup_once: Once::new(),
                 };
 
                 driver.present().context("Failed initial present")?;
@@ -616,7 +680,10 @@ impl Driver for CocoaDriver {
     }
 
     fn cleanup(&mut self) -> Result<()> {
-        info!("CocoaDriver: Cleanup");
+        info!("CocoaDriver: Cleanup called");
+        self.cleanup_once.call_once(|| {
+            self.do_cleanup();
+        });
         Ok(())
     }
 
@@ -709,6 +776,23 @@ impl CocoaDriver {
             }
         }
         Ok(())
+    }
+
+    /// Internal cleanup logic - closes the window.
+    /// This is called exactly once via `Once` from `cleanup()`.
+    fn do_cleanup(&self) {
+        info!("CocoaDriver: Performing cleanup (closing window)");
+        #[cfg(target_os = "macos")]
+        unsafe {
+            // Close the window - this is all we need to do
+            // The app will terminate naturally when main() exits
+            let _: () = msg_send![self.window, close];
+        }
+    }
+
+    /// Public wrapper for backward compatibility. Calls cleanup().
+    pub fn close_window(&mut self) {
+        let _ = self.cleanup();
     }
 }
 

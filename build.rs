@@ -49,9 +49,69 @@ fn main() {
             // No special linker flags are needed here by default, as the
             // system libraries are found automatically via frameworks.
             println!("cargo:rustc-cfg=use_macos_backend");
+
+            // Create app bundle structure for keyboard input support
+            create_macos_app_bundle();
         }
         _ => {
             // For any other operating system, we don't enable a specific backend.
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn create_macos_app_bundle() {
+    use std::fs;
+    use std::io::Write;
+    use std::path::Path;
+
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let bundle_dir = Path::new(&manifest_dir).join("CoreTerm.app/Contents");
+
+    // Create bundle structure
+    let _ = fs::remove_dir_all(Path::new(&manifest_dir).join("CoreTerm.app"));
+    fs::create_dir_all(bundle_dir.join("MacOS"))
+        .expect("Failed to create MacOS directory");
+    fs::create_dir_all(bundle_dir.join("Resources"))
+        .expect("Failed to create Resources directory");
+
+    // Create Info.plist (required for keyboard input to work on macOS)
+    let plist_content = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>CoreTerm</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.core-term.terminal</string>
+    <key>CFBundleName</key>
+    <string>CoreTerm</string>
+    <key>CFBundleDisplayName</key>
+    <string>CoreTerm</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSUIElement</key>
+    <false/>
+</dict>
+</plist>
+"#;
+
+    let plist_path = bundle_dir.join("Info.plist");
+    let mut plist_file = fs::File::create(&plist_path)
+        .expect("Failed to create Info.plist");
+    plist_file.write_all(plist_content.as_bytes())
+        .expect("Failed to write Info.plist");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn create_macos_app_bundle() {
+    // No-op on non-macOS platforms
 }

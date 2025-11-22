@@ -1,0 +1,81 @@
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    if args.len() < 2 {
+        eprintln!("Usage: cargo xtask <command>");
+        eprintln!("Commands:");
+        eprintln!("  bundle-run    Build and run the bundled macOS app");
+        std::process::exit(1);
+    }
+
+    match args[1].as_str() {
+        "bundle-run" => bundle_run(),
+        _ => {
+            eprintln!("Unknown command: {}", args[1]);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn bundle_run() {
+    println!("Building core-term in release mode...");
+
+    // Build the project
+    let status = Command::new("cargo")
+        .args(&["build", "--release"])
+        .status()
+        .expect("Failed to run cargo build");
+
+    if !status.success() {
+        eprintln!("Build failed");
+        std::process::exit(1);
+    }
+
+    // Copy binary to bundle (build.rs creates the bundle structure)
+    let binary_src = "target/release/core-term";
+    let binary_dest = "CoreTerm.app/Contents/MacOS/CoreTerm";
+
+    if !Path::new(binary_src).exists() {
+        eprintln!("Binary not found at {}", binary_src);
+        std::process::exit(1);
+    }
+
+    println!("Copying binary to bundle...");
+    fs::copy(binary_src, binary_dest)
+        .expect("Failed to copy binary to bundle");
+
+    // Make it executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(binary_dest)
+            .expect("Failed to get binary metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(binary_dest, perms)
+            .expect("Failed to set executable permission");
+    }
+
+    println!("Launching CoreTerm.app...");
+    println!("Logs will be written to /tmp/core-term.log");
+
+    // Launch the bundled app using 'open'
+    // Logs are written to /tmp/core-term.log (configured in main.rs)
+    let status = Command::new("open")
+        .arg("CoreTerm.app")
+        .status()
+        .expect("Failed to launch app");
+
+    if !status.success() {
+        eprintln!("Failed to launch CoreTerm.app");
+        std::process::exit(1);
+    }
+
+    println!("CoreTerm.app launched successfully!");
+    println!("Monitor logs with: tail -f /tmp/core-term.log");
+}

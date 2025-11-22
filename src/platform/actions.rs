@@ -21,4 +21,6 @@ pub enum PlatformAction {
     SetCursorVisibility(bool),
     /// Request Paste Data from the clipboard.
     RequestPaste,
+    /// Orchestrator has completed shutdown and it's safe to cleanup platform resources.
+    ShutdownComplete,
 }

@@ -142,6 +142,16 @@ impl OrchestratorActor {
                         backend_event
                     );
 
+                    // Check for CloseRequested before processing
+                    if let BackendEvent::CloseRequested = backend_event {
+                        info!("OrchestratorActor: CloseRequested received - sending ShutdownComplete and exiting");
+                        // Send ShutdownComplete to Display so it can perform cleanup
+                        display_action_tx
+                            .send(PlatformAction::ShutdownComplete)
+                            .context("Failed to send ShutdownComplete to Display")?;
+                        return Ok(()); // Exit the event loop, causing channels to close
+                    }
+
                     let emulator_input = Self::process_backend_event(
                         backend_event,
                         &platform_state,
@@ -192,17 +202,19 @@ impl OrchestratorActor {
 
     /// Process a BackendEvent and return the corresponding EmulatorInput.
     ///
-    /// Returns `Ok(None)` for events that don't produce emulator input (like CloseRequested).
+    /// Returns `Ok(None)` for events that don't produce emulator input.
     /// Returns `Err` only for fatal errors.
+    ///
+    /// Note: CloseRequested is handled in the main event loop before this function is called.
     fn process_backend_event(
         backend_event: BackendEvent,
         platform_state: &PlatformState,
-        term_emulator: &mut TerminalEmulator,
+        _term_emulator: &mut TerminalEmulator,
     ) -> Result<Option<EmulatorInput>> {
         match backend_event {
             BackendEvent::CloseRequested => {
-                info!("OrchestratorActor: CloseRequested received - shutting down is handled by channel close");
-                // The Display thread will close channels, causing recv() to return Err
+                // This should never be reached - CloseRequested is handled in the main loop
+                warn!("OrchestratorActor: CloseRequested reached process_backend_event (should not happen)");
                 Ok(None)
             }
             BackendEvent::Resize {
