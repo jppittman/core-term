@@ -39,7 +39,7 @@ pub const DEFAULT_TAB_INTERVAL: u8 = 8;
 /// This enum encapsulates the different kinds of data or events
 /// that the `TerminalEmulator` can receive and act upon. It serves as the
 /// primary "instruction set" for the terminal's internal state machine.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum EmulatorInput {
     /// An ANSI command parsed from the output of the attached PTY.
     Ansi(AnsiCommand),

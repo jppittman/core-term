@@ -1,10 +1,9 @@
 //! Defines the `Platform` trait, the hardware abstraction layer (HAL) for the terminal.
 
+use crate::platform::actions::PlatformAction;
 use crate::platform::backends::PlatformState;
+use crate::platform::{PlatformChannels, PlatformEvent};
 use anyhow::Result;
-
-use super::actions::PlatformAction;
-use super::PlatformEvent;
 
 /// A trait that abstracts over platform-specific operations.
 ///
@@ -13,28 +12,22 @@ use super::PlatformEvent;
 /// input devices, and the pseudo-terminal (PTY). Implementors of this trait
 /// handle the specifics of a given platform, such as Linux/X11 or macOS/Cocoa.
 pub trait Platform {
-    /// Creates a new platform-specific instance and its initial state.
+    /// Creates a new platform-specific instance.
     ///
-    /// This method initializes the connection to the windowing system, creates a
-    /// window, sets up the PTY, and spawns the shell process.
+    /// This method initializes the connection to the windowing system and creates a
+    /// window. The platform receives channels to communicate with the orchestrator
+    /// and other actors that were spawned in main.
+    ///
+    /// This should be pure initialization only - no thread spawning, no event sending.
     ///
     /// # Arguments
     ///
-    /// * `initial_pty_cols` - The initial number of columns for the PTY.
-    /// * `initial_pty_rows` - The initial number of rows for the PTY.
-    /// * `shell_command` - The command to run in the PTY (e.g., `/bin/bash`).
-    /// * `shell_args` - The arguments to pass to the shell command.
+    /// * `channels` - Grouped channels for Platform ↔ Orchestrator communication
     ///
     /// # Returns
     ///
-    /// On success, returns a tuple containing the platform driver instance and
-    /// the initial `PlatformState`.
-    fn new(
-        initial_pty_cols: u16,
-        initial_pty_rows: u16,
-        shell_command: String,
-        shell_args: Vec<String>,
-    ) -> Result<(Self, PlatformState)>
+    /// On success, returns the platform driver instance.
+    fn new(channels: PlatformChannels) -> Result<Self>
     where
         Self: Sized;
 

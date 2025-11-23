@@ -17,10 +17,16 @@ nix = { version = "0.30.0", features = ["term", "process", "fs", "ioctl", "signa
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 termios = "0.3.3"
+pprof = { version = "0.14", features = ["flamegraph", "criterion"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Old cocoa/objc for existing platform/backends/cocoa.rs (to be removed)
 cocoa = "0.26"
 objc = "0.2"
+# New objc2 for display/drivers/cocoa.rs
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSDate", "NSAutoreleasePool", "NSGeometry", "NSRunLoop"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSView", "NSEvent", "NSColor", "NSPasteboard"] }
 core-foundation = "0.9"
 core-graphics = "0.24"
 core-text = "20.1"
@@ -35,4 +41,8 @@ pkg-config = "0.3.32"
 [dev-dependencies]
 test-log = "0.2.17"
 rexpect = "0.6.1"
+
+[features]
+default = []
+profiling = ["pprof"]
 

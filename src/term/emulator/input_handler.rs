@@ -93,7 +93,11 @@ pub(super) fn process_control_event(
 ) -> Option<EmulatorAction> {
     emulator.cursor_wrap_next = false;
     match event {
-        ControlEvent::FrameRendered => {
+        ControlEvent::RequestSnapshot => {
+            trace!("TerminalEmulator: RequestSnapshot event received.");
+            None
+        }
+        ControlEvent::FrameRendered(_) => {
             trace!("TerminalEmulator: FrameRendered event received.");
             None
         }

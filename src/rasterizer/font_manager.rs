@@ -124,9 +124,7 @@ impl<D: FontDriver> FontManager<D> {
         if let Some(glyph_id) = self.driver.find_glyph(&self.primary_fonts[primary_idx], ch) {
             debug!(
                 "FontManager: Found '{}' (U+{:X}) in primary font {}",
-                ch,
-                ch as u32,
-                primary_idx
+                ch, ch as u32, primary_idx
             );
             self.glyph_cache
                 .insert((ch, attrs), (primary_idx, glyph_id));
@@ -142,9 +140,7 @@ impl<D: FontDriver> FontManager<D> {
                 let font_id = FALLBACK_FONT_ID_START + idx;
                 debug!(
                     "FontManager: Found '{}' (U+{:X}) in cached fallback font {}",
-                    ch,
-                    ch as u32,
-                    font_id
+                    ch, ch as u32, font_id
                 );
                 self.glyph_cache.insert((ch, attrs), (font_id, glyph_id));
                 return Some(ResolvedGlyph { font_id, glyph_id });
@@ -163,9 +159,7 @@ impl<D: FontDriver> FontManager<D> {
                 let font_id = FALLBACK_FONT_ID_START + self.fallback_fonts.len();
                 info!(
                     "FontManager: Found '{}' (U+{:X}) in new fallback font {} (caching)",
-                    ch,
-                    ch as u32,
-                    font_id
+                    ch, ch as u32, font_id
                 );
                 self.fallback_fonts.push(fallback_font);
                 self.glyph_cache.insert((ch, attrs), (font_id, glyph_id));
@@ -176,8 +170,7 @@ impl<D: FontDriver> FontManager<D> {
         // Character not found in any font
         warn!(
             "FontManager: Could not find glyph for '{}' (U+{:X}) in any font",
-            ch,
-            ch as u32
+            ch, ch as u32
         );
         None
     }
@@ -263,7 +256,7 @@ mod tests {
             // We iterate in a fixed order for stable tests.
             let mut font_names: Vec<_> = self.fonts.keys().collect();
             font_names.sort();
-            
+
             for name in font_names {
                 if let Some(glyphs) = self.fonts.get(name) {
                     if glyphs.contains_key(&ch) {
@@ -390,7 +383,7 @@ mod tests {
         assert_eq!(resolved.font_id, BOLD_ITALIC_FONT_ID);
         assert_eq!(resolved.glyph_id, MockGlyphId(400));
     }
-    
+
     #[test]
     fn test_get_glyph_cache_hit() {
         let db = setup_database();
@@ -402,7 +395,7 @@ mod tests {
         let resolved1 = fm.get_glyph('A', AttrFlags::empty()).unwrap();
         assert_eq!(resolved1.font_id, REGULAR_FONT_ID);
         assert_eq!(resolved1.glyph_id, MockGlyphId(100));
-        
+
         // Second call should hit the cache. The driver is immutable, so this proves
         // we are not calling it again.
         let resolved2 = fm.get_glyph('A', AttrFlags::empty()).unwrap();
@@ -421,7 +414,7 @@ mod tests {
         // should check the bold font, fail, then check fallbacks. It should *not*
         // check the regular font.
         let resolved = fm.get_glyph('B', AttrFlags::BOLD);
-        
+
         // In our mock DB, `find_fallback_font` will find 'B' in the "Regular" font.
         // So the fallback logic will kick in and find it.
         assert!(resolved.is_some());
@@ -429,7 +422,7 @@ mod tests {
         assert_eq!(glyph.font_id, FALLBACK_FONT_ID_START); // Found in a "new" fallback
         assert_eq!(fm.get_font(glyph.font_id).0, "Regular");
     }
-    
+
     #[test]
     fn test_get_glyph_new_fallback() {
         let db = setup_database();
@@ -441,19 +434,19 @@ mod tests {
         let resolved = fm.get_glyph('C', AttrFlags::empty()).unwrap();
         assert_eq!(resolved.font_id, FALLBACK_FONT_ID_START); // First fallback
         assert_eq!(resolved.glyph_id, MockGlyphId(500));
-        
+
         // Check that the fallback font is now cached
         assert_eq!(fm.fallback_fonts.len(), 1);
         assert_eq!(fm.fallback_fonts[0], MockFont("Fallback1".to_string()));
     }
-    
+
     #[test]
     fn test_get_glyph_cached_fallback() {
         let db = setup_database();
         let driver = MockFontDriver::new(&db);
         let mut fm =
             FontManager::new(driver, "Regular", "Bold", "Italic", "BoldItalic", 12.0).unwrap();
-        
+
         // Find 'C' to populate the fallback cache.
         let resolved_c = fm.get_glyph('C', AttrFlags::empty()).unwrap();
         assert_eq!(resolved_c.font_id, FALLBACK_FONT_ID_START);
@@ -469,19 +462,19 @@ mod tests {
         // The number of fallback fonts should still be 1.
         assert_eq!(fm.fallback_fonts.len(), 1);
     }
-    
+
     #[test]
     fn test_get_glyph_multiple_fallbacks() {
         let db = setup_database();
         let driver = MockFontDriver::new(&db);
         let mut fm =
             FontManager::new(driver, "Regular", "Bold", "Italic", "BoldItalic", 12.0).unwrap();
-            
+
         // 'C' is in Fallback1
         let resolved_c = fm.get_glyph('C', AttrFlags::empty()).unwrap();
         assert_eq!(resolved_c.font_id, FALLBACK_FONT_ID_START);
         assert_eq!(resolved_c.glyph_id, MockGlyphId(500));
-        
+
         // 'D' is in Fallback2
         let resolved_d = fm.get_glyph('D', AttrFlags::empty()).unwrap();
         assert_eq!(resolved_d.font_id, FALLBACK_FONT_ID_START + 1);
@@ -489,14 +482,14 @@ mod tests {
 
         assert_eq!(fm.fallback_fonts.len(), 2);
     }
-    
+
     #[test]
     fn test_get_glyph_not_found() {
         let db = setup_database();
         let driver = MockFontDriver::new(&db);
         let mut fm =
             FontManager::new(driver, "Regular", "Bold", "Italic", "BoldItalic", 12.0).unwrap();
-            
+
         // 'Z' is not in any font, and fallback search will also fail.
         let resolved = fm.get_glyph('Z', AttrFlags::empty());
         assert!(resolved.is_none());
@@ -508,7 +501,7 @@ mod tests {
         let driver = MockFontDriver::new(&db);
         let mut fm =
             FontManager::new(driver, "Regular", "Bold", "Italic", "BoldItalic", 12.0).unwrap();
-        
+
         // Resolve a fallback glyph to populate the fallback list
         let resolved_fallback = fm.get_glyph('C', AttrFlags::empty()).unwrap();
 
@@ -526,9 +519,8 @@ mod tests {
     fn test_get_font_invalid_id() {
         let db = setup_database();
         let driver = MockFontDriver::new(&db);
-        let fm =
-            FontManager::new(driver, "Regular", "Bold", "Italic", "BoldItalic", 12.0).unwrap();
-        
+        let fm = FontManager::new(driver, "Regular", "Bold", "Italic", "BoldItalic", 12.0).unwrap();
+
         // This should panic (index out of bounds)
         fm.get_font(99);
     }
