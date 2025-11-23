@@ -6,7 +6,11 @@
 //! and a PTY channel, providing a clean message-passing interface for PTY I/O.
 //! This allows the main thread to focus on UI events while PTY I/O happens
 //! asynchronously in the background.
+//!
+//! This actor owns the AnsiProcessor, parsing PTY output into ANSI commands
+//! in parallel with the Orchestrator thread for better performance.
 
+use crate::ansi::{AnsiParser, AnsiProcessor};
 use crate::platform::actions::PlatformAction;
 use crate::platform::os::event::{EventMonitor, KqueueFlags};
 use crate::platform::os::pty::{NixPty, PtyChannel};
@@ -83,9 +87,10 @@ impl EventMonitorActor {
     /// This function:
     /// 1. Creates an EventMonitor (kqueue/epoll)
     /// 2. Registers the PTY fd for read events
-    /// 3. Polls for events with a timeout
-    /// 4. Reads PTY data when available
-    /// 5. Processes commands from the Orchestrator thread
+    /// 3. Creates an AnsiProcessor for parsing PTY output
+    /// 4. Polls for events with a timeout
+    /// 5. Reads PTY data when available, parses it into ANSI commands
+    /// 6. Processes commands from the Orchestrator thread
     fn actor_thread_main(
         mut pty: NixPty,
         event_tx: Sender<PlatformEvent>,
@@ -109,6 +114,7 @@ impl EventMonitorActor {
             pty_fd, PTY_TOKEN
         );
 
+        let mut ansi_parser = AnsiProcessor::new();
         let mut events_buffer = Vec::with_capacity(8);
         let mut read_buffer = vec![0u8; PTY_READ_BUFFER_SIZE];
 
@@ -121,7 +127,12 @@ impl EventMonitorActor {
             // Process PTY events (data available to read)
             for event in &events_buffer {
                 if event.token == PTY_TOKEN && event.flags.contains(KqueueFlags::EPOLLIN) {
-                    Self::handle_pty_readable(&mut pty, &mut read_buffer, &event_tx)?;
+                    Self::handle_pty_readable(
+                        &mut pty,
+                        &mut read_buffer,
+                        &mut ansi_parser,
+                        &event_tx,
+                    )?;
                 }
             }
 
@@ -145,10 +156,11 @@ impl EventMonitorActor {
         }
     }
 
-    /// Handles PTY readable events by reading data and sending it to the Orchestrator.
+    /// Handles PTY readable events by reading data, parsing ANSI, and sending to Orchestrator.
     fn handle_pty_readable(
         pty: &mut NixPty,
         read_buffer: &mut [u8],
+        ansi_parser: &mut AnsiProcessor,
         event_tx: &Sender<PlatformEvent>,
     ) -> Result<()> {
         loop {
@@ -163,10 +175,19 @@ impl EventMonitorActor {
                 }
                 Ok(bytes_read) => {
                     trace!("EventMonitor: Read {} bytes from PTY", bytes_read);
-                    let data = read_buffer[..bytes_read].to_vec();
-                    event_tx
-                        .send(PlatformEvent::IOEvent { data })
-                        .context("Failed to send IOEvent")?;
+
+                    // Parse bytes into ANSI commands
+                    let ansi_commands = ansi_parser.process_bytes(&read_buffer[..bytes_read]);
+
+                    if !ansi_commands.is_empty() {
+                        debug!(
+                            "EventMonitor: Parsed {} ANSI commands",
+                            ansi_commands.len()
+                        );
+                        event_tx
+                            .send(PlatformEvent::IOEvent { commands: ansi_commands })
+                            .context("Failed to send IOEvent")?;
+                    }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
                     // No more data available right now

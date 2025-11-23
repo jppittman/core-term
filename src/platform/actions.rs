@@ -10,7 +10,12 @@ pub enum PlatformAction {
     /// Resize the PTY.
     ResizePty { cols: u16, rows: u16 },
     /// Render a list of commands to the UI.
-    Render(Vec<crate::platform::backends::RenderCommand>),
+    /// The (cols, rows) tuple is the AUTHORITATIVE size for this frame (from the snapshot).
+    Render {
+        commands: Vec<crate::platform::backends::RenderCommand>,
+        cols: usize,
+        rows: usize,
+    },
     /// Set the title of the window.
     SetTitle(String),
     /// Ring the terminal bell.

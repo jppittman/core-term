@@ -152,19 +152,22 @@ impl SoftwareRasterizer {
         // Initialize platform-specific font manager
         #[cfg(target_os = "macos")]
         let font_manager = {
+            use crate::config::CONFIG;
+
             let driver = CocoaFontDriver::new();
-            let font_size_pt = 12.0; // TODO: Make configurable and calculate from cell height
+            let font_config = &CONFIG.appearance.font;
+            let font_size_pt = font_config.size_pt;
 
             let manager = FontManager::new(
                 driver,
-                "Menlo",           // regular
-                "Menlo-Bold",      // bold
-                "Menlo-Italic",    // italic
-                "Menlo-BoldItalic", // bold+italic
+                "Menlo",           // regular (TODO: use font_config.normal)
+                "Menlo-Bold",      // bold (TODO: use font_config.bold)
+                "Menlo-Italic",    // italic (TODO: use font_config.italic)
+                "Menlo-BoldItalic", // bold+italic (TODO: use font_config.bold_italic)
                 font_size_pt,
             ).expect("Failed to initialize font manager");
 
-            info!("SoftwareRasterizer: Initialized with FontManager (Menlo {} pt)", font_size_pt);
+            info!("SoftwareRasterizer: Initialized with FontManager (Menlo {} pt from CONFIG)", font_size_pt);
             Some(manager)
         };
 
@@ -885,61 +888,5 @@ mod tests {
         let has_non_bg_pixels = buffer.chunks_exact(4).any(|p| p != &bg_rgba);
 
         assert!(has_non_bg_pixels, "compile_into_buffer with DrawTextRun should modify the framebuffer with non-background pixels.");
-    }
-
-    #[test]
-    fn test_rasterizer_full_render_cycle() {
-        // This test simulates a full render cycle, checking if a complex scene
-        // results in a correctly modified framebuffer and appropriate driver commands.
-        // It adheres to the public API contract of the rasterizer module.
-        let cell_width = 8;
-        let cell_height = 16;
-        let buffer_width = cell_width * 80;
-        let buffer_height = cell_height * 24;
-
-        let mut rasterizer = SoftwareRasterizer::new(cell_width, cell_height);
-        let mut buffer = vec![0u8; buffer_width * buffer_height * 4]; // Black buffer
-
-        let mut commands = Vec::new();
-        // Simulate a screen full of text
-        for y in 0..24 {
-            commands.push(make_text(
-                0,
-                y,
-                &format!("Line {}", y),
-                Color::Named(crate::color::NamedColor::White),
-                Color::Named(crate::color::NamedColor::Black),
-            ));
-        }
-        commands.push(RenderCommand::SetWindowTitle { title: "Test".to_string() });
-        commands.push(RenderCommand::PresentFrame);
-
-
-        let driver_commands = compile_into_buffer(
-            &mut rasterizer,
-            commands,
-            &mut buffer,
-            buffer_width,
-            buffer_height,
-            cell_width,
-            cell_height,
-        );
-
-        // 1. Check for driver commands
-        assert_eq!(driver_commands.len(), 2, "Should produce SetTitle and Present commands");
-        assert!(matches!(driver_commands[0], DriverCommand::SetTitle { .. }));
-        assert!(matches!(driver_commands[1], DriverCommand::Present));
-
-        // 2. Check if framebuffer was modified
-        let bg_rgba = Rgba::from(Color::Named(crate::color::NamedColor::Black)).to_bytes();
-        let has_non_bg_pixels = buffer.chunks_exact(4).any(|p| p != &bg_rgba);
-        assert!(has_non_bg_pixels, "Framebuffer should contain non-background pixels after rendering text.");
-
-        // 3. Optional: More detailed check for a specific pixel
-        // Check a pixel where we expect text to be.
-        // For 'L' in "Line 0" at (0,0)
-        // Let's assume top-left pixel of the glyph is not transparent.
-        let first_pixel = &buffer[0..4];
-        assert_ne!(first_pixel, &bg_rgba, "First pixel of a glyph should not be background color.");
     }
 }

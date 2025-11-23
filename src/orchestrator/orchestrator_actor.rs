@@ -1,27 +1,29 @@
-//! Orchestrator Actor - runs in a background thread and coordinates terminal logic.
+//! Orchestrator Actor - processes events and generates snapshots with backpressure.
 //!
-//! The OrchestratorActor owns all application state (TerminalEmulator, AnsiProcessor, Renderer)
-//! and processes events from both the Display driver and PTY I/O thread. It runs in a dedicated
-//! background thread and communicates via message-passing channels.
+//! This actor owns the terminal state machine (TerminalEmulator) and processes
+//! events from PTY, Vsync, and Platform threads. It uses a two-channel handshake with the Platform
+//! to prevent wasted snapshot generation: only generates snapshots when the Platform signals
+//! it's ready via the `ready_rx` channel.
+//!
+//! The PTY thread (EventMonitorActor) owns the AnsiProcessor and sends parsed AnsiCommands,
+//! not raw bytes. This allows parallel parsing while the Orchestrator processes frames.
 
-use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
-use crate::config::Config;
+use crate::ansi::AnsiCommand;
 use crate::keys;
 use crate::platform::actions::PlatformAction;
-use crate::platform::backends::{BackendEvent, MouseButton, PlatformState, RenderCommand};
+use crate::platform::backends::{BackendEvent, MouseButton, PlatformState};
 use crate::platform::PlatformEvent;
-use crate::renderer::Renderer;
+use crate::term::snapshot::RenderSnapshot;
 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
 use anyhow::{Context, Result};
 use log::*;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 
 /// Orchestrator actor that runs in a background thread.
 ///
-/// This actor receives events from both the Display driver (UI events) and the PTY thread
-/// (shell output), processes them through the terminal emulator, and sends back render
-/// commands to the display and write commands to the PTY.
+/// Receives events from PTY, Vsync, and Platform threads, processes them through the terminal
+/// emulator, and sends snapshots to the Platform only when it's ready (backpressure).
 pub struct OrchestratorActor {
     thread_handle: Option<JoinHandle<()>>,
 }
@@ -32,21 +34,22 @@ impl OrchestratorActor {
     /// # Arguments
     ///
     /// * `term_emulator` - The terminal emulator (takes ownership)
-    /// * `ansi_parser` - The ANSI parser (takes ownership)
-    /// * `renderer` - The renderer (takes ownership)
-    /// * `event_rx` - Channel to receive PlatformEvents (from Display and PTY)
-    /// * `display_action_tx` - Channel to send PlatformActions to Display
+    /// * `event_rx` - Channel to receive PlatformEvents (from Platform, PTY, Vsync)
+    /// * `snapshot_tx` - Channel to send RenderSnapshots to Platform
+    /// * `snapshot_pool_rx` - Channel to receive reusable RenderSnapshots from Platform
+    /// * `display_action_tx` - Channel to send PlatformActions to Platform
     /// * `pty_action_tx` - Channel to send PlatformActions to PTY
-    /// * `initial_platform_state` - Initial platform state for rendering
+    /// * `initial_platform_state` - Initial platform state
     ///
     /// # Returns
     ///
     /// Returns `Self` (handle to the actor for cleanup)
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         term_emulator: TerminalEmulator,
-        ansi_parser: AnsiProcessor,
-        renderer: Renderer,
         event_rx: Receiver<PlatformEvent>,
+        snapshot_tx: SyncSender<RenderSnapshot>,
+        snapshot_pool_rx: Receiver<RenderSnapshot>,
         display_action_tx: Sender<PlatformAction>,
         pty_action_tx: Sender<PlatformAction>,
         initial_platform_state: PlatformState,
@@ -58,9 +61,9 @@ impl OrchestratorActor {
             .spawn(move || {
                 if let Err(e) = Self::actor_thread_main(
                     term_emulator,
-                    ansi_parser,
-                    renderer,
                     event_rx,
+                    snapshot_tx,
+                    snapshot_pool_rx,
                     display_action_tx,
                     pty_action_tx,
                     initial_platform_state,
@@ -79,13 +82,16 @@ impl OrchestratorActor {
 
     /// Main loop for the Orchestrator actor thread.
     ///
-    /// Blocks on `event_rx.recv()` waiting for events from Display or PTY,
-    /// processes them, and sends actions back via channels.
+    /// Blocks on `event_rx.recv()` for the first event, then drains additional events with
+    /// `try_recv()` to coalesce state updates. Only generates snapshots when both:
+    /// 1. A frame was requested (by Vsync or user input)
+    /// 2. A snapshot buffer is available from the pool (Platform has returned it)
+    #[allow(clippy::too_many_arguments)]
     fn actor_thread_main(
         mut term_emulator: TerminalEmulator,
-        mut ansi_parser: AnsiProcessor,
-        renderer: Renderer,
         event_rx: Receiver<PlatformEvent>,
+        snapshot_tx: SyncSender<RenderSnapshot>,
+        snapshot_pool_rx: Receiver<RenderSnapshot>,
         display_action_tx: Sender<PlatformAction>,
         pty_action_tx: Sender<PlatformAction>,
         platform_state: PlatformState,
@@ -95,7 +101,6 @@ impl OrchestratorActor {
         let mut pending_emulator_actions = Vec::new();
 
         loop {
-            // Block on event channel - wakes when Display or PTY sends event
             let event = match event_rx.recv() {
                 Ok(event) => event,
                 Err(_) => {
@@ -105,108 +110,131 @@ impl OrchestratorActor {
             };
 
             pending_emulator_actions.clear();
-            let mut should_present_frame = false;
+            let mut frame_requested = false;
 
-            // Process the event
-            match event {
-                PlatformEvent::RequestFrame => {
-                    // Vsync is requesting a frame presentation
-                    debug!("OrchestratorActor: Received RequestFrame from Vsync");
-                    should_present_frame = true;
-                }
-                PlatformEvent::IOEvent { commands: ansi_commands } => {
-                    debug!(
-                        "OrchestratorActor: Received {} ANSI commands from PTY",
-                        ansi_commands.len()
-                    );
+            Self::process_event(
+                event,
+                &mut term_emulator,
+                &platform_state,
+                &mut pending_emulator_actions,
+                &mut frame_requested,
+                &display_action_tx,
+            )?;
 
-                    for command in ansi_commands {
-                        if let Some(action) =
-                            term_emulator.interpret_input(EmulatorInput::Ansi(command))
-                        {
-                            pending_emulator_actions.push(action);
-                        }
+            loop {
+                match event_rx.try_recv() {
+                    Ok(event) => {
+                        Self::process_event(
+                            event,
+                            &mut term_emulator,
+                            &platform_state,
+                            &mut pending_emulator_actions,
+                            &mut frame_requested,
+                            &display_action_tx,
+                        )?;
                     }
-                }
-                PlatformEvent::BackendEvent(backend_event) => {
-                    debug!(
-                        "OrchestratorActor: Received BackendEvent: {:?}",
-                        backend_event
-                    );
-
-                    // Check for CloseRequested before processing
-                    if let BackendEvent::CloseRequested = backend_event {
-                        info!("OrchestratorActor: CloseRequested received - sending ShutdownComplete and exiting");
-                        // Send ShutdownComplete to Display so it can perform cleanup
-                        display_action_tx
-                            .send(PlatformAction::ShutdownComplete)
-                            .context("Failed to send ShutdownComplete to Display")?;
-                        return Ok(()); // Exit the event loop, causing channels to close
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        info!("OrchestratorActor: Event channel disconnected, shutting down");
+                        return Ok(());
                     }
-
-                    let emulator_input = Self::process_backend_event(
-                        backend_event,
-                        &platform_state,
-                        &mut term_emulator,
-                    )?;
-
-                    if let Some(input) = emulator_input {
-                        if let Some(action) = term_emulator.interpret_input(input) {
-                            pending_emulator_actions.push(action);
-                        }
-                    }
-
-                    // User input should be immediately visible
-                    should_present_frame = true;
                 }
             }
 
-            // Handle emulator actions
             for action in pending_emulator_actions.drain(..) {
                 Self::handle_emulator_action(action, &display_action_tx, &pty_action_tx)?;
             }
 
-            // Generate render commands
-            let Some(snapshot) = term_emulator.get_render_snapshot() else {
-                continue;
-            };
-
-            // SOT: Extract authoritative dimensions from snapshot
-            let (cols, rows) = snapshot.dimensions;
-
-            let config = Config::default();
-            let mut render_commands =
-                renderer.prepare_render_commands(&snapshot, &config, &platform_state);
-
-            // Append PresentFrame only when vsync requests it (rate-limited to 60 FPS)
-            if should_present_frame {
-                render_commands.push(RenderCommand::PresentFrame);
-            }
-
-            if !render_commands.is_empty() {
-                debug!(
-                    "OrchestratorActor: Sending {} render commands ({}x{} grid)",
-                    render_commands.len(),
-                    cols,
-                    rows
-                );
-                display_action_tx
-                    .send(PlatformAction::Render {
-                        commands: render_commands,
-                        cols,
-                        rows,
-                    })
-                    .context("Failed to send render commands to Display")?;
+            if frame_requested {
+                match snapshot_pool_rx.try_recv() {
+                    Ok(mut snapshot) => {
+                        // Populate the snapshot with current terminal state
+                        if term_emulator.populate_snapshot(&mut snapshot) {
+                            snapshot_tx
+                                .send(snapshot)
+                                .context("Failed to send snapshot to Display")?;
+                        } else {
+                            // synchronized_output is active, skip frame but return snapshot to pool
+                            debug!("OrchestratorActor: Synchronized output active, skipping frame");
+                            snapshot_tx
+                                .send(snapshot)
+                                .context("Failed to return snapshot to pool")?;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => {
+                        trace!("OrchestratorActor: Snapshot pool empty (Platform still rendering), skipping frame");
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        info!("OrchestratorActor: Snapshot pool channel disconnected, shutting down");
+                        return Ok(());
+                    }
+                }
             }
         }
     }
 
+    /// Process a single event and update state accordingly.
+    ///
+    /// Updates `frame_requested` and `pending_emulator_actions` based on the event type.
+    /// Handles shutdown for CloseRequested by sending ShutdownComplete and returning an error.
+    #[allow(clippy::too_many_arguments)]
+    fn process_event(
+        event: PlatformEvent,
+        term_emulator: &mut TerminalEmulator,
+        platform_state: &PlatformState,
+        pending_emulator_actions: &mut Vec<EmulatorAction>,
+        frame_requested: &mut bool,
+        display_action_tx: &Sender<PlatformAction>,
+    ) -> Result<()> {
+        match event {
+            PlatformEvent::RequestFrame => {
+                debug!("OrchestratorActor: Received RequestFrame from Vsync");
+                *frame_requested = true;
+            }
+            PlatformEvent::IOEvent { commands: ansi_commands } => {
+                debug!(
+                    "OrchestratorActor: Received {} ANSI commands from PTY",
+                    ansi_commands.len()
+                );
+
+                for command in ansi_commands {
+                    if let Some(action) =
+                        term_emulator.interpret_input(EmulatorInput::Ansi(command))
+                    {
+                        pending_emulator_actions.push(action);
+                    }
+                }
+            }
+            PlatformEvent::BackendEvent(backend_event) => {
+                debug!(
+                    "OrchestratorActor: Received BackendEvent: {:?}",
+                    backend_event
+                );
+
+                if let BackendEvent::CloseRequested = backend_event {
+                    info!("OrchestratorActor: CloseRequested received - sending ShutdownComplete and exiting");
+                    display_action_tx
+                        .send(PlatformAction::ShutdownComplete)
+                        .context("Failed to send ShutdownComplete to Platform")?;
+                    return Err(anyhow::anyhow!("CloseRequested - shutting down"));
+                }
+
+                let emulator_input =
+                    Self::process_backend_event(backend_event, platform_state, term_emulator)?;
+
+                if let Some(input) = emulator_input {
+                    if let Some(action) = term_emulator.interpret_input(input) {
+                        pending_emulator_actions.push(action);
+                    }
+                }
+
+                *frame_requested = true;
+            }
+        }
+        Ok(())
+    }
+
     /// Process a BackendEvent and return the corresponding EmulatorInput.
-    ///
-    /// Returns `Ok(None)` for events that don't produce emulator input.
-    /// Returns `Err` only for fatal errors.
-    ///
-    /// Note: CloseRequested is handled in the main event loop before this function is called.
     fn process_backend_event(
         backend_event: BackendEvent,
         platform_state: &PlatformState,
@@ -214,7 +242,6 @@ impl OrchestratorActor {
     ) -> Result<Option<EmulatorInput>> {
         match backend_event {
             BackendEvent::CloseRequested => {
-                // This should never be reached - CloseRequested is handled in the main loop
                 warn!("OrchestratorActor: CloseRequested reached process_backend_event (should not happen)");
                 Ok(None)
             }

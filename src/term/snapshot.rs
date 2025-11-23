@@ -96,4 +96,22 @@ impl RenderSnapshot {
         }
         Some(self.lines[p.y][p.x])
     }
+
+    /// Clears and resizes the snapshot to the specified dimensions.
+    ///
+    /// This method reuses existing Vec allocations where possible to minimize allocations.
+    /// It's designed for snapshot buffer reuse in the actor architecture.
+    pub fn clear_and_resize(&mut self, cols: usize, rows: usize) {
+        self.dimensions = (cols, rows);
+
+        // Resize the lines Vec to match the new row count, reusing existing lines
+        self.lines.resize_with(rows, || SnapshotLine {
+            is_dirty: true,
+            cells: Vec::new(),
+        });
+
+        // Clear cursor and selection state
+        self.cursor_state = None;
+        self.selection = Selection::default();
+    }
 }

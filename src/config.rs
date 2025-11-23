@@ -192,6 +192,7 @@ pub struct FontConfig {
     pub bold: String,
     pub italic: String,
     pub bold_italic: String,
+    pub size_pt: f64,
     pub cw_scale: f32,
     pub ch_scale: f32,
 }
@@ -204,6 +205,7 @@ impl Default for FontConfig {
             bold: format!("{}:style=Bold", normal),
             italic: format!("{}:style=Italic", normal),
             bold_italic: format!("{}:style=Bold Italic", normal),
+            size_pt: 16.0, // Match cell height for proper scaling
             cw_scale: 1.0,
             ch_scale: 1.0,
         }
