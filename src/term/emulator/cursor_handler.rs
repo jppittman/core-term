@@ -1,8 +1,14 @@
 // src/term/emulator/cursor_handler.rs
 
 use super::TerminalEmulator;
-use crate::term::action::EmulatorAction; // For dimensions
-use log::warn; // For WindowManipulation
+use crate::term::action::EmulatorAction;
+use log::warn;
+
+const XTWINOPS_RESIZE_TEXT_AREA: u16 = 8;
+const XTWINOPS_REPORT_TEXT_AREA_SIZE_PIXELS: u16 = 14;
+const XTWINOPS_REPORT_TEXT_AREA_SIZE_CHARS: u16 = 18;
+const XTWINOPS_SAVE_TITLE: u16 = 22;
+const XTWINOPS_RESTORE_TITLE: u16 = 23;
 
 impl TerminalEmulator {
     pub(super) fn backspace(&mut self) {
@@ -70,34 +76,47 @@ impl TerminalEmulator {
         );
     }
 
-    // This method handles CsiCommand::WindowManipulation
     pub(super) fn handle_window_manipulation(
         &mut self,
         ps1: u16,
-        _ps2: Option<u16>, // ps2 and ps3 are not used in the current implementation
-        _ps3: Option<u16>,
+        ps2: Option<u16>,
+        ps3: Option<u16>,
     ) -> Option<EmulatorAction> {
         match ps1 {
-            14 => {
+            XTWINOPS_RESIZE_TEXT_AREA => {
+                let Some(rows) = ps2 else {
+                    return None;
+                };
+                let Some(cols) = ps3 else {
+                    return None;
+                };
+
+                if rows == 0 || cols == 0 {
+                    return None;
+                }
+
+                self.resize(cols as usize, rows as usize);
+                Some(EmulatorAction::RequestRedraw)
+            }
+            XTWINOPS_REPORT_TEXT_AREA_SIZE_PIXELS => {
                 warn!(
-                    "WindowManipulation: Report text area size in pixels (14) requested, but not implemented."
+                    "WindowManipulation: Report text area size in pixels (14) not implemented"
                 );
                 None
             }
-            18 => {
-                // Assuming dimensions() is available via TerminalInterface trait
+            XTWINOPS_REPORT_TEXT_AREA_SIZE_CHARS => {
                 let (cols, rows) = self.dimensions();
                 let response = format!("\x1b[8;{};{}t", rows, cols);
                 Some(EmulatorAction::WritePty(response.into_bytes()))
             }
-            22 | 23 => {
-                warn!("WindowManipulation: Save/Restore window title (22/23) not implemented.");
+            XTWINOPS_SAVE_TITLE | XTWINOPS_RESTORE_TITLE => {
+                warn!("WindowManipulation: Save/Restore window title (22/23) not implemented");
                 None
             }
             _ => {
                 warn!(
                     "Unhandled WindowManipulation: ps1={}, ps2={:?}, ps3={:?}",
-                    ps1, _ps2, _ps3
+                    ps1, ps2, ps3
                 );
                 None
             }

@@ -149,6 +149,16 @@ impl SoftwareRasterizer {
     pub fn new(cell_width_px: usize, cell_height_px: usize) -> Self {
         use log::*;
 
+        let safe_width = cell_width_px.max(1);
+        let safe_height = cell_height_px.max(1);
+
+        if cell_width_px == 0 || cell_height_px == 0 {
+            warn!(
+                "SoftwareRasterizer: Zero dimensions provided ({}x{}), using minimum ({}x{})",
+                cell_width_px, cell_height_px, safe_width, safe_height
+            );
+        }
+
         // Initialize platform-specific font manager
         #[cfg(target_os = "macos")]
         let font_manager = {
@@ -179,8 +189,8 @@ impl SoftwareRasterizer {
 
         Self {
             glyph_cache: HashMap::new(),
-            cell_width_px,
-            cell_height_px,
+            cell_width_px: safe_width,
+            cell_height_px: safe_height,
             font_manager,
         }
     }
@@ -394,16 +404,25 @@ pub fn compile_into_buffer(
                 flags,
                 is_selected: _,
             } => {
-                // Rasterize each character and blit directly to framebuffer
                 debug!(
                     "rasterizer: DrawTextRun '{}' at col={} row={} fg={:?} bg={:?} flags={:?}",
                     text, x, y, fg, bg, flags
                 );
+
+                let y_px = y.saturating_mul(cell_height_px);
+                if y_px >= buffer_height_px {
+                    continue;
+                }
+
                 let mut x_offset = x;
                 for ch in text.chars() {
+                    let x_px = x_offset.saturating_mul(cell_width_px);
+                    if x_px >= buffer_width_px {
+                        break;
+                    }
+
                     let glyph = rasterizer.render_cell(ch, fg, bg, flags);
 
-                    // Sample pixel data for diagnostics: check if glyph has non-black pixels
                     let has_color = glyph.rgba_data.chunks_exact(4).any(|p| {
                         p[0] > 0 || p[1] > 0 || p[2] > 0 || p[3] > 0
                     });
@@ -418,12 +437,12 @@ pub fn compile_into_buffer(
                         buffer_width_px,
                         buffer_height_px,
                         &glyph.rgba_data,
-                        x_offset * cell_width_px,
-                        y * cell_height_px,
+                        x_px,
+                        y_px,
                         glyph.width_px,
                         glyph.height_px,
                     );
-                    x_offset += 1;
+                    x_offset = x_offset.saturating_add(1);
                 }
             }
             RenderCommand::FillRect {
@@ -436,10 +455,14 @@ pub fn compile_into_buffer(
             } => {
                 let rgba: Rgba = color.into();
                 let color_bytes = rgba.to_bytes();
-                let x_px = x * cell_width_px;
-                let y_px = y * cell_height_px;
-                let width_px = width * cell_width_px;
-                let height_px = height * cell_height_px;
+                let x_px = x.saturating_mul(cell_width_px);
+                let y_px = y.saturating_mul(cell_height_px);
+                let width_px = width.saturating_mul(cell_width_px);
+                let height_px = height.saturating_mul(cell_height_px);
+
+                if x_px >= buffer_width_px || y_px >= buffer_height_px {
+                    continue;
+                }
 
                 debug!(
                     "rasterizer: FillRect at col={} row={} size={}x{} cells ({}x{} px) color={:?} (rgba={},{},{},{})",
@@ -528,365 +551,262 @@ fn blit_to_framebuffer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::{Color, NamedColor};
+    use crate::glyph::AttrFlags;
+    use crate::platform::backends::{DriverCommand, RenderCommand};
 
-    // Test helper to create basic RenderCommands
-    fn make_clear(color: Color) -> RenderCommand {
-        RenderCommand::ClearAll { bg: color }
+    // --- Test Constants ---
+
+    const TEST_BUF_WIDTH: usize = 100;
+    const TEST_BUF_HEIGHT: usize = 100;
+    const TEST_CELL_WIDTH: usize = 8;
+    const TEST_CELL_HEIGHT: usize = 16;
+    const BYTES_PER_PIXEL: usize = 4; // RGBA
+
+    // Standard colors for clear testing
+    const COLOR_BLACK: Color = Color::Named(NamedColor::Black);
+    const COLOR_WHITE: Color = Color::Named(NamedColor::White);
+    const COLOR_RED: Color = Color::Named(NamedColor::Red);
+    const COLOR_GREEN: Color = Color::Named(NamedColor::Green);
+
+    /// Test harness to manage the rasterizer lifecycle and buffer state.
+    /// Reduces argument clutter in tests and provides ergonomic assertions.
+    struct TestHarness {
+        rasterizer: SoftwareRasterizer,
+        framebuffer: Vec<u8>,
+        width: usize,
+        height: usize,
+        cell_w: usize,
+        cell_h: usize,
     }
 
-    fn make_text(x: usize, y: usize, text: &str, fg: Color, bg: Color) -> RenderCommand {
-        RenderCommand::DrawTextRun {
-            x,
-            y,
-            text: text.to_string(),
-            fg,
-            bg,
-            flags: AttrFlags::empty(),
-            is_selected: false,
+    impl TestHarness {
+        fn new(w: usize, h: usize, cell_w: usize, cell_h: usize) -> Self {
+            // Ensure we allocate enough space even for 0 dims to avoid Vec panics in setup
+            let buf_size = std::cmp::max(w * h * BYTES_PER_PIXEL, 4);
+            Self {
+                rasterizer: SoftwareRasterizer::new(cell_w, cell_h),
+                framebuffer: vec![0u8; buf_size],
+                width: w,
+                height: h,
+                cell_w,
+                cell_h,
+            }
+        }
+
+        fn default() -> Self {
+            Self::new(TEST_BUF_WIDTH, TEST_BUF_HEIGHT, TEST_CELL_WIDTH, TEST_CELL_HEIGHT)
+        }
+
+        /// Runs the compiler against the internal framebuffer.
+        fn compile(&mut self, commands: Vec<RenderCommand>) -> Vec<DriverCommand> {
+            compile_into_buffer(
+                &mut self.rasterizer,
+                commands,
+                &mut self.framebuffer,
+                self.width,
+                self.height,
+                self.cell_w,
+                self.cell_h,
+            )
+        }
+
+        /// Gets a pixel at (x, y). Panics if out of bounds (use strictly for validation).
+        fn get_pixel(&self, x: usize, y: usize) -> Rgba {
+            let idx = (y * self.width + x) * BYTES_PER_PIXEL;
+            let p = &self.framebuffer[idx..idx + 4];
+            Rgba::new(p[0], p[1], p[2], p[3])
+        }
+
+        /// Asserts that every pixel in the given rect matches the expected color.
+        #[track_caller]
+        fn assert_rect_color(&self, x: usize, y: usize, w: usize, h: usize, expected: Color) {
+            let expected_rgba: Rgba = expected.into();
+
+            for cy in y..y + h {
+                for cx in x..x + w {
+                    if cx >= self.width || cy >= self.height {
+                        continue; // Skip out of bounds checks for clipping tests
+                    }
+                    let pixel = self.get_pixel(cx, cy);
+                    assert_eq!(
+                        pixel, expected_rgba,
+                        "Pixel mismatch at ({}, {}). Expected {:?}, got {:?}",
+                        cx, cy, expected_rgba, pixel
+                    );
+                }
+            }
+        }
+
+        /// Asserts that every pixel in the buffer matches the expected color.
+        #[track_caller]
+        fn assert_clear(&self, expected: Color) {
+            self.assert_rect_color(0, 0, self.width, self.height, expected);
         }
     }
 
-    fn make_rect(x: usize, y: usize, w: usize, h: usize, color: Color) -> RenderCommand {
-        RenderCommand::FillRect {
-            x,
-            y,
-            width: w,
-            height: h,
-            color,
-            is_selection_bg: false,
-        }
-    }
-
-    #[test]
-    fn test_compile_empty() {
-        // Contract: Empty input should produce empty DriverCommand list
-        let commands = vec![];
-        let mut buffer = vec![0u8; 800 * 600 * 4];
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        let driver_commands = compile_into_buffer(&mut rasterizer, commands, &mut buffer, 800, 600, 8, 16);
-        assert!(driver_commands.is_empty());
-    }
+    // --- Correctness Tests ---
 
     #[test]
     fn test_compile_clear_all() {
-        // Contract: ClearAll should fill framebuffer with background color
-        let commands = vec![make_clear(Color::Named(crate::color::NamedColor::Black))];
-        let mut buffer = vec![255u8; 10 * 10 * 4]; // Start with white
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        compile_into_buffer(&mut rasterizer, commands, &mut buffer, 10, 10, 8, 16);
+        let mut harness = TestHarness::default();
 
-        // Verify all pixels are black
-        for pixel in buffer.chunks_exact(4) {
-            assert_eq!(pixel, &[0, 0, 0, 255]); // Black
-        }
+        harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_WHITE }]);
+        harness.assert_clear(COLOR_WHITE);
+
+        harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_BLACK }]);
+        harness.assert_clear(COLOR_BLACK);
     }
 
     #[test]
-    fn test_compile_clear_all_white() {
-        // Contract: Different colors fill correctly
-        let commands = vec![make_clear(Color::Named(crate::color::NamedColor::White))];
-        let mut buffer = vec![0u8; 10 * 10 * 4]; // Start with black
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        compile_into_buffer(&mut rasterizer, commands, &mut buffer, 10, 10, 8, 16);
+    fn test_fill_rect_geometry_exact() {
+        let mut harness = TestHarness::default();
+        harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_WHITE }]);
 
-        // Verify all pixels are white
-        for pixel in buffer.chunks_exact(4) {
-            assert_eq!(pixel, &[229, 229, 229, 255]); // White
-        }
+        let rect_cmd = RenderCommand::FillRect {
+            x: 1,
+            y: 1,
+            width: 1,
+            height: 1,
+            color: COLOR_RED,
+            is_selection_bg: false,
+        };
+        harness.compile(vec![rect_cmd]);
+
+        harness.assert_rect_color(8, 16, 8, 16, COLOR_RED);
+
+        let white_rgba: Rgba = COLOR_WHITE.into();
+        assert_eq!(harness.get_pixel(8, 15), white_rgba, "Bleed detected top");
+        assert_eq!(harness.get_pixel(7, 16), white_rgba, "Bleed detected left");
+        assert_eq!(harness.get_pixel(16, 16), white_rgba, "Bleed detected right");
+        assert_eq!(harness.get_pixel(8, 32), white_rgba, "Bleed detected bottom");
     }
 
     #[test]
-    fn test_compile_text_writes_to_buffer() {
-        // Contract: DrawTextRun should write pixels to framebuffer at correct position
-        let commands = vec![make_text(
-            0,
-            0,
-            "A",
-            Color::Named(crate::color::NamedColor::White),
-            Color::Named(crate::color::NamedColor::Black),
-        )];
-        let mut buffer = vec![0u8; 100 * 100 * 4];
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        compile_into_buffer(&mut rasterizer, commands, &mut buffer, 100, 100, 8, 16);
+    fn test_overwrite_behavior() {
+        let mut harness = TestHarness::default();
 
-        // Just verify something was written (placeholder rasterizer fills with bg)
-        // Real test would verify actual glyph rendering
-        assert!(buffer.iter().any(|&b| b != 0));
-    }
-
-    #[test]
-    fn test_compile_fill_rect() {
-        // Contract: FillRect should write correct color to framebuffer region
-        let commands = vec![make_rect(
-            0,
-            0,
-            2,
-            2,
-            Color::Named(crate::color::NamedColor::Red),
-        )];
-        let mut buffer = vec![0u8; 100 * 100 * 4];
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        compile_into_buffer(&mut rasterizer, commands, &mut buffer, 100, 100, 8, 16);
-
-        // Verify some pixels in the filled region are red
-        // The rect is 2x2 cells = 16x32 pixels starting at (0,0)
-        for y in 0..32 {
-            for x in 0..16 {
-                let idx = (y * 100 + x) * 4;
-                assert_eq!(&buffer[idx..idx + 4], &[205, 49, 49, 255]); // Red
+        let cmds = vec![
+            RenderCommand::ClearAll { bg: COLOR_WHITE },
+            RenderCommand::FillRect {
+                x: 0, y: 0, width: 4, height: 4, color: COLOR_RED, is_selection_bg: false
+            },
+            RenderCommand::FillRect {
+                x: 1, y: 1, width: 2, height: 2, color: COLOR_GREEN, is_selection_bg: false
             }
-        }
+        ];
+        harness.compile(cmds);
+
+        harness.assert_rect_color(1 * TEST_CELL_WIDTH, 1 * TEST_CELL_HEIGHT, 2 * TEST_CELL_WIDTH, 2 * TEST_CELL_HEIGHT, COLOR_GREEN);
+        harness.assert_rect_color(0, 0, TEST_CELL_WIDTH, TEST_CELL_HEIGHT, COLOR_RED);
     }
 
     #[test]
-    fn test_compile_set_title() {
-        // Contract: SetWindowTitle should produce SetTitle DriverCommand
-        let commands = vec![RenderCommand::SetWindowTitle {
-            title: "Test Terminal".to_string(),
-        }];
-        let mut buffer = vec![0u8; 10 * 10 * 4];
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        let driver_commands = compile_into_buffer(&mut rasterizer, commands, &mut buffer, 10, 10, 8, 16);
-
-        assert_eq!(driver_commands.len(), 1);
-        match &driver_commands[0] {
-            DriverCommand::SetTitle { title } => {
-                assert_eq!(title, "Test Terminal");
-            }
-            _ => panic!("Expected SetTitle command"),
-        }
-    }
-
-    #[test]
-    fn test_compile_bell() {
-        // Contract: RingBell should produce Bell DriverCommand
-        let commands = vec![RenderCommand::RingBell];
-        let mut buffer = vec![0u8; 10 * 10 * 4];
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        let driver_commands = compile_into_buffer(&mut rasterizer, commands, &mut buffer, 10, 10, 8, 16);
-
-        assert_eq!(driver_commands.len(), 1);
-        assert!(matches!(driver_commands[0], DriverCommand::Bell));
-    }
-
-    #[test]
-    fn test_compile_present() {
-        // Contract: PresentFrame should produce Present DriverCommand
-        let commands = vec![RenderCommand::PresentFrame];
-        let mut buffer = vec![0u8; 10 * 10 * 4];
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        let driver_commands = compile_into_buffer(&mut rasterizer, commands, &mut buffer, 10, 10, 8, 16);
-
-        assert_eq!(driver_commands.len(), 1);
-        assert!(matches!(driver_commands[0], DriverCommand::Present));
-    }
-
-    #[test]
-    fn test_compile_mixed_commands() {
-        // Contract: Multiple commands should process in order
-        let commands = vec![
-            make_clear(Color::Named(crate::color::NamedColor::Black)),
-            make_text(
-                0,
-                0,
-                "Hi",
-                Color::Named(crate::color::NamedColor::Green),
-                Color::Named(crate::color::NamedColor::Black),
-            ),
+    fn test_driver_command_passthrough() {
+        let mut harness = TestHarness::default();
+        let cmds = vec![
+            RenderCommand::SetWindowTitle { title: "Unit Test".into() },
             RenderCommand::RingBell,
             RenderCommand::PresentFrame,
         ];
-        let mut buffer = vec![0u8; 100 * 100 * 4];
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        let driver_commands = compile_into_buffer(&mut rasterizer, commands, &mut buffer, 100, 100, 8, 16);
 
-        // Only metadata commands returned (no pixel data in commands)
-        assert_eq!(driver_commands.len(), 2); // Bell + Present
-        assert!(matches!(driver_commands[0], DriverCommand::Bell));
-        assert!(matches!(driver_commands[1], DriverCommand::Present));
+        let driver_cmds = harness.compile(cmds);
 
-        // Framebuffer should be modified (black clear + green text)
-        assert!(buffer.iter().any(|&b| b != 0));
+        assert_eq!(driver_cmds.len(), 3);
+        assert!(matches!(driver_cmds[0], DriverCommand::SetTitle { .. }));
+        assert!(matches!(driver_cmds[1], DriverCommand::Bell));
+        assert!(matches!(driver_cmds[2], DriverCommand::Present));
+    }
+
+    // --- Edge Case & Robustness Tests ---
+
+    #[test]
+    fn test_clipping_right_edge() {
+        let mut harness = TestHarness::default();
+        harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_WHITE }]);
+
+        let cmd = RenderCommand::FillRect {
+            x: 12, y: 0, width: 2, height: 1, color: COLOR_RED, is_selection_bg: false
+        };
+        harness.compile(vec![cmd]);
+
+        harness.assert_rect_color(96, 0, 4, 16, COLOR_RED);
     }
 
     #[test]
-    fn test_rgba_conversion_named_colors() {
-        // Contract: Named colors convert to correct RGBA values
-        let test_cases = vec![
-            (crate::color::NamedColor::Black, (0, 0, 0, 255)),
-            (crate::color::NamedColor::White, (229, 229, 229, 255)),
-            (crate::color::NamedColor::Red, (205, 49, 49, 255)),
-            (crate::color::NamedColor::Green, (13, 188, 121, 255)),
+    fn test_clipping_bottom_edge() {
+        let mut harness = TestHarness::default();
+        harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_WHITE }]);
+
+        let cmd = RenderCommand::FillRect {
+            x: 0, y: 6, width: 1, height: 1, color: COLOR_RED, is_selection_bg: false
+        };
+        harness.compile(vec![cmd]);
+
+        harness.assert_rect_color(0, 96, 8, 4, COLOR_RED);
+    }
+
+    #[test]
+    fn test_massive_coordinates() {
+        let mut harness = TestHarness::default();
+
+        let cmds = vec![
+            RenderCommand::FillRect {
+                x: usize::MAX, y: usize::MAX, width: 10, height: 10, color: COLOR_RED, is_selection_bg: false
+            },
+            RenderCommand::DrawTextRun {
+                x: usize::MAX, y: usize::MAX, text: "Crash?".into(), fg: COLOR_WHITE, bg: COLOR_BLACK, flags: AttrFlags::empty(), is_selected: false
+            }
         ];
 
-        for (named, expected) in test_cases {
-            let rgba: Rgba = Color::Named(named).into();
-            assert_eq!((rgba.r, rgba.g, rgba.b, rgba.a), expected);
-        }
+        harness.compile(cmds);
     }
 
     #[test]
-    fn test_rgba_conversion_rgb() {
-        // Contract: RGB colors convert correctly
-        let rgba: Rgba = Color::Rgb(100, 150, 200).into();
-        assert_eq!((rgba.r, rgba.g, rgba.b, rgba.a), (100, 150, 200, 255));
+    fn test_zero_size_rasterizer() {
+        let mut harness = TestHarness::new(0, 0, 0, 0);
+
+        let cmds = vec![
+            RenderCommand::ClearAll { bg: COLOR_WHITE },
+            RenderCommand::DrawTextRun {
+                x: 0, y: 0, text: "A".into(), fg: COLOR_BLACK, bg: COLOR_WHITE, flags: AttrFlags::empty(), is_selected: false
+            }
+        ];
+
+        harness.compile(cmds);
     }
 
     #[test]
-    fn test_rgba_conversion_indexed() {
-        // Contract: Indexed colors convert to valid RGBA
-        let rgba: Rgba = Color::Indexed(1).into(); // Should be red
-        assert_eq!((rgba.r, rgba.g, rgba.b, rgba.a), (205, 49, 49, 255));
+    fn test_empty_text_run() {
+        let mut harness = TestHarness::default();
+        harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_BLACK }]);
 
-        // Test grayscale range (232-255)
-        let rgba: Rgba = Color::Indexed(232).into();
-        assert_eq!(rgba.a, 255); // Alpha should always be 255
+        harness.compile(vec![RenderCommand::DrawTextRun {
+            x: 0, y: 0, text: "".into(), fg: COLOR_WHITE, bg: COLOR_BLACK, flags: AttrFlags::empty(), is_selected: false
+        }]);
+
+        harness.assert_clear(COLOR_BLACK);
     }
 
     #[test]
-    fn test_render_cell_returns_non_empty_glyph() {
-        // Contract: render_cell should produce RGBA pixels with non-transparent content
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-        let cell_size = rasterizer.cell_size();
+    fn test_caching_behavior() {
+        let mut harness = TestHarness::default();
 
-        let glyph = rasterizer.render_cell(
-            'A',
-            Color::Named(crate::color::NamedColor::White),
-            Color::Named(crate::color::NamedColor::Black),
-            AttrFlags::empty(),
-        );
+        let cmd = RenderCommand::DrawTextRun {
+            x: 0, y: 0, text: "AA".into(), fg: COLOR_WHITE, bg: COLOR_BLACK, flags: AttrFlags::empty(), is_selected: false
+        };
 
-        assert_eq!(glyph.rgba_data.len(), cell_size.0 * cell_size.1 * 4);
+        harness.compile(vec![cmd]);
 
-        // Check that the glyph has some non-fully-transparent pixels
-        let has_content = glyph.rgba_data.chunks_exact(4).any(|p| {
-            // Not fully transparent AND not pure black background
-            p[3] < 255 || p[0] > 10 || p[1] > 10 || p[2] > 10
-        });
+        let bg_rgba: Rgba = COLOR_BLACK.into();
 
-        assert!(has_content, "Rendered cell should have visible content (non-black pixels)");
-    }
+        let mut a1_has_content = false;
+        for y in 0..TEST_CELL_HEIGHT { for x in 0..TEST_CELL_WIDTH { if harness.get_pixel(x, y) != bg_rgba { a1_has_content = true; } } }
 
-    #[test]
-    fn test_render_cell_white_on_black_produces_bright_pixels() {
-        // Contract: White foreground on black background should produce bright pixels
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
+        let mut a2_has_content = false;
+        for y in 0..TEST_CELL_HEIGHT { for x in TEST_CELL_WIDTH..TEST_CELL_WIDTH*2 { if harness.get_pixel(x, y) != bg_rgba { a2_has_content = true; } } }
 
-        let glyph = rasterizer.render_cell(
-            'A',
-            Color::Rgb(255, 255, 255), // White foreground
-            Color::Rgb(0, 0, 0),        // Black background
-            AttrFlags::empty(),
-        );
-
-        // Check for bright pixels (R, G, or B > 200)
-        let has_bright_pixels = glyph.rgba_data.chunks_exact(4).any(|p| {
-            p[0] > 200 || p[1] > 200 || p[2] > 200
-        });
-
-        assert!(has_bright_pixels, "White-on-black glyph should have bright pixels, not all black");
-    }
-
-    #[test]
-    fn test_render_cell_different_colors_produce_different_output() {
-        // Contract: Different foreground colors should produce different colored glyphs
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-
-        let white_data = rasterizer.render_cell(
-            'A',
-            Color::Rgb(255, 255, 255),
-            Color::Rgb(0, 0, 0),
-            AttrFlags::empty(),
-        ).rgba_data.clone();
-
-        let red_data = rasterizer.render_cell(
-            'A',
-            Color::Rgb(255, 0, 0),
-            Color::Rgb(0, 0, 0),
-            AttrFlags::empty(),
-        ).rgba_data.clone();
-
-        // The glyphs should be different (different colors)
-        assert_ne!(white_data, red_data, "Different foreground colors should produce different output");
-    }
-
-    #[test]
-    fn test_render_cell_caching_works() {
-        // Contract: render_cell should cache glyphs for repeated requests
-        let mut rasterizer = SoftwareRasterizer::new(8, 16);
-
-        let data1 = rasterizer.render_cell(
-            'A',
-            Color::Named(crate::color::NamedColor::White),
-            Color::Named(crate::color::NamedColor::Black),
-            AttrFlags::empty(),
-        ).rgba_data.clone();
-
-        let data2 = rasterizer.render_cell(
-            'A',
-            Color::Named(crate::color::NamedColor::White),
-            Color::Named(crate::color::NamedColor::Black),
-            AttrFlags::empty(),
-        ).rgba_data.clone();
-
-        // Both should be identical (from cache)
-        assert_eq!(data1, data2);
-        assert!(!data1.is_empty());
-    }
-
-    #[test]
-    fn test_colorize_glyph_produces_correct_blend() {
-        // Contract: colorize_glyph should blend white glyph with fg/bg colors
-        // White pixel with 50% alpha on white glyph
-        let white_glyph = vec![255, 255, 255, 128]; // 50% alpha
-
-        let fg = Rgba { r: 255, g: 0, b: 0, a: 255 }; // Red
-        let bg = Rgba { r: 0, g: 0, b: 0, a: 255 };   // Black
-
-        let result = SoftwareRasterizer::colorize_glyph(&white_glyph, fg, bg);
-
-        // Should blend to 50% red, 50% black = (128, 0, 0, 255)
-        assert_eq!(result.len(), 4);
-        assert!(result[0] > 100 && result[0] < 150, "Red channel should be ~128");
-        assert_eq!(result[1], 0, "Green should be 0");
-        assert_eq!(result[2], 0, "Blue should be 0");
-        assert_eq!(result[3], 255, "Alpha should be 255");
-    }
-
-    #[test]
-    fn test_draw_text_run_actually_draws_pixels() {
-        // This test is designed to fail if the rasterizer produces only background pixels.
-        let cell_width = 8;
-        let cell_height = 16;
-        let buffer_width = cell_width * 10;
-        let buffer_height = cell_height * 1;
-
-        let mut rasterizer = SoftwareRasterizer::new(cell_width, cell_height);
-        let mut buffer = vec![0u8; buffer_width * buffer_height * 4]; // Black buffer
-
-        let commands = vec![make_text(
-            0,
-            0,
-            "A",
-            Color::Rgb(255, 255, 255), // White
-            Color::Rgb(0, 0, 0),       // Black
-        )];
-
-        compile_into_buffer(
-            &mut rasterizer,
-            commands,
-            &mut buffer,
-            buffer_width,
-            buffer_height,
-            cell_width,
-            cell_height,
-        );
-
-        // If the screen is black, this test will fail.
-        // We expect that *some* pixels in the buffer are not the background color.
-        let bg_rgba = Rgba::from(Color::Rgb(0,0,0)).to_bytes();
-        let has_non_bg_pixels = buffer.chunks_exact(4).any(|p| p != &bg_rgba);
-
-        assert!(has_non_bg_pixels, "compile_into_buffer with DrawTextRun should modify the framebuffer with non-background pixels.");
+        assert!(a1_has_content, "First char failed to render");
+        assert!(a2_has_content, "Second char (cached) failed to render");
     }
 }

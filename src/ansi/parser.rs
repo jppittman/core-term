@@ -273,6 +273,7 @@ impl AnsiParser {
                 AnsiToken::Print('P') => self.enter_string_state(State::DcsEntry),
                 AnsiToken::Print('^') => self.enter_string_state(State::PmString),
                 AnsiToken::Print('_') => self.enter_string_state(State::ApcString),
+                AnsiToken::Print('k') => self.enter_string_state(State::ApcString),
                 AnsiToken::Print('\\') => self.dispatch_st_standalone(),
                 AnsiToken::Print(inter @ ('(' | ')' | '*' | '+')) => {
                     self.esc_intermediate = Some(inter);
