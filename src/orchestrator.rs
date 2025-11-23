@@ -6,6 +6,7 @@
 //! major components: `platform`, `term_emulator`, `ansi_parser`, and `renderer`.
 
 pub mod actor;
+pub mod orchestrator_actor;
 
 use anyhow::{Context, Result};
 use log::{debug, info, trace, warn};
@@ -134,25 +135,17 @@ impl<'a> AppOrchestrator<'a> {
                 PlatformEvent::RequestFrame => {
                     // Handled by actor-based architecture, not used in single-threaded orchestrator
                 }
-                PlatformEvent::IOEvent { data: pty_data } => {
+                PlatformEvent::IOEvent { commands: ansi_commands } => {
                     debug!(
-                        "AppOrchestrator: Received {} bytes from PTY.",
-                        pty_data.len()
+                        "AppOrchestrator: Received {} ANSI commands from PTY.",
+                        ansi_commands.len()
                     );
-                    // Use the AnsiParser trait method
-                    let ansi_commands: Vec<AnsiCommand> = self.ansi_parser.process_bytes(&pty_data);
-                    if !ansi_commands.is_empty() {
-                        debug!(
-                            "AppOrchestrator: Parsed {} ANSI commands.",
-                            ansi_commands.len()
-                        );
-                        for command in ansi_commands {
-                            if let Some(action) = self
-                                .term_emulator
-                                .interpret_input(EmulatorInput::Ansi(command))
-                            {
-                                self.pending_emulator_actions.push(action);
-                            }
+                    for command in ansi_commands {
+                        if let Some(action) = self
+                            .term_emulator
+                            .interpret_input(EmulatorInput::Ansi(command))
+                        {
+                            self.pending_emulator_actions.push(action);
                         }
                     }
                 }
@@ -333,6 +326,9 @@ impl<'a> AppOrchestrator<'a> {
             return Ok(OrchestratorStatus::Running);
         };
 
+        // SOT: Extract authoritative dimensions from snapshot
+        let (cols, rows) = snapshot.dimensions;
+
         let config = Config::default();
         let platform_state = self.platform.get_current_platform_state();
         let render_commands =
@@ -341,11 +337,17 @@ impl<'a> AppOrchestrator<'a> {
 
         if !render_commands.is_empty() {
             debug!(
-                "AppOrchestrator: Sending {} render commands to UI.",
-                render_commands.len()
+                "AppOrchestrator: Sending {} render commands ({}x{} grid) to UI.",
+                render_commands.len(),
+                cols,
+                rows
             );
             self.platform
-                .dispatch_actions(vec![PlatformAction::Render(render_commands)])
+                .dispatch_actions(vec![PlatformAction::Render {
+                    commands: render_commands,
+                    cols,
+                    rows,
+                }])
                 .context("Failed to dispatch UI render action")?;
         }
 

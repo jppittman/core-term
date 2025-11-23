@@ -148,28 +148,53 @@ impl TerminalEmulator {
         }
     }
 
-    /// Creates a snapshot of the terminal's current visible state for rendering.
-    /// clears dirty line flags
+    /// Creates a snapshot of the terminal's current visible state for rendering (legacy method).
+    /// Clears dirty line flags. Returns None if synchronized_output is active.
+    ///
+    /// This method allocates a new snapshot. For better performance with the actor architecture,
+    /// use `populate_snapshot()` with a reusable snapshot buffer instead.
     pub fn get_render_snapshot(&mut self) -> Option<RenderSnapshot> {
-        if self.dec_modes.synchronized_output {
-            return None;
-        }
         let (width, height) = (self.screen.width, self.screen.height);
-        let mut lines = Vec::with_capacity(height);
+        let mut snapshot = RenderSnapshot {
+            dimensions: (width, height),
+            lines: Vec::new(),
+            cursor_state: None,
+            selection: crate::term::snapshot::Selection::default(),
+        };
+
+        if self.populate_snapshot(&mut snapshot) {
+            Some(snapshot)
+        } else {
+            None
+        }
+    }
+
+    /// Populates an existing snapshot with the terminal's current visible state for rendering.
+    /// Clears dirty line flags. Returns false if synchronized_output is active (skip frame).
+    ///
+    /// This method reuses the snapshot's existing Vec allocations to minimize allocations.
+    pub fn populate_snapshot(&mut self, snapshot: &mut RenderSnapshot) -> bool {
+        if self.dec_modes.synchronized_output {
+            return false;
+        }
+
+        let (width, height) = (self.screen.width, self.screen.height);
         let active_grid = self.screen.active_grid();
 
+        // Resize snapshot to match current terminal dimensions
+        snapshot.clear_and_resize(width, height);
+
+        // Populate lines by copying glyphs into existing Vec buffers
         for y_idx in 0..height {
-            // Screen lines are directly 0..height for the visible part in active_grid
-            let line_glyphs = active_grid[y_idx].clone();
-            let is_dirty = self.screen.dirty.get(y_idx).map_or(true, |&d| d != 0); // Mark dirty if out of bounds or non-zero
-            lines.push(SnapshotLine {
-                is_dirty,
-                cells: line_glyphs,
-            });
+            let line_glyphs = &active_grid[y_idx];
+            let is_dirty = self.screen.dirty.get(y_idx).map_or(true, |&d| d != 0);
+
+            snapshot.lines[y_idx].is_dirty = is_dirty;
+            snapshot.lines[y_idx].cells.clear();
+            snapshot.lines[y_idx].cells.extend_from_slice(line_glyphs);
         }
 
-        let mut cursor_state = None;
-        // Check DECTCEM mode for cursor visibility
+        // Populate cursor state
         if self.dec_modes.text_cursor_enable_mode {
             let (cursor_x, cursor_y) = self
                 .cursor_controller
@@ -177,7 +202,6 @@ impl TerminalEmulator {
 
             let (cell_char_underneath, cell_attributes_underneath) =
                 if cursor_y < height && cursor_x < width {
-                    // Use active_grid directly as get_glyph might have side effects or different logic
                     let glyph_wrapper = &active_grid[cursor_y][cursor_x];
                     match glyph_wrapper {
                         crate::glyph::Glyph::Single(cell)
@@ -187,10 +211,9 @@ impl TerminalEmulator {
                         }
                     }
                 } else {
-                    (' ', Attributes::default()) // Default if cursor is out of bounds
+                    (' ', Attributes::default())
                 };
 
-            // Map internal cursor_controller.cursor.shape to term::snapshot::CursorShape
             let internal_shape = self.cursor_controller.cursor.shape;
             let mapped_shape = match internal_shape {
                 cursor::CursorShape::BlinkingBlock | cursor::CursorShape::SteadyBlock => {
@@ -204,23 +227,22 @@ impl TerminalEmulator {
                 }
             };
 
-            cursor_state = Some(CursorRenderState {
+            snapshot.cursor_state = Some(CursorRenderState {
                 x: cursor_x,
                 y: cursor_y,
                 shape: mapped_shape,
                 cell_char_underneath,
                 cell_attributes_underneath,
             });
+        } else {
+            snapshot.cursor_state = None;
         }
 
-        let snapshot = RenderSnapshot {
-            dimensions: (width, height),
-            lines,
-            cursor_state,
-            selection: self.screen.selection.clone(),
-        };
+        // Populate selection
+        snapshot.selection = self.screen.selection.clone();
+
         self.screen.mark_all_clean();
-        Some(snapshot)
+        true
     }
 
     // --- Selection Handling Methods ---

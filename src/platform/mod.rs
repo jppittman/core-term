@@ -3,6 +3,7 @@
 // This module re-exports the platform-specific functionalities.
 
 pub use backends::BackendEvent;
+use crate::ansi::AnsiCommand;
 
 pub mod actions;
 pub mod backends;
@@ -21,7 +22,7 @@ pub mod mock;
 
 pub enum PlatformEvent {
     BackendEvent(BackendEvent),
-    IOEvent { data: Vec<u8> },
+    IOEvent { commands: Vec<AnsiCommand> },
     RequestFrame, // Vsync signal to request a new frame render
 }
 
