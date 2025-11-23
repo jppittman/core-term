@@ -10,10 +10,10 @@
 //! - Linux: DRM vblank ioctls or GNOME/KDE compositor APIs
 //! - Windows: DwmFlush or DX12 present sync
 
-use crate::platform::PlatformEvent;
+use crate::orchestrator::OrchestratorSender;
+use crate::term::ControlEvent;
 use anyhow::{Context, Result};
 use log::*;
-use std::sync::mpsc::Sender;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -27,13 +27,13 @@ impl VsyncActor {
     ///
     /// # Arguments
     ///
-    /// * `orchestrator_event_tx` - Channel to send RequestFrame events to Orchestrator thread
+    /// * `orchestrator_tx` - Unified channel to send RequestSnapshot events to Orchestrator
     /// * `target_fps` - Target frames per second (e.g., 60)
     ///
     /// # Returns
     ///
     /// Returns a handle to the vsync actor for cleanup.
-    pub fn spawn(orchestrator_event_tx: Sender<PlatformEvent>, target_fps: u32) -> Result<Self> {
+    pub fn spawn(orchestrator_tx: OrchestratorSender, target_fps: u32) -> Result<Self> {
         let frame_duration = Duration::from_secs_f64(1.0 / target_fps as f64);
 
         let thread_handle = thread::Builder::new()
@@ -43,11 +43,8 @@ impl VsyncActor {
                 loop {
                     thread::sleep(frame_duration);
 
-                    // Send RequestFrame event to Orchestrator thread
-                    if orchestrator_event_tx
-                        .send(PlatformEvent::RequestFrame)
-                        .is_err()
-                    {
+                    // Send RequestSnapshot event to Orchestrator thread
+                    if orchestrator_tx.send(ControlEvent::RequestSnapshot).is_err() {
                         info!("VsyncActor: Orchestrator channel closed, exiting");
                         break;
                     }

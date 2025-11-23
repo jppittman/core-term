@@ -96,12 +96,10 @@ impl TerminalEmulator {
                 }
 
                 self.resize(cols as usize, rows as usize);
-                Some(EmulatorAction::RequestRedraw)
+                Some(EmulatorAction::ResizePty { cols, rows })
             }
             XTWINOPS_REPORT_TEXT_AREA_SIZE_PIXELS => {
-                warn!(
-                    "WindowManipulation: Report text area size in pixels (14) not implemented"
-                );
+                warn!("WindowManipulation: Report text area size in pixels (14) not implemented");
                 None
             }
             XTWINOPS_REPORT_TEXT_AREA_SIZE_CHARS => {

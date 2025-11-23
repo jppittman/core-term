@@ -62,6 +62,8 @@ pub struct TerminalEmulator {
     pub(super) active_charsets: [CharacterSet; 4],
     pub(super) active_charset_g_level: usize,
     pub(super) cursor_wrap_next: bool,
+    /// Owned snapshot buffer that circulates between terminal and renderer
+    snapshot_buffer: Option<RenderSnapshot>,
 }
 
 impl TerminalEmulator {
@@ -78,6 +80,14 @@ impl TerminalEmulator {
         // For now, keeping it to ensure SGR reset state is applied if it differs from CONFIG's default.
         screen.default_attributes = initial_attributes;
 
+        // Create initial snapshot buffer
+        let initial_snapshot = RenderSnapshot {
+            dimensions: (width, height),
+            lines: Vec::new(),
+            cursor_state: None,
+            selection: crate::term::snapshot::Selection::default(),
+        };
+
         TerminalEmulator {
             screen,
             cursor_controller: CursorController::new(initial_attributes),
@@ -91,6 +101,7 @@ impl TerminalEmulator {
             focus_state: FocusState::Focused,
             active_charset_g_level: 0, // Default to G0
             cursor_wrap_next: false,
+            snapshot_buffer: Some(initial_snapshot),
         }
     }
 
@@ -148,36 +159,38 @@ impl TerminalEmulator {
         }
     }
 
-    /// Creates a snapshot of the terminal's current visible state for rendering (legacy method).
-    /// Clears dirty line flags. Returns None if synchronized_output is active.
+    /// Takes the snapshot buffer, populates it with current terminal state, and returns it.
+    /// Returns None if snapshot buffer is not available (already out for rendering) or if
+    /// synchronized_output is active (skip frame).
     ///
-    /// This method allocates a new snapshot. For better performance with the actor architecture,
-    /// use `populate_snapshot()` with a reusable snapshot buffer instead.
+    /// This method implements the snapshot circulation pattern: take from terminal, populate,
+    /// send to renderer, renderer returns it via return_snapshot().
     pub fn get_render_snapshot(&mut self) -> Option<RenderSnapshot> {
-        let (width, height) = (self.screen.width, self.screen.height);
-        let mut snapshot = RenderSnapshot {
-            dimensions: (width, height),
-            lines: Vec::new(),
-            cursor_state: None,
-            selection: crate::term::snapshot::Selection::default(),
-        };
-
-        if self.populate_snapshot(&mut snapshot) {
-            Some(snapshot)
-        } else {
-            None
+        // Short-circuit if synchronized_output is active
+        if self.dec_modes.synchronized_output {
+            return None;
         }
+
+        // Take ownership of the snapshot buffer (if available)
+        let mut snapshot = self.snapshot_buffer.take()?;
+
+        // Populate the snapshot
+        self.populate_snapshot(&mut snapshot);
+
+        Some(snapshot)
     }
 
-    /// Populates an existing snapshot with the terminal's current visible state for rendering.
-    /// Clears dirty line flags. Returns false if synchronized_output is active (skip frame).
-    ///
-    /// This method reuses the snapshot's existing Vec allocations to minimize allocations.
-    pub fn populate_snapshot(&mut self, snapshot: &mut RenderSnapshot) -> bool {
-        if self.dec_modes.synchronized_output {
-            return false;
-        }
+    /// Returns a snapshot buffer to the terminal after rendering.
+    /// This completes the snapshot circulation cycle.
+    pub fn return_snapshot(&mut self, snapshot: RenderSnapshot) {
+        self.snapshot_buffer = Some(snapshot);
+    }
 
+    /// Populates an existing snapshot with the terminal's current visible state.
+    /// Clears dirty line flags.
+    ///
+    /// This is an internal helper method used by get_render_snapshot().
+    fn populate_snapshot(&mut self, snapshot: &mut RenderSnapshot) {
         let (width, height) = (self.screen.width, self.screen.height);
         let active_grid = self.screen.active_grid();
 
@@ -242,7 +255,6 @@ impl TerminalEmulator {
         snapshot.selection = self.screen.selection.clone();
 
         self.screen.mark_all_clean();
-        true
     }
 
     // --- Selection Handling Methods ---

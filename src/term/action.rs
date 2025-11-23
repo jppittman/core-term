@@ -63,10 +63,14 @@ pub enum UserInputAction {
 // --- Emulator Control Events ---
 
 /// Represents internal control events for the terminal emulator.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum ControlEvent {
-    /// Signals that a frame has been rendered and acknowledged by the driver.
-    FrameRendered,
+    /// Request for the orchestrator to generate a snapshot for rendering.
+    /// Sent by Vsync or when user input requires immediate visual feedback.
+    RequestSnapshot,
+    /// Returns a rendered snapshot back to the orchestrator for reuse.
+    /// The Platform sends this after rendering to return the snapshot buffer.
+    FrameRendered(Box<crate::term::snapshot::RenderSnapshot>),
     /// Signals a resize of the terminal display area.
     Resize { cols: usize, rows: usize },
 }
@@ -91,7 +95,7 @@ pub enum EmulatorAction {
 
     /// Signal that some part of the terminal display has changed and a redraw
     /// by the renderer is likely needed.
-    RequestRedraw, // Note: NORTH_STAR.md v1.9.4 suggests this is implicit after rendering.
+    RequestRedraw,
     // Keeping it for now as it's a common signal.
     /// Request to set the visibility of the (potentially native) cursor by the driver.
     SetCursorVisibility(bool),
@@ -102,4 +106,8 @@ pub enum EmulatorAction {
     /// Request for the orchestrator to fetch content from the system clipboard.
     /// The orchestrator should then feed this back via `EmulatorInput::User(UserInputAction::PasteText(...))`.
     RequestClipboardContent,
+
+    /// Request to resize the PTY to match the terminal dimensions.
+    /// This is sent when ANSI sequences request a terminal resize.
+    ResizePty { cols: u16, rows: u16 },
 }

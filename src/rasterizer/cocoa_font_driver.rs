@@ -146,8 +146,8 @@ impl FontDriver for CocoaFontDriver {
             Some(pixels.as_mut_ptr() as *mut _),
             width,
             height,
-            8,                   // bits per component
-            width * 4,           // bytes per row
+            8,         // bits per component
+            width * 4, // bytes per row
             &color_space,
             bitmap_info,
         );
@@ -302,7 +302,10 @@ mod tests {
         let pixels = driver.rasterize_glyph(&font, glyph_id, 8, 16);
         let has_content = pixels.chunks_exact(4).any(|p| p[3] > 0);
 
-        assert!(has_content, "Rasterized glyph should have pixels with non-zero alpha");
+        assert!(
+            has_content,
+            "Rasterized glyph should have pixels with non-zero alpha"
+        );
     }
 
     #[test]
@@ -313,11 +316,15 @@ mod tests {
 
         let pixels = driver.rasterize_glyph(&font, glyph_id, 8, 16);
 
-        let has_white_pixels = pixels.chunks_exact(4)
+        let has_white_pixels = pixels
+            .chunks_exact(4)
             .filter(|p| p[3] > 0)
             .any(|p| p[0] >= 250 && p[1] >= 250 && p[2] >= 250);
 
-        assert!(has_white_pixels, "Rasterized glyph should produce white pixels as per contract");
+        assert!(
+            has_white_pixels,
+            "Rasterized glyph should produce white pixels as per contract"
+        );
     }
 
     #[test]
@@ -348,7 +355,8 @@ mod tests {
         let pixels = driver.rasterize_glyph(&font, glyph_id, width, height);
 
         // Count non-transparent pixels
-        let non_transparent_pixels = pixels.chunks_exact(4)
+        let non_transparent_pixels = pixels
+            .chunks_exact(4)
             .filter(|p| p[3] > 0) // alpha > 0
             .count();
 
@@ -365,7 +373,8 @@ mod tests {
 
         // Also verify that we have some WHITE pixels (not just alpha)
         // Since we render with white color (1.0, 1.0, 1.0), we expect R, G, B values > 200
-        let white_pixels = pixels.chunks_exact(4)
+        let white_pixels = pixels
+            .chunks_exact(4)
             .filter(|p| p[3] > 0 && p[0] > 200 && p[1] > 200 && p[2] > 200)
             .count();
 

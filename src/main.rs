@@ -4,6 +4,7 @@
 pub mod ansi;
 pub mod color;
 pub mod config;
+pub mod display;
 pub mod glyph;
 pub mod keys;
 pub mod orchestrator;
@@ -16,12 +17,9 @@ pub mod term;
 use crate::platform::platform_trait::Platform;
 
 // Logging
+use crate::config::CONFIG;
 use anyhow::Context;
 use log::{info, warn};
-
-// Default initial PTY dimensions (hints for Platform::new)
-const DEFAULT_INITIAL_PTY_COLS: u16 = 80;
-const DEFAULT_INITIAL_PTY_ROWS: u16 = 24;
 
 /// Main entry point for the `myterm` application.
 fn main() -> anyhow::Result<()> {
@@ -57,19 +55,91 @@ fn main() -> anyhow::Result<()> {
 
     info!("Shell command: '{}', args: {:?}", shell_command, shell_args);
 
-    // Create platform - it spawns all actors internally
+    // =========================================================================
+    // Platform-Agnostic Initialization (at main scope - actors live here)
+    // =========================================================================
+
+    use crate::orchestrator::orchestrator_actor::OrchestratorActor;
+    use crate::orchestrator::{OrchestratorEvent, OrchestratorSender};
+    use crate::term::snapshot::RenderSnapshot;
+    use crate::term::ControlEvent;
+    use crate::term::TerminalEmulator;
+    use std::sync::mpsc;
+
+    let term_cols = CONFIG.appearance.columns as usize;
+    let term_rows = CONFIG.appearance.rows as usize;
+    info!("Terminal dimensions: {}x{} cells", term_cols, term_rows);
+
+    // 1. Create unified orchestrator channel (all actors send to same channel)
+    let (orchestrator_tx, orchestrator_rx) =
+        std::sync::mpsc::sync_channel::<OrchestratorEvent>(128);
+
+    // Wrap sender in type-safe wrapper
+    let orchestrator_sender = OrchestratorSender::new(orchestrator_tx.clone());
+
+    // Orchestrator → Platform: Display actions including RequestRedraw (backpressure = 1)
+    let (display_action_tx, display_action_rx) = std::sync::mpsc::sync_channel(1);
+
+    // Orchestrator → PTY: Write and ResizePty (backpressure = 1)
+    let (pty_action_tx, pty_action_rx) = std::sync::mpsc::sync_channel(1);
+
+    // 3. Spawn PTY EventMonitor (platform-specific implementation, but owned at main scope)
+    #[cfg(target_os = "macos")]
+    let _event_monitor_actor = {
+        use crate::platform::os::event_monitor_actor::EventMonitorActor;
+        use crate::platform::os::pty::{NixPty, PtyConfig};
+
+        let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
+        let pty_config = PtyConfig {
+            command_executable: &shell_command,
+            args: &shell_args_refs,
+            initial_cols: CONFIG.appearance.columns,
+            initial_rows: CONFIG.appearance.rows,
+        };
+        let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
+        info!("Spawned PTY");
+
+        EventMonitorActor::spawn(pty, orchestrator_sender.clone(), pty_action_rx)
+            .context("Failed to spawn EventMonitorActor")?
+    };
+    info!("EventMonitorActor spawned successfully");
+
+    // 4. Spawn VsyncActor (platform-agnostic)
+    use crate::platform::os::vsync_actor::VsyncActor;
+    let target_fps = CONFIG.performance.target_fps;
+    let _vsync_actor = VsyncActor::spawn(orchestrator_sender.clone(), target_fps)
+        .context("Failed to spawn VsyncActor")?;
+    info!("VsyncActor spawned successfully");
+
+    // 5. Spawn OrchestratorActor (platform-agnostic hub)
+    let term_emulator = TerminalEmulator::new(term_cols, term_rows);
+    let _orchestrator_actor = OrchestratorActor::spawn(
+        term_emulator,
+        orchestrator_rx,
+        display_action_tx,
+        pty_action_tx,
+    )
+    .context("Failed to spawn OrchestratorActor")?;
+    info!("OrchestratorActor spawned successfully");
+
+    // =========================================================================
+    // Platform-Specific Initialization (windowing/rendering only)
+    // =========================================================================
+
     #[cfg(target_os = "macos")]
     let platform = {
         use crate::platform::macos::MacosPlatform;
+
         info!("Initializing MacosPlatform...");
-        let (platform, _initial_state) = MacosPlatform::new(
-            DEFAULT_INITIAL_PTY_COLS,
-            DEFAULT_INITIAL_PTY_ROWS,
-            shell_command,
-            shell_args,
-        )
-        .context("Failed to initialize MacosPlatform")?;
-        platform
+
+        // Create platform channels struct
+        let platform_channels = crate::platform::PlatformChannels {
+            display_action_rx,
+            platform_event_tx: orchestrator_sender.clone(),
+        };
+
+        // Create platform (pure initialization - no spawning)
+        MacosPlatform::new(platform_channels).context("Failed to initialize MacosPlatform")?
     };
 
     #[cfg(target_os = "linux")]
@@ -78,8 +148,8 @@ fn main() -> anyhow::Result<()> {
         use crate::platform::linux_x11::LinuxX11Platform;
         info!("Initializing LinuxX11Platform...");
         let (platform, _initial_state) = LinuxX11Platform::<XDriver>::new(
-            DEFAULT_INITIAL_PTY_COLS,
-            DEFAULT_INITIAL_PTY_ROWS,
+            CONFIG.appearance.columns,
+            CONFIG.appearance.rows,
             shell_command,
             shell_args,
         )
@@ -95,6 +165,76 @@ fn main() -> anyhow::Result<()> {
     info!("Platform initialized. Starting main event loop...");
 
     // Run the platform's event loop - blocks until shutdown
+    #[cfg(feature = "profiling")]
+    {
+        info!("Profiling enabled - flamegraph will be generated on exit");
+        eprintln!("Profiling enabled - flamegraph will be generated on exit");
+        let guard = pprof::ProfilerGuardBuilder::default()
+            .frequency(1000)
+            .blocklist(&["libc", "libsystem", "libdyld"])
+            .build()
+            .expect("Failed to create profiler guard");
+
+        let result = platform.run().context("Platform event loop failed");
+
+        info!("Platform run completed, building profiler report...");
+        eprintln!("Platform run completed, building profiler report...");
+
+        match guard.report().build() {
+            Ok(report) => {
+                // Save as SVG flamegraph
+                let flamegraph_path = "/tmp/flamegraph.svg";
+                info!("Writing flamegraph to {}", flamegraph_path);
+                eprintln!("Writing flamegraph to {}", flamegraph_path);
+
+                match std::fs::File::create(flamegraph_path) {
+                    Ok(file) => match report.flamegraph(file) {
+                        Ok(_) => {
+                            info!("Flamegraph saved to {}", flamegraph_path);
+                            eprintln!("Flamegraph saved to {}", flamegraph_path);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to write flamegraph: {}", e);
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Failed to create flamegraph file: {}", e);
+                    }
+                }
+
+                // Save as text format for manual inspection
+                let text_path = "/tmp/profile.txt";
+                info!("Writing text profile to {}", text_path);
+                eprintln!("Writing text profile to {}", text_path);
+
+                match std::fs::File::create(text_path) {
+                    Ok(file) => {
+                        use std::io::Write;
+                        let mut writer = std::io::BufWriter::new(file);
+                        match write!(&mut writer, "{:#?}", report) {
+                            Ok(_) => {
+                                info!("Text profile saved to {}", text_path);
+                                eprintln!("Text profile saved to {}", text_path);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to write text profile: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to create text profile file: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to build profiler report: {:?}", e);
+            }
+        }
+
+        result?;
+    }
+
+    #[cfg(not(feature = "profiling"))]
     platform.run().context("Platform event loop failed")?;
 
     info!("core-term exited successfully.");

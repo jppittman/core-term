@@ -145,45 +145,53 @@ pub struct SoftwareRasterizer {
 }
 
 impl SoftwareRasterizer {
-    /// Create a new rasterizer with given font metrics
-    pub fn new(cell_width_px: usize, cell_height_px: usize) -> Self {
+    /// Create a new rasterizer using font metrics from CONFIG
+    pub fn new() -> Self {
+        use crate::config::CONFIG;
         use log::*;
+
+        // Get font size from config and calculate cell dimensions
+        // TODO: Get actual measured metrics from FontManager instead of estimating
+        let font_size_pt = CONFIG.appearance.font.size_pt;
+        let cell_width_px = 8; // Temporary hardcoded value, should come from FontManager
+        let cell_height_px = font_size_pt as usize; // Use font size as height
 
         let safe_width = cell_width_px.max(1);
         let safe_height = cell_height_px.max(1);
 
-        if cell_width_px == 0 || cell_height_px == 0 {
-            warn!(
-                "SoftwareRasterizer: Zero dimensions provided ({}x{}), using minimum ({}x{})",
-                cell_width_px, cell_height_px, safe_width, safe_height
-            );
-        }
+        info!(
+            "SoftwareRasterizer: Using font metrics from CONFIG: {}x{} px (font size {} pt)",
+            safe_width, safe_height, font_size_pt
+        );
 
         // Initialize platform-specific font manager
         #[cfg(target_os = "macos")]
         let font_manager = {
-            use crate::config::CONFIG;
-
             let driver = CocoaFontDriver::new();
             let font_config = &CONFIG.appearance.font;
-            let font_size_pt = font_config.size_pt;
 
             let manager = FontManager::new(
                 driver,
-                "Menlo",           // regular (TODO: use font_config.normal)
-                "Menlo-Bold",      // bold (TODO: use font_config.bold)
-                "Menlo-Italic",    // italic (TODO: use font_config.italic)
+                "Menlo",            // regular (TODO: use font_config.normal)
+                "Menlo-Bold",       // bold (TODO: use font_config.bold)
+                "Menlo-Italic",     // italic (TODO: use font_config.italic)
                 "Menlo-BoldItalic", // bold+italic (TODO: use font_config.bold_italic)
                 font_size_pt,
-            ).expect("Failed to initialize font manager");
+            )
+            .expect("Failed to initialize font manager");
 
-            info!("SoftwareRasterizer: Initialized with FontManager (Menlo {} pt from CONFIG)", font_size_pt);
+            info!(
+                "SoftwareRasterizer: Initialized with FontManager (Menlo {} pt from CONFIG)",
+                font_size_pt
+            );
             Some(manager)
         };
 
         #[cfg(not(target_os = "macos"))]
         let font_manager = {
-            warn!("SoftwareRasterizer: No font driver for this platform, using placeholder rendering");
+            warn!(
+                "SoftwareRasterizer: No font driver for this platform, using placeholder rendering"
+            );
             None
         };
 
@@ -237,12 +245,10 @@ impl SoftwareRasterizer {
         if let Some(ref mut font_manager) = self.font_manager {
             if let Some(resolved) = font_manager.get_glyph(ch, flags) {
                 let font = font_manager.get_font(resolved.font_id);
-                let glyph_pixels = font_manager.driver().rasterize_glyph(
-                    font,
-                    resolved.glyph_id,
-                    width,
-                    height,
-                );
+                let glyph_pixels =
+                    font_manager
+                        .driver()
+                        .rasterize_glyph(font, resolved.glyph_id, width, height);
 
                 let rgba_data = Self::colorize_glyph(&glyph_pixels, fg, bg);
 
@@ -304,10 +310,7 @@ impl SoftwareRasterizer {
                 white_glyph[8], white_glyph[9], white_glyph[10], white_glyph[11],
                 white_glyph[12], white_glyph[13], white_glyph[14], white_glyph[15]
             );
-            debug!(
-                "colorize_glyph: fg={:?}, bg={:?}",
-                fg, bg
-            );
+            debug!("colorize_glyph: fg={:?}, bg={:?}", fg, bg);
         }
 
         for pixel in white_glyph.chunks_exact(4) {
@@ -388,7 +391,11 @@ pub fn compile_into_buffer(
                 let color_bytes = rgba.to_bytes();
                 trace!(
                     "rasterizer: ClearAll with bg={:?} (rgba={},{},{},{})",
-                    bg, rgba.r, rgba.g, rgba.b, rgba.a
+                    bg,
+                    rgba.r,
+                    rgba.g,
+                    rgba.b,
+                    rgba.a
                 );
                 // Fill entire framebuffer with background color
                 for pixel in framebuffer.chunks_exact_mut(4) {
@@ -423,9 +430,10 @@ pub fn compile_into_buffer(
 
                     let glyph = rasterizer.render_cell(ch, fg, bg, flags);
 
-                    let has_color = glyph.rgba_data.chunks_exact(4).any(|p| {
-                        p[0] > 0 || p[1] > 0 || p[2] > 0 || p[3] > 0
-                    });
+                    let has_color = glyph
+                        .rgba_data
+                        .chunks_exact(4)
+                        .any(|p| p[0] > 0 || p[1] > 0 || p[2] > 0 || p[3] > 0);
 
                     debug!(
                         "rasterizer: Rendered '{}' (U+{:04X}): {}x{} pixels, {} bytes, has_color={}",
@@ -595,7 +603,12 @@ mod tests {
         }
 
         fn default() -> Self {
-            Self::new(TEST_BUF_WIDTH, TEST_BUF_HEIGHT, TEST_CELL_WIDTH, TEST_CELL_HEIGHT)
+            Self::new(
+                TEST_BUF_WIDTH,
+                TEST_BUF_HEIGHT,
+                TEST_CELL_WIDTH,
+                TEST_CELL_HEIGHT,
+            )
         }
 
         /// Runs the compiler against the internal framebuffer.
@@ -678,8 +691,16 @@ mod tests {
         let white_rgba: Rgba = COLOR_WHITE.into();
         assert_eq!(harness.get_pixel(8, 15), white_rgba, "Bleed detected top");
         assert_eq!(harness.get_pixel(7, 16), white_rgba, "Bleed detected left");
-        assert_eq!(harness.get_pixel(16, 16), white_rgba, "Bleed detected right");
-        assert_eq!(harness.get_pixel(8, 32), white_rgba, "Bleed detected bottom");
+        assert_eq!(
+            harness.get_pixel(16, 16),
+            white_rgba,
+            "Bleed detected right"
+        );
+        assert_eq!(
+            harness.get_pixel(8, 32),
+            white_rgba,
+            "Bleed detected bottom"
+        );
     }
 
     #[test]
@@ -689,15 +710,31 @@ mod tests {
         let cmds = vec![
             RenderCommand::ClearAll { bg: COLOR_WHITE },
             RenderCommand::FillRect {
-                x: 0, y: 0, width: 4, height: 4, color: COLOR_RED, is_selection_bg: false
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+                color: COLOR_RED,
+                is_selection_bg: false,
             },
             RenderCommand::FillRect {
-                x: 1, y: 1, width: 2, height: 2, color: COLOR_GREEN, is_selection_bg: false
-            }
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 2,
+                color: COLOR_GREEN,
+                is_selection_bg: false,
+            },
         ];
         harness.compile(cmds);
 
-        harness.assert_rect_color(1 * TEST_CELL_WIDTH, 1 * TEST_CELL_HEIGHT, 2 * TEST_CELL_WIDTH, 2 * TEST_CELL_HEIGHT, COLOR_GREEN);
+        harness.assert_rect_color(
+            1 * TEST_CELL_WIDTH,
+            1 * TEST_CELL_HEIGHT,
+            2 * TEST_CELL_WIDTH,
+            2 * TEST_CELL_HEIGHT,
+            COLOR_GREEN,
+        );
         harness.assert_rect_color(0, 0, TEST_CELL_WIDTH, TEST_CELL_HEIGHT, COLOR_RED);
     }
 
@@ -705,7 +742,9 @@ mod tests {
     fn test_driver_command_passthrough() {
         let mut harness = TestHarness::default();
         let cmds = vec![
-            RenderCommand::SetWindowTitle { title: "Unit Test".into() },
+            RenderCommand::SetWindowTitle {
+                title: "Unit Test".into(),
+            },
             RenderCommand::RingBell,
             RenderCommand::PresentFrame,
         ];
@@ -726,7 +765,12 @@ mod tests {
         harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_WHITE }]);
 
         let cmd = RenderCommand::FillRect {
-            x: 12, y: 0, width: 2, height: 1, color: COLOR_RED, is_selection_bg: false
+            x: 12,
+            y: 0,
+            width: 2,
+            height: 1,
+            color: COLOR_RED,
+            is_selection_bg: false,
         };
         harness.compile(vec![cmd]);
 
@@ -739,7 +783,12 @@ mod tests {
         harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_WHITE }]);
 
         let cmd = RenderCommand::FillRect {
-            x: 0, y: 6, width: 1, height: 1, color: COLOR_RED, is_selection_bg: false
+            x: 0,
+            y: 6,
+            width: 1,
+            height: 1,
+            color: COLOR_RED,
+            is_selection_bg: false,
         };
         harness.compile(vec![cmd]);
 
@@ -752,11 +801,22 @@ mod tests {
 
         let cmds = vec![
             RenderCommand::FillRect {
-                x: usize::MAX, y: usize::MAX, width: 10, height: 10, color: COLOR_RED, is_selection_bg: false
+                x: usize::MAX,
+                y: usize::MAX,
+                width: 10,
+                height: 10,
+                color: COLOR_RED,
+                is_selection_bg: false,
             },
             RenderCommand::DrawTextRun {
-                x: usize::MAX, y: usize::MAX, text: "Crash?".into(), fg: COLOR_WHITE, bg: COLOR_BLACK, flags: AttrFlags::empty(), is_selected: false
-            }
+                x: usize::MAX,
+                y: usize::MAX,
+                text: "Crash?".into(),
+                fg: COLOR_WHITE,
+                bg: COLOR_BLACK,
+                flags: AttrFlags::empty(),
+                is_selected: false,
+            },
         ];
 
         harness.compile(cmds);
@@ -769,8 +829,14 @@ mod tests {
         let cmds = vec![
             RenderCommand::ClearAll { bg: COLOR_WHITE },
             RenderCommand::DrawTextRun {
-                x: 0, y: 0, text: "A".into(), fg: COLOR_BLACK, bg: COLOR_WHITE, flags: AttrFlags::empty(), is_selected: false
-            }
+                x: 0,
+                y: 0,
+                text: "A".into(),
+                fg: COLOR_BLACK,
+                bg: COLOR_WHITE,
+                flags: AttrFlags::empty(),
+                is_selected: false,
+            },
         ];
 
         harness.compile(cmds);
@@ -782,7 +848,13 @@ mod tests {
         harness.compile(vec![RenderCommand::ClearAll { bg: COLOR_BLACK }]);
 
         harness.compile(vec![RenderCommand::DrawTextRun {
-            x: 0, y: 0, text: "".into(), fg: COLOR_WHITE, bg: COLOR_BLACK, flags: AttrFlags::empty(), is_selected: false
+            x: 0,
+            y: 0,
+            text: "".into(),
+            fg: COLOR_WHITE,
+            bg: COLOR_BLACK,
+            flags: AttrFlags::empty(),
+            is_selected: false,
         }]);
 
         harness.assert_clear(COLOR_BLACK);
@@ -793,7 +865,13 @@ mod tests {
         let mut harness = TestHarness::default();
 
         let cmd = RenderCommand::DrawTextRun {
-            x: 0, y: 0, text: "AA".into(), fg: COLOR_WHITE, bg: COLOR_BLACK, flags: AttrFlags::empty(), is_selected: false
+            x: 0,
+            y: 0,
+            text: "AA".into(),
+            fg: COLOR_WHITE,
+            bg: COLOR_BLACK,
+            flags: AttrFlags::empty(),
+            is_selected: false,
         };
 
         harness.compile(vec![cmd]);
@@ -801,10 +879,22 @@ mod tests {
         let bg_rgba: Rgba = COLOR_BLACK.into();
 
         let mut a1_has_content = false;
-        for y in 0..TEST_CELL_HEIGHT { for x in 0..TEST_CELL_WIDTH { if harness.get_pixel(x, y) != bg_rgba { a1_has_content = true; } } }
+        for y in 0..TEST_CELL_HEIGHT {
+            for x in 0..TEST_CELL_WIDTH {
+                if harness.get_pixel(x, y) != bg_rgba {
+                    a1_has_content = true;
+                }
+            }
+        }
 
         let mut a2_has_content = false;
-        for y in 0..TEST_CELL_HEIGHT { for x in TEST_CELL_WIDTH..TEST_CELL_WIDTH*2 { if harness.get_pixel(x, y) != bg_rgba { a2_has_content = true; } } }
+        for y in 0..TEST_CELL_HEIGHT {
+            for x in TEST_CELL_WIDTH..TEST_CELL_WIDTH * 2 {
+                if harness.get_pixel(x, y) != bg_rgba {
+                    a2_has_content = true;
+                }
+            }
+        }
 
         assert!(a1_has_content, "First char failed to render");
         assert!(a2_has_content, "Second char (cached) failed to render");

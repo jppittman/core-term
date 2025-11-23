@@ -3,19 +3,16 @@
 // Defines actions that can be sent to the PTY or UI services.
 
 /// Commands that can be sent to the PTY.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum PlatformAction {
     /// Write a byte sequence to the PTY.
     Write(Vec<u8>),
     /// Resize the PTY.
     ResizePty { cols: u16, rows: u16 },
-    /// Render a list of commands to the UI.
-    /// The (cols, rows) tuple is the AUTHORITATIVE size for this frame (from the snapshot).
-    Render {
-        commands: Vec<crate::platform::backends::RenderCommand>,
-        cols: usize,
-        rows: usize,
-    },
+    /// Request the platform to render the provided snapshot.
+    /// The orchestrator sends this in response to RequestSnapshot events.
+    /// The platform should render it and return via ControlEvent::FrameRendered.
+    RequestRedraw(Box<crate::term::snapshot::RenderSnapshot>),
     /// Set the title of the window.
     SetTitle(String),
     /// Ring the terminal bell.

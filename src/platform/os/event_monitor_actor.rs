@@ -10,16 +10,17 @@
 //! This actor owns the AnsiProcessor, parsing PTY output into ANSI commands
 //! in parallel with the Orchestrator thread for better performance.
 
-use crate::ansi::{AnsiParser, AnsiProcessor};
+use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
+use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
 use crate::platform::os::event::{EventMonitor, KqueueFlags};
 use crate::platform::os::pty::{NixPty, PtyChannel};
-use crate::platform::{BackendEvent, PlatformEvent};
+use crate::platform::BackendEvent;
 use anyhow::{Context, Result};
 use log::*;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::io::AsRawFd;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{TryRecvError, TrySendError};
 use std::thread::{self, JoinHandle};
 
 /// Token for identifying PTY events in the EventMonitor.
@@ -50,23 +51,21 @@ impl EventMonitorActor {
     /// # Arguments
     ///
     /// * `pty` - The PTY to monitor
-    /// * `event_tx` - Channel to send PlatformEvents (PTY data) to Orchestrator
+    /// * `orchestrator_tx` - Unified channel to send events to Orchestrator
+    /// * `pty_action_rx` - Channel to receive PlatformActions (Write, ResizePty) from Orchestrator
     ///
     /// # Returns
     ///
-    /// Returns:
-    /// - `command_tx`: Channel to send PlatformActions (write/resize)
-    /// - `Self`: Handle to the actor (used for cleanup)
+    /// Returns `Self` (handle to the actor for cleanup)
     pub fn spawn(
         pty: NixPty,
-        event_tx: Sender<PlatformEvent>,
-    ) -> Result<(Sender<PlatformAction>, Self)> {
-        let (command_tx, command_rx) = mpsc::channel();
-
+        orchestrator_tx: OrchestratorSender,
+        pty_action_rx: std::sync::mpsc::Receiver<PlatformAction>,
+    ) -> Result<Self> {
         let thread_handle = thread::Builder::new()
             .name("event-monitor".to_string())
             .spawn(move || {
-                if let Err(e) = Self::actor_thread_main(pty, event_tx, command_rx) {
+                if let Err(e) = Self::actor_thread_main(pty, orchestrator_tx, pty_action_rx) {
                     error!("EventMonitor actor thread error: {:#}", e);
                 }
             })
@@ -74,12 +73,9 @@ impl EventMonitorActor {
 
         info!("EventMonitor actor thread spawned");
 
-        Ok((
-            command_tx,
-            Self {
-                thread_handle: Some(thread_handle),
-            },
-        ))
+        Ok(Self {
+            thread_handle: Some(thread_handle),
+        })
     }
 
     /// Main loop for the EventMonitor actor thread.
@@ -93,8 +89,8 @@ impl EventMonitorActor {
     /// 6. Processes commands from the Orchestrator thread
     fn actor_thread_main(
         mut pty: NixPty,
-        event_tx: Sender<PlatformEvent>,
-        command_rx: Receiver<PlatformAction>,
+        orchestrator_tx: OrchestratorSender,
+        pty_action_rx: std::sync::mpsc::Receiver<PlatformAction>,
     ) -> Result<()> {
         debug!(
             "EventMonitor actor thread starting (PTY fd: {})",
@@ -118,6 +114,9 @@ impl EventMonitorActor {
         let mut events_buffer = Vec::with_capacity(8);
         let mut read_buffer = vec![0u8; PTY_READ_BUFFER_SIZE];
 
+        // Buffer for accumulating commands when channel is full
+        let mut command_buffer: Vec<AnsiCommand> = Vec::new();
+
         loop {
             // Poll for PTY events with a 100ms timeout to allow checking for commands
             event_monitor
@@ -131,14 +130,15 @@ impl EventMonitorActor {
                         &mut pty,
                         &mut read_buffer,
                         &mut ansi_parser,
-                        &event_tx,
+                        &orchestrator_tx,
+                        &mut command_buffer,
                     )?;
                 }
             }
 
-            // Process commands from main thread (non-blocking)
+            // Process commands from orchestrator thread (non-blocking)
             loop {
-                match command_rx.try_recv() {
+                match pty_action_rx.try_recv() {
                     Ok(action) => {
                         if !Self::handle_command(&mut pty, action)? {
                             // Command returned false = shutdown requested
@@ -157,19 +157,21 @@ impl EventMonitorActor {
     }
 
     /// Handles PTY readable events by reading data, parsing ANSI, and sending to Orchestrator.
+    /// Uses try_send with buffering to avoid blocking when the orchestrator channel is full.
     fn handle_pty_readable(
         pty: &mut NixPty,
         read_buffer: &mut [u8],
         ansi_parser: &mut AnsiProcessor,
-        event_tx: &Sender<PlatformEvent>,
+        orchestrator_tx: &OrchestratorSender,
+        command_buffer: &mut Vec<AnsiCommand>,
     ) -> Result<()> {
         loop {
             match pty.read(read_buffer) {
                 Ok(0) => {
                     // EOF - PTY closed
                     info!("EventMonitor: PTY returned EOF, sending CloseRequested");
-                    event_tx
-                        .send(BackendEvent::CloseRequested.into())
+                    orchestrator_tx
+                        .send(BackendEvent::CloseRequested)
                         .context("Failed to send CloseRequested event")?;
                     break;
                 }
@@ -177,21 +179,87 @@ impl EventMonitorActor {
                     trace!("EventMonitor: Read {} bytes from PTY", bytes_read);
 
                     // Parse bytes into ANSI commands
-                    let ansi_commands = ansi_parser.process_bytes(&read_buffer[..bytes_read]);
+                    let mut ansi_commands = ansi_parser.process_bytes(&read_buffer[..bytes_read]);
 
                     if !ansi_commands.is_empty() {
-                        debug!(
-                            "EventMonitor: Parsed {} ANSI commands",
-                            ansi_commands.len()
-                        );
-                        event_tx
-                            .send(PlatformEvent::IOEvent { commands: ansi_commands })
-                            .context("Failed to send IOEvent")?;
+                        debug!("EventMonitor: Parsed {} ANSI commands", ansi_commands.len());
+
+                        // If we have buffered commands, add new ones to buffer
+                        if !command_buffer.is_empty() {
+                            command_buffer.append(&mut ansi_commands);
+                            debug!(
+                                "EventMonitor: Added to buffer, total buffered: {}",
+                                command_buffer.len()
+                            );
+                        } else {
+                            // Try to send without blocking
+                            use crate::orchestrator::OrchestratorEvent;
+                            match orchestrator_tx.try_send(OrchestratorEvent::IOEvent {
+                                commands: ansi_commands.clone(),
+                            }) {
+                                Ok(()) => {
+                                    trace!("EventMonitor: Sent IOEvent successfully");
+                                }
+                                Err(TrySendError::Full(_)) => {
+                                    // Channel is full, start buffering
+                                    debug!(
+                                        "EventMonitor: Channel full, buffering {} commands",
+                                        ansi_commands.len()
+                                    );
+                                    command_buffer.append(&mut ansi_commands);
+                                }
+                                Err(TrySendError::Disconnected(_)) => {
+                                    return Err(anyhow::anyhow!(
+                                        "Orchestrator channel disconnected"
+                                    ));
+                                }
+                            }
+                        }
+
+                        // If buffer is too large, warn and use blocking send
+                        if command_buffer.len() > 10_000 {
+                            warn!(
+                                "EventMonitor: Command buffer exceeded 10,000 commands ({}), using blocking send",
+                                command_buffer.len()
+                            );
+                            let commands_to_send = std::mem::take(command_buffer);
+                            use crate::orchestrator::OrchestratorEvent;
+                            orchestrator_tx
+                                .send(OrchestratorEvent::IOEvent {
+                                    commands: commands_to_send,
+                                })
+                                .context("Failed to send buffered IOEvent")?;
+                        }
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
                     // No more data available right now
                     trace!("EventMonitor: PTY read would block, no more data");
+
+                    // Try to flush buffer if we have any pending commands
+                    if !command_buffer.is_empty() {
+                        use crate::orchestrator::OrchestratorEvent;
+                        match orchestrator_tx.try_send(OrchestratorEvent::IOEvent {
+                            commands: std::mem::take(command_buffer),
+                        }) {
+                            Ok(()) => {
+                                trace!("EventMonitor: Flushed command buffer successfully");
+                            }
+                            Err(TrySendError::Full(event)) => {
+                                // Put commands back in buffer
+                                if let OrchestratorEvent::IOEvent { commands } = event {
+                                    *command_buffer = commands;
+                                    debug!(
+                                        "EventMonitor: Channel still full, keeping {} commands in buffer",
+                                        command_buffer.len()
+                                    );
+                                }
+                            }
+                            Err(TrySendError::Disconnected(_)) => {
+                                return Err(anyhow::anyhow!("Orchestrator channel disconnected"));
+                            }
+                        }
+                    }
                     break;
                 }
                 Err(e) => {

@@ -14,7 +14,11 @@ fn main() {
     }
 
     match args[1].as_str() {
-        "bundle-run" => bundle_run(),
+        "bundle-run" => {
+            // Pass through any additional arguments after "bundle-run"
+            let extra_args = if args.len() > 2 { &args[2..] } else { &[] };
+            bundle_run(extra_args);
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             std::process::exit(1);
@@ -22,14 +26,25 @@ fn main() {
     }
 }
 
-fn bundle_run() {
+fn bundle_run(extra_args: &[String]) {
     println!("Building core-term in release mode...");
 
-    // Build the project
-    let status = Command::new("cargo")
-        .args(&["build", "--release"])
-        .status()
-        .expect("Failed to run cargo build");
+    // Build the project with extra args (e.g., --features profiling)
+    let mut cmd = Command::new("cargo");
+    cmd.args(&["build", "--release"]);
+
+    // Filter out --release since we already added it
+    let filtered_args: Vec<&String> = extra_args
+        .iter()
+        .filter(|arg| arg.as_str() != "--release")
+        .collect();
+
+    if !filtered_args.is_empty() {
+        println!("Additional build args: {:?}", filtered_args);
+        cmd.args(&filtered_args);
+    }
+
+    let status = cmd.status().expect("Failed to run cargo build");
 
     if !status.success() {
         eprintln!("Build failed");
@@ -46,8 +61,7 @@ fn bundle_run() {
     }
 
     println!("Copying binary to bundle...");
-    fs::copy(binary_src, binary_dest)
-        .expect("Failed to copy binary to bundle");
+    fs::copy(binary_src, binary_dest).expect("Failed to copy binary to bundle");
 
     // Make it executable
     #[cfg(unix)]
@@ -57,8 +71,7 @@ fn bundle_run() {
             .expect("Failed to get binary metadata")
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(binary_dest, perms)
-            .expect("Failed to set executable permission");
+        fs::set_permissions(binary_dest, perms).expect("Failed to set executable permission");
     }
 
     println!("Launching CoreTerm.app...");

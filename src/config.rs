@@ -272,7 +272,7 @@ pub struct PerformanceConfig {
     pub max_draw_latency_ms: time::Duration,
     /// Target frames per second for display refresh.
     /// The vsync thread will attempt to present frames at this rate.
-    /// Default: 60 FPS (16.67ms per frame)
+    /// Default: 120 FPS (8.33ms per frame) - supports ProMotion displays
     pub target_fps: u32,
 }
 
@@ -281,7 +281,7 @@ impl Default for PerformanceConfig {
         PerformanceConfig {
             min_draw_latency_ms: Duration::from_millis(2),
             max_draw_latency_ms: Duration::from_millis(33),
-            target_fps: 60,
+            target_fps: 120,
         }
     }
 }

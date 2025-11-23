@@ -12,7 +12,6 @@ use anyhow::Result;
 use std::os::unix::io::RawFd;
 
 // Re-export driver implementations so they can be accessed via `crate::platform::backends::console::ConsoleDriver`, etc.
-pub mod cocoa; // Add this line
 pub mod console;
 #[cfg(test)]
 pub mod mock;
@@ -362,4 +361,78 @@ pub trait Driver {
     /// # Returns
     /// * `(width_px, height_px)` - The framebuffer dimensions
     fn get_framebuffer_size(&self) -> (usize, usize);
+}
+
+/// Convert DisplayEvent (from display layer) to BackendEvent (platform layer).
+/// This conversion is platform-agnostic and bridges the display and platform abstractions.
+impl From<crate::display::DisplayEvent> for BackendEvent {
+    fn from(display_event: crate::display::DisplayEvent) -> Self {
+        use crate::display::DisplayEvent;
+
+        match display_event {
+            DisplayEvent::Key {
+                symbol,
+                modifiers,
+                text,
+            } => BackendEvent::Key {
+                symbol,
+                modifiers,
+                text: text.unwrap_or_default(),
+            },
+            DisplayEvent::Resize {
+                width_px,
+                height_px,
+            } => BackendEvent::Resize {
+                width_px: width_px as u16,
+                height_px: height_px as u16,
+            },
+            DisplayEvent::CloseRequested => BackendEvent::CloseRequested,
+            DisplayEvent::FocusGained => BackendEvent::FocusGained,
+            DisplayEvent::FocusLost => BackendEvent::FocusLost,
+            DisplayEvent::MouseButtonPress {
+                button,
+                x,
+                y,
+                modifiers,
+            } => {
+                let mouse_button = match button {
+                    1 => MouseButton::Left,
+                    2 => MouseButton::Middle,
+                    3 => MouseButton::Right,
+                    _ => MouseButton::Left, // Default to left for unknown buttons
+                };
+                BackendEvent::MouseButtonPress {
+                    button: mouse_button,
+                    x: x as u16,
+                    y: y as u16,
+                    modifiers,
+                }
+            }
+            DisplayEvent::MouseButtonRelease {
+                button,
+                x,
+                y,
+                modifiers,
+            } => {
+                let mouse_button = match button {
+                    1 => MouseButton::Left,
+                    2 => MouseButton::Middle,
+                    3 => MouseButton::Right,
+                    _ => MouseButton::Left,
+                };
+                BackendEvent::MouseButtonRelease {
+                    button: mouse_button,
+                    x: x as u16,
+                    y: y as u16,
+                    modifiers,
+                }
+            }
+            DisplayEvent::MouseMove { x, y, modifiers } => BackendEvent::MouseMove {
+                x: x as u16,
+                y: y as u16,
+                modifiers,
+            },
+            DisplayEvent::PasteData { text } => BackendEvent::PasteData { text },
+        }
+    }
 }

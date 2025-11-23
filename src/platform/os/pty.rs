@@ -346,12 +346,28 @@ impl PtyChannel for NixPty {
     fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
         Self::set_pty_size_internal(&self.master_fd, cols, rows).with_context(|| {
             format!(
-                "NixPty: PtyChannel::resize failed to set PTY size to {}x{} for fd {}",
+                "NixPty: Failed to set PTY size to {}x{} for fd {}",
                 cols,
                 rows,
                 self.master_fd.as_raw_fd()
             )
-        })
+        })?;
+
+        kill(self.child_pid, Some(Signal::SIGWINCH)).with_context(|| {
+            format!(
+                "NixPty: Failed to send SIGWINCH to child process {}",
+                self.child_pid
+            )
+        })?;
+
+        log::debug!(
+            "NixPty: Resized PTY to {}x{} and sent SIGWINCH to PID {}",
+            cols,
+            rows,
+            self.child_pid
+        );
+
+        Ok(())
     }
 
     fn child_pid(&self) -> Pid {

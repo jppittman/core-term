@@ -8,6 +8,7 @@
 fn main() {
     // This line tells Cargo to re-run this script only if the script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/icons/icon.icns");
 
     // Cargo sets this environment variable during the build process.
     // We read it to determine which OS we are compiling for.
@@ -70,10 +71,8 @@ fn create_macos_app_bundle() {
 
     // Create bundle structure
     let _ = fs::remove_dir_all(Path::new(&manifest_dir).join("CoreTerm.app"));
-    fs::create_dir_all(bundle_dir.join("MacOS"))
-        .expect("Failed to create MacOS directory");
-    fs::create_dir_all(bundle_dir.join("Resources"))
-        .expect("Failed to create Resources directory");
+    fs::create_dir_all(bundle_dir.join("MacOS")).expect("Failed to create MacOS directory");
+    fs::create_dir_all(bundle_dir.join("Resources")).expect("Failed to create Resources directory");
 
     // Create Info.plist (required for keyboard input to work on macOS)
     let plist_content = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -105,9 +104,9 @@ fn create_macos_app_bundle() {
 "#;
 
     let plist_path = bundle_dir.join("Info.plist");
-    let mut plist_file = fs::File::create(&plist_path)
-        .expect("Failed to create Info.plist");
-    plist_file.write_all(plist_content.as_bytes())
+    let mut plist_file = fs::File::create(&plist_path).expect("Failed to create Info.plist");
+    plist_file
+        .write_all(plist_content.as_bytes())
         .expect("Failed to write Info.plist");
 }
 
