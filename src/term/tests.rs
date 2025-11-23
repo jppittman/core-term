@@ -1580,4 +1580,127 @@ mod paste_text_tests {
             Some((0, expected_cursor_x)),
         );
     }
+
+    #[test]
+    fn test_ansi_resize_sets_terminal_dimensions() {
+        let mut emu = create_test_emulator(80, 24);
+        assert_eq!(emu.dimensions(), (80, 24));
+
+        let resize_command = AnsiCommand::Csi(CsiCommand::WindowManipulation {
+            ps1: 8,
+            ps2: Some(30),
+            ps3: Some(100),
+        });
+        emu.interpret_input(EmulatorInput::Ansi(resize_command));
+
+        assert_eq!(
+            emu.dimensions(),
+            (100, 30),
+            "Terminal should resize to 100 cols x 30 rows"
+        );
+    }
+
+    #[test]
+    fn test_ansi_resize_updates_snapshot_dimensions() {
+        let mut emu = create_test_emulator(80, 24);
+
+        let resize_command = AnsiCommand::Csi(CsiCommand::WindowManipulation {
+            ps1: 8,
+            ps2: Some(20),
+            ps3: Some(60),
+        });
+        emu.interpret_input(EmulatorInput::Ansi(resize_command));
+
+        let snapshot = emu.get_render_snapshot().expect("Snapshot should exist");
+        assert_eq!(
+            snapshot.dimensions,
+            (60, 20),
+            "Snapshot dimensions should reflect the resize"
+        );
+    }
+
+    #[test]
+    fn test_ansi_resize_with_zero_rows_ignored() {
+        let mut emu = create_test_emulator(80, 24);
+
+        let resize_command = AnsiCommand::Csi(CsiCommand::WindowManipulation {
+            ps1: 8,
+            ps2: Some(0),
+            ps3: Some(100),
+        });
+        emu.interpret_input(EmulatorInput::Ansi(resize_command));
+
+        assert_eq!(
+            emu.dimensions(),
+            (80, 24),
+            "Terminal should ignore resize with zero rows"
+        );
+    }
+
+    #[test]
+    fn test_ansi_resize_with_zero_cols_ignored() {
+        let mut emu = create_test_emulator(80, 24);
+
+        let resize_command = AnsiCommand::Csi(CsiCommand::WindowManipulation {
+            ps1: 8,
+            ps2: Some(30),
+            ps3: Some(0),
+        });
+        emu.interpret_input(EmulatorInput::Ansi(resize_command));
+
+        assert_eq!(
+            emu.dimensions(),
+            (80, 24),
+            "Terminal should ignore resize with zero cols"
+        );
+    }
+
+    #[test]
+    fn test_ansi_resize_with_missing_params_ignored() {
+        let mut emu = create_test_emulator(80, 24);
+
+        let resize_command = AnsiCommand::Csi(CsiCommand::WindowManipulation {
+            ps1: 8,
+            ps2: None,
+            ps3: Some(100),
+        });
+        emu.interpret_input(EmulatorInput::Ansi(resize_command));
+
+        assert_eq!(
+            emu.dimensions(),
+            (80, 24),
+            "Terminal should ignore resize with missing rows parameter"
+        );
+
+        let resize_command2 = AnsiCommand::Csi(CsiCommand::WindowManipulation {
+            ps1: 8,
+            ps2: Some(30),
+            ps3: None,
+        });
+        emu.interpret_input(EmulatorInput::Ansi(resize_command2));
+
+        assert_eq!(
+            emu.dimensions(),
+            (80, 24),
+            "Terminal should ignore resize with missing cols parameter"
+        );
+    }
+
+    #[test]
+    fn test_window_manipulation_report_size() {
+        let mut emu = create_test_emulator(80, 24);
+
+        let report_command = AnsiCommand::Csi(CsiCommand::WindowManipulation {
+            ps1: 18,
+            ps2: None,
+            ps3: None,
+        });
+        let action = emu.interpret_input(EmulatorInput::Ansi(report_command));
+
+        assert_eq!(
+            action,
+            Some(EmulatorAction::WritePty(b"\x1b[8;24;80t".to_vec())),
+            "Should report current terminal dimensions"
+        );
+    }
 }

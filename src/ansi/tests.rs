@@ -972,3 +972,60 @@ mod unicode_wide_tests {
         );
     }
 }
+
+#[test]
+fn it_should_handle_esc_k_screen_title_sequence() {
+    let bytes = b"\x1Bkls\x1B\\";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Apc(b"ls".to_vec())],
+        "ESC k (screen title sequence) should consume title text and not print it"
+    );
+}
+
+#[test]
+fn it_should_handle_esc_k_with_empty_title() {
+    let bytes = b"\x1Bk\x1B\\";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Apc(b"".to_vec())],
+        "ESC k with empty title should produce empty Apc command"
+    );
+}
+
+#[test]
+fn it_should_handle_esc_k_with_longer_title() {
+    let bytes = b"\x1Bkvim ~/.bashrc\x1B\\";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Apc(b"vim ~/.bashrc".to_vec())],
+        "ESC k with longer title should consume all text until ST"
+    );
+}
+
+#[test]
+fn it_should_handle_text_before_and_after_esc_k_sequence() {
+    let bytes = b"Before\x1Bkls\x1B\\After";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![
+            AnsiCommand::Print('B'),
+            AnsiCommand::Print('e'),
+            AnsiCommand::Print('f'),
+            AnsiCommand::Print('o'),
+            AnsiCommand::Print('r'),
+            AnsiCommand::Print('e'),
+            AnsiCommand::Apc(b"ls".to_vec()),
+            AnsiCommand::Print('A'),
+            AnsiCommand::Print('f'),
+            AnsiCommand::Print('t'),
+            AnsiCommand::Print('e'),
+            AnsiCommand::Print('r'),
+        ],
+        "Text before and after ESC k sequence should print correctly, title should be consumed"
+    );
+}
