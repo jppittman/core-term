@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
     let (pty_action_tx, pty_action_rx) = std::sync::mpsc::sync_channel(1);
 
     // 3. Spawn PTY EventMonitor (platform-specific implementation, but owned at main scope)
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _event_monitor_actor = {
         use crate::platform::os::event_monitor_actor::EventMonitorActor;
         use crate::platform::os::pty::{NixPty, PtyConfig};
@@ -153,6 +153,24 @@ fn main() -> anyhow::Result<()> {
         .create_waker()
         .context("Failed to create event loop waker")?;
 
+    #[cfg(target_os = "linux")]
+    let platform = {
+        use crate::platform::GenericPlatform;
+        info!("Initializing GenericPlatform (Headless)...");
+
+        // Create platform channels struct
+        let platform_channels = crate::platform::PlatformChannels {
+            display_action_rx,
+            platform_event_tx: orchestrator_sender.clone(),
+        };
+
+        GenericPlatform::new(platform_channels, render_channels)
+            .context("Failed to initialize GenericPlatform")?
+    };
+
+    #[cfg(target_os = "linux")]
+    let waker = Box::new(crate::platform::waker::NoOpWaker);
+
     // 5. Spawn OrchestratorActor (platform-agnostic hub)
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
     let _orchestrator_actor = OrchestratorActor::spawn(
@@ -164,21 +182,6 @@ fn main() -> anyhow::Result<()> {
     )
     .context("Failed to spawn OrchestratorActor")?;
     info!("OrchestratorActor spawned successfully");
-
-    #[cfg(target_os = "linux")]
-    let platform = {
-        use crate::platform::backends::x11::XDriver;
-        use crate::platform::linux_x11::LinuxX11Platform;
-        info!("Initializing LinuxX11Platform...");
-        let (platform, _initial_state) = LinuxX11Platform::<XDriver>::new(
-            CONFIG.appearance.columns,
-            CONFIG.appearance.rows,
-            shell_command,
-            shell_args,
-        )
-        .context("Failed to initialize LinuxX11Platform")?;
-        platform
-    };
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

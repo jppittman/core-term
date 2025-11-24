@@ -25,6 +25,8 @@ pub mod font_manager;
 #[cfg(target_os = "macos")]
 pub mod cocoa_font_driver;
 
+pub mod headless_font_driver;
+
 use crate::color::Color;
 use crate::glyph::AttrFlags;
 use crate::platform::backends::{DriverCommand, RenderCommand};
@@ -39,9 +41,10 @@ use crate::rasterizer::cocoa_font_driver::CocoaFontDriver;
 #[cfg(target_os = "macos")]
 type PlatformFontDriver = CocoaFontDriver;
 
-// TODO: Linux font driver
 #[cfg(not(target_os = "macos"))]
-type PlatformFontDriver = (); // Placeholder for now
+use crate::rasterizer::headless_font_driver::HeadlessFontDriver;
+#[cfg(not(target_os = "macos"))]
+type PlatformFontDriver = HeadlessFontDriver;
 
 /// RGBA color in 32-bit format (8 bits per channel)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -185,10 +188,19 @@ impl SoftwareRasterizer {
 
         #[cfg(not(target_os = "macos"))]
         let font_manager = {
-            warn!(
-                "SoftwareRasterizer: No font driver for this platform, using placeholder rendering"
-            );
-            None
+            info!("SoftwareRasterizer: Initializing HeadlessFontDriver");
+            let driver = HeadlessFontDriver::new();
+            // TODO: Use actual config values
+            let manager = FontManager::new(
+                driver,
+                "Headless",
+                "Headless-Bold",
+                "Headless-Italic",
+                "Headless-BoldItalic",
+                font_size_pt,
+            )
+            .expect("Failed to initialize headless font manager");
+            Some(manager)
         };
 
         Self {

@@ -14,16 +14,18 @@ use std::sync::mpsc::Receiver;
 
 pub mod actions;
 pub mod backends;
-#[cfg(target_os = "linux")]
-pub mod console_platform;
+// #[cfg(target_os = "linux")]
+// pub mod console_platform;
 pub mod font_manager;
-#[cfg(target_os = "linux")]
-pub mod linux_x11;
+// #[cfg(target_os = "linux")]
+// pub mod linux_x11;
+#[cfg(target_os = "macos")]
 pub mod macos;
 pub mod os;
 pub mod platform_trait;
 pub mod waker;
 
+#[cfg(target_os = "macos")]
 pub use macos::MacosPlatform;
 
 #[cfg(test)]
