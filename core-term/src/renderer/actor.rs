@@ -151,7 +151,8 @@ impl RenderActor {
 /// Spawn the render thread and return channels for communication
 pub fn spawn_render_thread(
     renderer: Renderer,
-    rasterizer: SoftwareRasterizer,
+    cell_width_px: usize,
+    cell_height_px: usize,
     config: Config,
 ) -> Result<RenderChannels> {
     info!("spawn_render_thread: Creating channels");
@@ -164,6 +165,8 @@ pub fn spawn_render_thread(
     thread::Builder::new()
         .name("render".to_string())
         .spawn(move || {
+            // Create the rasterizer on the render thread to avoid Send requirements
+            let rasterizer = SoftwareRasterizer::new(cell_width_px, cell_height_px);
             let actor = RenderActor::new(renderer, rasterizer, config);
             actor.run(work_rx, result_tx);
         })

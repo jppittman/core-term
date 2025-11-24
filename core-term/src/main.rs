@@ -113,25 +113,23 @@ fn main() -> anyhow::Result<()> {
 
     info!("Spawning render thread...");
     use crate::config::Config;
-    use crate::rasterizer::SoftwareRasterizer;
     use crate::renderer::{spawn_render_thread, Renderer};
 
     let config = Config::default();
     let renderer = Renderer::new();
 
     // FIXME: Scale factor should come from display initialization, not hardcoded
-    // For now, assume 2.0 scale factor (Retina displays) on macOS
-    #[cfg(target_os = "macos")]
+    // For now, assume 2.0 scale factor (Retina displays) on macOS with Cocoa
+    // X11 (including XQuartz) doesn't do HiDPI scaling, so use 1.0
+    #[cfg(all(target_os = "macos", use_cocoa_display))]
     let assumed_scale_factor = 2.0;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", use_cocoa_display)))]
     let assumed_scale_factor = 1.0;
 
-    let rasterizer = SoftwareRasterizer::new(
-        (config.appearance.cell_width_px as f64 * assumed_scale_factor) as usize,
-        (config.appearance.cell_height_px as f64 * assumed_scale_factor) as usize,
-    );
+    let cell_width_px = (config.appearance.cell_width_px as f64 * assumed_scale_factor) as usize;
+    let cell_height_px = (config.appearance.cell_height_px as f64 * assumed_scale_factor) as usize;
 
-    let render_channels = spawn_render_thread(renderer, rasterizer, config)
+    let render_channels = spawn_render_thread(renderer, cell_width_px, cell_height_px, config)
         .context("Failed to spawn render thread")?;
     info!("Render thread spawned successfully");
 

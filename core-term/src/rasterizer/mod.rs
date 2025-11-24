@@ -22,16 +22,19 @@
 pub mod font_driver;
 pub mod font_manager;
 
-#[cfg(use_cocoa_display)]
+// On macOS, always include Cocoa font driver (uses Core Text)
+#[cfg(target_os = "macos")]
 pub mod cocoa_font_driver;
 
-#[cfg(use_x11_display)]
+// On non-macOS with X11, include X11 font driver (uses FreeType)
+#[cfg(all(use_x11_display, not(target_os = "macos")))]
 pub mod x11_font_driver;
 
 #[cfg(use_headless_display)]
 pub mod headless_font_driver;
 
 use crate::color::Color;
+use crate::config::FontBackend;
 use crate::glyph::AttrFlags;
 use crate::platform::backends::{DriverCommand, RenderCommand};
 use crate::rasterizer::font_driver::FontDriver;
@@ -39,21 +42,12 @@ use crate::rasterizer::font_manager::FontManager;
 use log::{debug, trace};
 use std::collections::HashMap;
 
-// Display-driver-specific font driver selection
-#[cfg(use_cocoa_display)]
+// Font driver imports
 use crate::rasterizer::cocoa_font_driver::CocoaFontDriver;
-#[cfg(use_cocoa_display)]
-type PlatformFontDriver = CocoaFontDriver;
-
-#[cfg(use_x11_display)]
-use crate::rasterizer::x11_font_driver::X11FontDriver;
-#[cfg(use_x11_display)]
-type PlatformFontDriver = X11FontDriver;
-
 #[cfg(use_headless_display)]
 use crate::rasterizer::headless_font_driver::HeadlessFontDriver;
-#[cfg(use_headless_display)]
-type PlatformFontDriver = HeadlessFontDriver;
+#[cfg(use_x11_display)]
+use crate::rasterizer::x11_font_driver::X11FontDriver;
 
 /// RGBA color in 32-bit format (8 bits per channel)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -153,7 +147,7 @@ pub struct SoftwareRasterizer {
     cell_width_px: usize,
     cell_height_px: usize,
     /// Font manager for loading and caching fonts
-    font_manager: Option<FontManager<PlatformFontDriver>>,
+    font_manager: Option<FontManager>,
 }
 
 impl SoftwareRasterizer {
@@ -168,65 +162,72 @@ impl SoftwareRasterizer {
         let safe_height = cell_height_px.max(1);
 
         info!(
-            "SoftwareRasterizer: Using cell metrics: {}x{} px (font size {} pt)",
-            safe_width, safe_height, font_size_pt
+            "SoftwareRasterizer: Using cell metrics: {}x{} px (font size {} pt, backend: {:?})",
+            safe_width, safe_height, font_size_pt, CONFIG.appearance.font.backend
         );
 
-        // Initialize display-driver-specific font manager
-        #[cfg(use_cocoa_display)]
-        let font_manager = {
-            let driver = CocoaFontDriver::new();
-            let _font_config = &CONFIG.appearance.font;
+        // Initialize font manager based on configured backend
+        let font_manager = match CONFIG.appearance.font.backend {
+            FontBackend::CoreText => {
+                info!("SoftwareRasterizer: Initializing CocoaFontDriver (Core Text)");
+                let driver = Box::new(CocoaFontDriver::new()) as Box<dyn FontDriver>;
 
-            let manager = FontManager::new(
-                driver,
-                "Menlo",            // regular (TODO: use font_config.normal)
-                "Menlo-Bold",       // bold (TODO: use font_config.bold)
-                "Menlo-Italic",     // italic (TODO: use font_config.italic)
-                "Menlo-BoldItalic", // bold+italic (TODO: use font_config.bold_italic)
-                font_size_pt,
-            )
-            .expect("Failed to initialize font manager");
+                let manager = FontManager::new(
+                    driver,
+                    "Menlo",            // regular (TODO: use font_config.normal)
+                    "Menlo-Bold",       // bold (TODO: use font_config.bold)
+                    "Menlo-Italic",     // italic (TODO: use font_config.italic)
+                    "Menlo-BoldItalic", // bold+italic (TODO: use font_config.bold_italic)
+                    font_size_pt,
+                )
+                .expect("Failed to initialize font manager");
 
-            info!(
-                "SoftwareRasterizer: Initialized with FontManager (Menlo {} pt from CONFIG)",
-                font_size_pt
-            );
-            Some(manager)
-        };
+                Some(manager)
+            }
+            FontBackend::FreeType => {
+                #[cfg(use_x11_display)]
+                {
+                    info!("SoftwareRasterizer: Initializing X11FontDriver (FreeType)");
+                    let driver = Box::new(X11FontDriver::new(safe_width, safe_height)) as Box<dyn FontDriver>;
 
-        #[cfg(use_x11_display)]
-        let font_manager = {
-            info!("SoftwareRasterizer: Initializing X11FontDriver");
-            let driver = X11FontDriver::new(safe_width, safe_height);
+                    let manager = FontManager::new(
+                        driver,
+                        "Noto Sans Mono",             // regular
+                        "Noto Sans Mono:Bold",        // bold
+                        "Noto Sans Mono:Italic",      // italic
+                        "Noto Sans Mono:Bold:Italic", // bold+italic
+                        font_size_pt,
+                    )
+                    .expect("Failed to initialize X11 font manager");
+                    Some(manager)
+                }
+                #[cfg(not(use_x11_display))]
+                {
+                    panic!("FreeType backend requested but X11 display driver not compiled in");
+                }
+            }
+            FontBackend::Headless => {
+                #[cfg(use_headless_display)]
+                {
+                    info!("SoftwareRasterizer: Initializing HeadlessFontDriver");
+                    let driver = Box::new(HeadlessFontDriver::new()) as Box<dyn FontDriver>;
 
-            let manager = FontManager::new(
-                driver,
-                "monospace",
-                "monospace",
-                "monospace",
-                "monospace",
-                font_size_pt,
-            )
-            .expect("Failed to initialize X11 font manager");
-            Some(manager)
-        };
-
-        #[cfg(use_headless_display)]
-        let font_manager = {
-            info!("SoftwareRasterizer: Initializing HeadlessFontDriver");
-            let driver = HeadlessFontDriver::new();
-            // TODO: Use actual config values
-            let manager = FontManager::new(
-                driver,
-                "Headless",
-                "Headless-Bold",
-                "Headless-Italic",
-                "Headless-BoldItalic",
-                font_size_pt,
-            )
-            .expect("Failed to initialize headless font manager");
-            Some(manager)
+                    let manager = FontManager::new(
+                        driver,
+                        "Headless",
+                        "Headless-Bold",
+                        "Headless-Italic",
+                        "Headless-BoldItalic",
+                        font_size_pt,
+                    )
+                    .expect("Failed to initialize headless font manager");
+                    Some(manager)
+                }
+                #[cfg(not(use_headless_display))]
+                {
+                    panic!("Headless backend requested but headless display driver not compiled in");
+                }
+            }
         };
 
         Self {
@@ -278,11 +279,9 @@ impl SoftwareRasterizer {
         // Try to use the font manager if available
         if let Some(ref mut font_manager) = self.font_manager {
             if let Some(resolved) = font_manager.get_glyph(ch, flags) {
-                let font = font_manager.get_font(resolved.font_id);
-                let glyph_pixels =
-                    font_manager
-                        .driver()
-                        .rasterize_glyph(font, resolved.glyph_id, width, height);
+                let glyph_pixels = font_manager
+                    .driver()
+                    .rasterize_glyph(resolved.font_id, resolved.glyph_id, width, height);
 
                 let rgba_data = Self::colorize_glyph(&glyph_pixels, fg, bg);
 

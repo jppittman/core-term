@@ -188,6 +188,35 @@ impl Default for AppearanceConfig {
     }
 }
 
+/// Font backend selection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FontBackend {
+    /// Core Text (macOS native)
+    CoreText,
+    /// FreeType + fontconfig (Linux/X11)
+    FreeType,
+    /// Headless (testing/CI)
+    Headless,
+}
+
+impl Default for FontBackend {
+    fn default() -> Self {
+        // Auto-detect based on platform
+        #[cfg(target_os = "macos")]
+        return FontBackend::CoreText;
+
+        #[cfg(all(not(target_os = "macos"), use_x11_display))]
+        return FontBackend::FreeType;
+
+        #[cfg(use_headless_display)]
+        return FontBackend::Headless;
+
+        #[cfg(not(any(target_os = "macos", use_x11_display, use_headless_display)))]
+        return FontBackend::CoreText; // Fallback
+    }
+}
+
 /// Font configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -199,6 +228,7 @@ pub struct FontConfig {
     pub size_pt: f64,
     pub cw_scale: f32,
     pub ch_scale: f32,
+    pub backend: FontBackend,
 }
 
 impl Default for FontConfig {
@@ -212,6 +242,7 @@ impl Default for FontConfig {
             size_pt: 16.0, // Match cell height for proper scaling
             cw_scale: 1.0,
             ch_scale: 1.0,
+            backend: FontBackend::default(),
         }
     }
 }

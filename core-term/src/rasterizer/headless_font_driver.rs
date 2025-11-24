@@ -1,6 +1,6 @@
 //! Headless mock font driver implementation.
 
-use crate::rasterizer::font_driver::FontDriver;
+use super::font_driver::{FontDriver, FontId};
 use anyhow::Result;
 
 #[derive(Clone)]
@@ -13,25 +13,25 @@ impl HeadlessFontDriver {
 }
 
 impl FontDriver for HeadlessFontDriver {
-    type Font = ();
-    type GlyphId = u32;
-
-    fn load_font(&self, _name: &str, _size_pt: f64) -> Result<Self::Font> {
-        Ok(())
+    fn load_font(&self, _name: &str, _size_pt: f64) -> Result<FontId> {
+        // Just return a dummy FontId
+        Ok(0)
     }
 
-    fn find_glyph(&self, _font: &Self::Font, ch: char) -> Option<Self::GlyphId> {
+    fn find_glyph(&self, _font_id: FontId, ch: char) -> Option<u32> {
+        // Mock: use character codepoint as glyph ID
         Some(ch as u32)
     }
 
-    fn find_fallback_font(&self, _ch: char) -> Result<Self::Font> {
-        Ok(())
+    fn find_fallback_font(&self, _ch: char) -> Result<FontId> {
+        // Just return a dummy FontId
+        Ok(0)
     }
 
     fn rasterize_glyph(
         &self,
-        _font: &Self::Font,
-        _glyph_id: Self::GlyphId,
+        _font_id: FontId,
+        _glyph_id: u32,
         cell_width_px: usize,
         cell_height_px: usize,
     ) -> Vec<u8> {
