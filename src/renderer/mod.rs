@@ -6,3 +6,6 @@ mod renderer;
 
 pub use actor::{spawn_render_thread, RenderChannels, RenderResult, RenderWork};
 pub use renderer::Renderer;
+
+#[cfg(test)]
+mod renderer_tests;

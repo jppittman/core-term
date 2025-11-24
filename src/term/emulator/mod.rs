@@ -196,6 +196,20 @@ impl TerminalEmulator {
         self.snapshot_buffer = Some(snapshot);
     }
 
+    /// Test-only helper: Gets a snapshot without consuming the buffer.
+    /// This allows repeated calls in tests without manual return_snapshot() calls.
+    #[cfg(test)]
+    pub fn get_test_snapshot(&mut self) -> Option<TerminalSnapshot> {
+        if self.dec_modes.synchronized_output {
+            return None;
+        }
+
+        let snapshot = self.get_render_snapshot()?;
+        let cloned = snapshot.clone();
+        self.return_snapshot(snapshot);
+        Some(cloned)
+    }
+
     /// Populates an existing snapshot with the terminal's current visible state.
     /// Clears dirty line flags.
     ///

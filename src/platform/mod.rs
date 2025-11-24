@@ -26,8 +26,9 @@ pub mod waker;
 
 pub use macos::MacosPlatform;
 
-#[cfg(test)]
-pub mod mock;
+// MockPlatform is obsolete after refactor to actor model
+// #[cfg(test)]
+// pub mod mock;
 
 // Type alias for backward compatibility
 pub type PlatformEvent = crate::orchestrator::OrchestratorEvent;
