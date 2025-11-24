@@ -437,7 +437,12 @@ impl From<crate::display::DisplayEvent> for BackendEvent {
                     modifiers,
                 }
             }
-            DisplayEvent::MouseMove { x, y, scale_factor, modifiers } => BackendEvent::MouseMove {
+            DisplayEvent::MouseMove {
+                x,
+                y,
+                scale_factor,
+                modifiers,
+            } => BackendEvent::MouseMove {
                 x: x as u16,
                 y: y as u16,
                 scale_factor,

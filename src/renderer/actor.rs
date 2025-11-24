@@ -182,13 +182,21 @@ mod tests {
     use crate::renderer::Renderer;
     use crate::term::{CursorRenderState, CursorShape, Selection, SnapshotLine, TerminalSnapshot};
 
-    fn create_test_snapshot(cols: usize, rows: usize, cell_width_px: usize, cell_height_px: usize) -> TerminalSnapshot {
+    fn create_test_snapshot(
+        cols: usize,
+        rows: usize,
+        cell_width_px: usize,
+        cell_height_px: usize,
+    ) -> TerminalSnapshot {
         TerminalSnapshot {
             dimensions: (cols, rows),
-            lines: vec![SnapshotLine {
-                is_dirty: true,
-                cells: vec![],
-            }; rows],
+            lines: vec![
+                SnapshotLine {
+                    is_dirty: true,
+                    cells: vec![],
+                };
+                rows
+            ],
             cursor_state: None,
             selection: Selection::default(),
             cell_width_px,
