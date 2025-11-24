@@ -315,6 +315,13 @@ impl OrchestratorActor {
             BackendEvent::PasteData { text } => {
                 Ok(Some(EmulatorInput::User(UserInputAction::PasteText(text))))
             }
+            BackendEvent::ClipboardDataRequested => {
+                // X11 clipboard protocol: another app is requesting our clipboard data
+                // TODO: Send current clipboard text to display via SubmitClipboardData
+                // For now, just ignore this event - clipboard won't work properly on X11
+                warn!("ClipboardDataRequested: clipboard support not yet implemented");
+                Ok(None)
+            }
         }
     }
 

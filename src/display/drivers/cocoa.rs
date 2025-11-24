@@ -4,8 +4,9 @@
 
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{
-    DisplayError, DisplayEvent, DriverRequest, DriverResponse, RenderSnapshot,
+    DisplayError, DisplayEvent, DriverConfig, DriverRequest, DriverResponse, RenderSnapshot,
 };
+use crate::platform::waker::{CocoaWaker, EventLoopWaker};
 use anyhow::{Context, Result};
 use core_graphics::base::CGFloat;
 use core_graphics::color_space::CGColorSpace;
@@ -52,25 +53,57 @@ pub struct CocoaDisplayDriver {
 }
 
 impl DisplayDriver for CocoaDisplayDriver {
-    fn new() -> Result<Self> {
+    fn new(config: &DriverConfig) -> Result<Self> {
         let mtm =
             MainThreadMarker::new().context("CocoaDisplayDriver must be created on main thread")?;
-        info!("CocoaDisplayDriver::new() - Pure initialization");
+        info!("CocoaDisplayDriver::new() - Full initialization with config");
 
         Self::register_view_class();
         Self::register_delegate_class();
         Self::init_app(mtm)?;
 
-        Ok(Self {
+        // Calculate window size from config
+        let cols = config.initial_cols;
+        let rows = config.initial_rows;
+        let window_width_pts = (cols * config.cell_width_px) as f64;
+        let window_height_pts = (rows * config.cell_height_px) as f64;
+
+        let mut driver = Self {
             mtm,
             window: None,
             view: None,
             delegate: None,
-            window_width_pts: 0.0,
-            window_height_pts: 0.0,
+            window_width_pts,
+            window_height_pts,
             backing_scale: 1.0,
             framebuffer: None,
-        })
+        };
+
+        // Create window and view
+        let window = driver.create_window(window_width_pts as usize, window_height_pts as usize)?;
+        let view = driver.create_view(window_width_pts, window_height_pts)?;
+
+        unsafe {
+            let _: () = msg_send![&window, setContentView: &*view];
+        }
+
+        let backing_scale: CGFloat = unsafe { msg_send![&window, backingScaleFactor] };
+        info!(
+            "CocoaDisplayDriver: Created window {}x{} pts, backing scale {}",
+            window_width_pts, window_height_pts, backing_scale
+        );
+
+        driver.window = Some(window);
+        driver.view = Some(view);
+        driver.backing_scale = backing_scale;
+        driver.window_width_pts = window_width_pts;
+        driver.window_height_pts = window_height_pts;
+
+        Ok(driver)
+    }
+
+    fn create_waker(&self) -> Box<dyn EventLoopWaker> {
+        Box::new(CocoaWaker::new())
     }
 
     fn handle_request(
@@ -78,7 +111,7 @@ impl DisplayDriver for CocoaDisplayDriver {
         request: DriverRequest,
     ) -> std::result::Result<DriverResponse, DisplayError> {
         match request {
-            DriverRequest::Init(config) => Ok(self.handle_init(config)?),
+            DriverRequest::Init => Ok(self.handle_init()?),
             DriverRequest::PollEvents => Ok(self.handle_poll_events()?),
             DriverRequest::RequestFramebuffer => Ok(self.handle_request_framebuffer()?),
             // Present returns DisplayError directly, so no wrapping needed
@@ -90,6 +123,7 @@ impl DisplayDriver for CocoaDisplayDriver {
             }
             DriverRequest::CopyToClipboard(text) => Ok(self.handle_copy_to_clipboard(&text)?),
             DriverRequest::RequestPaste => Ok(self.handle_request_paste()?),
+            DriverRequest::SubmitClipboardData(text) => Ok(self.handle_copy_to_clipboard(&text)?),
         }
     }
 }
@@ -216,57 +250,35 @@ impl CocoaDisplayDriver {
         }
     }
 
-    fn handle_init(
-        &mut self,
-        config: crate::display::messages::DriverConfig,
-    ) -> Result<DriverResponse> {
-        info!("CocoaDisplayDriver: Handling Init request");
+    fn handle_init(&mut self) -> Result<DriverResponse> {
+        info!("CocoaDisplayDriver: Init - showing window and returning metrics");
 
-        let cols = config.initial_cols;
-        let rows = config.initial_rows;
-        let window_width_pts = (cols * config.cell_width_px) as f64;
-        let window_height_pts = (rows * config.cell_height_px) as f64;
-
-        let window = self.create_window(window_width_pts as usize, window_height_pts as usize)?;
-        let view = self.create_view(window_width_pts, window_height_pts)?;
-
-        unsafe {
-            let _: () = msg_send![&window, setContentView: &*view];
-        }
-
-        let backing_scale: CGFloat = unsafe { msg_send![&window, backingScaleFactor] };
-        info!(
-            "CocoaDisplayDriver: Backing scale factor = {}",
-            backing_scale
-        );
-
-        let width_px = (window_width_pts * backing_scale) as u32;
-        let height_px = (window_height_pts * backing_scale) as u32;
+        let width_px = (self.window_width_pts * self.backing_scale) as u32;
+        let height_px = (self.window_height_pts * self.backing_scale) as u32;
 
         info!(
-            "CocoaDisplayDriver: Window {} x {} points ({} x {} physical px)",
-            window_width_pts, window_height_pts, width_px, height_px
+            "CocoaDisplayDriver: {} x {} pts ({} x {} px)",
+            self.window_width_pts, self.window_height_pts, width_px, height_px
         );
 
-        let buffer_size = (width_px as usize) * (height_px as usize) * config.bytes_per_pixel;
+        let buffer_size = (width_px as usize) * (height_px as usize) * 4; // RGBA
         let framebuffer = vec![0u8; buffer_size].into_boxed_slice();
-
-        self.window = Some(window.clone());
-        self.view = Some(view.clone());
-        self.window_width_pts = window_width_pts;
-        self.window_height_pts = window_height_pts;
-        self.backing_scale = backing_scale;
         self.framebuffer = Some(framebuffer);
 
-        unsafe {
-            let _: () = msg_send![&window, makeKeyAndOrderFront: None::<&NSObject>];
-            let _: Bool = msg_send![&window, makeFirstResponder: &*view];
+        // Show window
+        if let Some(window) = &self.window {
+            if let Some(view) = &self.view {
+                unsafe {
+                    let _: () = msg_send![window, makeKeyAndOrderFront: None::<&NSObject>];
+                    let _: Bool = msg_send![window, makeFirstResponder: &**view];
+                }
+            }
         }
 
         Ok(DriverResponse::InitComplete {
             width_px,
             height_px,
-            scale_factor: backing_scale,
+            scale_factor: self.backing_scale,
         })
     }
 

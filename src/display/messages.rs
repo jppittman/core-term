@@ -80,9 +80,9 @@ pub struct DriverConfig {
 /// Requests sent from DisplayManager to DisplayDriver.
 #[derive(Debug, Clone)]
 pub enum DriverRequest {
-    /// Phase 1 initialization: Driver creates window and discovers metrics.
+    /// Complete initialization: Show window and return metrics.
     /// Driver responds with InitComplete containing dimensions.
-    Init(DriverConfig),
+    Init,
 
     /// Request pending native events from the platform.
     /// Driver responds with Events containing any queued events.
@@ -106,11 +106,15 @@ pub enum DriverRequest {
     /// Set cursor visibility.
     SetCursorVisibility(bool),
 
-    /// Copy text to clipboard.
+    /// Copy text to clipboard (deprecated: use SubmitClipboardData).
     CopyToClipboard(String),
 
     /// Request paste from clipboard.
     RequestPaste,
+
+    /// Submit clipboard data in response to ClipboardDataRequested event.
+    /// Used by X11 selection protocol where clipboard owner must provide data on demand.
+    SubmitClipboardData(String),
 }
 
 /// Responses sent from DisplayDriver to DisplayManager.
@@ -146,6 +150,9 @@ pub enum DriverResponse {
 
     /// Paste was requested (data will arrive via PasteData event).
     PasteRequested,
+
+    /// Clipboard data was submitted successfully.
+    ClipboardDataSubmitted,
 }
 
 /// Platform-agnostic display events.
@@ -198,4 +205,8 @@ pub enum DisplayEvent {
 
     /// Paste data from clipboard.
     PasteData { text: String },
+
+    /// Clipboard data requested by another application (X11 SelectionRequest).
+    /// Driver should respond with SubmitClipboardData containing the current clipboard text.
+    ClipboardDataRequested,
 }

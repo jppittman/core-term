@@ -2,8 +2,9 @@
 
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{
-    DisplayError, DriverRequest, DriverResponse,
+    DisplayError, DriverConfig, DriverRequest, DriverResponse,
 };
+use crate::platform::waker::{EventLoopWaker, NoOpWaker};
 use anyhow::Result;
 use log::{info, trace};
 
@@ -15,14 +16,26 @@ pub struct HeadlessDisplayDriver {
 }
 
 impl DisplayDriver for HeadlessDisplayDriver {
-    fn new() -> Result<Self> {
-        info!("HeadlessDisplayDriver::new()");
+    fn new(config: &DriverConfig) -> Result<Self> {
+        info!("HeadlessDisplayDriver::new() with config");
+
+        let cols = config.initial_cols;
+        let rows = config.initial_rows;
+        let width_px = (cols * config.cell_width_px) as u32;
+        let height_px = (rows * config.cell_height_px) as u32;
+        let buffer_size = (width_px as usize) * (height_px as usize) * config.bytes_per_pixel;
+        let framebuffer = vec![0u8; buffer_size].into_boxed_slice();
+
         Ok(Self {
-            width_px: 0,
-            height_px: 0,
+            width_px,
+            height_px,
             scale_factor: 1.0,
-            framebuffer: None,
+            framebuffer: Some(framebuffer),
         })
+    }
+
+    fn create_waker(&self) -> Box<dyn EventLoopWaker> {
+        Box::new(NoOpWaker)
     }
 
     fn handle_request(
@@ -30,19 +43,8 @@ impl DisplayDriver for HeadlessDisplayDriver {
         request: DriverRequest,
     ) -> Result<DriverResponse, DisplayError> {
         match request {
-            DriverRequest::Init(config) => {
-                info!("HeadlessDisplayDriver: Init {:?}", config);
-                let cols = config.initial_cols;
-                let rows = config.initial_rows;
-
-                // Simulate some window dimensions
-                self.width_px = (cols * config.cell_width_px) as u32;
-                self.height_px = (rows * config.cell_height_px) as u32;
-                self.scale_factor = 1.0;
-
-                let buffer_size = (self.width_px as usize) * (self.height_px as usize) * config.bytes_per_pixel;
-                self.framebuffer = Some(vec![0u8; buffer_size].into_boxed_slice());
-
+            DriverRequest::Init => {
+                info!("HeadlessDisplayDriver: Init - returning metrics");
                 Ok(DriverResponse::InitComplete {
                     width_px: self.width_px,
                     height_px: self.height_px,
@@ -84,6 +86,10 @@ impl DisplayDriver for HeadlessDisplayDriver {
             DriverRequest::RequestPaste => {
                 info!("HeadlessDisplayDriver: RequestPaste");
                 Ok(DriverResponse::PasteRequested)
+            }
+            DriverRequest::SubmitClipboardData(text) => {
+                info!("HeadlessDisplayDriver: SubmitClipboardData '{}'", text);
+                Ok(DriverResponse::ClipboardDataSubmitted)
             }
         }
     }
