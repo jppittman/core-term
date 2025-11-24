@@ -104,6 +104,9 @@ pub enum BackendEvent {
     },
     /// Paste data received from clipboard or primary selection.
     PasteData { text: String },
+    /// Clipboard data requested by another application (X11 SelectionRequest).
+    /// Orchestrator should respond with current clipboard contents.
+    ClipboardDataRequested,
 }
 
 /// Specific commands for the UI driver/backend.
@@ -449,6 +452,7 @@ impl From<crate::display::DisplayEvent> for BackendEvent {
                 modifiers,
             },
             DisplayEvent::PasteData { text } => BackendEvent::PasteData { text },
+            DisplayEvent::ClipboardDataRequested => BackendEvent::ClipboardDataRequested,
         }
     }
 }

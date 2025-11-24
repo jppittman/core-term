@@ -45,12 +45,12 @@ impl DisplayManager {
         #[cfg(use_cocoa_display)]
         {
             use crate::display::drivers::CocoaDisplayDriver;
-            info!("DisplayManager: Creating CocoaDisplayDriver...");
-            let mut driver = Box::new(CocoaDisplayDriver::new()?) as Box<dyn DisplayDriver>;
+            info!("DisplayManager: Creating CocoaDisplayDriver with config...");
+            let mut driver = Box::new(CocoaDisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
 
-            info!("DisplayManager: Initializing driver...");
+            info!("DisplayManager: Calling Init...");
             let response = driver
-                .handle_request(DriverRequest::Init(driver_config))
+                .handle_request(DriverRequest::Init)
                 .map_err(|e| anyhow::anyhow!(e))
                 .context("Failed to initialize display driver")?;
 
@@ -61,12 +61,12 @@ impl DisplayManager {
         #[cfg(use_x11_display)]
         {
             use crate::display::drivers::X11DisplayDriver;
-            info!("DisplayManager: Creating X11DisplayDriver...");
-            let mut driver = Box::new(X11DisplayDriver::new()?) as Box<dyn DisplayDriver>;
+            info!("DisplayManager: Creating X11DisplayDriver with config...");
+            let mut driver = Box::new(X11DisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
 
-            info!("DisplayManager: Initializing driver...");
+            info!("DisplayManager: Calling Init...");
             let response = driver
-                .handle_request(DriverRequest::Init(driver_config))
+                .handle_request(DriverRequest::Init)
                 .map_err(|e| anyhow::anyhow!(e))
                 .context("Failed to initialize display driver")?;
 
@@ -77,12 +77,12 @@ impl DisplayManager {
         #[cfg(use_headless_display)]
         {
             use crate::display::drivers::HeadlessDisplayDriver;
-            info!("DisplayManager: Creating HeadlessDisplayDriver...");
-            let mut driver = Box::new(HeadlessDisplayDriver::new()?) as Box<dyn DisplayDriver>;
+            info!("DisplayManager: Creating HeadlessDisplayDriver with config...");
+            let mut driver = Box::new(HeadlessDisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
 
-            info!("DisplayManager: Initializing driver...");
+            info!("DisplayManager: Calling Init...");
             let response = driver
-                .handle_request(DriverRequest::Init(driver_config))
+                .handle_request(DriverRequest::Init)
                 .map_err(|e| anyhow::anyhow!(e))
                 .context("Failed to initialize display driver")?;
 

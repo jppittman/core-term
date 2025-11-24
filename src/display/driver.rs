@@ -10,12 +10,13 @@
 //! - Communication is message-based via channels (no shared state)
 //!
 //! ## Lifecycle
-//! 1. `new()` - Pure initialization (register classes, minimal setup)
+//! 1. `new(config)` - Initialize with display configuration
 //! 2. `handle_request(Init)` - Create window, discover metrics
 //! 3. Request/response loop - All operations via messages
 //! 4. `Drop` - Cleanup (no explicit shutdown message)
 
-use crate::display::messages::{DisplayError, DriverRequest, DriverResponse};
+use crate::display::messages::{DisplayError, DriverConfig, DriverRequest, DriverResponse};
+use crate::platform::waker::EventLoopWaker;
 use anyhow::Result;
 
 /// Minimal platform-specific display driver interface.
@@ -23,15 +24,25 @@ use anyhow::Result;
 /// Implementations should be RISC-style: provide only the primitives needed
 /// for the platform. All common logic lives in DisplayManager.
 pub trait DisplayDriver {
-    /// Pure initialization only - no window creation, no resource allocation.
+    /// Initialize display driver with configuration.
     ///
     /// On macOS: Register NSView class, initialize NSApp if needed.
-    /// On X11: Connect to X server, verify extensions.
+    /// On X11: Connect to X server, initialize atoms and protocols.
     ///
     /// Window creation happens in `handle_request(Init)`.
-    fn new() -> Result<Self>
+    fn new(config: &DriverConfig) -> Result<Self>
     where
         Self: Sized;
+
+    /// Create a platform-specific event loop waker.
+    ///
+    /// The waker is used by background threads (orchestrator, PTY) to interrupt
+    /// the main thread's event loop when work is available.
+    ///
+    /// On macOS: Posts NSEvent to wake NSApp.nextEvent()
+    /// On X11: Sends ClientMessage to wake XNextEvent()
+    /// Headless: Returns no-op waker
+    fn create_waker(&self) -> Box<dyn EventLoopWaker>;
 
     /// Handle a request from DisplayManager, returning a response.
     ///
