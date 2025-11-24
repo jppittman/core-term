@@ -8,6 +8,7 @@ pub mod display;
 pub mod glyph;
 pub mod keys;
 pub mod orchestrator;
+pub mod pixels;
 pub mod platform;
 pub mod rasterizer;
 pub mod renderer;
@@ -117,9 +118,17 @@ fn main() -> anyhow::Result<()> {
 
     let config = Config::default();
     let renderer = Renderer::new();
+
+    // FIXME: Scale factor should come from display initialization, not hardcoded
+    // For now, assume 2.0 scale factor (Retina displays) on macOS
+    #[cfg(target_os = "macos")]
+    let assumed_scale_factor = 2.0;
+    #[cfg(not(target_os = "macos"))]
+    let assumed_scale_factor = 1.0;
+
     let rasterizer = SoftwareRasterizer::new(
-        config.appearance.cell_width_px,
-        config.appearance.cell_height_px,
+        (config.appearance.cell_width_px as f64 * assumed_scale_factor) as usize,
+        (config.appearance.cell_height_px as f64 * assumed_scale_factor) as usize,
     );
 
     let render_channels = spawn_render_thread(renderer, rasterizer, config)

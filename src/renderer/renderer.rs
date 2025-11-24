@@ -759,5 +759,4 @@ impl Renderer {
     }
 }
 
-#[cfg(test)]
-mod tests;
+// Tests are in src/renderer/renderer_tests.rs
