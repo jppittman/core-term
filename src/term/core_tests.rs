@@ -1546,13 +1546,10 @@ fn it_should_scroll_up_entire_screen_by_n_lines_on_csi_s() {
 fn it_should_scroll_up_entire_screen_by_1_line_on_csi_s_with_param_0_or_1() {
     let mut term = create_test_emulator(5, 3);
     setup_ed_el_screen(&mut term, 5, 3); // Cursor at (1,2)
-    let initial_screen_line0_char0 = get_glyph_from_snapshot(
-        &term.get_test_snapshot().expect("Snapshot was None"),
-        0,
-        0,
-    )
-    .unwrap()
-    .display_char();
+    let initial_screen_line0_char0 =
+        get_glyph_from_snapshot(&term.get_test_snapshot().expect("Snapshot was None"), 0, 0)
+            .unwrap()
+            .display_char();
     assert_eq!(initial_screen_line0_char0, 'A');
 
     // Test with param 1
@@ -2490,16 +2487,13 @@ fn it_should_set_indexed_foreground_color_sgr_38_5_n() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Indexed(123))]),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
-    let attr = match get_glyph_from_snapshot(
-        &term.get_test_snapshot().expect("Snapshot was None"),
-        0,
-        0,
-    )
-    .unwrap()
-    {
-        Glyph::Single(c) => c.attr,
-        _ => panic!("Expected Single"),
-    };
+    let attr =
+        match get_glyph_from_snapshot(&term.get_test_snapshot().expect("Snapshot was None"), 0, 0)
+            .unwrap()
+        {
+            Glyph::Single(c) => c.attr,
+            _ => panic!("Expected Single"),
+        };
     assert_eq!(attr.fg, Color::Indexed(123));
 }
 
@@ -2510,16 +2504,13 @@ fn it_should_set_rgb_foreground_color_sgr_38_2_r_g_b() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Rgb(10, 20, 30))]),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
-    let attr = match get_glyph_from_snapshot(
-        &term.get_test_snapshot().expect("Snapshot was None"),
-        0,
-        0,
-    )
-    .unwrap()
-    {
-        Glyph::Single(c) => c.attr,
-        _ => panic!("Expected Single"),
-    };
+    let attr =
+        match get_glyph_from_snapshot(&term.get_test_snapshot().expect("Snapshot was None"), 0, 0)
+            .unwrap()
+        {
+            Glyph::Single(c) => c.attr,
+            _ => panic!("Expected Single"),
+        };
     assert_eq!(attr.fg, Color::Rgb(10, 20, 30));
 }
 
@@ -2640,16 +2631,13 @@ fn it_should_set_indexed_background_color_sgr_48_5_n() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Background(Color::Indexed(201))]),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
-    let attr = match get_glyph_from_snapshot(
-        &term.get_test_snapshot().expect("Snapshot was None"),
-        0,
-        0,
-    )
-    .unwrap()
-    {
-        Glyph::Single(c) => c.attr,
-        _ => panic!("Expected Single"),
-    };
+    let attr =
+        match get_glyph_from_snapshot(&term.get_test_snapshot().expect("Snapshot was None"), 0, 0)
+            .unwrap()
+        {
+            Glyph::Single(c) => c.attr,
+            _ => panic!("Expected Single"),
+        };
     assert_eq!(attr.bg, Color::Indexed(201));
 }
 
@@ -2660,16 +2648,13 @@ fn it_should_set_rgb_background_color_sgr_48_2_r_g_b() {
         CsiCommand::SetGraphicsRendition(vec![Attribute::Background(Color::Rgb(40, 50, 60))]),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
-    let attr = match get_glyph_from_snapshot(
-        &term.get_test_snapshot().expect("Snapshot was None"),
-        0,
-        0,
-    )
-    .unwrap()
-    {
-        Glyph::Single(c) => c.attr,
-        _ => panic!("Expected Single"),
-    };
+    let attr =
+        match get_glyph_from_snapshot(&term.get_test_snapshot().expect("Snapshot was None"), 0, 0)
+            .unwrap()
+        {
+            Glyph::Single(c) => c.attr,
+            _ => panic!("Expected Single"),
+        };
     assert_eq!(attr.bg, Color::Rgb(40, 50, 60));
 }
 
@@ -2766,16 +2751,13 @@ fn it_should_set_multiple_attributes_in_one_sgr_sequence() {
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
 
-    let attr_x = match get_glyph_from_snapshot(
-        &term.get_test_snapshot().expect("Snapshot was None"),
-        0,
-        0,
-    )
-    .unwrap()
-    {
-        Glyph::Single(c) => c.attr,
-        _ => panic!("Expected Single"),
-    };
+    let attr_x =
+        match get_glyph_from_snapshot(&term.get_test_snapshot().expect("Snapshot was None"), 0, 0)
+            .unwrap()
+        {
+            Glyph::Single(c) => c.attr,
+            _ => panic!("Expected Single"),
+        };
     assert!(attr_x.flags.contains(AttrFlags::BOLD));
     assert!(attr_x.flags.contains(AttrFlags::UNDERLINE));
     assert!(!attr_x.flags.contains(AttrFlags::ITALIC));

@@ -381,11 +381,7 @@ fn fill_emulator_screen(emu: &mut TerminalEmulator, text_lines: Vec<String>) {
 #[test]
 fn test_mouse_press_starts_selection() {
     let mut emu = create_test_emulator(10, 5);
-    let action = send_mouse_input(
-        &mut emu,
-        start_selection_at(1, 1),
-        MouseButton::Left,
-    );
+    let action = send_mouse_input(&mut emu, start_selection_at(1, 1), MouseButton::Left);
 
     assert!(
         emu.screen.selection.is_active,
@@ -416,16 +412,8 @@ fn test_mouse_press_starts_selection() {
 #[test]
 fn test_mouse_drag_updates_selection() {
     let mut emu = create_test_emulator(10, 5);
-    send_mouse_input(
-        &mut emu,
-        start_selection_at(1, 1),
-        MouseButton::Left,
-    );
-    let action = send_mouse_input(
-        &mut emu,
-        extend_selection_to(5, 2),
-        MouseButton::Left,
-    );
+    send_mouse_input(&mut emu, start_selection_at(1, 1), MouseButton::Left);
+    let action = send_mouse_input(&mut emu, extend_selection_to(5, 2), MouseButton::Left);
 
     assert!(
         emu.screen.selection.is_active,
@@ -451,16 +439,8 @@ fn test_mouse_drag_updates_selection() {
 #[test]
 fn test_mouse_release_ends_selection_activity() {
     let mut emu = create_test_emulator(10, 5);
-    send_mouse_input(
-        &mut emu,
-        start_selection_at(1, 1),
-        MouseButton::Left,
-    );
-    send_mouse_input(
-        &mut emu,
-        extend_selection_to(5, 2),
-        MouseButton::Left,
-    );
+    send_mouse_input(&mut emu, start_selection_at(1, 1), MouseButton::Left);
+    send_mouse_input(&mut emu, extend_selection_to(5, 2), MouseButton::Left);
     let action = send_mouse_input(
         &mut emu,
         UserInputAction::ApplySelectionClear,
@@ -507,16 +487,8 @@ fn test_initiate_copy_with_selection() {
     let mut emu = create_test_emulator(10, 2);
     fill_emulator_screen(&mut emu, vec!["Hello".to_string(), "World".to_string()]);
 
-    send_mouse_input(
-        &mut emu,
-        start_selection_at(0, 0),
-        MouseButton::Left,
-    );
-    send_mouse_input(
-        &mut emu,
-        extend_selection_to(4, 0),
-        MouseButton::Left,
-    );
+    send_mouse_input(&mut emu, start_selection_at(0, 0), MouseButton::Left);
+    send_mouse_input(&mut emu, extend_selection_to(4, 0), MouseButton::Left);
     send_mouse_input(
         &mut emu,
         UserInputAction::ApplySelectionClear,
@@ -559,16 +531,8 @@ fn test_initiate_copy_block_selection() {
 fn test_new_mouse_press_clears_old_selection() {
     let mut emu = create_test_emulator(10, 5);
 
-    send_mouse_input(
-        &mut emu,
-        start_selection_at(0, 0),
-        MouseButton::Left,
-    );
-    send_mouse_input(
-        &mut emu,
-        extend_selection_to(2, 0),
-        MouseButton::Left,
-    );
+    send_mouse_input(&mut emu, start_selection_at(0, 0), MouseButton::Left);
+    send_mouse_input(&mut emu, extend_selection_to(2, 0), MouseButton::Left);
     send_mouse_input(
         &mut emu,
         UserInputAction::ApplySelectionClear,
@@ -583,11 +547,7 @@ fn test_new_mouse_press_clears_old_selection() {
     );
     assert!(!emu.screen.selection.is_active);
 
-    let action = send_mouse_input(
-        &mut emu,
-        start_selection_at(1, 1),
-        MouseButton::Left,
-    );
+    let action = send_mouse_input(&mut emu, start_selection_at(1, 1), MouseButton::Left);
 
     assert!(
         emu.screen.selection.is_active,
@@ -625,16 +585,8 @@ fn test_selection_coordinates_adjust_on_scroll() {
         ],
     );
 
-    send_mouse_input(
-        &mut emu,
-        start_selection_at(0, 1),
-        MouseButton::Left,
-    );
-    send_mouse_input(
-        &mut emu,
-        extend_selection_to(4, 1),
-        MouseButton::Left,
-    );
+    send_mouse_input(&mut emu, start_selection_at(0, 1), MouseButton::Left);
+    send_mouse_input(&mut emu, extend_selection_to(4, 1), MouseButton::Left);
     send_mouse_input(
         &mut emu,
         UserInputAction::ApplySelectionClear,
@@ -691,16 +643,8 @@ fn test_selection_on_alt_screen_then_exit() {
     )));
     fill_emulator_screen(&mut emu, vec!["Alt1".to_string(), "Alt2".to_string()]);
 
-    send_mouse_input(
-        &mut emu,
-        start_selection_at(0, 0),
-        MouseButton::Left,
-    );
-    send_mouse_input(
-        &mut emu,
-        extend_selection_to(3, 0),
-        MouseButton::Left,
-    );
+    send_mouse_input(&mut emu, start_selection_at(0, 0), MouseButton::Left);
+    send_mouse_input(&mut emu, extend_selection_to(3, 0), MouseButton::Left);
     send_mouse_input(
         &mut emu,
         UserInputAction::ApplySelectionClear,

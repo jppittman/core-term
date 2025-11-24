@@ -48,7 +48,7 @@ impl Layout {
             rows,
             cell_width_px: CONFIG.appearance.cell_width_px,
             cell_height_px: CONFIG.appearance.cell_height_px,
-            padding_x: 0,  // No padding yet, but ready for future use
+            padding_x: 0, // No padding yet, but ready for future use
             padding_y: 0,
         }
     }
@@ -69,7 +69,7 @@ impl Layout {
     pub fn pixels_to_cells(&self, x_px: u16, y_px: u16) -> Option<(usize, usize)> {
         // Apply padding (if any)
         if x_px < self.padding_x || y_px < self.padding_y {
-            return None;  // Click in the border/margin
+            return None; // Click in the border/margin
         }
 
         let effective_x = x_px - self.padding_x;
@@ -81,7 +81,7 @@ impl Layout {
 
         // Bounds check
         if col >= self.cols || row >= self.rows {
-            return None;  // Click outside the grid (right/bottom padding or beyond)
+            return None; // Click outside the grid (right/bottom padding or beyond)
         }
 
         Some((col, row))

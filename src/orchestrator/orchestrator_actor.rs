@@ -144,10 +144,21 @@ impl OrchestratorActor {
                         // Return the snapshot buffer to the terminal
                         term_emulator.return_snapshot(*boxed_snapshot);
                     }
-                    ControlEvent::Resize { width_px, height_px, scale_factor } => {
-                        info!("OrchestratorActor: Resizing to {}x{} px (scale={})", width_px, height_px, scale_factor);
+                    ControlEvent::Resize {
+                        width_px,
+                        height_px,
+                        scale_factor,
+                    } => {
+                        info!(
+                            "OrchestratorActor: Resizing to {}x{} px (scale={})",
+                            width_px, height_px, scale_factor
+                        );
                         if let Some(action) = term_emulator.interpret_input(EmulatorInput::Control(
-                            ControlEvent::Resize { width_px, height_px, scale_factor },
+                            ControlEvent::Resize {
+                                width_px,
+                                height_px,
+                                scale_factor,
+                            },
                         )) {
                             pending_emulator_actions.push(action);
                         }
@@ -187,8 +198,7 @@ impl OrchestratorActor {
                     return Err(anyhow::anyhow!("CloseRequested - shutting down"));
                 }
 
-                let emulator_input =
-                    Self::process_backend_event(backend_event, term_emulator)?;
+                let emulator_input = Self::process_backend_event(backend_event, term_emulator)?;
 
                 if let Some(input) = emulator_input {
                     if let Some(action) = term_emulator.interpret_input(input) {
@@ -216,8 +226,10 @@ impl OrchestratorActor {
                 scale_factor,
             } => {
                 // Forward physical dimensions to emulator, which will calculate cols/rows
-                info!("OrchestratorActor: Forwarding resize {}x{} px (scale={}) to emulator",
-                      width_px, height_px, scale_factor);
+                info!(
+                    "OrchestratorActor: Forwarding resize {}x{} px (scale={}) to emulator",
+                    width_px, height_px, scale_factor
+                );
 
                 Ok(Some(EmulatorInput::Control(ControlEvent::Resize {
                     width_px,
@@ -281,7 +293,12 @@ impl OrchestratorActor {
                     Ok(None)
                 }
             }
-            BackendEvent::MouseMove { x, y, scale_factor, modifiers: _ } => {
+            BackendEvent::MouseMove {
+                x,
+                y,
+                scale_factor,
+                modifiers: _,
+            } => {
                 // Forward pixel coordinates to emulator, which will convert to cells
                 Ok(Some(EmulatorInput::User(
                     UserInputAction::ExtendSelection {
@@ -344,10 +361,7 @@ impl OrchestratorActor {
                     .context("Failed to send RequestPaste to Display")?;
             }
             EmulatorAction::ResizePty { cols, rows } => {
-                info!(
-                    "OrchestratorActor: Resizing PTY to {}x{}",
-                    cols, rows
-                );
+                info!("OrchestratorActor: Resizing PTY to {}x{}", cols, rows);
                 pty_tx
                     .send(PlatformAction::ResizePty { cols, rows })
                     .context("Failed to send ResizePty to PTY")?;

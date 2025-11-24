@@ -216,7 +216,10 @@ impl CocoaDisplayDriver {
         }
     }
 
-    fn handle_init(&mut self, config: crate::display::messages::DriverConfig) -> Result<DriverResponse> {
+    fn handle_init(
+        &mut self,
+        config: crate::display::messages::DriverConfig,
+    ) -> Result<DriverResponse> {
         info!("CocoaDisplayDriver: Handling Init request");
 
         let cols = config.initial_cols;
@@ -360,76 +363,76 @@ impl CocoaDisplayDriver {
 
     fn convert_event(&self, event: &NSEvent) -> Option<DisplayEvent> {
         match event.r#type() {
-                NSEventType::KeyDown => {
-                    let chars = event.characters();
-                    let text = chars.map(|s| s.to_string());
-                    let key_code = event.keyCode();
-                    let symbol = Self::map_keycode_to_symbol(key_code);
-                    let modifiers = Self::extract_modifiers(event);
-                    Some(DisplayEvent::Key {
-                        symbol,
-                        modifiers,
-                        text,
-                    })
-                }
-                NSEventType::LeftMouseDown => {
-                    let location = event.locationInWindow();
-                    let modifiers = Self::extract_modifiers(event);
-                    Some(DisplayEvent::MouseButtonPress {
-                        button: 0,
-                        x: location.x as i32,
-                        y: (self.window_height_pts - location.y) as i32,
-                        scale_factor: self.backing_scale,
-                        modifiers,
-                    })
-                }
-                NSEventType::RightMouseDown => {
-                    let location = event.locationInWindow();
-                    let modifiers = Self::extract_modifiers(event);
-                    Some(DisplayEvent::MouseButtonPress {
-                        button: 1,
-                        x: location.x as i32,
-                        y: (self.window_height_pts - location.y) as i32,
-                        scale_factor: self.backing_scale,
-                        modifiers,
-                    })
-                }
-                NSEventType::LeftMouseUp => {
-                    let location = event.locationInWindow();
-                    let modifiers = Self::extract_modifiers(event);
-                    Some(DisplayEvent::MouseButtonRelease {
-                        button: 0,
-                        x: location.x as i32,
-                        y: (self.window_height_pts - location.y) as i32,
-                        scale_factor: self.backing_scale,
-                        modifiers,
-                    })
-                }
-                NSEventType::RightMouseUp => {
-                    let location = event.locationInWindow();
-                    let modifiers = Self::extract_modifiers(event);
-                    Some(DisplayEvent::MouseButtonRelease {
-                        button: 1,
-                        x: location.x as i32,
-                        y: (self.window_height_pts - location.y) as i32,
-                        scale_factor: self.backing_scale,
-                        modifiers,
-                    })
-                }
-                NSEventType::MouseMoved
-                | NSEventType::LeftMouseDragged
-                | NSEventType::RightMouseDragged => {
-                    let location = event.locationInWindow();
-                    let modifiers = Self::extract_modifiers(event);
-                    Some(DisplayEvent::MouseMove {
-                        x: location.x as i32,
-                        y: (self.window_height_pts - location.y) as i32,
-                        scale_factor: self.backing_scale,
-                        modifiers,
-                    })
-                }
-                _ => None,
+            NSEventType::KeyDown => {
+                let chars = event.characters();
+                let text = chars.map(|s| s.to_string());
+                let key_code = event.keyCode();
+                let symbol = Self::map_keycode_to_symbol(key_code);
+                let modifiers = Self::extract_modifiers(event);
+                Some(DisplayEvent::Key {
+                    symbol,
+                    modifiers,
+                    text,
+                })
             }
+            NSEventType::LeftMouseDown => {
+                let location = event.locationInWindow();
+                let modifiers = Self::extract_modifiers(event);
+                Some(DisplayEvent::MouseButtonPress {
+                    button: 0,
+                    x: location.x as i32,
+                    y: (self.window_height_pts - location.y) as i32,
+                    scale_factor: self.backing_scale,
+                    modifiers,
+                })
+            }
+            NSEventType::RightMouseDown => {
+                let location = event.locationInWindow();
+                let modifiers = Self::extract_modifiers(event);
+                Some(DisplayEvent::MouseButtonPress {
+                    button: 1,
+                    x: location.x as i32,
+                    y: (self.window_height_pts - location.y) as i32,
+                    scale_factor: self.backing_scale,
+                    modifiers,
+                })
+            }
+            NSEventType::LeftMouseUp => {
+                let location = event.locationInWindow();
+                let modifiers = Self::extract_modifiers(event);
+                Some(DisplayEvent::MouseButtonRelease {
+                    button: 0,
+                    x: location.x as i32,
+                    y: (self.window_height_pts - location.y) as i32,
+                    scale_factor: self.backing_scale,
+                    modifiers,
+                })
+            }
+            NSEventType::RightMouseUp => {
+                let location = event.locationInWindow();
+                let modifiers = Self::extract_modifiers(event);
+                Some(DisplayEvent::MouseButtonRelease {
+                    button: 1,
+                    x: location.x as i32,
+                    y: (self.window_height_pts - location.y) as i32,
+                    scale_factor: self.backing_scale,
+                    modifiers,
+                })
+            }
+            NSEventType::MouseMoved
+            | NSEventType::LeftMouseDragged
+            | NSEventType::RightMouseDragged => {
+                let location = event.locationInWindow();
+                let modifiers = Self::extract_modifiers(event);
+                Some(DisplayEvent::MouseMove {
+                    x: location.x as i32,
+                    y: (self.window_height_pts - location.y) as i32,
+                    scale_factor: self.backing_scale,
+                    modifiers,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn extract_modifiers(event: &NSEvent) -> crate::platform::backends::Modifiers {
