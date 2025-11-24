@@ -19,13 +19,13 @@ pub mod backends;
 pub mod font_manager;
 // #[cfg(target_os = "linux")]
 // pub mod linux_x11;
-#[cfg(target_os = "macos")]
+#[cfg(use_cocoa_display)]
 pub mod macos;
 pub mod os;
 pub mod platform_trait;
 pub mod waker;
 
-#[cfg(target_os = "macos")]
+#[cfg(use_cocoa_display)]
 pub use macos::MacosPlatform;
 
 // MockPlatform is obsolete after refactor to actor model

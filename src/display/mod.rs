@@ -14,5 +14,12 @@ pub use driver::DisplayDriver;
 pub use manager::{DisplayManager, DisplayMetrics};
 pub use messages::{DisplayError, DisplayEvent, DriverRequest, DriverResponse};
 
-#[cfg(target_os = "macos")]
+// Re-export the active display driver for convenience
+#[cfg(use_cocoa_display)]
 pub use drivers::CocoaDisplayDriver;
+
+#[cfg(use_x11_display)]
+pub use drivers::X11DisplayDriver;
+
+#[cfg(use_headless_display)]
+pub use drivers::HeadlessDisplayDriver;
