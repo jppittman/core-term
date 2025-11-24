@@ -1,6 +1,6 @@
 //! Core Text font driver implementation for macOS.
 
-use super::font_driver::FontDriver;
+use super::font_driver::{FontDriver, FontId};
 use anyhow::{anyhow, Result};
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
@@ -10,6 +10,8 @@ use core_graphics::context::CGContext;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_text::font::CTFont;
 use core_text::font_descriptor::kCTFontDefaultOrientation;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::os::raw::c_void;
 
 // Default fallback font and size for system font queries
@@ -48,26 +50,39 @@ extern "C" {
 /// - Finding glyphs for characters
 /// - Querying system for fallback fonts
 /// - Rasterizing glyphs to RGBA pixels
-pub struct CocoaFontDriver;
+pub struct CocoaFontDriver {
+    /// Internal font cache mapping FontId to CTFont
+    fonts: RefCell<HashMap<FontId, CTFont>>,
+    /// Next font ID to assign
+    next_id: RefCell<FontId>,
+}
 
 impl CocoaFontDriver {
     /// Create a new Cocoa font driver
     pub fn new() -> Self {
-        Self
+        Self {
+            fonts: RefCell::new(HashMap::new()),
+            next_id: RefCell::new(0),
+        }
     }
 }
 
 impl FontDriver for CocoaFontDriver {
-    type Font = CTFont;
-    type GlyphId = u16; // CGGlyph is u16
-
-    fn load_font(&self, name: &str, size_pt: f64) -> Result<CTFont> {
+    fn load_font(&self, name: &str, size_pt: f64) -> Result<FontId> {
         let font = core_text::font::new_from_name(name, size_pt)
             .map_err(|_| anyhow!("Failed to load font '{}'", name))?;
-        Ok(font)
+
+        let id = *self.next_id.borrow();
+        *self.next_id.borrow_mut() += 1;
+        self.fonts.borrow_mut().insert(id, font);
+
+        Ok(id)
     }
 
-    fn find_glyph(&self, font: &CTFont, ch: char) -> Option<u16> {
+    fn find_glyph(&self, font_id: FontId, ch: char) -> Option<u32> {
+        let fonts = self.fonts.borrow();
+        let font = fonts.get(&font_id)?;
+
         // Encode character to UTF-16 (Core Text uses UTF-16)
         let mut chars_utf16 = [0u16; 2];
         let encoded_len = ch.encode_utf16(&mut chars_utf16).len();
@@ -85,13 +100,13 @@ impl FontDriver for CocoaFontDriver {
         };
 
         if found && glyphs[0] != 0 {
-            Some(glyphs[0])
+            Some(glyphs[0] as u32)
         } else {
             None
         }
     }
 
-    fn find_fallback_font(&self, ch: char) -> Result<CTFont> {
+    fn find_fallback_font(&self, ch: char) -> Result<FontId> {
         // Use CTFontCreateForString to find a font that supports this character
         let base_font = core_text::font::new_from_name(FALLBACK_FONT_NAME, FALLBACK_FONT_SIZE_PT)
             .map_err(|_| anyhow!("Failed to create base font for fallback"))?;
@@ -117,16 +132,28 @@ impl FontDriver for CocoaFontDriver {
             CTFont::wrap_under_create_rule(fallback_ref as *mut _)
         };
 
-        Ok(fallback)
+        let id = *self.next_id.borrow();
+        *self.next_id.borrow_mut() += 1;
+        self.fonts.borrow_mut().insert(id, fallback);
+
+        Ok(id)
     }
 
     fn rasterize_glyph(
         &self,
-        font: &CTFont,
-        glyph_id: u16,
+        font_id: FontId,
+        glyph_id: u32,
         cell_width_px: usize,
         cell_height_px: usize,
     ) -> Vec<u8> {
+        let fonts = self.fonts.borrow();
+        let font = match fonts.get(&font_id) {
+            Some(f) => f,
+            None => return vec![0u8; cell_width_px * cell_height_px * 4],
+        };
+
+        let glyph_id = glyph_id as u16; // Convert back to u16 for Core Text
+
         // Create RGBA bitmap context
         let width = cell_width_px;
         let height = cell_height_px;
@@ -268,23 +295,23 @@ mod tests {
     #[test]
     fn test_find_glyph_returns_some_for_ascii() {
         let driver = CocoaFontDriver::new();
-        let font = driver.load_font("Menlo", 12.0).unwrap();
+        let font_id = driver.load_font("Menlo", 12.0).unwrap();
 
-        assert!(driver.find_glyph(&font, 'A').is_some());
-        assert!(driver.find_glyph(&font, 'a').is_some());
-        assert!(driver.find_glyph(&font, '0').is_some());
-        assert!(driver.find_glyph(&font, ' ').is_some());
+        assert!(driver.find_glyph(font_id, 'A').is_some());
+        assert!(driver.find_glyph(font_id, 'a').is_some());
+        assert!(driver.find_glyph(font_id, '0').is_some());
+        assert!(driver.find_glyph(font_id, ' ').is_some());
     }
 
     #[test]
     fn test_rasterize_glyph_returns_correct_buffer_size() {
         let driver = CocoaFontDriver::new();
-        let font = driver.load_font("Menlo", 12.0).unwrap();
-        let glyph_id = driver.find_glyph(&font, 'A').unwrap();
+        let font_id = driver.load_font("Menlo", 12.0).unwrap();
+        let glyph_id = driver.find_glyph(font_id, 'A').unwrap();
 
         let width = 8;
         let height = 16;
-        let pixels = driver.rasterize_glyph(&font, glyph_id, width, height);
+        let pixels = driver.rasterize_glyph(font_id, glyph_id, width, height);
 
         assert_eq!(pixels.len(), width * height * 4);
     }
@@ -292,10 +319,10 @@ mod tests {
     #[test]
     fn test_rasterize_glyph_produces_non_empty_output() {
         let driver = CocoaFontDriver::new();
-        let font = driver.load_font("Menlo", 12.0).unwrap();
-        let glyph_id = driver.find_glyph(&font, 'A').unwrap();
+        let font_id = driver.load_font("Menlo", 12.0).unwrap();
+        let glyph_id = driver.find_glyph(font_id, 'A').unwrap();
 
-        let pixels = driver.rasterize_glyph(&font, glyph_id, 8, 16);
+        let pixels = driver.rasterize_glyph(font_id, glyph_id, 8, 16);
         let has_content = pixels.chunks_exact(4).any(|p| p[3] > 0);
 
         assert!(
@@ -307,10 +334,10 @@ mod tests {
     #[test]
     fn test_rasterize_glyph_produces_white_glyph() {
         let driver = CocoaFontDriver::new();
-        let font = driver.load_font("Menlo", 12.0).unwrap();
-        let glyph_id = driver.find_glyph(&font, 'A').unwrap();
+        let font_id = driver.load_font("Menlo", 12.0).unwrap();
+        let glyph_id = driver.find_glyph(font_id, 'A').unwrap();
 
-        let pixels = driver.rasterize_glyph(&font, glyph_id, 8, 16);
+        let pixels = driver.rasterize_glyph(font_id, glyph_id, 8, 16);
 
         let has_white_pixels = pixels
             .chunks_exact(4)
@@ -343,12 +370,12 @@ mod tests {
         // the pixel buffer contains NON-ZERO values, proving Core Text drew something.
 
         let driver = CocoaFontDriver::new();
-        let font = driver.load_font("Menlo", 12.0).unwrap();
-        let glyph_id = driver.find_glyph(&font, 'A').unwrap();
+        let font_id = driver.load_font("Menlo", 12.0).unwrap();
+        let glyph_id = driver.find_glyph(font_id, 'A').unwrap();
 
         let width = 8;
         let height = 16;
-        let pixels = driver.rasterize_glyph(&font, glyph_id, width, height);
+        let pixels = driver.rasterize_glyph(font_id, glyph_id, width, height);
 
         // Count non-transparent pixels
         let non_transparent_pixels = pixels
