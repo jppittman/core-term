@@ -35,22 +35,17 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct EpollEvent {
+    pub token: u64,
+    pub flags: EpollFlags,
+}
+
 fn new_libc_epoll_event(flags: EpollFlags, token: u64) -> libc::epoll_event {
     libc::epoll_event {
         events: flags.bits(),
         u64: token,
     }
-}
-
-#[allow(dead_code)]
-pub fn epoll_event_token(event: &libc::epoll_event) -> u64 {
-    // Removed unnecessary unsafe block as field access to Copy types in a union is safe.
-    event.u64
-}
-
-#[allow(dead_code)]
-pub fn epoll_event_flags(event: &libc::epoll_event) -> EpollFlags {
-    EpollFlags::from_bits_truncate(event.events)
 }
 
 #[derive(Debug)]
@@ -137,8 +132,8 @@ impl EventMonitor {
     }
 
     pub fn events(
-        &self, // No longer needs &mut self
-        events_out: &mut Vec<libc::epoll_event>,
+        &self,
+        events_out: &mut Vec<EpollEvent>,
         timeout_ms: isize,
     ) -> Result<()> {
         // Returns () on success
@@ -148,13 +143,14 @@ impl EventMonitor {
             self.epoll_fd
         );
 
+        // Use a fixed-size buffer for libc calls
+        let mut libc_events: [libc::epoll_event; 32] = unsafe { std::mem::zeroed() };
+
         let num_events = unsafe {
-            // 2. Call epoll_wait directly on the vector's buffer.
-            //    We can write up to `capacity()` events into it.
             libc::epoll_wait(
                 self.epoll_fd,
-                events_out.as_mut_ptr(),
-                events_out.capacity() as libc::c_int,
+                libc_events.as_mut_ptr(),
+                32,
                 timeout_ms as libc::c_int,
             )
         };
@@ -163,17 +159,10 @@ impl EventMonitor {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
                 trace!("EventMonitor: epoll_wait interrupted (EINTR), returning.");
+                events_out.clear();
                 return Ok(());
             }
             return Err(err).context("epoll_wait failed in EventMonitor");
-        }
-
-        // 3. UNSAFE: This is the critical part. We are telling Rust that
-        //    the kernel has initialized `num_events` elements in the vector,
-        //    so we can safely set the vector's length to this new value.
-        //    This is safe because epoll_wait guarantees initialization.
-        unsafe {
-            events_out.set_len(num_events as usize);
         }
 
         trace!(
@@ -181,6 +170,16 @@ impl EventMonitor {
             self.epoll_fd,
             num_events
         );
+
+        events_out.clear();
+        for i in 0..num_events as usize {
+            let ev = &libc_events[i];
+            events_out.push(EpollEvent {
+                token: ev.u64,
+                flags: EpollFlags::from_bits_truncate(ev.events),
+            });
+        }
+
         Ok(())
     }
 }

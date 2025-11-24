@@ -13,7 +13,10 @@
 use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
+#[cfg(target_os = "macos")]
 use crate::platform::os::event::{EventMonitor, KqueueFlags};
+#[cfg(target_os = "linux")]
+use crate::platform::os::event::{EventMonitor, EpollFlags as KqueueFlags};
 use crate::platform::os::pty::{NixPty, PtyChannel};
 use crate::platform::BackendEvent;
 use anyhow::{Context, Result};

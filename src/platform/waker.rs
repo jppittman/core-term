@@ -16,6 +16,14 @@ pub trait EventLoopWaker: Send + Sync {
     fn wake(&self) -> Result<()>;
 }
 
+pub struct NoOpWaker;
+
+impl EventLoopWaker for NoOpWaker {
+    fn wake(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub use cocoa_waker::CocoaWaker;
 
