@@ -24,10 +24,10 @@ impl EventLoopWaker for NoOpWaker {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(use_cocoa_display)]
 pub use cocoa_waker::CocoaWaker;
 
-#[cfg(target_os = "macos")]
+#[cfg(use_cocoa_display)]
 mod cocoa_waker {
     use super::*;
     use objc2::ffi::NSUInteger;

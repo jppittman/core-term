@@ -22,9 +22,13 @@
 pub mod font_driver;
 pub mod font_manager;
 
-#[cfg(target_os = "macos")]
+#[cfg(use_cocoa_display)]
 pub mod cocoa_font_driver;
 
+#[cfg(use_x11_display)]
+pub mod x11_font_driver;
+
+#[cfg(use_headless_display)]
 pub mod headless_font_driver;
 
 use crate::color::Color;
@@ -35,15 +39,20 @@ use crate::rasterizer::font_manager::FontManager;
 use log::{debug, trace};
 use std::collections::HashMap;
 
-// Platform-specific font driver selection
-#[cfg(target_os = "macos")]
+// Display-driver-specific font driver selection
+#[cfg(use_cocoa_display)]
 use crate::rasterizer::cocoa_font_driver::CocoaFontDriver;
-#[cfg(target_os = "macos")]
+#[cfg(use_cocoa_display)]
 type PlatformFontDriver = CocoaFontDriver;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(use_x11_display)]
+use crate::rasterizer::x11_font_driver::X11FontDriver;
+#[cfg(use_x11_display)]
+type PlatformFontDriver = X11FontDriver;
+
+#[cfg(use_headless_display)]
 use crate::rasterizer::headless_font_driver::HeadlessFontDriver;
-#[cfg(not(target_os = "macos"))]
+#[cfg(use_headless_display)]
 type PlatformFontDriver = HeadlessFontDriver;
 
 /// RGBA color in 32-bit format (8 bits per channel)
@@ -163,8 +172,8 @@ impl SoftwareRasterizer {
             safe_width, safe_height, font_size_pt
         );
 
-        // Initialize platform-specific font manager
-        #[cfg(target_os = "macos")]
+        // Initialize display-driver-specific font manager
+        #[cfg(use_cocoa_display)]
         let font_manager = {
             let driver = CocoaFontDriver::new();
             let _font_config = &CONFIG.appearance.font;
@@ -186,7 +195,24 @@ impl SoftwareRasterizer {
             Some(manager)
         };
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(use_x11_display)]
+        let font_manager = {
+            info!("SoftwareRasterizer: Initializing X11FontDriver");
+            let driver = X11FontDriver::new(safe_width, safe_height);
+
+            let manager = FontManager::new(
+                driver,
+                "monospace",
+                "monospace",
+                "monospace",
+                "monospace",
+                font_size_pt,
+            )
+            .expect("Failed to initialize X11 font manager");
+            Some(manager)
+        };
+
+        #[cfg(use_headless_display)]
         let font_manager = {
             info!("SoftwareRasterizer: Initializing HeadlessFontDriver");
             let driver = HeadlessFontDriver::new();

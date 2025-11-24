@@ -139,33 +139,10 @@ fn main() -> anyhow::Result<()> {
     // Platform-Specific Initialization (windowing/display only)
     // =========================================================================
 
-    #[cfg(target_os = "macos")]
-    let platform = {
-        use crate::platform::macos::MacosPlatform;
-
-        info!("Initializing MacosPlatform...");
-
-        // Create platform channels struct
-        let platform_channels = crate::platform::PlatformChannels {
-            display_action_rx,
-            platform_event_tx: orchestrator_sender.clone(),
-        };
-
-        // Create platform (pure initialization - no spawning)
-        MacosPlatform::new(platform_channels, render_channels)
-            .context("Failed to initialize MacosPlatform")?
-    };
-
-    // Create waker for the orchestrator to wake the platform event loop
-    #[cfg(target_os = "macos")]
-    let waker = platform
-        .create_waker()
-        .context("Failed to create event loop waker")?;
-
-    #[cfg(target_os = "linux")]
+    // Initialize GenericPlatform (works with any display driver)
     let platform = {
         use crate::platform::GenericPlatform;
-        info!("Initializing GenericPlatform (Headless)...");
+        info!("Initializing GenericPlatform...");
 
         // Create platform channels struct
         let platform_channels = crate::platform::PlatformChannels {
@@ -177,8 +154,16 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to initialize GenericPlatform")?
     };
 
-    #[cfg(target_os = "linux")]
-    let waker = Box::new(crate::platform::waker::NoOpWaker);
+    // Create waker based on display driver
+    // CocoaDisplayDriver needs macOS event loop waker; others use no-op
+    #[cfg(use_cocoa_display)]
+    let waker = {
+        use crate::platform::waker::CocoaWaker;
+        Box::new(CocoaWaker::new()) as Box<dyn crate::platform::waker::EventLoopWaker>
+    };
+
+    #[cfg(not(use_cocoa_display))]
+    let waker = Box::new(crate::platform::waker::NoOpWaker) as Box<dyn crate::platform::waker::EventLoopWaker>;
 
     // 5. Spawn OrchestratorActor (platform-agnostic hub)
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);

@@ -22,87 +22,47 @@ pub struct DisplayManager {
 }
 
 impl DisplayManager {
-    /// Create a new DisplayManager with platform-specific driver.
+    /// Create a new DisplayManager with display driver selected at build time.
     pub fn new() -> Result<Self> {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::config::CONFIG;
-            use crate::display::messages::DriverConfig;
-            use crate::display::CocoaDisplayDriver;
+        use crate::config::CONFIG;
+        use crate::display::messages::DriverConfig;
 
+        // Build DriverConfig from CONFIG (shared by all drivers)
+        let driver_config = DriverConfig {
+            initial_window_x: 100.0,
+            initial_window_y: 100.0,
+            initial_cols: CONFIG.appearance.columns as usize,
+            initial_rows: CONFIG.appearance.rows as usize,
+            cell_width_px: CONFIG.appearance.cell_width_px,
+            cell_height_px: CONFIG.appearance.cell_height_px,
+            bytes_per_pixel: 4,
+            bits_per_component: 8,
+            bits_per_pixel: 32,
+            max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
+        };
+
+        // Create driver based on build-time selection
+        #[cfg(use_cocoa_display)]
+        {
+            use crate::display::drivers::CocoaDisplayDriver;
             info!("DisplayManager: Creating CocoaDisplayDriver...");
             let mut driver = Box::new(CocoaDisplayDriver::new()?) as Box<dyn DisplayDriver>;
 
-            // Build DriverConfig from CONFIG
-            let driver_config = DriverConfig {
-                initial_window_x: 100.0,
-                initial_window_y: 100.0,
-                initial_cols: CONFIG.appearance.columns as usize,
-                initial_rows: CONFIG.appearance.rows as usize,
-                cell_width_px: CONFIG.appearance.cell_width_px,
-                cell_height_px: CONFIG.appearance.cell_height_px,
-                bytes_per_pixel: 4,
-                bits_per_component: 8,
-                bits_per_pixel: 32,
-                max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
-            };
-
             info!("DisplayManager: Initializing driver...");
-            // FIX: Convert DisplayError to anyhow::Error using map_err for Init
             let response = driver
                 .handle_request(DriverRequest::Init(driver_config))
                 .map_err(|e| anyhow::anyhow!(e))
                 .context("Failed to initialize display driver")?;
 
-            let metrics = match response {
-                DriverResponse::InitComplete {
-                    width_px,
-                    height_px,
-                    scale_factor,
-                } => {
-                    info!(
-                        "DisplayManager: Initialized - {}x{} px, scale={}",
-                        width_px, height_px, scale_factor
-                    );
-                    DisplayMetrics {
-                        width_px,
-                        height_px,
-                        scale_factor,
-                    }
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Expected InitComplete response, got {:?}",
-                        response
-                    ));
-                }
-            };
-
+            let metrics = Self::extract_metrics(response)?;
             Ok(Self { driver, metrics })
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(use_x11_display)]
         {
-            use crate::config::CONFIG;
-            use crate::display::messages::DriverConfig;
-            use crate::display::drivers::HeadlessDisplayDriver;
-
-            info!("DisplayManager: Creating HeadlessDisplayDriver...");
-            let mut driver = Box::new(HeadlessDisplayDriver::new()?) as Box<dyn DisplayDriver>;
-
-            // Build DriverConfig from CONFIG
-            let driver_config = DriverConfig {
-                initial_window_x: 100.0,
-                initial_window_y: 100.0,
-                initial_cols: CONFIG.appearance.columns as usize,
-                initial_rows: CONFIG.appearance.rows as usize,
-                cell_width_px: CONFIG.appearance.cell_width_px,
-                cell_height_px: CONFIG.appearance.cell_height_px,
-                bytes_per_pixel: 4,
-                bits_per_component: 8,
-                bits_per_pixel: 32,
-                max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
-            };
+            use crate::display::drivers::X11DisplayDriver;
+            info!("DisplayManager: Creating X11DisplayDriver...");
+            let mut driver = Box::new(X11DisplayDriver::new()?) as Box<dyn DisplayDriver>;
 
             info!("DisplayManager: Initializing driver...");
             let response = driver
@@ -110,31 +70,49 @@ impl DisplayManager {
                 .map_err(|e| anyhow::anyhow!(e))
                 .context("Failed to initialize display driver")?;
 
-            let metrics = match response {
-                DriverResponse::InitComplete {
+            let metrics = Self::extract_metrics(response)?;
+            Ok(Self { driver, metrics })
+        }
+
+        #[cfg(use_headless_display)]
+        {
+            use crate::display::drivers::HeadlessDisplayDriver;
+            info!("DisplayManager: Creating HeadlessDisplayDriver...");
+            let mut driver = Box::new(HeadlessDisplayDriver::new()?) as Box<dyn DisplayDriver>;
+
+            info!("DisplayManager: Initializing driver...");
+            let response = driver
+                .handle_request(DriverRequest::Init(driver_config))
+                .map_err(|e| anyhow::anyhow!(e))
+                .context("Failed to initialize display driver")?;
+
+            let metrics = Self::extract_metrics(response)?;
+            Ok(Self { driver, metrics })
+        }
+    }
+
+    /// Helper to extract metrics from InitComplete response
+    fn extract_metrics(response: DriverResponse) -> Result<DisplayMetrics> {
+        match response {
+            DriverResponse::InitComplete {
+                width_px,
+                height_px,
+                scale_factor,
+            } => {
+                info!(
+                    "DisplayManager: Initialized - {}x{} px, scale={}",
+                    width_px, height_px, scale_factor
+                );
+                Ok(DisplayMetrics {
                     width_px,
                     height_px,
                     scale_factor,
-                } => {
-                    info!(
-                        "DisplayManager: Initialized - {}x{} px, scale={}",
-                        width_px, height_px, scale_factor
-                    );
-                    DisplayMetrics {
-                        width_px,
-                        height_px,
-                        scale_factor,
-                    }
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Expected InitComplete response, got {:?}",
-                        response
-                    ));
-                }
-            };
-
-            Ok(Self { driver, metrics })
+                })
+            }
+            _ => Err(anyhow::anyhow!(
+                "Expected InitComplete response, got {:?}",
+                response
+            )),
         }
     }
 

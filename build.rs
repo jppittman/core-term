@@ -1,62 +1,96 @@
 // build.rs
 
-/// This build script automatically detects the target operating system and sets
-/// the appropriate configuration flags (`cfg`) for conditional compilation.
-/// It uses the `pkg-config` utility to find system libraries in a robust
-/// and portable way, which is the standard practice for Rust projects
-/// with C dependencies.
+/// This build script determines which display driver to use based on:
+/// 1. DISPLAY_DRIVER environment variable (highest priority)
+/// 2. Enabled Cargo features (display_cocoa, display_x11, display_headless)
+/// 3. Target OS defaults (fallback)
+///
+/// It emits cfg flags for conditional compilation and handles platform-specific setup.
 fn main() {
-    // This line tells Cargo to re-run this script only if the script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/icons/icon.icns");
+    println!("cargo:rerun-if-env-changed=DISPLAY_DRIVER");
 
-    // Cargo sets this environment variable during the build process.
-    // We read it to determine which OS we are compiling for.
-    let target_os = match std::env::var("CARGO_CFG_TARGET_OS") {
-        Ok(os) => os,
-        Err(_) => {
-            // If the variable isn't set, we can't proceed.
-            // This is highly unlikely in a normal Cargo build.
-            panic!("CARGO_CFG_TARGET_OS is not set, cannot determine target platform.");
+    // Declare custom cfg names to avoid warnings
+    println!("cargo::rustc-check-cfg=cfg(use_cocoa_display)");
+    println!("cargo::rustc-check-cfg=cfg(use_x11_display)");
+    println!("cargo::rustc-check-cfg=cfg(use_headless_display)");
+
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS")
+        .expect("CARGO_CFG_TARGET_OS is not set, cannot determine target platform.");
+
+    // Determine which display driver to use
+    let display_driver = determine_display_driver(&target_os);
+
+    // Emit appropriate cfg flag for the selected display driver
+    match display_driver.as_str() {
+        "cocoa" => {
+            println!("cargo:rustc-cfg=use_cocoa_display");
+            println!("cargo:warning=Building with Cocoa display driver");
+            // Create macOS app bundle if on macOS
+            if target_os == "macos" {
+                create_macos_app_bundle();
+            }
         }
-    };
-
-    // Based on the operating system, we emit the appropriate `cfg` flag.
-    // The `main.rs` and other modules will use these flags to include the
-    // correct platform-specific backend.
-    match target_os.as_str() {
-        "linux" => {
-            // On Linux, we enable the X11 backend.
-            println!("cargo:rustc-cfg=use_x11_backend");
-
-            // Define the list of required libraries for the X11 backend.
-            let required_libs = ["x11", "xext", "xft", "fontconfig", "freetype2"];
-
-            // Use a loop to probe for each library using pkg-config.
-            // This is cleaner and easier to maintain than repeating the call.
+        "x11" => {
+            println!("cargo:rustc-cfg=use_x11_display");
+            println!("cargo:warning=Building with X11 display driver");
+            // Probe for X11 libraries using pkg-config
+            let required_libs = ["x11", "fontconfig", "freetype2"];
             for lib in required_libs {
                 if let Err(e) = pkg_config::probe_library(lib) {
-                    // Panicking here is the correct behavior, as these are
-                    // required dependencies for the build to succeed on Linux.
-                    panic!(
-                        "Failed to find required library `{}` using pkg-config: {}",
-                        lib, e
-                    );
+                    eprintln!("Warning: Failed to find library `{}`: {}", lib, e);
+                    eprintln!("X11 display driver may not work correctly.");
                 }
             }
         }
-        "macos" => {
-            // On macOS, we enable the macOS-specific backend.
-            // No special linker flags are needed here by default, as the
-            // system libraries are found automatically via frameworks.
-            println!("cargo:rustc-cfg=use_macos_backend");
-
-            // Create app bundle structure for keyboard input support
-            create_macos_app_bundle();
+        "headless" => {
+            println!("cargo:rustc-cfg=use_headless_display");
+            println!("cargo:warning=Building with Headless display driver (no GUI)");
         }
         _ => {
-            // For any other operating system, we don't enable a specific backend.
+            panic!("Unknown display driver: {}", display_driver);
         }
+    }
+}
+
+/// Determines which display driver to use based on environment and features
+fn determine_display_driver(target_os: &str) -> String {
+    // 1. Check DISPLAY_DRIVER environment variable (highest priority)
+    if let Ok(driver) = std::env::var("DISPLAY_DRIVER") {
+        let driver_lower = driver.to_lowercase();
+        match driver_lower.as_str() {
+            "cocoa" | "x11" | "headless" => {
+                println!("cargo:warning=Using display driver from DISPLAY_DRIVER env: {}", driver_lower);
+                return driver_lower;
+            }
+            _ => {
+                panic!("Invalid DISPLAY_DRIVER value: '{}'. Must be one of: cocoa, x11, headless", driver);
+            }
+        }
+    }
+
+    // 2. Check which display features are enabled
+    let has_cocoa = cfg!(feature = "display_cocoa") || std::env::var("CARGO_FEATURE_DISPLAY_COCOA").is_ok();
+    let has_x11 = cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok();
+    let has_headless = cfg!(feature = "display_headless") || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
+
+    // If a specific feature is enabled, use it (last one wins if multiple)
+    if has_headless && !has_x11 && !has_cocoa {
+        return "headless".to_string();
+    }
+    if has_x11 && !has_headless {
+        return "x11".to_string();
+    }
+    if has_cocoa {
+        return "cocoa".to_string();
+    }
+
+    // 3. Fall back to sensible platform defaults
+    match target_os {
+        "macos" => "cocoa".to_string(),
+        "linux" => "x11".to_string(),
+        _ => "headless".to_string(),
     }
 }
 
