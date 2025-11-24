@@ -59,10 +59,19 @@ pub(super) fn translate_key_input(
     }
 
     // If text is provided, and we haven't already handled a Ctrl combination, use it.
+    // However, ignore macOS private use area characters (U+F700-U+F8FF) which are
+    // placeholders for special keys like arrow keys - we need to use KeySymbol instead.
     if let Some(txt_val) = &text {
         if !txt_val.is_empty() {
-             bytes_to_send.extend(txt_val.as_bytes());
-             return bytes_to_send;
+            // Check if the text contains private use area characters
+            let has_private_use = txt_val.chars().any(|c| {
+                matches!(c, '\u{E000}'..='\u{F8FF}')
+            });
+
+            if !has_private_use {
+                bytes_to_send.extend(txt_val.as_bytes());
+                return bytes_to_send;
+            }
         }
     }
 
@@ -242,6 +251,57 @@ mod tests {
         assert_eq!(
             translate_key_input(KeySymbol::Tab, Modifiers::SHIFT, None, &modes),
             b"\x1b[Z".to_vec()
+        );
+    }
+
+    #[test]
+    fn macos_private_use_area_characters_ignored_for_arrow_keys() {
+        // macOS sends U+F700-F703 for arrow keys in the `characters` field
+        // These should be ignored and the KeySymbol should be used instead
+        let modes = DecPrivateModes::default();
+
+        // Up arrow with macOS private use placeholder
+        assert_eq!(
+            translate_key_input(
+                KeySymbol::Up,
+                Modifiers::empty(),
+                Some("\u{F700}".to_string()), // macOS sends this for up arrow
+                &modes
+            ),
+            b"\x1b[A".to_vec()
+        );
+
+        // Down arrow
+        assert_eq!(
+            translate_key_input(
+                KeySymbol::Down,
+                Modifiers::empty(),
+                Some("\u{F701}".to_string()), // macOS sends this for down arrow
+                &modes
+            ),
+            b"\x1b[B".to_vec()
+        );
+
+        // Right arrow
+        assert_eq!(
+            translate_key_input(
+                KeySymbol::Right,
+                Modifiers::empty(),
+                Some("\u{F703}".to_string()), // macOS sends this for right arrow
+                &modes
+            ),
+            b"\x1b[C".to_vec()
+        );
+
+        // Left arrow
+        assert_eq!(
+            translate_key_input(
+                KeySymbol::Left,
+                Modifiers::empty(),
+                Some("\u{F702}".to_string()), // macOS sends this for left arrow
+                &modes
+            ),
+            b"\x1b[D".to_vec()
         );
     }
 }
