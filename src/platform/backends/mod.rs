@@ -16,10 +16,10 @@ pub mod console;
 #[cfg(test)]
 pub mod mock;
 pub mod wayland;
-#[cfg(not(target_os = "macos"))]
-pub mod x11;
-#[cfg(not(target_os = "macos"))]
-pub mod xadapter;
+// #[cfg(not(target_os = "macos"))]
+// pub mod x11;
+// #[cfg(not(target_os = "macos"))]
+// pub mod xadapter;
 
 /// Represents the visibility state of the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

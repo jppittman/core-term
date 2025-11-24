@@ -83,7 +83,58 @@ impl DisplayManager {
 
         #[cfg(not(target_os = "macos"))]
         {
-            Err(anyhow::anyhow!("DisplayManager: Unsupported platform"))
+            use crate::config::CONFIG;
+            use crate::display::messages::DriverConfig;
+            use crate::display::drivers::HeadlessDisplayDriver;
+
+            info!("DisplayManager: Creating HeadlessDisplayDriver...");
+            let mut driver = Box::new(HeadlessDisplayDriver::new()?) as Box<dyn DisplayDriver>;
+
+            // Build DriverConfig from CONFIG
+            let driver_config = DriverConfig {
+                initial_window_x: 100.0,
+                initial_window_y: 100.0,
+                initial_cols: CONFIG.appearance.columns as usize,
+                initial_rows: CONFIG.appearance.rows as usize,
+                cell_width_px: CONFIG.appearance.cell_width_px,
+                cell_height_px: CONFIG.appearance.cell_height_px,
+                bytes_per_pixel: 4,
+                bits_per_component: 8,
+                bits_per_pixel: 32,
+                max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
+            };
+
+            info!("DisplayManager: Initializing driver...");
+            let response = driver
+                .handle_request(DriverRequest::Init(driver_config))
+                .map_err(|e| anyhow::anyhow!(e))
+                .context("Failed to initialize display driver")?;
+
+            let metrics = match response {
+                DriverResponse::InitComplete {
+                    width_px,
+                    height_px,
+                    scale_factor,
+                } => {
+                    info!(
+                        "DisplayManager: Initialized - {}x{} px, scale={}",
+                        width_px, height_px, scale_factor
+                    );
+                    DisplayMetrics {
+                        width_px,
+                        height_px,
+                        scale_factor,
+                    }
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Expected InitComplete response, got {:?}",
+                        response
+                    ));
+                }
+            };
+
+            Ok(Self { driver, metrics })
         }
     }
 
