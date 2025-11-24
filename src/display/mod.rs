@@ -12,7 +12,7 @@ pub mod messages;
 
 pub use driver::DisplayDriver;
 pub use manager::{DisplayManager, DisplayMetrics};
-pub use messages::{DisplayEvent, DriverRequest, DriverResponse};
+pub use messages::{DisplayError, DisplayEvent, DriverRequest, DriverResponse};
 
 #[cfg(target_os = "macos")]
 pub use drivers::CocoaDisplayDriver;

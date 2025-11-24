@@ -6,9 +6,7 @@ use crate::config::Config;
 use crate::display::{DisplayManager, DriverRequest, DriverResponse};
 use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
-use crate::platform::backends::{PlatformState, RenderCommand};
-use crate::rasterizer::{compile_into_buffer, SoftwareRasterizer};
-use crate::renderer::Renderer;
+use crate::renderer::{RenderChannels, RenderResult, RenderWork};
 use anyhow::{Context, Result};
 pub use backends::BackendEvent;
 use log::*;
@@ -24,6 +22,7 @@ pub mod linux_x11;
 pub mod macos;
 pub mod os;
 pub mod platform_trait;
+pub mod waker;
 
 pub use macos::MacosPlatform;
 
@@ -46,8 +45,7 @@ pub struct PlatformChannels {
 /// Contains all the common logic for event polling, rendering, and action handling.
 pub struct GenericPlatform {
     pub display_manager: DisplayManager,
-    pub rasterizer: SoftwareRasterizer,
-    pub renderer: Renderer,
+    pub render_channels: RenderChannels,
     pub config: Config,
     pub platform_event_tx: OrchestratorSender,
     pub display_action_rx: Option<Receiver<PlatformAction>>,
@@ -56,7 +54,7 @@ pub struct GenericPlatform {
 
 impl GenericPlatform {
     /// Create a new GenericPlatform with the given channels.
-    pub fn new(channels: PlatformChannels) -> Result<Self> {
+    pub fn new(channels: PlatformChannels, render_channels: RenderChannels) -> Result<Self> {
         info!("GenericPlatform::new() - Initializing display-based platform");
 
         // Create the display manager (initializes driver and window)
@@ -67,41 +65,18 @@ impl GenericPlatform {
             metrics.width_px, metrics.height_px, metrics.scale_factor
         );
 
-        // Create rasterizer (gets font metrics from CONFIG/FontManager)
-        let rasterizer = SoftwareRasterizer::new();
-        let renderer = Renderer::new();
         let config = Config::default();
 
         info!("GenericPlatform::new() - Initialization complete");
 
         Ok(Self {
             display_manager,
-            rasterizer,
-            renderer,
+            render_channels,
             config,
             platform_event_tx: channels.platform_event_tx,
             display_action_rx: Some(channels.display_action_rx),
             framebuffer: None, // Framebuffer starts in display driver
         })
-    }
-
-    /// Get current platform state (dimensions, font metrics, etc.)
-    pub fn get_current_platform_state(&self) -> PlatformState {
-        let metrics = self.display_manager.metrics();
-
-        // Font metrics come from rasterizer's internal state
-        // TODO: Expose cell metrics from rasterizer or get from FontManager
-        const FONT_CELL_WIDTH_PX: usize = 8;
-        const FONT_CELL_HEIGHT_PX: usize = 16;
-
-        PlatformState {
-            event_fd: None, // Display-based platforms don't use FD-based events
-            font_cell_width_px: FONT_CELL_WIDTH_PX,
-            font_cell_height_px: FONT_CELL_HEIGHT_PX,
-            scale_factor: metrics.scale_factor,
-            display_width_px: metrics.width_px as u16,
-            display_height_px: metrics.height_px as u16,
-        }
     }
 
     /// Run the platform event loop. This consumes self.
@@ -120,6 +95,7 @@ impl GenericPlatform {
             .send(BackendEvent::Resize {
                 width_px: metrics.width_px as u16,
                 height_px: metrics.height_px as u16,
+                scale_factor: metrics.scale_factor,
             })
             .context("Failed to send initial Resize event")?;
         info!("Sent initial Resize event to orchestrator");
@@ -155,18 +131,8 @@ impl GenericPlatform {
                             cols, rows
                         );
 
-                        let platform_state = self.get_current_platform_state();
-
-                        // Prepare render commands
-                        let mut render_commands = self.renderer.prepare_render_commands(
-                            &snapshot,
-                            &self.config,
-                            &platform_state,
-                        );
-                        render_commands.push(RenderCommand::PresentFrame);
-
                         // Get framebuffer from display or self (ping-pong pattern)
-                        let mut framebuffer = if let Some(fb) = self.framebuffer.take() {
+                        let framebuffer = if let Some(fb) = self.framebuffer.take() {
                             fb
                         } else {
                             // Request framebuffer from display
@@ -180,26 +146,65 @@ impl GenericPlatform {
                             }
                         };
 
-                        // Compile into framebuffer
+                        // Send rendering work to render thread
                         let metrics = self.display_manager.metrics();
-                        compile_into_buffer(
-                            &mut self.rasterizer,
-                            render_commands,
-                            &mut framebuffer,
-                            metrics.width_px as usize,
-                            metrics.height_px as usize,
-                            platform_state.font_cell_width_px,
-                            platform_state.font_cell_height_px,
-                        );
+                        let work = RenderWork {
+                            snapshot,
+                            framebuffer,
+                            display_width_px: metrics.width_px as u16,
+                            display_height_px: metrics.height_px as u16,
+                            scale_factor: metrics.scale_factor,
+                        };
 
-                        // Present framebuffer and get it back
+                        if let Err(e) = self.render_channels.work_tx.send(work) {
+                            return Err(anyhow::anyhow!("Failed to send render work: {}", e));
+                        }
+                        trace!("GenericPlatform: Sent render work to render thread");
+
+                        // Receive rendered result from render thread
+                        let RenderResult {
+                            snapshot,
+                            framebuffer,
+                        } = self
+                            .render_channels
+                            .result_rx
+                            .recv()
+                            .context("Failed to receive render result")?;
+                        trace!("GenericPlatform: Received render result from render thread");
+
+                        // Create RenderSnapshot with framebuffer + dimensions
+                        let metrics = self.display_manager.metrics();
+                        let render_snapshot = crate::display::messages::RenderSnapshot {
+                            framebuffer,
+                            width_px: metrics.width_px,
+                            height_px: metrics.height_px,
+                        };
+
+                        // Present RenderSnapshot and get it back, recovering on error
                         let response = self
                             .display_manager
-                            .handle_request(DriverRequest::Present(framebuffer))?;
-                        if let DriverResponse::PresentComplete(fb) = response {
-                            self.framebuffer = Some(fb); // Store for next frame
-                        } else {
-                            return Err(anyhow::anyhow!("Expected PresentComplete response"));
+                            .handle_request(DriverRequest::Present(render_snapshot));
+
+                        match response {
+                            Ok(DriverResponse::PresentComplete(render_snapshot)) => {
+                                // Extract framebuffer from returned snapshot
+                                self.framebuffer = Some(render_snapshot.framebuffer);
+                            }
+                            Ok(_) => {
+                                return Err(anyhow::anyhow!("Expected PresentComplete response"));
+                            }
+                            Err(crate::display::DisplayError::PresentationFailed(
+                                render_snapshot,
+                                reason,
+                            )) => {
+                                // Recover the framebuffer even on error
+                                self.framebuffer = Some(render_snapshot.framebuffer);
+                                warn!("Presentation failed, buffer recovered: {}", reason);
+                                // Continue execution - don't propagate the error
+                            }
+                            Err(crate::display::DisplayError::Generic(e)) => {
+                                return Err(e);
+                            }
                         }
 
                         // Return snapshot to orchestrator

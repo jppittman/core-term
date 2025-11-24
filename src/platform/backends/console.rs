@@ -177,6 +177,7 @@ impl Driver for ConsoleDriver {
                     backend_events.push(BackendEvent::Resize {
                         width_px,
                         height_px,
+                        scale_factor: 1.0, // Console backend doesn't have HiDPI scaling
                     });
                 }
             }

@@ -3,7 +3,7 @@ use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::term::{
     action::EmulatorAction, modes::DecModeConstant, ControlEvent, CursorShape, EmulatorInput,
-    RenderSnapshot, TerminalEmulator,
+    TerminalEmulator, TerminalSnapshot,
 };
 
 fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
@@ -11,7 +11,7 @@ fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
 }
 
 // Helper to get a Glyph from the snapshot.
-fn get_glyph_from_snapshot(snapshot: &RenderSnapshot, row: usize, col: usize) -> Option<Glyph> {
+fn get_glyph_from_snapshot(snapshot: &TerminalSnapshot, row: usize, col: usize) -> Option<Glyph> {
     if row < snapshot.dimensions.1 && col < snapshot.dimensions.0 {
         snapshot
             .lines
@@ -25,7 +25,7 @@ fn get_glyph_from_snapshot(snapshot: &RenderSnapshot, row: usize, col: usize) ->
 // asserts screen content and cursor position
 #[allow(clippy::panic_in_result_fn)] // Allow panic in this test helper
 fn assert_screen_state(
-    snapshot: &RenderSnapshot,
+    snapshot: &TerminalSnapshot,
     expected_screen: &[&str], // expected_screen strings should NOT contain explicit WIDE_CHAR_PLACEHOLDERs
     expected_cursor_pos: Option<(usize, usize)>,
 ) {

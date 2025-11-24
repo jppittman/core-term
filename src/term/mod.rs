@@ -11,6 +11,7 @@ pub mod unicode;
 pub mod action;
 pub mod charset;
 mod emulator;
+pub mod layout;
 pub mod modes;
 pub mod snapshot; // Add this line to declare the module
 
@@ -18,14 +19,15 @@ pub mod snapshot; // Add this line to declare the module
 pub use action::{ControlEvent, EmulatorAction, UserInputAction}; // Added UserInputAction, ControlEvent
 pub use charset::{map_to_dec_line_drawing, CharacterSet};
 pub use emulator::TerminalEmulator;
+pub use layout::Layout;
 pub use snapshot::{
     CursorRenderState,
     CursorShape,
     Point,
-    RenderSnapshot,
     Selection, // Changed SelectionRenderState to Selection
     SelectionMode,
     SnapshotLine,
+    TerminalSnapshot,
 };
 
 // Crate-level imports (adjust paths based on where items are moved)
@@ -78,14 +80,14 @@ pub trait TerminalInterface {
     /// output to the PTY. Returns `None` if the input is fully handled internally.
     fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction>;
 
-    /// Creates a `RenderSnapshot` of the terminal's current visible state.
+    /// Creates a `TerminalSnapshot` of the terminal's current visible state.
     ///
     /// This method provides all necessary information for the `Renderer` to draw the
     /// terminal screen, including cell data, dirty flags, cursor state, and selection.
     ///
     /// It returns `None` if no snapshot is generated, for example, if the terminal
     /// is not in a renderable state.
-    fn get_render_snapshot(&mut self) -> Option<RenderSnapshot>;
+    fn get_render_snapshot(&mut self) -> Option<TerminalSnapshot>;
 }
 
 impl TerminalInterface for TerminalEmulator {
@@ -93,7 +95,7 @@ impl TerminalInterface for TerminalEmulator {
         self.interpret_input(input)
     }
 
-    fn get_render_snapshot(&mut self) -> Option<RenderSnapshot> {
+    fn get_render_snapshot(&mut self) -> Option<TerminalSnapshot> {
         self.get_render_snapshot()
     }
 }

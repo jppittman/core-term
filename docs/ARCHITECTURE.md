@@ -180,7 +180,7 @@ Orchestrator is the **central hub**. All actors communicate only with Orchestrat
         │       │ Orchestrator │
         │       └──────────────┘
         │            │      │
-        │  Write     │      │ RenderSnapshot
+        │  Write     │      │ TerminalSnapshot
         └───────────┤      └────┐
                     ▼           ▼
               PTY Thread    Platform Thread

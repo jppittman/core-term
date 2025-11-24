@@ -1,64 +1,45 @@
 #![cfg(target_os = "macos")]
 
 //! Cocoa DisplayDriver implementation using objc2.
-//!
-//! This is a minimal RISC-style driver that provides only platform-specific primitives.
-//! All common logic lives in DisplayManager.
 
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, DriverRequest, DriverResponse};
+use crate::display::messages::{
+    DisplayError, DisplayEvent, DriverRequest, DriverResponse, RenderSnapshot,
+};
 use anyhow::{Context, Result};
 use core_graphics::base::CGFloat;
 use core_graphics::color_space::CGColorSpace;
 use core_graphics::data_provider::CGDataProvider;
 use core_graphics::image::CGImage;
-use log::{debug, info, trace, warn};
-use objc2::rc::{autoreleasepool, Id, Retained};
-use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
-use objc2::{class, msg_send, msg_send_id, sel, ClassType, DeclaredClass, MainThreadOnly};
+use log::{debug, info, trace};
+use objc2::rc::{Allocated, Retained};
+use objc2::runtime::{AnyObject, Bool, Sel};
+use objc2::{class, msg_send, sel, MainThreadOnly};
 
 // Explicit imports from objc2-app-kit
 use objc2_app_kit::{
-    NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask,
-    NSEventModifierFlags, NSEventType, NSPasteboard, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask,
+    NSEventModifierFlags, NSEventType, NSPasteboard, NSWindow, NSWindowStyleMask,
 };
 
 // Explicit imports from objc2-foundation
 use objc2_foundation::{
-    MainThreadMarker,
-    NSDate,
-    NSDefaultRunLoopMode,
-    NSObject,
-    NSObjectProtocol,
-    NSPoint,
-    NSRect,
-    NSSize, // Use NS* types instead of CG* types
-    NSString,
+    MainThreadMarker, NSDate, NSDefaultRunLoopMode, NSObject, NSPoint, NSRect, NSSize, NSString,
 };
-use std::ffi::c_void;
-use std::ptr::NonNull;
+use std::ffi::{c_void, CStr};
 use std::sync::Arc;
 
-// Default window dimensions
+// Default dimensions
 const DEFAULT_WINDOW_X: f64 = 100.0;
 const DEFAULT_WINDOW_Y: f64 = 100.0;
-
-// Default cell (character) dimensions
-const DEFAULT_CELL_WIDTH_PX: usize = 8;
-const DEFAULT_CELL_HEIGHT_PX: usize = 16;
-
-// RGBA pixel format constants
 const BYTES_PER_PIXEL: usize = 4;
 const BITS_PER_COMPONENT: usize = 8;
 const BITS_PER_PIXEL: usize = 32;
+const MAX_DRAW_LATENCY_SECONDS: f64 = 1.0 / 120.0;
 
-const MAX_DRAW_LATENCY_SECONDS: f64 = 0.016; // ~60 FPS (16ms)
-
-// Custom NSView subclass name
 const VIEW_CLASS_NAME: &str = "CoreTermView";
 const DELEGATE_CLASS_NAME: &str = "CoreTermWindowDelegate";
 
-/// Platform-specific Cocoa display driver.
 pub struct CocoaDisplayDriver {
     mtm: MainThreadMarker,
     window: Option<Retained<NSWindow>>,
@@ -74,14 +55,10 @@ impl DisplayDriver for CocoaDisplayDriver {
     fn new() -> Result<Self> {
         let mtm =
             MainThreadMarker::new().context("CocoaDisplayDriver must be created on main thread")?;
-
         info!("CocoaDisplayDriver::new() - Pure initialization");
 
-        // Register custom classes
         Self::register_view_class();
         Self::register_delegate_class();
-
-        // Initialize NSApplication
         Self::init_app(mtm)?;
 
         Ok(Self {
@@ -96,130 +73,131 @@ impl DisplayDriver for CocoaDisplayDriver {
         })
     }
 
-    fn handle_request(&mut self, request: DriverRequest) -> Result<DriverResponse> {
+    fn handle_request(
+        &mut self,
+        request: DriverRequest,
+    ) -> std::result::Result<DriverResponse, DisplayError> {
         match request {
-            DriverRequest::Init => self.handle_init(),
-            DriverRequest::PollEvents => self.handle_poll_events(),
-            DriverRequest::RequestFramebuffer => self.handle_request_framebuffer(),
-            DriverRequest::Present(buffer) => self.handle_present(buffer),
-            DriverRequest::SetTitle(title) => self.handle_set_title(&title),
-            DriverRequest::Bell => self.handle_bell(),
+            DriverRequest::Init(config) => Ok(self.handle_init(config)?),
+            DriverRequest::PollEvents => Ok(self.handle_poll_events()?),
+            DriverRequest::RequestFramebuffer => Ok(self.handle_request_framebuffer()?),
+            // Present returns DisplayError directly, so no wrapping needed
+            DriverRequest::Present(snapshot) => self.handle_present(snapshot),
+            DriverRequest::SetTitle(title) => Ok(self.handle_set_title(&title)?),
+            DriverRequest::Bell => Ok(self.handle_bell()?),
             DriverRequest::SetCursorVisibility(visible) => {
-                self.handle_set_cursor_visibility(visible)
+                Ok(self.handle_set_cursor_visibility(visible)?)
             }
-            DriverRequest::CopyToClipboard(text) => self.handle_copy_to_clipboard(&text),
-            DriverRequest::RequestPaste => self.handle_request_paste(),
+            DriverRequest::CopyToClipboard(text) => Ok(self.handle_copy_to_clipboard(&text)?),
+            DriverRequest::RequestPaste => Ok(self.handle_request_paste()?),
         }
     }
 }
 
 impl CocoaDisplayDriver {
-    /// Register custom NSView subclass
     fn register_view_class() {
         use objc2::declare::ClassBuilder;
         use std::sync::Once;
-
         static REGISTER_ONCE: Once = Once::new();
         REGISTER_ONCE.call_once(|| {
-            let mut builder = ClassBuilder::new(VIEW_CLASS_NAME, class!(NSView))
+            let name = CStr::from_bytes_with_nul(b"CoreTermView\0").unwrap();
+            let mut builder = ClassBuilder::new(name, class!(NSView))
                 .expect("Failed to create CoreTermView class");
 
-            // Override isFlipped to return YES (top-left origin)
-            unsafe extern "C" fn is_flipped(_this: &NSObject, _cmd: Sel) -> Bool {
+            // FIX: Restore explicit cast to satisfy HRTB for *mut AnyObject
+            unsafe extern "C" fn is_flipped(_this: *mut AnyObject, _cmd: Sel) -> Bool {
                 trace!("CoreTermView::isFlipped called - returning YES");
                 Bool::YES
             }
             unsafe {
                 builder.add_method(
                     sel!(isFlipped),
-                    is_flipped as unsafe extern "C" fn(&NSObject, Sel) -> Bool,
+                    is_flipped as unsafe extern "C" fn(*mut AnyObject, Sel) -> Bool,
                 );
             }
 
-            // Override acceptsFirstResponder to return YES
-            unsafe extern "C" fn accepts_first_responder(_this: &NSObject, _cmd: Sel) -> Bool {
+            unsafe extern "C" fn accepts_first_responder(_this: *mut AnyObject, _cmd: Sel) -> Bool {
                 debug!("CoreTermView::acceptsFirstResponder called - returning YES");
                 Bool::YES
             }
+            // FIX: Restore explicit cast
             unsafe {
                 builder.add_method(
                     sel!(acceptsFirstResponder),
-                    accepts_first_responder as unsafe extern "C" fn(&NSObject, Sel) -> Bool,
+                    accepts_first_responder as unsafe extern "C" fn(*mut AnyObject, Sel) -> Bool,
                 );
             }
 
-            // Override becomeFirstResponder
-            unsafe extern "C" fn become_first_responder(_this: &mut NSObject, _cmd: Sel) -> Bool {
+            unsafe extern "C" fn become_first_responder(_this: *mut AnyObject, _cmd: Sel) -> Bool {
                 info!("CoreTermView::becomeFirstResponder called - view gained focus");
                 Bool::YES
             }
+            // FIX: Restore explicit cast
             unsafe {
                 builder.add_method(
                     sel!(becomeFirstResponder),
-                    become_first_responder as unsafe extern "C" fn(&mut NSObject, Sel) -> Bool,
+                    become_first_responder as unsafe extern "C" fn(*mut AnyObject, Sel) -> Bool,
                 );
             }
 
-            // Override keyDown: to prevent system beep
-            unsafe extern "C" fn key_down(_this: &NSObject, _cmd: Sel, _event: *mut NSEvent) {
+            unsafe extern "C" fn key_down(_this: *mut AnyObject, _cmd: Sel, _event: *mut NSEvent) {
                 trace!("CoreTermView::keyDown: called - event handled, NOT calling super");
-                // Don't call [super keyDown:event] to silence beep
             }
+            // FIX: Restore explicit cast
             unsafe {
                 builder.add_method(
                     sel!(keyDown:),
-                    key_down as unsafe extern "C" fn(&NSObject, Sel, *mut NSEvent),
+                    key_down as unsafe extern "C" fn(*mut AnyObject, Sel, *mut NSEvent),
                 );
             }
 
-            let _cls = builder.register();
+            builder.register();
             debug!("Registered custom NSView subclass: {}", VIEW_CLASS_NAME);
         });
     }
 
-    /// Register custom NSWindowDelegate subclass
     fn register_delegate_class() {
         use objc2::declare::ClassBuilder;
         use std::sync::Once;
-
         static REGISTER_ONCE: Once = Once::new();
         REGISTER_ONCE.call_once(|| {
-            let mut builder = ClassBuilder::new(DELEGATE_CLASS_NAME, class!(NSObject))
+            let name = CStr::from_bytes_with_nul(b"CoreTermWindowDelegate\0").unwrap();
+            let mut builder = ClassBuilder::new(name, class!(NSObject))
                 .expect("Failed to create CoreTermWindowDelegate class");
 
-            // windowShouldClose:
             unsafe extern "C" fn window_should_close(
-                _this: &NSObject,
+                _this: *mut AnyObject,
                 _cmd: Sel,
                 _sender: *mut NSWindow,
             ) -> Bool {
                 info!("CoreTermWindowDelegate::windowShouldClose: - allowing window to close");
                 Bool::YES
             }
+            // FIX: Restore explicit cast
             unsafe {
                 builder.add_method(
                     sel!(windowShouldClose:),
                     window_should_close
-                        as unsafe extern "C" fn(&NSObject, Sel, *mut NSWindow) -> Bool,
+                        as unsafe extern "C" fn(*mut AnyObject, Sel, *mut NSWindow) -> Bool,
                 );
             }
 
-            // windowWillClose:
             unsafe extern "C" fn window_will_close(
-                _this: &NSObject,
+                _this: *mut AnyObject,
                 _cmd: Sel,
                 _notification: *mut NSObject,
             ) {
                 info!("CoreTermWindowDelegate::windowWillClose: - window closing");
             }
+            // FIX: Restore explicit cast
             unsafe {
                 builder.add_method(
                     sel!(windowWillClose:),
-                    window_will_close as unsafe extern "C" fn(&NSObject, Sel, *mut NSObject),
+                    window_will_close as unsafe extern "C" fn(*mut AnyObject, Sel, *mut NSObject),
                 );
             }
 
-            let _cls = builder.register();
+            builder.register();
             debug!(
                 "Registered NSWindowDelegate subclass: {}",
                 DELEGATE_CLASS_NAME
@@ -227,7 +205,6 @@ impl CocoaDisplayDriver {
         });
     }
 
-    /// Initialize NSApplication
     fn init_app(mtm: MainThreadMarker) -> Result<()> {
         unsafe {
             let app = NSApplication::sharedApplication(mtm);
@@ -239,50 +216,38 @@ impl CocoaDisplayDriver {
         }
     }
 
-    /// Handle Init request - create window and discover metrics
-    fn handle_init(&mut self) -> Result<DriverResponse> {
+    fn handle_init(&mut self, config: crate::display::messages::DriverConfig) -> Result<DriverResponse> {
         info!("CocoaDisplayDriver: Handling Init request");
 
-        // Calculate initial window size (80x24 terminal)
-        let cols = 80usize;
-        let rows = 24usize;
-        let window_width_pts = (cols * DEFAULT_CELL_WIDTH_PX) as f64;
-        let window_height_pts = (rows * DEFAULT_CELL_HEIGHT_PX) as f64;
+        let cols = config.initial_cols;
+        let rows = config.initial_rows;
+        let window_width_pts = (cols * config.cell_width_px) as f64;
+        let window_height_pts = (rows * config.cell_height_px) as f64;
 
-        // Create window
         let window = self.create_window(window_width_pts as usize, window_height_pts as usize)?;
-
-        // Create view
         let view = self.create_view(window_width_pts, window_height_pts)?;
 
-        // Set view as window content
         unsafe {
-            let _: () = msg_send![&window, setContentView: &view];
+            let _: () = msg_send![&window, setContentView: &*view];
         }
 
-        // Get backing scale factor
         let backing_scale: CGFloat = unsafe { msg_send![&window, backingScaleFactor] };
         info!(
             "CocoaDisplayDriver: Backing scale factor = {}",
             backing_scale
         );
 
-        // Calculate physical dimensions
-        let cell_width_px = (DEFAULT_CELL_WIDTH_PX as f64 * backing_scale) as u32;
-        let cell_height_px = (DEFAULT_CELL_HEIGHT_PX as f64 * backing_scale) as u32;
         let width_px = (window_width_pts * backing_scale) as u32;
         let height_px = (window_height_pts * backing_scale) as u32;
 
         info!(
-            "CocoaDisplayDriver: Window {} x {} points ({} x {} physical px), font cells {} x {} px",
-            window_width_pts, window_height_pts, width_px, height_px, cell_width_px, cell_height_px
+            "CocoaDisplayDriver: Window {} x {} points ({} x {} physical px)",
+            window_width_pts, window_height_pts, width_px, height_px
         );
 
-        // Allocate initial framebuffer
-        let buffer_size = (width_px as usize) * (height_px as usize) * BYTES_PER_PIXEL;
+        let buffer_size = (width_px as usize) * (height_px as usize) * config.bytes_per_pixel;
         let framebuffer = vec![0u8; buffer_size].into_boxed_slice();
 
-        // Store state
         self.window = Some(window.clone());
         self.view = Some(view.clone());
         self.window_width_pts = window_width_pts;
@@ -290,31 +255,9 @@ impl CocoaDisplayDriver {
         self.backing_scale = backing_scale;
         self.framebuffer = Some(framebuffer);
 
-        // Make window visible and focused
         unsafe {
-            let app = NSApp(self.mtm);
-            let _: () = msg_send![&app, activateIgnoringOtherApps: Bool::YES];
             let _: () = msg_send![&window, makeKeyAndOrderFront: None::<&NSObject>];
-
-            // Make view first responder
-            info!("Attempting to make view the first responder...");
-            let success: Bool = msg_send![&window, makeFirstResponder: &view];
-            info!(
-                "makeFirstResponder returned: {}",
-                if success.as_bool() { "YES" } else { "NO" }
-            );
-
-            // Verify first responder was set correctly
-            let first_responder: *mut AnyObject = msg_send![&window, firstResponder];
-            let view_ptr: *const NSObject = &**view;
-            if first_responder as *const NSObject == view_ptr {
-                info!("SUCCESS: View is now the first responder");
-            } else {
-                warn!(
-                    "WARNING: First responder is NOT our view (it's {:?})",
-                    first_responder
-                );
-            }
+            let _: Bool = msg_send![&window, makeFirstResponder: &*view];
         }
 
         Ok(DriverResponse::InitComplete {
@@ -324,15 +267,13 @@ impl CocoaDisplayDriver {
         })
     }
 
-    /// Create an NSWindow
-    fn create_window(&self, width: usize, height: usize) -> Result<Retained<NSWindow>> {
+    fn create_window(&mut self, width: usize, height: usize) -> Result<Retained<NSWindow>> {
         unsafe {
             let content_rect = NSRect::new(
                 NSPoint::new(DEFAULT_WINDOW_X, DEFAULT_WINDOW_Y),
                 NSSize::new(width as f64, height as f64),
             );
-
-            let style_mask = NSWindowStyleMask::Titled
+            let style = NSWindowStyleMask::Titled
                 | NSWindowStyleMask::Closable
                 | NSWindowStyleMask::Miniaturizable
                 | NSWindowStyleMask::Resizable;
@@ -340,31 +281,22 @@ impl CocoaDisplayDriver {
             let window = NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(self.mtm),
                 content_rect,
-                style_mask,
+                style,
                 NSBackingStoreType::Buffered,
                 false,
             );
 
-            // Set title
             let title = NSString::from_str("CoreTerm");
             window.setTitle(&title);
-
-            // Center window on screen
             window.center();
-
-            // Configure window for optimal rendering
             let _: () = msg_send![&window, setOpaque: Bool::YES];
-
-            // Set black background color
             let black_color: *mut AnyObject = msg_send![class!(NSColor), blackColor];
             let _: () = msg_send![&window, setBackgroundColor: black_color];
 
-            // Create and set delegate
             let delegate_class = class!(CoreTermWindowDelegate);
             let delegate: Retained<NSObject> = msg_send![delegate_class, new];
-            window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
-            // Store delegate to keep it alive
+            let _: () = msg_send![&window, setDelegate: &*delegate];
             self.delegate = Some(delegate);
 
             info!("NSWindow created successfully");
@@ -372,37 +304,35 @@ impl CocoaDisplayDriver {
         }
     }
 
-    /// Create a custom NSView
     fn create_view(&self, width: f64, height: f64) -> Result<Retained<NSObject>> {
         unsafe {
             let view_class = class!(CoreTermView);
-            let view: Retained<NSObject> = msg_send![view_class, alloc];
+
+            // Explicitly use Allocated<AnyObject> to guide msg_send!
+            let view_alloc: Allocated<AnyObject> = msg_send![view_class, alloc];
 
             let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
-            let view: Retained<NSObject> = msg_send![view, initWithFrame: frame];
 
-            // Enable CALayer backing
-            let _: () = msg_send![&view, setWantsLayer: Bool::YES];
+            // Init consumes Allocated and returns Retained<AnyObject>
+            let view_ptr: Retained<AnyObject> = msg_send![view_alloc, initWithFrame: frame];
 
-            // Set autoresizing mask
-            let autoresizing_mask: u64 = 18; // width sizable (2) | height sizable (16)
-            let _: () = msg_send![&view, setAutoresizingMask: autoresizing_mask];
+            // Safe transmute to specific type
+            let view: Retained<NSObject> = std::mem::transmute(view_ptr);
+
+            let _: () = msg_send![&*view, setWantsLayer: Bool::YES];
+            let mask: u64 = 18;
+            let _: () = msg_send![&*view, setAutoresizingMask: mask];
 
             info!("CoreTermView created successfully");
             Ok(view)
         }
     }
 
-    /// Handle PollEvents request
     fn handle_poll_events(&mut self) -> Result<DriverResponse> {
         let mut events = Vec::new();
-
         unsafe {
             let app = NSApplication::sharedApplication(self.mtm);
-
-            // Poll with timeout
             let timeout = NSDate::dateWithTimeIntervalSinceNow(MAX_DRAW_LATENCY_SECONDS);
-
             loop {
                 let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
                     NSEventMask::Any,
@@ -410,55 +340,32 @@ impl CocoaDisplayDriver {
                     &NSDefaultRunLoopMode,
                     true,
                 );
-
-                let Some(event) = event else {
+                if let Some(event) = event {
+                    if event.r#type() == NSEventType::ApplicationDefined {
+                        let _: () = msg_send![&app, sendEvent: &*event];
+                        continue;
+                    }
+                    debug!("cocoa: Received NSEvent type={:?}", event.r#type());
+                    if let Some(evt) = self.convert_event(&event) {
+                        events.push(evt);
+                    }
+                    let _: () = msg_send![&app, sendEvent: &*event];
+                } else {
                     break;
-                };
-
-                let event_type = event.r#type();
-
-                // Skip NSApplicationDefined events
-                if event_type == NSEventType::ApplicationDefined {
-                    debug!("cocoa: Skipping NSApplicationDefined event");
-                    let _: () = msg_send![&app, sendEvent: &event];
-                    continue;
                 }
-
-                debug!("cocoa: Received NSEvent type={:?}", event_type);
-
-                // Convert to DisplayEvent
-                if let Some(display_event) = self.convert_event(&event) {
-                    events.push(display_event);
-                }
-
-                // Forward to NSApp for window management
-                trace!("cocoa: Dispatching event to NSApp via sendEvent");
-                let _: () = msg_send![&app, sendEvent: &event];
             }
         }
-
         Ok(DriverResponse::Events(events))
     }
 
-    /// Convert NSEvent to DisplayEvent
     fn convert_event(&self, event: &NSEvent) -> Option<DisplayEvent> {
-        use crate::platform::backends::{KeySymbol, Modifiers};
-
-        unsafe {
-            match event.r#type() {
+        match event.r#type() {
                 NSEventType::KeyDown => {
                     let chars = event.characters();
                     let text = chars.map(|s| s.to_string());
-
                     let key_code = event.keyCode();
                     let symbol = Self::map_keycode_to_symbol(key_code);
                     let modifiers = Self::extract_modifiers(event);
-
-                    debug!(
-                        "cocoa: KeyDown - keyCode={}, text={:?}, symbol={:?}",
-                        key_code, text, symbol
-                    );
-
                     Some(DisplayEvent::Key {
                         symbol,
                         modifiers,
@@ -472,6 +379,7 @@ impl CocoaDisplayDriver {
                         button: 0,
                         x: location.x as i32,
                         y: (self.window_height_pts - location.y) as i32,
+                        scale_factor: self.backing_scale,
                         modifiers,
                     })
                 }
@@ -482,6 +390,7 @@ impl CocoaDisplayDriver {
                         button: 1,
                         x: location.x as i32,
                         y: (self.window_height_pts - location.y) as i32,
+                        scale_factor: self.backing_scale,
                         modifiers,
                     })
                 }
@@ -492,6 +401,7 @@ impl CocoaDisplayDriver {
                         button: 0,
                         x: location.x as i32,
                         y: (self.window_height_pts - location.y) as i32,
+                        scale_factor: self.backing_scale,
                         modifiers,
                     })
                 }
@@ -502,6 +412,7 @@ impl CocoaDisplayDriver {
                         button: 1,
                         x: location.x as i32,
                         y: (self.window_height_pts - location.y) as i32,
+                        scale_factor: self.backing_scale,
                         modifiers,
                     })
                 }
@@ -513,21 +424,18 @@ impl CocoaDisplayDriver {
                     Some(DisplayEvent::MouseMove {
                         x: location.x as i32,
                         y: (self.window_height_pts - location.y) as i32,
+                        scale_factor: self.backing_scale,
                         modifiers,
                     })
                 }
                 _ => None,
             }
-        }
     }
 
-    /// Extract modifier flags
     fn extract_modifiers(event: &NSEvent) -> crate::platform::backends::Modifiers {
         use crate::platform::backends::Modifiers;
-
         let flags = event.modifierFlags();
         let mut modifiers = Modifiers::empty();
-
         if flags.contains(NSEventModifierFlags::Shift) {
             modifiers |= Modifiers::SHIFT;
         }
@@ -540,14 +448,11 @@ impl CocoaDisplayDriver {
         if flags.contains(NSEventModifierFlags::Command) {
             modifiers |= Modifiers::SUPER;
         }
-
         modifiers
     }
 
-    /// Map macOS keycode to KeySymbol
     fn map_keycode_to_symbol(keycode: u16) -> crate::platform::backends::KeySymbol {
         use crate::platform::backends::KeySymbol;
-
         match keycode {
             0x00 => KeySymbol::Char('a'),
             0x01 => KeySymbol::Char('s'),
@@ -614,7 +519,6 @@ impl CocoaDisplayDriver {
         }
     }
 
-    /// Handle RequestFramebuffer
     fn handle_request_framebuffer(&mut self) -> Result<DriverResponse> {
         let buffer = self
             .framebuffer
@@ -623,28 +527,29 @@ impl CocoaDisplayDriver {
         Ok(DriverResponse::Framebuffer(buffer))
     }
 
-    /// Handle Present
-    fn handle_present(&mut self, buffer: Box<[u8]>) -> Result<DriverResponse> {
-        let view = self.view.as_ref().context("View not initialized")?;
+    fn handle_present(
+        &mut self,
+        snapshot: RenderSnapshot,
+    ) -> std::result::Result<DriverResponse, DisplayError> {
+        let view = match &self.view {
+            Some(v) => v,
+            None => {
+                return Err(DisplayError::PresentationFailed(
+                    snapshot,
+                    "View is None".to_string(),
+                ))
+            }
+        };
 
         unsafe {
-            // Calculate dimensions
-            let width = (self.window_width_pts * self.backing_scale) as usize;
-            let height = (self.window_height_pts * self.backing_scale) as usize;
-
-            debug!(
-                "draw_framebuffer_to_view: {} x {} physical pixels (scale={})",
-                width, height, self.backing_scale
-            );
-
+            // Extract dimensions from the RenderSnapshot instead of driver state
+            let width = snapshot.width_px as usize;
+            let height = snapshot.height_px as usize;
             let bytes_per_row = width * BYTES_PER_PIXEL;
 
-            // Create CGImage from buffer
-            let data = Arc::new(Vec::from(buffer.as_ref()));
+            let data = Arc::new(Vec::from(snapshot.framebuffer.as_ref()));
             let provider = CGDataProvider::from_buffer(data);
             let color_space = CGColorSpace::create_device_rgb();
-            let bitmap_info = 1u32; // kCGImageAlphaPremultipliedLast
-
             let image = CGImage::new(
                 width,
                 height,
@@ -652,38 +557,27 @@ impl CocoaDisplayDriver {
                 BITS_PER_PIXEL,
                 bytes_per_row,
                 &color_space,
-                bitmap_info,
+                1,
                 &provider,
                 false,
                 0,
             );
 
-            // Get CALayer
             let layer: *mut AnyObject = msg_send![&**view, layer];
             if layer.is_null() {
-                return Err(anyhow::anyhow!(
-                    "View has no layer - did setWantsLayer: YES fail?"
+                return Err(DisplayError::PresentationFailed(
+                    snapshot,
+                    "View has no layer".to_string(),
                 ));
             }
 
-            // Extract CGImageRef pointer
-            let image_ref: *mut core_graphics::sys::CGImage = std::mem::transmute_copy(&image);
-
-            // Set layer contents
-            let _: () = msg_send![layer, setContents: image_ref];
+            let image_ptr: *mut c_void = std::mem::transmute(image); // CGImageRef
+            let _: () = msg_send![layer, setContents: image_ptr];
             let _: () = msg_send![layer, setContentsScale: self.backing_scale];
-
-            debug!(
-                "draw_framebuffer_to_view: CGImage set (scale={})",
-                self.backing_scale
-            );
         }
-
-        // Return buffer ownership to caller for reuse
-        Ok(DriverResponse::PresentComplete(buffer))
+        Ok(DriverResponse::PresentComplete(snapshot))
     }
 
-    /// Handle SetTitle
     fn handle_set_title(&mut self, title: &str) -> Result<DriverResponse> {
         if let Some(window) = &self.window {
             let ns_title = NSString::from_str(title);
@@ -692,7 +586,6 @@ impl CocoaDisplayDriver {
         Ok(DriverResponse::TitleSet)
     }
 
-    /// Handle Bell
     fn handle_bell(&mut self) -> Result<DriverResponse> {
         unsafe {
             let app = NSApplication::sharedApplication(self.mtm);
@@ -701,34 +594,28 @@ impl CocoaDisplayDriver {
         Ok(DriverResponse::BellRung)
     }
 
-    /// Handle SetCursorVisibility
     fn handle_set_cursor_visibility(&mut self, _visible: bool) -> Result<DriverResponse> {
-        // TODO: Implement with NSCursor
         Ok(DriverResponse::CursorVisibilitySet)
     }
 
-    /// Handle CopyToClipboard
     fn handle_copy_to_clipboard(&mut self, text: &str) -> Result<DriverResponse> {
         unsafe {
             let pasteboard = NSPasteboard::generalPasteboard();
             pasteboard.clearContents();
             let ns_string = NSString::from_str(text);
             let _: bool =
-                msg_send![&pasteboard, setString: &ns_string forType: NSPasteboardTypeString];
+                msg_send![&pasteboard, setString: &*ns_string, forType: NSPasteboardTypeString()];
         }
         Ok(DriverResponse::ClipboardCopied)
     }
 
-    /// Handle RequestPaste
     fn handle_request_paste(&mut self) -> Result<DriverResponse> {
-        // Paste data will arrive via PasteData event (not implemented yet)
         Ok(DriverResponse::PasteRequested)
     }
 }
 
 impl Drop for CocoaDisplayDriver {
     fn drop(&mut self) {
-        info!("CocoaDisplayDriver::drop() - Closing window");
         if let Some(window) = &self.window {
             unsafe {
                 let _: () = msg_send![&**window, close];
@@ -738,7 +625,7 @@ impl Drop for CocoaDisplayDriver {
     }
 }
 
-// NSPasteboardTypeString constant
+#[allow(non_snake_case)]
 unsafe fn NSPasteboardTypeString() -> &'static NSString {
     extern "C" {
         static NSPasteboardTypeString: &'static NSString;

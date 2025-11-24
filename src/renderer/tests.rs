@@ -9,7 +9,7 @@ use crate::platform::backends::{
     RenderCommand as ActualRenderCommand, TextRunStyle,
 };
 use crate::renderer::Renderer;
-use crate::term::{CursorRenderState, CursorShape, RenderSnapshot, Selection, SnapshotLine};
+use crate::term::{CursorRenderState, CursorShape, Selection, SnapshotLine, TerminalSnapshot};
 
 use anyhow::Result;
 use std::sync::Mutex;
@@ -143,15 +143,15 @@ fn create_test_renderer_and_driver(
     (renderer, driver)
 }
 
-// Helper to create a RenderSnapshot for tests
+// Helper to create a TerminalSnapshot for tests
 fn create_test_snapshot(
     lines_data: Vec<SnapshotLine>,
     cursor_state: Option<CursorRenderState>,
     num_cols: usize,
     num_rows: usize,
     selection: Selection,
-) -> RenderSnapshot {
-    RenderSnapshot {
+) -> TerminalSnapshot {
+    TerminalSnapshot {
         dimensions: (num_cols, num_rows),
         lines: lines_data,
         cursor_state,

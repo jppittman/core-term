@@ -12,7 +12,7 @@ pub enum PlatformAction {
     /// Request the platform to render the provided snapshot.
     /// The orchestrator sends this in response to RequestSnapshot events.
     /// The platform should render it and return via ControlEvent::FrameRendered.
-    RequestRedraw(Box<crate::term::snapshot::RenderSnapshot>),
+    RequestRedraw(Box<crate::term::snapshot::TerminalSnapshot>),
     /// Set the title of the window.
     SetTitle(String),
     /// Ring the terminal bell.

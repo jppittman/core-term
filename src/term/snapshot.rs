@@ -76,16 +76,19 @@ pub struct Selection {
 /// A complete snapshot of the terminal's visible state at a moment in time.
 /// This structure is provided by the `TerminalEmulator` to the `Renderer`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderSnapshot {
+pub struct TerminalSnapshot {
     pub dimensions: (usize, usize), // cols, rows
     pub lines: Vec<SnapshotLine>,
     pub cursor_state: Option<CursorRenderState>,
     pub selection: Selection, // Current selection state.
+    /// Cell dimensions in pixels (used by renderer/rasterizer)
+    pub cell_width_px: usize,
+    pub cell_height_px: usize,
 }
 
 // Point struct was moved up
 
-impl RenderSnapshot {
+impl TerminalSnapshot {
     /// Gets the glyph at the given `Point` (column, row) if it exists within the snapshot dimensions.
     ///
     /// Returns `None` if the coordinates are out of bounds.

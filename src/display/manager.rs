@@ -1,10 +1,9 @@
 // src/display/manager.rs
 //! DisplayManager - Synchronous wrapper around DisplayDriver.
-//!
-//! Provides a simple interface for MacosPlatform to interact with the display system.
-//! The manager forwards requests to the driver and stores window metrics.
 
-use crate::display::{DisplayDriver, DriverRequest, DriverResponse};
+// FIX: Import DisplayError
+use crate::display::driver::DisplayDriver;
+use crate::display::messages::{DisplayError, DriverRequest, DriverResponse};
 use anyhow::{Context, Result};
 use log::info;
 
@@ -17,9 +16,6 @@ pub struct DisplayMetrics {
 }
 
 /// DisplayManager manages the display driver and tracks window state.
-///
-/// This is a synchronous component that runs on the main thread (macOS requirement).
-/// It wraps the message-based DisplayDriver API with a simple method-based interface.
 pub struct DisplayManager {
     driver: Box<dyn DisplayDriver>,
     metrics: DisplayMetrics,
@@ -27,20 +23,35 @@ pub struct DisplayManager {
 
 impl DisplayManager {
     /// Create a new DisplayManager with platform-specific driver.
-    ///
-    /// On macOS, this creates a CocoaDisplayDriver.
     pub fn new() -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
+            use crate::config::CONFIG;
+            use crate::display::messages::DriverConfig;
             use crate::display::CocoaDisplayDriver;
 
             info!("DisplayManager: Creating CocoaDisplayDriver...");
             let mut driver = Box::new(CocoaDisplayDriver::new()?) as Box<dyn DisplayDriver>;
 
-            // Initialize driver and get metrics
+            // Build DriverConfig from CONFIG
+            let driver_config = DriverConfig {
+                initial_window_x: 100.0,
+                initial_window_y: 100.0,
+                initial_cols: CONFIG.appearance.columns as usize,
+                initial_rows: CONFIG.appearance.rows as usize,
+                cell_width_px: CONFIG.appearance.cell_width_px,
+                cell_height_px: CONFIG.appearance.cell_height_px,
+                bytes_per_pixel: 4,
+                bits_per_component: 8,
+                bits_per_pixel: 32,
+                max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
+            };
+
             info!("DisplayManager: Initializing driver...");
+            // FIX: Convert DisplayError to anyhow::Error using map_err for Init
             let response = driver
-                .handle_request(DriverRequest::Init)
+                .handle_request(DriverRequest::Init(driver_config))
+                .map_err(|e| anyhow::anyhow!(e))
                 .context("Failed to initialize display driver")?;
 
             let metrics = match response {
@@ -77,9 +88,11 @@ impl DisplayManager {
     }
 
     /// Forward a request to the driver.
-    ///
-    /// This is the primary interface for all display operations.
-    pub fn handle_request(&mut self, request: DriverRequest) -> Result<DriverResponse> {
+    pub fn handle_request(
+        &mut self,
+        request: DriverRequest,
+    ) -> Result<DriverResponse, DisplayError> {
+        // FIX: The driver returns Result<DriverResponse, DisplayError>. Convert to anyhow::Result.
         self.driver.handle_request(request)
     }
 

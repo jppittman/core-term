@@ -69,7 +69,7 @@ The existing `Graphics` struct in `src/platform/backends/x11/graphics.rs` will b
 
 The new data flow ensures a clean separation of concerns:
 
-1.  The **`Renderer`** processes the `RenderSnapshot` and produces a `Vec<RenderCommand>`. The `DrawTextRun` command remains abstract, containing only a `String` and `Attributes`.
+1.  The **`Renderer`** processes the `TerminalSnapshot` and produces a `Vec<RenderCommand>`. The `DrawTextRun` command remains abstract, containing only a `String` and `Attributes`.
 
 2.  The **`AppOrchestrator`** passes these commands to the **`XDriver`**.
 

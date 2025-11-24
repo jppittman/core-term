@@ -14,7 +14,6 @@ pub mod renderer;
 pub mod term;
 
 // Use statements for items needed in main.rs
-use crate::platform::platform_trait::Platform;
 
 // Logging
 use crate::config::CONFIG;
@@ -26,7 +25,6 @@ fn main() -> anyhow::Result<()> {
     // Initialize the logger to write to /tmp/core-term.log
     // Default filter is "info" if RUST_LOG is not set.
     use std::fs::OpenOptions;
-    use std::io::Write;
 
     let log_file = OpenOptions::new()
         .create(true)
@@ -61,10 +59,7 @@ fn main() -> anyhow::Result<()> {
 
     use crate::orchestrator::orchestrator_actor::OrchestratorActor;
     use crate::orchestrator::{OrchestratorEvent, OrchestratorSender};
-    use crate::term::snapshot::RenderSnapshot;
-    use crate::term::ControlEvent;
     use crate::term::TerminalEmulator;
-    use std::sync::mpsc;
 
     let term_cols = CONFIG.appearance.columns as usize;
     let term_rows = CONFIG.appearance.rows as usize;
@@ -111,19 +106,28 @@ fn main() -> anyhow::Result<()> {
         .context("Failed to spawn VsyncActor")?;
     info!("VsyncActor spawned successfully");
 
-    // 5. Spawn OrchestratorActor (platform-agnostic hub)
-    let term_emulator = TerminalEmulator::new(term_cols, term_rows);
-    let _orchestrator_actor = OrchestratorActor::spawn(
-        term_emulator,
-        orchestrator_rx,
-        display_action_tx,
-        pty_action_tx,
-    )
-    .context("Failed to spawn OrchestratorActor")?;
-    info!("OrchestratorActor spawned successfully");
+    // =========================================================================
+    // Render Thread Initialization
+    // =========================================================================
+
+    info!("Spawning render thread...");
+    use crate::config::Config;
+    use crate::rasterizer::SoftwareRasterizer;
+    use crate::renderer::{spawn_render_thread, Renderer};
+
+    let config = Config::default();
+    let renderer = Renderer::new();
+    let rasterizer = SoftwareRasterizer::new(
+        config.appearance.cell_width_px,
+        config.appearance.cell_height_px,
+    );
+
+    let render_channels = spawn_render_thread(renderer, rasterizer, config)
+        .context("Failed to spawn render thread")?;
+    info!("Render thread spawned successfully");
 
     // =========================================================================
-    // Platform-Specific Initialization (windowing/rendering only)
+    // Platform-Specific Initialization (windowing/display only)
     // =========================================================================
 
     #[cfg(target_os = "macos")]
@@ -139,8 +143,27 @@ fn main() -> anyhow::Result<()> {
         };
 
         // Create platform (pure initialization - no spawning)
-        MacosPlatform::new(platform_channels).context("Failed to initialize MacosPlatform")?
+        MacosPlatform::new(platform_channels, render_channels)
+            .context("Failed to initialize MacosPlatform")?
     };
+
+    // Create waker for the orchestrator to wake the platform event loop
+    #[cfg(target_os = "macos")]
+    let waker = platform
+        .create_waker()
+        .context("Failed to create event loop waker")?;
+
+    // 5. Spawn OrchestratorActor (platform-agnostic hub)
+    let term_emulator = TerminalEmulator::new(term_cols, term_rows);
+    let _orchestrator_actor = OrchestratorActor::spawn(
+        term_emulator,
+        orchestrator_rx,
+        display_action_tx,
+        pty_action_tx,
+        waker,
+    )
+    .context("Failed to spawn OrchestratorActor")?;
+    info!("OrchestratorActor spawned successfully");
 
     #[cfg(target_os = "linux")]
     let platform = {
