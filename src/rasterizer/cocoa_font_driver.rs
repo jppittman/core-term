@@ -9,16 +9,12 @@ use core_graphics::color_space::CGColorSpace;
 use core_graphics::context::CGContext;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_text::font::CTFont;
-use core_text::font_descriptor::{kCTFontDefaultOrientation, CTFontDescriptor};
+use core_text::font_descriptor::kCTFontDefaultOrientation;
 use std::os::raw::c_void;
-use std::ptr;
 
 // Default fallback font and size for system font queries
 const FALLBACK_FONT_NAME: &str = "Menlo";
 const FALLBACK_FONT_SIZE_PT: f64 = 12.0;
-
-// RGBA pixel format
-const BYTES_PER_PIXEL: usize = 4;
 
 // FFI declarations for Core Text functions not exposed in the crate
 #[link(name = "CoreText", kind = "framework")]
@@ -142,7 +138,7 @@ impl FontDriver for CocoaFontDriver {
         let bitmap_info = core_graphics::base::kCGImageAlphaPremultipliedLast
             | core_graphics::base::kCGBitmapByteOrder32Big;
 
-        let mut context = CGContext::create_bitmap_context(
+        let context = CGContext::create_bitmap_context(
             Some(pixels.as_mut_ptr() as *mut _),
             width,
             height,

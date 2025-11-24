@@ -30,7 +30,7 @@ use crate::glyph::AttrFlags;
 use crate::platform::backends::{DriverCommand, RenderCommand};
 use crate::rasterizer::font_driver::FontDriver;
 use crate::rasterizer::font_manager::FontManager;
-use log::{debug, trace, warn};
+use log::{debug, trace};
 use std::collections::HashMap;
 
 // Platform-specific font driver selection
@@ -127,10 +127,10 @@ struct GlyphKey {
 
 /// A pre-rendered glyph as RGBA pixel data
 #[derive(Debug, Clone)]
-struct RenderedGlyph {
-    width_px: usize,
-    height_px: usize,
-    rgba_data: Vec<u8>, // width * height * 4 bytes
+pub struct RenderedGlyph {
+    pub width_px: usize,
+    pub height_px: usize,
+    pub rgba_data: Vec<u8>, // width * height * 4 bytes
 }
 
 /// Software text rasterizer
@@ -145,22 +145,18 @@ pub struct SoftwareRasterizer {
 }
 
 impl SoftwareRasterizer {
-    /// Create a new rasterizer using font metrics from CONFIG
-    pub fn new() -> Self {
+    /// Create a new rasterizer with specified cell dimensions
+    pub fn new(cell_width_px: usize, cell_height_px: usize) -> Self {
         use crate::config::CONFIG;
         use log::*;
 
-        // Get font size from config and calculate cell dimensions
-        // TODO: Get actual measured metrics from FontManager instead of estimating
         let font_size_pt = CONFIG.appearance.font.size_pt;
-        let cell_width_px = 8; // Temporary hardcoded value, should come from FontManager
-        let cell_height_px = font_size_pt as usize; // Use font size as height
 
         let safe_width = cell_width_px.max(1);
         let safe_height = cell_height_px.max(1);
 
         info!(
-            "SoftwareRasterizer: Using font metrics from CONFIG: {}x{} px (font size {} pt)",
+            "SoftwareRasterizer: Using cell metrics: {}x{} px (font size {} pt)",
             safe_width, safe_height, font_size_pt
         );
 
@@ -168,7 +164,7 @@ impl SoftwareRasterizer {
         #[cfg(target_os = "macos")]
         let font_manager = {
             let driver = CocoaFontDriver::new();
-            let font_config = &CONFIG.appearance.font;
+            let _font_config = &CONFIG.appearance.font;
 
             let manager = FontManager::new(
                 driver,

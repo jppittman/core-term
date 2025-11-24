@@ -53,7 +53,7 @@ pub const DEFAULT_WINDOW_HEIGHT_CHARS: usize = 24;
 /// Represents events originating from the backend (platform-specific UI/input).
 /// These events are processed by the `AppOrchestrator`, which may then update the
 /// `TerminalEmulator` or perform other actions like writing to the PTY.
-#[derive(Debug, Clone, PartialEq, Eq)] // Added Eq for full PartialEq comparison if needed by event handlers
+#[derive(Debug, Clone, PartialEq)] // Cannot derive Eq because Resize contains f64 (scale_factor)
 pub enum BackendEvent {
     /// A keyboard key was pressed.
     Key {
@@ -69,6 +69,8 @@ pub enum BackendEvent {
         width_px: u16,
         /// New height of the display area in pixels.
         height_px: u16,
+        /// Display scale factor (e.g., 2.0 for Retina, 1.0 for standard displays).
+        scale_factor: f64,
     },
     /// The application received a request to close from the platform
     /// (e.g., user clicked the window's close button).
@@ -82,6 +84,7 @@ pub enum BackendEvent {
         button: MouseButton,
         x: u16,
         y: u16,
+        scale_factor: f64,
         modifiers: Modifiers,
     },
     /// A mouse button was released.
@@ -89,12 +92,14 @@ pub enum BackendEvent {
         button: MouseButton,
         x: u16,
         y: u16,
+        scale_factor: f64,
         modifiers: Modifiers,
     },
     /// The mouse was moved.
     MouseMove {
         x: u16,
         y: u16,
+        scale_factor: f64,
         modifiers: Modifiers,
     },
     /// Paste data received from clipboard or primary selection.
@@ -385,6 +390,7 @@ impl From<crate::display::DisplayEvent> for BackendEvent {
             } => BackendEvent::Resize {
                 width_px: width_px as u16,
                 height_px: height_px as u16,
+                scale_factor: 1.0, // Legacy test event, no HiDPI
             },
             DisplayEvent::CloseRequested => BackendEvent::CloseRequested,
             DisplayEvent::FocusGained => BackendEvent::FocusGained,
@@ -393,6 +399,7 @@ impl From<crate::display::DisplayEvent> for BackendEvent {
                 button,
                 x,
                 y,
+                scale_factor,
                 modifiers,
             } => {
                 let mouse_button = match button {
@@ -405,6 +412,7 @@ impl From<crate::display::DisplayEvent> for BackendEvent {
                     button: mouse_button,
                     x: x as u16,
                     y: y as u16,
+                    scale_factor,
                     modifiers,
                 }
             }
@@ -412,6 +420,7 @@ impl From<crate::display::DisplayEvent> for BackendEvent {
                 button,
                 x,
                 y,
+                scale_factor,
                 modifiers,
             } => {
                 let mouse_button = match button {
@@ -424,12 +433,14 @@ impl From<crate::display::DisplayEvent> for BackendEvent {
                     button: mouse_button,
                     x: x as u16,
                     y: y as u16,
+                    scale_factor,
                     modifiers,
                 }
             }
-            DisplayEvent::MouseMove { x, y, modifiers } => BackendEvent::MouseMove {
+            DisplayEvent::MouseMove { x, y, scale_factor, modifiers } => BackendEvent::MouseMove {
                 x: x as u16,
                 y: y as u16,
+                scale_factor,
                 modifiers,
             },
             DisplayEvent::PasteData { text } => BackendEvent::PasteData { text },

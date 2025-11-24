@@ -26,15 +26,19 @@ pub enum UserInputAction {
     PasteText(String), // Content from clipboard to be pasted by orchestrator
 
     // New selection-related actions
-    /// Starts a selection at the given cell coordinates (e.g., mouse button press).
+    /// Starts a selection at the given pixel coordinates (e.g., mouse button press).
+    /// The emulator will convert these to cell coordinates using its Layout.
     StartSelection {
-        x: usize,
-        y: usize,
+        x_px: u16,
+        y_px: u16,
+        scale_factor: f64,
     },
-    /// Extends an ongoing selection to the given cell coordinates (e.g., mouse drag).
+    /// Extends an ongoing selection to the given pixel coordinates (e.g., mouse drag).
+    /// The emulator will convert these to cell coordinates using its Layout.
     ExtendSelection {
-        x: usize,
-        y: usize,
+        x_px: u16,
+        y_px: u16,
+        scale_factor: f64,
     },
     /// Finalizes a selection (e.g., mouse button release).
     /// If the selection start and end are the same (a click without drag),
@@ -70,9 +74,14 @@ pub enum ControlEvent {
     RequestSnapshot,
     /// Returns a rendered snapshot back to the orchestrator for reuse.
     /// The Platform sends this after rendering to return the snapshot buffer.
-    FrameRendered(Box<crate::term::snapshot::RenderSnapshot>),
-    /// Signals a resize of the terminal display area.
-    Resize { cols: usize, rows: usize },
+    FrameRendered(Box<crate::term::snapshot::TerminalSnapshot>),
+    /// Signals a resize of the terminal display area with physical dimensions.
+    /// The emulator calculates cols/rows using its Layout.
+    Resize {
+        width_px: u16,
+        height_px: u16,
+        scale_factor: f64,
+    },
 }
 
 // --- Emulator Actions (Signaled to Orchestrator) ---

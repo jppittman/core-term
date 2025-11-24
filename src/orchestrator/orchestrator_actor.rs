@@ -11,7 +11,7 @@
 use crate::keys;
 use crate::orchestrator::OrchestratorEvent;
 use crate::platform::actions::PlatformAction;
-use crate::platform::backends::{BackendEvent, MouseButton, PlatformState};
+use crate::platform::backends::{BackendEvent, MouseButton};
 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
 use anyhow::{Context, Result};
 use log::*;
@@ -44,6 +44,7 @@ impl OrchestratorActor {
         orchestrator_rx: Receiver<OrchestratorEvent>,
         display_action_tx: SyncSender<PlatformAction>,
         pty_action_tx: SyncSender<PlatformAction>,
+        waker: Box<dyn crate::platform::waker::EventLoopWaker>,
     ) -> Result<Self> {
         info!("OrchestratorActor: Spawning background thread");
 
@@ -55,6 +56,7 @@ impl OrchestratorActor {
                     orchestrator_rx,
                     display_action_tx,
                     pty_action_tx,
+                    waker,
                 ) {
                     error!("OrchestratorActor thread error: {:#}", e);
                 }
@@ -77,19 +79,9 @@ impl OrchestratorActor {
         orchestrator_rx: Receiver<OrchestratorEvent>,
         display_action_tx: SyncSender<PlatformAction>,
         pty_action_tx: SyncSender<PlatformAction>,
+        waker: Box<dyn crate::platform::waker::EventLoopWaker>,
     ) -> Result<()> {
         debug!("OrchestratorActor: Starting event loop (unified channel model)");
-
-        // Start with default state from config - will be updated by first Resize event from platform
-        use crate::config::CONFIG;
-        let platform_state = PlatformState {
-            event_fd: None,
-            font_cell_width_px: 8, // Placeholder, will be set by platform's driver
-            font_cell_height_px: 16, // Placeholder, will be set by platform's driver
-            scale_factor: 1.0,
-            display_width_px: CONFIG.appearance.columns * 8, // Rough estimate until real Resize event
-            display_height_px: CONFIG.appearance.rows * 16,
-        };
 
         let mut pending_emulator_actions = Vec::new();
 
@@ -107,9 +99,9 @@ impl OrchestratorActor {
             Self::process_event(
                 event,
                 &mut term_emulator,
-                &platform_state,
                 &mut pending_emulator_actions,
                 &display_action_tx,
+                &waker,
             )?;
 
             // Handle any pending emulator actions
@@ -128,9 +120,9 @@ impl OrchestratorActor {
     fn process_event(
         event: OrchestratorEvent,
         term_emulator: &mut TerminalEmulator,
-        platform_state: &PlatformState,
         pending_emulator_actions: &mut Vec<EmulatorAction>,
         display_action_tx: &SyncSender<PlatformAction>,
+        waker: &Box<dyn crate::platform::waker::EventLoopWaker>,
     ) -> Result<()> {
         match event {
             OrchestratorEvent::Control(control_event) => {
@@ -152,10 +144,10 @@ impl OrchestratorActor {
                         // Return the snapshot buffer to the terminal
                         term_emulator.return_snapshot(*boxed_snapshot);
                     }
-                    ControlEvent::Resize { cols, rows } => {
-                        info!("OrchestratorActor: Resizing to {}x{} cells", cols, rows);
+                    ControlEvent::Resize { width_px, height_px, scale_factor } => {
+                        info!("OrchestratorActor: Resizing to {}x{} px (scale={})", width_px, height_px, scale_factor);
                         if let Some(action) = term_emulator.interpret_input(EmulatorInput::Control(
-                            ControlEvent::Resize { cols, rows },
+                            ControlEvent::Resize { width_px, height_px, scale_factor },
                         )) {
                             pending_emulator_actions.push(action);
                         }
@@ -177,6 +169,9 @@ impl OrchestratorActor {
                         pending_emulator_actions.push(action);
                     }
                 }
+
+                // Wake the platform event loop to handle OOB PTY input
+                let _ = waker.wake();
             }
             OrchestratorEvent::BackendEvent(backend_event) => {
                 debug!(
@@ -193,7 +188,7 @@ impl OrchestratorActor {
                 }
 
                 let emulator_input =
-                    Self::process_backend_event(backend_event, platform_state, term_emulator)?;
+                    Self::process_backend_event(backend_event, term_emulator)?;
 
                 if let Some(input) = emulator_input {
                     if let Some(action) = term_emulator.interpret_input(input) {
@@ -208,7 +203,6 @@ impl OrchestratorActor {
     /// Process a BackendEvent and return the corresponding EmulatorInput.
     fn process_backend_event(
         backend_event: BackendEvent,
-        platform_state: &PlatformState,
         _term_emulator: &mut TerminalEmulator,
     ) -> Result<Option<EmulatorInput>> {
         match backend_event {
@@ -219,22 +213,17 @@ impl OrchestratorActor {
             BackendEvent::Resize {
                 width_px,
                 height_px,
+                scale_factor,
             } => {
-                if platform_state.font_cell_width_px > 0 && platform_state.font_cell_height_px > 0 {
-                    let cols =
-                        (width_px as usize / platform_state.font_cell_width_px.max(1)).max(1);
-                    let rows =
-                        (height_px as usize / platform_state.font_cell_height_px.max(1)).max(1);
-                    info!("OrchestratorActor: Resizing to {}x{} cells", cols, rows);
+                // Forward physical dimensions to emulator, which will calculate cols/rows
+                info!("OrchestratorActor: Forwarding resize {}x{} px (scale={}) to emulator",
+                      width_px, height_px, scale_factor);
 
-                    Ok(Some(EmulatorInput::Control(ControlEvent::Resize {
-                        cols,
-                        rows,
-                    })))
-                } else {
-                    warn!("OrchestratorActor: Font dimensions are zero, cannot process resize");
-                    Ok(None)
-                }
+                Ok(Some(EmulatorInput::Control(ControlEvent::Resize {
+                    width_px,
+                    height_px,
+                    scale_factor,
+                })))
             }
             BackendEvent::Key {
                 symbol,
@@ -258,71 +247,49 @@ impl OrchestratorActor {
                 button,
                 x,
                 y,
+                scale_factor,
                 modifiers: _,
             } => {
-                if platform_state.font_cell_width_px > 0 && platform_state.font_cell_height_px > 0 {
-                    let cell_x =
-                        (x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize;
-                    let cell_y =
-                        (y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize;
-
-                    let input = match button {
-                        MouseButton::Left => {
-                            Some(EmulatorInput::User(UserInputAction::StartSelection {
-                                x: cell_x,
-                                y: cell_y,
-                            }))
-                        }
-                        MouseButton::Middle => {
-                            Some(EmulatorInput::User(UserInputAction::RequestPrimaryPaste))
-                        }
-                        _ => None,
-                    };
-                    Ok(input)
-                } else {
-                    warn!(
-                        "OrchestratorActor: Font dimensions are zero, cannot process mouse press"
-                    );
-                    Ok(None)
-                }
+                let input = match button {
+                    MouseButton::Left => {
+                        // Forward pixel coordinates to emulator, which will convert to cells
+                        Some(EmulatorInput::User(UserInputAction::StartSelection {
+                            x_px: x,
+                            y_px: y,
+                            scale_factor,
+                        }))
+                    }
+                    MouseButton::Middle => {
+                        Some(EmulatorInput::User(UserInputAction::RequestPrimaryPaste))
+                    }
+                    _ => None,
+                };
+                Ok(input)
             }
             BackendEvent::MouseButtonRelease {
                 button,
                 x: _x,
                 y: _y,
+                scale_factor: _scale_factor,
                 modifiers: _,
             } => {
-                if platform_state.font_cell_width_px > 0 && platform_state.font_cell_height_px > 0 {
-                    if button == MouseButton::Left {
-                        Ok(Some(EmulatorInput::User(
-                            UserInputAction::ApplySelectionClear,
-                        )))
-                    } else {
-                        Ok(None)
-                    }
+                if button == MouseButton::Left {
+                    Ok(Some(EmulatorInput::User(
+                        UserInputAction::ApplySelectionClear,
+                    )))
                 } else {
-                    warn!(
-                        "OrchestratorActor: Font dimensions are zero, cannot process mouse release"
-                    );
                     Ok(None)
                 }
             }
-            BackendEvent::MouseMove { x, y, modifiers: _ } => {
-                if platform_state.font_cell_width_px > 0 && platform_state.font_cell_height_px > 0 {
-                    let cell_x =
-                        (x as u32 / platform_state.font_cell_width_px.max(1) as u32) as usize;
-                    let cell_y =
-                        (y as u32 / platform_state.font_cell_height_px.max(1) as u32) as usize;
-                    Ok(Some(EmulatorInput::User(
-                        UserInputAction::ExtendSelection {
-                            x: cell_x,
-                            y: cell_y,
-                        },
-                    )))
-                } else {
-                    warn!("OrchestratorActor: Font dimensions are zero, cannot process mouse move");
-                    Ok(None)
-                }
+            BackendEvent::MouseMove { x, y, scale_factor, modifiers: _ } => {
+                // Forward pixel coordinates to emulator, which will convert to cells
+                Ok(Some(EmulatorInput::User(
+                    UserInputAction::ExtendSelection {
+                        x_px: x,
+                        y_px: y,
+                        scale_factor,
+                    },
+                )))
             }
             BackendEvent::FocusGained => {
                 Ok(Some(EmulatorInput::User(UserInputAction::FocusGained)))
@@ -378,7 +345,7 @@ impl OrchestratorActor {
             }
             EmulatorAction::ResizePty { cols, rows } => {
                 info!(
-                    "OrchestratorActor: Resizing PTY to {}x{} (from ANSI sequence)",
+                    "OrchestratorActor: Resizing PTY to {}x{}",
                     cols, rows
                 );
                 pty_tx

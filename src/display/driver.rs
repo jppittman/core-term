@@ -15,7 +15,7 @@
 //! 3. Request/response loop - All operations via messages
 //! 4. `Drop` - Cleanup (no explicit shutdown message)
 
-use crate::display::messages::{DriverRequest, DriverResponse};
+use crate::display::messages::{DisplayError, DriverRequest, DriverResponse};
 use anyhow::Result;
 
 /// Minimal platform-specific display driver interface.
@@ -48,7 +48,12 @@ pub trait DisplayDriver {
     /// - `SetCursorVisibility(b)` → `CursorVisibilitySet`
     /// - `CopyToClipboard(s)` → `ClipboardCopied`
     /// - `RequestPaste` → `PasteRequested` (data arrives via `PasteData` event)
-    fn handle_request(&mut self, request: DriverRequest) -> Result<DriverResponse>;
+    ///
+    /// ## Error Handling
+    /// Returns `DisplayError` instead of `anyhow::Result` to enable safe buffer recovery.
+    /// When a `Present` request fails, the buffer is returned via `DisplayError::PresentationFailed`
+    /// to prevent starvation of the framebuffer ping-pong pattern.
+    fn handle_request(&mut self, request: DriverRequest) -> Result<DriverResponse, DisplayError>;
 
     // Drop trait handles cleanup - no explicit shutdown method needed
 }

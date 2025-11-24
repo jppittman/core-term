@@ -19,15 +19,15 @@ use crate::{
         },
         charset::CharacterSet,
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
+        layout::Layout,
         modes::DecPrivateModes,
         screen::Screen,
         snapshot::{
             CursorRenderState,
             CursorShape,
-            Point, // Unused
-            RenderSnapshot,
+            Point,         // Unused
             SelectionMode, // Unused
-            SnapshotLine,
+            TerminalSnapshot,
         },
         EmulatorInput, // Added EmulatorInput
     },
@@ -63,7 +63,9 @@ pub struct TerminalEmulator {
     pub(super) active_charset_g_level: usize,
     pub(super) cursor_wrap_next: bool,
     /// Owned snapshot buffer that circulates between terminal and renderer
-    snapshot_buffer: Option<RenderSnapshot>,
+    snapshot_buffer: Option<TerminalSnapshot>,
+    /// Layout manager - handles coordinate transformations and geometry
+    pub(super) layout: Layout,
 }
 
 impl TerminalEmulator {
@@ -80,12 +82,17 @@ impl TerminalEmulator {
         // For now, keeping it to ensure SGR reset state is applied if it differs from CONFIG's default.
         screen.default_attributes = initial_attributes;
 
+        // Create layout manager
+        let layout = Layout::new(width, height);
+
         // Create initial snapshot buffer
-        let initial_snapshot = RenderSnapshot {
+        let initial_snapshot = TerminalSnapshot {
             dimensions: (width, height),
             lines: Vec::new(),
             cursor_state: None,
             selection: crate::term::snapshot::Selection::default(),
+            cell_width_px: layout.cell_width_px,
+            cell_height_px: layout.cell_height_px,
         };
 
         TerminalEmulator {
@@ -102,6 +109,7 @@ impl TerminalEmulator {
             active_charset_g_level: 0, // Default to G0
             cursor_wrap_next: false,
             snapshot_buffer: Some(initial_snapshot),
+            layout,
         }
     }
 
@@ -125,6 +133,8 @@ impl TerminalEmulator {
         self.cursor_wrap_next = false;
         // Screen::resize now gets scrollback_limit from CONFIG
         self.screen.resize(cols, rows);
+        // Update layout with new dimensions
+        self.layout.resize(cols, rows);
         let (log_x, log_y) = self.cursor_controller.logical_pos();
         self.cursor_controller
             .move_to_logical(log_x, log_y, &self.current_screen_context());
@@ -165,7 +175,7 @@ impl TerminalEmulator {
     ///
     /// This method implements the snapshot circulation pattern: take from terminal, populate,
     /// send to renderer, renderer returns it via return_snapshot().
-    pub fn get_render_snapshot(&mut self) -> Option<RenderSnapshot> {
+    pub fn get_render_snapshot(&mut self) -> Option<TerminalSnapshot> {
         // Short-circuit if synchronized_output is active
         if self.dec_modes.synchronized_output {
             return None;
@@ -182,7 +192,7 @@ impl TerminalEmulator {
 
     /// Returns a snapshot buffer to the terminal after rendering.
     /// This completes the snapshot circulation cycle.
-    pub fn return_snapshot(&mut self, snapshot: RenderSnapshot) {
+    pub fn return_snapshot(&mut self, snapshot: TerminalSnapshot) {
         self.snapshot_buffer = Some(snapshot);
     }
 
@@ -190,7 +200,7 @@ impl TerminalEmulator {
     /// Clears dirty line flags.
     ///
     /// This is an internal helper method used by get_render_snapshot().
-    fn populate_snapshot(&mut self, snapshot: &mut RenderSnapshot) {
+    fn populate_snapshot(&mut self, snapshot: &mut TerminalSnapshot) {
         let (width, height) = (self.screen.width, self.screen.height);
         let active_grid = self.screen.active_grid();
 
@@ -253,6 +263,10 @@ impl TerminalEmulator {
 
         // Populate selection
         snapshot.selection = self.screen.selection.clone();
+
+        // Populate cell dimensions for rendering (from layout)
+        snapshot.cell_width_px = self.layout.cell_width_px;
+        snapshot.cell_height_px = self.layout.cell_height_px;
 
         self.screen.mark_all_clean();
     }

@@ -164,6 +164,8 @@ pub struct AppearanceConfig {
     pub cursor: CursorConfig,
     pub unfocused_cursor: CursorConfig,
     pub default_title: String,
+    pub cell_width_px: usize,
+    pub cell_height_px: usize,
 }
 
 impl Default for AppearanceConfig {
@@ -180,6 +182,8 @@ impl Default for AppearanceConfig {
                 thickness: 2,
             },
             default_title: "core-term".to_string(),
+            cell_width_px: 10,
+            cell_height_px: 16,
         }
     }
 }

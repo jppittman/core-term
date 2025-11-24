@@ -16,13 +16,13 @@ use crate::term::{
     EmulatorAction,
     EmulatorInput,
     // Imports for new tests:
-    Point, // From snapshot
-    RenderSnapshot,
+    Point,     // From snapshot
     Selection, // Added missing import
     SelectionMode,
     // SelectionRenderState, // This was the old name, replaced by snapshot::Selection
     SnapshotLine,
     TerminalEmulator,
+    TerminalSnapshot,
     UserInputAction,
 }; // For mouse input
 
@@ -34,7 +34,7 @@ fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
 }
 
 // Helper to get a Glyph from the snapshot.
-fn get_glyph_from_snapshot(snapshot: &RenderSnapshot, row: usize, col: usize) -> Option<Glyph> {
+fn get_glyph_from_snapshot(snapshot: &TerminalSnapshot, row: usize, col: usize) -> Option<Glyph> {
     if row < snapshot.dimensions.1 && col < snapshot.dimensions.0 {
         snapshot
             .lines
@@ -48,7 +48,7 @@ fn get_glyph_from_snapshot(snapshot: &RenderSnapshot, row: usize, col: usize) ->
 // asserts screen content and cursor position
 #[allow(clippy::panic_in_result_fn)] // Allow panic in this test helper
 fn assert_screen_state(
-    snapshot: &RenderSnapshot,
+    snapshot: &TerminalSnapshot,
     expected_screen: &[&str],
     expected_cursor_pos: Option<(usize, usize)>, // (row, col) for physical cursor
 ) {
@@ -842,7 +842,7 @@ fn test_snapshot_with_selection() {
         is_active: false,
     };
 
-    let snapshot_with_selection = RenderSnapshot {
+    let snapshot_with_selection = TerminalSnapshot {
         dimensions: (num_cols, num_rows),
         lines,
         cursor_state: Some(CursorRenderState {
@@ -861,7 +861,7 @@ fn test_snapshot_with_selection() {
     assert_eq!(sel_range.end, Point { x: 3, y: 1 });
     assert_eq!(snapshot_with_selection.selection.mode, SelectionMode::Cell);
 
-    let snapshot_cleared = RenderSnapshot {
+    let snapshot_cleared = TerminalSnapshot {
         dimensions: (num_cols, num_rows),
         lines: snapshot_with_selection.lines.clone(),
         cursor_state: snapshot_with_selection.cursor_state.clone(),

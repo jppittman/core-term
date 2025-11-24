@@ -3,7 +3,7 @@
 //! Defines the `Renderer`, responsible for translating a terminal's visual state
 //! into a series of drawing commands for a platform-specific backend.
 //!
-//! The `Renderer` is a stateless component that takes a `RenderSnapshot` and produces
+//! The `Renderer` is a stateless component that takes a `TerminalSnapshot` and produces
 //! a `Vec<RenderCommand>`. It is designed to be completely independent of the
 //! underlying graphics backend, which receives and interprets the commands.
 //! This design allows the core rendering logic to be shared across different
@@ -13,14 +13,14 @@ use crate::color::Color;
 use crate::config::Config;
 use crate::glyph::{AttrFlags, Attributes, Glyph};
 use crate::platform::backends::{PlatformState, RenderCommand};
-use crate::term::snapshot::{Point, RenderSnapshot, Selection};
+use crate::term::snapshot::{Point, Selection, TerminalSnapshot};
 use crate::term::unicode::get_char_display_width;
 use log::{trace, warn};
 
 /// A constant representing a single terminal cell consumed by a drawing operation.
 const SINGLE_CELL_CONSUMED: usize = 1;
 
-/// Translates a `RenderSnapshot` into a list of `RenderCommand`s.
+/// Translates a `TerminalSnapshot` into a list of `RenderCommand`s.
 ///
 /// The `Renderer` optimizes the drawing process by:
 /// 1. Only processing lines that are marked as "dirty" in the snapshot.
@@ -60,7 +60,7 @@ impl Renderer {
         (resolved_fg, resolved_bg, effective_flags)
     }
 
-    /// Generates a list of `RenderCommand`s from a `RenderSnapshot`.
+    /// Generates a list of `RenderCommand`s from a `TerminalSnapshot`.
     ///
     /// This is the primary method of the `Renderer`. It inspects the snapshot,
     /// identifies dirty lines, and generates an optimized sequence of drawing
@@ -68,7 +68,7 @@ impl Renderer {
     ///
     /// # Arguments
     ///
-    /// * `snapshot`: A `RenderSnapshot` of the current terminal state.
+    /// * `snapshot`: A `TerminalSnapshot` of the current terminal state.
     /// * `config`: The application configuration, used for resolving default colors.
     /// * `platform_state`: The current state of the platform, providing font and
     ///   display metrics.
@@ -79,7 +79,7 @@ impl Renderer {
     /// the terminal window.
     pub fn prepare_render_commands(
         &self,
-        snapshot: &RenderSnapshot,
+        snapshot: &TerminalSnapshot,
         config: &Config,
         platform_state: &PlatformState,
     ) -> Vec<RenderCommand> {
@@ -641,7 +641,7 @@ impl Renderer {
 
     fn draw_cursor_overlay(
         &self,
-        snapshot: &RenderSnapshot,
+        snapshot: &TerminalSnapshot,
         config: &Config,
         commands: &mut Vec<RenderCommand>,
     ) {

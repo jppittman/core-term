@@ -761,6 +761,7 @@ impl Screen {
     /// it's explicitly cleared or a new selection is started.
     /// No lines are marked dirty by this action itself, as the visual state of the
     /// selection highlight does not change upon deactivation.
+    #[allow(dead_code)]
     pub fn end_selection(&mut self) {
         if self.selection.is_active {
             self.selection.is_active = false;
@@ -791,6 +792,7 @@ impl Screen {
     ///
     /// # Returns
     /// `true` if the cell is selected, `false` otherwise.
+    #[allow(dead_code)]
     pub fn is_selected(&self, point: Point) -> bool {
         if point.x >= self.width || point.y >= self.height {
             return false;
