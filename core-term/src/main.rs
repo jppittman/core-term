@@ -10,7 +10,6 @@ pub mod keys;
 pub mod orchestrator;
 pub mod pixels;
 pub mod platform;
-pub mod rasterizer;
 pub mod renderer;
 pub mod term;
 

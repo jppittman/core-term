@@ -7,7 +7,7 @@
 //! - Converting to RGBA format
 
 // Include the generated baked font data
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 include!(concat!(env!("OUT_DIR"), "/baked_font.rs"));
 
 /// Unpack 4-bit packed grayscale data to 8-bit.
@@ -141,7 +141,7 @@ pub struct RenderedGlyph {
 /// Decompress and render a glyph from ROM, scaled to target cell size.
 ///
 /// Returns glyph with proper metrics for baseline alignment.
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 pub fn render_glyph_natural(ch: char, target_cell_height: usize, bold: bool, italic: bool) -> RenderedGlyph {
     use crate::simd_resize;
 
@@ -216,13 +216,13 @@ pub fn render_glyph_natural(ch: char, target_cell_height: usize, bold: bool, ita
 /// Decompress and render a glyph from ROM (legacy, forces exact size).
 ///
 /// Returns grayscale alpha mask (8-bit per pixel).
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 pub fn render_glyph(ch: char, _width: usize, height: usize, bold: bool, italic: bool) -> Vec<u8> {
     render_glyph_natural(ch, height, bold, italic).data
 }
 
-/// Stub for when font_headless is not enabled.
-#[cfg(not(feature = "font_headless"))]
+/// Stub for when fonts is not enabled.
+#[cfg(not(feature = "fonts"))]
 pub fn render_glyph(_ch: char, width: usize, height: usize, _bold: bool, _italic: bool) -> Vec<u8> {
     vec![0u8; width * height]
 }

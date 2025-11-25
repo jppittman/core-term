@@ -42,7 +42,7 @@ fontdue = "0.9"
 # Font backend features
 font_coretext = ["core-text", "core-graphics", "core-foundation"]
 font_freetype = ["freetype", "yeslogic-fontconfig-sys"]
-font_headless = []
+fonts = []
 
-# Default to headless (pre-baked font)
-default = ["font_headless"]
+# Default: use pre-baked fonts
+default = ["fonts"]
