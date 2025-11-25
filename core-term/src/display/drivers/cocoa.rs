@@ -631,10 +631,14 @@ impl CocoaDisplayDriver {
 
 impl Drop for CocoaDisplayDriver {
     fn drop(&mut self) {
-        if let Some(window) = &self.window {
-            unsafe {
+        unsafe {
+            if let Some(window) = &self.window {
                 let _: () = msg_send![&**window, close];
             }
+
+            // Terminate the application when driver is dropped
+            let app = NSApplication::sharedApplication(self.mtm);
+            app.terminate(None);
         }
         info!("CocoaDisplayDriver::drop() - Drop complete");
     }
