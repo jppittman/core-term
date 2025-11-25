@@ -38,7 +38,8 @@ const DEFAULT_WINDOW_Y: f64 = 100.0;
 const BYTES_PER_PIXEL: usize = 4;
 const BITS_PER_COMPONENT: usize = 8;
 const BITS_PER_PIXEL: usize = 32;
-const MAX_DRAW_LATENCY_SECONDS: f64 = 1.0 / 120.0;
+// Aggressive timeout to test wake events - should still feel instant if wake mechanism works
+const MAX_DRAW_LATENCY_SECONDS: f64 = 1.0; // 1 second - relies entirely on wake events
 
 const VIEW_CLASS_NAME: &str = "CoreTermView";
 const DELEGATE_CLASS_NAME: &str = "CoreTermWindowDelegate";
@@ -350,14 +351,19 @@ impl CocoaDisplayDriver {
         unsafe {
             let app = NSApplication::sharedApplication(self.mtm);
             let timeout = NSDate::dateWithTimeIntervalSinceNow(MAX_DRAW_LATENCY_SECONDS);
+            let immediate = NSDate::distantPast();
+            let mut first_event = true;
             loop {
+                // Use timeout for first event, then poll immediately (distantPast) for remaining events
+                let event_timeout = if first_event { &timeout } else { &immediate };
                 let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
                     NSEventMask::Any,
-                    Some(&timeout),
+                    Some(event_timeout),
                     &NSDefaultRunLoopMode,
                     true,
                 );
                 if let Some(event) = event {
+                    first_event = false; // We got an event, switch to non-blocking mode for draining
                     if event.r#type() == NSEventType::ApplicationDefined {
                         // Wake event - exit immediately to process pending display actions
                         debug!("cocoa: Received wake event (ApplicationDefined)");
@@ -367,9 +373,13 @@ impl CocoaDisplayDriver {
                     debug!("cocoa: Received NSEvent type={:?}", event.r#type());
                     if let Some(evt) = self.convert_event(&event) {
                         events.push(evt);
+                        // Don't send events we handle to the app - skip sendEvent for our events
+                    } else {
+                        // Only send events we don't handle to the app
+                        let _: () = msg_send![&app, sendEvent: &*event];
                     }
-                    let _: () = msg_send![&app, sendEvent: &*event];
                 } else {
+                    // No more events available - exit and return what we have
                     break;
                 }
             }
@@ -378,7 +388,9 @@ impl CocoaDisplayDriver {
     }
 
     fn convert_event(&self, event: &NSEvent) -> Option<DisplayEvent> {
-        match event.r#type() {
+        let event_type = event.r#type();
+        debug!("cocoa: convert_event type={:?}", event_type);
+        match event_type {
             NSEventType::KeyDown => {
                 let chars = event.characters();
                 let text = chars.map(|s| s.to_string());
