@@ -3,12 +3,12 @@
 fn main() {
     println!("cargo:rerun-if-changed=../assets/font/Noto_Sans_Mono/static/NotoSansMono-Regular.ttf");
 
-    // Only run font baking when font_headless feature is enabled
-    #[cfg(feature = "font_headless")]
+    // Only run font baking when fonts feature is enabled
+    #[cfg(feature = "fonts")]
     bake_font();
 }
 
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 fn bake_font() {
     use fontdue::{Font, FontSettings};
     use std::fs;
@@ -73,7 +73,7 @@ fn bake_font() {
     generate_baked_font_code(&all_glyph_data, &glyph_metadata, font_size_px);
 }
 
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 struct GlyphMeta {
     c: char,
     offset: usize,
@@ -84,7 +84,7 @@ struct GlyphMeta {
     advance: f32,
 }
 
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 fn pack_4bit(bitmap: &[u8]) -> Vec<u8> {
     let mut packed = Vec::with_capacity((bitmap.len() + 1) / 2);
     let mut high_nibble = true;
@@ -112,7 +112,7 @@ fn pack_4bit(bitmap: &[u8]) -> Vec<u8> {
     packed
 }
 
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 fn generate_baked_font_code(
     glyph_data: &[u8],
     metadata: &[GlyphMeta],
@@ -171,7 +171,7 @@ fn generate_baked_font_code(
     fs::write(&dest_path, code).unwrap();
 }
 
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 fn escape_char(c: char) -> String {
     match c {
         '\'' => "\\'".to_string(),
@@ -185,7 +185,7 @@ fn escape_char(c: char) -> String {
     }
 }
 
-#[cfg(feature = "font_headless")]
+#[cfg(feature = "fonts")]
 fn get_noto_sans_mono_char_ranges() -> Vec<(u32, u32)> {
     // Character ranges from fc-query output for NotoSansMono-Regular.ttf
     // This represents all 3,488 glyphs in the font

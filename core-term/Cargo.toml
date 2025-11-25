@@ -81,7 +81,7 @@ display_cocoa = [
     "core-foundation",
     "core-graphics",
     "core-text",
-    "pixelflow-render/font_headless",  # Use pre-baked font for all displays
+    "pixelflow-render/fonts",  # Use pre-baked fonts
 ]
 display_x11 = [
     "x11",
@@ -90,10 +90,10 @@ display_x11 = [
     "core-foundation",  # For CocoaFontDriver on macOS
     "core-graphics",    # For CocoaFontDriver on macOS
     "core-text",        # For CocoaFontDriver on macOS
-    "pixelflow-render/font_headless",  # Use pre-baked font for all displays
+    "pixelflow-render/fonts",  # Use pre-baked fonts
 ]
 display_headless = [
-    "pixelflow-render/font_headless",  # Use pre-baked font for all displays
+    "pixelflow-render/fonts",  # Use pre-baked fonts
 ]
 
 # Default feature strategy:
