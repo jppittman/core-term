@@ -108,6 +108,59 @@ pub trait PixelBatch: Copy + Clone + Sized {
     /// This single operation compiles to highly optimized code on all platforms.
     #[must_use]
     fn select(self, other: Self, mask: Self) -> Self;
+
+    /// Alpha blend: Linear interpolation between `self` (fg) and `bg` based on `alpha`.
+    ///
+    /// Formula: `fg * alpha + bg * (1 - alpha)`
+    ///
+    /// This is the proper way to blend antialiased text glyphs.
+    /// Each pixel is independently blended based on its alpha channel.
+    ///
+    /// # Arguments
+    /// * `self` - Foreground color (RGBA pixels)
+    /// * `bg` - Background color (RGBA pixels)
+    /// * `alpha` - Alpha mask where alpha channel contains coverage (0-255)
+    ///
+    /// # Implementation Note
+    /// Default implementation uses per-pixel scalar blending.
+    /// Backends can override with SIMD-optimized versions using:
+    /// 1. Expand u8 channels to u16 (prevent overflow)
+    /// 2. Multiply fg by alpha, bg by (256 - alpha)
+    /// 3. Add and shift right by 8 (divide by 256)
+    /// 4. Pack back to u8
+    #[must_use]
+    fn blend_alpha(self, bg: Self, alpha: Self) -> Self {
+        // Default scalar implementation
+        // This processes each pixel independently
+        // Backends can override with SIMD optimizations
+
+        // Convert each u32 pixel to [u8; 4] for processing
+        let fg_pixels = self.to_bytes();
+        let bg_pixels = bg.to_bytes();
+        let alpha_pixels = alpha.to_bytes();
+
+        let mut result = [[0u8; 4]; 4];
+
+        for i in 0..4 {
+            let a = alpha_pixels[i][3] as u16; // Alpha channel
+            let inv_a = 256 - a;
+
+            // Blend each channel
+            result[i][0] = ((fg_pixels[i][0] as u16 * a + bg_pixels[i][0] as u16 * inv_a) >> 8) as u8; // R
+            result[i][1] = ((fg_pixels[i][1] as u16 * a + bg_pixels[i][1] as u16 * inv_a) >> 8) as u8; // G
+            result[i][2] = ((fg_pixels[i][2] as u16 * a + bg_pixels[i][2] as u16 * inv_a) >> 8) as u8; // B
+            result[i][3] = 255; // Output alpha is always opaque
+        }
+
+        Self::from_bytes(result)
+    }
+
+    // Helper methods for blend_alpha default implementation
+    /// Convert batch to array of RGBA byte arrays
+    fn to_bytes(self) -> [[u8; 4]; 4];
+
+    /// Create batch from array of RGBA byte arrays
+    fn from_bytes(bytes: [[u8; 4]; 4]) -> Self;
 }
 
 // ============================================================================

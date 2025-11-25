@@ -74,6 +74,26 @@ impl PixelBatch for Batch {
             (self.0[3] & mask.0[3]) | (other.0[3] & !mask.0[3]),
         ])
     }
+
+    #[inline(always)]
+    fn to_bytes(self) -> [[u8; 4]; 4] {
+        [
+            self.0[0].to_le_bytes(),
+            self.0[1].to_le_bytes(),
+            self.0[2].to_le_bytes(),
+            self.0[3].to_le_bytes(),
+        ]
+    }
+
+    #[inline(always)]
+    fn from_bytes(bytes: [[u8; 4]; 4]) -> Self {
+        Self([
+            u32::from_le_bytes(bytes[0]),
+            u32::from_le_bytes(bytes[1]),
+            u32::from_le_bytes(bytes[2]),
+            u32::from_le_bytes(bytes[3]),
+        ])
+    }
 }
 
 #[cfg(test)]

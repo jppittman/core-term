@@ -8,7 +8,9 @@
 //! Color definitions (`Color`, `NamedColor`) are found in the `crate::color` module.
 
 use crate::color::Color;
-use bitflags::bitflags; // For creating flag enums like AttrFlags
+
+// Re-export AttrFlags from pixelflow-render
+pub use pixelflow_render::AttrFlags;
 
 /// Represents a glyph in a terminal grid cell.
 ///
@@ -51,34 +53,6 @@ pub struct ContentCell {
 /// This helps in scenarios where a single char representation is needed for a cell,
 /// indicating that it's part of a wide character but not the primary content-bearing part.
 pub const WIDE_CHAR_PLACEHOLDER: char = '\0';
-
-bitflags! {
-    /// Represents text attribute flags like bold, underline, reverse video, etc.
-    /// These flags correspond to common ANSI SGR (Select Graphic Rendition) parameters.
-    ///
-    /// The `bitflags` macro allows these to be combined (e.g., `AttrFlags::BOLD | AttrFlags::UNDERLINE`).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-    pub struct AttrFlags: u16 {
-        // Basic text styling attributes
-        const BOLD          = 1 << 0; // Typically increases intensity or changes font weight.
-        const FAINT         = 1 << 1; // Typically decreases intensity (not always supported or distinct).
-        const ITALIC        = 1 << 2; // Italicizes text (font-dependent).
-        const UNDERLINE     = 1 << 3; // Adds an underline.
-        const BLINK         = 1 << 4; // Makes text blink (behavior varies; often slow blink).
-        const REVERSE       = 1 << 5; // Swaps foreground and background colors.
-        const HIDDEN        = 1 << 6; // Makes text invisible (aka Conceal).
-        const STRIKETHROUGH = 1 << 7; // Puts a line through the text.
-
-        // Flags related to wide character handling, primarily for `ContentCell` within `Glyph::WidePrimary`.
-        // The `Glyph` enum variant (`Glyph::WidePrimary` or `Glyph::WideSpacer`) is the primary
-        // determinant of a glyph's role in a wide character sequence.
-
-        // Placeholder for future or less common attributes, if needed.
-        // const WRAP          = 1 << 8; // Example: Line wrap indicator (if stored per-glyph).
-        // const UNDERLINE_DOUBLE = 1 << 10; // Example: Double underline.
-        // const UNDERLINE_CURLY  = 1 << 11; // Example: Curly underline.
-    }
-}
 
 /// Represents the visual attributes of a glyph, including foreground color,
 /// background color, and styling flags.

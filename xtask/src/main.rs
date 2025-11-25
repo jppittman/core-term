@@ -74,6 +74,26 @@ fn bundle_run(extra_args: &[String]) {
         fs::set_permissions(binary_dest, perms).expect("Failed to set executable permission");
     }
 
+    // Copy icon file to bundle Resources
+    let icon_src = "assets/icons/icon.icns";
+    let icon_dest = "CoreTerm.app/Contents/Resources/icon.icns";
+
+    if Path::new(icon_src).exists() {
+        println!("Copying icon to bundle...");
+        fs::create_dir_all("CoreTerm.app/Contents/Resources")
+            .expect("Failed to create Resources directory");
+        fs::copy(icon_src, icon_dest).expect("Failed to copy icon to bundle");
+    } else {
+        println!("Warning: Icon not found at {}", icon_src);
+    }
+
+    // Touch the app bundle to invalidate macOS icon cache
+    println!("Refreshing app bundle metadata...");
+    Command::new("touch")
+        .arg("CoreTerm.app")
+        .status()
+        .expect("Failed to touch app bundle");
+
     println!("Launching CoreTerm.app...");
     println!("Logs will be written to /tmp/core-term.log");
 

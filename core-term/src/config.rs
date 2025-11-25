@@ -188,34 +188,8 @@ impl Default for AppearanceConfig {
     }
 }
 
-/// Font backend selection.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum FontBackend {
-    /// Core Text (macOS native)
-    CoreText,
-    /// FreeType + fontconfig (Linux/X11)
-    FreeType,
-    /// Headless (testing/CI)
-    Headless,
-}
-
-impl Default for FontBackend {
-    fn default() -> Self {
-        // Auto-detect based on platform
-        #[cfg(target_os = "macos")]
-        return FontBackend::CoreText;
-
-        #[cfg(all(not(target_os = "macos"), use_x11_display))]
-        return FontBackend::FreeType;
-
-        #[cfg(use_headless_display)]
-        return FontBackend::Headless;
-
-        #[cfg(not(any(target_os = "macos", use_x11_display, use_headless_display)))]
-        return FontBackend::CoreText; // Fallback
-    }
-}
+// Re-export FontBackend from renderer
+pub use crate::renderer::FontBackend;
 
 /// Font configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,6 +208,23 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         let normal = "Noto Sans Mono:pixelsize=12:antialias=true:autohint=true".to_string();
+
+        // Auto-detect font backend based on platform
+        // Priority: headless > x11 > macos
+        let backend = {
+            #[cfg(use_headless_display)]
+            { FontBackend::Headless }
+
+            #[cfg(all(not(use_headless_display), use_x11_display))]
+            { FontBackend::FreeType }
+
+            #[cfg(all(not(use_headless_display), not(use_x11_display), target_os = "macos"))]
+            { FontBackend::CoreText }
+
+            #[cfg(not(any(use_headless_display, use_x11_display, target_os = "macos")))]
+            { FontBackend::Headless } // Fallback to headless
+        };
+
         FontConfig {
             normal: normal.clone(),
             bold: format!("{}:style=Bold", normal),
@@ -242,7 +233,7 @@ impl Default for FontConfig {
             size_pt: 16.0, // Match cell height for proper scaling
             cw_scale: 1.0,
             ch_scale: 1.0,
-            backend: FontBackend::default(),
+            backend,
         }
     }
 }
