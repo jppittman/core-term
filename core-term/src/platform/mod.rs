@@ -115,6 +115,7 @@ impl GenericPlatform {
                 for display_event in display_events {
                     // Convert DisplayEvent to BackendEvent using From trait
                     let backend_event: BackendEvent = display_event.into();
+                    debug!("GenericPlatform: Sending BackendEvent to orchestrator: {:?}", backend_event);
                     if let Err(e) = self.platform_event_tx.send(backend_event) {
                         warn!("Failed to send display event to orchestrator: {}", e);
                         info!("Platform event channel closed, shutting down");
@@ -126,6 +127,7 @@ impl GenericPlatform {
 
             // Drain all available display actions
             while let Ok(action) = display_action_rx.try_recv() {
+                trace!("GenericPlatform: Processing action: {:?}", std::mem::discriminant(&action));
                 match action {
                     PlatformAction::RequestRedraw(snapshot) => {
                         let (cols, rows) = snapshot.dimensions;

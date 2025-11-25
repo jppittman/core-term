@@ -86,7 +86,7 @@ impl OrchestratorActor {
         let mut pending_emulator_actions = Vec::new();
 
         loop {
-            // Blocking receive from unified channel
+            // Blocking receive from unified channel - wait for first event
             let event = match orchestrator_rx.recv() {
                 Ok(event) => event,
                 Err(RecvError) => {
@@ -95,7 +95,7 @@ impl OrchestratorActor {
                 }
             };
 
-            // Process the event
+            // Process the first event
             Self::process_event(
                 event,
                 &mut term_emulator,
@@ -104,9 +104,25 @@ impl OrchestratorActor {
                 &waker,
             )?;
 
+            // Drain all other waiting events (batch processing)
+            loop {
+                match orchestrator_rx.try_recv() {
+                    Ok(event) => {
+                        Self::process_event(
+                            event,
+                            &mut term_emulator,
+                            &mut pending_emulator_actions,
+                            &display_action_tx,
+                            &waker,
+                        )?;
+                    }
+                    Err(_) => break, // No more events, exit drain loop
+                }
+            }
+
             // Handle any pending emulator actions
             for action in pending_emulator_actions.drain(..) {
-                Self::handle_emulator_action(action, &display_action_tx, &pty_action_tx)?;
+                Self::handle_emulator_action(action, &display_action_tx, &pty_action_tx, &waker)?;
             }
         }
     }
@@ -132,9 +148,21 @@ impl OrchestratorActor {
 
                         // Ask terminal for its snapshot (it owns the buffer)
                         if let Some(snapshot) = term_emulator.get_render_snapshot() {
-                            display_action_tx
-                                .send(PlatformAction::RequestRedraw(Box::new(snapshot)))
-                                .context("Failed to send RequestRedraw to Platform")?;
+                            // Only send snapshot and wake if there are dirty lines (noop detection)
+                            let has_dirty_lines = snapshot.lines.iter().any(|line| line.is_dirty);
+                            if has_dirty_lines {
+                                display_action_tx
+                                    .send(PlatformAction::RequestRedraw(Box::new(snapshot)))
+                                    .context("Failed to send RequestRedraw to Platform")?;
+                                // Wake immediately - we just sent a snapshot to render!
+                                if let Err(e) = waker.wake() {
+                                    warn!("OrchestratorActor: Failed to wake after sending snapshot: {}", e);
+                                }
+                            } else {
+                                trace!("OrchestratorActor: Snapshot has no dirty lines, skipping render");
+                                // Return the clean snapshot immediately
+                                term_emulator.return_snapshot(snapshot);
+                            }
                         } else {
                             debug!("OrchestratorActor: No snapshot available (synchronized_output or buffer out)");
                         }
@@ -180,11 +208,6 @@ impl OrchestratorActor {
                         pending_emulator_actions.push(action);
                     }
                 }
-
-                // Wake the platform event loop to handle OOB PTY input
-                if let Err(e) = waker.wake() {
-                    warn!("OrchestratorActor: Failed to wake platform event loop: {}", e);
-                }
             }
             OrchestratorEvent::BackendEvent(backend_event) => {
                 debug!(
@@ -197,6 +220,10 @@ impl OrchestratorActor {
                     display_action_tx
                         .send(PlatformAction::ShutdownComplete)
                         .context("Failed to send ShutdownComplete to Platform")?;
+                    // Wake immediately so platform processes shutdown
+                    if let Err(e) = waker.wake() {
+                        warn!("Failed to wake for shutdown: {}", e);
+                    }
                     return Err(anyhow::anyhow!("CloseRequested - shutting down"));
                 }
 
@@ -332,6 +359,7 @@ impl OrchestratorActor {
         action: EmulatorAction,
         display_tx: &SyncSender<PlatformAction>,
         pty_tx: &SyncSender<PlatformAction>,
+        waker: &Box<dyn crate::platform::waker::EventLoopWaker>,
     ) -> Result<()> {
         debug!("OrchestratorActor: Handling EmulatorAction: {:?}", action);
 
@@ -345,21 +373,37 @@ impl OrchestratorActor {
                 display_tx
                     .send(PlatformAction::SetTitle(title))
                     .context("Failed to send SetTitle to Display")?;
+                // Wake - window title changed
+                if let Err(e) = waker.wake() {
+                    warn!("Failed to wake after SetTitle: {}", e);
+                }
             }
             EmulatorAction::RingBell => {
                 display_tx
                     .send(PlatformAction::RingBell)
                     .context("Failed to send RingBell to Display")?;
+                // Wake - bell needs immediate feedback
+                if let Err(e) = waker.wake() {
+                    warn!("Failed to wake after RingBell: {}", e);
+                }
             }
             EmulatorAction::CopyToClipboard(text) => {
                 display_tx
                     .send(PlatformAction::CopyToClipboard(text))
                     .context("Failed to send CopyToClipboard to Display")?;
+                // Wake - user expects clipboard to be updated immediately
+                if let Err(e) = waker.wake() {
+                    warn!("Failed to wake after CopyToClipboard: {}", e);
+                }
             }
             EmulatorAction::SetCursorVisibility(visible) => {
                 display_tx
                     .send(PlatformAction::SetCursorVisibility(visible))
                     .context("Failed to send SetCursorVisibility to Display")?;
+                // Wake - cursor visibility is a visual change
+                if let Err(e) = waker.wake() {
+                    warn!("Failed to wake after SetCursorVisibility: {}", e);
+                }
             }
             EmulatorAction::RequestRedraw => {
                 trace!("OrchestratorActor: RequestRedraw received (no-op in actor model)");
@@ -368,12 +412,17 @@ impl OrchestratorActor {
                 display_tx
                     .send(PlatformAction::RequestPaste)
                     .context("Failed to send RequestPaste to Display")?;
+                // Wake - need to process paste request
+                if let Err(e) = waker.wake() {
+                    warn!("Failed to wake after RequestPaste: {}", e);
+                }
             }
             EmulatorAction::ResizePty { cols, rows } => {
                 info!("OrchestratorActor: Resizing PTY to {}x{}", cols, rows);
                 pty_tx
                     .send(PlatformAction::ResizePty { cols, rows })
                     .context("Failed to send ResizePty to PTY")?;
+                // No wake - PTY resize doesn't affect display immediately
             }
         }
         Ok(())

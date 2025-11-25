@@ -72,11 +72,11 @@ fn main() -> anyhow::Result<()> {
     // Wrap sender in type-safe wrapper
     let orchestrator_sender = OrchestratorSender::new(orchestrator_tx.clone());
 
-    // Orchestrator → Platform: Display actions including RequestRedraw (backpressure = 1)
-    let (display_action_tx, display_action_rx) = std::sync::mpsc::sync_channel(1);
+    // Orchestrator → Platform: Display actions including RequestRedraw (buffered to prevent blocking)
+    let (display_action_tx, display_action_rx) = std::sync::mpsc::sync_channel(128);
 
-    // Orchestrator → PTY: Write and ResizePty (backpressure = 1)
-    let (pty_action_tx, pty_action_rx) = std::sync::mpsc::sync_channel(1);
+    // Orchestrator → PTY: Write and ResizePty (buffered to prevent blocking)
+    let (pty_action_tx, pty_action_rx) = std::sync::mpsc::sync_channel(128);
 
     // 3. Spawn PTY EventMonitor (platform-specific implementation, but owned at main scope)
     #[cfg(any(target_os = "macos", target_os = "linux"))]
