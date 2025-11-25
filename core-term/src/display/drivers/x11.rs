@@ -8,8 +8,8 @@ use crate::display::messages::{
 };
 use crate::platform::backends::{KeySymbol, Modifiers};
 use crate::platform::waker::EventLoopWaker;
-use anyhow::{anyhow, Context, Result};
-use log::{debug, info, trace, warn};
+use anyhow::{anyhow, Result};
+use log::{debug, info};
 use std::ffi::CString;
 use std::mem;
 use std::ptr;
@@ -86,7 +86,7 @@ impl EventLoopWaker for X11Waker {
 pub struct X11DisplayDriver {
     display: *mut xlib::Display,
     screen: c_int,
-    root: xlib::Window,
+    _root: xlib::Window,
 
     window: xlib::Window,
     gc: xlib::GC,
@@ -115,7 +115,7 @@ impl DisplayDriver for X11DisplayDriver {
 
             let screen = xlib::XDefaultScreen(display);
             let root = xlib::XRootWindow(display, screen);
-            let visual = xlib::XDefaultVisual(display, screen);
+            let _visual = xlib::XDefaultVisual(display, screen);
 
             let wm_delete_name = CString::new("WM_DELETE_WINDOW").unwrap();
             let wm_delete_window = xlib::XInternAtom(display, wm_delete_name.as_ptr(), xlib::False);
@@ -160,7 +160,7 @@ impl DisplayDriver for X11DisplayDriver {
             Ok(Self {
                 display,
                 screen,
-                root,
+                _root: root,
                 window,
                 gc,
                 wm_delete_window,
@@ -215,7 +215,7 @@ impl X11DisplayDriver {
                     xlib::ClientMessage => {
                         let client = event.client_message;
                         // Check if this is WM_DELETE_WINDOW
-                        let data0 = unsafe { client.data.as_longs()[0] };
+                        let data0 = client.data.as_longs()[0];
                         if data0 as xlib::Atom != self.wm_delete_window {
                             debug!("X11: Received ClientMessage (Wake)");
                             continue;
@@ -445,7 +445,7 @@ impl X11DisplayDriver {
         None
     }
 
-    fn handle_copy_to_clipboard(&mut self, text: &str) -> Result<DriverResponse> {
+    fn handle_copy_to_clipboard(&mut self, _text: &str) -> Result<DriverResponse> {
         // Just assert ownership - data will be provided when requested
         unsafe {
             xlib::XSetSelectionOwner(self.display, self.atoms.clipboard, self.window, xlib::CurrentTime);

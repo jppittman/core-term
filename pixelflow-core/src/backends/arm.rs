@@ -65,6 +65,29 @@ impl PixelBatch for Batch {
         // SAFETY: All these operations are safe bitwise ops
         unsafe { Self(vbslq_u32(mask.0, self.0, other.0)) }
     }
+
+    #[inline(always)]
+    fn to_bytes(self) -> [[u8; 4]; 4] {
+        let mut output = [0u32; 4];
+        unsafe { self.store(output.as_mut_ptr()) };
+        [
+            output[0].to_le_bytes(),
+            output[1].to_le_bytes(),
+            output[2].to_le_bytes(),
+            output[3].to_le_bytes(),
+        ]
+    }
+
+    #[inline(always)]
+    fn from_bytes(bytes: [[u8; 4]; 4]) -> Self {
+        let pixels = [
+            u32::from_le_bytes(bytes[0]),
+            u32::from_le_bytes(bytes[1]),
+            u32::from_le_bytes(bytes[2]),
+            u32::from_le_bytes(bytes[3]),
+        ];
+        unsafe { Self::load(pixels.as_ptr()) }
+    }
 }
 
 #[cfg(test)]

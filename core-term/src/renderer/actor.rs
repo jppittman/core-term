@@ -11,8 +11,7 @@
 
 use crate::config::Config;
 use crate::platform::backends::{PlatformState, RenderCommand};
-use crate::rasterizer::{compile_into_buffer, SoftwareRasterizer};
-use crate::renderer::Renderer;
+use crate::renderer::{FramebufferConfig, Rasterizer, Renderer};
 use crate::term::TerminalSnapshot;
 use anyhow::{Context, Result};
 use log::*;
@@ -43,13 +42,13 @@ pub struct RenderChannels {
 /// RenderActor state (runs on dedicated thread)
 struct RenderActor {
     renderer: Renderer,
-    rasterizer: SoftwareRasterizer,
+    rasterizer: Rasterizer,
     config: Config,
 }
 
 impl RenderActor {
     /// Create new render actor with given renderer and rasterizer
-    fn new(renderer: Renderer, rasterizer: SoftwareRasterizer, config: Config) -> Self {
+    fn new(renderer: Renderer, rasterizer: Rasterizer, config: Config) -> Self {
         Self {
             renderer,
             rasterizer,
@@ -102,15 +101,14 @@ impl RenderActor {
             physical_cell_width, physical_cell_height
         );
 
-        compile_into_buffer(
-            &mut self.rasterizer,
-            render_commands,
-            &mut framebuffer,
-            display_width_px as usize,
-            display_height_px as usize,
-            physical_cell_width,
-            physical_cell_height,
-        );
+        let fb_config = FramebufferConfig {
+            width_px: display_width_px as usize,
+            height_px: display_height_px as usize,
+            cell_width_px: physical_cell_width,
+            cell_height_px: physical_cell_height,
+        };
+
+        self.rasterizer.compile(&render_commands, &mut framebuffer, fb_config);
 
         RenderResult {
             snapshot,
@@ -162,11 +160,14 @@ pub fn spawn_render_thread(
     let (result_tx, result_rx) = sync_channel(1);
 
     // Spawn render thread
+    let font_backend = config.appearance.font.backend;
+    let font_size_pt = config.appearance.font.size_pt;
+
     thread::Builder::new()
         .name("render".to_string())
         .spawn(move || {
             // Create the rasterizer on the render thread to avoid Send requirements
-            let rasterizer = SoftwareRasterizer::new(cell_width_px, cell_height_px);
+            let rasterizer = Rasterizer::new(cell_width_px, cell_height_px, font_backend, font_size_pt);
             let actor = RenderActor::new(renderer, rasterizer, config);
             actor.run(work_rx, result_tx);
         })
@@ -181,9 +182,8 @@ pub fn spawn_render_thread(
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::rasterizer::SoftwareRasterizer;
-    use crate::renderer::Renderer;
-    use crate::term::{CursorRenderState, CursorShape, Selection, SnapshotLine, TerminalSnapshot};
+    use crate::renderer::{FontBackend, Rasterizer, Renderer};
+    use crate::term::{Selection, SnapshotLine, TerminalSnapshot};
 
     fn create_test_snapshot(
         cols: usize,
@@ -217,7 +217,7 @@ mod tests {
 
         // Simulate a 2x scale factor (Retina display)
         // Rasterizer initialized with physical pixels (20x32 for 2x scale of 10x16 logical)
-        let rasterizer = SoftwareRasterizer::new(20, 32);
+        let rasterizer = Rasterizer::new(20, 32, FontBackend::Headless, 14.0);
 
         let mut actor = RenderActor::new(renderer, rasterizer, config);
 
@@ -251,7 +251,7 @@ mod tests {
         let renderer = Renderer::new();
 
         // 1x scale factor
-        let rasterizer = SoftwareRasterizer::new(10, 16);
+        let rasterizer = Rasterizer::new(10, 16, FontBackend::Headless, 14.0);
 
         let mut actor = RenderActor::new(renderer, rasterizer, config);
 

@@ -16,6 +16,11 @@ serde_json = "1.0.140"
 termios = "0.3.3"
 pprof = { version = "0.14", features = ["flamegraph", "criterion"], optional = true }
 
+# Rendering library
+[dependencies.pixelflow-render]
+path = "../pixelflow-render"
+features = ["serde"]
+
 # Display driver dependencies - feature-gated for flexibility
 [dependencies.objc2]
 version = "0.6"
@@ -76,6 +81,7 @@ display_cocoa = [
     "core-foundation",
     "core-graphics",
     "core-text",
+    "pixelflow-render/font_headless",  # Use pre-baked font for all displays
 ]
 display_x11 = [
     "x11",
@@ -84,8 +90,11 @@ display_x11 = [
     "core-foundation",  # For CocoaFontDriver on macOS
     "core-graphics",    # For CocoaFontDriver on macOS
     "core-text",        # For CocoaFontDriver on macOS
+    "pixelflow-render/font_headless",  # Use pre-baked font for all displays
 ]
-display_headless = []
+display_headless = [
+    "pixelflow-render/font_headless",  # Use pre-baked font for all displays
+]
 
 # Default feature strategy:
 # We enable display_cocoa by default as it's the most common development platform.

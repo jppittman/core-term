@@ -1186,7 +1186,7 @@ fn wide_character_followed_by_attribute_change() {
     let platform_state = create_test_platform_state();
 
     let attr_default = Attributes::default();
-    let attr_red = Attributes {
+    let _attr_red = Attributes {
         fg: Color::Named(NamedColor::Red),
         bg: Color::Default,
         flags: AttrFlags::empty(),
