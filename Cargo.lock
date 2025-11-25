@@ -391,6 +391,8 @@ dependencies = [
  "core-graphics 0.24.0",
  "core-text",
  "env_logger",
+ "foreign-types",
+ "foreign-types-shared",
  "freetype",
  "libc",
  "log",

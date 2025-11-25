@@ -182,7 +182,9 @@ impl OrchestratorActor {
                 }
 
                 // Wake the platform event loop to handle OOB PTY input
-                let _ = waker.wake();
+                if let Err(e) = waker.wake() {
+                    warn!("OrchestratorActor: Failed to wake platform event loop: {}", e);
+                }
             }
             OrchestratorEvent::BackendEvent(backend_event) => {
                 debug!(

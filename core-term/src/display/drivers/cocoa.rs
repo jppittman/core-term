@@ -16,6 +16,8 @@ use log::{debug, info, trace};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{class, msg_send, sel, MainThreadOnly};
+//use core_foundation::base::TCFType;
+use foreign_types_shared::ForeignType;
 
 // Explicit imports from objc2-app-kit
 use objc2_app_kit::{
@@ -357,8 +359,10 @@ impl CocoaDisplayDriver {
                 );
                 if let Some(event) = event {
                     if event.r#type() == NSEventType::ApplicationDefined {
+                        // Wake event - exit immediately to process pending display actions
+                        debug!("cocoa: Received wake event (ApplicationDefined)");
                         let _: () = msg_send![&app, sendEvent: &*event];
-                        continue;
+                        break;
                     }
                     debug!("cocoa: Received NSEvent type={:?}", event.r#type());
                     if let Some(evt) = self.convert_event(&event) {
@@ -562,7 +566,7 @@ impl CocoaDisplayDriver {
             let height = snapshot.height_px as usize;
             let bytes_per_row = width * BYTES_PER_PIXEL;
 
-            let data = Arc::new(Vec::from(snapshot.framebuffer.as_ref()));
+            let data = Arc::new(snapshot.framebuffer.as_ref());
             let provider = CGDataProvider::from_buffer(data);
             let color_space = CGColorSpace::create_device_rgb();
             let image = CGImage::new(
@@ -585,9 +589,8 @@ impl CocoaDisplayDriver {
                     "View has no layer".to_string(),
                 ));
             }
-
-            let image_ptr: *mut c_void = std::mem::transmute(image); // CGImageRef
-            let _: () = msg_send![layer, setContents: image_ptr];
+            let image_ref = image.as_ptr();  // Returns CGImageRef (raw pointer)
+            let _: () = msg_send![layer, setContents: image_ref as *mut c_void];
             let _: () = msg_send![layer, setContentsScale: self.backing_scale];
         }
         Ok(DriverResponse::PresentComplete(snapshot))
