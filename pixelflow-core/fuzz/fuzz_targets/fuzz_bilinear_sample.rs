@@ -35,7 +35,7 @@ fuzz_target!(|data: &[u8]| {
     let result = unsafe { view.sample_4bit_bilinear(u_batch, v_batch) };
 
     // Verify result is in valid range (0-255 for unpacked 4-bit)
-    let result_arr = result.to_array_u32();
+    let result_arr = result.to_array_usize();
     for &val in &result_arr {
         assert!(val <= 255, "sample_4bit_bilinear returned value > 255: {}", val);
     }

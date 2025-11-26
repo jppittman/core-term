@@ -152,11 +152,12 @@ impl<'a> ScreenView<'a> {
                     let a2 = alpha_mask[alpha_idx + 2];
                     let a3 = alpha_mask[alpha_idx + 3];
 
+                    // Broadcast alpha to all channels (R, G, B, A) to apply glyph shape
                     let alpha_pixels = [
-                        u32::from_le_bytes([255, 255, 255, a0]),
-                        u32::from_le_bytes([255, 255, 255, a1]),
-                        u32::from_le_bytes([255, 255, 255, a2]),
-                        u32::from_le_bytes([255, 255, 255, a3]),
+                        u32::from_le_bytes([a0, a0, a0, a0]),
+                        u32::from_le_bytes([a1, a1, a1, a1]),
+                        u32::from_le_bytes([a2, a2, a2, a2]),
+                        u32::from_le_bytes([a3, a3, a3, a3]),
                     ];
                     let alpha_batch = unsafe { Batch::load(alpha_pixels.as_ptr()) };
 

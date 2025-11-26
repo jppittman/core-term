@@ -82,14 +82,14 @@ fuzz_target!(|data: &[u8]| {
             .map(|(_, y)| params.y_proj.v0 + (params.y_proj.dv * y))
             .collect();
 
-        let u_batch = Batch::from_array_u32([u_coords[0], u_coords[1], u_coords[2], u_coords[3]]);
-        let v_batch = Batch::from_array_u32([v_coords[0], v_coords[1], v_coords[2], v_coords[3]]);
+        let u_batch = Batch::new(u_coords[0], u_coords[1], u_coords[2], u_coords[3]);
+        let v_batch = Batch::new(v_coords[0], v_coords[1], v_coords[2], v_coords[3]);
 
         // Sample from source (bilinear)
         let alpha = unsafe { src_view.sample_4bit_bilinear(u_batch, v_batch) };
 
         // Verify alpha is in range
-        let alpha_arr = alpha.to_array_u32();
+        let alpha_arr = alpha.to_array_usize();
         for &a in &alpha_arr {
             assert!(a <= 255, "Alpha out of range: {}", a);
         }
@@ -103,7 +103,7 @@ fuzz_target!(|data: &[u8]| {
         let result = fg_batch.blend_alpha(bg_batch, alpha_argb);
 
         // Verify result
-        let result_arr = result.to_array_u32();
+        let result_arr = result.to_array_usize();
         for &pixel in &result_arr {
             let a = (pixel >> 24) & 0xFF;
             let r = (pixel >> 16) & 0xFF;

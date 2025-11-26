@@ -14,7 +14,7 @@
 
 use core::arch::aarch64::*;
 use core::marker::PhantomData;
-use crate::SimdOps;
+use crate::batch::SimdOps;
 
 // ============================================================================
 // Platform-Specific Types
