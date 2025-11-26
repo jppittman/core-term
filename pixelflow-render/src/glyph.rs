@@ -143,7 +143,8 @@ pub struct RenderedGlyph {
 /// Returns glyph with proper metrics for baseline alignment.
 #[cfg(feature = "fonts")]
 pub fn render_glyph_natural(ch: char, target_cell_height: usize, bold: bool, italic: bool) -> RenderedGlyph {
-    use crate::simd_resize;
+    use pixelflow_core::{TensorView, TensorViewMut};
+    use crate::shader::{self, FontWeight, GlyphParams, GlyphStyle, Projection};
 
     // Binary search in GLYPH_METADATA
     let glyph_idx = match GLYPH_METADATA.binary_search_by_key(&ch, |meta| meta.c) {
@@ -162,44 +163,44 @@ pub fn render_glyph_natural(ch: char, target_cell_height: usize, bold: bool, ita
 
     let meta = &GLYPH_METADATA[glyph_idx];
 
-    // Calculate packed data length
-    let src_pixel_count = meta.width * meta.height;
-    let packed_len = (src_pixel_count + 1) / 2;
+    // Calculate output dimensions
+    let scale = target_cell_height as f32 / 24.0; // 24pt is our base size
+    let width = (meta.width as f32 * scale).max(1.0) as usize;
+    let height = (meta.height as f32 * scale).max(1.0) as usize;
+    let bearing_x = (meta.bearing_x as f32 * scale) as i32;
+    let bearing_y = (meta.bearing_y as f32 * scale) as i32;
 
-    // Extract packed data
-    let packed_data = &GLYPH_DATA[meta.offset..meta.offset + packed_len];
+    // Build shader parameters
+    let params = GlyphParams {
+        style: GlyphStyle {
+            fg: 0xFF_FF_FF_FF,  // White (will extract alpha channel later)
+            bg: 0x00_00_00_00,  // Transparent
+            weight: if bold { FontWeight::Bold } else { FontWeight::Normal },
+        },
+        x_proj: Projection::scale(meta.width, width),
+        y_proj: Projection::scale(meta.height, height),
+    };
 
-    // Unpack 4-bit to 8-bit grayscale
-    let mut grayscale = unpack_4bit(packed_data, meta.width, meta.height);
-    let mut width = meta.width;
-    let mut height = meta.height;
-    let mut bearing_x = meta.bearing_x;
-    let mut bearing_y = meta.bearing_y;
+    // Allocate output buffer (u32 for shader pipeline)
+    let mut output_u32 = vec![0u32; width * height];
+    let mut dst_view = TensorViewMut::new(&mut output_u32, width, height, width);
 
-    // Scale glyph to target cell height
-    // Font was baked at 24pt, typical cell height is ~18px at 24pt
-    // We scale everything proportionally
-    if height > 0 {
-        let scale = target_cell_height as f32 / 24.0; // 24pt is our base size
+    // Get packed atlas data (stays 4-bit packed!)
+    let packed_len = (meta.width * meta.height + 1) / 2;
+    let packed = &GLYPH_DATA[meta.offset..meta.offset + packed_len];
+    let atlas_view = TensorView::new(packed, meta.width, meta.height, (meta.width + 1) / 2);
 
-        if scale != 1.0 {
-            let new_width = (width as f32 * scale).max(1.0) as usize;
-            let new_height = (height as f32 * scale).max(1.0) as usize;
+    // *** THE SHADER: One pass, zero intermediate buffers ***
+    // Fuses: 4-bit unpack + bilinear resize + bold synthesis + alpha blend
+    shader::render_glyph(&mut dst_view, &atlas_view, params);
 
-            grayscale = simd_resize::resize_bilinear(&grayscale, width, height, new_width, new_height);
+    // Extract grayscale from R channel (after alpha blending, all RGB channels contain glyph intensity)
+    let mut grayscale: Vec<u8> = output_u32
+        .iter()
+        .map(|&px| (px & 0xFF) as u8)
+        .collect();
 
-            bearing_x = (bearing_x as f32 * scale) as i32;
-            bearing_y = (bearing_y as f32 * scale) as i32;
-            width = new_width;
-            height = new_height;
-        }
-    }
-
-    // Apply synthesis
-    if bold {
-        grayscale = apply_bold(&grayscale, width, height);
-    }
-
+    // Apply italic if needed (TODO: could be moved into shader too)
     if italic {
         grayscale = apply_italic(&grayscale, width, height);
     }

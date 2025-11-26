@@ -651,9 +651,10 @@ impl Drop for CocoaDisplayDriver {
                 let _: () = msg_send![&**window, close];
             }
 
-            // Terminate the application when driver is dropped
+            // Don't call app.terminate() - it forcefully exits and prevents cleanup (profiler, etc)
+            // Just close the window and let the app exit naturally
             let app = NSApplication::sharedApplication(self.mtm);
-            app.terminate(None);
+            app.stop(None);
         }
         info!("CocoaDisplayDriver::drop() - Drop complete");
     }

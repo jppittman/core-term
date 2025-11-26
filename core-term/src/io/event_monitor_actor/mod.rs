@@ -1,4 +1,4 @@
-// src/platform/os/event_monitor_actor.rs
+// src/io/event_monitor_actor/mod.rs
 
 //! Platform-agnostic PTY I/O actor that coordinates read and write operations.
 //!
@@ -15,7 +15,7 @@ mod write_thread;
 
 use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
-use crate::platform::os::pty::NixPty;
+use crate::io::pty::NixPty;
 use anyhow::{Context, Result};
 use log::*;
 use std::os::unix::io::AsRawFd;

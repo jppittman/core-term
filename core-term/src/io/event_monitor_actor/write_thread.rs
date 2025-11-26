@@ -1,4 +1,4 @@
-// src/platform/os/write_thread.rs
+// src/io/event_monitor_actor/write_thread.rs
 
 //! Internal write thread for EventMonitorActor.
 //!
@@ -6,7 +6,7 @@
 //! in a dedicated thread.
 
 use crate::platform::actions::PlatformAction;
-use crate::platform::os::pty::{NixPty, PtyChannel};
+use crate::io::pty::{NixPty, PtyChannel};
 use anyhow::{Context, Result};
 use log::*;
 use std::io::Write;

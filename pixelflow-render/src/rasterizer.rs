@@ -5,7 +5,7 @@
 
 use crate::commands::Op;
 use crate::glyph;
-use pixelflow_core::{Batch, PixelBatch};
+use pixelflow_core::Batch;
 
 /// Safe wrapper for framebuffer access with clipping.
 struct ScreenView<'a> {

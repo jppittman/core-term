@@ -21,7 +21,7 @@ pub mod font_manager;
 // pub mod linux_x11;
 #[cfg(use_cocoa_display)]
 pub mod macos;
-pub mod os;
+// pub mod os; // Moved to io module
 pub mod platform_trait;
 pub mod waker;
 
