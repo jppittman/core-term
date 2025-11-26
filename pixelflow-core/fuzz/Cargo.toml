@@ -1,0 +1,58 @@
+[package]
+name = "pixelflow-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.pixelflow-core]
+path = ".."
+
+[[bin]]
+name = "fuzz_blend_alpha"
+path = "fuzz_targets/fuzz_blend_alpha.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_bilinear_sample"
+path = "fuzz_targets/fuzz_bilinear_sample.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_saturating_ops"
+path = "fuzz_targets/fuzz_saturating_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_projection"
+path = "fuzz_targets/fuzz_projection.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_4bit_unpack"
+path = "fuzz_targets/fuzz_4bit_unpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_shader_pipeline"
+path = "fuzz_targets/fuzz_shader_pipeline.rs"
+test = false
+doc = false
+bench = false

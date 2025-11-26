@@ -1,6 +1,6 @@
 //! Platform-specific SIMD backends.
 //!
-//! Each backend implements the `PixelBatch` trait using platform intrinsics.
+//! Each backend implements the `SimdOps` trait using platform intrinsics.
 
 #[cfg(target_arch = "x86_64")]
 pub mod x86;

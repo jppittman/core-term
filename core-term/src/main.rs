@@ -6,6 +6,7 @@ pub mod color;
 pub mod config;
 pub mod display;
 pub mod glyph;
+pub mod io;
 pub mod keys;
 pub mod orchestrator;
 pub mod pixels;
@@ -81,8 +82,8 @@ fn main() -> anyhow::Result<()> {
     // 3. Spawn PTY EventMonitor (platform-specific implementation, but owned at main scope)
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _event_monitor_actor = {
-        use crate::platform::os::event_monitor_actor::EventMonitorActor;
-        use crate::platform::os::pty::{NixPty, PtyConfig};
+        use crate::io::event_monitor_actor::EventMonitorActor;
+        use crate::io::pty::{NixPty, PtyConfig};
 
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
         let pty_config = PtyConfig {
@@ -100,7 +101,7 @@ fn main() -> anyhow::Result<()> {
     info!("EventMonitorActor spawned successfully");
 
     // 4. Spawn VsyncActor (platform-agnostic)
-    use crate::platform::os::vsync_actor::VsyncActor;
+    use crate::io::vsync_actor::VsyncActor;
     let target_fps = CONFIG.performance.target_fps;
     let _vsync_actor = VsyncActor::spawn(orchestrator_sender.clone(), target_fps)
         .context("Failed to spawn VsyncActor")?;

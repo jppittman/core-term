@@ -1,4 +1,4 @@
-// src/platform/os/read_thread.rs
+// src/io/event_monitor_actor/read_thread.rs
 
 //! Internal read thread for EventMonitorActor.
 //!
@@ -8,9 +8,9 @@
 use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use crate::orchestrator::OrchestratorSender;
 #[cfg(target_os = "macos")]
-use crate::platform::os::event::{EventMonitor, KqueueFlags};
+use crate::io::event::{EventMonitor, KqueueFlags};
 #[cfg(target_os = "linux")]
-use crate::platform::os::event::{EventMonitor, EpollFlags as KqueueFlags};
+use crate::io::event::{EventMonitor, EpollFlags as KqueueFlags};
 use crate::platform::BackendEvent;
 use anyhow::{Context, Result};
 use log::*;
