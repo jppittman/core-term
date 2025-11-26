@@ -22,13 +22,12 @@ fuzz_target!(|data: &[u8]| {
     let result = fg_batch.blend_alpha(bg_batch, alpha_batch);
 
     // Extract result to ensure it's computed
-    let _ = result.to_array_u32();
+    let result_arr = result.to_array_usize();
 
     // Invariants to check:
     // 1. If alpha is 0, result should be close to bg
     // 2. If alpha is 0xFFFFFFFF, result should be close to fg
     // 3. Result should be in valid ARGB range
-    let result_arr = result.to_array_u32();
 
     for &pixel in &result_arr {
         // Each byte should be in 0..=255 range

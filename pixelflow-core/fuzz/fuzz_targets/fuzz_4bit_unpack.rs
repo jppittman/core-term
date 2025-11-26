@@ -36,7 +36,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Fuzz gather_4bit - should extract correct nibble
     let result = unsafe { view.gather_4bit(x_batch, y_batch) };
-    let result_arr = result.to_array_u32();
+    let result_arr = result.to_array_usize();
 
     // All results should be in 0..=15 range (4-bit values)
     for &val in &result_arr {
@@ -45,12 +45,12 @@ fuzz_target!(|data: &[u8]| {
 
     // Verify consistency: same coordinates should give same result
     let result2 = unsafe { view.gather_4bit(x_batch, y_batch) };
-    let result2_arr = result2.to_array_u32();
+    let result2_arr = result2.to_array_usize();
     assert_eq!(result_arr, result2_arr, "gather_4bit not deterministic");
 
     // Test expanded version (unpacks to 0-255 range)
     let expanded = unsafe { view.gather_4bit_expanded(x_batch, y_batch) };
-    let expanded_arr = expanded.to_array_u32();
+    let expanded_arr = expanded.to_array_usize();
 
     for &val in &expanded_arr {
         assert!(val <= 255, "gather_4bit_expanded returned value > 255: {}", val);
