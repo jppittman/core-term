@@ -11,7 +11,7 @@
 //! result = (WeightsY 1×2) * [(Pixels 2×2) * (WeightsX 2×1)]
 //! ```
 
-use pixelflow_core::{Batch, Tensor1x2, Tensor2x1, TensorView, TensorViewMut};
+use pixelflow_core::{Batch, MapPixels, Tensor1x2, Tensor2x1, TensorView, TensorViewMut};
 
 fn main() {
     println!("Tensor-Based Image Resize Example\n");
@@ -83,7 +83,7 @@ fn main() {
         );
 
         // Gather pixels from source
-        unsafe { src_view.gather_2d(src_x, src_y) }
+        unsafe { src_view.gather_2d(src_x, src_y).cast::<u8>() }
     });
 
     println!("=== Result ===");

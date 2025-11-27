@@ -73,8 +73,9 @@ pub fn bilinear_weights(p00: [u32; 4], p10: [u32; 4], dx: u32) -> [u32; 4] {
         let inv_dx = Batch::<u32>::splat(256) - dx;
 
         // This is the money shot: Clean syntax that compiles to optimal SIMD
-        let w0 = ((p00.cast::<u16>() * inv_dx.cast::<u16>()) +
-                  (p10.cast::<u16>() * dx.cast::<u16>())) >> 8;
+        let w0 = ((p00.cast::<u16>() * inv_dx.cast::<u16>())
+            + (p10.cast::<u16>() * dx.cast::<u16>()))
+            >> 8;
 
         let mut out = [0u32; 4];
         w0.cast::<u32>().store(out.as_mut_ptr());

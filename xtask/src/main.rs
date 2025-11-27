@@ -1,8 +1,13 @@
+//! Automation tasks for the project.
+//!
+//! Currently supports bundling the macOS application.
+
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+/// Entry point for xtask.
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -26,6 +31,11 @@ fn main() {
     }
 }
 
+/// Builds the project in release mode and bundles it into a macOS .app structure.
+/// Then launches the application.
+///
+/// # Parameters
+/// * `extra_args` - Additional arguments to pass to `cargo build`.
 fn bundle_run(extra_args: &[String]) {
     println!("Building core-term in release mode...");
 

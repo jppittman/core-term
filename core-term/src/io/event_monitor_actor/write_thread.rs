@@ -5,8 +5,8 @@
 //! This module handles all PTY write operations and resize commands
 //! in a dedicated thread.
 
-use crate::platform::actions::PlatformAction;
 use crate::io::pty::{NixPty, PtyChannel};
+use crate::platform::actions::PlatformAction;
 use anyhow::{Context, Result};
 use log::*;
 use std::io::Write;

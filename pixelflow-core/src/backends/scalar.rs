@@ -10,8 +10,8 @@
 //! - `SimdVec<u16>` → Array of 8×u16
 //! - `SimdVec<u8>` → Array of 16×u8
 
+use crate::batch::SimdOps;
 use core::marker::PhantomData;
-use crate::SimdOps;
 
 // ============================================================================
 // Platform-Specific Types
@@ -27,9 +27,13 @@ pub struct SimdVec<T>(pub(crate) ScalarReg<T>);
 /// The actual storage types (platform-specific).
 #[derive(Copy, Clone)]
 pub union ScalarReg<T> {
+    /// 4 lanes of u32.
     pub u32: [u32; 4],
+    /// 8 lanes of u16.
     pub u16: [u16; 8],
+    /// 16 lanes of u8.
     pub u8: [u8; 16],
+    /// Type marker.
     _marker: PhantomData<T>,
 }
 
@@ -38,11 +42,13 @@ pub union ScalarReg<T> {
 // ============================================================================
 
 impl SimdOps<u32> for SimdVec<u32> {
+    /// Broadcasts a value to all lanes.
     #[inline(always)]
     fn splat(val: u32) -> Self {
         Self(ScalarReg { u32: [val; 4] })
     }
 
+    /// Loads a vector from a pointer.
     #[inline(always)]
     unsafe fn load(ptr: *const u32) -> Self {
         // SAFETY: Caller guarantees ptr is valid for reading 4 u32 values
@@ -58,6 +64,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Stores the vector to a pointer.
     #[inline(always)]
     unsafe fn store(self, ptr: *mut u32) {
         // SAFETY: Caller guarantees ptr is valid for writing 4 u32 values
@@ -70,11 +77,15 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Creates a new vector from values.
     #[inline(always)]
     fn new(v0: u32, v1: u32, v2: u32, v3: u32) -> Self {
-        Self(ScalarReg { u32: [v0, v1, v2, v3] })
+        Self(ScalarReg {
+            u32: [v0, v1, v2, v3],
+        })
     }
 
+    /// Adds two vectors.
     #[inline(always)]
     fn add(self, other: Self) -> Self {
         unsafe {
@@ -91,6 +102,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Subtracts two vectors.
     #[inline(always)]
     fn sub(self, other: Self) -> Self {
         unsafe {
@@ -107,6 +119,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Multiplies two vectors.
     #[inline(always)]
     fn mul(self, other: Self) -> Self {
         unsafe {
@@ -123,6 +136,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Bitwise AND.
     #[inline(always)]
     fn bitand(self, other: Self) -> Self {
         unsafe {
@@ -134,6 +148,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Bitwise OR.
     #[inline(always)]
     fn bitor(self, other: Self) -> Self {
         unsafe {
@@ -145,6 +160,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Bitwise NOT.
     #[inline(always)]
     fn not(self) -> Self {
         unsafe {
@@ -155,36 +171,29 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Logical shift right.
     #[inline(always)]
     fn shr(self, count: i32) -> Self {
         unsafe {
             let a = self.0.u32;
             Self(ScalarReg {
-                u32: [
-                    a[0] >> count,
-                    a[1] >> count,
-                    a[2] >> count,
-                    a[3] >> count,
-                ],
+                u32: [a[0] >> count, a[1] >> count, a[2] >> count, a[3] >> count],
             })
         }
     }
 
+    /// Logical shift left.
     #[inline(always)]
     fn shl(self, count: i32) -> Self {
         unsafe {
             let a = self.0.u32;
             Self(ScalarReg {
-                u32: [
-                    a[0] << count,
-                    a[1] << count,
-                    a[2] << count,
-                    a[3] << count,
-                ],
+                u32: [a[0] << count, a[1] << count, a[2] << count, a[3] << count],
             })
         }
     }
 
+    /// Element-wise selection.
     #[inline(always)]
     fn select(self, other: Self, mask: Self) -> Self {
         // (self & mask) | (other & !mask)
@@ -203,6 +212,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Minimum value.
     #[inline(always)]
     fn min(self, other: Self) -> Self {
         unsafe {
@@ -219,6 +229,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Maximum value.
     #[inline(always)]
     fn max(self, other: Self) -> Self {
         unsafe {
@@ -235,6 +246,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Saturating addition.
     #[inline(always)]
     fn saturating_add(self, other: Self) -> Self {
         unsafe {
@@ -251,6 +263,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Saturating subtraction.
     #[inline(always)]
     fn saturating_sub(self, other: Self) -> Self {
         unsafe {
@@ -273,11 +286,13 @@ impl SimdOps<u32> for SimdVec<u32> {
 // ============================================================================
 
 impl SimdOps<u16> for SimdVec<u16> {
+    /// Broadcasts a value to all lanes.
     #[inline(always)]
     fn splat(val: u16) -> Self {
         Self(ScalarReg { u16: [val; 8] })
     }
 
+    /// Loads a vector from a pointer.
     #[inline(always)]
     unsafe fn load(ptr: *const u16) -> Self {
         // SAFETY: Caller guarantees ptr is valid for reading 8 u16 values
@@ -297,6 +312,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Stores the vector to a pointer.
     #[inline(always)]
     unsafe fn store(self, ptr: *mut u16) {
         // SAFETY: Caller guarantees ptr is valid for writing 8 u16 values
@@ -313,6 +329,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Creates a new vector (partial initialization).
     #[inline(always)]
     fn new(v0: u16, v1: u16, v2: u16, v3: u16) -> Self {
         Self(ScalarReg {
@@ -320,6 +337,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         })
     }
 
+    /// Adds two vectors.
     #[inline(always)]
     fn add(self, other: Self) -> Self {
         unsafe {
@@ -340,6 +358,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Subtracts two vectors.
     #[inline(always)]
     fn sub(self, other: Self) -> Self {
         unsafe {
@@ -360,6 +379,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Multiplies two vectors.
     #[inline(always)]
     fn mul(self, other: Self) -> Self {
         unsafe {
@@ -380,6 +400,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Bitwise AND.
     #[inline(always)]
     fn bitand(self, other: Self) -> Self {
         unsafe {
@@ -400,6 +421,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Bitwise OR.
     #[inline(always)]
     fn bitor(self, other: Self) -> Self {
         unsafe {
@@ -420,6 +442,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Bitwise NOT.
     #[inline(always)]
     fn not(self) -> Self {
         unsafe {
@@ -430,6 +453,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Logical shift right.
     #[inline(always)]
     fn shr(self, count: i32) -> Self {
         unsafe {
@@ -449,6 +473,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Logical shift left.
     #[inline(always)]
     fn shl(self, count: i32) -> Self {
         unsafe {
@@ -468,6 +493,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Element-wise selection.
     #[inline(always)]
     fn select(self, other: Self, mask: Self) -> Self {
         unsafe {
@@ -489,6 +515,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Minimum value.
     #[inline(always)]
     fn min(self, other: Self) -> Self {
         unsafe {
@@ -509,6 +536,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Maximum value.
     #[inline(always)]
     fn max(self, other: Self) -> Self {
         unsafe {
@@ -529,6 +557,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Saturating addition.
     #[inline(always)]
     fn saturating_add(self, other: Self) -> Self {
         unsafe {
@@ -549,6 +578,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Saturating subtraction.
     #[inline(always)]
     fn saturating_sub(self, other: Self) -> Self {
         unsafe {
@@ -575,11 +605,13 @@ impl SimdOps<u16> for SimdVec<u16> {
 // ============================================================================
 
 impl SimdOps<u8> for SimdVec<u8> {
+    /// Broadcasts a value to all lanes.
     #[inline(always)]
     fn splat(val: u8) -> Self {
         Self(ScalarReg { u8: [val; 16] })
     }
 
+    /// Loads a vector from a pointer.
     #[inline(always)]
     unsafe fn load(ptr: *const u8) -> Self {
         // SAFETY: Caller guarantees ptr is valid for reading 16 u8 values
@@ -607,6 +639,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Stores the vector to a pointer.
     #[inline(always)]
     unsafe fn store(self, ptr: *mut u8) {
         // SAFETY: Caller guarantees ptr is valid for writing 16 u8 values
@@ -618,6 +651,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Creates a new vector (partial initialization).
     #[inline(always)]
     fn new(v0: u8, v1: u8, v2: u8, v3: u8) -> Self {
         Self(ScalarReg {
@@ -625,6 +659,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         })
     }
 
+    /// Adds two vectors.
     #[inline(always)]
     fn add(self, other: Self) -> Self {
         unsafe {
@@ -638,6 +673,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Subtracts two vectors.
     #[inline(always)]
     fn sub(self, other: Self) -> Self {
         unsafe {
@@ -651,6 +687,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Multiplies two vectors.
     #[inline(always)]
     fn mul(self, other: Self) -> Self {
         unsafe {
@@ -664,6 +701,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Bitwise AND.
     #[inline(always)]
     fn bitand(self, other: Self) -> Self {
         unsafe {
@@ -677,6 +715,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Bitwise OR.
     #[inline(always)]
     fn bitor(self, other: Self) -> Self {
         unsafe {
@@ -690,6 +729,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Bitwise NOT.
     #[inline(always)]
     fn not(self) -> Self {
         unsafe {
@@ -702,6 +742,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Logical shift right.
     #[inline(always)]
     fn shr(self, count: i32) -> Self {
         unsafe {
@@ -714,6 +755,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Logical shift left.
     #[inline(always)]
     fn shl(self, count: i32) -> Self {
         unsafe {
@@ -726,6 +768,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Element-wise selection.
     #[inline(always)]
     fn select(self, other: Self, mask: Self) -> Self {
         unsafe {
@@ -740,6 +783,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Minimum value.
     #[inline(always)]
     fn min(self, other: Self) -> Self {
         unsafe {
@@ -753,6 +797,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Maximum value.
     #[inline(always)]
     fn max(self, other: Self) -> Self {
         unsafe {
@@ -766,6 +811,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Saturating addition.
     #[inline(always)]
     fn saturating_add(self, other: Self) -> Self {
         unsafe {
@@ -779,6 +825,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Saturating subtraction.
     #[inline(always)]
     fn saturating_sub(self, other: Self) -> Self {
         unsafe {
@@ -800,6 +847,12 @@ impl SimdOps<u8> for SimdVec<u8> {
 /// Bitcast between scalar types.
 ///
 /// This just reinterprets the union field.
+///
+/// # Parameters
+/// * `v` - The source vector.
+///
+/// # Returns
+/// * The vector bitcasted to type `U`.
 #[inline(always)]
 pub fn cast<T, U>(v: SimdVec<T>) -> SimdVec<U> {
     SimdVec(v.0)

@@ -61,19 +61,28 @@ fn determine_display_driver(target_os: &str) -> String {
         let driver_lower = driver.to_lowercase();
         match driver_lower.as_str() {
             "cocoa" | "x11" | "headless" => {
-                println!("cargo:warning=Using display driver from DISPLAY_DRIVER env: {}", driver_lower);
+                println!(
+                    "cargo:warning=Using display driver from DISPLAY_DRIVER env: {}",
+                    driver_lower
+                );
                 return driver_lower;
             }
             _ => {
-                panic!("Invalid DISPLAY_DRIVER value: '{}'. Must be one of: cocoa, x11, headless", driver);
+                panic!(
+                    "Invalid DISPLAY_DRIVER value: '{}'. Must be one of: cocoa, x11, headless",
+                    driver
+                );
             }
         }
     }
 
     // 2. Check which display features are enabled
-    let has_cocoa = cfg!(feature = "display_cocoa") || std::env::var("CARGO_FEATURE_DISPLAY_COCOA").is_ok();
-    let has_x11 = cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok();
-    let has_headless = cfg!(feature = "display_headless") || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
+    let has_cocoa =
+        cfg!(feature = "display_cocoa") || std::env::var("CARGO_FEATURE_DISPLAY_COCOA").is_ok();
+    let has_x11 =
+        cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok();
+    let has_headless = cfg!(feature = "display_headless")
+        || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
 
     // If a specific feature is enabled, use it (last one wins if multiple)
     if has_headless && !has_x11 && !has_cocoa {

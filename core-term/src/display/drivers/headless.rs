@@ -1,9 +1,7 @@
 //! Headless mock display driver implementation.
 
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{
-    DisplayError, DriverConfig, DriverRequest, DriverResponse,
-};
+use crate::display::messages::{DisplayError, DriverConfig, DriverRequest, DriverResponse};
 use crate::platform::waker::{EventLoopWaker, NoOpWaker};
 use anyhow::Result;
 use log::{info, trace};
@@ -38,10 +36,7 @@ impl DisplayDriver for HeadlessDisplayDriver {
         Box::new(NoOpWaker)
     }
 
-    fn handle_request(
-        &mut self,
-        request: DriverRequest,
-    ) -> Result<DriverResponse, DisplayError> {
+    fn handle_request(&mut self, request: DriverRequest) -> Result<DriverResponse, DisplayError> {
         match request {
             DriverRequest::Init => {
                 info!("HeadlessDisplayDriver: Init - returning metrics");

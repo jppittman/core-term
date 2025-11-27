@@ -1,79 +1,94 @@
 // src/platform/mock.rs
 
 use crate::platform::actions::PlatformAction;
-use crate::platform::backends::{BackendEvent, PlatformState};
-use crate::platform::platform_trait::Platform;
-use crate::platform::PlatformEvent;
-use anyhow::Result;
+use crate::platform::PlatformChannels;
+use crate::term::ControlEvent;
+use crate::platform::BackendEvent;
+use anyhow::{Context, Result};
+use std::sync::mpsc::{Receiver, TryRecvError, RecvTimeoutError};
+use std::time::Duration;
 
 pub struct MockPlatform {
-    events: Vec<PlatformEvent>,
-    dispatched_actions: Vec<PlatformAction>,
+    pub display_action_rx: Receiver<PlatformAction>,
+    pub platform_event_tx: crate::orchestrator::OrchestratorSender,
+    // We store actions that are not RequestRedraw.
+    // RequestRedraw contains a Box<TerminalSnapshot> which we must return, so we can't keep it.
+    pub received_actions: Vec<PlatformAction>,
+    pub redraw_count: usize,
 }
 
 impl MockPlatform {
-    pub fn new() -> Self {
+    pub fn new(channels: PlatformChannels) -> Self {
         Self {
-            events: Vec::new(),
-            dispatched_actions: Vec::new(),
+            display_action_rx: channels.display_action_rx,
+            platform_event_tx: channels.platform_event_tx,
+            received_actions: Vec::new(),
+            redraw_count: 0,
         }
     }
 
-    pub fn push_event(&mut self, event: PlatformEvent) {
-        self.events.push(event);
-    }
-
-    pub fn dispatched_actions(&self) -> &[PlatformAction] {
-        &self.dispatched_actions
-    }
-}
-
-impl Platform for MockPlatform {
-    fn new(
-        _initial_pty_cols: u16,
-        _initial_pty_rows: u16,
-        _shell_command: String,
-        _shell_args: Vec<String>,
-    ) -> Result<(Self, PlatformState)> {
-        Ok((
-            Self::new(),
-            PlatformState {
-                event_fd: None,
-                font_cell_width_px: 8,
-                font_cell_height_px: 16,
-                scale_factor: 1.0,
-                display_width_px: 800,
-                display_height_px: 600,
-            },
-        ))
-    }
-
-    fn poll_events(&mut self) -> Result<Vec<PlatformEvent>> {
-        Ok(self.events.drain(..).collect())
-    }
-
-    fn dispatch_actions(&mut self, actions: Vec<PlatformAction>) -> Result<()> {
-        self.dispatched_actions.extend(actions);
+    /// Process all pending actions in the channel.
+    /// Non-blocking.
+    pub fn process_actions(&mut self) -> Result<()> {
+        loop {
+            match self.display_action_rx.try_recv() {
+                Ok(action) => {
+                    match action {
+                        PlatformAction::RequestRedraw(snapshot) => {
+                             self.redraw_count += 1;
+                             // Echo back immediately to simulate rendering completion
+                             // This is critical for the orchestrator to reuse the snapshot buffer
+                             self.platform_event_tx
+                                .send(ControlEvent::FrameRendered(snapshot))
+                                .context("Failed to return snapshot")?;
+                        }
+                        other => {
+                            self.received_actions.push(other);
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    // Channel disconnected means sender (Orchestrator) has dropped the channel.
+                    // This is expected during shutdown.
+                    break;
+                },
+            }
+        }
         Ok(())
     }
 
-    fn get_current_platform_state(&self) -> PlatformState {
-        PlatformState {
-            event_fd: None,
-            font_cell_width_px: 8,
-            font_cell_height_px: 16,
-            scale_factor: 1.0,
-            display_width_px: 800,
-            display_height_px: 600,
+    /// Wait for the next action from the orchestrator.
+    /// Handles RequestRedraw side-effects automatically.
+    pub fn wait_for_next_action(&mut self, timeout: Duration) -> Result<Option<PlatformAction>> {
+        match self.display_action_rx.recv_timeout(timeout) {
+            Ok(action) => {
+                match action {
+                    PlatformAction::RequestRedraw(snapshot) => {
+                        self.redraw_count += 1;
+                        // Clone snapshot so we can return one and send one back
+                        let snapshot_clone = snapshot.clone();
+                        self.platform_event_tx
+                           .send(ControlEvent::FrameRendered(snapshot))
+                           .context("Failed to return snapshot")?;
+
+                        Ok(Some(PlatformAction::RequestRedraw(snapshot_clone)))
+                    }
+                    other => {
+                         Ok(Some(other))
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => {
+                // Treated as end of stream
+                Ok(None)
+            }
         }
     }
 
-    fn run(self) -> Result<()> {
-        // Mock implementation - immediately return Ok
-        Ok(())
-    }
-
-    fn cleanup(&mut self) -> Result<()> {
-        Ok(())
+    /// Inject a backend event (e.g. keyboard input, resize)
+    pub fn send_event(&self, event: BackendEvent) -> Result<()> {
+         self.platform_event_tx.send(event).context("Failed to send event")
     }
 }
