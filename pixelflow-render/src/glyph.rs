@@ -124,9 +124,10 @@ pub fn render_glyph_direct(
 
     // --- 3. Pipeline Construction ---
 
-    let packed_len = (meta.width * meta.height + 1) / 2;
+    let stride = (meta.width + 1) / 2;
+    let packed_len = stride * meta.height;
     let packed = &GLYPH_DATA[meta.offset..meta.offset + packed_len];
-    let atlas_view = TensorView::new(packed, meta.width, meta.height, (meta.width + 1) / 2);
+    let atlas_view = TensorView::new(packed, meta.width, meta.height, stride);
 
     // The Base Signal: Sample from Atlas
     let sampler = SampleAtlas { atlas: atlas_view };
