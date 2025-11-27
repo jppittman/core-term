@@ -13,7 +13,8 @@ impl<'a> Surface<u8> for SampleAtlas<'a> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
         // Direct bilinear sample
-        unsafe { self.atlas.sample_4bit_bilinear(x, y).cast() }
+        // Convert integer coordinates to 16.16 fixed point format expected by sample_4bit_bilinear.
+        unsafe { self.atlas.sample_4bit_bilinear(x << 16, y << 16).cast() }
     }
 }
 
