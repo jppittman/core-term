@@ -397,7 +397,7 @@ impl<'a> MapPixels<u8> for TensorViewMut<'a, u8> {
                 let result = f(x_vec, y_vec);
                 let bytes = result.cast::<u32>().to_bytes_packed();
                 let tail_slice = &mut self.data[row_offset + x ..];
-                let count = tail_slice.len().min(4);
+                let count = (self.width - x).min(4).min(tail_slice.len());
                 for i in 0..count { tail_slice[i] = bytes[i]; }
             }
         }
@@ -426,7 +426,8 @@ impl<'a> MapPixels<u32> for TensorViewMut<'a, u32> {
                 let x_vec = batch::Batch::new(x as u32, (x + 1) as u32, (x + 2) as u32, (x + 3) as u32);
                 let result = f(x_vec, y_vec);
                 let tail_slice = &mut self.data[row_offset + x ..];
-                result.store_into_slice(tail_slice);
+                let write_len = (self.width - x).min(tail_slice.len());
+                result.store_into_slice(&mut tail_slice[..write_len]);
             }
         }
     }

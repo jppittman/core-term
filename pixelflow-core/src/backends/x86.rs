@@ -145,51 +145,71 @@ impl SimdOps<u32> for SimdVec<u32> {
     /// Minimum value.
     #[inline(always)]
     fn min(self, other: Self) -> Self {
-        // SAFETY: _mm_min_epu32 (unsigned 32-bit min, requires SSE4.1)
-        unsafe { Self(_mm_min_epu32(self.0, other.0), PhantomData) }
+        // SSE2 compatible unsigned min
+        unsafe {
+            let mask = cmp_gt_u32(self.0, other.0); // mask = self > other
+            // if self > other, min is other. else self.
+            // select(other, self, mask)
+            let masked_other = _mm_and_si128(other.0, mask);
+            let not_mask = _mm_xor_si128(mask, _mm_set1_epi32(-1));
+            let masked_self = _mm_and_si128(self.0, not_mask);
+            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
+        }
     }
 
     /// Maximum value.
     #[inline(always)]
     fn max(self, other: Self) -> Self {
-        // SAFETY: _mm_max_epu32 (unsigned 32-bit max, requires SSE4.1)
-        unsafe { Self(_mm_max_epu32(self.0, other.0), PhantomData) }
+        // SSE2 compatible unsigned max
+        unsafe {
+            let mask = cmp_gt_u32(self.0, other.0); // mask = self > other
+            // if self > other, max is self. else other.
+            // select(self, other, mask)
+            let masked_self = _mm_and_si128(self.0, mask);
+            let not_mask = _mm_xor_si128(mask, _mm_set1_epi32(-1));
+            let masked_other = _mm_and_si128(other.0, not_mask);
+            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
+        }
     }
 
     /// Saturating addition.
     #[inline(always)]
     fn saturating_add(self, other: Self) -> Self {
-        // No native u32 saturating add in SSE - emulate with min
-        // result = min(a + b, 0xFFFFFFFF) but check for overflow
-        // If a + b < a, overflow occurred, return 0xFFFFFFFF
         unsafe {
             let sum = _mm_add_epi32(self.0, other.0);
-            // Overflow detection: sum < self means overflow occurred
-            // Unsigned comparison: a < b ⟺ (a - b) has sign bit set (when interpreted as signed)
-            // Equivalent: sum < self ⟺ (sum - self) is negative
-            let diff = _mm_sub_epi32(sum, self.0);
-            let overflow = _mm_srai_epi32(diff, 31); // Arithmetic shift right to replicate sign bit
-            // If overflow (all 1s), set to 0xFFFFFFFF, else keep sum
-            let max_val = _mm_set1_epi32(-1i32); // 0xFFFFFFFF
-            Self(_mm_or_si128(sum, _mm_and_si128(overflow, max_val)), PhantomData)
+            // Overflow if sum < self (unsigned)
+            // mask = self > sum
+            let mask = cmp_gt_u32(self.0, sum);
+            // if mask (overflow), return MAX (-1), else sum
+            // sum | mask
+            Self(_mm_or_si128(sum, mask), PhantomData)
         }
     }
 
     /// Saturating subtraction.
     #[inline(always)]
     fn saturating_sub(self, other: Self) -> Self {
-        // Emulate: max(a - b, 0), which is a - min(a, b)
-        // But simpler: if b > a, return 0, else return a - b
         unsafe {
             let diff = _mm_sub_epi32(self.0, other.0);
-            // Underflow detection: if self < other, result should be 0
-            // Unsigned comparison: self < other ⟺ (self - other) is negative
-            // Since diff = self - other, if diff is negative (sign bit set), underflow occurred
-            let sign_bit = _mm_srai_epi32(diff, 31); // All 1s if negative, all 0s if positive
-            // If underflow (sign_bit = all 1s), return 0, else return diff
-            // andnot(a, b) = (!a) & b, so andnot(sign_bit, diff) zeros out diff if sign_bit is set
-            Self(_mm_andnot_si128(sign_bit, diff), PhantomData)
+            // Underflow if self < other (unsigned) -> other > self
+            // mask = other > self
+            let mask = cmp_gt_u32(other.0, self.0);
+            // if mask (underflow), return 0, else diff
+            // diff & !mask
+            let not_mask = _mm_xor_si128(mask, _mm_set1_epi32(-1));
+            Self(_mm_and_si128(diff, not_mask), PhantomData)
         }
+    }
+}
+
+// Helper: Unsigned Greater Than for u32 (SSE2)
+#[inline(always)]
+unsafe fn cmp_gt_u32(a: __m128i, b: __m128i) -> __m128i {
+    unsafe {
+        let sign_flip = _mm_set1_epi32(0x80000000u32 as i32);
+        let a_flipped = _mm_xor_si128(a, sign_flip);
+        let b_flipped = _mm_xor_si128(b, sign_flip);
+        _mm_cmpgt_epi32(a_flipped, b_flipped)
     }
 }
 
