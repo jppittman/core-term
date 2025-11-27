@@ -47,7 +47,7 @@ fn bake_font() {
                 }
 
                 // Pack to 4-bit
-                let packed = pack_4bit(&bitmap);
+                let packed = pack_4bit(&bitmap, metrics.width);
 
                 // Record metadata
                 let offset = all_glyph_data.len();
@@ -90,28 +90,42 @@ struct GlyphMeta {
 }
 
 #[cfg(feature = "fonts")]
-fn pack_4bit(bitmap: &[u8]) -> Vec<u8> {
-    let mut packed = Vec::with_capacity((bitmap.len() + 1) / 2);
-    let mut high_nibble = true;
-    let mut current_byte = 0u8;
-
-    for &pixel in bitmap {
-        // Quantize 0..255 -> 0..15
-        let val_4bit = ((pixel as u16 + 8) / 17).min(15) as u8;
-
-        if high_nibble {
-            current_byte = val_4bit << 4;
-            high_nibble = false;
-        } else {
-            current_byte |= val_4bit;
-            packed.push(current_byte);
-            high_nibble = true;
-        }
+fn pack_4bit(bitmap: &[u8], width: usize) -> Vec<u8> {
+    if width == 0 {
+        return Vec::new();
     }
 
-    // Push final byte if we ended on a high nibble
-    if !high_nibble {
-        packed.push(current_byte);
+    // Calculate stride in bytes
+    let stride = (width + 1) / 2;
+    let height = bitmap.len() / width;
+
+    let mut packed = Vec::with_capacity(stride * height);
+
+    for row in 0..height {
+        let row_start = row * width;
+        let mut current_byte = 0u8;
+        let mut high_nibble = true;
+
+        for col in 0..width {
+            let pixel = bitmap[row_start + col];
+            // Quantize 0..255 -> 0..15
+            let val_4bit = ((pixel as u16 + 8) / 17).min(15) as u8;
+
+            if high_nibble {
+                current_byte = val_4bit << 4;
+                high_nibble = false;
+            } else {
+                current_byte |= val_4bit;
+                packed.push(current_byte);
+                high_nibble = true;
+                current_byte = 0; // Reset
+            }
+        }
+
+        // If row ends on high nibble, push the partial byte
+        if !high_nibble {
+            packed.push(current_byte);
+        }
     }
 
     packed
