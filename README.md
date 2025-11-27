@@ -32,6 +32,14 @@ The project is organized as a Cargo workspace with the following members:
 *   **`Renderer`**: Runs on a dedicated thread. It receives snapshots of the terminal state and produces frames using `pixelflow-render`.
 *   **`Platform`**: Handles window creation, input events, and displaying the rendered framebuffer.
 
+### Priority Model
+
+| Plane | Component | Channel | Priority | Behavior |
+| :--- | :--- | :--- | :--- | :--- |
+| **Management** | `config.rs` | N/A (Static) | N/A | Defines QoS limits (FPS, Buffer Sizes). |
+| **Control** | Orchestrator (Main Loop) | `ui_rx` (Unbounded) | **Strict High** | Handles Signaling (Resize, Quit, Input). Never blocks. |
+| **Data** | PTY Stream | `pty_rx` (Bounded) | **Weighted Low** | Handles Payload (ANSI). Subject to Backpressure. |
+
 ## Building and Running
 
 ### Prerequisites
