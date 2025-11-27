@@ -11,7 +11,7 @@
 //! - `SimdVec<u8>` → Array of 16×u8
 
 use core::marker::PhantomData;
-use crate::SimdOps;
+use crate::batch::SimdOps;
 
 // ============================================================================
 // Platform-Specific Types
