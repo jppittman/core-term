@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
     // =========================================================================
 
     use crate::orchestrator::orchestrator_actor::OrchestratorActor;
-    use crate::orchestrator::{OrchestratorEvent, OrchestratorSender};
+    use crate::orchestrator::orchestrator_channel::create_orchestrator_channels;
     use crate::term::TerminalEmulator;
 
     let term_cols = CONFIG.appearance.columns as usize;
@@ -81,11 +81,7 @@ fn main() -> anyhow::Result<()> {
     info!("Terminal dimensions: {}x{} cells", term_cols, term_rows);
 
     // 1. Create unified orchestrator channel (all actors send to same channel)
-    let (orchestrator_tx, orchestrator_rx) =
-        std::sync::mpsc::sync_channel::<OrchestratorEvent>(128);
-
-    // Wrap sender in type-safe wrapper
-    let orchestrator_sender = OrchestratorSender::new(orchestrator_tx.clone());
+    let (orchestrator_sender, ui_rx, pty_rx) = create_orchestrator_channels(128);
 
     // Orchestrator → Platform: Display actions including RequestRedraw (buffered to prevent blocking)
     let (display_action_tx, display_action_rx) = std::sync::mpsc::sync_channel(128);
@@ -182,7 +178,8 @@ fn main() -> anyhow::Result<()> {
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
     let _orchestrator_actor = OrchestratorActor::spawn(
         term_emulator,
-        orchestrator_rx,
+        ui_rx,
+        pty_rx,
         display_action_tx,
         pty_action_tx,
         waker,

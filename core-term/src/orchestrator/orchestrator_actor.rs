@@ -32,7 +32,8 @@ impl OrchestratorActor {
     /// # Arguments
     ///
     /// * `term_emulator` - The terminal emulator (takes ownership)
-    /// * `orchestrator_rx` - Unified channel to receive all events (IO, Vsync, Platform)
+    /// * `ui_rx` - High-priority channel (User input, Controls)
+    /// * `pty_rx` - Low-priority channel (PTY data)
     /// * `display_action_tx` - Channel to send PlatformActions to Platform
     /// * `pty_action_tx` - Channel to send PlatformActions to PTY
     ///
@@ -41,7 +42,8 @@ impl OrchestratorActor {
     /// Returns `Self` (handle to the actor for cleanup)
     pub fn spawn(
         term_emulator: TerminalEmulator,
-        orchestrator_rx: Receiver<OrchestratorEvent>,
+        ui_rx: Receiver<OrchestratorEvent>,
+        pty_rx: Receiver<OrchestratorEvent>,
         display_action_tx: SyncSender<PlatformAction>,
         pty_action_tx: SyncSender<PlatformAction>,
         waker: Box<dyn crate::platform::waker::EventLoopWaker>,
@@ -53,7 +55,8 @@ impl OrchestratorActor {
             .spawn(move || {
                 if let Err(e) = Self::actor_thread_main(
                     term_emulator,
-                    orchestrator_rx,
+                    ui_rx,
+                    pty_rx,
                     display_action_tx,
                     pty_action_tx,
                     waker,
@@ -70,43 +73,47 @@ impl OrchestratorActor {
         })
     }
 
-    /// Main loop for the Orchestrator actor thread (unified channel model).
+    /// Main loop for the Orchestrator actor thread (priority scheduling model).
     ///
-    /// Receives events from a single unified channel and processes them.
-    /// Manages snapshot lifecycle: receives FrameRendered (with snapshot), generates on RequestSnapshot.
+    /// Implements the "Doorbell" model:
+    /// 1. Drains the UI queue (high priority).
+    /// 2. Processes a limited batch of PTY events (low priority).
+    /// 3. Sleeps on the UI queue if both are empty (woken by Doorbell from PTY send).
     fn actor_thread_main(
         mut term_emulator: TerminalEmulator,
-        orchestrator_rx: Receiver<OrchestratorEvent>,
+        ui_rx: Receiver<OrchestratorEvent>,
+        pty_rx: Receiver<OrchestratorEvent>,
         display_action_tx: SyncSender<PlatformAction>,
         pty_action_tx: SyncSender<PlatformAction>,
         waker: Box<dyn crate::platform::waker::EventLoopWaker>,
     ) -> Result<()> {
-        debug!("OrchestratorActor: Starting event loop (unified channel model)");
+        debug!("OrchestratorActor: Starting event loop (priority channel model)");
 
         let mut pending_emulator_actions = Vec::new();
 
         loop {
-            // Blocking receive from unified channel - wait for first event
-            let event = match orchestrator_rx.recv() {
-                Ok(event) => event,
-                Err(RecvError) => {
-                    info!("OrchestratorActor: Orchestrator channel disconnected, shutting down");
-                    return Ok(());
+            // 1. HIGH PRIORITY DRAIN
+            // Always empty the UI queue first.
+            while let Ok(event) = ui_rx.try_recv() {
+                match event {
+                    // The doorbell just wakes us; we don't process it as data.
+                    OrchestratorEvent::Control(ControlEvent::PtyDataReady) => continue,
+                    _ => Self::process_event(
+                        event,
+                        &mut term_emulator,
+                        &mut pending_emulator_actions,
+                        &display_action_tx,
+                        &waker,
+                    )?,
                 }
-            };
+            }
 
-            // Process the first event
-            Self::process_event(
-                event,
-                &mut term_emulator,
-                &mut pending_emulator_actions,
-                &display_action_tx,
-                &waker,
-            )?;
-
-            // Drain all other waiting events (batch processing)
-            loop {
-                match orchestrator_rx.try_recv() {
+            // 2. LOW PRIORITY BATCH
+            // Process a fixed budget of PTY events (e.g., 10 batches)
+            // to ensure we yield back to the UI check quickly.
+            let mut budget = 10;
+            while budget > 0 {
+                match pty_rx.try_recv() {
                     Ok(event) => {
                         Self::process_event(
                             event,
@@ -115,14 +122,57 @@ impl OrchestratorActor {
                             &display_action_tx,
                             &waker,
                         )?;
+                        budget -= 1;
                     }
-                    Err(_) => break, // No more events, exit drain loop
+                    Err(_) => break, // Empty or Disconnected
                 }
             }
 
-            // Handle any pending emulator actions
+            // Handle any pending emulator actions generated by the above processing
             for action in pending_emulator_actions.drain(..) {
                 Self::handle_emulator_action(action, &display_action_tx, &pty_action_tx, &waker)?;
+            }
+
+            // 3. SMART SLEEP
+            // If budget > 0, it means PTY queue was empty (or we drained it).
+            // UI queue is also empty (we drained it at step 1).
+            // So we can safely sleep on the UI channel.
+            //
+            // If budget == 0, it means PTY might still have data.
+            // We should NOT sleep, but loop back to check UI again (yield).
+            if budget > 0 {
+                match ui_rx.recv() {
+                    Ok(event) => {
+                        match event {
+                            OrchestratorEvent::Control(ControlEvent::PtyDataReady) => {
+                                // Woke up by doorbell, continue to top of loop to process PTY data
+                            }
+                            _ => {
+                                // Process the event that woke us up
+                                Self::process_event(
+                                    event,
+                                    &mut term_emulator,
+                                    &mut pending_emulator_actions,
+                                    &display_action_tx,
+                                    &waker,
+                                )?;
+                                // Handle actions immediately
+                                for action in pending_emulator_actions.drain(..) {
+                                    Self::handle_emulator_action(
+                                        action,
+                                        &display_action_tx,
+                                        &pty_action_tx,
+                                        &waker,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                    Err(RecvError) => {
+                        info!("OrchestratorActor: UI channel disconnected, shutting down");
+                        return Ok(());
+                    }
+                }
             }
         }
     }
@@ -190,6 +240,10 @@ impl OrchestratorActor {
                         )) {
                             pending_emulator_actions.push(action);
                         }
+                    }
+                    ControlEvent::PtyDataReady => {
+                        // Should be handled by the loop logic (doorbell), but if it slips through:
+                        trace!("OrchestratorActor: Received PtyDataReady in process_event (noop)");
                     }
                 }
             }

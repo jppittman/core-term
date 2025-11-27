@@ -142,6 +142,10 @@ pub(super) fn process_control_event(
             emulator.resize(cols, rows);
             None
         }
+        ControlEvent::PtyDataReady => {
+            // Orchestrator wake-up signal, ignored by emulator
+            None
+        }
     }
 }
 
