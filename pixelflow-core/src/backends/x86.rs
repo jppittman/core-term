@@ -13,9 +13,9 @@
 //!
 //! The type `T` is purely a compile-time marker - bitcasting is free.
 
+use crate::batch::SimdOps;
 use core::arch::x86_64::*;
 use core::marker::PhantomData;
-use crate::batch::SimdOps;
 
 /// Platform-specific SIMD vector wrapper.
 ///
@@ -29,24 +29,28 @@ pub struct SimdVec<T>(pub(crate) __m128i, PhantomData<T>);
 // ============================================================================
 
 impl SimdOps<u32> for SimdVec<u32> {
+    /// Broadcasts a value to all lanes.
     #[inline(always)]
     fn splat(val: u32) -> Self {
         // SAFETY: _mm_set1_epi32 is always safe
         unsafe { Self(_mm_set1_epi32(val as i32), PhantomData) }
     }
 
+    /// Loads a vector from a pointer.
     #[inline(always)]
     unsafe fn load(ptr: *const u32) -> Self {
         // SAFETY: Caller guarantees ptr is valid for reading 16 bytes
         unsafe { Self(_mm_loadu_si128(ptr as *const __m128i), PhantomData) }
     }
 
+    /// Stores the vector to a pointer.
     #[inline(always)]
     unsafe fn store(self, ptr: *mut u32) {
         // SAFETY: Caller guarantees ptr is valid for writing 16 bytes
         unsafe { _mm_storeu_si128(ptr as *mut __m128i, self.0) }
     }
 
+    /// Creates a new vector from values.
     #[inline(always)]
     fn new(v0: u32, v1: u32, v2: u32, v3: u32) -> Self {
         // SAFETY: _mm_set_epi32 is always safe
@@ -59,18 +63,21 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Adds two vectors.
     #[inline(always)]
     fn add(self, other: Self) -> Self {
         // SAFETY: paddd (32-bit add)
         unsafe { Self(_mm_add_epi32(self.0, other.0), PhantomData) }
     }
 
+    /// Subtracts two vectors.
     #[inline(always)]
     fn sub(self, other: Self) -> Self {
         // SAFETY: psubd (32-bit subtract)
         unsafe { Self(_mm_sub_epi32(self.0, other.0), PhantomData) }
     }
 
+    /// Multiplies two vectors.
     #[inline(always)]
     fn mul(self, other: Self) -> Self {
         // SAFETY: pmulld (32-bit multiply, SSE4.1)
@@ -78,18 +85,21 @@ impl SimdOps<u32> for SimdVec<u32> {
         unsafe { Self(_mm_mullo_epi32(self.0, other.0), PhantomData) }
     }
 
+    /// Bitwise AND.
     #[inline(always)]
     fn bitand(self, other: Self) -> Self {
         // SAFETY: pand (bitwise AND)
         unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
     }
 
+    /// Bitwise OR.
     #[inline(always)]
     fn bitor(self, other: Self) -> Self {
         // SAFETY: por (bitwise OR)
         unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
     }
 
+    /// Bitwise NOT.
     #[inline(always)]
     fn not(self) -> Self {
         // SAFETY: XOR with all-ones produces NOT
@@ -99,24 +109,27 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Logical shift right.
     #[inline(always)]
     fn shr(self, count: i32) -> Self {
         // SAFETY: psrld (32-bit logical right shift)
         unsafe {
-            let count_vec = _mm_cvtsi32_si128(count);
-            Self(_mm_srl_epi32(self.0, count_vec), PhantomData)
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_srl_epi32(self.0, shift), PhantomData)
         }
     }
 
+    /// Logical shift left.
     #[inline(always)]
     fn shl(self, count: i32) -> Self {
         // SAFETY: pslld (32-bit logical left shift)
         unsafe {
-            let count_vec = _mm_cvtsi32_si128(count);
-            Self(_mm_sll_epi32(self.0, count_vec), PhantomData)
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_sll_epi32(self.0, shift), PhantomData)
         }
     }
 
+    /// Element-wise selection.
     #[inline(always)]
     fn select(self, other: Self, mask: Self) -> Self {
         // Implements: (self & mask) | (other & !mask)
@@ -129,6 +142,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Minimum value.
     #[inline(always)]
     fn min(self, other: Self) -> Self {
         // SSE2 compatible unsigned min
@@ -143,6 +157,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Maximum value.
     #[inline(always)]
     fn max(self, other: Self) -> Self {
         // SSE2 compatible unsigned max
@@ -157,6 +172,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Saturating addition.
     #[inline(always)]
     fn saturating_add(self, other: Self) -> Self {
         unsafe {
@@ -170,6 +186,7 @@ impl SimdOps<u32> for SimdVec<u32> {
         }
     }
 
+    /// Saturating subtraction.
     #[inline(always)]
     fn saturating_sub(self, other: Self) -> Self {
         unsafe {
@@ -201,24 +218,28 @@ unsafe fn cmp_gt_u32(a: __m128i, b: __m128i) -> __m128i {
 // ============================================================================
 
 impl SimdOps<u16> for SimdVec<u16> {
+    /// Broadcasts a value to all lanes.
     #[inline(always)]
     fn splat(val: u16) -> Self {
         // SAFETY: _mm_set1_epi16 is always safe
         unsafe { Self(_mm_set1_epi16(val as i16), PhantomData) }
     }
 
+    /// Loads a vector from a pointer.
     #[inline(always)]
     unsafe fn load(ptr: *const u16) -> Self {
         // SAFETY: Caller guarantees ptr is valid for reading 16 bytes (8×u16)
         unsafe { Self(_mm_loadu_si128(ptr as *const __m128i), PhantomData) }
     }
 
+    /// Stores the vector to a pointer.
     #[inline(always)]
     unsafe fn store(self, ptr: *mut u16) {
         // SAFETY: Caller guarantees ptr is valid for writing 16 bytes
         unsafe { _mm_storeu_si128(ptr as *mut __m128i, self.0) }
     }
 
+    /// Creates a new vector (partial initialization).
     #[inline(always)]
     fn new(v0: u16, v1: u16, v2: u16, v3: u16) -> Self {
         // SAFETY: Create 8×u16 vector (only setting first 4, rest are zero)
@@ -231,6 +252,7 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Adds two vectors.
     #[inline(always)]
     fn add(self, other: Self) -> Self {
         // SAFETY: paddw (16-bit add)
@@ -238,12 +260,14 @@ impl SimdOps<u16> for SimdVec<u16> {
         unsafe { Self(_mm_add_epi16(self.0, other.0), PhantomData) }
     }
 
+    /// Subtracts two vectors.
     #[inline(always)]
     fn sub(self, other: Self) -> Self {
         // SAFETY: psubw (16-bit subtract)
         unsafe { Self(_mm_sub_epi16(self.0, other.0), PhantomData) }
     }
 
+    /// Multiplies two vectors.
     #[inline(always)]
     fn mul(self, other: Self) -> Self {
         // SAFETY: pmullw (16-bit multiply, keeps low 16 bits)
@@ -251,18 +275,21 @@ impl SimdOps<u16> for SimdVec<u16> {
         unsafe { Self(_mm_mullo_epi16(self.0, other.0), PhantomData) }
     }
 
+    /// Bitwise AND.
     #[inline(always)]
     fn bitand(self, other: Self) -> Self {
         // SAFETY: pand (bitwise AND, type-agnostic)
         unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
     }
 
+    /// Bitwise OR.
     #[inline(always)]
     fn bitor(self, other: Self) -> Self {
         // SAFETY: por (bitwise OR, type-agnostic)
         unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
     }
 
+    /// Bitwise NOT.
     #[inline(always)]
     fn not(self) -> Self {
         // SAFETY: XOR with all-ones
@@ -272,25 +299,27 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Logical shift right.
     #[inline(always)]
     fn shr(self, count: i32) -> Self {
         // SAFETY: psrlw (16-bit logical right shift)
-        // This is the instruction that `shift_right_u16()` was trying to expose!
         unsafe {
-            let count_vec = _mm_cvtsi32_si128(count);
-            Self(_mm_srl_epi16(self.0, count_vec), PhantomData)
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_srl_epi16(self.0, shift), PhantomData)
         }
     }
 
+    /// Logical shift left.
     #[inline(always)]
     fn shl(self, count: i32) -> Self {
         // SAFETY: psllw (16-bit logical left shift)
         unsafe {
-            let count_vec = _mm_cvtsi32_si128(count);
-            Self(_mm_sll_epi16(self.0, count_vec), PhantomData)
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_sll_epi16(self.0, shift), PhantomData)
         }
     }
 
+    /// Element-wise selection.
     #[inline(always)]
     fn select(self, other: Self, mask: Self) -> Self {
         // SAFETY: Same bitwise logic as u32
@@ -302,24 +331,28 @@ impl SimdOps<u16> for SimdVec<u16> {
         }
     }
 
+    /// Minimum value.
     #[inline(always)]
     fn min(self, other: Self) -> Self {
         // SAFETY: _mm_min_epu16 (unsigned 16-bit min, requires SSE4.1)
         unsafe { Self(_mm_min_epu16(self.0, other.0), PhantomData) }
     }
 
+    /// Maximum value.
     #[inline(always)]
     fn max(self, other: Self) -> Self {
         // SAFETY: _mm_max_epu16 (unsigned 16-bit max, requires SSE4.1)
         unsafe { Self(_mm_max_epu16(self.0, other.0), PhantomData) }
     }
 
+    /// Saturating addition.
     #[inline(always)]
     fn saturating_add(self, other: Self) -> Self {
         // SAFETY: _mm_adds_epu16 (native u16 saturating add in SSE2!)
         unsafe { Self(_mm_adds_epu16(self.0, other.0), PhantomData) }
     }
 
+    /// Saturating subtraction.
     #[inline(always)]
     fn saturating_sub(self, other: Self) -> Self {
         // SAFETY: _mm_subs_epu16 (native u16 saturating sub in SSE2!)
@@ -332,24 +365,28 @@ impl SimdOps<u16> for SimdVec<u16> {
 // ============================================================================
 
 impl SimdOps<u8> for SimdVec<u8> {
+    /// Broadcasts a value to all lanes.
     #[inline(always)]
     fn splat(val: u8) -> Self {
         // SAFETY: _mm_set1_epi8 is always safe
         unsafe { Self(_mm_set1_epi8(val as i8), PhantomData) }
     }
 
+    /// Loads a vector from a pointer.
     #[inline(always)]
     unsafe fn load(ptr: *const u8) -> Self {
         // SAFETY: Caller guarantees ptr is valid for reading 16 bytes (16×u8)
         unsafe { Self(_mm_loadu_si128(ptr as *const __m128i), PhantomData) }
     }
 
+    /// Stores the vector to a pointer.
     #[inline(always)]
     unsafe fn store(self, ptr: *mut u8) {
         // SAFETY: Caller guarantees ptr is valid for writing 16 bytes
         unsafe { _mm_storeu_si128(ptr as *mut __m128i, self.0) }
     }
 
+    /// Creates a new vector (partial initialization).
     #[inline(always)]
     fn new(v0: u8, v1: u8, v2: u8, v3: u8) -> Self {
         // SAFETY: Create 16×u8 vector (only setting first 4, rest are zero)
@@ -363,18 +400,21 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Adds two vectors.
     #[inline(always)]
     fn add(self, other: Self) -> Self {
         // SAFETY: paddb (8-bit add)
         unsafe { Self(_mm_add_epi8(self.0, other.0), PhantomData) }
     }
 
+    /// Subtracts two vectors.
     #[inline(always)]
     fn sub(self, other: Self) -> Self {
         // SAFETY: psubb (8-bit subtract)
         unsafe { Self(_mm_sub_epi8(self.0, other.0), PhantomData) }
     }
 
+    /// Multiplies two vectors.
     #[inline(always)]
     fn mul(self, _other: Self) -> Self {
         // SAFETY: SSE2 does NOT have pmullb (8-bit multiply)
@@ -382,16 +422,19 @@ impl SimdOps<u8> for SimdVec<u8> {
         unimplemented!("8-bit multiply not supported in SSE2")
     }
 
+    /// Bitwise AND.
     #[inline(always)]
     fn bitand(self, other: Self) -> Self {
         unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
     }
 
+    /// Bitwise OR.
     #[inline(always)]
     fn bitor(self, other: Self) -> Self {
         unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
     }
 
+    /// Bitwise NOT.
     #[inline(always)]
     fn not(self) -> Self {
         unsafe {
@@ -400,6 +443,7 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Logical shift right.
     #[inline(always)]
     fn shr(self, _count: i32) -> Self {
         // SAFETY: SSE2 does not have psrlb (8-bit shift)
@@ -407,11 +451,13 @@ impl SimdOps<u8> for SimdVec<u8> {
         unimplemented!("8-bit shift not supported in SSE2")
     }
 
+    /// Logical shift left.
     #[inline(always)]
     fn shl(self, _count: i32) -> Self {
         unimplemented!("8-bit shift not supported in SSE2")
     }
 
+    /// Element-wise selection.
     #[inline(always)]
     fn select(self, other: Self, mask: Self) -> Self {
         unsafe {
@@ -422,24 +468,28 @@ impl SimdOps<u8> for SimdVec<u8> {
         }
     }
 
+    /// Minimum value.
     #[inline(always)]
     fn min(self, other: Self) -> Self {
         // SAFETY: _mm_min_epu8 (unsigned 8-bit min, requires SSE2)
         unsafe { Self(_mm_min_epu8(self.0, other.0), PhantomData) }
     }
 
+    /// Maximum value.
     #[inline(always)]
     fn max(self, other: Self) -> Self {
         // SAFETY: _mm_max_epu8 (unsigned 8-bit max, requires SSE2)
         unsafe { Self(_mm_max_epu8(self.0, other.0), PhantomData) }
     }
 
+    /// Saturating addition.
     #[inline(always)]
     fn saturating_add(self, other: Self) -> Self {
         // SAFETY: _mm_adds_epu8 (native u8 saturating add in SSE2!)
         unsafe { Self(_mm_adds_epu8(self.0, other.0), PhantomData) }
     }
 
+    /// Saturating subtraction.
     #[inline(always)]
     fn saturating_sub(self, other: Self) -> Self {
         // SAFETY: _mm_subs_epu8 (native u8 saturating sub in SSE2!)
@@ -459,6 +509,12 @@ impl SimdOps<u8> for SimdVec<u8> {
 /// let pixels = SimdVec::<u32>::splat(0xFF00FF00); // 4×u32
 /// let as_u16: SimdVec<u16> = cast(pixels);         // View as 8×u16
 /// ```
+///
+/// # Parameters
+/// * `v` - The source vector.
+///
+/// # Returns
+/// * The vector bitcasted to type `U`.
 #[inline(always)]
 pub fn cast<T, U>(v: SimdVec<T>) -> SimdVec<U> {
     // SAFETY: On x86, all types are just __m128i

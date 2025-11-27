@@ -10,26 +10,48 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[repr(u8)]
 pub enum NamedColor {
+    /// ANSI Black.
     Black = 0,
+    /// ANSI Red.
     Red = 1,
+    /// ANSI Green.
     Green = 2,
+    /// ANSI Yellow.
     Yellow = 3,
+    /// ANSI Blue.
     Blue = 4,
+    /// ANSI Magenta.
     Magenta = 5,
+    /// ANSI Cyan.
     Cyan = 6,
+    /// ANSI White.
     White = 7,
+    /// ANSI Bright Black.
     BrightBlack = 8,
+    /// ANSI Bright Red.
     BrightRed = 9,
+    /// ANSI Bright Green.
     BrightGreen = 10,
+    /// ANSI Bright Yellow.
     BrightYellow = 11,
+    /// ANSI Bright Blue.
     BrightBlue = 12,
+    /// ANSI Bright Magenta.
     BrightMagenta = 13,
+    /// ANSI Bright Cyan.
     BrightCyan = 14,
+    /// ANSI Bright White.
     BrightWhite = 15,
 }
 
 impl NamedColor {
     /// Convert a u8 index (0-15) to a NamedColor.
+    ///
+    /// # Parameters
+    /// * `idx` - The color index (must be < 16).
+    ///
+    /// # Panics
+    /// Panics if `idx` >= 16.
     pub fn from_index(idx: u8) -> Self {
         assert!(idx < 16, "Invalid NamedColor index: {}. Must be 0-15.", idx);
         // SAFETY: The check above ensures idx is within the valid range
@@ -37,7 +59,11 @@ impl NamedColor {
     }
 
     /// Returns the RGB representation of this named color.
+    ///
     /// These are common sRGB values used by many terminals.
+    ///
+    /// # Returns
+    /// * A tuple `(r, g, b)`.
     pub fn to_rgb(self) -> (u8, u8, u8) {
         match self {
             NamedColor::Black => (0, 0, 0),
@@ -85,13 +111,21 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
     pub struct AttrFlags: u16 {
+        /// Bold text.
         const BOLD          = 1 << 0;
+        /// Faint (dim) text.
         const FAINT         = 1 << 1;
+        /// Italic text.
         const ITALIC        = 1 << 2;
+        /// Underlined text.
         const UNDERLINE     = 1 << 3;
+        /// Blinking text.
         const BLINK         = 1 << 4;
+        /// Reverse video (foreground and background swapped).
         const REVERSE       = 1 << 5;
+        /// Hidden text (not visible).
         const HIDDEN        = 1 << 6;
+        /// Strikethrough text.
         const STRIKETHROUGH = 1 << 7;
     }
 }
@@ -105,6 +139,9 @@ const GRAYSCALE_OFFSET: u8 = COLOR_CUBE_OFFSET + COLOR_CUBE_TOTAL_COLORS; // 16 
 
 impl From<Color> for u32 {
     /// Convert a Color enum to a u32 pixel value (RGBA format: 0xAABBGGRR).
+    ///
+    /// # Returns
+    /// * A `u32` value representing the color in RGBA layout (little-endian).
     fn from(color: Color) -> u32 {
         let (r, g, b) = match color {
             Color::Default => (0, 0, 0), // Default to black

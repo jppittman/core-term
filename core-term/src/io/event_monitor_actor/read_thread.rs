@@ -6,11 +6,11 @@
 //! using kqueue/epoll for efficient event-driven I/O.
 
 use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
-use crate::orchestrator::OrchestratorSender;
+#[cfg(target_os = "linux")]
+use crate::io::event::{EpollFlags as KqueueFlags, EventMonitor};
 #[cfg(target_os = "macos")]
 use crate::io::event::{EventMonitor, KqueueFlags};
-#[cfg(target_os = "linux")]
-use crate::io::event::{EventMonitor, EpollFlags as KqueueFlags};
+use crate::orchestrator::OrchestratorSender;
 use crate::platform::BackendEvent;
 use anyhow::{Context, Result};
 use log::*;
@@ -168,7 +168,10 @@ impl ReadThread {
                         }
                         Err(TrySendError::Full(_)) => {
                             // Channel is full, put chunk back and stop trying
-                            debug!("Read thread: Channel full, keeping {} buffered commands", chunk.len() + command_buffer.len());
+                            debug!(
+                                "Read thread: Channel full, keeping {} buffered commands",
+                                chunk.len() + command_buffer.len()
+                            );
                             command_buffer.splice(0..0, chunk);
                             break;
                         }
@@ -193,9 +196,7 @@ impl ReadThread {
                         let chunk_size = command_buffer.len().min(MAX_COMMANDS_PER_IOEVENT);
                         let chunk: Vec<_> = command_buffer.drain(..chunk_size).collect();
                         orchestrator_tx
-                            .send(OrchestratorEvent::IOEvent {
-                                commands: chunk,
-                            })
+                            .send(OrchestratorEvent::IOEvent { commands: chunk })
                             .context("Failed to send buffered IOEvent")?;
                     }
                 }

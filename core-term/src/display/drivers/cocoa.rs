@@ -601,7 +601,7 @@ impl CocoaDisplayDriver {
                     "View has no layer".to_string(),
                 ));
             }
-            let image_ref = image.as_ptr();  // Returns CGImageRef (raw pointer)
+            let image_ref = image.as_ptr(); // Returns CGImageRef (raw pointer)
             let _: () = msg_send![layer, setContents: image_ref as *mut c_void];
             let _: () = msg_send![layer, setContentsScale: self.backing_scale];
         }

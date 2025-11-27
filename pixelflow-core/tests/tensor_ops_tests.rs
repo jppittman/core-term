@@ -1,4 +1,4 @@
-use pixelflow_core::{TensorView, TensorViewMut, Batch, MapPixels};
+use pixelflow_core::{Batch, MapPixels, TensorView, TensorViewMut};
 
 #[test]
 fn test_tensor_view_gather_clamping() {
@@ -31,16 +31,11 @@ fn test_tensor_view_mut_map_pixels_odd_width() {
     let mut view = TensorViewMut::new(&mut data, 5, 2, 5);
 
     // Map pixels to coordinate sum x + y
-    view.map_pixels(|x, y| {
-        x + y
-    });
+    view.map_pixels(|x, y| x + y);
 
     // Row 0: 0, 1, 2, 3, 4
     // Row 1: 1, 2, 3, 4, 5
-    let expected = [
-        0, 1, 2, 3, 4,
-        1, 2, 3, 4, 5
-    ];
+    let expected = [0, 1, 2, 3, 4, 1, 2, 3, 4, 5];
 
     assert_eq!(data, expected);
 }
@@ -59,11 +54,7 @@ fn test_tensor_view_mut_map_pixels_narrow() {
 #[test]
 fn test_tensor_view_sub_view() {
     // Explicitly u32
-    let mut data: [u32; 12] = [
-        0, 1, 2, 3,
-        4, 5, 6, 7,
-        8, 9, 10, 11
-    ]; // 4x3
+    let mut data: [u32; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]; // 4x3
 
     let mut view = TensorViewMut::new(&mut data, 4, 3, 4);
 
@@ -83,11 +74,7 @@ fn test_tensor_view_sub_view() {
 
     // Check original data
     // 5, 6, 9, 10 should be 99
-    let expected = [
-        0, 1, 2, 3,
-        4, 99, 99, 7,
-        8, 99, 99, 11
-    ];
+    let expected = [0, 1, 2, 3, 4, 99, 99, 7, 8, 99, 99, 11];
 
     assert_eq!(data, expected);
 }

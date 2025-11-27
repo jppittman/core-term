@@ -11,8 +11,8 @@ fn main() {
     // Example 1: Rust infers everything from the first splat
     println!("=== Example 1: Zero annotations ===");
     let a = Batch::splat(100u32); // Explicitly u32 here
-    let b = Batch::splat(50);      // Infers u32 from 'a'
-    let c = a + b;                 // Infers Batch<u32>
+    let b = Batch::splat(50); // Infers u32 from 'a'
+    let c = a + b; // Infers Batch<u32>
 
     let mut result = [0u32; 4];
     unsafe { c.store(result.as_mut_ptr()) };
@@ -22,13 +22,12 @@ fn main() {
     println!("\n=== Example 2: Bilinear interpolation (terse!) ===");
     let p00 = Batch::splat(0xFF000000u32);
     let p10 = Batch::splat(0x00000000u32);
-    let dx = Batch::splat(64u32);       // 25% weight
+    let dx = Batch::splat(64u32); // 25% weight
     let inv_dx = Batch::splat(256u32) - dx; // 75% weight
 
     // Look how clean this is! No type annotations needed.
     // Rust infers that cast() returns Batch<u16> from context.
-    let w0 = (p00.cast::<u16>() * inv_dx.cast::<u16>() +
-              p10.cast::<u16>() * dx.cast::<u16>()) >> 8;
+    let w0 = (p00.cast::<u16>() * inv_dx.cast::<u16>() + p10.cast::<u16>() * dx.cast::<u16>()) >> 8;
 
     let mut result = [0u32; 4];
     unsafe { w0.cast::<u32>().store(result.as_mut_ptr()) };

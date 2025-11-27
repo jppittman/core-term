@@ -131,11 +131,7 @@ impl EventMonitor {
         Ok(())
     }
 
-    pub fn events(
-        &self,
-        events_out: &mut Vec<EpollEvent>,
-        timeout_ms: isize,
-    ) -> Result<()> {
+    pub fn events(&self, events_out: &mut Vec<EpollEvent>, timeout_ms: isize) -> Result<()> {
         // Returns () on success
         trace!(
             "EventMonitor: polling for events with timeout {}ms on epoll_fd {}",

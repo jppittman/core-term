@@ -1,6 +1,6 @@
-use pixelflow_core::{Batch, execute, TensorViewMut};
+use pixelflow_core::dsl::SurfaceExt;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::dsl::SurfaceExt; // for offset()
+use pixelflow_core::{Batch, TensorViewMut, execute}; // for offset()
 
 #[test]
 fn test_constant_surface() {

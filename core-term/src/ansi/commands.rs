@@ -109,29 +109,52 @@ enum ColorIntensity {
 /// Now uses `crate::color::Color` for its color fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attribute {
+    /// Reset all attributes to default.
     Reset,
+    /// Bold text.
     Bold,
+    /// Faint (dim) text.
     Faint,
+    /// Italic text.
     Italic,
+    /// Underlined text.
     Underline,
+    /// Slow blink.
     BlinkSlow,
+    /// Rapid blink.
     BlinkRapid,
+    /// Inverse video.
     Reverse,
+    /// Hidden text.
     Conceal,
+    /// Strikethrough text.
     Strikethrough,
+    /// Double underline.
     UnderlineDouble,
+    /// Turn off bold/faint (normal intensity).
     NoBold,
+    /// Turn off italic.
     NoItalic,
+    /// Turn off underline.
     NoUnderline,
+    /// Turn off blink.
     NoBlink,
+    /// Turn off inverse video.
     NoReverse,
+    /// Turn off hidden text.
     NoConceal,
+    /// Turn off strikethrough.
     NoStrikethrough,
-    Foreground(Color), // Uses crate::color::Color
-    Background(Color), // Uses crate::color::Color
+    /// Set foreground color.
+    Foreground(Color),
+    /// Set background color.
+    Background(Color),
+    /// Overlined text.
     Overlined,
+    /// Turn off overline.
     NoOverlined,
-    UnderlineColor(Color), // Uses crate::color::Color
+    /// Set underline color.
+    UnderlineColor(Color),
 }
 
 // --- C0 Control Enum ---
@@ -191,86 +214,151 @@ impl C0Control {
 /// Represents Control Sequence Introducer (CSI) commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CsiCommand {
+    /// Clear tab stops.
     ClearTabStops(u16),
+    /// Move cursor backward by `n`.
     CursorBackward(u16),
+    /// Move cursor to column `n`.
     CursorCharacterAbsolute(u16),
+    /// Move cursor down by `n`.
     CursorDown(u16),
+    /// Move cursor forward by `n`.
     CursorForward(u16),
+    /// Move cursor to beginning of line `n` lines down.
     CursorNextLine(u16),
-    CursorPosition(u16, u16), // Parameters are 1-based: (row, col)
+    /// Move cursor to `(row, col)`. Parameters are 1-based.
+    CursorPosition(u16, u16),
+    /// Move cursor to beginning of line `n` lines up.
     CursorPrevLine(u16),
+    /// Move cursor up by `n`.
     CursorUp(u16),
+    /// Delete `n` characters.
     DeleteCharacter(u16),
+    /// Delete `n` lines.
     DeleteLine(u16),
+    /// Request device status report.
     DeviceStatusReport(u16),
+    /// Erase `n` characters.
     EraseCharacter(u16),
+    /// Erase in display (mode `n`).
     EraseInDisplay(u16),
+    /// Erase in line (mode `n`).
     EraseInLine(u16),
+    /// Insert `n` characters (shifting existing text).
     InsertCharacter(u16),
+    /// Insert `n` lines.
     InsertLine(u16),
+    /// Request primary device attributes.
     PrimaryDeviceAttributes,
+    /// Soft reset.
     Reset,
+    /// Reset standard mode `n`.
     ResetMode(u16),
+    /// Reset private mode `n` (DEC).
     ResetModePrivate(u16),
+    /// Restore cursor position (DEC).
     RestoreCursor,
+    /// Restore cursor position (ANSI).
     RestoreCursorAnsi,
+    /// Save cursor position (DEC).
     SaveCursor,
+    /// Save cursor position (ANSI).
     SaveCursorAnsi,
+    /// Scroll down by `n` lines.
     ScrollDown(u16),
+    /// Scroll up by `n` lines.
     ScrollUp(u16),
+    /// Set graphics rendition (SGR).
     SetGraphicsRendition(Vec<Attribute>),
+    /// Set standard mode `n`.
     SetMode(u16),
+    /// Set private mode `n` (DEC).
     SetModePrivate(u16),
+    /// Set tab stop at current column.
     SetTabStop,
+    /// Set scrolling region (top, bottom).
     SetScrollingRegion {
+        /// Top line (1-based).
         top: u16,
+        /// Bottom line (1-based).
         bottom: u16,
     },
-
+    /// Set cursor style (DECSCUSR).
     SetCursorStyle {
+        /// Shape parameter.
         shape: u16,
     },
+    /// Window manipulation (dtterm).
     WindowManipulation {
+        /// First parameter.
         ps1: u16,
+        /// Optional second parameter.
         ps2: Option<u16>,
+        /// Optional third parameter.
         ps3: Option<u16>,
     },
+    /// Unsupported CSI sequence.
     Unsupported(Vec<u8>, Option<u8>),
 }
 
 // --- ESC Command Enum ---
+/// Represents Escape (ESC) sequences.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EscCommand {
+    /// Set tab stop at current column.
     SetTabStop,
+    /// Index (move cursor down).
     Index,
+    /// Next line.
     NextLine,
+    /// Reverse index (move cursor up).
     ReverseIndex,
+    /// Save cursor position (DEC).
     SaveCursor,
+    /// Restore cursor position (DEC).
     RestoreCursor,
+    /// Full reset (RIS).
     ResetToInitialState,
+    /// Select character set.
     SelectCharacterSet(char, char),
+    /// Single Shift 2.
     SingleShift2,
+    /// Single Shift 3.
     SingleShift3,
 }
 
 // --- Main AnsiCommand Enum ---
+/// Represents a parsed ANSI escape command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnsiCommand {
+    /// A printable character.
     Print(char),
+    /// A C0 control code (e.g., CR, LF).
     C0Control(C0Control),
+    /// A C1 control code.
     C1Control(u8),
+    /// A CSI command.
     Csi(CsiCommand),
+    /// An ESC command.
     Esc(EscCommand),
+    /// An Operating System Command (OSC).
     Osc(Vec<u8>),
+    /// Device Control String (DCS).
     Dcs(Vec<u8>),
+    /// Privacy Message (PM).
     Pm(Vec<u8>),
+    /// Application Program Command (APC).
     Apc(Vec<u8>),
+    /// String Terminator (ST).
     StringTerminator,
+    /// Ignored byte.
     Ignore(u8),
+    /// Error byte.
     Error(u8),
 }
 
 impl AnsiCommand {
+    /// Parses a C0 control code.
     pub(crate) fn from_c0(byte: u8) -> Option<Self> {
         C0Control::from_byte(byte).map(AnsiCommand::C0Control)
     }
@@ -291,6 +379,7 @@ impl AnsiCommand {
     }
     */
 
+    /// Parses a generic escape sequence from its final character.
     pub(crate) fn from_esc(final_char: char) -> Option<Self> {
         match final_char {
             'D' => Some(AnsiCommand::Esc(EscCommand::Index)),
@@ -306,6 +395,7 @@ impl AnsiCommand {
         }
     }
 
+    /// Parses an escape sequence with an intermediate character.
     pub(crate) fn from_esc_intermediate(intermediate: char, final_char: char) -> Option<Self> {
         if ['(', ')', '*', '+'].contains(&intermediate) {
             // TODO: Validate final_char more strictly if needed (e.g., specific ranges for charsets)
