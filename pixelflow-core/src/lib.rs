@@ -19,6 +19,8 @@ extern crate alloc;
 pub mod backends;
 /// SIMD batch processing types and operations.
 pub mod batch;
+/// Font packing and compression utilities.
+pub mod packing;
 /// Domain-Specific Language (DSL) extensions for building pipelines.
 pub mod dsl;
 /// Core operations and surface implementations.

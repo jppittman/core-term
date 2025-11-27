@@ -13,6 +13,7 @@ fn main() {
 #[cfg(feature = "fonts")]
 fn bake_font() {
     use fontdue::{Font, FontSettings};
+    use pixelflow_core::packing::pack_4bit;
     use std::fs;
 
     println!("cargo:warning=Pre-baking Noto Sans Mono font...");
@@ -87,48 +88,6 @@ struct GlyphMeta {
     bearing_x: i32,
     bearing_y: i32,
     advance: f32,
-}
-
-#[cfg(feature = "fonts")]
-fn pack_4bit(bitmap: &[u8], width: usize) -> Vec<u8> {
-    if width == 0 {
-        return Vec::new();
-    }
-
-    // Calculate stride in bytes
-    let stride = (width + 1) / 2;
-    let height = bitmap.len() / width;
-
-    let mut packed = Vec::with_capacity(stride * height);
-
-    for row in 0..height {
-        let row_start = row * width;
-        let mut current_byte = 0u8;
-        let mut high_nibble = true;
-
-        for col in 0..width {
-            let pixel = bitmap[row_start + col];
-            // Quantize 0..255 -> 0..15
-            let val_4bit = ((pixel as u16 + 8) / 17).min(15) as u8;
-
-            if high_nibble {
-                current_byte = val_4bit << 4;
-                high_nibble = false;
-            } else {
-                current_byte |= val_4bit;
-                packed.push(current_byte);
-                high_nibble = true;
-                current_byte = 0; // Reset
-            }
-        }
-
-        // If row ends on high nibble, push the partial byte
-        if !high_nibble {
-            packed.push(current_byte);
-        }
-    }
-
-    packed
 }
 
 #[cfg(feature = "fonts")]

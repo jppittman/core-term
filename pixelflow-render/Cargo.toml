@@ -37,6 +37,7 @@ optional = true
 
 [build-dependencies]
 fontdue = "0.9"
+pixelflow-core = { path = "../pixelflow-core" }
 
 [features]
 # Font backend features

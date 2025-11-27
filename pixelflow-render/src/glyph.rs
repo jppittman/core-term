@@ -124,7 +124,7 @@ pub fn render_glyph_direct(
 
     // --- 3. Pipeline Construction ---
 
-    let stride = (meta.width + 1) / 2;
+    let stride = pixelflow_core::packing::compute_stride_4bit(meta.width);
     let packed_len = stride * meta.height;
     let packed = &GLYPH_DATA[meta.offset..meta.offset + packed_len];
     let atlas_view = TensorView::new(packed, meta.width, meta.height, stride);
