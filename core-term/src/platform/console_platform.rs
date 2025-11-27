@@ -64,7 +64,7 @@ impl ConsolePlatform {
             EventMonitor::new().context("Failed to create EventMonitor for ConsolePlatform PTY")?;
         let pty_fd = pty.as_raw_fd();
         event_monitor
-            .add(pty_fd, PTY_EPOLL_TOKEN, EpollFlags::EPOLLIN)
+            .add(&pty, PTY_EPOLL_TOKEN, EpollFlags::EPOLLIN)
             .context("Failed to add PTY FD to event monitor for ConsolePlatform")?;
         debug!(
             "PTY FD {} added to event monitor for ConsolePlatform",

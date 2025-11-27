@@ -18,8 +18,6 @@ use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
 use anyhow::{Context, Result};
 use log::*;
-use std::os::unix::io::AsRawFd;
-
 use read_thread::ReadThread;
 use write_thread::WriteThread;
 
@@ -52,13 +50,14 @@ impl EventMonitorActor {
         orchestrator_tx: OrchestratorSender,
         pty_action_rx: std::sync::mpsc::Receiver<PlatformAction>,
     ) -> Result<Self> {
-        let pty_fd = pty.as_raw_fd();
+        // Clone PTY for the read thread (shared ownership of FD)
+        let pty_read = pty.try_clone().context("Failed to clone PTY for read thread")?;
 
-        // Spawn read thread (borrows PTY fd for reading)
-        let read_thread = ReadThread::spawn(pty_fd, orchestrator_tx)
+        // Spawn read thread (uses independent PTY clone)
+        let read_thread = ReadThread::spawn(pty_read, orchestrator_tx)
             .context("Failed to spawn PTY read thread")?;
 
-        // Spawn write thread (owns PTY for writes and lifecycle management)
+        // Spawn write thread (owns primary PTY for writes and lifecycle management)
         let write_thread =
             WriteThread::spawn(pty, pty_action_rx).context("Failed to spawn PTY write thread")?;
 
