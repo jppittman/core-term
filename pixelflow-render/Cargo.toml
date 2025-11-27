@@ -13,6 +13,13 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 # SIMD library for optimized rendering
 pixelflow-core = { path = "../pixelflow-core" }
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "render_bench"
+harness = false
+
 # Font rendering - CoreText (macOS)
 [dependencies.core-text]
 version = "20.1"

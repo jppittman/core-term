@@ -1169,6 +1169,9 @@ checksum = "3b3cff922bd51709b605d9ead9aa71031d81447142d828eb4a6eba76fe619f9b"
 [[package]]
 name = "pixelflow-core"
 version = "0.1.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "pixelflow-render"
@@ -1179,6 +1182,7 @@ dependencies = [
  "core-foundation 0.9.4",
  "core-graphics 0.24.0",
  "core-text",
+ "criterion",
  "fontdue",
  "freetype",
  "log",
