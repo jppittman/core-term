@@ -12,17 +12,22 @@ pub use backends::BackendEvent;
 use log::*;
 use std::sync::mpsc::Receiver;
 
+/// Platform actions (Orchestrator -> Platform).
 pub mod actions;
+/// Backend event types and definitions.
 pub mod backends;
 // #[cfg(target_os = "linux")]
 // pub mod console_platform;
+/// Font management and fallback logic.
 pub mod font_manager;
 // #[cfg(target_os = "linux")]
 // pub mod linux_x11;
 #[cfg(use_cocoa_display)]
 pub mod macos;
 // pub mod os; // Moved to io module
+/// Platform traits.
 pub mod platform_trait;
+/// Event loop waker abstraction.
 pub mod waker;
 
 #[cfg(use_cocoa_display)]
@@ -33,6 +38,7 @@ pub use macos::MacosPlatform;
 // pub mod mock;
 
 // Type alias for backward compatibility
+/// Alias for orchestrator events.
 pub type PlatformEvent = crate::orchestrator::OrchestratorEvent;
 
 /// Groups all channels used for Platform ↔ Orchestrator communication.
@@ -47,16 +53,29 @@ pub struct PlatformChannels {
 /// Generic platform implementation that works for all display-based platforms.
 /// Contains all the common logic for event polling, rendering, and action handling.
 pub struct GenericPlatform {
+    /// The display manager responsible for the window and driver.
     pub display_manager: DisplayManager,
+    /// Channels for communicating with the render thread.
     pub render_channels: RenderChannels,
+    /// Application configuration.
     pub config: Config,
+    /// Channel to send events to the orchestrator.
     pub platform_event_tx: OrchestratorSender,
+    /// Channel to receive actions from the orchestrator (Option because consumed in run).
     pub display_action_rx: Option<Receiver<PlatformAction>>,
+    /// The current framebuffer (owned here or by display driver).
     pub framebuffer: Option<Box<[u8]>>,
 }
 
 impl GenericPlatform {
     /// Create a new GenericPlatform with the given channels.
+    ///
+    /// # Parameters
+    /// * `channels` - Platform communication channels.
+    /// * `render_channels` - Renderer communication channels.
+    ///
+    /// # Returns
+    /// * A new `GenericPlatform` instance.
     pub fn new(channels: PlatformChannels, render_channels: RenderChannels) -> Result<Self> {
         info!("GenericPlatform::new() - Initializing display-based platform");
 
@@ -83,6 +102,9 @@ impl GenericPlatform {
     }
 
     /// Run the platform event loop. This consumes self.
+    ///
+    /// This loop polls for display events, processes incoming actions from the orchestrator,
+    /// handles rendering, and manages the framebuffer lifecycle.
     pub fn run(mut self) -> Result<()> {
         info!("GenericPlatform::run() - Starting event loop");
 

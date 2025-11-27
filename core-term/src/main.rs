@@ -1,17 +1,31 @@
 // In src/main.rs
 
+//! Main entry point and module declarations for `core-term`.
+
 // Declare modules
+/// ANSI escape sequence parsing and handling.
 pub mod ansi;
+/// Color types and definitions.
 pub mod color;
+/// Configuration management.
 pub mod config;
+/// Display driver interfaces and implementations.
 pub mod display;
+/// Glyph definitions.
 pub mod glyph;
+/// Input/Output subsystems (PTY, event loop).
 pub mod io;
+/// Keyboard input handling.
 pub mod keys;
+/// Core logic orchestration (actors).
 pub mod orchestrator;
+/// Pixel coordinate types.
 pub mod pixels;
+/// Platform abstraction layer.
 pub mod platform;
+/// Rendering subsystem.
 pub mod renderer;
+/// Terminal emulator state machine.
 pub mod term;
 
 // Use statements for items needed in main.rs

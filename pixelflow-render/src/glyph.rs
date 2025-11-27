@@ -17,33 +17,46 @@ use pixelflow_core::dsl::{SurfaceExt, MaskExt};
 /// The drawing surface (destination).
 #[derive(Debug)]
 pub struct RenderTarget<'a> {
+    /// The destination buffer (pixels in u32 format).
     pub dest: &'a mut [u32],
+    /// The stride of the destination buffer (pixels per row).
     pub stride: usize,
 }
 
 /// The spatial configuration for the glyph.
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphRenderCoords {
+    /// The X coordinate in pixels.
     pub x_px: usize,
+    /// The Y coordinate in pixels.
     pub y_px: usize,
+    /// The height of the cell in pixels (used for scaling).
     pub cell_height: usize,
 }
 
 /// The stylistic overrides.
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphStyleOverrides {
+    /// Foreground color (u32 RGBA).
     pub fg: u32,
+    /// Background color (u32 RGBA).
     pub bg: u32,
+    /// Whether to render in bold.
     pub bold: bool,
+    /// Whether to render in italic.
     pub italic: bool,
 }
 
 /// Layout metrics returned after rendering.
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphMetrics {
+    /// The width of the glyph in pixels.
     pub width: usize,
+    /// The height of the glyph in pixels.
     pub height: usize,
+    /// Horizontal bearing (offset from origin).
     pub bearing_x: i32,
+    /// Vertical bearing (offset from origin).
     pub bearing_y: i32,
 }
 
@@ -60,6 +73,15 @@ const ITALIC_SHEAR: i32 = 50; // ~0.2 fixed point
 /// 2. Creates a sub-view for the glyph.
 /// 3. Composes a pipeline graph.
 /// 4. Compiles and executes the graph.
+///
+/// # Parameters
+/// * `ch` - The character to render.
+/// * `target` - The render target (buffer and stride).
+/// * `coords` - The coordinates and scaling info.
+/// * `style` - Style overrides (color, bold, italic).
+///
+/// # Returns
+/// * The metrics of the rendered glyph.
 #[cfg(feature = "fonts")]
 pub fn render_glyph_direct(
     ch: char,
@@ -131,6 +153,7 @@ pub fn render_glyph_direct(
     GlyphMetrics { width, height, bearing_x, bearing_y }
 }
 
+/// Fallback implementation when fonts are disabled.
 #[cfg(not(feature = "fonts"))]
 pub fn render_glyph_direct(
     _ch: char,
@@ -141,7 +164,14 @@ pub fn render_glyph_direct(
     GlyphMetrics { width: 0, height: 0, bearing_x: 0, bearing_y: 0 }
 }
 
-// Helper for Layout (needed by Rasterizer to calculate positions beforehand)
+/// Helper for Layout (needed by Rasterizer to calculate positions beforehand).
+///
+/// # Parameters
+/// * `ch` - The character.
+/// * `cell_height` - The desired cell height in pixels.
+///
+/// # Returns
+/// * The metrics for the glyph.
 #[cfg(feature = "fonts")]
 pub fn get_glyph_metrics(ch: char, cell_height: usize) -> GlyphMetrics {
     let glyph_idx = match GLYPH_METADATA.binary_search_by_key(&ch, |meta| meta.c) {
@@ -158,6 +188,7 @@ pub fn get_glyph_metrics(ch: char, cell_height: usize) -> GlyphMetrics {
     GlyphMetrics { width, height, bearing_x, bearing_y }
 }
 
+/// Fallback implementation when fonts are disabled.
 #[cfg(not(feature = "fonts"))]
 pub fn get_glyph_metrics(_ch: char, _cell_height: usize) -> GlyphMetrics {
     GlyphMetrics { width: 0, height: 0, bearing_x: 0, bearing_y: 0 }

@@ -90,6 +90,18 @@ impl<'a> ScreenView<'a> {
     }
 }
 
+/// Process a list of rendering commands and update the framebuffer.
+///
+/// This function acts as the main entry point for the rasterizer. It iterates
+/// over the provided commands and executes them against the framebuffer.
+///
+/// # Parameters
+/// * `framebuffer` - The destination framebuffer (u32 RGBA).
+/// * `width` - Framebuffer width in pixels.
+/// * `height` - Framebuffer height in pixels.
+/// * `cell_width` - Grid cell width (for text layout).
+/// * `cell_height` - Grid cell height (for text layout).
+/// * `commands` - The list of operations to execute.
 pub fn process_frame<T: AsRef<[u8]>>(
     framebuffer: &mut [u32],
     width: usize,
