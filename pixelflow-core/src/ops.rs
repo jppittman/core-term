@@ -11,6 +11,10 @@ use crate::pipe::Surface;
 pub struct SampleAtlas<'a> {
     /// The source texture atlas.
     pub atlas: TensorView<'a, u8>,
+    /// The horizontal step size in 16.16 fixed point format.
+    pub step_x_fp: u32,
+    /// The vertical step size in 16.16 fixed point format.
+    pub step_y_fp: u32,
 }
 
 impl<'a> Surface<u8> for SampleAtlas<'a> {
@@ -26,7 +30,9 @@ impl<'a> Surface<u8> for SampleAtlas<'a> {
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
         // Direct bilinear sample
         // Convert integer coordinates to 16.16 fixed point format expected by sample_4bit_bilinear.
-        unsafe { self.atlas.sample_4bit_bilinear(x << 16, y << 16).cast() }
+        let u = x * Batch::splat(self.step_x_fp);
+        let v = y * Batch::splat(self.step_y_fp);
+        unsafe { self.atlas.sample_4bit_bilinear(u, v).cast() }
     }
 }
 

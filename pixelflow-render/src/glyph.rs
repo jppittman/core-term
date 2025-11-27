@@ -129,8 +129,17 @@ pub fn render_glyph_direct(
     let packed = &GLYPH_DATA[meta.offset..meta.offset + packed_len];
     let atlas_view = TensorView::new(packed, meta.width, meta.height, stride);
 
+    // Calculate step size in 16.16 fixed point format
+    // step = 1.0 / scale
+    let inv_scale = if scale > 0.001 { 1.0 / scale } else { 1.0 };
+    let step_fp = (inv_scale * 65536.0) as u32;
+
     // The Base Signal: Sample from Atlas
-    let sampler = SampleAtlas { atlas: atlas_view };
+    let sampler = SampleAtlas {
+        atlas: atlas_view,
+        step_x_fp: step_fp,
+        step_y_fp: step_fp,
+    };
 
     // Define Colors as Constant Surfaces (The Unification!)
     let fg = Batch::splat(style.fg);
