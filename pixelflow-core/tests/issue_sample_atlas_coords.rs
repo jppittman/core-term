@@ -18,7 +18,11 @@ fn test_sample_atlas_integer_coords_bug() {
     let data = [0x12, 0x34];
     // width=2, height=2, stride=1 (byte)
     let view = TensorView::new(&data, 2, 2, 1);
-    let sampler = SampleAtlas { atlas: view };
+    let sampler = SampleAtlas {
+        atlas: view,
+        step_x_fp: 65536, // 1.0 in 16.16
+        step_y_fp: 65536,
+    };
 
     // Sample at (1, 0)
     // We expect value from x=1, y=0 -> 34 (0x22)
