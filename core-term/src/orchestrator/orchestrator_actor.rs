@@ -18,6 +18,15 @@ use log::*;
 use std::sync::mpsc::{Receiver, RecvError, SyncSender};
 use std::thread::{self, JoinHandle};
 
+/// Arguments for spawning the OrchestratorActor.
+pub struct OrchestratorArgs {
+    pub ui_rx: Receiver<OrchestratorEvent>,
+    pub pty_rx: Receiver<OrchestratorEvent>,
+    pub display_action_tx: SyncSender<PlatformAction>,
+    pub pty_action_tx: SyncSender<PlatformAction>,
+    pub waker: Box<dyn crate::platform::waker::EventLoopWaker>,
+}
+
 /// Orchestrator actor that runs in a background thread.
 ///
 /// Receives events from PTY, Vsync, and Platform threads, processes them through the terminal
@@ -32,35 +41,18 @@ impl OrchestratorActor {
     /// # Arguments
     ///
     /// * `term_emulator` - The terminal emulator (takes ownership)
-    /// * `ui_rx` - High-priority channel (User input, Controls)
-    /// * `pty_rx` - Low-priority channel (PTY data)
-    /// * `display_action_tx` - Channel to send PlatformActions to Platform
-    /// * `pty_action_tx` - Channel to send PlatformActions to PTY
+    /// * `args` - The arguments required to run the orchestrator loop.
     ///
     /// # Returns
     ///
     /// Returns `Self` (handle to the actor for cleanup)
-    pub fn spawn(
-        term_emulator: TerminalEmulator,
-        ui_rx: Receiver<OrchestratorEvent>,
-        pty_rx: Receiver<OrchestratorEvent>,
-        display_action_tx: SyncSender<PlatformAction>,
-        pty_action_tx: SyncSender<PlatformAction>,
-        waker: Box<dyn crate::platform::waker::EventLoopWaker>,
-    ) -> Result<Self> {
+    pub fn spawn(term_emulator: TerminalEmulator, args: OrchestratorArgs) -> Result<Self> {
         info!("OrchestratorActor: Spawning background thread");
 
         let thread_handle = thread::Builder::new()
             .name("orchestrator".to_string())
             .spawn(move || {
-                if let Err(e) = Self::actor_thread_main(
-                    term_emulator,
-                    ui_rx,
-                    pty_rx,
-                    display_action_tx,
-                    pty_action_tx,
-                    waker,
-                ) {
+                if let Err(e) = Self::actor_thread_main(term_emulator, args) {
                     error!("OrchestratorActor thread error: {:#}", e);
                 }
             })
@@ -81,12 +73,16 @@ impl OrchestratorActor {
     /// 3. Sleeps on the UI queue if both are empty (woken by Doorbell from PTY send).
     fn actor_thread_main(
         mut term_emulator: TerminalEmulator,
-        ui_rx: Receiver<OrchestratorEvent>,
-        pty_rx: Receiver<OrchestratorEvent>,
-        display_action_tx: SyncSender<PlatformAction>,
-        pty_action_tx: SyncSender<PlatformAction>,
-        waker: Box<dyn crate::platform::waker::EventLoopWaker>,
+        args: OrchestratorArgs,
     ) -> Result<()> {
+        let OrchestratorArgs {
+            ui_rx,
+            pty_rx,
+            display_action_tx,
+            pty_action_tx,
+            waker,
+        } = args;
+
         debug!("OrchestratorActor: Starting event loop (priority channel model)");
 
         let mut pending_emulator_actions = Vec::new();

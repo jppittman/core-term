@@ -1,4 +1,4 @@
-use pixelflow_core::{TensorView, batch::Batch};
+use pixelflow_core::{batch::Batch, TensorView};
 
 // Simulate the FIXED build.rs packing logic (Padded per row)
 fn pack_4bit_padded(bitmap: &[u8], width: usize) -> Vec<u8> {
@@ -63,7 +63,6 @@ fn test_odd_width_glyph_rendering_correctness() {
     assert_eq!(packed[2], 0xF0);
     assert_eq!(packed[3], 0xF0);
 
-
     // 2. Setup TensorView (New glyph.rs behavior)
     let stride = (width + 1) / 2;
     let view = TensorView::new(&packed, width, height, stride);
@@ -71,23 +70,37 @@ fn test_odd_width_glyph_rendering_correctness() {
     // 3. Verify correctness
     unsafe {
         // (0, 0) -> 0
-        let val = view.gather_4bit(Batch::splat(0), Batch::splat(0)).to_array_usize()[0];
+        let val = view
+            .gather_4bit(Batch::splat(0), Batch::splat(0))
+            .to_array_usize()[0];
         assert_eq!(val, 0);
 
         // (1, 0) -> F
-        let val = view.gather_4bit(Batch::splat(1), Batch::splat(0)).to_array_usize()[0];
+        let val = view
+            .gather_4bit(Batch::splat(1), Batch::splat(0))
+            .to_array_usize()[0];
         assert_eq!(val, 0xFF);
 
         // (0, 1) -> F (Previously failed here)
-        let val = view.gather_4bit(Batch::splat(0), Batch::splat(1)).to_array_usize()[0];
-        assert_eq!(val, 0xFF, "Glyph corruption at (0,1). Got {:#x}, expected 0xFF", val);
+        let val = view
+            .gather_4bit(Batch::splat(0), Batch::splat(1))
+            .to_array_usize()[0];
+        assert_eq!(
+            val, 0xFF,
+            "Glyph corruption at (0,1). Got {:#x}, expected 0xFF",
+            val
+        );
 
         // (1, 1) -> 0
-        let val = view.gather_4bit(Batch::splat(1), Batch::splat(1)).to_array_usize()[0];
+        let val = view
+            .gather_4bit(Batch::splat(1), Batch::splat(1))
+            .to_array_usize()[0];
         assert_eq!(val, 0);
 
         // (2, 1) -> F
-        let val = view.gather_4bit(Batch::splat(2), Batch::splat(1)).to_array_usize()[0];
+        let val = view
+            .gather_4bit(Batch::splat(2), Batch::splat(1))
+            .to_array_usize()[0];
         assert_eq!(val, 0xFF);
     }
 }
