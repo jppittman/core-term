@@ -12,9 +12,9 @@ use anyhow::{anyhow, Result};
 use log::{debug, info};
 use std::ffi::CString;
 use std::mem;
-use std::ptr;
 use std::os::raw::c_int;
-use x11::{xlib, keysym};
+use std::ptr;
+use x11::{keysym, xlib};
 
 // --- Atoms ---
 #[derive(Debug, Clone, Copy)]
@@ -29,7 +29,8 @@ struct SelectionAtoms {
 impl SelectionAtoms {
     fn new(display: *mut xlib::Display) -> Self {
         unsafe {
-            let intern = |name: &[u8]| xlib::XInternAtom(display, name.as_ptr() as *const i8, xlib::False);
+            let intern =
+                |name: &[u8]| xlib::XInternAtom(display, name.as_ptr() as *const i8, xlib::False);
             Self {
                 clipboard: intern(b"CLIPBOARD\0"),
                 targets: intern(b"TARGETS\0"),
@@ -71,7 +72,9 @@ impl EventLoopWaker for X11Waker {
                 self.window,
                 xlib::False,
                 xlib::NoEventMask,
-                &mut xlib::XEvent { client_message: event }
+                &mut xlib::XEvent {
+                    client_message: event,
+                },
             );
 
             xlib::XFlush(display);
@@ -129,18 +132,22 @@ impl DisplayDriver for X11DisplayDriver {
             let black = xlib::XBlackPixel(display, screen);
             let white = xlib::XWhitePixel(display, screen);
 
-            let window = xlib::XCreateSimpleWindow(
-                display, root, 0, 0, width, height, 0, white, black,
-            );
+            let window =
+                xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
 
             // Select Input Events
             xlib::XSelectInput(
                 display,
                 window,
-                xlib::KeyPressMask | xlib::KeyReleaseMask |
-                xlib::ButtonPressMask | xlib::ButtonReleaseMask | xlib::PointerMotionMask |
-                xlib::StructureNotifyMask | xlib::FocusChangeMask | xlib::ExposureMask |
-                xlib::PropertyChangeMask
+                xlib::KeyPressMask
+                    | xlib::KeyReleaseMask
+                    | xlib::ButtonPressMask
+                    | xlib::ButtonReleaseMask
+                    | xlib::PointerMotionMask
+                    | xlib::StructureNotifyMask
+                    | xlib::FocusChangeMask
+                    | xlib::ExposureMask
+                    | xlib::PropertyChangeMask,
             );
 
             // Set WM Protocols
@@ -177,7 +184,10 @@ impl DisplayDriver for X11DisplayDriver {
         Box::new(X11Waker::new(self.window))
     }
 
-    fn handle_request(&mut self, request: DriverRequest) -> std::result::Result<DriverResponse, DisplayError> {
+    fn handle_request(
+        &mut self,
+        request: DriverRequest,
+    ) -> std::result::Result<DriverResponse, DisplayError> {
         match request {
             DriverRequest::Init => Ok(self.handle_init()?),
             DriverRequest::PollEvents => Ok(self.handle_poll_events()?),
@@ -187,7 +197,9 @@ impl DisplayDriver for X11DisplayDriver {
             DriverRequest::Bell => Ok(self.handle_bell()?),
             DriverRequest::SetCursorVisibility(_visible) => Ok(DriverResponse::CursorVisibilitySet),
             DriverRequest::CopyToClipboard(text) => Ok(self.handle_copy_to_clipboard(&text)?),
-            DriverRequest::SubmitClipboardData(text) => Ok(self.handle_submit_clipboard_data(&text)?),
+            DriverRequest::SubmitClipboardData(text) => {
+                Ok(self.handle_submit_clipboard_data(&text)?)
+            }
             DriverRequest::RequestPaste => Ok(self.handle_request_paste()?),
         }
     }
@@ -255,7 +267,7 @@ impl X11DisplayDriver {
                         buffer.as_mut_ptr() as *mut i8,
                         buffer.len() as c_int,
                         &mut keysym,
-                        ptr::null_mut()
+                        ptr::null_mut(),
                     );
 
                     let text = if count > 0 {
@@ -267,7 +279,11 @@ impl X11DisplayDriver {
                     let modifiers = self.extract_modifiers(key_event.state);
                     let symbol = self.xkeysym_to_keysymbol(keysym, text.as_deref().unwrap_or(""));
 
-                    Some(DisplayEvent::Key { symbol, modifiers, text })
+                    Some(DisplayEvent::Key {
+                        symbol,
+                        modifiers,
+                        text,
+                    })
                 }
                 xlib::ConfigureNotify => {
                     let conf = event.configure;
@@ -328,10 +344,18 @@ impl X11DisplayDriver {
 
     fn extract_modifiers(&self, state: u32) -> Modifiers {
         let mut modifiers = Modifiers::empty();
-        if (state & xlib::ShiftMask) != 0 { modifiers.insert(Modifiers::SHIFT); }
-        if (state & xlib::ControlMask) != 0 { modifiers.insert(Modifiers::CONTROL); }
-        if (state & xlib::Mod1Mask) != 0 { modifiers.insert(Modifiers::ALT); }
-        if (state & xlib::Mod4Mask) != 0 { modifiers.insert(Modifiers::SUPER); }
+        if (state & xlib::ShiftMask) != 0 {
+            modifiers.insert(Modifiers::SHIFT);
+        }
+        if (state & xlib::ControlMask) != 0 {
+            modifiers.insert(Modifiers::CONTROL);
+        }
+        if (state & xlib::Mod1Mask) != 0 {
+            modifiers.insert(Modifiers::ALT);
+        }
+        if (state & xlib::Mod4Mask) != 0 {
+            modifiers.insert(Modifiers::SUPER);
+        }
         modifiers
     }
 
@@ -346,7 +370,9 @@ impl X11DisplayDriver {
         match keysym_val as u32 {
             keysym::XK_Shift_L | keysym::XK_Shift_R => KeySymbol::Shift,
             keysym::XK_Control_L | keysym::XK_Control_R => KeySymbol::Control,
-            keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => KeySymbol::Alt,
+            keysym::XK_Alt_L | keysym::XK_Alt_R | keysym::XK_Meta_L | keysym::XK_Meta_R => {
+                KeySymbol::Alt
+            }
             keysym::XK_Super_L | keysym::XK_Super_R => KeySymbol::Super,
             keysym::XK_Return => KeySymbol::Enter,
             keysym::XK_BackSpace => KeySymbol::Backspace,
@@ -362,12 +388,18 @@ impl X11DisplayDriver {
             keysym::XK_End => KeySymbol::End,
             keysym::XK_Insert => KeySymbol::Insert,
             keysym::XK_Delete => KeySymbol::Delete,
-            keysym::XK_F1 => KeySymbol::F1, keysym::XK_F2 => KeySymbol::F2,
-            keysym::XK_F3 => KeySymbol::F3, keysym::XK_F4 => KeySymbol::F4,
-            keysym::XK_F5 => KeySymbol::F5, keysym::XK_F6 => KeySymbol::F6,
-            keysym::XK_F7 => KeySymbol::F7, keysym::XK_F8 => KeySymbol::F8,
-            keysym::XK_F9 => KeySymbol::F9, keysym::XK_F10 => KeySymbol::F10,
-            keysym::XK_F11 => KeySymbol::F11, keysym::XK_F12 => KeySymbol::F12,
+            keysym::XK_F1 => KeySymbol::F1,
+            keysym::XK_F2 => KeySymbol::F2,
+            keysym::XK_F3 => KeySymbol::F3,
+            keysym::XK_F4 => KeySymbol::F4,
+            keysym::XK_F5 => KeySymbol::F5,
+            keysym::XK_F6 => KeySymbol::F6,
+            keysym::XK_F7 => KeySymbol::F7,
+            keysym::XK_F8 => KeySymbol::F8,
+            keysym::XK_F9 => KeySymbol::F9,
+            keysym::XK_F10 => KeySymbol::F10,
+            keysym::XK_F11 => KeySymbol::F11,
+            keysym::XK_F12 => KeySymbol::F12,
             _ => KeySymbol::Unknown,
         }
     }
@@ -377,12 +409,19 @@ impl X11DisplayDriver {
     fn handle_submit_clipboard_data(&mut self, text: &str) -> Result<DriverResponse> {
         // If we have a pending request, fulfill it
         if let Some(req) = self.pending_selection_request.take() {
-            unsafe { self.fulfill_selection_request(&req, text); }
+            unsafe {
+                self.fulfill_selection_request(&req, text);
+            }
         }
 
         // Re-assert ownership
         unsafe {
-            xlib::XSetSelectionOwner(self.display, self.atoms.clipboard, self.window, xlib::CurrentTime);
+            xlib::XSetSelectionOwner(
+                self.display,
+                self.atoms.clipboard,
+                self.window,
+                xlib::CurrentTime,
+            );
             xlib::XFlush(self.display);
         }
         Ok(DriverResponse::ClipboardDataSubmitted)
@@ -398,31 +437,60 @@ impl X11DisplayDriver {
         ev.time = req.time;
         ev.property = 0; // Reject by default
 
-        if req.target == self.atoms.utf8_string || req.target == self.atoms.text || req.target == self.atoms.xa_string {
+        if req.target == self.atoms.utf8_string
+            || req.target == self.atoms.text
+            || req.target == self.atoms.xa_string
+        {
             // Send data
             xlib::XChangeProperty(
-                self.display, req.requestor, req.property, req.target,
-                8, xlib::PropModeReplace,
-                text.as_ptr(), text.len() as c_int
+                self.display,
+                req.requestor,
+                req.property,
+                req.target,
+                8,
+                xlib::PropModeReplace,
+                text.as_ptr(),
+                text.len() as c_int,
             );
             ev.property = req.property;
         } else if req.target == self.atoms.targets {
             // Send supported targets
-            let targets = [self.atoms.utf8_string, self.atoms.text, self.atoms.xa_string, self.atoms.targets];
+            let targets = [
+                self.atoms.utf8_string,
+                self.atoms.text,
+                self.atoms.xa_string,
+                self.atoms.targets,
+            ];
             xlib::XChangeProperty(
-                self.display, req.requestor, req.property, xlib::XA_ATOM,
-                32, xlib::PropModeReplace,
-                targets.as_ptr() as *const u8, targets.len() as c_int
+                self.display,
+                req.requestor,
+                req.property,
+                xlib::XA_ATOM,
+                32,
+                xlib::PropModeReplace,
+                targets.as_ptr() as *const u8,
+                targets.len() as c_int,
             );
             ev.property = req.property;
         }
 
-        xlib::XSendEvent(self.display, req.requestor, xlib::False, xlib::NoEventMask, &mut xlib::XEvent { selection: ev });
+        xlib::XSendEvent(
+            self.display,
+            req.requestor,
+            xlib::False,
+            xlib::NoEventMask,
+            &mut xlib::XEvent { selection: ev },
+        );
         xlib::XFlush(self.display);
     }
 
-    unsafe fn handle_selection_notify(&self, event: &xlib::XSelectionEvent) -> Option<DisplayEvent> {
-        if event.property == 0 { return None; } // Paste failed
+    unsafe fn handle_selection_notify(
+        &self,
+        event: &xlib::XSelectionEvent,
+    ) -> Option<DisplayEvent> {
+        if event.property == 0 {
+            return None;
+        } // Paste failed
 
         let mut type_ret = 0;
         let mut format_ret = 0;
@@ -431,9 +499,18 @@ impl X11DisplayDriver {
         let mut prop_ret = ptr::null_mut();
 
         xlib::XGetWindowProperty(
-            self.display, event.requestor, event.property,
-            0, i64::MAX / 4, xlib::True, xlib::AnyPropertyType as u64,
-            &mut type_ret, &mut format_ret, &mut nitems, &mut bytes_after, &mut prop_ret
+            self.display,
+            event.requestor,
+            event.property,
+            0,
+            i64::MAX / 4,
+            xlib::True,
+            xlib::AnyPropertyType as u64,
+            &mut type_ret,
+            &mut format_ret,
+            &mut nitems,
+            &mut bytes_after,
+            &mut prop_ret,
         );
 
         if !prop_ret.is_null() {
@@ -448,7 +525,12 @@ impl X11DisplayDriver {
     fn handle_copy_to_clipboard(&mut self, _text: &str) -> Result<DriverResponse> {
         // Just assert ownership - data will be provided when requested
         unsafe {
-            xlib::XSetSelectionOwner(self.display, self.atoms.clipboard, self.window, xlib::CurrentTime);
+            xlib::XSetSelectionOwner(
+                self.display,
+                self.atoms.clipboard,
+                self.window,
+                xlib::CurrentTime,
+            );
             xlib::XFlush(self.display);
         }
         Ok(DriverResponse::ClipboardCopied)
@@ -457,8 +539,12 @@ impl X11DisplayDriver {
     fn handle_request_paste(&mut self) -> Result<DriverResponse> {
         unsafe {
             xlib::XConvertSelection(
-                self.display, self.atoms.clipboard, self.atoms.utf8_string,
-                self.atoms.clipboard, self.window, xlib::CurrentTime
+                self.display,
+                self.atoms.clipboard,
+                self.atoms.utf8_string,
+                self.atoms.clipboard,
+                self.window,
+                xlib::CurrentTime,
             );
             xlib::XFlush(self.display);
         }
@@ -471,27 +557,46 @@ impl X11DisplayDriver {
         Ok(DriverResponse::Framebuffer(buffer))
     }
 
-    fn handle_present(&mut self, snapshot: RenderSnapshot) -> std::result::Result<DriverResponse, DisplayError> {
+    fn handle_present(
+        &mut self,
+        snapshot: RenderSnapshot,
+    ) -> std::result::Result<DriverResponse, DisplayError> {
         unsafe {
             let depth = xlib::XDefaultDepth(self.display, self.screen);
             let visual = xlib::XDefaultVisual(self.display, self.screen);
             let data_ptr = snapshot.framebuffer.as_ptr() as *mut i8;
 
             let image = xlib::XCreateImage(
-                self.display, visual, depth as u32, xlib::ZPixmap, 0,
-                data_ptr, snapshot.width_px, snapshot.height_px, 32, 0
+                self.display,
+                visual,
+                depth as u32,
+                xlib::ZPixmap,
+                0,
+                data_ptr,
+                snapshot.width_px,
+                snapshot.height_px,
+                32,
+                0,
             );
 
             if image.is_null() {
                 return Err(DisplayError::PresentationFailed(
                     snapshot,
-                    "XCreateImage failed".into()
+                    "XCreateImage failed".into(),
                 ));
             }
 
             xlib::XPutImage(
-                self.display, self.window, self.gc, image,
-                0, 0, 0, 0, snapshot.width_px, snapshot.height_px
+                self.display,
+                self.window,
+                self.gc,
+                image,
+                0,
+                0,
+                0,
+                0,
+                snapshot.width_px,
+                snapshot.height_px,
             );
 
             (*image).data = ptr::null_mut(); // Don't let XDestroyImage free our Rust buffer

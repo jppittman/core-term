@@ -192,7 +192,10 @@ mod tests {
         // Cell (2,0) should be black - check further away to avoid any glyph edge effects
         let cell_2_0 = pixel_at(&fb, 16, 0, config.width_px);
 
-        assert_ne!(cell_0_0_bg, BLACK, "Cell (0,0) should have gray bg, not black");
+        assert_ne!(
+            cell_0_0_bg, BLACK,
+            "Cell (0,0) should have gray bg, not black"
+        );
         assert_eq!(cell_2_0, BLACK, "Cell (2,0) should be black from clear");
     }
 

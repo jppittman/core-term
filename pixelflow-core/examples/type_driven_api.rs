@@ -40,14 +40,14 @@ fn main() {
     let p10 = Batch::<u32>::new(0x00000000, 0x00000000, 0x00000000, 0x00000000);
 
     let inv_dx = Batch::<u32>::splat(192); // 75% weight (256 - 64)
-    let dx = Batch::<u32>::splat(64);       // 25% weight
+    let dx = Batch::<u32>::splat(64); // 25% weight
 
     // Old C-style API (what we had before):
     // let w0 = p00.mullo_u16(inv_dx).add_u16(p10.mullo_u16(dx)).shift_right_u16(8);
 
     // New Rust-style API (using standard operators):
-    let w0 = ((p00.cast::<u16>() * inv_dx.cast::<u16>()) +
-              (p10.cast::<u16>() * dx.cast::<u16>())) >> 8;
+    let w0 =
+        ((p00.cast::<u16>() * inv_dx.cast::<u16>()) + (p10.cast::<u16>() * dx.cast::<u16>())) >> 8;
 
     let mut result_pixels = [0u32; 4];
     unsafe { w0.cast::<u32>().store(result_pixels.as_mut_ptr()) };

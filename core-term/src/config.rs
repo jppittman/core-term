@@ -213,16 +213,24 @@ impl Default for FontConfig {
         // Priority: headless > x11 > macos
         let backend = {
             #[cfg(use_headless_display)]
-            { FontBackend::Headless }
+            {
+                FontBackend::Headless
+            }
 
             #[cfg(all(not(use_headless_display), use_x11_display))]
-            { FontBackend::FreeType }
+            {
+                FontBackend::FreeType
+            }
 
             #[cfg(all(not(use_headless_display), not(use_x11_display), target_os = "macos"))]
-            { FontBackend::CoreText }
+            {
+                FontBackend::CoreText
+            }
 
             #[cfg(not(any(use_headless_display, use_x11_display, target_os = "macos")))]
-            { FontBackend::Headless } // Fallback to headless
+            {
+                FontBackend::Headless
+            } // Fallback to headless
         };
 
         FontConfig {

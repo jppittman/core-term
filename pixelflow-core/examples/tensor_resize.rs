@@ -11,7 +11,7 @@
 //! result = (WeightsY 1×2) * [(Pixels 2×2) * (WeightsX 2×1)]
 //! ```
 
-use pixelflow_core::{Batch, Tensor1x2, Tensor2x1, TensorView, TensorViewMut, MapPixels};
+use pixelflow_core::{Batch, MapPixels, Tensor1x2, Tensor2x1, TensorView, TensorViewMut};
 
 fn main() {
     println!("Tensor-Based Image Resize Example\n");

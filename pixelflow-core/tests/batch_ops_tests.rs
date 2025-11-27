@@ -59,7 +59,10 @@ fn test_batch_u32_shifts_large() {
     // but SIMD usually masks the shift count.
     // However, let's test within reasonable bounds that might be edge cases.
     let shl = a << 31;
-    assert_eq!(shl.to_array_usize(), [0x80000000, 0x80000000, 0x80000000, 0x80000000]);
+    assert_eq!(
+        shl.to_array_usize(),
+        [0x80000000, 0x80000000, 0x80000000, 0x80000000]
+    );
 
     let shr = shl >> 31;
     assert_eq!(shr.to_array_usize(), [1, 1, 1, 1]);

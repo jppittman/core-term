@@ -13,19 +13,35 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{execvp, fork, setsid, ForkResult, Pid}; // Added ForkResult
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
+/// Configuration for spawning a PTY.
 #[derive(Debug, Clone)]
 pub struct PtyConfig<'a> {
+    /// The executable to run (e.g., "/bin/bash").
     pub command_executable: &'a str,
+    /// Arguments to the executable.
     pub args: &'a [&'a str],
+    /// Initial columns.
     pub initial_cols: u16,
+    /// Initial rows.
     pub initial_rows: u16,
 }
 
+/// Trait abstracting a PTY channel.
+///
+/// Allows reading/writing data and managing the PTY session (resizing, PID access).
 pub trait PtyChannel: Read + Write + AsRawFd + Send + Sync {
+    /// Resizes the PTY window.
+    ///
+    /// # Parameters
+    /// * `cols` - New width in columns.
+    /// * `rows` - New height in rows.
     fn resize(&self, cols: u16, rows: u16) -> Result<()>;
+
+    /// Returns the process ID of the child process attached to the PTY.
     fn child_pid(&self) -> Pid;
 }
 
+/// Implementation of `PtyChannel` using `nix` for POSIX systems.
 #[derive(Debug)]
 pub struct NixPty {
     master_fd: OwnedFd,
@@ -49,6 +65,16 @@ impl NixPty {
         Ok(())
     }
 
+    /// Spawns a new process connected to a PTY using the given configuration.
+    ///
+    /// This forks the process, creates a new session in the child, sets up the PTY,
+    /// and executes the command.
+    ///
+    /// # Parameters
+    /// * `config` - Configuration for the PTY and command.
+    ///
+    /// # Returns
+    /// * A new `NixPty` instance in the parent process.
     pub fn spawn_with_config(config: &PtyConfig) -> Result<Self> {
         let pty_results =
             openpty(None, None).with_context(|| "Failed to open PTY (nix::pty::openpty call)")?;
@@ -160,6 +186,7 @@ impl NixPty {
         })
     }
 
+    /// Helper to spawn a shell command (deprecated/unimplemented convenience method).
     pub fn spawn_shell_command(
         _shell_command_str: &str,
         _initial_cols: u16,
@@ -180,6 +207,7 @@ impl NixPty {
         Ok(())
     }
 
+    /// Terminates the child process.
     #[allow(dead_code)]
     pub fn terminate_child_process(&mut self) -> Result<()> {
         log::info!("Terminating child process {}", self.child_pid);

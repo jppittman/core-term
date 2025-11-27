@@ -1,4 +1,4 @@
-use pixelflow_render::{process_frame, Op, Color, NamedColor};
+use pixelflow_render::{process_frame, Color, NamedColor, Op};
 
 #[test]
 fn test_color_conversion() {
@@ -24,9 +24,9 @@ fn test_process_frame_clear() {
 
     // Clear to Blue
     // Specify T as &[u8] explicitly
-    let ops: Vec<Op<&[u8]>> = vec![
-        Op::Clear { color: Color::Named(NamedColor::Blue) }
-    ];
+    let ops: Vec<Op<&[u8]>> = vec![Op::Clear {
+        color: Color::Named(NamedColor::Blue),
+    }];
 
     process_frame(&mut framebuffer, width, height, 8, 16, &ops);
 
@@ -52,19 +52,14 @@ fn test_process_frame_blit() {
     let b = 0u8;
     let a = 255u8;
 
-    let data = vec![
-        r, g, b, a,  r, g, b, a,
-        r, g, b, a,  r, g, b, a,
-    ];
+    let data = vec![r, g, b, a, r, g, b, a, r, g, b, a, r, g, b, a];
 
-    let ops = vec![
-        Op::Blit {
-            data: &data,
-            w: 2,
-            x: 1,
-            y: 1
-        }
-    ];
+    let ops = vec![Op::Blit {
+        data: &data,
+        w: 2,
+        x: 1,
+        y: 1,
+    }];
 
     process_frame(&mut framebuffer, width, height, 4, 4, &ops);
 

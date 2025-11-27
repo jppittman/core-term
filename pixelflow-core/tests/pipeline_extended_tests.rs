@@ -1,7 +1,7 @@
 use pixelflow_core::Batch;
-use pixelflow_core::pipe::Surface;
-use pixelflow_core::dsl::{SurfaceExt, MaskExt};
+use pixelflow_core::dsl::{MaskExt, SurfaceExt};
 use pixelflow_core::ops::Max;
+use pixelflow_core::pipe::Surface;
 
 // A simple test surface that returns x coordinate as u8
 #[derive(Copy, Clone)]

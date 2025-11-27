@@ -14,9 +14,12 @@ const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
 /// Represents the outcome of a single byte being processed by the Utf8Decoder.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Utf8DecodeResult {
-    Decoded(char),   // Successfully decoded a valid Unicode character.
-    InvalidSequence, // The byte sequence was invalid. Decoder is reset.
-    NeedsMoreBytes,  // Current byte was validly consumed/buffered; more bytes needed.
+    /// Successfully decoded a valid Unicode character.
+    Decoded(char),
+    /// The byte sequence was invalid. Decoder is reset.
+    InvalidSequence,
+    /// Current byte was validly consumed/buffered; more bytes needed.
+    NeedsMoreBytes,
 }
 
 // --- Constants for Control Code Ranges ---
@@ -63,12 +66,14 @@ struct Utf8Decoder {
 }
 
 impl Utf8Decoder {
+    /// Resets the decoder state.
     #[inline]
     fn reset(&mut self) {
         self.len = 0;
         self.expected = 0;
     }
 
+    /// Decodes a single byte.
     fn decode(&mut self, byte: u8) -> Utf8DecodeResult {
         if self.len == 0 {
             return self.decode_first_byte(byte);
@@ -172,6 +177,7 @@ impl Utf8Decoder {
     }
 }
 
+/// Lexer that processes a stream of bytes into `AnsiToken`s.
 #[derive(Debug, Clone, Default)]
 pub struct AnsiLexer {
     tokens: Vec<AnsiToken>,
@@ -179,6 +185,7 @@ pub struct AnsiLexer {
 }
 
 impl AnsiLexer {
+    /// Creates a new `AnsiLexer`.
     pub fn new() -> Self {
         AnsiLexer::default()
     }
@@ -235,6 +242,10 @@ impl AnsiLexer {
         }
     }
 
+    /// Processes a single byte and updates the lexer state.
+    ///
+    /// # Parameters
+    /// * `byte` - The byte to process.
     pub fn process_byte(&mut self, byte: u8) {
         if self.utf8_decoder.len > 0 {
             // --- Currently building a multi-byte UTF-8 char ---
@@ -273,6 +284,7 @@ impl AnsiLexer {
         }
     }
 
+    /// Consumes and returns all accumulated tokens.
     pub fn take_tokens(&mut self) -> Vec<AnsiToken> {
         trace!("taking {:?} tokens from lexer", &self.tokens);
         mem::take(&mut self.tokens)

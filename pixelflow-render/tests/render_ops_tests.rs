@@ -1,9 +1,11 @@
-use pixelflow_render::{process_frame, Op, Color, NamedColor};
+use pixelflow_render::{process_frame, Color, NamedColor, Op};
 
 #[test]
 fn test_clear() {
     let mut fb = vec![0u32; 100];
-    let ops: Vec<Op<&[u8]>> = vec![Op::Clear { color: Color::Named(NamedColor::Green) }];
+    let ops: Vec<Op<&[u8]>> = vec![Op::Clear {
+        color: Color::Named(NamedColor::Green),
+    }];
     process_frame(&mut fb, 10, 10, 1, 1, &ops);
 
     let green: u32 = Color::Named(NamedColor::Green).into();
@@ -32,7 +34,7 @@ fn test_blit_clipping() {
         data: &data,
         w: 2,
         x: 9,
-        y: 9
+        y: 9,
     }];
 
     process_frame(&mut fb, width, height, 1, 1, &ops);
@@ -56,7 +58,7 @@ fn test_blit_bad_data_len() {
         data: &data,
         w: 1,
         x: 0,
-        y: 0
+        y: 0,
     }];
 
     process_frame(&mut fb, 10, 1, 1, 1, &ops);
@@ -123,11 +125,11 @@ fn test_text_coordinates_verification() {
 
     // Assuming grid coordinates based on code review
     if fb[idx_grid] == black {
-         // Confirmed grid coordinates
-         assert_eq!(fb[idx_grid], black);
+        // Confirmed grid coordinates
+        assert_eq!(fb[idx_grid], black);
     } else if fb[idx_pixel] == black {
-         // Confirmed pixel coordinates
-         panic!("Op::Text used pixel coordinates, contrary to expectation from code review!");
+        // Confirmed pixel coordinates
+        panic!("Op::Text used pixel coordinates, contrary to expectation from code review!");
     } else {
         // Maybe neither?
         // Check if anything changed?
@@ -139,6 +141,9 @@ fn test_text_coordinates_verification() {
         // panic!("Neither grid (10,20) nor pixel (1,1) was cleared to black.");
 
         // Actually, let's just assert grid coordinates because that's what the code says.
-        assert_eq!(fb[idx_grid], black, "Expected grid coordinates (10,20) to be cleared");
+        assert_eq!(
+            fb[idx_grid], black,
+            "Expected grid coordinates (10,20) to be cleared"
+        );
     }
 }

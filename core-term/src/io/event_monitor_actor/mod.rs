@@ -13,9 +13,9 @@
 mod read_thread;
 mod write_thread;
 
+use crate::io::pty::NixPty;
 use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
-use crate::io::pty::NixPty;
 use anyhow::{Context, Result};
 use log::*;
 use std::os::unix::io::AsRawFd;
@@ -59,8 +59,8 @@ impl EventMonitorActor {
             .context("Failed to spawn PTY read thread")?;
 
         // Spawn write thread (owns PTY for writes and lifecycle management)
-        let write_thread = WriteThread::spawn(pty, pty_action_rx)
-            .context("Failed to spawn PTY write thread")?;
+        let write_thread =
+            WriteThread::spawn(pty, pty_action_rx).context("Failed to spawn PTY write thread")?;
 
         info!("EventMonitorActor spawned with read and write threads");
 

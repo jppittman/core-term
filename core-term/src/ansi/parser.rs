@@ -32,6 +32,9 @@ enum State {
 }
 
 /// The ANSI parser structure.
+///
+/// Manages the state transitions and parameter accumulation for parsing
+/// ANSI escape sequences.
 #[derive(Debug)]
 pub struct AnsiParser {
     state: State,
@@ -47,6 +50,7 @@ pub struct AnsiParser {
 }
 
 impl AnsiParser {
+    /// Creates a new `AnsiParser`.
     pub fn new() -> Self {
         AnsiParser {
             state: State::Ground,
@@ -62,6 +66,7 @@ impl AnsiParser {
         }
     }
 
+    /// Consumes and returns the list of fully parsed commands.
     pub fn take_commands(&mut self) -> Vec<AnsiCommand> {
         mem::take(&mut self.commands)
     }
@@ -253,6 +258,10 @@ impl AnsiParser {
         self.state = State::EscInString;
     }
 
+    /// Feeds a token into the parser state machine.
+    ///
+    /// # Parameters
+    /// * `token` - The ANSI token to process.
     pub fn process_token(&mut self, token: AnsiToken) {
         match self.state {
             State::Ground => match token {

@@ -46,7 +46,8 @@ impl DisplayManager {
         {
             use crate::display::drivers::CocoaDisplayDriver;
             info!("DisplayManager: Creating CocoaDisplayDriver with config...");
-            let mut driver = Box::new(CocoaDisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
+            let mut driver =
+                Box::new(CocoaDisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
 
             info!("DisplayManager: Calling Init...");
             let response = driver
@@ -62,7 +63,8 @@ impl DisplayManager {
         {
             use crate::display::drivers::X11DisplayDriver;
             info!("DisplayManager: Creating X11DisplayDriver with config...");
-            let mut driver = Box::new(X11DisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
+            let mut driver =
+                Box::new(X11DisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
 
             info!("DisplayManager: Calling Init...");
             let response = driver
@@ -78,7 +80,8 @@ impl DisplayManager {
         {
             use crate::display::drivers::HeadlessDisplayDriver;
             info!("DisplayManager: Creating HeadlessDisplayDriver with config...");
-            let mut driver = Box::new(HeadlessDisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
+            let mut driver =
+                Box::new(HeadlessDisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
 
             info!("DisplayManager: Calling Init...");
             let response = driver

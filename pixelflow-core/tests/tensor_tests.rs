@@ -1,4 +1,4 @@
-use pixelflow_core::{TensorView, TensorViewMut, Batch, MapPixels};
+use pixelflow_core::{Batch, MapPixels, TensorView, TensorViewMut};
 
 #[test]
 fn test_tensor_view_gather() {
@@ -24,9 +24,7 @@ fn test_tensor_view_mut_map_pixels() {
     let mut view = TensorViewMut::new(&mut data, 4, 4, 4);
 
     // Map pixels to set them to coordinate index: y * width + x
-    view.map_pixels(|x, y| {
-        (y * Batch::splat(4)) + x
-    });
+    view.map_pixels(|x, y| (y * Batch::splat(4)) + x);
 
     for i in 0..16 {
         assert_eq!(data[i], i as u32);

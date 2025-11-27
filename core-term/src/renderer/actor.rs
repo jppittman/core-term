@@ -108,7 +108,8 @@ impl RenderActor {
             cell_height_px: physical_cell_height,
         };
 
-        self.rasterizer.compile(&render_commands, &mut framebuffer, fb_config);
+        self.rasterizer
+            .compile(&render_commands, &mut framebuffer, fb_config);
 
         RenderResult {
             snapshot,
@@ -167,7 +168,8 @@ pub fn spawn_render_thread(
         .name("render".to_string())
         .spawn(move || {
             // Create the rasterizer on the render thread to avoid Send requirements
-            let rasterizer = Rasterizer::new(cell_width_px, cell_height_px, font_backend, font_size_pt);
+            let rasterizer =
+                Rasterizer::new(cell_width_px, cell_height_px, font_backend, font_size_pt);
             let actor = RenderActor::new(renderer, rasterizer, config);
             actor.run(work_rx, result_tx);
         })
