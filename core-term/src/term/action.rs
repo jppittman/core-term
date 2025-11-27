@@ -82,6 +82,9 @@ pub enum ControlEvent {
         height_px: u16,
         scale_factor: f64,
     },
+    /// Notification that data is available in the PTY queue.
+    /// Acts as a "doorbell" to wake the orchestrator for low-priority bulk data.
+    PtyDataReady,
 }
 
 // --- Emulator Actions (Signaled to Orchestrator) ---
