@@ -21,6 +21,14 @@ Expected behavior is not an error. For example, `TryRecvError::Empty` when check
 ### No Raw Mutexes in 2024
 Use channels for communication between threads. Mutexes should only appear in channel implementations, not application code.
 
+## Priority Architecture
+
+| Plane | Component | Channel | Priority | Behavior |
+| :--- | :--- | :--- | :--- | :--- |
+| **Management** | `config.rs` | N/A (Static) | N/A | Defines QoS limits (FPS, Buffer Sizes). |
+| **Control** | Orchestrator (Main Loop) | `ui_rx` (Unbounded) | **Strict High** | Handles Signaling (Resize, Quit, Input). Never blocks. |
+| **Data** | PTY Stream | `pty_rx` (Bounded) | **Weighted Low** | Handles Payload (ANSI). Subject to Backpressure. |
+
 ## Thread Architecture
 
 ```
