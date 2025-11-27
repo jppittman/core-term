@@ -10,11 +10,11 @@ use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use crate::io::event::{EpollFlags as KqueueFlags, EventMonitor};
 #[cfg(target_os = "macos")]
 use crate::io::event::{EventMonitor, KqueueFlags};
+use crate::io::traits::EventSource;
 use crate::orchestrator::OrchestratorSender;
 use crate::platform::BackendEvent;
 use anyhow::{Context, Result};
 use log::*;
-use std::os::unix::io::RawFd;
 use std::sync::mpsc::TrySendError;
 use std::thread::{self, JoinHandle};
 
@@ -44,19 +44,22 @@ impl ReadThread {
     ///
     /// # Arguments
     ///
-    /// * `pty_fd` - Raw file descriptor for the PTY (borrowed, not owned)
+    /// * `source` - The event source (e.g., PTY) to monitor and read from
     /// * `orchestrator_tx` - Channel to send IOEvents to orchestrator
-    pub(super) fn spawn(pty_fd: RawFd, orchestrator_tx: OrchestratorSender) -> Result<Self> {
+    pub(super) fn spawn<S>(source: S, orchestrator_tx: OrchestratorSender) -> Result<Self>
+    where
+        S: EventSource + 'static,
+    {
         let thread_handle = thread::Builder::new()
             .name("pty-read".to_string())
             .spawn(move || {
-                if let Err(e) = Self::read_loop(pty_fd, orchestrator_tx) {
+                if let Err(e) = Self::read_loop(source, orchestrator_tx) {
                     error!("PTY read thread error: {:#}", e);
                 }
             })
             .context("Failed to spawn PTY read thread")?;
 
-        debug!("PTY read thread spawned for fd {}", pty_fd);
+        debug!("PTY read thread spawned");
 
         Ok(Self {
             thread_handle: Some(thread_handle),
@@ -67,17 +70,18 @@ impl ReadThread {
     ///
     /// Polls the PTY for read events, reads data, parses ANSI commands,
     /// and sends them to the orchestrator.
-    fn read_loop(pty_fd: RawFd, orchestrator_tx: OrchestratorSender) -> Result<()> {
-        debug!("PTY read thread starting (fd: {})", pty_fd);
+    fn read_loop<S: EventSource>(mut source: S, orchestrator_tx: OrchestratorSender) -> Result<()> {
+        let fd = source.as_raw_fd();
+        debug!("PTY read thread starting (fd: {})", fd);
 
         let event_monitor =
             EventMonitor::new().context("Failed to create EventMonitor in read thread")?;
 
         event_monitor
-            .add(pty_fd, PTY_TOKEN, KqueueFlags::EPOLLIN)
+            .add(&source, PTY_TOKEN, KqueueFlags::EPOLLIN)
             .context("Failed to register PTY with EventMonitor")?;
 
-        debug!("Read thread registered PTY fd {} for EPOLLIN", pty_fd);
+        debug!("Read thread registered PTY fd {} for EPOLLIN", fd);
 
         let mut ansi_parser = AnsiProcessor::new();
         let mut events_buffer = Vec::with_capacity(8);
@@ -96,7 +100,7 @@ impl ReadThread {
             for event in &events_buffer {
                 if event.token == PTY_TOKEN && event.flags.contains(KqueueFlags::EPOLLIN) {
                     Self::handle_pty_readable(
-                        pty_fd,
+                        &mut source,
                         &mut read_buffer,
                         &mut ansi_parser,
                         &orchestrator_tx,
@@ -108,29 +112,26 @@ impl ReadThread {
     }
 
     /// Handles PTY readable events.
-    fn handle_pty_readable(
-        pty_fd: RawFd,
+    fn handle_pty_readable<S: EventSource>(
+        source: &mut S,
         read_buffer: &mut [u8],
         ansi_parser: &mut AnsiProcessor,
         orchestrator_tx: &OrchestratorSender,
         command_buffer: &mut Vec<AnsiCommand>,
     ) -> Result<()> {
         loop {
-            // Read from PTY using unsafe borrowed FD
-            // SAFETY: The write thread owns the NixPty and keeps the FD alive.
-            // This thread only borrows the FD for reading.
-            let bytes_read = unsafe {
-                let borrowed_fd = std::os::unix::io::BorrowedFd::borrow_raw(pty_fd);
-                match nix::unistd::read(borrowed_fd, read_buffer) {
-                    Ok(n) => n,
-                    Err(nix::Error::EAGAIN) => {
-                        // No more data available (EAGAIN and EWOULDBLOCK are the same on most platforms)
-                        break;
-                    }
-                    Err(nix::Error::EIO) => 0, // EOF
-                    Err(e) => {
-                        return Err(e).context("Failed to read from PTY");
-                    }
+            // Read from PTY using safe trait method
+            let bytes_read = match source.read(read_buffer) {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // No more data available
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e).context("Failed to read from PTY");
                 }
             };
 
