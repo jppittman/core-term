@@ -54,9 +54,9 @@ impl OrchestratorSender {
                 // Ignore send errors here - if UI channel is closed, orchestrator is dead anyway
                 let _ = self.ui_tx.send(ControlEvent::PtyDataReady.into());
                 Ok(())
-            },
+            }
             // Fast Lane: Always succeeds (conceptually, unless disconnected)
-            _ => self.ui_tx.send(event)
+            _ => self.ui_tx.send(event),
         }
     }
 
@@ -74,9 +74,12 @@ impl OrchestratorSender {
                 // 2. Ring Doorbell (Wake Orchestrator)
                 let _ = self.ui_tx.send(ControlEvent::PtyDataReady.into());
                 Ok(())
-            },
+            }
             // Fast Lane: Always succeeds (conceptually)
-            _ => self.ui_tx.send(event).map_err(|e| TrySendError::Disconnected(e.0))
+            _ => self
+                .ui_tx
+                .send(event)
+                .map_err(|e| TrySendError::Disconnected(e.0)),
         }
     }
 }
@@ -99,7 +102,13 @@ impl From<ControlEvent> for OrchestratorEvent {
 
 /// Create the orchestrator channels and sender.
 /// Returns (Sender, UI_Receiver, PTY_Receiver).
-pub fn create_orchestrator_channels(pty_buffer_size: usize) -> (OrchestratorSender, Receiver<OrchestratorEvent>, Receiver<OrchestratorEvent>) {
+pub fn create_orchestrator_channels(
+    pty_buffer_size: usize,
+) -> (
+    OrchestratorSender,
+    Receiver<OrchestratorEvent>,
+    Receiver<OrchestratorEvent>,
+) {
     let (ui_tx, ui_rx) = mpsc::channel();
     let (pty_tx, pty_rx) = mpsc::sync_channel(pty_buffer_size);
 
