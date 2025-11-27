@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use std::ffi::CString;
 use std::io::{Read, Result as IoResult, Write};
 use std::os::unix::io::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::sync::Arc;
 
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use nix::pty::openpty;
@@ -44,8 +45,8 @@ pub trait PtyChannel: Read + Write + AsRawFd + Send + Sync {
 /// Implementation of `PtyChannel` using `nix` for POSIX systems.
 #[derive(Debug)]
 pub struct NixPty {
-    master_fd: OwnedFd,
-    child_pid: Pid,
+    master_fd: Arc<OwnedFd>,
+    child_pid: Option<Pid>,
 }
 
 impl NixPty {
@@ -181,8 +182,17 @@ impl NixPty {
         };
 
         Ok(NixPty {
-            master_fd,
-            child_pid,
+            master_fd: Arc::new(master_fd),
+            child_pid: Some(child_pid),
+        })
+    }
+
+    /// Creates a clone of the PTY handle for reading.
+    /// The clone shares the file descriptor but does not own the child process.
+    pub fn try_clone(&self) -> Result<Self> {
+        Ok(Self {
+            master_fd: self.master_fd.clone(),
+            child_pid: None,
         })
     }
 
@@ -210,9 +220,13 @@ impl NixPty {
     /// Terminates the child process.
     #[allow(dead_code)]
     pub fn terminate_child_process(&mut self) -> Result<()> {
-        log::info!("Terminating child process {}", self.child_pid);
-        kill(self.child_pid, Some(Signal::SIGKILL))
-            .with_context(|| format!("Failed to send SIGKILL to child process {}", self.child_pid))
+        if let Some(pid) = self.child_pid {
+            log::info!("Terminating child process {}", pid);
+            kill(pid, Some(Signal::SIGKILL))
+                .with_context(|| format!("Failed to send SIGKILL to child process {}", pid))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -220,43 +234,52 @@ impl Drop for NixPty {
     fn drop(&mut self) {
         let master_raw_fd = self.master_fd.as_raw_fd();
         log::debug!(
-            "NixPty drop: Cleaning up PTY master_fd: {} (child_pid: {})",
+            "NixPty drop: Cleaning up PTY master_fd: {} (child_pid: {:?})",
             master_raw_fd,
             self.child_pid
         );
-        // self.master_fd (OwnedFd) is dropped automatically, closing the FD.
+        // self.master_fd (Arc<OwnedFd>) is dropped automatically.
+        // The underlying FD closes only when strong_count hits 0.
 
-        if self.child_pid.as_raw() <= 0 {
+        let pid = match self.child_pid {
+            Some(p) => p,
+            None => {
+                // This is a clone (Read Thread), so we don't manage the child process.
+                return;
+            }
+        };
+
+        if pid.as_raw() <= 0 {
             log::debug!(
-                "NixPty drop: Invalid or no child PID ({}), skipping child process handling.",
-                self.child_pid
+                "NixPty drop: Invalid child PID ({}), skipping child process handling.",
+                pid
             );
             return;
         }
 
-        match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+        match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::StillAlive) => {
                 log::debug!(
                     "NixPty drop: Child process {} is still alive. Sending SIGHUP.",
-                    self.child_pid
+                    pid
                 );
-                if let Err(e) = kill(self.child_pid, Some(Signal::SIGHUP)) {
+                if let Err(e) = kill(pid, Some(Signal::SIGHUP)) {
                     log::warn!(
                         "NixPty drop: Failed to send SIGHUP to child process {}: {}",
-                        self.child_pid,
+                        pid,
                         e
                     );
                 } else {
                     log::debug!(
                         "NixPty drop: Successfully sent SIGHUP to child process {}.",
-                        self.child_pid
+                        pid
                     );
                 }
             }
             Ok(status) => {
                 log::debug!(
                     "NixPty drop: Child process {} already exited or changed state: {:?}",
-                    self.child_pid,
+                    pid,
                     status
                 );
             }
@@ -265,13 +288,13 @@ impl Drop for NixPty {
                 if matches!(e, nix::Error::ECHILD) || matches!(e, nix::Error::ESRCH) {
                     log::debug!(
                         "NixPty drop: Child process {} does not exist or is not a child (waitpid error: {}). Already reaped?",
-                        self.child_pid,
+                        pid,
                         e
                     );
                 } else {
                     log::warn!(
                         "NixPty drop: Error checking child process {} status with waitpid: {}",
-                        self.child_pid,
+                        pid,
                         e
                     );
                 }
@@ -372,7 +395,7 @@ impl AsRawFd for NixPty {
 
 impl PtyChannel for NixPty {
     fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
-        Self::set_pty_size_internal(&self.master_fd, cols, rows).with_context(|| {
+        Self::set_pty_size_internal(&*self.master_fd, cols, rows).with_context(|| {
             format!(
                 "NixPty: Failed to set PTY size to {}x{} for fd {}",
                 cols,
@@ -381,24 +404,28 @@ impl PtyChannel for NixPty {
             )
         })?;
 
-        kill(self.child_pid, Some(Signal::SIGWINCH)).with_context(|| {
-            format!(
-                "NixPty: Failed to send SIGWINCH to child process {}",
-                self.child_pid
-            )
-        })?;
+        if let Some(pid) = self.child_pid {
+            kill(pid, Some(Signal::SIGWINCH)).with_context(|| {
+                format!(
+                    "NixPty: Failed to send SIGWINCH to child process {}",
+                    pid
+                )
+            })?;
 
-        log::debug!(
-            "NixPty: Resized PTY to {}x{} and sent SIGWINCH to PID {}",
-            cols,
-            rows,
-            self.child_pid
-        );
+            log::debug!(
+                "NixPty: Resized PTY to {}x{} and sent SIGWINCH to PID {}",
+                cols,
+                rows,
+                pid
+            );
+        } else {
+            log::warn!("NixPty: Resize called on a clone (no PID). PTY size set, but SIGWINCH not sent.");
+        }
 
         Ok(())
     }
 
     fn child_pid(&self) -> Pid {
-        self.child_pid
+        self.child_pid.unwrap_or_else(|| Pid::from_raw(0))
     }
 }
