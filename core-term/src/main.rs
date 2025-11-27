@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
     // Platform-Agnostic Initialization (at main scope - actors live here)
     // =========================================================================
 
-    use crate::orchestrator::orchestrator_actor::OrchestratorActor;
+    use crate::orchestrator::orchestrator_actor::{OrchestratorActor, OrchestratorArgs};
     use crate::orchestrator::orchestrator_channel::create_orchestrator_channels;
     use crate::term::TerminalEmulator;
 
@@ -178,11 +178,13 @@ fn main() -> anyhow::Result<()> {
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
     let _orchestrator_actor = OrchestratorActor::spawn(
         term_emulator,
-        ui_rx,
-        pty_rx,
-        display_action_tx,
-        pty_action_tx,
-        waker,
+        OrchestratorArgs {
+            ui_rx,
+            pty_rx,
+            display_action_tx,
+            pty_action_tx,
+            waker,
+        },
     )
     .context("Failed to spawn OrchestratorActor")?;
     info!("OrchestratorActor spawned successfully");

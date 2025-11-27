@@ -1,7 +1,6 @@
-
-use pixelflow_core::{TensorView, Batch};
 use pixelflow_core::ops::SampleAtlas;
 use pixelflow_core::pipe::Surface;
+use pixelflow_core::{Batch, TensorView};
 
 #[test]
 fn test_sample_atlas_integer_coords_bug() {
@@ -45,5 +44,9 @@ fn test_sample_atlas_integer_coords_bug() {
 
     println!("Sampled value: {}", val);
 
-    assert_eq!(val, 34, "Expected 34 (pixel at 1,0), got {}. Likely sampled (0,0) due to coordinate interpretation bug.", val);
+    assert_eq!(
+        val, 34,
+        "Expected 34 (pixel at 1,0), got {}. Likely sampled (0,0) due to coordinate interpretation bug.",
+        val
+    );
 }
