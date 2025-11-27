@@ -15,7 +15,7 @@
 
 use core::arch::x86_64::*;
 use core::marker::PhantomData;
-use crate::SimdOps;
+use crate::batch::SimdOps;
 
 /// Platform-specific SIMD vector wrapper.
 ///
@@ -102,13 +102,19 @@ impl SimdOps<u32> for SimdVec<u32> {
     #[inline(always)]
     fn shr(self, count: i32) -> Self {
         // SAFETY: psrld (32-bit logical right shift)
-        unsafe { Self(_mm_srli_epi32(self.0, count), PhantomData) }
+        unsafe {
+            let count_vec = _mm_cvtsi32_si128(count);
+            Self(_mm_srl_epi32(self.0, count_vec), PhantomData)
+        }
     }
 
     #[inline(always)]
     fn shl(self, count: i32) -> Self {
         // SAFETY: pslld (32-bit logical left shift)
-        unsafe { Self(_mm_slli_epi32(self.0, count), PhantomData) }
+        unsafe {
+            let count_vec = _mm_cvtsi32_si128(count);
+            Self(_mm_sll_epi32(self.0, count_vec), PhantomData)
+        }
     }
 
     #[inline(always)]
@@ -250,13 +256,19 @@ impl SimdOps<u16> for SimdVec<u16> {
     fn shr(self, count: i32) -> Self {
         // SAFETY: psrlw (16-bit logical right shift)
         // This is the instruction that `shift_right_u16()` was trying to expose!
-        unsafe { Self(_mm_srli_epi16(self.0, count), PhantomData) }
+        unsafe {
+            let count_vec = _mm_cvtsi32_si128(count);
+            Self(_mm_srl_epi16(self.0, count_vec), PhantomData)
+        }
     }
 
     #[inline(always)]
     fn shl(self, count: i32) -> Self {
         // SAFETY: psllw (16-bit logical left shift)
-        unsafe { Self(_mm_slli_epi16(self.0, count), PhantomData) }
+        unsafe {
+            let count_vec = _mm_cvtsi32_si128(count);
+            Self(_mm_sll_epi16(self.0, count_vec), PhantomData)
+        }
     }
 
     #[inline(always)]
