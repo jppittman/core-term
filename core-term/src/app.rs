@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
+use crate::glyph::AttrFlags;
 use crate::renderer::{PlatformState, RenderCommand, Renderer};
 use crate::term::snapshot::TerminalSnapshot;
 use crate::term::unicode::get_char_display_width;
@@ -113,9 +114,18 @@ impl Application for CoreTermApp {
                     });
                 }
                 RenderCommand::DrawTextRun {
-                    x, y, text, fg, bg, ..
+                    x,
+                    y,
+                    text,
+                    fg,
+                    bg,
+                    flags,
+                    ..
                 } => {
                     let mut current_x = x;
+                    let bold = flags.contains(AttrFlags::BOLD);
+                    let italic = flags.contains(AttrFlags::ITALIC);
+
                     for ch in text.chars() {
                         ops.push(Op::Text {
                             ch,
@@ -123,6 +133,8 @@ impl Application for CoreTermApp {
                             y,
                             fg,
                             bg,
+                            bold,
+                            italic,
                         });
                         let width = get_char_display_width(ch);
                         current_x += width;
