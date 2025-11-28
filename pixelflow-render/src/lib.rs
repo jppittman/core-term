@@ -23,5 +23,5 @@ pub use glyph::{
     get_glyph_metrics, render_glyph_direct, GlyphMetrics, GlyphRenderCoords, GlyphStyleOverrides,
     RenderTarget,
 };
-pub use rasterizer::process_frame;
+pub use rasterizer::{process_frame, ScreenView, ScreenViewMut};
 pub use types::*;

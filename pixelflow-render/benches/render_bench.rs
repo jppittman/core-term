@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use pixelflow_render::{process_frame, Color, NamedColor, Op};
+use pixelflow_render::{process_frame, Color, NamedColor, Op, ScreenViewMut};
 
 const SCREEN_WIDTH: usize = 1920;
 const SCREEN_HEIGHT: usize = 1080;
@@ -44,53 +44,53 @@ fn bench_text_styles(c: &mut Criterion) {
 
     group.bench_function("Normal", |b| {
         b.iter(|| {
-            process_frame(
+            let mut screen = ScreenViewMut::new(
                 black_box(&mut fb),
                 black_box(SCREEN_WIDTH),
                 black_box(SCREEN_HEIGHT),
                 black_box(CELL_WIDTH),
                 black_box(CELL_HEIGHT),
-                black_box(&cmds_normal),
             );
+            process_frame(black_box(&mut screen), black_box(&cmds_normal));
         })
     });
 
     group.bench_function("Bold", |b| {
         b.iter(|| {
-            process_frame(
+            let mut screen = ScreenViewMut::new(
                 black_box(&mut fb),
                 black_box(SCREEN_WIDTH),
                 black_box(SCREEN_HEIGHT),
                 black_box(CELL_WIDTH),
                 black_box(CELL_HEIGHT),
-                black_box(&cmds_bold),
             );
+            process_frame(black_box(&mut screen), black_box(&cmds_bold));
         })
     });
 
     group.bench_function("Italic", |b| {
         b.iter(|| {
-            process_frame(
+            let mut screen = ScreenViewMut::new(
                 black_box(&mut fb),
                 black_box(SCREEN_WIDTH),
                 black_box(SCREEN_HEIGHT),
                 black_box(CELL_WIDTH),
                 black_box(CELL_HEIGHT),
-                black_box(&cmds_italic),
             );
+            process_frame(black_box(&mut screen), black_box(&cmds_italic));
         })
     });
 
     group.bench_function("BoldItalic", |b| {
         b.iter(|| {
-            process_frame(
+            let mut screen = ScreenViewMut::new(
                 black_box(&mut fb),
                 black_box(SCREEN_WIDTH),
                 black_box(SCREEN_HEIGHT),
                 black_box(CELL_WIDTH),
                 black_box(CELL_HEIGHT),
-                black_box(&cmds_bold_italic),
             );
+            process_frame(black_box(&mut screen), black_box(&cmds_bold_italic));
         })
     });
 
@@ -116,14 +116,14 @@ fn bench_primitives(c: &mut Criterion) {
 
     group.bench_function("Rects", |b| {
         b.iter(|| {
-            process_frame(
+            let mut screen = ScreenViewMut::new(
                 black_box(&mut fb),
                 black_box(SCREEN_WIDTH),
                 black_box(SCREEN_HEIGHT),
                 black_box(CELL_WIDTH),
                 black_box(CELL_HEIGHT),
-                black_box(&cmds_rect),
             );
+            process_frame(black_box(&mut screen), black_box(&cmds_rect));
         })
     });
 
@@ -144,14 +144,14 @@ fn bench_primitives(c: &mut Criterion) {
 
     group.bench_function("Blit_500x500", |b| {
         b.iter(|| {
-             process_frame(
+            let mut screen = ScreenViewMut::new(
                 black_box(&mut fb),
                 black_box(SCREEN_WIDTH),
                 black_box(SCREEN_HEIGHT),
                 black_box(CELL_WIDTH),
                 black_box(CELL_HEIGHT),
-                black_box(&cmds_blit),
             );
+            process_frame(black_box(&mut screen), black_box(&cmds_blit));
         })
     });
 

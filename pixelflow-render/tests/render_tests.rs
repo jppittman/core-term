@@ -1,4 +1,4 @@
-use pixelflow_render::{process_frame, Color, NamedColor, Op};
+use pixelflow_render::{process_frame, Color, NamedColor, Op, ScreenViewMut};
 
 #[test]
 fn test_color_conversion() {
@@ -28,7 +28,8 @@ fn test_process_frame_clear() {
         color: Color::Named(NamedColor::Blue),
     }];
 
-    process_frame(&mut framebuffer, width, height, 8, 16, &ops);
+    let mut screen = ScreenViewMut::new(&mut framebuffer, width, height, 8, 16);
+    process_frame(&mut screen, &ops);
 
     // Blue is (0, 0, 238) -> 0xAABBGGRR -> 0xFFEE0000
     let expected_color: u32 = Color::Named(NamedColor::Blue).into();
@@ -61,7 +62,8 @@ fn test_process_frame_blit() {
         y: 1,
     }];
 
-    process_frame(&mut framebuffer, width, height, 4, 4, &ops);
+    let mut screen = ScreenViewMut::new(&mut framebuffer, width, height, 4, 4);
+    process_frame(&mut screen, &ops);
 
     // Check pixel at (1,1) -> index 1*4 + 1 = 5
     assert_eq!(framebuffer[5], red_u32);
