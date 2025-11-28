@@ -19,3 +19,8 @@ pub use x11::X11DisplayDriver;
 pub mod headless;
 #[cfg(use_headless_display)]
 pub use headless::HeadlessDisplayDriver;
+
+#[cfg(use_web_display)]
+pub mod web;
+#[cfg(use_web_display)]
+pub use web::WebDisplayDriver;

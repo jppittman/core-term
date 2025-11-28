@@ -20,12 +20,18 @@ use core::marker::PhantomData;
 /// Platform-specific SIMD vector wrapper.
 ///
 /// On scalar: Uses fixed-size arrays matching SIMD lane counts.
-#[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct SimdVec<T>(pub(crate) ScalarReg<T>);
 
+impl<T> Clone for SimdVec<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for SimdVec<T> {}
+
 /// The actual storage types (platform-specific).
-#[derive(Copy, Clone)]
 pub union ScalarReg<T> {
     /// 4 lanes of u32.
     pub u32: [u32; 4],
@@ -36,6 +42,14 @@ pub union ScalarReg<T> {
     /// Type marker.
     _marker: PhantomData<T>,
 }
+
+impl<T> Clone for ScalarReg<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for ScalarReg<T> {}
 
 // ============================================================================
 // u32 Implementation (4 lanes)
@@ -855,7 +869,7 @@ impl SimdOps<u8> for SimdVec<u8> {
 /// * The vector bitcasted to type `U`.
 #[inline(always)]
 pub fn cast<T, U>(v: SimdVec<T>) -> SimdVec<U> {
-    SimdVec(v.0)
+    unsafe { core::mem::transmute(v) }
 }
 
 // ============================================================================
