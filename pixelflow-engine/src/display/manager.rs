@@ -23,24 +23,7 @@ pub struct DisplayManager {
 
 impl DisplayManager {
     /// Create a new DisplayManager with display driver selected at build time.
-    pub fn new() -> Result<Self> {
-        use crate::config::CONFIG;
-        use crate::display::messages::DriverConfig;
-
-        // Build DriverConfig from CONFIG (shared by all drivers)
-        let driver_config = DriverConfig {
-            initial_window_x: 100.0,
-            initial_window_y: 100.0,
-            initial_cols: CONFIG.appearance.columns as usize,
-            initial_rows: CONFIG.appearance.rows as usize,
-            cell_width_px: CONFIG.appearance.cell_width_px,
-            cell_height_px: CONFIG.appearance.cell_height_px,
-            bytes_per_pixel: 4,
-            bits_per_component: 8,
-            bits_per_pixel: 32,
-            max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
-        };
-
+    pub fn new(driver_config: crate::display::messages::DriverConfig) -> Result<Self> {
         // Create driver based on build-time selection
         #[cfg(use_cocoa_display)]
         {
@@ -146,5 +129,9 @@ impl DisplayManager {
     /// Get display scale factor (Retina = 2.0, standard = 1.0).
     pub fn scale_factor(&self) -> f64 {
         self.metrics.scale_factor
+    }
+
+    pub fn create_waker(&self) -> Box<dyn crate::platform::waker::EventLoopWaker> {
+        self.driver.create_waker()
     }
 }

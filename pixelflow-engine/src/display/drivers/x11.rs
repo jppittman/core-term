@@ -6,7 +6,7 @@ use crate::display::driver::DisplayDriver;
 use crate::display::messages::{
     DisplayError, DisplayEvent, DriverConfig, DriverRequest, DriverResponse, RenderSnapshot,
 };
-use crate::platform::backends::{KeySymbol, Modifiers};
+use crate::input::{KeySymbol, Modifiers};
 use crate::platform::waker::EventLoopWaker;
 use anyhow::{anyhow, Result};
 use log::{debug, info};

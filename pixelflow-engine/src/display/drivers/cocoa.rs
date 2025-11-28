@@ -463,8 +463,8 @@ impl CocoaDisplayDriver {
         }
     }
 
-    fn extract_modifiers(event: &NSEvent) -> crate::platform::backends::Modifiers {
-        use crate::platform::backends::Modifiers;
+    fn extract_modifiers(event: &NSEvent) -> crate::input::Modifiers {
+        use crate::input::Modifiers;
         let flags = event.modifierFlags();
         let mut modifiers = Modifiers::empty();
         if flags.contains(NSEventModifierFlags::Shift) {
@@ -482,8 +482,8 @@ impl CocoaDisplayDriver {
         modifiers
     }
 
-    fn map_keycode_to_symbol(keycode: u16) -> crate::platform::backends::KeySymbol {
-        use crate::platform::backends::KeySymbol;
+    fn map_keycode_to_symbol(keycode: u16) -> crate::input::KeySymbol {
+        use crate::input::KeySymbol;
         match keycode {
             0x00 => KeySymbol::Char('a'),
             0x01 => KeySymbol::Char('s'),

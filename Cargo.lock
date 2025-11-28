@@ -386,22 +386,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitflags 2.9.1",
- "cocoa",
- "core-foundation 0.9.4",
- "core-graphics 0.24.0",
- "core-text",
  "env_logger",
  "foreign-types",
  "foreign-types-shared",
- "freetype",
  "libc",
  "log",
  "nix 0.30.1",
- "objc",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
  "once_cell",
+ "pixelflow-engine",
  "pixelflow-render",
  "pkg-config",
  "pprof",
@@ -410,8 +402,6 @@ dependencies = [
  "serde_json",
  "termios",
  "test-log",
- "x11",
- "yeslogic-fontconfig-sys",
 ]
 
 [[package]]
@@ -1171,6 +1161,33 @@ name = "pixelflow-core"
 version = "0.1.0"
 dependencies = [
  "criterion",
+]
+
+[[package]]
+name = "pixelflow-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitflags 2.9.1",
+ "cocoa",
+ "core-foundation 0.9.4",
+ "core-graphics 0.24.0",
+ "core-text",
+ "env_logger",
+ "freetype",
+ "libc",
+ "log",
+ "objc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "once_cell",
+ "pixelflow-core",
+ "pixelflow-render",
+ "pkg-config",
+ "serde",
+ "x11",
+ "yeslogic-fontconfig-sys",
 ]
 
 [[package]]
