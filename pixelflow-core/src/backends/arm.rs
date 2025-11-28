@@ -36,7 +36,199 @@ pub union NeonReg<T> {
     pub u32: uint32x4_t,
     pub u16: uint16x8_t,
     pub u8: uint8x16_t,
+    pub f32: float32x4_t,
     _marker: PhantomData<T>,
+}
+
+// ============================================================================
+// f32 Implementation (4 lanes, 32-bit operations)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    /// Broadcasts a value to all lanes.
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        // SAFETY: vdupq_n_f32 is always safe
+        unsafe {
+            Self(NeonReg {
+                f32: vdupq_n_f32(val),
+            })
+        }
+    }
+
+    /// Loads a vector from a pointer.
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        // SAFETY: Caller guarantees ptr is valid for reading 16 bytes
+        unsafe {
+            Self(NeonReg {
+                f32: vld1q_f32(ptr),
+            })
+        }
+    }
+
+    /// Stores the vector to a pointer.
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        // SAFETY: Caller guarantees ptr is valid for writing 16 bytes
+        unsafe { vst1q_f32(ptr, self.0.f32) }
+    }
+
+    /// Creates a new vector from values.
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        // SAFETY: Load from stack array
+        unsafe {
+            Self(NeonReg {
+                f32: vld1q_f32([v0, v1, v2, v3].as_ptr()),
+            })
+        }
+    }
+
+    /// Adds two vectors.
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        // SAFETY: vaddq_f32
+        unsafe {
+            Self(NeonReg {
+                f32: vaddq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    /// Subtracts two vectors.
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        // SAFETY: vsubq_f32
+        unsafe {
+            Self(NeonReg {
+                f32: vsubq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    /// Multiplies two vectors.
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        // SAFETY: vmulq_f32
+        unsafe {
+            Self(NeonReg {
+                f32: vmulq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    /// Bitwise AND.
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        // Bitwise ops on floats using reinterpret cast
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let b = vreinterpretq_u32_f32(other.0.f32);
+            let res = vandq_u32(a, b);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    /// Bitwise OR.
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let b = vreinterpretq_u32_f32(other.0.f32);
+            let res = vorrq_u32(a, b);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    /// Bitwise NOT.
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let res = vmvnq_u32(a);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    /// Logical shift right.
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let shift = vdupq_n_s32(-count);
+            let res = vshlq_u32(a, shift);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    /// Logical shift left.
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let shift = vdupq_n_s32(count);
+            let res = vshlq_u32(a, shift);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    /// Element-wise selection.
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+            // vbslq_f32 takes (mask_u32, f32, f32) or similar?
+            // Intrinsics are vbslq_f32(uint32x4_t mask, float32x4_t a, float32x4_t b) usually
+            let m = vreinterpretq_u32_f32(mask.0.f32);
+            Self(NeonReg {
+                f32: vbslq_f32(m, self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    /// Minimum value.
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        // SAFETY: vminq_f32
+        unsafe {
+            Self(NeonReg {
+                f32: vminq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    /// Maximum value.
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        // SAFETY: vmaxq_f32
+        unsafe {
+            Self(NeonReg {
+                f32: vmaxq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    /// Saturating addition.
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        self.add(other)
+    }
+
+    /// Saturating subtraction.
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        self.sub(other)
+    }
 }
 
 // ============================================================================

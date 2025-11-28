@@ -13,6 +13,16 @@
 *   **Pipeline DSL**: Includes a Domain-Specific Language (DSL) for composing rendering pipelines with operations like `offset`, `skew`, and `over`.
 *   **`no_std` Compatible**: Designed for embedded and bare-metal environments.
 
+## New Shader Algebra (Proposed)
+
+We are transitioning to a new "Shader Algebra" design based on functional combinators. This new approach offers:
+
+*   **Coordinate-Based Surfaces**: Treating coordinates as surfaces (`X`, `Y`) enables arbitrary warping and distortion.
+*   **Automatic Format Elision**: The type system optimizes away unnecessary color format conversions (packed vs. planar).
+*   **Unified Abstraction**: Everything is a `Surface` (texture, noise, constant color), allowing seamless composition.
+
+See [docs/SHADER_ALGEBRA.md](docs/SHADER_ALGEBRA.md) for the full design specification.
+
 ## Example Usage
 
 The following example demonstrates how `pixelflow-core` uses Rust's type system to select the appropriate SIMD instructions:

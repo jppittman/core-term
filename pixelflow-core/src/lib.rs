@@ -25,6 +25,8 @@ pub mod dsl;
 pub mod ops;
 /// Pipeline abstractions and surface traits.
 pub mod pipe;
+/// The Shader Algebra: Composable functional surfaces.
+pub mod surface;
 
 pub use batch::Batch;
 

@@ -25,6 +25,175 @@ use core::marker::PhantomData;
 pub struct SimdVec<T>(pub(crate) __m128i, PhantomData<T>);
 
 // ============================================================================
+// f32 Implementation (4 lanes, 32-bit operations)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    /// Broadcasts a value to all lanes.
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        unsafe {
+            let vec = _mm_set1_ps(val);
+            Self(_mm_castps_si128(vec), PhantomData)
+        }
+    }
+
+    /// Loads a vector from a pointer.
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        unsafe {
+            let vec = _mm_loadu_ps(ptr);
+            Self(_mm_castps_si128(vec), PhantomData)
+        }
+    }
+
+    /// Stores the vector to a pointer.
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        unsafe {
+            let vec = _mm_castsi128_ps(self.0);
+            _mm_storeu_ps(ptr, vec)
+        }
+    }
+
+    /// Creates a new vector from values.
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        unsafe {
+            // Note: _mm_set_ps takes arguments in reverse order (e3, e2, e1, e0)
+            let vec = _mm_set_ps(v3, v2, v1, v0);
+            Self(_mm_castps_si128(vec), PhantomData)
+        }
+    }
+
+    /// Adds two vectors.
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_add_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    /// Subtracts two vectors.
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_sub_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    /// Multiplies two vectors.
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_mul_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    /// Bitwise AND.
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        // Logical ops on floats are bitwise in SSE2 too, usually can use integer ops or float ops.
+        // Using integer ops is fine since we store as __m128i.
+        unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
+    }
+
+    /// Bitwise OR.
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
+    }
+
+    /// Bitwise NOT.
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm_set1_epi32(-1);
+            Self(_mm_xor_si128(self.0, all_ones), PhantomData)
+        }
+    }
+
+    /// Logical shift right.
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        // Float shift is reinterpret cast to int, shift, cast back.
+        // Since we are already __m128i, we just shift.
+        // NOTE: Shifting floats bitwise is usually not what you want unless you are doing bit-hackery.
+        // But the trait requires it.
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_srl_epi32(self.0, shift), PhantomData)
+        }
+    }
+
+    /// Logical shift left.
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_sll_epi32(self.0, shift), PhantomData)
+        }
+    }
+
+    /// Element-wise selection.
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        // (self & mask) | (other & !mask)
+        unsafe {
+            let masked_self = _mm_and_si128(self.0, mask.0);
+            let not_mask = _mm_xor_si128(mask.0, _mm_set1_epi32(-1));
+            let masked_other = _mm_and_si128(other.0, not_mask);
+            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
+        }
+    }
+
+    /// Minimum value.
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_min_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    /// Maximum value.
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_max_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    /// Saturating addition.
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        // Floats don't have saturating add in the integer sense, just regular add.
+        // Usually saturating add is for integers. For floats, we just delegate to add.
+        self.add(other)
+    }
+
+    /// Saturating subtraction.
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        self.sub(other)
+    }
+}
+
+// ============================================================================
 // u32 Implementation (4 lanes, 32-bit operations)
 // ============================================================================
 

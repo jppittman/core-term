@@ -33,8 +33,217 @@ pub union ScalarReg<T> {
     pub u16: [u16; 8],
     /// 16 lanes of u8.
     pub u8: [u8; 16],
+    /// 4 lanes of f32.
+    pub f32: [f32; 4],
     /// Type marker.
     _marker: PhantomData<T>,
+}
+
+// ============================================================================
+// f32 Implementation (4 lanes)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    /// Broadcasts a value to all lanes.
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        Self(ScalarReg { f32: [val; 4] })
+    }
+
+    /// Loads a vector from a pointer.
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        // SAFETY: Caller guarantees ptr is valid for reading 4 f32 values
+        unsafe {
+            Self(ScalarReg {
+                f32: [
+                    *ptr.offset(0),
+                    *ptr.offset(1),
+                    *ptr.offset(2),
+                    *ptr.offset(3),
+                ],
+            })
+        }
+    }
+
+    /// Stores the vector to a pointer.
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        // SAFETY: Caller guarantees ptr is valid for writing 4 f32 values
+        unsafe {
+            let arr = self.0.f32;
+            *ptr.offset(0) = arr[0];
+            *ptr.offset(1) = arr[1];
+            *ptr.offset(2) = arr[2];
+            *ptr.offset(3) = arr[3];
+        }
+    }
+
+    /// Creates a new vector from values.
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        Self(ScalarReg {
+            f32: [v0, v1, v2, v3],
+        })
+    }
+
+    /// Adds two vectors.
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]],
+            })
+        }
+    }
+
+    /// Subtracts two vectors.
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]],
+            })
+        }
+    }
+
+    /// Multiplies two vectors.
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]],
+            })
+        }
+    }
+
+    /// Bitwise AND.
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            let b = other.0.u32;
+            Self(ScalarReg {
+                u32: [a[0] & b[0], a[1] & b[1], a[2] & b[2], a[3] & b[3]],
+            })
+        }
+    }
+
+    /// Bitwise OR.
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            let b = other.0.u32;
+            Self(ScalarReg {
+                u32: [a[0] | b[0], a[1] | b[1], a[2] | b[2], a[3] | b[3]],
+            })
+        }
+    }
+
+    /// Bitwise NOT.
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            Self(ScalarReg {
+                u32: [!a[0], !a[1], !a[2], !a[3]],
+            })
+        }
+    }
+
+    /// Logical shift right.
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            Self(ScalarReg {
+                u32: [a[0] >> count, a[1] >> count, a[2] >> count, a[3] >> count],
+            })
+        }
+    }
+
+    /// Logical shift left.
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            Self(ScalarReg {
+                u32: [a[0] << count, a[1] << count, a[2] << count, a[3] << count],
+            })
+        }
+    }
+
+    /// Element-wise selection.
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        // (self & mask) | (other & !mask)
+        unsafe {
+            let a = self.0.u32;
+            let b = other.0.u32;
+            let m = mask.0.u32;
+            Self(ScalarReg {
+                u32: [
+                    (a[0] & m[0]) | (b[0] & !m[0]),
+                    (a[1] & m[1]) | (b[1] & !m[1]),
+                    (a[2] & m[2]) | (b[2] & !m[2]),
+                    (a[3] & m[3]) | (b[3] & !m[3]),
+                ],
+            })
+        }
+    }
+
+    /// Minimum value.
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [
+                    a[0].min(b[0]),
+                    a[1].min(b[1]),
+                    a[2].min(b[2]),
+                    a[3].min(b[3]),
+                ],
+            })
+        }
+    }
+
+    /// Maximum value.
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [
+                    a[0].max(b[0]),
+                    a[1].max(b[1]),
+                    a[2].max(b[2]),
+                    a[3].max(b[3]),
+                ],
+            })
+        }
+    }
+
+    /// Saturating addition.
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        self.add(other)
+    }
+
+    /// Saturating subtraction.
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        self.sub(other)
+    }
 }
 
 // ============================================================================

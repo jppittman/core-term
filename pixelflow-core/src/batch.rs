@@ -354,6 +354,29 @@ impl Batch<u16> {
         self.cast()
     }
 }
+
+impl Batch<f32> {
+    /// Converts the batch to a fixed-size array of `f32`.
+    #[inline(always)]
+    pub fn to_array(self) -> [f32; 4] {
+        let mut arr = [0.0; 4];
+        unsafe { self.store(arr.as_mut_ptr()) };
+        arr
+    }
+
+    /// Creates a batch from a fixed-size array of `f32`.
+    #[inline(always)]
+    pub fn from_array(arr: [f32; 4]) -> Self {
+        Self::new(arr[0], arr[1], arr[2], arr[3])
+    }
+
+    /// Casts to u32 (bits).
+    #[inline(always)]
+    pub fn to_bits(self) -> Batch<u32> {
+        self.cast()
+    }
+}
+
 impl<T: Copy> Batch<T>
 where
     backend::SimdVec<T>: SimdOps<T>,
