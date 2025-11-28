@@ -101,7 +101,7 @@ The system is **algebraically closed**: composing surfaces yields surfaces. This
 /// This is a "Lazy Array"—it doesn't own memory; it describes how to
 /// compute a value at any coordinate. Surfaces are the universal
 /// abstraction for anything that varies over 2D space.
-pub trait Surface: Copy + Send + Sync {
+pub trait Surface: Send + Sync {
     /// The output type of this surface.
     type Output: Copy;
 
@@ -131,10 +131,10 @@ pub trait Surface: Copy + Send + Sync {
 - Makes coordinate math (rotation, scaling) natural
 - Matches GPU shader conventions
 
-**Copy + Send + Sync Bounds**: Surfaces must be trivially copyable and thread-safe. This:
+**Send + Sync Bounds**: Surfaces must be thread-safe. This:
 
 - Enables parallel rendering (stripe the framebuffer across cores)
-- Ensures surfaces can be passed by value into closures
+- Ensures surfaces can be passed by value into closures (if Clone) or moved
 - Prevents accidental shared mutable state
 
 -----

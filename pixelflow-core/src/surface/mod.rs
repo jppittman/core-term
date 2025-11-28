@@ -5,7 +5,7 @@ use crate::batch::Batch;
 /// This is a "Lazy Array"—it doesn't own memory; it describes how to
 /// compute a value at any coordinate. Surfaces are the universal
 /// abstraction for anything that varies over 2D space.
-pub trait Surface: Copy + Send + Sync {
+pub trait Surface: Send + Sync {
     /// The output type of this surface.
     type Output: Copy;
 
