@@ -85,6 +85,8 @@ fn test_text_coordinates() {
         y: 1,
         fg: Color::Named(NamedColor::White),
         bg: Color::Named(NamedColor::Black),
+        bold: false,
+        italic: false,
     }];
 
     process_frame(&mut fb, width, height, 10, 20, &ops);
@@ -110,6 +112,8 @@ fn test_text_coordinates_verification() {
         y: 1,
         fg: Color::Named(NamedColor::White),
         bg: Color::Named(NamedColor::Black), // 0x000000FF (Black opaque) -> Wait, NamedColor::Black is (0,0,0). Alpha?
+        bold: false,
+        italic: false,
     }];
     // NamedColor::Black -> (0,0,0). Alpha 255. 0xFF000000.
 

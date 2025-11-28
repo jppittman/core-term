@@ -163,12 +163,20 @@ pub fn process_frame<T: AsRef<[u8]>>(
                 screen.blit(data.as_ref(), *w, *x, *y);
             }
 
-            Op::Text { ch, x, y, fg, bg } => {
+            Op::Text {
+                ch,
+                x,
+                y,
+                fg,
+                bg,
+                bold,
+                italic,
+            } => {
                 let style = GlyphStyleOverrides {
                     fg: (*fg).into(),
                     bg: (*bg).into(),
-                    bold: false, // Default, could be exposed in Op::Text later
-                    italic: false,
+                    bold: *bold,
+                    italic: *italic,
                 };
 
                 screen.draw_glyph(*ch, (*x, *y), style);
