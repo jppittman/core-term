@@ -1,10 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use pixelflow_core::{
-    batch::Batch,
-    execute,
-    ops::SampleAtlas,
-    TensorView, TensorViewMut,
-};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use pixelflow_core::{TensorView, TensorViewMut, batch::Batch, execute, ops::SampleAtlas};
 
 // Benchmark constants to avoid magic numbers
 const WIDTH: usize = 256;
@@ -59,5 +54,10 @@ fn bench_pipeline_execution(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_gather_2d, bench_sample_4bit_bilinear, bench_pipeline_execution);
+criterion_group!(
+    benches,
+    bench_gather_2d,
+    bench_sample_4bit_bilinear,
+    bench_pipeline_execution
+);
 criterion_main!(benches);

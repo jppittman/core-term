@@ -1,4 +1,3 @@
-
 use crate::input::{CursorIcon, KeySymbol, Modifiers, MouseButton};
 use pixelflow_render::commands::Op;
 
@@ -7,7 +6,11 @@ pub enum EngineEvent {
     /// Window was resized by the user or OS.
     Resize(u32, u32),
     /// User pressed a key.
-    KeyDown { key: KeySymbol, mods: Modifiers, text: Option<String> },
+    KeyDown {
+        key: KeySymbol,
+        mods: Modifiers,
+        text: Option<String>,
+    },
     /// User moved/clicked mouse.
     MouseClick { x: u32, y: u32, button: MouseButton },
     /// Mouse move

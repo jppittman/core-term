@@ -406,10 +406,7 @@ impl PtyChannel for NixPty {
 
         if let Some(pid) = self.child_pid {
             kill(pid, Some(Signal::SIGWINCH)).with_context(|| {
-                format!(
-                    "NixPty: Failed to send SIGWINCH to child process {}",
-                    pid
-                )
+                format!("NixPty: Failed to send SIGWINCH to child process {}", pid)
             })?;
 
             log::debug!(
@@ -419,7 +416,9 @@ impl PtyChannel for NixPty {
                 pid
             );
         } else {
-            log::warn!("NixPty: Resize called on a clone (no PID). PTY size set, but SIGWINCH not sent.");
+            log::warn!(
+                "NixPty: Resize called on a clone (no PID). PTY size set, but SIGWINCH not sent."
+            );
         }
 
         Ok(())

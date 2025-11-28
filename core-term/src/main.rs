@@ -4,6 +4,7 @@
 
 // Declare modules
 pub mod ansi;
+pub mod app;
 pub mod color;
 pub mod config;
 pub mod glyph;
@@ -14,7 +15,6 @@ pub mod pixels;
 pub mod platform;
 pub mod renderer;
 pub mod term;
-pub mod app;
 
 // Use statements for items needed in main.rs
 use crate::config::CONFIG;
@@ -93,19 +93,20 @@ fn main() -> anyhow::Result<()> {
     use pixelflow_engine::{EnginePlatform, WindowConfig};
 
     let window_config = WindowConfig {
-            initial_window_x: 100.0,
-            initial_window_y: 100.0,
-            initial_cols: CONFIG.appearance.columns as usize,
-            initial_rows: CONFIG.appearance.rows as usize,
-            cell_width_px: CONFIG.appearance.cell_width_px,
-            cell_height_px: CONFIG.appearance.cell_height_px,
-            bytes_per_pixel: 4,
-            bits_per_component: 8,
-            bits_per_pixel: 32,
-            max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
+        initial_window_x: 100.0,
+        initial_window_y: 100.0,
+        initial_cols: CONFIG.appearance.columns as usize,
+        initial_rows: CONFIG.appearance.rows as usize,
+        cell_width_px: CONFIG.appearance.cell_width_px,
+        cell_height_px: CONFIG.appearance.cell_height_px,
+        bytes_per_pixel: 4,
+        bits_per_component: 8,
+        bits_per_pixel: 32,
+        max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
     };
 
-    let platform = EnginePlatform::new(window_config).context("Failed to initialize EnginePlatform")?;
+    let platform =
+        EnginePlatform::new(window_config).context("Failed to initialize EnginePlatform")?;
 
     let waker = platform.create_waker();
 
@@ -126,7 +127,11 @@ fn main() -> anyhow::Result<()> {
 
     // Create App
     use crate::app::CoreTermApp;
-    let app = CoreTermApp::new(orchestrator_sender.clone(), display_action_rx, crate::config::Config::default());
+    let app = CoreTermApp::new(
+        orchestrator_sender.clone(),
+        display_action_rx,
+        crate::config::Config::default(),
+    );
 
     info!("Platform initialized. Starting main event loop...");
 
