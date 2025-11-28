@@ -12,7 +12,7 @@
 //!
 //! We use newtype wrappers to implement the `SimdOps` trait for each type.
 
-use crate::batch::SimdOps;
+use crate::batch::{SimdOps, SimdOps8};
 use core::arch::aarch64::*;
 use core::marker::PhantomData;
 
@@ -686,4 +686,104 @@ mod tests {
         assert_eq!(output[0], 0x5678); // Low 16 bits of 0x12345678
         assert_eq!(output[1], 0x1234); // High 16 bits
     }
+}
+
+// ============================================================================
+// SimdVec256 (Fallback for ARM)
+// ============================================================================
+
+#[derive(Copy, Clone)]
+pub struct SimdVec256<T>(pub(crate) [SimdVec<T>; 2]);
+
+impl<T: Copy> SimdOps8<T> for SimdVec256<T>
+where SimdVec<T>: SimdOps<T>
+{
+    #[inline(always)]
+    fn splat(val: T) -> Self {
+        Self([SimdVec::splat(val), SimdVec::splat(val)])
+    }
+    #[inline(always)]
+    unsafe fn load(ptr: *const T) -> Self {
+        unsafe {
+            let low = SimdVec::load(ptr);
+            // We assume packed SIMD load is 16 bytes (128 bits)
+            let high = SimdVec::load((ptr as *const u8).add(16) as *const T);
+            Self([low, high])
+        }
+    }
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut T) {
+        unsafe {
+            self.0[0].store(ptr);
+            self.0[1].store((ptr as *mut u8).add(16) as *mut T);
+        }
+    }
+    #[inline(always)]
+    fn new(v0: T, v1: T, v2: T, v3: T, v4: T, v5: T, v6: T, v7: T) -> Self {
+        Self([
+            SimdVec::new(v0, v1, v2, v3),
+            SimdVec::new(v4, v5, v6, v7)
+        ])
+    }
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        Self([self.0[0].add(other.0[0]), self.0[1].add(other.0[1])])
+    }
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        Self([self.0[0].sub(other.0[0]), self.0[1].sub(other.0[1])])
+    }
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        Self([self.0[0].mul(other.0[0]), self.0[1].mul(other.0[1])])
+    }
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        Self([self.0[0].bitand(other.0[0]), self.0[1].bitand(other.0[1])])
+    }
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        Self([self.0[0].bitor(other.0[0]), self.0[1].bitor(other.0[1])])
+    }
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self([self.0[0].not(), self.0[1].not()])
+    }
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        Self([self.0[0].shr(count), self.0[1].shr(count)])
+    }
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        Self([self.0[0].shl(count), self.0[1].shl(count)])
+    }
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        Self([
+            self.0[0].select(other.0[0], mask.0[0]),
+            self.0[1].select(other.0[1], mask.0[1])
+        ])
+    }
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        Self([self.0[0].min(other.0[0]), self.0[1].min(other.0[1])])
+    }
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        Self([self.0[0].max(other.0[0]), self.0[1].max(other.0[1])])
+    }
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        Self([self.0[0].saturating_add(other.0[0]), self.0[1].saturating_add(other.0[1])])
+    }
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        Self([self.0[0].saturating_sub(other.0[0]), self.0[1].saturating_sub(other.0[1])])
+    }
+}
+
+/// Bitcast between 256-bit SIMD types.
+#[inline(always)]
+pub fn cast256<T: Copy, U: Copy>(v: SimdVec256<T>) -> SimdVec256<U> {
+    SimdVec256([cast(v.0[0]), cast(v.0[1])])
 }

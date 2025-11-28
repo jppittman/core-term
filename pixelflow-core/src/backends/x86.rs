@@ -13,7 +13,7 @@
 //!
 //! The type `T` is purely a compile-time marker - bitcasting is free.
 
-use crate::batch::SimdOps;
+use crate::batch::{SimdOps, SimdOps8};
 use core::arch::x86_64::*;
 use core::marker::PhantomData;
 
@@ -565,4 +565,497 @@ mod tests {
         assert_eq!(output[0], 0x5678); // Low 16 bits of 0x12345678
         assert_eq!(output[1], 0x1234); // High 16 bits
     }
+}
+
+// ============================================================================
+// AVX2 (256-bit) Implementation
+// ============================================================================
+
+/// 256-bit SIMD vector (AVX2).
+#[cfg(target_feature = "avx2")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct SimdVec256<T>(pub(crate) __m256i, PhantomData<T>);
+
+#[cfg(not(target_feature = "avx2"))]
+#[derive(Copy, Clone)]
+pub struct SimdVec256<T>(pub(crate) [SimdVec<T>; 2]);
+
+// --- u32 AVX2 Implementation ---
+
+#[cfg(target_feature = "avx2")]
+impl SimdOps8<u32> for SimdVec256<u32> {
+    #[inline(always)]
+    fn splat(val: u32) -> Self {
+        unsafe { Self(_mm256_set1_epi32(val as i32), PhantomData) }
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const u32) -> Self {
+        unsafe { Self(_mm256_loadu_si256(ptr as *const __m256i), PhantomData) }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut u32) {
+        unsafe { _mm256_storeu_si256(ptr as *mut __m256i, self.0) }
+    }
+
+    #[inline(always)]
+    fn new(v0: u32, v1: u32, v2: u32, v3: u32, v4: u32, v5: u32, v6: u32, v7: u32) -> Self {
+        unsafe {
+            Self(
+                _mm256_set_epi32(
+                    v7 as i32, v6 as i32, v5 as i32, v4 as i32,
+                    v3 as i32, v2 as i32, v1 as i32, v0 as i32
+                ),
+                PhantomData,
+            )
+        }
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe { Self(_mm256_add_epi32(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe { Self(_mm256_sub_epi32(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe { Self(_mm256_mullo_epi32(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe { Self(_mm256_and_si256(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe { Self(_mm256_or_si256(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm256_set1_epi32(-1);
+            Self(_mm256_xor_si256(self.0, all_ones), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm256_srl_epi32(self.0, shift), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm256_sll_epi32(self.0, shift), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+             // blendv is cleaner but requires AVX2. We have AVX2.
+             // _mm256_blendv_epi8 works on bytes.
+             // Manual bitwise is safer if unsure about blendv behavior on u32 vs float.
+             // (self & mask) | (other & !mask)
+             let masked_self = _mm256_and_si256(self.0, mask.0);
+             let not_mask = _mm256_xor_si256(mask.0, _mm256_set1_epi32(-1));
+             let masked_other = _mm256_and_si256(other.0, not_mask);
+             Self(_mm256_or_si256(masked_self, masked_other), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe { Self(_mm256_min_epu32(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe { Self(_mm256_max_epu32(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        // AVX2 doesn't have unsigned saturating add for u32 (only u8/u16).
+        // Emulate: sum = a + b. if sum < a, result = MAX.
+         unsafe {
+            let sum = _mm256_add_epi32(self.0, other.0);
+            // mask = self > sum (unsigned compare? AVX2 has _mm256_max_epu32 but no cmpgt_epu32)
+            // Emulate unsigned compare or use max?
+            // if max(a, sum) == a and sum != a ... tricky.
+            // Standard trick: flip sign bits and use signed compare.
+            let sign = _mm256_set1_epi32(0x80000000u32 as i32);
+            let self_flip = _mm256_xor_si256(self.0, sign);
+            let sum_flip = _mm256_xor_si256(sum, sign);
+            let mask = _mm256_cmpgt_epi32(self_flip, sum_flip); // mask where self > sum (overflow)
+
+            Self(_mm256_or_si256(sum, mask), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        unsafe {
+             let diff = _mm256_sub_epi32(self.0, other.0);
+             // underflow if other > self.
+             let sign = _mm256_set1_epi32(0x80000000u32 as i32);
+             let other_flip = _mm256_xor_si256(other.0, sign);
+             let self_flip = _mm256_xor_si256(self.0, sign);
+             let mask = _mm256_cmpgt_epi32(other_flip, self_flip); // mask where other > self (underflow)
+             let not_mask = _mm256_xor_si256(mask, _mm256_set1_epi32(-1));
+             Self(_mm256_and_si256(diff, not_mask), PhantomData)
+        }
+    }
+}
+
+// --- Fallback Implementation ---
+#[cfg(not(target_feature = "avx2"))]
+impl<T: Copy> SimdOps8<T> for SimdVec256<T>
+where SimdVec<T>: SimdOps<T>
+{
+    #[inline(always)]
+    fn splat(val: T) -> Self {
+        Self([SimdVec::splat(val), SimdVec::splat(val)])
+    }
+    #[inline(always)]
+    unsafe fn load(ptr: *const T) -> Self {
+        // Assumes T is u32/u16/u8.
+        // We need to know stride.
+        // SimdOps doesn't expose stride or size.
+        // But we know SimdVec<u32> is 4 lanes = 16 bytes.
+        // We can just pointer offset.
+        unsafe {
+            // This is slightly dangerous if T size is unknown, but SimdVec is tightly coupled.
+            // 128-bit vector = 16 bytes.
+            let low = SimdVec::load(ptr);
+            let high = SimdVec::load((ptr as *const u8).add(16) as *const T);
+            Self([low, high])
+        }
+    }
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut T) {
+        unsafe {
+            self.0[0].store(ptr);
+            self.0[1].store((ptr as *mut u8).add(16) as *mut T);
+        }
+    }
+    #[inline(always)]
+    fn new(v0: T, v1: T, v2: T, v3: T, v4: T, v5: T, v6: T, v7: T) -> Self {
+        Self([
+            SimdVec::new(v0, v1, v2, v3),
+            SimdVec::new(v4, v5, v6, v7)
+        ])
+    }
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        Self([self.0[0].add(other.0[0]), self.0[1].add(other.0[1])])
+    }
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        Self([self.0[0].sub(other.0[0]), self.0[1].sub(other.0[1])])
+    }
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        Self([self.0[0].mul(other.0[0]), self.0[1].mul(other.0[1])])
+    }
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        Self([self.0[0].bitand(other.0[0]), self.0[1].bitand(other.0[1])])
+    }
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        Self([self.0[0].bitor(other.0[0]), self.0[1].bitor(other.0[1])])
+    }
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self([self.0[0].not(), self.0[1].not()])
+    }
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        Self([self.0[0].shr(count), self.0[1].shr(count)])
+    }
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        Self([self.0[0].shl(count), self.0[1].shl(count)])
+    }
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        Self([
+            self.0[0].select(other.0[0], mask.0[0]),
+            self.0[1].select(other.0[1], mask.0[1])
+        ])
+    }
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        Self([self.0[0].min(other.0[0]), self.0[1].min(other.0[1])])
+    }
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        Self([self.0[0].max(other.0[0]), self.0[1].max(other.0[1])])
+    }
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        Self([self.0[0].saturating_add(other.0[0]), self.0[1].saturating_add(other.0[1])])
+    }
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        Self([self.0[0].saturating_sub(other.0[0]), self.0[1].saturating_sub(other.0[1])])
+    }
+}
+
+// --- u16 AVX2 Implementation ---
+
+#[cfg(target_feature = "avx2")]
+impl SimdOps8<u16> for SimdVec256<u16> {
+    #[inline(always)]
+    fn splat(val: u16) -> Self {
+        unsafe { Self(_mm256_set1_epi16(val as i16), PhantomData) }
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const u16) -> Self {
+        unsafe { Self(_mm256_loadu_si256(ptr as *const __m256i), PhantomData) }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut u16) {
+        unsafe { _mm256_storeu_si256(ptr as *mut __m256i, self.0) }
+    }
+
+    #[inline(always)]
+    fn new(v0: u16, v1: u16, v2: u16, v3: u16, v4: u16, v5: u16, v6: u16, v7: u16) -> Self {
+        unsafe {
+            // AVX2 set_epi16 takes 16 args... we only have 8.
+            // The trait SimdOps8 is hardcoded to 8 args.
+            // But SimdVec256<u16> holds 16 x u16 (256 bits).
+            // This is a mismatch!
+            // Batch<u16> (Legacy) is 8 lanes (128 bits).
+            // Batch256<u16> should be 16 lanes (256 bits).
+            // But SimdOps8 forces 8 args.
+            // So Batch256<u16> using SimdOps8 would only initialize 8 lanes?
+            // This suggests SimdOps8 is "8 lanes of T", regardless of T size?
+            // NO. SimdOps logic in x86.rs for SSE:
+            // SimdVec<u32> -> 4 lanes. SimdOps<u32> defined for SimdVec<u32>. SimdOps has new(v0..v3). Correct.
+            // SimdVec<u16> -> 8 lanes. SimdOps<u16> defined for SimdVec<u16>. SimdOps has new(v0..v3). Only sets 4 lanes!
+            // So SimdOps::new is partial init for smaller types.
+            // So SimdOps8::new (8 args) will partially init u16 (needs 16) and u8 (needs 32).
+            Self(
+                 _mm256_set_epi16(
+                    0,0,0,0,0,0,0,0,
+                    v7 as i16, v6 as i16, v5 as i16, v4 as i16,
+                    v3 as i16, v2 as i16, v1 as i16, v0 as i16
+                 ),
+                 PhantomData
+            )
+        }
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe { Self(_mm256_add_epi16(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe { Self(_mm256_sub_epi16(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe { Self(_mm256_mullo_epi16(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe { Self(_mm256_and_si256(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe { Self(_mm256_or_si256(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm256_set1_epi16(-1);
+            Self(_mm256_xor_si256(self.0, all_ones), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm256_srl_epi16(self.0, shift), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm256_sll_epi16(self.0, shift), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+             let masked_self = _mm256_and_si256(self.0, mask.0);
+             let not_mask = _mm256_xor_si256(mask.0, _mm256_set1_epi16(-1));
+             let masked_other = _mm256_and_si256(other.0, not_mask);
+             Self(_mm256_or_si256(masked_self, masked_other), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe { Self(_mm256_min_epu16(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe { Self(_mm256_max_epu16(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        unsafe { Self(_mm256_adds_epu16(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        unsafe { Self(_mm256_subs_epu16(self.0, other.0), PhantomData) }
+    }
+}
+
+// --- u8 AVX2 Implementation ---
+
+#[cfg(target_feature = "avx2")]
+impl SimdOps8<u8> for SimdVec256<u8> {
+    #[inline(always)]
+    fn splat(val: u8) -> Self {
+        unsafe { Self(_mm256_set1_epi8(val as i8), PhantomData) }
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const u8) -> Self {
+        unsafe { Self(_mm256_loadu_si256(ptr as *const __m256i), PhantomData) }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut u8) {
+        unsafe { _mm256_storeu_si256(ptr as *mut __m256i, self.0) }
+    }
+
+    #[inline(always)]
+    fn new(v0: u8, v1: u8, v2: u8, v3: u8, v4: u8, v5: u8, v6: u8, v7: u8) -> Self {
+        unsafe {
+            // 32 lanes, only setting first 8.
+            Self(
+                 _mm256_set_epi8(
+                    0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+                    0,0,0,0,0,0,0,0,
+                    v7 as i8, v6 as i8, v5 as i8, v4 as i8,
+                    v3 as i8, v2 as i8, v1 as i8, v0 as i8
+                 ),
+                 PhantomData
+            )
+        }
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe { Self(_mm256_add_epi8(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe { Self(_mm256_sub_epi8(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn mul(self, _other: Self) -> Self {
+        unimplemented!("8-bit multiply not supported in AVX2")
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe { Self(_mm256_and_si256(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe { Self(_mm256_or_si256(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm256_set1_epi8(-1);
+            Self(_mm256_xor_si256(self.0, all_ones), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, _count: i32) -> Self {
+        unimplemented!("8-bit shift not supported in AVX2")
+    }
+
+    #[inline(always)]
+    fn shl(self, _count: i32) -> Self {
+        unimplemented!("8-bit shift not supported in AVX2")
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+             let masked_self = _mm256_and_si256(self.0, mask.0);
+             let not_mask = _mm256_xor_si256(mask.0, _mm256_set1_epi8(-1));
+             let masked_other = _mm256_and_si256(other.0, not_mask);
+             Self(_mm256_or_si256(masked_self, masked_other), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe { Self(_mm256_min_epu8(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe { Self(_mm256_max_epu8(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        unsafe { Self(_mm256_adds_epu8(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        unsafe { Self(_mm256_subs_epu8(self.0, other.0), PhantomData) }
+    }
+}
+
+/// Bitcast between 256-bit SIMD types.
+#[inline(always)]
+pub fn cast256<T: Copy, U: Copy>(v: SimdVec256<T>) -> SimdVec256<U> {
+    #[cfg(target_feature = "avx2")]
+    unsafe { SimdVec256(v.0, PhantomData) }
+    #[cfg(not(target_feature = "avx2"))]
+    SimdVec256([cast(v.0[0]), cast(v.0[1])])
 }
