@@ -10,7 +10,7 @@
 //! - `SimdVec<u16>` → Array of 8×u16
 //! - `SimdVec<u8>` → Array of 16×u8
 
-use crate::batch::SimdOps;
+use crate::batch::{SimdFloatOps, SimdOps};
 use core::marker::PhantomData;
 
 // ============================================================================
@@ -33,8 +33,211 @@ pub union ScalarReg<T> {
     pub u16: [u16; 8],
     /// 16 lanes of u8.
     pub u8: [u8; 16],
+    /// 4 lanes of f32.
+    pub f32: [f32; 4],
     /// Type marker.
     _marker: PhantomData<T>,
+}
+
+// ============================================================================
+// f32 Implementation (4 lanes)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        Self(ScalarReg { f32: [val; 4] })
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        unsafe {
+            Self(ScalarReg {
+                f32: [
+                    *ptr.offset(0),
+                    *ptr.offset(1),
+                    *ptr.offset(2),
+                    *ptr.offset(3),
+                ],
+            })
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        unsafe {
+            let arr = self.0.f32;
+            *ptr.offset(0) = arr[0];
+            *ptr.offset(1) = arr[1];
+            *ptr.offset(2) = arr[2];
+            *ptr.offset(3) = arr[3];
+        }
+    }
+
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        Self(ScalarReg {
+            f32: [v0, v1, v2, v3],
+        })
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.u32; // Access as u32 bits
+            let b = other.0.u32;
+            Self(ScalarReg {
+                u32: [a[0] & b[0], a[1] & b[1], a[2] & b[2], a[3] & b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            let b = other.0.u32;
+            Self(ScalarReg {
+                u32: [a[0] | b[0], a[1] | b[1], a[2] | b[2], a[3] | b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            Self(ScalarReg {
+                u32: [!a[0], !a[1], !a[2], !a[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            Self(ScalarReg {
+                u32: [a[0] >> count, a[1] >> count, a[2] >> count, a[3] >> count],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            Self(ScalarReg {
+                u32: [a[0] << count, a[1] << count, a[2] << count, a[3] << count],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+            let a = self.0.u32;
+            let b = other.0.u32;
+            let m = mask.0.u32;
+            Self(ScalarReg {
+                u32: [
+                    (a[0] & m[0]) | (b[0] & !m[0]),
+                    (a[1] & m[1]) | (b[1] & !m[1]),
+                    (a[2] & m[2]) | (b[2] & !m[2]),
+                    (a[3] & m[3]) | (b[3] & !m[3]),
+                ],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2]), a[3].min(b[3])],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2]), a[3].max(b[3])],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        // No saturation for floats, fall back to add
+        self.add(other)
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        self.sub(other)
+    }
+}
+
+impl SimdFloatOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            Self(ScalarReg {
+                f32: [a[0].sqrt(), a[1].sqrt(), a[2].sqrt(), a[3].sqrt()],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn div(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] / b[0], a[1] / b[1], a[2] / b[2], a[3] / b[3]],
+            })
+        }
+    }
 }
 
 // ============================================================================

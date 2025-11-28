@@ -1,4 +1,4 @@
-use core::ops::{Add, BitAnd, BitOr, Mul, Not, Shl, Shr, Sub};
+use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
 
 // Use the top-level backends module.
 // Note: We assume `mod backends` is declared in lib.rs.
@@ -97,20 +97,6 @@ impl Batch<u32> {
         let mut arr = [0u32; 4];
         unsafe { self.store(arr.as_mut_ptr()) };
         [arr[0] as u8, arr[1] as u8, arr[2] as u8, arr[3] as u8]
-    }
-
-    /// Extracts a single element from the batch at the given index.
-    ///
-    /// # Parameters
-    /// * `index` - The lane index (0-3).
-    ///
-    /// # Returns
-    /// * The `u32` value at the index.
-    #[inline(always)]
-    pub fn extract(self, index: usize) -> u32 {
-        let mut arr = [0u32; 4];
-        unsafe { self.store(arr.as_mut_ptr()) };
-        arr[index]
     }
 
     /// Gathers values from a slice using a set of indices.
@@ -225,6 +211,27 @@ pub trait SimdOps<T>: Copy + Clone + Sized {
     fn saturating_sub(self, other: Self) -> Self;
 }
 
+/// Trait defining floating-point SIMD operations.
+pub trait SimdFloatOps<T>: SimdOps<T> {
+    /// Computes the square root of the vector.
+    fn sqrt(self) -> Self;
+    /// Divides two vectors.
+    fn div(self, other: Self) -> Self;
+}
+
+impl<T: Copy> Div for Batch<T>
+where
+    backend::SimdVec<T>: SimdFloatOps<T>,
+{
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self {
+        Self {
+            inner: self.inner.div(rhs.inner),
+        }
+    }
+}
+
 impl<T: Copy> Add for Batch<T>
 where
     backend::SimdVec<T>: SimdOps<T>,
@@ -234,6 +241,20 @@ where
     fn add(self, rhs: Self) -> Self {
         Self {
             inner: self.inner.add(rhs.inner),
+        }
+    }
+}
+
+impl<T: Copy> Batch<T>
+where
+    backend::SimdVec<T>: SimdFloatOps<T>,
+{
+    /// Computes the square root of each element.
+    #[inline(always)]
+    #[must_use]
+    pub fn sqrt(self) -> Self {
+        Self {
+            inner: self.inner.sqrt(),
         }
     }
 }
@@ -443,6 +464,22 @@ where
     pub fn select(self, other: Self, mask: Self) -> Self {
         Self {
             inner: self.inner.select(other.inner, mask.inner),
+        }
+    }
+
+    /// Extracts a single element from the batch at the given index.
+    ///
+    /// # Parameters
+    /// * `index` - The lane index (0-3).
+    ///
+    /// # Returns
+    /// * The value at the index.
+    #[inline(always)]
+    pub fn extract(self, index: usize) -> T {
+        let mut arr = core::mem::MaybeUninit::<[T; 4]>::uninit();
+        unsafe {
+            self.store(arr.as_mut_ptr() as *mut T);
+            (arr.assume_init())[index]
         }
     }
 }

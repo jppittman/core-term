@@ -19,12 +19,16 @@ extern crate alloc;
 pub mod backends;
 /// SIMD batch processing types and operations.
 pub mod batch;
+/// Differential algebra and automatic differentiation.
+pub mod diff;
 /// Domain-Specific Language (DSL) extensions for building pipelines.
 pub mod dsl;
 /// Core operations and surface implementations.
 pub mod ops;
 /// Pipeline abstractions and surface traits.
 pub mod pipe;
+/// Vector graphics primitives (Loop-Blinn).
+pub mod vector;
 
 pub use batch::Batch;
 

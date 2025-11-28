@@ -12,7 +12,7 @@
 //!
 //! We use newtype wrappers to implement the `SimdOps` trait for each type.
 
-use crate::batch::SimdOps;
+use crate::batch::{SimdFloatOps, SimdOps};
 use core::arch::aarch64::*;
 use core::marker::PhantomData;
 
@@ -36,7 +36,199 @@ pub union NeonReg<T> {
     pub u32: uint32x4_t,
     pub u16: uint16x8_t,
     pub u8: uint8x16_t,
+    pub f32: float32x4_t,
     _marker: PhantomData<T>,
+}
+
+// ============================================================================
+// f32 Implementation (4 lanes)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vdupq_n_f32(val),
+            })
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vld1q_f32(ptr),
+            })
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        unsafe { vst1q_f32(ptr, self.0.f32) }
+    }
+
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vld1q_f32([v0, v1, v2, v3].as_ptr()),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vaddq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vsubq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vmulq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe {
+            // Reinterpret as u32 for bitwise ops
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let b = vreinterpretq_u32_f32(other.0.f32);
+            let res = vandq_u32(a, b);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let b = vreinterpretq_u32_f32(other.0.f32);
+            let res = vorrq_u32(a, b);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let res = vmvnq_u32(a);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            // vshlq_u32 with negative shift
+            let shift = vdupq_n_s32(-count);
+            let res = vshlq_u32(a, shift);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let shift = vdupq_n_s32(count);
+            let res = vshlq_u32(a, shift);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+            // vbslq_f32(mask, a, b) doesn't exist? usually BSL is polymorphic or typed.
+            // Check docs: vbslq_f32 exists in some versions, or use u32 BSL.
+            // vbslq_u32 is robust.
+            let m = vreinterpretq_u32_f32(mask.0.f32);
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let b = vreinterpretq_u32_f32(other.0.f32);
+            let res = vbslq_u32(m, a, b);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vminq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vmaxq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        // No saturation for floats
+        self.add(other)
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        self.sub(other)
+    }
+}
+
+impl SimdFloatOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vsqrtq_f32(self.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn div(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vdivq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
 }
 
 // ============================================================================

@@ -13,7 +13,7 @@
 //!
 //! The type `T` is purely a compile-time marker - bitcasting is free.
 
-use crate::batch::SimdOps;
+use crate::batch::{SimdFloatOps, SimdOps};
 use core::arch::x86_64::*;
 use core::marker::PhantomData;
 
@@ -23,6 +23,155 @@ use core::marker::PhantomData;
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct SimdVec<T>(pub(crate) __m128i, PhantomData<T>);
+
+// ============================================================================
+// f32 Implementation (4 lanes, 32-bit operations)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        unsafe { Self(_mm_castps_si128(_mm_set1_ps(val)), PhantomData) }
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        unsafe { Self(_mm_castps_si128(_mm_loadu_ps(ptr)), PhantomData) }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        unsafe { _mm_storeu_ps(ptr, _mm_castsi128_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        unsafe {
+            Self(
+                _mm_castps_si128(_mm_set_ps(v3, v2, v1, v0)),
+                PhantomData,
+            )
+        }
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            Self(_mm_castps_si128(_mm_add_ps(a, b)), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            Self(_mm_castps_si128(_mm_sub_ps(a, b)), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            Self(_mm_castps_si128(_mm_mul_ps(a, b)), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm_set1_epi32(-1);
+            Self(_mm_xor_si128(self.0, all_ones), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_srl_epi32(self.0, shift), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_sll_epi32(self.0, shift), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+            let masked_self = _mm_and_si128(self.0, mask.0);
+            let not_mask = _mm_xor_si128(mask.0, _mm_set1_epi32(-1));
+            let masked_other = _mm_and_si128(other.0, not_mask);
+            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            Self(_mm_castps_si128(_mm_min_ps(a, b)), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            Self(_mm_castps_si128(_mm_max_ps(a, b)), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        self.add(other)
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        self.sub(other)
+    }
+}
+
+impl SimdFloatOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            Self(_mm_castps_si128(_mm_sqrt_ps(a)), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn div(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            Self(_mm_castps_si128(_mm_div_ps(a, b)), PhantomData)
+        }
+    }
+}
 
 // ============================================================================
 // u32 Implementation (4 lanes, 32-bit operations)
