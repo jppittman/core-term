@@ -7,7 +7,7 @@ use crate::input::MouseButton;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
 use log::info;
-use pixelflow_render::rasterizer::process_frame;
+use pixelflow_render::rasterizer::{process_frame, ScreenViewMut};
 
 pub struct EnginePlatform {
     display_manager: DisplayManager,
@@ -217,14 +217,15 @@ impl EnginePlatform {
         let cell_w = 10; // Placeholder
         let cell_h = 20; // Placeholder
 
-        process_frame(
+        let mut screen = ScreenViewMut::new(
             pixels,
             metrics.width_px as usize,
             metrics.height_px as usize,
             cell_w,
             cell_h,
-            &ops,
         );
+
+        process_frame(&mut screen, &ops);
 
         // Present
         let snapshot = RenderSnapshot {

@@ -1,4 +1,4 @@
-use pixelflow_render::{process_frame, Color, NamedColor, Op};
+use pixelflow_render::{process_frame, Color, NamedColor, Op, ScreenViewMut};
 
 #[test]
 fn test_clear() {
@@ -6,7 +6,8 @@ fn test_clear() {
     let ops: Vec<Op<&[u8]>> = vec![Op::Clear {
         color: Color::Named(NamedColor::Green),
     }];
-    process_frame(&mut fb, 10, 10, 1, 1, &ops);
+    let mut screen = ScreenViewMut::new(&mut fb, 10, 10, 1, 1);
+    process_frame(&mut screen, &ops);
 
     let green: u32 = Color::Named(NamedColor::Green).into();
     for px in fb {
@@ -37,7 +38,8 @@ fn test_blit_clipping() {
         y: 9,
     }];
 
-    process_frame(&mut fb, width, height, 1, 1, &ops);
+    let mut screen = ScreenViewMut::new(&mut fb, width, height, 1, 1);
+    process_frame(&mut screen, &ops);
 
     // Only (9,9) should be set.
     let idx = 9 * width + 9;
@@ -61,7 +63,8 @@ fn test_blit_bad_data_len() {
         y: 0,
     }];
 
-    process_frame(&mut fb, 10, 1, 1, 1, &ops);
+    let mut screen = ScreenViewMut::new(&mut fb, 10, 1, 1, 1);
+    process_frame(&mut screen, &ops);
 }
 
 #[test]
@@ -89,7 +92,8 @@ fn test_text_coordinates() {
         italic: false,
     }];
 
-    process_frame(&mut fb, width, height, 10, 20, &ops);
+    let mut screen = ScreenViewMut::new(&mut fb, width, height, 10, 20);
+    process_frame(&mut screen, &ops);
 
     // Check where pixels are drawn.
     // If grid (1,1) -> (10, 20).
@@ -117,7 +121,8 @@ fn test_text_coordinates_verification() {
     }];
     // NamedColor::Black -> (0,0,0). Alpha 255. 0xFF000000.
 
-    process_frame(&mut fb, width, height, 10, 20, &ops);
+    let mut screen = ScreenViewMut::new(&mut fb, width, height, 10, 20);
+    process_frame(&mut screen, &ops);
 
     // Check (10, 20). If it's Black, then grid coordinates used.
     // If (1, 1) is Black, then pixel coordinates used.

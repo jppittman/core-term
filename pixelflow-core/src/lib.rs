@@ -178,7 +178,7 @@ impl<'a, T> TensorView<'a, T> {
     }
 }
 
-impl<'a> TensorView<'a, u8> {
+impl<'a, T: batch::Gatherable> TensorView<'a, T> {
     /// Gathers 32-bit values from the tensor at the specified 2D coordinates.
     ///
     /// # Parameters
@@ -210,7 +210,9 @@ impl<'a> TensorView<'a, u8> {
         let indices = clamped_idx_vec.to_array_usize();
         unsafe { batch::Batch::gather(self.data, indices) }
     }
+}
 
+impl<'a> TensorView<'a, u8> {
     /// Gathers 4-bit packed values from the tensor.
     ///
     /// Assumes pixels are packed 2 per byte (4 bits each).

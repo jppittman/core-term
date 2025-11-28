@@ -2,18 +2,29 @@
 
 use crate::commands::Op;
 use crate::glyph::{self, GlyphRenderCoords, GlyphStyleOverrides, RenderTarget};
+use pixelflow_core::pipe::Surface;
+use pixelflow_core::{Batch, TensorView};
 
-/// Safe wrapper for framebuffer access and layout context.
-struct ScreenView<'a> {
-    fb: &'a mut [u32],
-    width: usize,
-    height: usize,
-    cell_width: usize,
-    cell_height: usize,
+/// Mutable view of the screen for rendering.
+///
+/// This struct wraps the framebuffer and layout information, providing
+/// methods for drawing primitives.
+pub struct ScreenViewMut<'a> {
+    /// The framebuffer slice.
+    pub fb: &'a mut [u32],
+    /// Screen width in pixels.
+    pub width: usize,
+    /// Screen height in pixels.
+    pub height: usize,
+    /// Cell width for text layout.
+    pub cell_width: usize,
+    /// Cell height for text layout.
+    pub cell_height: usize,
 }
 
-impl<'a> ScreenView<'a> {
-    fn new(fb: &'a mut [u32], width: usize, height: usize, cw: usize, ch: usize) -> Self {
+impl<'a> ScreenViewMut<'a> {
+    /// Creates a new `ScreenViewMut`.
+    pub fn new(fb: &'a mut [u32], width: usize, height: usize, cw: usize, ch: usize) -> Self {
         Self {
             fb,
             width,
@@ -131,28 +142,47 @@ impl<'a> ScreenView<'a> {
     }
 }
 
+/// Immutable view of the screen, implementing Surface.
+#[derive(Copy, Clone)]
+pub struct ScreenView<'a> {
+    /// The tensor view of the screen.
+    pub tensor: TensorView<'a, u32>,
+    /// Cell width for text layout.
+    pub cell_width: usize,
+    /// Cell height for text layout.
+    pub cell_height: usize,
+}
+
+impl<'a> ScreenView<'a> {
+    /// Creates a new `ScreenView`.
+    pub fn new(tensor: TensorView<'a, u32>, cw: usize, ch: usize) -> Self {
+        Self {
+            tensor,
+            cell_width: cw,
+            cell_height: ch,
+        }
+    }
+}
+
+impl<'a> Surface<u32> for ScreenView<'a> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+        // Safe wrapper around unsafe gather_2d (which clamps internally)
+        unsafe { self.tensor.gather_2d(x, y) }
+    }
+}
+
 /// Process a list of rendering commands and update the framebuffer.
 ///
 /// This function acts as the main entry point for the rasterizer. It iterates
-/// over the provided commands and executes them against the framebuffer.
+/// over the provided commands and executes them against the provided ScreenViewMut.
 ///
 /// # Parameters
-/// * `framebuffer` - The destination framebuffer (u32 RGBA).
-/// * `width` - Framebuffer width in pixels.
-/// * `height` - Framebuffer height in pixels.
-/// * `cell_width` - Grid cell width (for text layout).
-/// * `cell_height` - Grid cell height (for text layout).
+/// * `screen` - The mutable screen view to render into.
 /// * `commands` - The list of operations to execute.
 pub fn process_frame<T: AsRef<[u8]>>(
-    framebuffer: &mut [u32],
-    width: usize,
-    height: usize,
-    cell_width: usize,
-    cell_height: usize,
+    screen: &mut ScreenViewMut,
     commands: &[Op<T>],
 ) {
-    let mut screen = ScreenView::new(framebuffer, width, height, cell_width, cell_height);
-
     for op in commands {
         match op {
             Op::Clear { color } => {
