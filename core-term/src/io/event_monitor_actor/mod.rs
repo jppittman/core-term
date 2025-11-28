@@ -13,24 +13,28 @@
 mod read_thread;
 mod write_thread;
 
-use crate::io::pty::NixPty;
+use crate::io::pty::{NixPty, PtyReader, PtyWriter, PtyChannel};
 use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
 use anyhow::{Context, Result};
 use log::*;
-use read_thread::ReadThread;
-use write_thread::WriteThread;
+use read_thread::run_read_loop;
+use std::os::unix::io::AsFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use write_thread::run_write_loop;
 
 /// EventMonitor actor that manages PTY I/O across two dedicated threads.
 ///
-/// Internally spawns:
+/// Internally spawns a supervisor thread which uses scoped threads to run:
 /// - Read thread: Polls PTY for data, parses ANSI, sends to orchestrator
 /// - Write thread: Receives write/resize commands, executes on PTY
 ///
 /// External callers see a single unified actor.
 pub struct EventMonitorActor {
-    read_thread: Option<ReadThread>,
-    write_thread: Option<WriteThread>,
+    supervisor_handle: Option<JoinHandle<()>>,
+    stop_signal: Arc<AtomicBool>,
 }
 
 impl EventMonitorActor {
@@ -38,7 +42,7 @@ impl EventMonitorActor {
     ///
     /// # Arguments
     ///
-    /// * `pty` - The PTY to monitor (owned by write thread)
+    /// * `pty` - The PTY to monitor (owned by supervisor thread)
     /// * `orchestrator_tx` - Channel to send events to Orchestrator (used by read thread)
     /// * `pty_action_rx` - Channel to receive PlatformActions (used by write thread)
     ///
@@ -50,38 +54,63 @@ impl EventMonitorActor {
         orchestrator_tx: OrchestratorSender,
         pty_action_rx: std::sync::mpsc::Receiver<PlatformAction>,
     ) -> Result<Self> {
-        // Clone PTY for the read thread (shared ownership of FD)
-        let pty_read = pty.try_clone().context("Failed to clone PTY for read thread")?;
+        let stop_signal = Arc::new(AtomicBool::new(false));
+        let stop_signal_clone = stop_signal.clone();
 
-        // Spawn read thread (uses independent PTY clone)
-        let read_thread = ReadThread::spawn(pty_read, orchestrator_tx)
-            .context("Failed to spawn PTY read thread")?;
+        let supervisor_handle = thread::Builder::new()
+            .name("io-supervisor".to_string())
+            .spawn(move || {
+                let pty_ref = &pty;
+                let stop_signal_read = stop_signal_clone.clone();
+                let stop_signal_write = stop_signal_clone.clone();
 
-        // Spawn write thread (owns primary PTY for writes and lifecycle management)
-        let write_thread =
-            WriteThread::spawn(pty, pty_action_rx).context("Failed to spawn PTY write thread")?;
+                thread::scope(|s| {
+                    // Spawn read thread
+                    s.spawn(move || {
+                        // Create PtyReader borrowing the PTY FD
+                        let reader = PtyReader::new(pty_ref.as_fd());
+                        if let Err(e) = run_read_loop(reader, orchestrator_tx, stop_signal_read) {
+                            error!("PTY read thread error: {:#}", e);
+                        }
+                    });
 
-        info!("EventMonitorActor spawned with read and write threads");
+                    // Spawn write thread
+                    s.spawn(move || {
+                        // Create PtyWriter borrowing the PTY FD
+                        let writer = PtyWriter::new(pty_ref.as_fd(), Some(pty_ref.child_pid()));
+                        if let Err(e) = run_write_loop(writer, pty_action_rx, stop_signal_write) {
+                            error!("PTY write thread error: {:#}", e);
+                        }
+                    });
+                });
+
+                // When scope returns, threads are joined.
+                // pty is dropped here, closing the FD.
+                debug!("IO supervisor thread finished, PTY dropped");
+            })
+            .context("Failed to spawn IO supervisor thread")?;
+
+        info!("EventMonitorActor spawned with IO supervisor");
 
         Ok(Self {
-            read_thread: Some(read_thread),
-            write_thread: Some(write_thread),
+            supervisor_handle: Some(supervisor_handle),
+            stop_signal,
         })
     }
 }
 
 impl Drop for EventMonitorActor {
     fn drop(&mut self) {
-        debug!("EventMonitorActor dropped, cleaning up I/O threads");
+        debug!("EventMonitorActor dropped, signaling threads to stop");
 
-        // Drop write thread first (owns the PTY, will close the FD)
-        if let Some(write_thread) = self.write_thread.take() {
-            drop(write_thread);
-        }
+        // Signal threads to stop
+        self.stop_signal.store(true, Ordering::Relaxed);
 
-        // Then drop read thread (will exit when PTY FD is closed)
-        if let Some(read_thread) = self.read_thread.take() {
-            drop(read_thread);
+        // Join supervisor thread
+        if let Some(handle) = self.supervisor_handle.take() {
+            if let Err(e) = handle.join() {
+                error!("IO supervisor thread panicked: {:?}", e);
+            }
         }
 
         debug!("EventMonitorActor cleanup complete");

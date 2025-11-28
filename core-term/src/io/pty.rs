@@ -3,8 +3,7 @@
 use anyhow::{Context, Result};
 use std::ffi::CString;
 use std::io::{Read, Result as IoResult, Write};
-use std::os::unix::io::{AsFd, AsRawFd, OwnedFd, RawFd};
-use std::sync::Arc;
+use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use nix::pty::openpty;
@@ -45,7 +44,7 @@ pub trait PtyChannel: Read + Write + AsRawFd + Send + Sync {
 /// Implementation of `PtyChannel` using `nix` for POSIX systems.
 #[derive(Debug)]
 pub struct NixPty {
-    master_fd: Arc<OwnedFd>,
+    master_fd: OwnedFd,
     child_pid: Option<Pid>,
 }
 
@@ -182,17 +181,8 @@ impl NixPty {
         };
 
         Ok(NixPty {
-            master_fd: Arc::new(master_fd),
+            master_fd: master_fd,
             child_pid: Some(child_pid),
-        })
-    }
-
-    /// Creates a clone of the PTY handle for reading.
-    /// The clone shares the file descriptor but does not own the child process.
-    pub fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
-            master_fd: self.master_fd.clone(),
-            child_pid: None,
         })
     }
 
@@ -238,15 +228,11 @@ impl Drop for NixPty {
             master_raw_fd,
             self.child_pid
         );
-        // self.master_fd (Arc<OwnedFd>) is dropped automatically.
-        // The underlying FD closes only when strong_count hits 0.
+        // self.master_fd (OwnedFd) is dropped automatically.
 
         let pid = match self.child_pid {
             Some(p) => p,
-            None => {
-                // This is a clone (Read Thread), so we don't manage the child process.
-                return;
-            }
+            None => return,
         };
 
         if pid.as_raw() <= 0 {
@@ -393,9 +379,15 @@ impl AsRawFd for NixPty {
     }
 }
 
+impl AsFd for NixPty {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.master_fd.as_fd()
+    }
+}
+
 impl PtyChannel for NixPty {
     fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
-        Self::set_pty_size_internal(&*self.master_fd, cols, rows).with_context(|| {
+        Self::set_pty_size_internal(&self.master_fd, cols, rows).with_context(|| {
             format!(
                 "NixPty: Failed to set PTY size to {}x{} for fd {}",
                 cols,
@@ -419,7 +411,7 @@ impl PtyChannel for NixPty {
                 pid
             );
         } else {
-            log::warn!("NixPty: Resize called on a clone (no PID). PTY size set, but SIGWINCH not sent.");
+            log::warn!("NixPty: Resize called on a NixPty with no PID. PTY size set, but SIGWINCH not sent.");
         }
 
         Ok(())
@@ -427,5 +419,83 @@ impl PtyChannel for NixPty {
 
     fn child_pid(&self) -> Pid {
         self.child_pid.unwrap_or_else(|| Pid::from_raw(0))
+    }
+}
+
+/// A helper struct that borrows a PTY file descriptor for reading.
+/// This allows using the PTY in a thread without owning the NixPty instance.
+pub struct PtyReader<'a> {
+    fd: BorrowedFd<'a>,
+}
+
+impl<'a> PtyReader<'a> {
+    pub fn new(fd: BorrowedFd<'a>) -> Self {
+        Self { fd }
+    }
+}
+
+impl<'a> Read for PtyReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        match nix::unistd::read(self.fd, buf) {
+            Ok(bytes_read) => Ok(bytes_read),
+            Err(nix::Error::EIO) => Ok(0),
+            Err(nix_err) => {
+                if matches!(nix_err, nix::Error::EAGAIN)
+                    || matches!(nix_err, nix::Error::EWOULDBLOCK)
+                {
+                    Err(IoError::new(IoErrorKind::WouldBlock, nix_err))
+                } else {
+                    Err(IoError::other(nix_err))
+                }
+            }
+        }
+    }
+}
+
+impl<'a> AsRawFd for PtyReader<'a> {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+/// A helper struct that borrows a PTY file descriptor for writing and resizing.
+pub struct PtyWriter<'a> {
+    fd: BorrowedFd<'a>,
+    child_pid: Option<Pid>,
+}
+
+impl<'a> PtyWriter<'a> {
+    pub fn new(fd: BorrowedFd<'a>, child_pid: Option<Pid>) -> Self {
+        Self { fd, child_pid }
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        NixPty::set_pty_size_internal(self.fd, cols, rows).context("PtyWriter: Resize failed")?;
+
+        if let Some(pid) = self.child_pid {
+            kill(pid, Some(Signal::SIGWINCH)).context("PtyWriter: SIGWINCH failed")?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> Write for PtyWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+        match nix::unistd::write(self.fd, buf) {
+            Ok(bytes_written) => Ok(bytes_written),
+            Err(nix_err) => {
+                if matches!(nix_err, nix::Error::EAGAIN)
+                    || matches!(nix_err, nix::Error::EWOULDBLOCK)
+                {
+                    Err(IoError::new(IoErrorKind::WouldBlock, nix_err))
+                } else {
+                    Err(IoError::other(nix_err))
+                }
+            }
+        }
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        Ok(())
     }
 }

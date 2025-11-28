@@ -15,8 +15,9 @@ use crate::orchestrator::OrchestratorSender;
 use pixelflow_engine::EngineEvent;
 use anyhow::{Context, Result};
 use log::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::TrySendError;
-use std::thread::{self, JoinHandle};
+use std::sync::Arc;
 
 /// Token for identifying PTY events in the EventMonitor.
 const PTY_TOKEN: u64 = 1;
@@ -34,91 +35,69 @@ const PTY_READ_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE_MULTIPLIER * PTY_BASE_B
 /// Small enough to prevent stalling rendering, large enough to be efficient.
 const MAX_COMMANDS_PER_IOEVENT: usize = 1000;
 
-/// Internal read thread handle.
-pub(super) struct ReadThread {
-    thread_handle: Option<JoinHandle<()>>,
-}
+/// Main read loop.
+///
+/// Polls the PTY for read events, reads data, parses ANSI commands,
+/// and sends them to the orchestrator.
+pub(super) fn run_read_loop<S: EventSource>(
+    mut source: S,
+    orchestrator_tx: OrchestratorSender,
+    stop_signal: Arc<AtomicBool>,
+) -> Result<()> {
+    let fd = source.as_raw_fd();
+    debug!("PTY read thread starting (fd: {})", fd);
 
-impl ReadThread {
-    /// Spawns the read thread.
-    ///
-    /// # Arguments
-    ///
-    /// * `source` - The event source (e.g., PTY) to monitor and read from
-    /// * `orchestrator_tx` - Channel to send IOEvents to orchestrator
-    pub(super) fn spawn<S>(source: S, orchestrator_tx: OrchestratorSender) -> Result<Self>
-    where
-        S: EventSource + 'static,
-    {
-        let thread_handle = thread::Builder::new()
-            .name("pty-read".to_string())
-            .spawn(move || {
-                if let Err(e) = Self::read_loop(source, orchestrator_tx) {
-                    error!("PTY read thread error: {:#}", e);
-                }
-            })
-            .context("Failed to spawn PTY read thread")?;
+    let event_monitor =
+        EventMonitor::new().context("Failed to create EventMonitor in read thread")?;
 
-        debug!("PTY read thread spawned");
+    event_monitor
+        .add(&source, PTY_TOKEN, KqueueFlags::EPOLLIN)
+        .context("Failed to register PTY with EventMonitor")?;
 
-        Ok(Self {
-            thread_handle: Some(thread_handle),
-        })
-    }
+    debug!("Read thread registered PTY fd {} for EPOLLIN", fd);
 
-    /// Main read loop.
-    ///
-    /// Polls the PTY for read events, reads data, parses ANSI commands,
-    /// and sends them to the orchestrator.
-    fn read_loop<S: EventSource>(mut source: S, orchestrator_tx: OrchestratorSender) -> Result<()> {
-        let fd = source.as_raw_fd();
-        debug!("PTY read thread starting (fd: {})", fd);
+    let mut ansi_parser = AnsiProcessor::new();
+    let mut events_buffer = Vec::with_capacity(8);
+    let mut read_buffer = vec![0u8; PTY_READ_BUFFER_SIZE];
 
-        let event_monitor =
-            EventMonitor::new().context("Failed to create EventMonitor in read thread")?;
+    // Buffer for accumulating commands when channel is full
+    let mut command_buffer: Vec<AnsiCommand> = Vec::new();
 
+    loop {
+        if stop_signal.load(Ordering::Relaxed) {
+            debug!("Read thread received stop signal");
+            break;
+        }
+
+        // Poll for PTY events with a 100ms timeout
         event_monitor
-            .add(&source, PTY_TOKEN, KqueueFlags::EPOLLIN)
-            .context("Failed to register PTY with EventMonitor")?;
+            .events(&mut events_buffer, 100)
+            .context("EventMonitor polling failed")?;
 
-        debug!("Read thread registered PTY fd {} for EPOLLIN", fd);
-
-        let mut ansi_parser = AnsiProcessor::new();
-        let mut events_buffer = Vec::with_capacity(8);
-        let mut read_buffer = vec![0u8; PTY_READ_BUFFER_SIZE];
-
-        // Buffer for accumulating commands when channel is full
-        let mut command_buffer: Vec<AnsiCommand> = Vec::new();
-
-        loop {
-            // Poll for PTY events with a 100ms timeout
-            event_monitor
-                .events(&mut events_buffer, 100)
-                .context("EventMonitor polling failed")?;
-
-            // Process PTY read events
-            for event in &events_buffer {
-                if event.token == PTY_TOKEN && event.flags.contains(KqueueFlags::EPOLLIN) {
-                    Self::handle_pty_readable(
-                        &mut source,
-                        &mut read_buffer,
-                        &mut ansi_parser,
-                        &orchestrator_tx,
-                        &mut command_buffer,
-                    )?;
-                }
+        // Process PTY read events
+        for event in &events_buffer {
+            if event.token == PTY_TOKEN && event.flags.contains(KqueueFlags::EPOLLIN) {
+                handle_pty_readable(
+                    &mut source,
+                    &mut read_buffer,
+                    &mut ansi_parser,
+                    &orchestrator_tx,
+                    &mut command_buffer,
+                )?;
             }
         }
     }
+    Ok(())
+}
 
-    /// Handles PTY readable events.
-    fn handle_pty_readable<S: EventSource>(
-        source: &mut S,
-        read_buffer: &mut [u8],
-        ansi_parser: &mut AnsiProcessor,
-        orchestrator_tx: &OrchestratorSender,
-        command_buffer: &mut Vec<AnsiCommand>,
-    ) -> Result<()> {
+/// Handles PTY readable events.
+fn handle_pty_readable<S: EventSource>(
+    source: &mut S,
+    read_buffer: &mut [u8],
+    ansi_parser: &mut AnsiProcessor,
+    orchestrator_tx: &OrchestratorSender,
+    command_buffer: &mut Vec<AnsiCommand>,
+) -> Result<()> {
         loop {
             // Read from PTY using safe trait method
             let bytes_read = match source.read(read_buffer) {
@@ -231,15 +210,4 @@ impl ReadThread {
 
         Ok(())
     }
-}
 
-impl Drop for ReadThread {
-    fn drop(&mut self) {
-        debug!("ReadThread dropped");
-        if let Some(handle) = self.thread_handle.take() {
-            if let Err(e) = handle.join() {
-                error!("Read thread panicked: {:?}", e);
-            }
-        }
-    }
-}
