@@ -8,7 +8,7 @@ use super::renderer::Renderer;
 use crate::color::{Color, NamedColor};
 use crate::config::Config;
 use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
-use crate::platform::backends::{PlatformState, RenderCommand};
+use crate::renderer::{PlatformState, RenderCommand};
 use crate::term::snapshot::{
     CursorRenderState, CursorShape, Point, Selection, SelectionMode, SelectionRange, SnapshotLine,
     TerminalSnapshot,
