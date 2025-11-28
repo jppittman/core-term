@@ -41,6 +41,12 @@ pub enum Op<T: AsRef<[u8]>> {
         fg: Color,
         /// Background color.
         bg: Color,
+        /// Render in bold (thicker).
+        #[allow(missing_docs)] // Field is self-explanatory
+        bold: bool,
+        /// Render in italic (slanted).
+        #[allow(missing_docs)] // Field is self-explanatory
+        italic: bool,
     },
 
     /// Draw a filled rectangle.
