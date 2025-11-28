@@ -5,7 +5,7 @@ use crate::color::{Color, NamedColor};
 use crate::glyph::{Attributes, ContentCell, Glyph}; // Removed AttrFlags
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
-use crate::platform::backends::MouseButton; // Correct import for MouseButton
+use pixelflow_engine::input::MouseButton;
 use crate::term::{
     modes::DecModeConstant,   // For DECTCEM test
     snapshot::SelectionRange, // Corrected import for SelectionRange
