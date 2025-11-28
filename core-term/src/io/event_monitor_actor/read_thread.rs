@@ -12,9 +12,9 @@ use crate::io::event::{EpollFlags as KqueueFlags, EventMonitor};
 use crate::io::event::{EventMonitor, KqueueFlags};
 use crate::io::traits::EventSource;
 use crate::orchestrator::OrchestratorSender;
-use pixelflow_engine::EngineEvent;
 use anyhow::{Context, Result};
 use log::*;
+use pixelflow_engine::EngineEvent;
 use std::sync::mpsc::TrySendError;
 use std::thread::{self, JoinHandle};
 

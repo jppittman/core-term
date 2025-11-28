@@ -43,13 +43,22 @@ fn determine_display_driver(target_os: &str) -> String {
     }
 
     // Check features
-    let has_cocoa = cfg!(feature = "display_cocoa") || std::env::var("CARGO_FEATURE_DISPLAY_COCOA").is_ok();
-    let has_x11 = cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok();
-    let has_headless = cfg!(feature = "display_headless") || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
+    let has_cocoa =
+        cfg!(feature = "display_cocoa") || std::env::var("CARGO_FEATURE_DISPLAY_COCOA").is_ok();
+    let has_x11 =
+        cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok();
+    let has_headless = cfg!(feature = "display_headless")
+        || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
 
-    if has_headless && !has_x11 && !has_cocoa { return "headless".to_string(); }
-    if has_x11 && !has_headless { return "x11".to_string(); }
-    if has_cocoa { return "cocoa".to_string(); }
+    if has_headless && !has_x11 && !has_cocoa {
+        return "headless".to_string();
+    }
+    if has_x11 && !has_headless {
+        return "x11".to_string();
+    }
+    if has_cocoa {
+        return "cocoa".to_string();
+    }
 
     match target_os {
         "macos" => "cocoa".to_string(),

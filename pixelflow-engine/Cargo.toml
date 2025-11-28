@@ -80,9 +80,6 @@ display_x11 = [
     "x11",
     "yeslogic-fontconfig-sys",
     "freetype",
-    "core-foundation",
-    "core-graphics",
-    "core-text",
     "pixelflow-render/fonts",
 ]
 display_headless = [

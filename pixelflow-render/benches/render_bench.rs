@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use pixelflow_render::{Op, process_frame, Color, NamedColor};
+use pixelflow_render::{process_frame, Color, NamedColor, Op};
 
 const SCREEN_WIDTH: usize = 1920;
 const SCREEN_HEIGHT: usize = 1080;
@@ -15,7 +15,9 @@ fn bench_process_frame_text(c: &mut Criterion) {
 
     // Fill with text ops
     let mut commands: Vec<Op<&[u8]>> = Vec::with_capacity(GRID_COLS * GRID_ROWS + 1);
-    commands.push(Op::Clear { color: Color::Named(NamedColor::Black) });
+    commands.push(Op::Clear {
+        color: Color::Named(NamedColor::Black),
+    });
 
     for y in 0..GRID_ROWS {
         for x in 0..GRID_COLS {
@@ -24,7 +26,7 @@ fn bench_process_frame_text(c: &mut Criterion) {
                 x,
                 y,
                 fg: Color::Named(NamedColor::White),
-                bg: Color::Named(NamedColor::Black)
+                bg: Color::Named(NamedColor::Black),
             });
         }
     }

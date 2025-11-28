@@ -4,8 +4,8 @@ pub mod platform;
 pub mod traits;
 
 pub use display::messages::DriverConfig as WindowConfig;
-pub use traits::{Application, EngineEvent, AppAction, AppState};
 pub use platform::EnginePlatform;
+pub use traits::{AppAction, AppState, Application, EngineEvent};
 
 /// Entry point for the Pixelflow Engine.
 ///

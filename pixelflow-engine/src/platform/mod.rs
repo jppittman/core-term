@@ -1,15 +1,12 @@
-
 pub mod waker;
-// pub mod backends; // Legacy
-// pub mod font_manager; // Legacy?
-// pub mod macos; // Wrapper around GenericPlatform, not needed if we use EnginePlatform directly.
-// pub mod linux_x11; // Legacy
 
-use crate::display::{DisplayManager, DriverRequest, DriverResponse, DisplayEvent, messages::RenderSnapshot};
-use crate::traits::{Application, EngineEvent, AppAction, AppState};
-use crate::input::{KeySymbol, Modifiers, MouseButton};
+use crate::display::{
+    messages::RenderSnapshot, DisplayEvent, DisplayManager, DriverRequest, DriverResponse,
+};
+use crate::input::MouseButton;
+use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
-use log::{info, warn, debug, trace};
+use log::info;
 use pixelflow_render::rasterizer::process_frame;
 
 pub struct EnginePlatform {
@@ -20,7 +17,8 @@ pub struct EnginePlatform {
 impl EnginePlatform {
     pub fn new(config: crate::display::messages::DriverConfig) -> Result<Self> {
         info!("EnginePlatform::new() - Initializing display-based platform");
-        let display_manager = DisplayManager::new(config).context("Failed to create DisplayManager")?;
+        let display_manager =
+            DisplayManager::new(config).context("Failed to create DisplayManager")?;
         Ok(Self {
             display_manager,
             framebuffer: None,
@@ -38,7 +36,9 @@ impl EnginePlatform {
 
         loop {
             // Poll display events
-            let response = self.display_manager.handle_request(DriverRequest::PollEvents)
+            let response = self
+                .display_manager
+                .handle_request(DriverRequest::PollEvents)
                 .context("DisplayManager event polling failed")?;
 
             let mut needs_redraw = false;
@@ -47,13 +47,22 @@ impl EnginePlatform {
                 for display_event in display_events {
                     if let Some(engine_event) = self.map_event(display_event) {
                         let action = app.on_event(engine_event);
-                        if self.handle_action(action, &mut app, &mut shutdown_complete, &mut needs_redraw)? {
-                             if shutdown_complete { break; }
+                        if self.handle_action(
+                            action,
+                            &mut app,
+                            &mut shutdown_complete,
+                            &mut needs_redraw,
+                        )? {
+                            if shutdown_complete {
+                                break;
+                            }
                         }
                     }
                 }
             }
-            if shutdown_complete { break; }
+            if shutdown_complete {
+                break;
+            }
 
             // Check if we need to redraw
             if needs_redraw {
@@ -67,9 +76,26 @@ impl EnginePlatform {
 
     fn map_event(&self, event: DisplayEvent) -> Option<EngineEvent> {
         match event {
-            DisplayEvent::Resize { width_px, height_px } => Some(EngineEvent::Resize(width_px, height_px)),
-            DisplayEvent::Key { symbol, modifiers, text } => Some(EngineEvent::KeyDown { key: symbol, mods: modifiers, text }),
-            DisplayEvent::MouseButtonPress { button, x, y, modifiers, .. } => {
+            DisplayEvent::Resize {
+                width_px,
+                height_px,
+            } => Some(EngineEvent::Resize(width_px, height_px)),
+            DisplayEvent::Key {
+                symbol,
+                modifiers,
+                text,
+            } => Some(EngineEvent::KeyDown {
+                key: symbol,
+                mods: modifiers,
+                text,
+            }),
+            DisplayEvent::MouseButtonPress {
+                button,
+                x,
+                y,
+                modifiers: _,
+                ..
+            } => {
                 let btn = match button {
                     0 => MouseButton::Left,
                     1 => MouseButton::Right, // Cocoa maps 0=Left, 1=Right usually? DisplayDriver converts.
@@ -90,8 +116,12 @@ impl EnginePlatform {
                     // So 0=Left, 1=Right.
                     _ => MouseButton::Other(button),
                 };
-                 Some(EngineEvent::MouseClick { x: x as u32, y: y as u32, button: btn })
-            },
+                Some(EngineEvent::MouseClick {
+                    x: x as u32,
+                    y: y as u32,
+                    button: btn,
+                })
+            }
             DisplayEvent::CloseRequested => Some(EngineEvent::CloseRequested),
             DisplayEvent::ClipboardDataRequested => None, // Handled internally? Or passed to app? App handles copy/paste.
             // Wait, DisplayEvent::ClipboardDataRequested means X11 needs data.
@@ -104,24 +134,33 @@ impl EnginePlatform {
         }
     }
 
-    fn handle_action(&mut self, action: AppAction, app: &mut impl Application, shutdown: &mut bool, needs_redraw: &mut bool) -> Result<bool> {
+    fn handle_action(
+        &mut self,
+        action: AppAction,
+        _app: &mut impl Application,
+        shutdown: &mut bool,
+        needs_redraw: &mut bool,
+    ) -> Result<bool> {
         match action {
-            AppAction::Continue => {},
+            AppAction::Continue => {}
             AppAction::Redraw => *needs_redraw = true,
             AppAction::SetTitle(t) => {
-                self.display_manager.handle_request(DriverRequest::SetTitle(t))?;
-            },
+                self.display_manager
+                    .handle_request(DriverRequest::SetTitle(t))?;
+            }
             AppAction::Quit => *shutdown = true,
             AppAction::ResizeRequest(_, _) => {
-                 // Not implemented in DriverRequest yet?
-            },
-            AppAction::SetCursorIcon(_) => {}, // Not impl
+                // Not implemented in DriverRequest yet?
+            }
+            AppAction::SetCursorIcon(_) => {} // Not impl
             AppAction::CopyToClipboard(text) => {
-                self.display_manager.handle_request(DriverRequest::CopyToClipboard(text))?;
-            },
+                self.display_manager
+                    .handle_request(DriverRequest::CopyToClipboard(text))?;
+            }
             AppAction::RequestPaste => {
-                self.display_manager.handle_request(DriverRequest::RequestPaste)?;
-            },
+                self.display_manager
+                    .handle_request(DriverRequest::RequestPaste)?;
+            }
         }
         Ok(false)
     }
@@ -140,8 +179,14 @@ impl EnginePlatform {
         let mut framebuffer = if let Some(fb) = self.framebuffer.take() {
             fb
         } else {
-             let resp = self.display_manager.handle_request(DriverRequest::RequestFramebuffer)?;
-             if let DriverResponse::Framebuffer(fb) = resp { fb } else { return Err(anyhow::anyhow!("Expected Framebuffer")); }
+            let resp = self
+                .display_manager
+                .handle_request(DriverRequest::RequestFramebuffer)?;
+            if let DriverResponse::Framebuffer(fb) = resp {
+                fb
+            } else {
+                return Err(anyhow::anyhow!("Expected Framebuffer"));
+            }
         };
 
         // Convert u8 framebuffer to u32 slice for process_frame
@@ -172,7 +217,14 @@ impl EnginePlatform {
         let cell_w = 10; // Placeholder
         let cell_h = 20; // Placeholder
 
-        process_frame(pixels, metrics.width_px as usize, metrics.height_px as usize, cell_w, cell_h, &ops);
+        process_frame(
+            pixels,
+            metrics.width_px as usize,
+            metrics.height_px as usize,
+            cell_w,
+            cell_h,
+            &ops,
+        );
 
         // Present
         let snapshot = RenderSnapshot {
@@ -180,8 +232,10 @@ impl EnginePlatform {
             width_px: metrics.width_px,
             height_px: metrics.height_px,
         };
-        let resp = self.display_manager.handle_request(DriverRequest::Present(snapshot));
-         match resp {
+        let resp = self
+            .display_manager
+            .handle_request(DriverRequest::Present(snapshot));
+        match resp {
             Ok(DriverResponse::PresentComplete(snap)) => {
                 self.framebuffer = Some(snap.framebuffer);
             }

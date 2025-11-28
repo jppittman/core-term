@@ -2,8 +2,8 @@
 
 use crate::config::Config;
 use crate::term::action::UserInputAction;
-pub use pixelflow_engine::input::{KeySymbol, Modifiers};
 use log::debug;
+pub use pixelflow_engine::input::{KeySymbol, Modifiers};
 
 /// Maps a given key symbol and modifiers to a `UserInputAction` based on the provided configuration.
 ///

@@ -5,7 +5,6 @@ use crate::color::{Color, NamedColor};
 use crate::glyph::{Attributes, ContentCell, Glyph}; // Removed AttrFlags
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
-use pixelflow_engine::input::MouseButton;
 use crate::term::{
     modes::DecModeConstant,   // For DECTCEM test
     snapshot::SelectionRange, // Corrected import for SelectionRange
@@ -24,7 +23,8 @@ use crate::term::{
     TerminalEmulator,
     TerminalSnapshot,
     UserInputAction,
-}; // For mouse input
+};
+use pixelflow_engine::input::MouseButton; // For mouse input
 
 // Default scrollback for tests, can be adjusted.
 // const TEST_SCROLLBACK_LIMIT: usize = 100;
