@@ -6,6 +6,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(use_cocoa_display)");
     println!("cargo::rustc-check-cfg=cfg(use_x11_display)");
     println!("cargo::rustc-check-cfg=cfg(use_headless_display)");
+    println!("cargo::rustc-check-cfg=cfg(use_web_display)");
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS")
         .expect("CARGO_CFG_TARGET_OS is not set, cannot determine target platform.");
@@ -31,6 +32,9 @@ fn main() {
         "headless" => {
             println!("cargo:rustc-cfg=use_headless_display");
         }
+        "web" => {
+            println!("cargo:rustc-cfg=use_web_display");
+        }
         _ => {
             panic!("Unknown display driver: {}", display_driver);
         }
@@ -49,7 +53,12 @@ fn determine_display_driver(target_os: &str) -> String {
         cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok();
     let has_headless = cfg!(feature = "display_headless")
         || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
+    let has_web =
+        cfg!(feature = "display_web") || std::env::var("CARGO_FEATURE_DISPLAY_WEB").is_ok();
 
+    if has_web {
+        return "web".to_string();
+    }
     if has_headless && !has_x11 && !has_cocoa {
         return "headless".to_string();
     }
@@ -63,6 +72,7 @@ fn determine_display_driver(target_os: &str) -> String {
     match target_os {
         "macos" => "cocoa".to_string(),
         "linux" => "x11".to_string(),
+        "unknown" => "web".to_string(),
         _ => "headless".to_string(),
     }
 }

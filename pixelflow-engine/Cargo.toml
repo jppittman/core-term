@@ -63,6 +63,26 @@ optional = true
 cocoa = "0.26"
 objc = "0.2"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.92"
+js-sys = "0.3.69"
+serde-wasm-bindgen = "0.6.5"
+bincode = "1.3.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3.69"
+features = [
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "DedicatedWorkerGlobalScope",
+    "MessageEvent",
+    "ImageData",
+    "Window",
+    "Worker",
+    "console",
+    "Performance",
+]
+
 [build-dependencies]
 pkg-config = "0.3.32"
 
@@ -83,6 +103,9 @@ display_x11 = [
     "pixelflow-render/fonts",
 ]
 display_headless = [
+    "pixelflow-render/fonts",
+]
+display_web = [
     "pixelflow-render/fonts",
 ]
 

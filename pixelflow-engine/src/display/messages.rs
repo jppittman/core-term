@@ -5,6 +5,7 @@
 //! All communication happens via ownership transfer - no shared state.
 
 use crate::input::{KeySymbol, Modifiers};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Custom error type for DisplayDriver operations.
@@ -156,7 +157,7 @@ pub enum DriverResponse {
 }
 
 /// Platform-agnostic display events.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DisplayEvent {
     /// Key press event.
     Key {
