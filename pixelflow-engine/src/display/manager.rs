@@ -75,6 +75,23 @@ impl DisplayManager {
             let metrics = Self::extract_metrics(response)?;
             Ok(Self { driver, metrics })
         }
+
+        #[cfg(use_web_display)]
+        {
+            use crate::display::drivers::WebDisplayDriver;
+            info!("DisplayManager: Creating WebDisplayDriver...");
+            let mut driver =
+                Box::new(WebDisplayDriver::new(&driver_config)?) as Box<dyn DisplayDriver>;
+
+            info!("DisplayManager: Calling Init...");
+            let response = driver
+                .handle_request(DriverRequest::Init)
+                .map_err(|e| anyhow::anyhow!(e))
+                .context("Failed to initialize display driver")?;
+
+            let metrics = Self::extract_metrics(response)?;
+            Ok(Self { driver, metrics })
+        }
     }
 
     /// Helper to extract metrics from InitComplete response
