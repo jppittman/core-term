@@ -11,11 +11,11 @@
 use crate::keys;
 use crate::orchestrator::OrchestratorEvent;
 use crate::platform::actions::PlatformAction;
-use pixelflow_engine::EngineEvent;
-use pixelflow_engine::input::MouseButton;
 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
 use anyhow::{Context, Result};
 use log::*;
+use pixelflow_engine::input::MouseButton;
+use pixelflow_engine::EngineEvent;
 use std::sync::mpsc::{Receiver, RecvError, SyncSender};
 use std::thread::{self, JoinHandle};
 
@@ -320,11 +320,7 @@ impl OrchestratorActor {
                     scale_factor,
                 })))
             }
-            EngineEvent::KeyDown {
-                key,
-                mods,
-                text,
-            } => {
+            EngineEvent::KeyDown { key, mods, text } => {
                 // EngineEvent doesn't carry text. We need to map key to text if possible?
                 // Or update EngineEvent to carry text?
                 // DisplayEvent has text. I stripped it in map_event?
@@ -332,24 +328,18 @@ impl OrchestratorActor {
                 // I lost the text!
                 // I MUST update EngineEvent to carry text.
                 let text = None; // Temporary breakage
-                debug!(
-                    "OrchestratorActor: Key: {:?} + {:?}",
-                    mods, key
-                );
+                debug!("OrchestratorActor: Key: {:?} + {:?}", mods, key);
                 let key_input_action =
-                    keys::map_key_event_to_action(key, mods, &crate::config::CONFIG)
-                        .unwrap_or(UserInputAction::KeyInput {
+                    keys::map_key_event_to_action(key, mods, &crate::config::CONFIG).unwrap_or(
+                        UserInputAction::KeyInput {
                             symbol: key,
                             modifiers: mods,
                             text,
-                        });
+                        },
+                    );
                 Ok(Some(EmulatorInput::User(key_input_action)))
             }
-            EngineEvent::MouseClick {
-                button,
-                x,
-                y,
-            } => {
+            EngineEvent::MouseClick { button, x, y } => {
                 // Missing scale_factor here too.
                 let scale_factor = 2.0;
                 let input = match button {
@@ -368,10 +358,7 @@ impl OrchestratorActor {
                 };
                 Ok(input)
             }
-            EngineEvent::MouseRelease {
-                button,
-                ..
-            } => {
+            EngineEvent::MouseRelease { button, .. } => {
                 if button == MouseButton::Left {
                     Ok(Some(EmulatorInput::User(
                         UserInputAction::ApplySelectionClear,
@@ -380,11 +367,7 @@ impl OrchestratorActor {
                     Ok(None)
                 }
             }
-            EngineEvent::MouseMove {
-                x,
-                y,
-                ..
-            } => {
+            EngineEvent::MouseMove { x, y, .. } => {
                 let scale_factor = 2.0;
                 // Forward pixel coordinates to emulator, which will convert to cells
                 Ok(Some(EmulatorInput::User(
@@ -395,9 +378,7 @@ impl OrchestratorActor {
                     },
                 )))
             }
-            EngineEvent::FocusGained => {
-                Ok(Some(EmulatorInput::User(UserInputAction::FocusGained)))
-            }
+            EngineEvent::FocusGained => Ok(Some(EmulatorInput::User(UserInputAction::FocusGained))),
             EngineEvent::FocusLost => Ok(Some(EmulatorInput::User(UserInputAction::FocusLost))),
             EngineEvent::Paste(text) => {
                 Ok(Some(EmulatorInput::User(UserInputAction::PasteText(text))))

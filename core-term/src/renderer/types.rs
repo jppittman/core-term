@@ -15,7 +15,9 @@ pub struct PlatformState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderCommand {
-    ClearAll { bg: Color },
+    ClearAll {
+        bg: Color,
+    },
     DrawTextRun {
         x: usize,
         y: usize,
@@ -33,8 +35,12 @@ pub enum RenderCommand {
         color: Color,
         is_selection_bg: bool,
     },
-    SetCursorVisibility { visible: bool },
-    SetWindowTitle { title: String },
+    SetCursorVisibility {
+        visible: bool,
+    },
+    SetWindowTitle {
+        title: String,
+    },
     RingBell,
     PresentFrame,
 }

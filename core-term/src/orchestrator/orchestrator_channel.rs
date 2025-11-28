@@ -6,8 +6,8 @@
 //! Uses a "Doorbell" signal to wake the orchestrator when PTY data is ready.
 
 use crate::ansi::AnsiCommand;
-use pixelflow_engine::EngineEvent;
 use crate::term::ControlEvent;
+use pixelflow_engine::EngineEvent;
 use std::sync::mpsc::{self, Receiver, SendError, Sender, SyncSender, TrySendError};
 
 /// All event types that the orchestrator can receive.

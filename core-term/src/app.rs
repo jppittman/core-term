@@ -1,10 +1,10 @@
 use crate::config::Config;
-use crate::renderer::{Renderer, PlatformState, RenderCommand};
 use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
+use crate::renderer::{PlatformState, RenderCommand, Renderer};
 use crate::term::snapshot::TerminalSnapshot;
 use crate::term::unicode::get_char_display_width;
-use pixelflow_engine::{Application, AppState, EngineEvent, AppAction};
+use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
 use pixelflow_render::commands::Op;
 use std::sync::mpsc::Receiver;
 
@@ -41,16 +41,16 @@ impl Application for CoreTermApp {
                         PlatformAction::RequestRedraw(snapshot) => {
                             self.current_snapshot = Some(snapshot);
                             return AppAction::Redraw;
-                        },
+                        }
                         PlatformAction::SetTitle(title) => {
                             return AppAction::SetTitle(title);
-                        },
+                        }
                         PlatformAction::CopyToClipboard(text) => {
-                             return AppAction::CopyToClipboard(text);
-                        },
+                            return AppAction::CopyToClipboard(text);
+                        }
                         PlatformAction::RequestPaste => {
-                             return AppAction::RequestPaste;
-                        },
+                            return AppAction::RequestPaste;
+                        }
                         PlatformAction::ShutdownComplete => {
                             return AppAction::Quit;
                         }
@@ -77,15 +77,17 @@ impl Application for CoreTermApp {
         let cell_height = self.config.appearance.cell_height_px;
 
         let platform_state = PlatformState {
-             event_fd: None,
-             font_cell_width_px: cell_width,
-             font_cell_height_px: cell_height,
-             scale_factor: state.scale_factor,
-             display_width_px: state.width_px as u16,
-             display_height_px: state.height_px as u16,
+            event_fd: None,
+            font_cell_width_px: cell_width,
+            font_cell_height_px: cell_height,
+            scale_factor: state.scale_factor,
+            display_width_px: state.width_px as u16,
+            display_height_px: state.height_px as u16,
         };
 
-        let commands = self.renderer.prepare_render_commands(snapshot, &self.config, &platform_state);
+        let commands =
+            self.renderer
+                .prepare_render_commands(snapshot, &self.config, &platform_state);
 
         let mut ops = Vec::new();
 
@@ -93,30 +95,39 @@ impl Application for CoreTermApp {
             match cmd {
                 RenderCommand::ClearAll { bg } => {
                     ops.push(Op::Clear { color: bg });
-                },
-                RenderCommand::FillRect { x, y, width, height, color, .. } => {
-                     ops.push(Op::Rect {
-                         x: x * cell_width,
-                         y: y * cell_height,
-                         w: width * cell_width,
-                         h: height * cell_height,
-                         color,
-                     });
-                },
-                RenderCommand::DrawTextRun { x, y, text, fg, bg, .. } => {
-                     let mut current_x = x;
-                     for ch in text.chars() {
-                         ops.push(Op::Text {
-                             ch,
-                             x: current_x, // Grid coords
-                             y,
-                             fg,
-                             bg,
-                         });
-                         let width = get_char_display_width(ch);
-                         current_x += width;
-                     }
-                },
+                }
+                RenderCommand::FillRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    color,
+                    ..
+                } => {
+                    ops.push(Op::Rect {
+                        x: x * cell_width,
+                        y: y * cell_height,
+                        w: width * cell_width,
+                        h: height * cell_height,
+                        color,
+                    });
+                }
+                RenderCommand::DrawTextRun {
+                    x, y, text, fg, bg, ..
+                } => {
+                    let mut current_x = x;
+                    for ch in text.chars() {
+                        ops.push(Op::Text {
+                            ch,
+                            x: current_x, // Grid coords
+                            y,
+                            fg,
+                            bg,
+                        });
+                        let width = get_char_display_width(ch);
+                        current_x += width;
+                    }
+                }
                 _ => {}
             }
         }

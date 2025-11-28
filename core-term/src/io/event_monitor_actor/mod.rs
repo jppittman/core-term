@@ -51,7 +51,9 @@ impl EventMonitorActor {
         pty_action_rx: std::sync::mpsc::Receiver<PlatformAction>,
     ) -> Result<Self> {
         // Clone PTY for the read thread (shared ownership of FD)
-        let pty_read = pty.try_clone().context("Failed to clone PTY for read thread")?;
+        let pty_read = pty
+            .try_clone()
+            .context("Failed to clone PTY for read thread")?;
 
         // Spawn read thread (uses independent PTY clone)
         let read_thread = ReadThread::spawn(pty_read, orchestrator_tx)
