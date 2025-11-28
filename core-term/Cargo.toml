@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0.98"
 bitflags = { version = "2.9.0", features = ["serde"] }
 env_logger = "0.11.8"
-once_cell = "1.19.0" # Added for Lazy static initialization
+once_cell = "1.19.0"
 libc = "0.2.172"
 log = "0.4.27"
 nix = { version = "0.30.0", features = ["term", "process", "fs", "ioctl", "signal"] }
@@ -18,54 +18,13 @@ pprof = { version = "0.14", features = ["flamegraph", "criterion"], optional = t
 foreign-types = "0.5.0"
 foreign-types-shared = "0.3.1"
 
-# Rendering library
 [dependencies.pixelflow-render]
 path = "../pixelflow-render"
 features = ["serde"]
 
-# Display driver dependencies - feature-gated for flexibility
-[dependencies.objc2]
-version = "0.6"
-optional = true
-
-[dependencies.objc2-foundation]
-version = "0.3"
-features = ["NSString", "NSDate", "NSAutoreleasePool", "NSGeometry", "NSRunLoop"]
-optional = true
-
-[dependencies.objc2-app-kit]
-version = "0.3"
-features = ["NSApplication", "NSWindow", "NSView", "NSEvent", "NSColor", "NSPasteboard"]
-optional = true
-
-[dependencies.core-foundation]
-version = "0.9"
-optional = true
-
-[dependencies.core-graphics]
-version = "0.24"
-optional = true
-
-[dependencies.core-text]
-version = "20.1"
-optional = true
-
-[dependencies.x11]
-version = "2.21.0"
-optional = true
-
-[dependencies.yeslogic-fontconfig-sys]
-version = "6.0.0"
-optional = true
-
-[dependencies.freetype]
-version = "0.7"
-optional = true
-
-# Legacy cocoa/objc for old platform/backends code (target_os gated for now)
-[target.'cfg(target_os = "macos")'.dependencies]
-cocoa = "0.26"
-objc = "0.2"
+[dependencies.pixelflow-engine]
+path = "../pixelflow-engine"
+default-features = false
 
 [build-dependencies]
 pkg-config = "0.3.32"
@@ -75,38 +34,8 @@ test-log = "0.2.17"
 rexpect = "0.6.1"
 
 [features]
-# Display driver features
-display_cocoa = [
-    "objc2",
-    "objc2-foundation",
-    "objc2-app-kit",
-    "core-foundation",
-    "core-graphics",
-    "core-text",
-    "pixelflow-render/fonts",  # Use pre-baked fonts
-]
-display_x11 = [
-    "x11",
-    "yeslogic-fontconfig-sys",
-    "freetype",
-    "core-foundation",  # For CocoaFontDriver on macOS
-    "core-graphics",    # For CocoaFontDriver on macOS
-    "core-text",        # For CocoaFontDriver on macOS
-    "pixelflow-render/fonts",  # Use pre-baked fonts
-]
-display_headless = [
-    "pixelflow-render/fonts",  # Use pre-baked fonts
-]
-
-# Default feature strategy:
-# We enable display_cocoa by default as it's the most common development platform.
-# Users on Linux should explicitly use: cargo build --features display_x11
-# Users wanting headless should use: cargo build --features display_headless --no-default-features
-#
-# The build.rs will select the appropriate driver based on:
-# 1. DISPLAY_DRIVER env var (highest priority)
-# 2. Enabled features (what's specified here or on command line)
-# 3. Target OS fallback (if none of the above apply)
+display_cocoa = ["pixelflow-engine/display_cocoa"]
+display_x11 = ["pixelflow-engine/display_x11"]
+display_headless = ["pixelflow-engine/display_headless"]
 default = ["display_cocoa"]
 profiling = ["pprof"]
-

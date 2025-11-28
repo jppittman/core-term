@@ -4,7 +4,7 @@
 //! This includes user-initiated actions, control events, and actions
 //! the emulator signals to the orchestrator.
 
-use crate::platform::backends::{KeySymbol, Modifiers}; // Assuming these are re-exported via backends
+use crate::keys::{KeySymbol, Modifiers};
 use serde::{Deserialize, Serialize};
 
 // --- User Input Actions ---

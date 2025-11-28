@@ -12,7 +12,7 @@
 use crate::color::Color;
 use crate::config::Config;
 use crate::glyph::{AttrFlags, Attributes, Glyph};
-use crate::platform::backends::{PlatformState, RenderCommand};
+use crate::renderer::{PlatformState, RenderCommand};
 use crate::term::snapshot::{Point, Selection, TerminalSnapshot};
 use crate::term::unicode::get_char_display_width;
 use log::{trace, warn};

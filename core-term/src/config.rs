@@ -188,9 +188,6 @@ impl Default for AppearanceConfig {
     }
 }
 
-// Re-export FontBackend from renderer
-pub use crate::renderer::FontBackend;
-
 /// Font configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -202,36 +199,11 @@ pub struct FontConfig {
     pub size_pt: f64,
     pub cw_scale: f32,
     pub ch_scale: f32,
-    pub backend: FontBackend,
 }
 
 impl Default for FontConfig {
     fn default() -> Self {
         let normal = "Noto Sans Mono:pixelsize=12:antialias=true:autohint=true".to_string();
-
-        // Auto-detect font backend based on platform
-        // Priority: headless > x11 > macos
-        let backend = {
-            #[cfg(use_headless_display)]
-            {
-                FontBackend::Headless
-            }
-
-            #[cfg(all(not(use_headless_display), use_x11_display))]
-            {
-                FontBackend::FreeType
-            }
-
-            #[cfg(all(not(use_headless_display), not(use_x11_display), target_os = "macos"))]
-            {
-                FontBackend::CoreText
-            }
-
-            #[cfg(not(any(use_headless_display, use_x11_display, target_os = "macos")))]
-            {
-                FontBackend::Headless
-            } // Fallback to headless
-        };
 
         FontConfig {
             normal: normal.clone(),
@@ -241,7 +213,6 @@ impl Default for FontConfig {
             size_pt: 16.0, // Match cell height for proper scaling
             cw_scale: 1.0,
             ch_scale: 1.0,
-            backend,
         }
     }
 }
