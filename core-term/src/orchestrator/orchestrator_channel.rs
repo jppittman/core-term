@@ -6,7 +6,7 @@
 //! Uses a "Doorbell" signal to wake the orchestrator when PTY data is ready.
 
 use crate::ansi::AnsiCommand;
-use crate::platform::backends::BackendEvent;
+use pixelflow_engine::EngineEvent;
 use crate::term::ControlEvent;
 use std::sync::mpsc::{self, Receiver, SendError, Sender, SyncSender, TrySendError};
 
@@ -15,7 +15,7 @@ use std::sync::mpsc::{self, Receiver, SendError, Sender, SyncSender, TrySendErro
 #[derive(Debug)]
 pub enum OrchestratorEvent {
     /// Display/input events from the Platform thread (keyboard, mouse, resize, etc.)
-    BackendEvent(BackendEvent),
+    EngineEvent(EngineEvent),
 
     /// PTY output events - parsed ANSI command sequences
     IOEvent { commands: Vec<AnsiCommand> },
@@ -86,9 +86,9 @@ impl OrchestratorSender {
 
 // Conversion traits for ergonomic sending
 
-impl From<BackendEvent> for OrchestratorEvent {
-    fn from(event: BackendEvent) -> Self {
-        OrchestratorEvent::BackendEvent(event)
+impl From<EngineEvent> for OrchestratorEvent {
+    fn from(event: EngineEvent) -> Self {
+        OrchestratorEvent::EngineEvent(event)
     }
 }
 

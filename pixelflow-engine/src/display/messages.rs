@@ -4,7 +4,7 @@
 //! This module defines the message-based protocol for display operations.
 //! All communication happens via ownership transfer - no shared state.
 
-use crate::platform::backends::{KeySymbol, Modifiers};
+use crate::input::{KeySymbol, Modifiers};
 use std::fmt;
 
 /// Custom error type for DisplayDriver operations.

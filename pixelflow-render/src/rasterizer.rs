@@ -60,6 +60,23 @@ impl<'a> ScreenView<'a> {
         }
     }
 
+    fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, color: u32) {
+        for row in 0..h {
+            let fb_y = y + row;
+            if fb_y >= self.height {
+                break;
+            }
+            let row_start = fb_y * self.width;
+            for col in 0..w {
+                let fb_x = x + col;
+                if fb_x >= self.width {
+                    break;
+                }
+                self.fb[row_start + fb_x] = color;
+            }
+        }
+    }
+
     /// Draw a glyph using the new Zero-Copy Pipeline.
     fn draw_glyph(&mut self, ch: char, pos: (usize, usize), style: GlyphStyleOverrides) {
         let (col, row) = pos;
@@ -155,6 +172,10 @@ pub fn process_frame<T: AsRef<[u8]>>(
                 };
 
                 screen.draw_glyph(*ch, (*x, *y), style);
+            }
+
+            Op::Rect { x, y, w, h, color } => {
+                screen.fill_rect(*x, *y, *w, *h, (*color).into());
             }
         }
     }

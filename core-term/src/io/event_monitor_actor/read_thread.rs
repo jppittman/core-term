@@ -12,7 +12,7 @@ use crate::io::event::{EpollFlags as KqueueFlags, EventMonitor};
 use crate::io::event::{EventMonitor, KqueueFlags};
 use crate::io::traits::EventSource;
 use crate::orchestrator::OrchestratorSender;
-use crate::platform::BackendEvent;
+use pixelflow_engine::EngineEvent;
 use anyhow::{Context, Result};
 use log::*;
 use std::sync::mpsc::TrySendError;
@@ -139,7 +139,7 @@ impl ReadThread {
                 // EOF - PTY closed
                 info!("Read thread: PTY returned EOF, sending CloseRequested");
                 orchestrator_tx
-                    .send(BackendEvent::CloseRequested)
+                    .send(EngineEvent::CloseRequested)
                     .context("Failed to send CloseRequested event")?;
                 return Ok(());
             }

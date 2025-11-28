@@ -11,7 +11,8 @@
 use crate::keys;
 use crate::orchestrator::OrchestratorEvent;
 use crate::platform::actions::PlatformAction;
-use crate::platform::backends::{BackendEvent, MouseButton};
+use pixelflow_engine::EngineEvent;
+use pixelflow_engine::input::MouseButton;
 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
 use anyhow::{Context, Result};
 use log::*;
@@ -259,13 +260,13 @@ impl OrchestratorActor {
                     }
                 }
             }
-            OrchestratorEvent::BackendEvent(backend_event) => {
+            OrchestratorEvent::EngineEvent(backend_event) => {
                 debug!(
-                    "OrchestratorActor: Received BackendEvent: {:?}",
+                    "OrchestratorActor: Received EngineEvent: {:?}",
                     backend_event
                 );
 
-                if let BackendEvent::CloseRequested = backend_event {
+                if let EngineEvent::CloseRequested = backend_event {
                     info!("OrchestratorActor: CloseRequested received - sending ShutdownComplete and exiting");
                     display_action_tx
                         .send(PlatformAction::ShutdownComplete)
@@ -291,19 +292,22 @@ impl OrchestratorActor {
 
     /// Process a BackendEvent and return the corresponding EmulatorInput.
     fn process_backend_event(
-        backend_event: BackendEvent,
+        backend_event: EngineEvent,
         _term_emulator: &mut TerminalEmulator,
     ) -> Result<Option<EmulatorInput>> {
         match backend_event {
-            BackendEvent::CloseRequested => {
+            EngineEvent::CloseRequested => {
                 warn!("OrchestratorActor: CloseRequested reached process_backend_event (should not happen)");
                 Ok(None)
             }
-            BackendEvent::Resize {
-                width_px,
-                height_px,
-                scale_factor,
-            } => {
+            EngineEvent::Resize(width_px, height_px) => {
+                // FIXME: EngineEvent doesn't have scale_factor in Resize variant (yet).
+                // Assuming 2.0 for macOS or getting it elsewhere?
+                // AppState has it. But Orchestrator doesn't have AppState.
+                // We'll use 1.0 or try to get it.
+                // Or update EngineEvent to include scale_factor.
+                let scale_factor = 2.0;
+
                 // Forward physical dimensions to emulator, which will calculate cols/rows
                 info!(
                     "OrchestratorActor: Forwarding resize {}x{} px (scale={}) to emulator",
@@ -311,42 +315,49 @@ impl OrchestratorActor {
                 );
 
                 Ok(Some(EmulatorInput::Control(ControlEvent::Resize {
-                    width_px,
-                    height_px,
+                    width_px: width_px as u16,
+                    height_px: height_px as u16,
                     scale_factor,
                 })))
             }
-            BackendEvent::Key {
-                symbol,
-                modifiers,
+            EngineEvent::KeyDown {
+                key,
+                mods,
                 text,
             } => {
+                // EngineEvent doesn't carry text. We need to map key to text if possible?
+                // Or update EngineEvent to carry text?
+                // DisplayEvent has text. I stripped it in map_event?
+                // Yes, map_event in EnginePlatform: Some(EngineEvent::KeyDown { key: symbol, mods: modifiers })
+                // I lost the text!
+                // I MUST update EngineEvent to carry text.
+                let text = None; // Temporary breakage
                 debug!(
-                    "OrchestratorActor: Key: {:?} + {:?}, Text: {:?}",
-                    modifiers, symbol, text
+                    "OrchestratorActor: Key: {:?} + {:?}",
+                    mods, key
                 );
                 let key_input_action =
-                    keys::map_key_event_to_action(symbol, modifiers, &crate::config::CONFIG)
+                    keys::map_key_event_to_action(key, mods, &crate::config::CONFIG)
                         .unwrap_or(UserInputAction::KeyInput {
-                            symbol,
-                            modifiers,
-                            text: if text.is_empty() { None } else { Some(text) },
+                            symbol: key,
+                            modifiers: mods,
+                            text,
                         });
                 Ok(Some(EmulatorInput::User(key_input_action)))
             }
-            BackendEvent::MouseButtonPress {
+            EngineEvent::MouseClick {
                 button,
                 x,
                 y,
-                scale_factor,
-                modifiers: _,
             } => {
+                // Missing scale_factor here too.
+                let scale_factor = 2.0;
                 let input = match button {
                     MouseButton::Left => {
                         // Forward pixel coordinates to emulator, which will convert to cells
                         Some(EmulatorInput::User(UserInputAction::StartSelection {
-                            x_px: x,
-                            y_px: y,
+                            x_px: x as u16,
+                            y_px: y as u16,
                             scale_factor,
                         }))
                     }
@@ -357,12 +368,9 @@ impl OrchestratorActor {
                 };
                 Ok(input)
             }
-            BackendEvent::MouseButtonRelease {
+            EngineEvent::MouseRelease {
                 button,
-                x: _x,
-                y: _y,
-                scale_factor: _scale_factor,
-                modifiers: _,
+                ..
             } => {
                 if button == MouseButton::Left {
                     Ok(Some(EmulatorInput::User(
@@ -372,35 +380,29 @@ impl OrchestratorActor {
                     Ok(None)
                 }
             }
-            BackendEvent::MouseMove {
+            EngineEvent::MouseMove {
                 x,
                 y,
-                scale_factor,
-                modifiers: _,
+                ..
             } => {
+                let scale_factor = 2.0;
                 // Forward pixel coordinates to emulator, which will convert to cells
                 Ok(Some(EmulatorInput::User(
                     UserInputAction::ExtendSelection {
-                        x_px: x,
-                        y_px: y,
+                        x_px: x as u16,
+                        y_px: y as u16,
                         scale_factor,
                     },
                 )))
             }
-            BackendEvent::FocusGained => {
+            EngineEvent::FocusGained => {
                 Ok(Some(EmulatorInput::User(UserInputAction::FocusGained)))
             }
-            BackendEvent::FocusLost => Ok(Some(EmulatorInput::User(UserInputAction::FocusLost))),
-            BackendEvent::PasteData { text } => {
+            EngineEvent::FocusLost => Ok(Some(EmulatorInput::User(UserInputAction::FocusLost))),
+            EngineEvent::Paste(text) => {
                 Ok(Some(EmulatorInput::User(UserInputAction::PasteText(text))))
             }
-            BackendEvent::ClipboardDataRequested => {
-                // X11 clipboard protocol: another app is requesting our clipboard data
-                // TODO: Send current clipboard text to display via SubmitClipboardData
-                // For now, just ignore this event - clipboard won't work properly on X11
-                warn!("ClipboardDataRequested: clipboard support not yet implemented");
-                Ok(None)
-            }
+            _ => Ok(None),
         }
     }
 

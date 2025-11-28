@@ -42,4 +42,18 @@ pub enum Op<T: AsRef<[u8]>> {
         /// Background color.
         bg: Color,
     },
+
+    /// Draw a filled rectangle.
+    Rect {
+        /// X coordinate in pixels.
+        x: usize,
+        /// Y coordinate in pixels.
+        y: usize,
+        /// Width in pixels.
+        w: usize,
+        /// Height in pixels.
+        h: usize,
+        /// Color to fill.
+        color: Color,
+    },
 }
