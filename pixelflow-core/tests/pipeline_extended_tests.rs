@@ -2,6 +2,7 @@ use pixelflow_core::Batch;
 use pixelflow_core::dsl::{MaskExt, SurfaceExt};
 use pixelflow_core::ops::Max;
 use pixelflow_core::pipe::Surface;
+use pixelflow_core::Pixel;
 
 // A simple test surface that returns x coordinate as u8
 #[derive(Copy, Clone)]
@@ -18,6 +19,46 @@ struct Constant(u32);
 impl Surface<u32> for Constant {
     fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<u32> {
         Batch::splat(self.0)
+    }
+}
+
+// Simple RGBA pixel type for testing
+// Byte order: [R, G, B, A] in memory = 0xAABBGGRR as u32 (little endian)
+#[derive(Copy, Clone, Default)]
+struct TestRgba;
+
+impl Pixel for TestRgba {
+    fn from_u32(_v: u32) -> Self { Self }
+    fn to_u32(self) -> u32 { 0 }
+
+    #[inline(always)]
+    fn batch_red(batch: Batch<u32>) -> Batch<u32> {
+        batch & Batch::splat(0xFF)
+    }
+
+    #[inline(always)]
+    fn batch_green(batch: Batch<u32>) -> Batch<u32> {
+        (batch >> 8) & Batch::splat(0xFF)
+    }
+
+    #[inline(always)]
+    fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
+        (batch >> 16) & Batch::splat(0xFF)
+    }
+
+    #[inline(always)]
+    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
+        batch >> 24
+    }
+
+    #[inline(always)]
+    fn batch_from_channels(
+        r: Batch<u32>,
+        g: Batch<u32>,
+        b: Batch<u32>,
+        a: Batch<u32>,
+    ) -> Batch<u32> {
+        r | (g << 8) | (b << 16) | (a << 24)
     }
 }
 
@@ -40,8 +81,8 @@ fn test_pipeline_offset_skew_over() {
     let red = Constant(0xFF0000FF); // Red (ABGR/RGBA depending on interpretation)
     let blue = Constant(0xFFFF0000); // Blue
 
-    // Test Over
-    let blend = mask.over(red, blue);
+    // Test Over with TestRgba pixel format
+    let blend = mask.over::<TestRgba, _, _>(red, blue);
 
     // At x=0, alpha=0, should be blue
     let x0 = Batch::splat(0);
@@ -65,7 +106,7 @@ fn test_pipeline_offset_skew_over() {
     // If shear=256 (1.0), offset = y.
 
     let skewed_mask = mask.skew(256);
-    let skewed_blend = skewed_mask.over(red, blue);
+    let skewed_blend = skewed_mask.over::<TestRgba, _, _>(red, blue);
 
     // At x=10, y=10. Offset = 10. Sample mask at x-offset = 0.
     // So alpha should be 0 -> Blue.

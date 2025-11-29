@@ -1,90 +1,120 @@
+#![cfg(use_headless_display)]
+
 //! Headless mock display driver implementation.
+//!
+//! Driver struct is just cmd_tx - trivially Clone.
+//! run() reads Configure, runs a simple event loop.
 
+use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayError, DriverConfig, DriverRequest, DriverResponse};
-use crate::platform::waker::{EventLoopWaker, NoOpWaker};
-use anyhow::Result;
-use log::{info, trace};
+use crate::display::messages::{DisplayEvent, RenderSnapshot};
+use anyhow::{anyhow, Result};
+use log::info;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
+// --- Run State (only original driver has this) ---
+struct RunState {
+    cmd_rx: Receiver<DriverCommand>,
+    engine_tx: EngineSender,
+}
+
+// --- Display Driver ---
+
+/// Headless display driver for testing.
+///
+/// Clone to get a handle for sending commands. Only the original can run().
 pub struct HeadlessDisplayDriver {
-    width_px: u32,
-    height_px: u32,
-    scale_factor: f64,
-    framebuffer: Option<Box<[u8]>>,
+    cmd_tx: SyncSender<DriverCommand>,
+    /// Only present on original, None on clones
+    run_state: Option<RunState>,
+}
+
+impl Clone for HeadlessDisplayDriver {
+    fn clone(&self) -> Self {
+        Self {
+            cmd_tx: self.cmd_tx.clone(),
+            run_state: None, // Clones can't run
+        }
+    }
 }
 
 impl DisplayDriver for HeadlessDisplayDriver {
-    fn new(config: &DriverConfig) -> Result<Self> {
-        info!("HeadlessDisplayDriver::new() with config");
-
-        let cols = config.initial_cols;
-        let rows = config.initial_rows;
-        let width_px = (cols * config.cell_width_px) as u32;
-        let height_px = (rows * config.cell_height_px) as u32;
-        let buffer_size = (width_px as usize) * (height_px as usize) * config.bytes_per_pixel;
-        let framebuffer = vec![0u8; buffer_size].into_boxed_slice();
+    fn new(engine_tx: EngineSender) -> Result<Self> {
+        let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
-            width_px,
-            height_px,
-            scale_factor: 1.0,
-            framebuffer: Some(framebuffer),
+            cmd_tx,
+            run_state: Some(RunState { cmd_rx, engine_tx }),
         })
     }
 
-    fn create_waker(&self) -> Box<dyn EventLoopWaker> {
-        Box::new(NoOpWaker)
+    fn send(&self, cmd: DriverCommand) -> Result<()> {
+        self.cmd_tx.send(cmd)?;
+        Ok(())
     }
 
-    fn handle_request(&mut self, request: DriverRequest) -> Result<DriverResponse, DisplayError> {
-        match request {
-            DriverRequest::Init => {
-                info!("HeadlessDisplayDriver: Init - returning metrics");
-                Ok(DriverResponse::InitComplete {
-                    width_px: self.width_px,
-                    height_px: self.height_px,
-                    scale_factor: self.scale_factor,
-                })
+    fn run(&self) -> Result<()> {
+        let run_state = self
+            .run_state
+            .as_ref()
+            .ok_or_else(|| anyhow!("Only original driver can run (this is a clone)"))?;
+
+        run_event_loop(&run_state.cmd_rx, &run_state.engine_tx)
+    }
+}
+
+// --- Event Loop ---
+
+fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) -> Result<()> {
+    // 1. Read Configure command first
+    let config = match cmd_rx.recv()? {
+        DriverCommand::Configure(c) => c,
+        other => return Err(anyhow!("Expected Configure, got {:?}", other)),
+    };
+
+    info!("Headless: Creating resources with config");
+
+    let width_px = (config.initial_cols * config.cell_width_px) as u32;
+    let height_px = (config.initial_rows * config.cell_height_px) as u32;
+
+    info!("Headless: Virtual window {}x{} px", width_px, height_px);
+
+    // Send initial resize
+    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
+        width_px,
+        height_px,
+    }));
+
+    // 2. Run simple event loop
+    loop {
+        match cmd_rx.recv()? {
+            DriverCommand::Configure(_) => {
+                // Already configured, ignore
             }
-            DriverRequest::PollEvents => {
-                // Mock driver returns no events
-                Ok(DriverResponse::Events(Vec::new()))
+            DriverCommand::Shutdown => {
+                info!("Headless: Shutdown command received");
+                return Ok(());
             }
-            DriverRequest::RequestFramebuffer => {
-                let buffer = self.framebuffer.take().ok_or_else(|| {
-                    anyhow::anyhow!("Framebuffer already transferred or not initialized")
-                })?;
-                Ok(DriverResponse::Framebuffer(buffer))
+            DriverCommand::Present(snapshot) => {
+                // Just return the framebuffer
+                let _ = engine_tx.send(EngineCommand::PresentComplete(snapshot));
             }
-            DriverRequest::Present(snapshot) => {
-                trace!("HeadlessDisplayDriver: Present");
-                // In a real driver, we would display the buffer.
-                // Here we just accept it and return it.
-                Ok(DriverResponse::PresentComplete(snapshot))
+            DriverCommand::SetTitle(title) => {
+                info!("Headless: SetTitle '{}'", title);
+                let _ = engine_tx.send(EngineCommand::DriverAck);
             }
-            DriverRequest::SetTitle(title) => {
-                info!("HeadlessDisplayDriver: SetTitle '{}'", title);
-                Ok(DriverResponse::TitleSet)
+            DriverCommand::CopyToClipboard(text) => {
+                info!("Headless: CopyToClipboard '{}'", text);
+                let _ = engine_tx.send(EngineCommand::DriverAck);
             }
-            DriverRequest::Bell => {
-                info!("HeadlessDisplayDriver: Bell");
-                Ok(DriverResponse::BellRung)
+            DriverCommand::RequestPaste => {
+                info!("Headless: RequestPaste");
+                // In headless mode, just acknowledge - no actual paste data
+                let _ = engine_tx.send(EngineCommand::DriverAck);
             }
-            DriverRequest::SetCursorVisibility(visible) => {
-                info!("HeadlessDisplayDriver: SetCursorVisibility {}", visible);
-                Ok(DriverResponse::CursorVisibilitySet)
-            }
-            DriverRequest::CopyToClipboard(text) => {
-                info!("HeadlessDisplayDriver: CopyToClipboard '{}'", text);
-                Ok(DriverResponse::ClipboardCopied)
-            }
-            DriverRequest::RequestPaste => {
-                info!("HeadlessDisplayDriver: RequestPaste");
-                Ok(DriverResponse::PasteRequested)
-            }
-            DriverRequest::SubmitClipboardData(text) => {
-                info!("HeadlessDisplayDriver: SubmitClipboardData '{}'", text);
-                Ok(DriverResponse::ClipboardDataSubmitted)
+            DriverCommand::Bell => {
+                info!("Headless: Bell");
+                let _ = engine_tx.send(EngineCommand::DriverAck);
             }
         }
     }

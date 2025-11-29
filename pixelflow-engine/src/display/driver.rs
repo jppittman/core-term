@@ -1,70 +1,54 @@
 // src/display/driver.rs
-//! DisplayDriver trait - minimal RISC interface for platform-specific display primitives.
+//! DisplayDriver trait - unified driver/sender interface.
 //!
-//! This trait defines the minimal set of platform-specific operations required
-//! to drive a display. All complexity lives in DisplayManager (Strategy Pattern).
+//! The driver IS the sender. One type, one interface:
+//! - `new()` creates the driver (just channels, no platform resources yet)
+//! - `send()` sends commands (always non-blocking)
+//! - `run()` blocks, runs the event loop
 //!
 //! ## Threading Model
-//! - DisplayDriver runs on the main thread (required by macOS/Cocoa)
-//! - DisplayManager runs on a background thread
-//! - Communication is message-based via channels (no shared state)
+//! - Driver is Clone - just cmd_tx, trivially cloneable
+//! - `send(Configure)` queues config for event loop
+//! - `run()` blocks, reads Configure, creates platform resources, runs loop
+//! - Other commands are sent via channel to the running event loop
 //!
 //! ## Lifecycle
-//! 1. `new(config)` - Initialize with display configuration
-//! 2. `handle_request(Init)` - Create window, discover metrics
-//! 3. Request/response loop - All operations via messages
-//! 4. `Drop` - Cleanup (no explicit shutdown message)
+//! 1. `new(engine_tx)` - Create driver (just channels)
+//! 2. `driver.clone()` - Engine gets a clone
+//! 3. `driver.send(Configure(config))` - Queue config
+//! 4. Main thread calls `driver.run()` - blocks until shutdown
+//! 5. Engine spawns on thread, calls `driver.send(Present(...))` etc.
 
-use crate::display::messages::{DisplayError, DriverConfig, DriverRequest, DriverResponse};
-use crate::platform::waker::EventLoopWaker;
+use crate::channel::{DriverCommand, EngineSender};
 use anyhow::Result;
 
-/// Minimal platform-specific display driver interface.
+/// Platform-specific display driver.
 ///
-/// Implementations should be RISC-style: provide only the primitives needed
-/// for the platform. All common logic lives in DisplayManager.
-pub trait DisplayDriver {
-    /// Initialize display driver with configuration.
+/// The driver IS the sender. Just one field: `cmd_tx`.
+/// Clone it to give the engine a handle.
+/// - `send()` queues commands (non-blocking)
+/// - `run()` blocks, reads Configure, creates resources, runs event loop
+pub trait DisplayDriver: Clone + Send {
+    /// Create a new driver with engine channel.
     ///
-    /// On macOS: Register NSView class, initialize NSApp if needed.
-    /// On X11: Connect to X server, initialize atoms and protocols.
-    ///
-    /// Window creation happens in `handle_request(Init)`.
-    fn new(config: &DriverConfig) -> Result<Self>
-    where
-        Self: Sized;
+    /// This only creates channels. Platform resources (window, etc.) are
+    /// created when `run()` reads the Configure command.
+    fn new(engine_tx: EngineSender) -> Result<Self>;
 
-    /// Create a platform-specific event loop waker.
+    /// Send a command to the driver (non-blocking).
     ///
-    /// The waker is used by background threads (orchestrator, PTY) to interrupt
-    /// the main thread's event loop when work is available.
-    ///
-    /// On macOS: Posts NSEvent to wake NSApp.nextEvent()
-    /// On X11: Sends ClientMessage to wake XNextEvent()
-    /// Headless: Returns no-op waker
-    fn create_waker(&self) -> Box<dyn EventLoopWaker>;
+    /// - `Configure(config)`: Queue config, must be sent before run()
+    /// - `Present(snapshot)`: Queue frame for display
+    /// - `SetTitle(s)`: Set window title
+    /// - `CopyToClipboard(s)`: Copy text to clipboard
+    /// - `RequestPaste`: Request paste, data arrives via DisplayEvent::PasteData
+    /// - `Bell`: Ring the terminal bell
+    /// - `Shutdown`: Stop the event loop
+    fn send(&self, cmd: DriverCommand) -> Result<()>;
 
-    /// Handle a request from DisplayManager, returning a response.
+    /// Run the driver event loop (blocking).
     ///
-    /// This is the only method called after `new()`. All operations are
-    /// message-based to enable clean threading and ownership transfer.
-    ///
-    /// ## Request/Response Pairs
-    /// - `Init` → `InitComplete` (discover window metrics)
-    /// - `PollEvents` → `Events` (fetch pending native events)
-    /// - `RequestFramebuffer` → `Framebuffer` (transfer ownership to manager)
-    /// - `Present(buf)` → `PresentComplete` (display and return ownership)
-    /// - `SetTitle(s)` → `TitleSet`
-    /// - `Bell` → `BellRung`
-    /// - `SetCursorVisibility(b)` → `CursorVisibilitySet`
-    /// - `CopyToClipboard(s)` → `ClipboardCopied`
-    /// - `RequestPaste` → `PasteRequested` (data arrives via `PasteData` event)
-    ///
-    /// ## Error Handling
-    /// Returns `DisplayError` instead of `anyhow::Result` to enable safe buffer recovery.
-    /// When a `Present` request fails, the buffer is returned via `DisplayError::PresentationFailed`
-    /// to prevent starvation of the framebuffer ping-pong pattern.
-    fn handle_request(&mut self, request: DriverRequest) -> Result<DriverResponse, DisplayError>;
-
-    // Drop trait handles cleanup - no explicit shutdown method needed
+    /// Reads Configure from channel first, creates platform resources,
+    /// then runs the event loop until Shutdown or close.
+    fn run(&self) -> Result<()>;
 }

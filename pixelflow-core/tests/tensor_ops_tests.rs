@@ -2,7 +2,7 @@ use pixelflow_core::{Batch, MapPixels, TensorView, TensorViewMut};
 
 #[test]
 fn test_tensor_view_gather_clamping() {
-    let data = [10, 20, 30, 40];
+    let data: [u32; 4] = [10, 20, 30, 40];
     // 2x2 image, stride 2
     let view = TensorView::new(&data, 2, 2, 2);
 

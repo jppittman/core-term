@@ -1,6 +1,6 @@
 use crate::ops::{Offset, Over, Skew};
 use crate::pipe::Surface;
-// Removed invalid `Const` import
+use crate::pixel::Pixel;
 
 /// Extensions for any surface (Coordinate transforms).
 pub trait SurfaceExt<T: Copy>: Surface<T> + Sized {
@@ -39,18 +39,24 @@ pub trait SurfaceExt<T: Copy>: Surface<T> + Sized {
 pub trait MaskExt: Surface<u8> + Sized {
     /// Composites a foreground over a background using this surface as a mask (alpha).
     ///
+    /// Generic over pixel format `P` for format-aware channel operations.
+    ///
+    /// # Type Parameters
+    /// * `P` - The pixel format type (e.g., `Rgba`, `Bgra`).
+    ///
     /// # Parameters
     /// * `fg` - The foreground surface.
     /// * `bg` - The background surface.
     ///
     /// # Returns
-    /// * An `Over` compositing operation.
-    fn over<F, B>(self, fg: F, bg: B) -> Over<Self, F, B>
+    /// * An `Over` compositing operation parameterized by pixel format.
+    fn over<P, F, B>(self, fg: F, bg: B) -> Over<P, Self, F, B>
     where
+        P: Pixel,
         F: Surface<u32>,
         B: Surface<u32>,
     {
-        Over { mask: self, fg, bg }
+        Over::new(self, fg, bg)
     }
 }
 

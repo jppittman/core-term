@@ -2,7 +2,7 @@ use pixelflow_core::{Batch, MapPixels, TensorView, TensorViewMut};
 
 #[test]
 fn test_tensor_view_gather() {
-    let data = [10, 20, 30, 40, 50, 60, 70, 80];
+    let data: [u32; 8] = [10, 20, 30, 40, 50, 60, 70, 80];
     // 4x2 image, stride 4
     let view = TensorView::new(&data, 4, 2, 4);
 
