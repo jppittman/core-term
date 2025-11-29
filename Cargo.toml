@@ -1,4 +1,4 @@
 [workspace]
-members = ["core-term", "pixelflow-core", "pixelflow-render", "xtask"]
+members = ["core-term", "pixelflow-core", "pixelflow-render", "xtask", "pixelflow-fonts", "pixelflow-engine"]
 exclude = ["pixelflow-core/fuzz"]
 resolver = "2"
