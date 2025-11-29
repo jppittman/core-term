@@ -1205,6 +1205,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pixelflow-fonts"
+version = "0.1.0"
+dependencies = [
+ "pixelflow-core",
+ "thiserror 1.0.69",
+ "ttf-parser",
+]
+
+[[package]]
 name = "pixelflow-render"
 version = "0.1.0"
 dependencies = [
