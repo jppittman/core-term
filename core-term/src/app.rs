@@ -207,4 +207,27 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_tick_triggers_request_snapshot() {
+        let (orchestrator_tx, ui_rx, _pty_rx) = create_orchestrator_channels(16);
+        let (_display_tx, display_rx) = std::sync::mpsc::sync_channel(16);
+
+        let mut app = CoreTermApp::new(
+            orchestrator_tx,
+            display_rx,
+            Config::default(),
+        );
+
+        // Send Tick
+        let action = app.on_event(EngineEvent::Tick);
+        assert!(matches!(action, AppAction::Continue));
+
+        // Verify RequestSnapshot sent to orchestrator
+        let event = ui_rx.try_recv().expect("RequestSnapshot should be sent");
+        match event {
+            OrchestratorEvent::Control(ControlEvent::RequestSnapshot) => {}
+            other => panic!("Expected RequestSnapshot, got {:?}", other),
+        }
+    }
 }
