@@ -25,6 +25,8 @@ pub enum EngineEvent {
     FocusLost,
     /// The application explicitly woke the loop (e.g. from PTY thread).
     Wake,
+    /// Periodic tick (vsync)
+    Tick,
     /// OS requested app close.
     CloseRequested,
 }

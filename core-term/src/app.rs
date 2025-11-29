@@ -58,6 +58,10 @@ impl Application for CoreTermApp {
                 AppAction::Continue
             }
             EngineEvent::CloseRequested => AppAction::Quit,
+            EngineEvent::Tick => {
+                let _ = self.orchestrator_tx.send(ControlEvent::RequestSnapshot);
+                AppAction::Continue
+            }
             _ => {
                 // Forward input events to Orchestrator
                 let _ = self.orchestrator_tx.send(event);

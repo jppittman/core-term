@@ -84,12 +84,6 @@ fn main() -> anyhow::Result<()> {
     };
     info!("EventMonitorActor spawned successfully");
 
-    use crate::io::vsync_actor::VsyncActor;
-    let target_fps = CONFIG.performance.target_fps;
-    let _vsync_actor = VsyncActor::spawn(orchestrator_sender.clone(), target_fps)
-        .context("Failed to spawn VsyncActor")?;
-    info!("VsyncActor spawned successfully");
-
     // Engine Initialization
     use pixelflow_engine::{EngineConfig, EnginePlatform, WindowConfig};
 
@@ -107,7 +101,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let platform =
-        EnginePlatform::new(engine_config.into()).context("Failed to initialize EnginePlatform")?;
+        EnginePlatform::new(engine_config).context("Failed to initialize EnginePlatform")?;
 
     let waker = platform.create_waker();
 

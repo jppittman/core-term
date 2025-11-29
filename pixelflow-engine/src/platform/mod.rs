@@ -1,9 +1,12 @@
 pub mod waker;
+pub mod vsync;
 
 use crate::channel::{create_engine_channels, DriverCommand, EngineCommand, EngineSender};
+use crate::config::EngineConfig;
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, DriverConfig, RenderSnapshot};
 use crate::input::MouseButton;
+use crate::platform::vsync::VsyncActor;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
 use log::info;
@@ -29,6 +32,7 @@ pub struct EnginePlatform {
     control_rx: Receiver<EngineCommand>,
     display_rx: Receiver<EngineCommand>,
     engine_sender: EngineSender,
+    _vsync_actor: VsyncActor,
 }
 
 struct PlatformWaker {
@@ -44,19 +48,22 @@ impl crate::platform::waker::EventLoopWaker for PlatformWaker {
 }
 
 impl EnginePlatform {
-    pub fn new(config: DriverConfig) -> Result<Self> {
+    pub fn new(config: EngineConfig) -> Result<Self> {
         info!("EnginePlatform::new() - Creating channel-based platform");
 
         let channels = create_engine_channels(64);
         let driver = PlatformDriver::new(channels.engine_sender.clone())
             .context("Failed to create display driver")?;
 
+        let vsync_actor = VsyncActor::spawn(channels.engine_sender.clone(), config.performance.target_fps)?;
+
         Ok(Self {
             driver,
-            config,
+            config: config.into(),
             control_rx: channels.control_rx,
             display_rx: channels.display_rx,
             engine_sender: channels.engine_sender,
+            _vsync_actor: vsync_actor,
         })
     }
 
@@ -108,6 +115,14 @@ fn engine_loop(
         loop {
             match control_rx.try_recv() {
                 Ok(EngineCommand::Doorbell) => continue,
+                Ok(EngineCommand::Tick) => {
+                    let action = app.on_event(EngineEvent::Tick);
+                    match handle_action(action, &driver)? {
+                        ActionResult::Continue => {}
+                        ActionResult::Redraw => needs_redraw = true,
+                        ActionResult::Shutdown => return Ok(()),
+                    }
+                }
                 Ok(EngineCommand::PresentComplete(snap)) => {
                     framebuffer = Some(snap.framebuffer);
                 }
@@ -211,6 +226,14 @@ fn engine_loop(
         if budget > 0 {
             match control_rx.recv() {
                 Ok(EngineCommand::Doorbell) => {}
+                Ok(EngineCommand::Tick) => {
+                    let action = app.on_event(EngineEvent::Tick);
+                    match handle_action(action, &driver)? {
+                        ActionResult::Continue => {}
+                        ActionResult::Redraw => needs_redraw = true,
+                        ActionResult::Shutdown => return Ok(()),
+                    }
+                }
                 Ok(EngineCommand::PresentComplete(snap)) => {
                     framebuffer = Some(snap.framebuffer);
                 }

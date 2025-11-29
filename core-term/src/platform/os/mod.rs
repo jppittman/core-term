@@ -1,7 +1,6 @@
 // src/platform/os/mod.rs
 pub mod event_monitor_actor;
 pub mod pty;
-pub mod vsync_actor;
 
 #[cfg(target_os = "linux")]
 pub mod epoll;
