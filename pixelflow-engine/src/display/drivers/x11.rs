@@ -230,6 +230,7 @@ impl X11DisplayDriver {
                         let data0 = client.data.as_longs()[0];
                         if data0 as xlib::Atom != self.wm_delete_window {
                             debug!("X11: Received ClientMessage (Wake)");
+                            events.push(DisplayEvent::Wake);
                             continue;
                         }
                         events.push(DisplayEvent::CloseRequested);
@@ -496,7 +497,7 @@ impl X11DisplayDriver {
         let mut format_ret = 0;
         let mut nitems = 0;
         let mut bytes_after = 0;
-        let mut prop_ret = ptr::null_mut();
+        let mut prop_ret: *mut u8 = ptr::null_mut();
 
         xlib::XGetWindowProperty(
             self.display,

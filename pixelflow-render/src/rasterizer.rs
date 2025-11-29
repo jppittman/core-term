@@ -88,24 +88,20 @@ impl<'a> ScreenViewMut<'a> {
         }
     }
 
-    /// Draw a glyph using the new Zero-Copy Pipeline.
+    /// Draw a glyph at the given pixel position.
     fn draw_glyph(&mut self, ch: char, pos: (usize, usize), style: GlyphStyleOverrides) {
-        let (col, row) = pos;
+        let (px, py) = pos; // Position in pixels
 
-        // 1. Clear the cell background
-        // We do this procedurally first to ensure the cell is clean.
-        let cx = col * self.cell_width;
-        let cy = row * self.cell_height;
-
+        // 1. Clear the cell background at pixel position
         for y in 0..self.cell_height {
-            let fb_y = cy + y;
+            let fb_y = py + y;
             if fb_y >= self.height {
                 break;
             }
 
             let row_start = fb_y * self.width;
             for x in 0..self.cell_width {
-                let fb_x = cx + x;
+                let fb_x = px + x;
                 if fb_x >= self.width {
                     break;
                 }
@@ -118,9 +114,9 @@ impl<'a> ScreenViewMut<'a> {
 
         let baseline = (self.cell_height as f32 * 0.8) as i32;
 
-        let x_px = (cx as i32 + metrics.bearing_x.max(0)) as usize;
+        let x_px = (px as i32 + metrics.bearing_x.max(0)) as usize;
         let y_px =
-            (cy as i32 + (baseline - metrics.height as i32 - metrics.bearing_y).max(0)) as usize;
+            (py as i32 + (baseline - metrics.height as i32 - metrics.bearing_y).max(0)) as usize;
 
         // 3. Render Direct (Zero Copy)
         // Bounds check before calling unsafe slice
@@ -171,14 +167,58 @@ impl<'a> Surface<u32> for ScreenView<'a> {
     }
 }
 
-/// Process a list of rendering commands and update the framebuffer.
+/// Materialize a Surface into the framebuffer.
 ///
-/// This function acts as the main entry point for the rasterizer. It iterates
-/// over the provided commands and executes them against the provided ScreenViewMut.
+/// This is the core rendering function. It evaluates the surface at every
+/// pixel coordinate and writes the result to the framebuffer.
+///
+/// Processing is done in batches of 4 pixels (SIMD lanes) for efficiency.
 ///
 /// # Parameters
 /// * `screen` - The mutable screen view to render into.
-/// * `commands` - The list of operations to execute.
+/// * `surface` - The composed surface to evaluate.
+pub fn materialize_into(screen: &mut ScreenViewMut, surface: &dyn Surface<u32>) {
+    for py in 0..screen.height {
+        let row_start = py * screen.width;
+
+        // Process in batches of 4 pixels
+        let mut px = 0;
+        while px + 4 <= screen.width {
+            let batch_x = Batch::new(
+                px as u32,
+                (px + 1) as u32,
+                (px + 2) as u32,
+                (px + 3) as u32,
+            );
+            let batch_y = Batch::splat(py as u32);
+
+            let colors = surface.eval(batch_x, batch_y);
+
+            // Write 4 pixels to framebuffer
+            unsafe {
+                colors.store(screen.fb.as_mut_ptr().add(row_start + px));
+            }
+
+            px += 4;
+        }
+
+        // Handle remaining pixels (< 4)
+        while px < screen.width {
+            let batch_x = Batch::splat(px as u32);
+            let batch_y = Batch::splat(py as u32);
+            let colors = surface.eval(batch_x, batch_y);
+            // Extract first lane only
+            screen.fb[row_start + px] = unsafe { *(&colors as *const _ as *const u32) };
+            px += 1;
+        }
+    }
+}
+
+/// Process a list of rendering commands and update the framebuffer.
+///
+/// DEPRECATED: Use `materialize_into` with Surface-based rendering instead.
+/// This function is kept for backwards compatibility during migration.
+#[deprecated(note = "Use materialize_into with Surface-based rendering")]
 pub fn process_frame<T: AsRef<[u8]>>(
     screen: &mut ScreenViewMut,
     commands: &[Op<T>],

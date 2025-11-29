@@ -402,6 +402,7 @@ dependencies = [
  "log",
  "nix 0.30.1",
  "once_cell",
+ "pixelflow-core",
  "pixelflow-engine",
  "pixelflow-render",
  "pkg-config",

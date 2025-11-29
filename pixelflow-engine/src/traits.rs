@@ -1,5 +1,5 @@
 use crate::input::{CursorIcon, KeySymbol, Modifiers, MouseButton};
-use pixelflow_render::commands::Op;
+use pixelflow_core::pipe::Surface;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -59,8 +59,9 @@ pub struct AppState {
 pub trait Application {
     /// THE DATA PLANE
     /// The Hot Path: Produce a frame based on current state.
-    /// Returns a list of platform-agnostic drawing commands.
-    fn render(&mut self, state: &AppState) -> Vec<Op<Vec<u8>>>;
+    /// Returns a composed surface that will be materialized into the framebuffer.
+    /// One vtable call per surface, then pure SIMD execution.
+    fn render(&mut self, state: &AppState) -> Option<Box<dyn Surface<u32> + Send + Sync>>;
 
     /// THE CONTROL PLANE
     /// The Control Path: Process input or wake signals.

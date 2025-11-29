@@ -155,18 +155,6 @@ fn empty_snapshot_produces_no_commands() {
 }
 
 #[test]
-fn clean_lines_produce_no_commands() {
-    let renderer = Renderer::new();
-    let config = create_test_config();
-    let platform_state = create_test_platform_state();
-    let snapshot = create_empty_snapshot(TEST_TERM_WIDTH, TEST_TERM_HEIGHT);
-
-    let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
-
-    assert_eq!(commands.len(), 0);
-}
-
-#[test]
 fn dirty_line_with_text_produces_draw_commands() {
     let renderer = Renderer::new();
     let config = create_test_config();

@@ -18,13 +18,28 @@ pprof = { version = "0.14", features = ["flamegraph", "criterion"], optional = t
 foreign-types = "0.5.0"
 foreign-types-shared = "0.3.1"
 
+[dependencies.pixelflow-core]
+path = "../pixelflow-core"
+
 [dependencies.pixelflow-render]
 path = "../pixelflow-render"
 features = ["serde"]
 
-[dependencies.pixelflow-engine]
+# Platform-specific display driver selection
+[target.'cfg(target_os = "macos")'.dependencies.pixelflow-engine]
 path = "../pixelflow-engine"
 default-features = false
+features = ["display_cocoa"]
+
+[target.'cfg(target_os = "linux")'.dependencies.pixelflow-engine]
+path = "../pixelflow-engine"
+default-features = false
+features = ["display_x11"]
+
+[target.'cfg(target_os = "windows")'.dependencies.pixelflow-engine]
+path = "../pixelflow-engine"
+default-features = false
+# TODO: Add display_win32 when implemented
 
 [build-dependencies]
 pkg-config = "0.3.32"
@@ -34,7 +49,8 @@ test-log = "0.2.17"
 rexpect = "0.6.1"
 
 [features]
+# Manual override features (optional - platform auto-detects)
 display_cocoa = ["pixelflow-engine/display_cocoa"]
 display_x11 = ["pixelflow-engine/display_x11"]
-default = ["display_cocoa"]
+default = []
 profiling = ["pprof"]

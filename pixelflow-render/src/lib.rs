@@ -4,14 +4,14 @@
 //!
 //! This crate provides functionality for:
 //! - Rasterizing graphical primitives (rectangles, blits).
-//! - Rendering text glyphs using font atlases.
+//! - Rendering text glyphs using font atlases (legacy) and Loop-Blinn vectors (v11).
 //! - Managing rendering commands and types.
 
 #![warn(missing_docs)]
 
 /// Rendering commands and operation definitions.
 pub mod commands;
-/// Glyph rendering and font management.
+/// Loop-Blinn vector font rendering (v11.0 architecture).
 pub mod glyph;
 /// Rasterization logic and frame processing.
 pub mod rasterizer;

@@ -210,4 +210,7 @@ pub enum DisplayEvent {
     /// Clipboard data requested by another application (X11 SelectionRequest).
     /// Driver should respond with SubmitClipboardData containing the current clipboard text.
     ClipboardDataRequested,
+
+    /// Event loop was woken by a background thread.
+    Wake,
 }
