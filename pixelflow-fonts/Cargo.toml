@@ -1,0 +1,9 @@
+[package]
+name = "pixelflow-fonts"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pixelflow-core = { path = "../pixelflow-core" }
+ttf-parser = "0.21"
+thiserror = "1.0"
