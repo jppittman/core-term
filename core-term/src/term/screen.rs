@@ -13,6 +13,7 @@
 use std::cmp::min;
 use std::cmp::{max, min as std_min}; // For local min/max, renamed from std::cmp::min
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::config::CONFIG;
 use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph}; // Added AttrFlags
@@ -20,7 +21,9 @@ use crate::term::snapshot::{Point, Selection, SelectionMode, SelectionRange};
 use log::{trace, warn};
 
 // Define a type alias for a single row in the grid
-pub type Row = Vec<Glyph>;
+// Using Arc<Vec<Glyph>> for Copy-on-Write semantics via Arc::make_mut
+// Snapshots clone the Arc (cheap), mutations use make_mut (clones if shared)
+pub type Row = Arc<Vec<Glyph>>;
 // Define a type alias for the grid itself (for primary and alternate screens)
 pub type Grid = Vec<Row>;
 
@@ -121,8 +124,12 @@ impl Screen {
             scrollback_limit_from_config
         );
 
-        let grid = vec![vec![default_fill_char.clone(); w]; h];
-        let alt_grid = vec![vec![default_fill_char.clone(); w]; h];
+        let grid: Grid = (0..h)
+            .map(|_| Arc::new(vec![default_fill_char.clone(); w]))
+            .collect();
+        let alt_grid: Grid = (0..h)
+            .map(|_| Arc::new(vec![default_fill_char.clone(); w]))
+            .collect();
         let scrollback = VecDeque::with_capacity(scrollback_limit_from_config);
 
         let mut tabs = vec![false; w];
@@ -211,7 +218,7 @@ impl Screen {
         let width = self.width;
         let height_for_log = self.height; // Used for logging only
 
-        let row = match self.active_grid_mut().get_mut(y) {
+        let row_arc = match self.active_grid_mut().get_mut(y) {
             Some(r) => r,
             None => {
                 warn!(
@@ -226,6 +233,7 @@ impl Screen {
         let end_clamped = min(x_end, width);
 
         if start_clamped < end_clamped {
+            let row = Arc::make_mut(row_arc);
             for cell in row[start_clamped..end_clamped].iter_mut() {
                 *cell = fill_glyph.clone();
             }
@@ -259,6 +267,7 @@ impl Screen {
 
         let top = self.scroll_top;
         let bot = self.scroll_bot;
+        let width = self.width;
 
         // Get a mutable reference to the currently active grid
         let active_grid = self.active_grid_mut();
@@ -270,10 +279,11 @@ impl Screen {
 
         // Fill the newly vacated lines at the bottom of the scrolling region
         // The lines that were wrapped around by rotate_left are now at the end of the slice.
-        // These are the lines that need to be cleared.
+        // These are the lines that need to be cleared - create fresh Arc rows.
         for y_idx in (bot.saturating_sub(n_val) + 1)..=bot {
-            if let Some(row_to_fill) = active_grid.get_mut(y_idx) {
-                row_to_fill.fill(fill_glyph.clone());
+            if let Some(row_arc) = active_grid.get_mut(y_idx) {
+                // Create a fresh row rather than mutating (avoids CoW clone if shared)
+                *row_arc = Arc::new(vec![fill_glyph.clone(); width]);
             } else {
                 // This should ideally not happen if bounds are correct
                 warn!(
@@ -314,6 +324,7 @@ impl Screen {
 
         let top = self.scroll_top;
         let bot = self.scroll_bot;
+        let width = self.width;
 
         // Get a mutable reference to the currently active grid
         let active_grid = self.active_grid_mut();
@@ -324,10 +335,11 @@ impl Screen {
         active_grid[top..=bot].rotate_right(n_val);
 
         // Fill the newly vacated lines at the top of the scrolling region.
-        // These are the lines that were wrapped around by rotate_right.
+        // These are the lines that were wrapped around by rotate_right - create fresh Arc rows.
         for y_idx in top..(top + n_val) {
-            if let Some(row_to_fill) = active_grid.get_mut(y_idx) {
-                row_to_fill.fill(fill_glyph.clone());
+            if let Some(row_arc) = active_grid.get_mut(y_idx) {
+                // Create a fresh row rather than mutating (avoids CoW clone if shared)
+                *row_arc = Arc::new(vec![fill_glyph.clone(); width]);
             } else {
                 // This should ideally not happen if bounds are correct
                 warn!(
@@ -358,7 +370,7 @@ impl Screen {
             return;
         }
 
-        let row = match self.active_grid_mut().get_mut(y) {
+        let row_arc = match self.active_grid_mut().get_mut(y) {
             Some(r) => r,
             None => {
                 warn!(
@@ -374,6 +386,7 @@ impl Screen {
             return;
         }
 
+        let row = Arc::make_mut(row_arc);
         row[x..].rotate_right(count);
         for fill_x_idx in x..(x + count) {
             if let Some(cell) = row.get_mut(fill_x_idx) {
@@ -398,7 +411,7 @@ impl Screen {
             return;
         }
 
-        let row = match self.active_grid_mut().get_mut(y) {
+        let row_arc = match self.active_grid_mut().get_mut(y) {
             Some(r) => r,
             None => {
                 warn!(
@@ -414,6 +427,7 @@ impl Screen {
             return;
         }
 
+        let row = Arc::make_mut(row_arc);
         row[x..].rotate_left(count);
         let fill_start_idx = width.saturating_sub(count);
         for fill_x_idx in fill_start_idx..width {
@@ -460,8 +474,9 @@ impl Screen {
             // Let's assume if scrollback_limit is > 0, we still resize its lines for width.
             if nw != self.width {
                 // self.width is still old_width here
-                for row_ref in self.scrollback.iter_mut() {
-                    row_ref.resize(nw, fill_glyph.clone());
+                for row_arc in self.scrollback.iter_mut() {
+                    let row = Arc::make_mut(row_arc);
+                    row.resize(nw, fill_glyph.clone());
                 }
             }
             while self.scrollback.len() > self.scrollback_limit {
@@ -471,7 +486,9 @@ impl Screen {
 
         // 3. Create new primary grid and copy content
         //    Content is anchored to the top-left.
-        let mut new_primary_grid = vec![vec![fill_glyph.clone(); nw]; nh];
+        let mut new_primary_grid: Grid = (0..nh)
+            .map(|_| Arc::new(vec![fill_glyph.clone(); nw]))
+            .collect();
         for y in 0..std_min(old_height, nh) {
             // Check if the row y exists in the old grid
             if let Some(old_row_content) = self.grid.get(y) {
@@ -480,7 +497,7 @@ impl Screen {
                     new_row[x] = old_row_content[x].clone();
                 }
                 // new_primary_grid[y] is guaranteed to exist due to initialization size
-                new_primary_grid[y] = new_row;
+                new_primary_grid[y] = Arc::new(new_row);
             }
             // If old_height > nh, lines beyond nh-1 are truncated.
             // If old_height < nh, new lines at the bottom remain as fill_glyph.
@@ -488,14 +505,16 @@ impl Screen {
         self.grid = new_primary_grid;
 
         // 4. Create new alternate grid and copy content (similarly)
-        let mut new_alt_grid = vec![vec![fill_glyph.clone(); nw]; nh];
+        let mut new_alt_grid: Grid = (0..nh)
+            .map(|_| Arc::new(vec![fill_glyph.clone(); nw]))
+            .collect();
         for y in 0..std_min(old_height, nh) {
             if let Some(old_row_content) = self.alt_grid.get(y) {
                 let mut new_row = vec![fill_glyph.clone(); nw];
                 for x in 0..std_min(old_row_content.len(), nw) {
                     new_row[x] = old_row_content[x].clone();
                 }
-                new_alt_grid[y] = new_row;
+                new_alt_grid[y] = Arc::new(new_row);
             }
         }
         self.alt_grid = new_alt_grid;
@@ -611,7 +630,8 @@ impl Screen {
 
         let grid_to_use = self.active_grid_mut();
         if y < grid_to_use.len() && x < grid_to_use.get(y).map_or(0, |row| row.len()) {
-            grid_to_use[y][x] = glyph;
+            let row = Arc::make_mut(&mut grid_to_use[y]);
+            row[x] = glyph;
             self.mark_line_dirty(y);
         } else {
             warn!(
@@ -1026,6 +1046,7 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::{
+        Arc,
         Attributes,
         ContentCell,
         Glyph,
@@ -1070,7 +1091,8 @@ mod tests {
             for c in 0..screen.width {
                 let char_val =
                     char::from_u32(('a' as u32) + (c % 26) as u32 + (r % 3) as u32).unwrap_or('?');
-                screen.grid[r][c] = Glyph::Single(ContentCell {
+                let row = Arc::make_mut(&mut screen.grid[r]);
+                row[c] = Glyph::Single(ContentCell {
                     c: char_val,
                     attr: Attributes::default(),
                 });
@@ -1318,46 +1340,22 @@ mod tests {
     #[test]
     fn test_get_selected_text_normal_trailing_spaces_behavior() {
         let mut screen = create_test_screen(5, 2);
-        screen.grid[0][0] = Glyph::Single(ContentCell {
-            c: 'a',
-            attr: Attributes::default(),
-        });
-        screen.grid[0][1] = Glyph::Single(ContentCell {
-            c: 'a',
-            attr: Attributes::default(),
-        });
-        screen.grid[0][2] = Glyph::Single(ContentCell {
-            c: ' ',
-            attr: Attributes::default(),
-        });
-        screen.grid[0][3] = Glyph::Single(ContentCell {
-            c: ' ',
-            attr: Attributes::default(),
-        });
-        screen.grid[0][4] = Glyph::Single(ContentCell {
-            c: ' ',
-            attr: Attributes::default(),
-        });
-        screen.grid[1][0] = Glyph::Single(ContentCell {
-            c: 'b',
-            attr: Attributes::default(),
-        });
-        screen.grid[1][1] = Glyph::Single(ContentCell {
-            c: 'b',
-            attr: Attributes::default(),
-        });
-        screen.grid[1][2] = Glyph::Single(ContentCell {
-            c: ' ',
-            attr: Attributes::default(),
-        });
-        screen.grid[1][3] = Glyph::Single(ContentCell {
-            c: ' ',
-            attr: Attributes::default(),
-        });
-        screen.grid[1][4] = Glyph::Single(ContentCell {
-            c: ' ',
-            attr: Attributes::default(),
-        });
+        {
+            let row0 = Arc::make_mut(&mut screen.grid[0]);
+            row0[0] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
+            row0[1] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
+            row0[2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row0[3] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row0[4] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        }
+        {
+            let row1 = Arc::make_mut(&mut screen.grid[1]);
+            row1[0] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
+            row1[1] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
+            row1[2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row1[3] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row1[4] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        }
 
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 4, y: 0 });

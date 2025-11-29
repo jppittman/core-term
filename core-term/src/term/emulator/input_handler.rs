@@ -113,10 +113,6 @@ pub(super) fn process_control_event(
             trace!("TerminalEmulator: RequestSnapshot event received.");
             None
         }
-        ControlEvent::FrameRendered(_) => {
-            trace!("TerminalEmulator: FrameRendered event received.");
-            None
-        }
         ControlEvent::Resize {
             width_px,
             height_px,

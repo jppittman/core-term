@@ -38,3 +38,12 @@ impl<T: Copy> Surface<T> for Batch<T> {
         *self
     }
 }
+
+// A raw u32 value acts as an infinite constant Surface.
+// This allows passing colors directly: `fg_color.over(bg_color)`
+impl Surface<u32> for u32 {
+    #[inline(always)]
+    fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<u32> {
+        Batch::splat(*self)
+    }
+}

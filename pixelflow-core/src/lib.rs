@@ -545,6 +545,29 @@ where
     target.map_pixels(|x, y| pipe.eval(x, y));
 }
 
+/// Executes a typed pixel pipeline onto a u32 target tensor.
+///
+/// This allows strongly-typed pixel surfaces (e.g., `Surface<Rgba>`) to write
+/// to a u32 framebuffer by transmuting the output.
+///
+/// # Parameters
+/// * `pipe` - The pipeline to evaluate (outputs `Batch<P>`).
+/// * `target` - The target mutable tensor view (u32 buffer).
+///
+/// # Type Parameters
+/// * `P` - The pixel type (e.g., `Rgba`, `Bgra`). Must be repr(transparent) over u32.
+/// * `S` - The surface type which implements `Surface<P>`.
+pub fn execute_typed<P, S>(pipe: S, target: &mut TensorViewMut<u32>)
+where
+    P: pixel::Pixel,
+    S: pipe::Surface<P>,
+{
+    target.map_pixels(|x, y| {
+        let result: Batch<P> = pipe.eval(x, y);
+        result.transmute()
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

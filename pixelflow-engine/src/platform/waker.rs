@@ -27,6 +27,107 @@ impl EventLoopWaker for NoOpWaker {
 #[cfg(use_cocoa_display)]
 pub use cocoa_waker::CocoaWaker;
 
+#[cfg(use_x11_display)]
+pub use x11_waker::X11Waker;
+
+#[cfg(use_x11_display)]
+mod x11_waker {
+    use super::*;
+    use std::mem;
+    use std::sync::{Arc, Mutex};
+    use x11::xlib;
+
+    /// Inner state for X11Waker, populated once window exists.
+    struct WakerInner {
+        display: *mut xlib::Display,
+        window: xlib::Window,
+        wake_atom: xlib::Atom,
+    }
+
+    // SAFETY: XInitThreads is called before any X11 operations, making xlib thread-safe.
+    // The display pointer and window ID can be safely shared across threads.
+    unsafe impl Send for WakerInner {}
+    unsafe impl Sync for WakerInner {}
+
+    /// X11 implementation of EventLoopWaker using XSendEvent.
+    ///
+    /// Posts a ClientMessage event to the window's event queue, waking the
+    /// event loop from XNextEvent blocking.
+    ///
+    /// The waker starts empty and is initialized by `set_target()` once the
+    /// X11 window is created. Before initialization, `wake()` is a no-op.
+    #[derive(Clone)]
+    pub struct X11Waker {
+        inner: Arc<Mutex<Option<WakerInner>>>,
+    }
+
+    impl X11Waker {
+        /// Create a new uninitialized waker.
+        ///
+        /// Call `set_target()` once the X11 window is created.
+        pub fn new() -> Self {
+            Self {
+                inner: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        /// Initialize the waker with the X11 display and window.
+        ///
+        /// Call this from `run()` after creating the window.
+        pub fn set_target(
+            &self,
+            display: *mut xlib::Display,
+            window: xlib::Window,
+        ) {
+            unsafe {
+                let wake_atom = xlib::XInternAtom(
+                    display,
+                    b"PIXELFLOW_WAKE\0".as_ptr() as *const i8,
+                    xlib::False,
+                );
+
+                let mut guard = self.inner.lock().unwrap();
+                *guard = Some(WakerInner {
+                    display,
+                    window,
+                    wake_atom,
+                });
+            }
+        }
+
+        /// Get the wake atom for filtering in the event loop.
+        pub fn wake_atom(&self) -> Option<xlib::Atom> {
+            self.inner.lock().unwrap().as_ref().map(|i| i.wake_atom)
+        }
+    }
+
+    impl EventLoopWaker for X11Waker {
+        fn wake(&self) -> Result<()> {
+            let guard = self.inner.lock().unwrap();
+            if let Some(inner) = guard.as_ref() {
+                unsafe {
+                    let mut event: xlib::XClientMessageEvent = mem::zeroed();
+                    event.type_ = xlib::ClientMessage;
+                    event.window = inner.window;
+                    event.message_type = inner.wake_atom;
+                    event.format = 32;
+
+                    xlib::XSendEvent(
+                        inner.display,
+                        inner.window,
+                        xlib::False,
+                        xlib::NoEventMask,
+                        &mut event as *mut _ as *mut xlib::XEvent,
+                    );
+                    xlib::XFlush(inner.display);
+                }
+            }
+            // No-op if window not created yet (before run())
+            Ok(())
+        }
+    }
+}
+
 #[cfg(use_cocoa_display)]
 mod cocoa_waker {
     use super::*;

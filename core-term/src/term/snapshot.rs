@@ -5,6 +5,7 @@
 
 use crate::glyph::{Attributes, Glyph};
 use std::ops::Index;
+use std::sync::Arc;
 
 /// Represents the visual shape of the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,17 +40,27 @@ pub enum SelectionMode {
 }
 
 /// A snapshot of a single line in the terminal grid.
+///
+/// Uses `Arc<Vec<Glyph>>` for Copy-on-Write semantics - cloning a line just
+/// bumps the reference count. Screen uses `Arc::make_mut` for mutations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnapshotLine {
     pub is_dirty: bool,
-    pub cells: Vec<Glyph>,
+    pub cells: Arc<Vec<Glyph>>,
 }
 
 impl Index<usize> for SnapshotLine {
     type Output = Glyph;
 
     fn index(&self, column_index: usize) -> &Self::Output {
-        &self.cells[column_index] // Delegates to Vec<Glyph>'s indexing
+        &self.cells[column_index]
+    }
+}
+
+impl SnapshotLine {
+    /// Creates a new SnapshotLine from an existing Arc (cheap clone).
+    pub fn from_arc(cells: Arc<Vec<Glyph>>, is_dirty: bool) -> Self {
+        Self { is_dirty, cells }
     }
 }
 
@@ -100,21 +111,4 @@ impl TerminalSnapshot {
         Some(self.lines[p.y][p.x])
     }
 
-    /// Clears and resizes the snapshot to the specified dimensions.
-    ///
-    /// This method reuses existing Vec allocations where possible to minimize allocations.
-    /// It's designed for snapshot buffer reuse in the actor architecture.
-    pub fn clear_and_resize(&mut self, cols: usize, rows: usize) {
-        self.dimensions = (cols, rows);
-
-        // Resize the lines Vec to match the new row count, reusing existing lines
-        self.lines.resize_with(rows, || SnapshotLine {
-            is_dirty: true,
-            cells: Vec::new(),
-        });
-
-        // Clear cursor and selection state
-        self.cursor_state = None;
-        self.selection = Selection::default();
-    }
 }

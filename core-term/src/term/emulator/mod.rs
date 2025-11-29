@@ -25,8 +25,9 @@ use crate::{
         snapshot::{
             CursorRenderState,
             CursorShape,
-            Point,         // Unused
-            SelectionMode, // Unused
+            Point,
+            SelectionMode,
+            SnapshotLine,
             TerminalSnapshot,
         },
         EmulatorInput, // Added EmulatorInput
@@ -62,8 +63,6 @@ pub struct TerminalEmulator {
     pub(super) active_charsets: [CharacterSet; 4],
     pub(super) active_charset_g_level: usize,
     pub(super) cursor_wrap_next: bool,
-    /// Owned snapshot buffer that circulates between terminal and renderer
-    snapshot_buffer: Option<TerminalSnapshot>,
     /// Layout manager - handles coordinate transformations and geometry
     pub(super) layout: Layout,
 }
@@ -85,16 +84,6 @@ impl TerminalEmulator {
         // Create layout manager
         let layout = Layout::new(width, height);
 
-        // Create initial snapshot buffer
-        let initial_snapshot = TerminalSnapshot {
-            dimensions: (width, height),
-            lines: Vec::new(),
-            cursor_state: None,
-            selection: crate::term::snapshot::Selection::default(),
-            cell_width_px: layout.cell_width_px,
-            cell_height_px: layout.cell_height_px,
-        };
-
         TerminalEmulator {
             screen,
             cursor_controller: CursorController::new(initial_attributes),
@@ -108,7 +97,6 @@ impl TerminalEmulator {
             focus_state: FocusState::Focused,
             active_charset_g_level: 0, // Default to G0
             cursor_wrap_next: false,
-            snapshot_buffer: Some(initial_snapshot),
             layout,
         }
     }
@@ -169,78 +157,37 @@ impl TerminalEmulator {
         }
     }
 
-    /// Takes the snapshot buffer, populates it with current terminal state, and returns it.
-    /// Returns None if snapshot buffer is not available (already out for rendering) or if
-    /// synchronized_output is active (skip frame).
+    /// Creates a fresh snapshot of the terminal's current visible state.
+    /// Returns None if synchronized_output is active (skip frame).
     ///
-    /// This method implements the snapshot circulation pattern: take from terminal, populate,
-    /// send to renderer, renderer returns it via return_snapshot().
+    /// Uses Copy-on-Write: clones Arc references to row data (cheap).
+    /// The terminal can continue mutating via Arc::make_mut while
+    /// the snapshot holds immutable references to the old data.
     pub fn get_render_snapshot(&mut self) -> Option<TerminalSnapshot> {
-        // Short-circuit if synchronized_output is active
         if self.dec_modes.synchronized_output {
             return None;
         }
 
-        // Take ownership of the snapshot buffer (if available)
-        let mut snapshot = self.snapshot_buffer.take()?;
-
-        // Populate the snapshot
-        self.populate_snapshot(&mut snapshot);
-
-        Some(snapshot)
-    }
-
-    /// Returns a snapshot buffer to the terminal after rendering.
-    /// This completes the snapshot circulation cycle.
-    pub fn return_snapshot(&mut self, snapshot: TerminalSnapshot) {
-        self.snapshot_buffer = Some(snapshot);
-    }
-
-    /// Test-only helper: Gets a snapshot without consuming the buffer.
-    /// This allows repeated calls in tests without manual return_snapshot() calls.
-    #[cfg(test)]
-    pub fn get_test_snapshot(&mut self) -> Option<TerminalSnapshot> {
-        if self.dec_modes.synchronized_output {
-            return None;
-        }
-
-        let snapshot = self.get_render_snapshot()?;
-        let cloned = snapshot.clone();
-        self.return_snapshot(snapshot);
-        Some(cloned)
-    }
-
-    /// Populates an existing snapshot with the terminal's current visible state.
-    /// Clears dirty line flags.
-    ///
-    /// This is an internal helper method used by get_render_snapshot().
-    fn populate_snapshot(&mut self, snapshot: &mut TerminalSnapshot) {
         let (width, height) = (self.screen.width, self.screen.height);
         let active_grid = self.screen.active_grid();
 
-        // Resize snapshot to match current terminal dimensions
-        snapshot.clear_and_resize(width, height);
+        // Build lines by cloning Arc references (cheap ref count bump)
+        let lines: Vec<SnapshotLine> = (0..height)
+            .map(|y_idx| {
+                let is_dirty = self.screen.dirty.get(y_idx).map_or(true, |&d| d != 0);
+                SnapshotLine::from_arc(active_grid[y_idx].clone(), is_dirty)
+            })
+            .collect();
 
-        // Populate lines by copying glyphs into existing Vec buffers
-        for y_idx in 0..height {
-            let line_glyphs = &active_grid[y_idx];
-            let is_dirty = self.screen.dirty.get(y_idx).map_or(true, |&d| d != 0);
-
-            snapshot.lines[y_idx].is_dirty = is_dirty;
-            snapshot.lines[y_idx].cells.clear();
-            snapshot.lines[y_idx].cells.extend_from_slice(line_glyphs);
-        }
-
-        // Populate cursor state
-        if self.dec_modes.text_cursor_enable_mode {
+        // Build cursor state
+        let cursor_state = if self.dec_modes.text_cursor_enable_mode {
             let (cursor_x, cursor_y) = self
                 .cursor_controller
                 .physical_screen_pos(&self.current_screen_context());
 
             let (cell_char_underneath, cell_attributes_underneath) =
                 if cursor_y < height && cursor_x < width {
-                    let glyph_wrapper = &active_grid[cursor_y][cursor_x];
-                    match glyph_wrapper {
+                    match &active_grid[cursor_y][cursor_x] {
                         crate::glyph::Glyph::Single(cell)
                         | crate::glyph::Glyph::WidePrimary(cell) => (cell.c, cell.attr),
                         crate::glyph::Glyph::WideSpacer { .. } => {
@@ -251,8 +198,7 @@ impl TerminalEmulator {
                     (' ', Attributes::default())
                 };
 
-            let internal_shape = self.cursor_controller.cursor.shape;
-            let mapped_shape = match internal_shape {
+            let mapped_shape = match self.cursor_controller.cursor.shape {
                 cursor::CursorShape::BlinkingBlock | cursor::CursorShape::SteadyBlock => {
                     CursorShape::Block
                 }
@@ -264,25 +210,27 @@ impl TerminalEmulator {
                 }
             };
 
-            snapshot.cursor_state = Some(CursorRenderState {
+            Some(CursorRenderState {
                 x: cursor_x,
                 y: cursor_y,
                 shape: mapped_shape,
                 cell_char_underneath,
                 cell_attributes_underneath,
-            });
+            })
         } else {
-            snapshot.cursor_state = None;
-        }
-
-        // Populate selection
-        snapshot.selection = self.screen.selection.clone();
-
-        // Populate cell dimensions for rendering (from layout)
-        snapshot.cell_width_px = self.layout.cell_width_px;
-        snapshot.cell_height_px = self.layout.cell_height_px;
+            None
+        };
 
         self.screen.mark_all_clean();
+
+        Some(TerminalSnapshot {
+            dimensions: (width, height),
+            lines,
+            cursor_state,
+            selection: self.screen.selection.clone(),
+            cell_width_px: self.layout.cell_width_px,
+            cell_height_px: self.layout.cell_height_px,
+        })
     }
 
     // --- Selection Handling Methods ---

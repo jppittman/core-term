@@ -143,20 +143,25 @@ fn blend_math(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -> Batch<u32> {
     ((fg * alpha) + (bg * inv_alpha)) >> 8
 }
 
-impl<P, M, F, B> Surface<u32> for Over<P, M, F, B>
+impl<P, M, F, B> Surface<P> for Over<P, M, F, B>
 where
-    P: Pixel,
+    P: Pixel + Copy,
     M: Surface<u8>,
-    F: Surface<u32>,
-    B: Surface<u32>,
+    F: Surface<P>,
+    B: Surface<P>,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
         let alpha_val = self.mask.eval(x, y);
         let alpha = alpha_val.cast::<u32>();
 
-        let fg = self.fg.eval(x, y);
-        let bg = self.bg.eval(x, y);
+        // Evaluate children (returns Batch<P>)
+        let fg_batch = self.fg.eval(x, y);
+        let bg_batch = self.bg.eval(x, y);
+
+        // Transmute to u32 for SIMD math (P is repr(transparent) u32)
+        let fg: Batch<u32> = fg_batch.transmute();
+        let bg: Batch<u32> = bg_batch.transmute();
 
         // Extract channels using Pixel trait (format-aware)
         let fg_r = P::batch_red(fg);
@@ -175,7 +180,10 @@ where
         let b = blend_math(fg_b, bg_b, alpha);
         let a = blend_math(fg_a, bg_a, alpha);
 
-        // Reconstruct in target format
-        P::batch_from_channels(r, g, b, a)
+        // Reconstruct in target format (P determines byte order)
+        let result = P::batch_from_channels(r, g, b, a);
+
+        // Transmute back to Batch<P>
+        result.transmute()
     }
 }

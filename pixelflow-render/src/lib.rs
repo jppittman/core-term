@@ -4,31 +4,31 @@
 //!
 //! This crate provides functionality for:
 //! - Rasterizing graphical primitives (rectangles, blits).
-//! - Rendering text glyphs using font atlases (legacy) and Loop-Blinn vectors (v11).
+//! - Font access via pixelflow-fonts (glyphs are Surfaces).
 //! - Managing rendering commands and types.
 //! - Type-safe color format handling (Rgba, Bgra).
 
 #![warn(missing_docs)]
 
-/// Color format types (Rgba, Bgra) with compile-time safety.
+/// Unified color types: semantic colors (Color, NamedColor), text attributes, and pixel formats.
 pub mod color;
 /// Rendering commands and operation definitions.
 pub mod commands;
 /// Framebuffer type generic over color format.
 pub mod frame;
-/// Loop-Blinn vector font rendering (v11.0 architecture).
+/// Embedded font access.
 pub mod glyph;
 /// Rasterization logic and frame processing.
 pub mod rasterizer;
-/// Common types and data structures used in rendering.
-pub mod types;
 
-pub use color::{Bgra, CocoaPixel, Pixel, Rgba, WebPixel, X11Pixel};
+pub use color::{
+    // Semantic colors
+    AttrFlags, Color, NamedColor,
+    // Pixel formats
+    Bgra, CocoaPixel, Pixel, Rgba, WebPixel, X11Pixel,
+};
 pub use commands::Op;
 pub use frame::Frame;
-pub use glyph::{
-    get_glyph_metrics, render_glyph_direct, GlyphMetrics, GlyphRenderCoords, GlyphStyleOverrides,
-    RenderTarget,
-};
+pub use glyph::font;
+pub use pixelflow_fonts::{Font, Glyph, GlyphBounds};
 pub use rasterizer::{process_frame, ScreenView, ScreenViewMut};
-pub use types::*;

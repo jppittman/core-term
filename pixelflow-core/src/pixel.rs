@@ -48,3 +48,7 @@ pub trait Pixel: Copy + Default + 'static + Send + Sync {
         a: Batch<u32>,
     ) -> Batch<u32>;
 }
+
+// Note: Surface<P> for concrete pixel types (Rgba, Bgra) is implemented
+// in pixelflow-render/src/color.rs to avoid conflicting with the closure
+// blanket impl in pipe.rs.
