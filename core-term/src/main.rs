@@ -91,23 +91,23 @@ fn main() -> anyhow::Result<()> {
     info!("VsyncActor spawned successfully");
 
     // Engine Initialization
-    use pixelflow_engine::{EnginePlatform, WindowConfig};
+    use pixelflow_engine::{EngineConfig, EnginePlatform, WindowConfig};
 
-    let window_config = WindowConfig {
-        initial_window_x: 100.0,
-        initial_window_y: 100.0,
-        initial_cols: CONFIG.appearance.columns as usize,
-        initial_rows: CONFIG.appearance.rows as usize,
-        cell_width_px: CONFIG.appearance.cell_width_px,
-        cell_height_px: CONFIG.appearance.cell_height_px,
-        bytes_per_pixel: 4,
-        bits_per_component: 8,
-        bits_per_pixel: 32,
-        max_draw_latency_seconds: CONFIG.performance.max_draw_latency_ms.as_secs_f64(),
+    let engine_config = EngineConfig {
+        window: WindowConfig {
+            title: CONFIG.appearance.default_title.clone(),
+            columns: CONFIG.appearance.columns,
+            rows: CONFIG.appearance.rows,
+            cell_width_px: CONFIG.appearance.cell_width_px,
+            cell_height_px: CONFIG.appearance.cell_height_px,
+            initial_x: 100.0,
+            initial_y: 100.0,
+        },
+        performance: CONFIG.performance.clone(),
     };
 
     let platform =
-        EnginePlatform::new(window_config).context("Failed to initialize EnginePlatform")?;
+        EnginePlatform::new(engine_config.into()).context("Failed to initialize EnginePlatform")?;
 
     let waker = platform.create_waker();
 

@@ -1,6 +1,6 @@
 pub mod waker;
 
-use crate::channel::{create_engine_channels, DriverCommand, EngineCommand};
+use crate::channel::{create_engine_channels, DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, DriverConfig, RenderSnapshot};
 use crate::input::MouseButton;
@@ -28,6 +28,19 @@ pub struct EnginePlatform {
     config: DriverConfig,
     control_rx: Receiver<EngineCommand>,
     display_rx: Receiver<EngineCommand>,
+    engine_sender: EngineSender,
+}
+
+struct PlatformWaker {
+    sender: EngineSender,
+}
+
+impl crate::platform::waker::EventLoopWaker for PlatformWaker {
+    fn wake(&self) -> Result<()> {
+        self.sender
+            .send(EngineCommand::Doorbell)
+            .map_err(|e| anyhow::anyhow!("Failed to wake engine: {}", e))
+    }
 }
 
 impl EnginePlatform {
@@ -35,7 +48,7 @@ impl EnginePlatform {
         info!("EnginePlatform::new() - Creating channel-based platform");
 
         let channels = create_engine_channels(64);
-        let driver = PlatformDriver::new(channels.engine_sender)
+        let driver = PlatformDriver::new(channels.engine_sender.clone())
             .context("Failed to create display driver")?;
 
         Ok(Self {
@@ -43,6 +56,13 @@ impl EnginePlatform {
             config,
             control_rx: channels.control_rx,
             display_rx: channels.display_rx,
+            engine_sender: channels.engine_sender,
+        })
+    }
+
+    pub fn create_waker(&self) -> Box<dyn crate::platform::waker::EventLoopWaker> {
+        Box::new(PlatformWaker {
+            sender: self.engine_sender.clone(),
         })
     }
 

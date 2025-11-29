@@ -1,4 +1,5 @@
 pub mod channel;
+pub mod config;
 pub mod display;
 pub mod frame;
 pub mod input;
@@ -8,7 +9,7 @@ pub mod traits;
 pub use channel::{
     create_engine_channels, DriverCommand, EngineChannels, EngineCommand, EngineSender,
 };
-pub use display::messages::DriverConfig as WindowConfig;
+pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
 pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
 pub use platform::EnginePlatform;
 pub use traits::{AppAction, AppState, Application, EngineEvent};
@@ -47,8 +48,8 @@ pub fn pixelflow_dispatch_event(
 ///
 /// # Arguments
 /// * `app` - The application logic.
-/// * `config` - Window configuration.
-pub fn run(app: impl Application + Send + 'static, config: WindowConfig) -> anyhow::Result<()> {
-    let platform = EnginePlatform::new(config)?;
+/// * `config` - Engine configuration.
+pub fn run(app: impl Application + Send + 'static, config: EngineConfig) -> anyhow::Result<()> {
+    let platform = EnginePlatform::new(config.into())?;
     platform.run(app)
 }
