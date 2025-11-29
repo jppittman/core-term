@@ -14,7 +14,7 @@ use std::ffi::CString;
 use std::mem;
 use std::os::raw::c_int;
 use std::ptr;
-use x11::{keysym, xlib};
+use x11::{xlib, xlib::KeySym, keysym};
 
 // --- Atoms ---
 #[derive(Debug, Clone, Copy)]
