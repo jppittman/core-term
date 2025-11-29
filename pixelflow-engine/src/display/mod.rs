@@ -1,18 +1,15 @@
 // src/display/mod.rs
-//! Message-based display system with Strategy Pattern.
+//! Channel-based display system.
 //!
-//! - DisplayDriver: Platform-specific primitives (Cocoa, X11, etc.)
-//! - DisplayManager: Common logic and state management
-//! - Messages: Request/Response protocol for communication
+//! - DisplayDriver: Platform-specific driver (Cocoa, X11, etc.)
+//! - Messages: Display events and render snapshots
 
 pub mod driver;
 pub mod drivers;
-pub mod manager;
 pub mod messages;
 
 pub use driver::DisplayDriver;
-pub use manager::{DisplayManager, DisplayMetrics};
-pub use messages::{DisplayError, DisplayEvent, DriverRequest, DriverResponse};
+pub use messages::{DisplayEvent, DriverConfig, RenderSnapshot};
 
 // Re-export the active display driver for convenience
 #[cfg(use_cocoa_display)]
@@ -23,3 +20,6 @@ pub use drivers::X11DisplayDriver;
 
 #[cfg(use_headless_display)]
 pub use drivers::HeadlessDisplayDriver;
+
+#[cfg(use_web_display)]
+pub use drivers::WebDisplayDriver;

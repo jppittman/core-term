@@ -10,7 +10,7 @@
 //! - `SimdVec<u16>` → Array of 8×u16
 //! - `SimdVec<u8>` → Array of 16×u8
 
-use crate::batch::SimdOps;
+use crate::batch::{SimdOps, SimdOpsU8};
 use core::marker::PhantomData;
 
 // ============================================================================
@@ -854,6 +854,30 @@ impl SimdOps<u8> for SimdVec<u8> {
     }
 }
 
+impl SimdOpsU8 for SimdVec<u8> {
+    /// Shuffles bytes according to indices (scalar fallback).
+    ///
+    /// For each byte position i:
+    /// - If `indices[i] & 0x80` is set, result[i] = 0
+    /// - Otherwise, result[i] = self[indices[i] & 0x0F]
+    #[inline(always)]
+    fn shuffle_bytes(self, indices: Self) -> Self {
+        unsafe {
+            let data = self.0.u8;
+            let idx = indices.0.u8;
+            let mut result = [0u8; 16];
+            for i in 0..16 {
+                if idx[i] & 0x80 != 0 {
+                    result[i] = 0;
+                } else {
+                    result[i] = data[(idx[i] & 0x0F) as usize];
+                }
+            }
+            Self(ScalarReg { u8: result })
+        }
+    }
+}
+
 // ============================================================================
 // Bitcasting (Zero-Cost Type Conversion)
 // ============================================================================
@@ -912,5 +936,37 @@ mod tests {
         let mut output = [0u32; 4];
         unsafe { result.store(output.as_mut_ptr()) };
         assert_eq!(output, [0xFFFFFFFF, 0x00000000, 0xFFFFFFFF, 0x00000000]);
+    }
+
+    #[test]
+    fn test_shuffle_bytes_rgba_bgra() {
+        // Test RGBA to BGRA conversion
+        // Input: 4 RGBA pixels [R,G,B,A] = [0x11,0x22,0x33,0xFF] each
+        let rgba_bytes: [u8; 16] = [
+            0x11, 0x22, 0x33, 0xFF, // Pixel 0: R=0x11, G=0x22, B=0x33, A=0xFF
+            0xAA, 0xBB, 0xCC, 0xDD, // Pixel 1
+            0x00, 0x55, 0xAA, 0xFF, // Pixel 2
+            0x12, 0x34, 0x56, 0x78, // Pixel 3
+        ];
+        // Shuffle mask: swap bytes 0↔2 in each 4-byte group
+        let shuffle_mask: [u8; 16] = [
+            2, 1, 0, 3,    // Pixel 0
+            6, 5, 4, 7,    // Pixel 1
+            10, 9, 8, 11,  // Pixel 2
+            14, 13, 12, 15 // Pixel 3
+        ];
+
+        let data = unsafe { SimdVec::<u8>::load(rgba_bytes.as_ptr()) };
+        let indices = unsafe { SimdVec::<u8>::load(shuffle_mask.as_ptr()) };
+        let result = data.shuffle_bytes(indices);
+
+        let mut output = [0u8; 16];
+        unsafe { result.store(output.as_mut_ptr()) };
+
+        // Expected: BGRA [B,G,R,A]
+        assert_eq!(output[0..4], [0x33, 0x22, 0x11, 0xFF]); // Pixel 0: B,G,R,A
+        assert_eq!(output[4..8], [0xCC, 0xBB, 0xAA, 0xDD]); // Pixel 1
+        assert_eq!(output[8..12], [0xAA, 0x55, 0x00, 0xFF]); // Pixel 2
+        assert_eq!(output[12..16], [0x56, 0x34, 0x12, 0x78]); // Pixel 3
     }
 }

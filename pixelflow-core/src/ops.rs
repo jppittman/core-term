@@ -1,6 +1,8 @@
 use crate::TensorView;
-use crate::batch::{Batch, SimdOps, SimdVec}; // Corrected import
+use crate::batch::{Batch, SimdOps, SimdVec};
 use crate::pipe::Surface;
+use crate::pixel::Pixel;
+use core::marker::PhantomData;
 
 // --- 1. Sources ---
 
@@ -103,14 +105,33 @@ where
 // --- 3. Finalizers (Blend) ---
 
 /// A compositing operation that blends a foreground over a background using a mask.
+///
+/// Generic over pixel format `P`, allowing format-aware channel extraction and
+/// reconstruction. This enables zero-cost format abstraction - the channel
+/// operations are inlined and monomorphized for each pixel format.
 #[derive(Copy, Clone)]
-pub struct Over<M, F, B> {
+pub struct Over<P, M, F, B> {
     /// The alpha mask.
     pub mask: M,
     /// The foreground surface.
     pub fg: F,
     /// The background surface.
     pub bg: B,
+    /// Phantom data for the pixel format.
+    pub _pixel: PhantomData<P>,
+}
+
+impl<P, M, F, B> Over<P, M, F, B> {
+    /// Creates a new Over combinator.
+    #[inline]
+    pub fn new(mask: M, fg: F, bg: B) -> Self {
+        Self {
+            mask,
+            fg,
+            bg,
+            _pixel: PhantomData,
+        }
+    }
 }
 
 /// Helper function to perform alpha blending math.
@@ -122,8 +143,9 @@ fn blend_math(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -> Batch<u32> {
     ((fg * alpha) + (bg * inv_alpha)) >> 8
 }
 
-impl<M, F, B> Surface<u32> for Over<M, F, B>
+impl<P, M, F, B> Surface<u32> for Over<P, M, F, B>
 where
+    P: Pixel,
     M: Surface<u8>,
     F: Surface<u32>,
     B: Surface<u32>,
@@ -131,31 +153,29 @@ where
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
         let alpha_val = self.mask.eval(x, y);
-        let a = alpha_val.cast::<u32>();
-        let alpha_broadcast = a * Batch::splat(0x01010101);
+        let alpha = alpha_val.cast::<u32>();
 
         let fg = self.fg.eval(x, y);
         let bg = self.bg.eval(x, y);
 
-        let mask_8 = Batch::splat(0xFF);
+        // Extract channels using Pixel trait (format-aware)
+        let fg_r = P::batch_red(fg);
+        let fg_g = P::batch_green(fg);
+        let fg_b = P::batch_blue(fg);
+        let fg_a = P::batch_alpha(fg);
 
-        let r = blend_math(fg & mask_8, bg & mask_8, alpha_broadcast & mask_8);
-        let g = blend_math(
-            (fg >> 8) & mask_8,
-            (bg >> 8) & mask_8,
-            (alpha_broadcast >> 8) & mask_8,
-        );
-        let b = blend_math(
-            (fg >> 16) & mask_8,
-            (bg >> 16) & mask_8,
-            (alpha_broadcast >> 16) & mask_8,
-        );
-        let a = blend_math(
-            (fg >> 24) & mask_8,
-            (bg >> 24) & mask_8,
-            (alpha_broadcast >> 24) & mask_8,
-        );
+        let bg_r = P::batch_red(bg);
+        let bg_g = P::batch_green(bg);
+        let bg_b = P::batch_blue(bg);
+        let bg_a = P::batch_alpha(bg);
 
-        r | (g << 8) | (b << 16) | (a << 24)
+        // Blend each channel: result = fg * alpha + bg * (256 - alpha)
+        let r = blend_math(fg_r, bg_r, alpha);
+        let g = blend_math(fg_g, bg_g, alpha);
+        let b = blend_math(fg_b, bg_b, alpha);
+        let a = blend_math(fg_a, bg_a, alpha);
+
+        // Reconstruct in target format
+        P::batch_from_channels(r, g, b, a)
     }
 }

@@ -23,10 +23,13 @@ pub mod batch;
 pub mod dsl;
 /// Core operations and surface implementations.
 pub mod ops;
+/// Pixel format trait for generic color operations.
+pub mod pixel;
 /// Pipeline abstractions and surface traits.
 pub mod pipe;
 
-pub use batch::Batch;
+pub use batch::{Batch, SimdOpsU8, SHUFFLE_RGBA_BGRA};
+pub use pixel::Pixel;
 
 // ============================================================================
 // Tensor Macros

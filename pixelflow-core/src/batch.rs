@@ -225,6 +225,18 @@ pub trait SimdOps<T>: Copy + Clone + Sized {
     fn saturating_sub(self, other: Self) -> Self;
 }
 
+/// Extended operations for byte-level SIMD (u8 only).
+pub trait SimdOpsU8: SimdOps<u8> {
+    /// Shuffles bytes according to indices.
+    ///
+    /// For each byte position i in the result:
+    /// - If `indices[i] & 0x80` is set, result[i] = 0
+    /// - Otherwise, result[i] = self[indices[i] & 0x0F]
+    ///
+    /// This maps to `pshufb` on x86 (SSSE3) and `vqtbl1q_u8` on ARM NEON.
+    fn shuffle_bytes(self, indices: Self) -> Self;
+}
+
 impl<T: Copy> Add for Batch<T>
 where
     backend::SimdVec<T>: SimdOps<T>,
@@ -352,6 +364,45 @@ impl Batch<u16> {
     #[must_use]
     pub fn as_u32(self) -> Batch<u32> {
         self.cast()
+    }
+}
+
+/// Shuffle mask for RGBA↔BGRA conversion (swaps bytes 0 and 2 in each 4-byte group).
+///
+/// This mask converts between:
+/// - RGBA [R,G,B,A] → BGRA [B,G,R,A]
+/// - BGRA [B,G,R,A] → RGBA [R,G,B,A]
+///
+/// The same mask works in both directions since it's a symmetric swap.
+pub const SHUFFLE_RGBA_BGRA: [u8; 16] = [
+    2, 1, 0, 3,    // Pixel 0: swap R↔B
+    6, 5, 4, 7,    // Pixel 1: swap R↔B
+    10, 9, 8, 11,  // Pixel 2: swap R↔B
+    14, 13, 12, 15 // Pixel 3: swap R↔B
+];
+
+impl Batch<u8>
+where
+    backend::SimdVec<u8>: SimdOpsU8,
+{
+    /// Shuffles bytes according to indices.
+    ///
+    /// For each byte position i in the result:
+    /// - If `indices[i] & 0x80` is set, result[i] = 0
+    /// - Otherwise, result[i] = self[indices[i] & 0x0F]
+    #[inline(always)]
+    #[must_use]
+    pub fn shuffle_bytes(self, indices: Self) -> Self {
+        Self {
+            inner: self.inner.shuffle_bytes(indices.inner),
+        }
+    }
+
+    /// Creates a batch from a 16-byte array.
+    #[inline(always)]
+    #[must_use]
+    pub fn from_array(arr: [u8; 16]) -> Self {
+        unsafe { Self::load(arr.as_ptr()) }
     }
 }
 impl<T: Copy> Batch<T>

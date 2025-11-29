@@ -1,20 +1,22 @@
 #![cfg(use_x11_display)]
 
 //! X11 DisplayDriver implementation using xlib.
+//!
+//! Driver struct is just cmd_tx - trivially Clone.
+//! run() reads Configure, creates X11 resources, runs event loop.
 
+use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{
-    DisplayError, DisplayEvent, DriverConfig, DriverRequest, DriverResponse, RenderSnapshot,
-};
+use crate::display::messages::{DisplayEvent, RenderSnapshot};
 use crate::input::{KeySymbol, Modifiers};
-use crate::platform::waker::EventLoopWaker;
 use anyhow::{anyhow, Result};
-use log::{debug, info};
-use std::ffi::CString;
+use log::{info, trace};
+use std::ffi::{CStr, CString};
 use std::mem;
-use std::os::raw::c_int;
+use std::os::raw::{c_char, c_int};
 use std::ptr;
-use x11::{xlib, xlib::KeySym, keysym};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use x11::{keysym, xlib};
 
 // --- Atoms ---
 #[derive(Debug, Clone, Copy)]
@@ -42,223 +44,298 @@ impl SelectionAtoms {
     }
 }
 
-// --- Waker Implementation ---
 
-pub struct X11Waker {
-    window: xlib::Window,
-}
-
-impl X11Waker {
-    pub fn new(window: xlib::Window) -> Self {
-        Self { window }
-    }
-}
-
-impl EventLoopWaker for X11Waker {
-    fn wake(&self) -> Result<()> {
-        unsafe {
-            let display = xlib::XOpenDisplay(ptr::null());
-            if display.is_null() {
-                return Err(anyhow!("Failed to open X display for Waker"));
-            }
-
-            let mut event: xlib::XClientMessageEvent = mem::zeroed();
-            event.type_ = xlib::ClientMessage;
-            event.window = self.window;
-            event.format = 32;
-
-            xlib::XSendEvent(
-                display,
-                self.window,
-                xlib::False,
-                xlib::NoEventMask,
-                &mut xlib::XEvent {
-                    client_message: event,
-                },
-            );
-
-            xlib::XFlush(display);
-            xlib::XCloseDisplay(display);
-        }
-        Ok(())
-    }
+// --- Run State (only original driver has this) ---
+struct RunState {
+    cmd_rx: Receiver<DriverCommand>,
+    engine_tx: EngineSender,
 }
 
 // --- Display Driver ---
 
+/// X11 display driver.
+///
+/// Clone to get a handle for sending commands. Only the original can run().
 pub struct X11DisplayDriver {
+    cmd_tx: SyncSender<DriverCommand>,
+    /// Only present on original, None on clones
+    run_state: Option<RunState>,
+}
+
+impl Clone for X11DisplayDriver {
+    fn clone(&self) -> Self {
+        Self {
+            cmd_tx: self.cmd_tx.clone(),
+            run_state: None, // Clones can't run
+        }
+    }
+}
+
+impl DisplayDriver for X11DisplayDriver {
+    fn new(engine_tx: EngineSender) -> Result<Self> {
+        let (cmd_tx, cmd_rx) = sync_channel(16);
+
+        Ok(Self {
+            cmd_tx,
+            run_state: Some(RunState { cmd_rx, engine_tx }),
+        })
+    }
+
+    fn send(&self, cmd: DriverCommand) -> Result<()> {
+        self.cmd_tx.send(cmd)?;
+        Ok(())
+    }
+
+    fn run(&self) -> Result<()> {
+        let run_state = self
+            .run_state
+            .as_ref()
+            .ok_or_else(|| anyhow!("Only original driver can run (this is a clone)"))?;
+
+        run_event_loop(&run_state.cmd_rx, &run_state.engine_tx)
+    }
+}
+
+// --- Event Loop ---
+
+fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) -> Result<()> {
+    // 1. Read Configure command first
+    let config = match cmd_rx.recv()? {
+        DriverCommand::Configure(c) => c,
+        other => return Err(anyhow!("Expected Configure, got {:?}", other)),
+    };
+
+    info!("X11: Creating resources with config");
+
+    // 2. Create X11 resources
+    unsafe {
+        if xlib::XInitThreads() == 0 {
+            return Err(anyhow!("XInitThreads failed"));
+        }
+
+        let display = xlib::XOpenDisplay(ptr::null());
+        if display.is_null() {
+            return Err(anyhow!("Failed to open X display"));
+        }
+
+        let screen = xlib::XDefaultScreen(display);
+        let root = xlib::XRootWindow(display, screen);
+
+        let wm_delete_name = CString::new("WM_DELETE_WINDOW").unwrap();
+        let wm_delete_window = xlib::XInternAtom(display, wm_delete_name.as_ptr(), xlib::False);
+
+        let atoms = SelectionAtoms::new(display);
+
+        // Calculate window size from config
+        let width = (config.initial_cols * config.cell_width_px) as u32;
+        let height = (config.initial_rows * config.cell_height_px) as u32;
+
+        let black = xlib::XBlackPixel(display, screen);
+        let white = xlib::XWhitePixel(display, screen);
+
+        let window =
+            xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
+
+        // Select Input Events
+        xlib::XSelectInput(
+            display,
+            window,
+            xlib::KeyPressMask
+                | xlib::KeyReleaseMask
+                | xlib::ButtonPressMask
+                | xlib::ButtonReleaseMask
+                | xlib::PointerMotionMask
+                | xlib::StructureNotifyMask
+                | xlib::FocusChangeMask
+                | xlib::ExposureMask
+                | xlib::PropertyChangeMask,
+        );
+
+        // Set WM Protocols
+        xlib::XSetWMProtocols(display, window, &wm_delete_window as *const _ as *mut _, 1);
+
+        // Initialize GC
+        let gc = xlib::XCreateGC(display, window, 0, ptr::null_mut());
+        xlib::XSetForeground(display, gc, white);
+        xlib::XSetBackground(display, gc, black);
+
+        // Map Window
+        xlib::XMapWindow(display, window);
+        xlib::XFlush(display);
+
+        // Initialize XRM database for querying Xft.dpi
+        xlib::XrmInitialize();
+        let resource_string = xlib::XResourceManagerString(display);
+        let xrm_db = if resource_string.is_null() {
+            None
+        } else {
+            Some(xlib::XrmGetStringDatabase(resource_string))
+        };
+
+        // 3. Run event loop
+        let mut state = X11State {
+            display,
+            screen,
+            window,
+            gc,
+            wm_delete_window,
+            atoms,
+            xrm_db,
+            width_px: width,
+            height_px: height,
+            scale_factor: 1.0, // Updated below
+            pending_selection_request: None,
+        };
+
+        // Query scale factor from Xft.dpi using initialized XRM database
+        state.scale_factor = state.query_scale_factor();
+
+        info!("X11: Window created {}x{} px, scale {:.2}", width, height, state.scale_factor);
+
+        // Send initial resize
+        let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
+            width_px: width,
+            height_px: height,
+        }));
+
+        state.event_loop(cmd_rx, engine_tx)
+        // X11State::drop() handles cleanup
+    }
+}
+
+// --- X11 State (only exists during run) ---
+
+struct X11State {
     display: *mut xlib::Display,
     screen: c_int,
-    _root: xlib::Window,
-
     window: xlib::Window,
     gc: xlib::GC,
     wm_delete_window: xlib::Atom,
     atoms: SelectionAtoms,
-
+    xrm_db: Option<xlib::XrmDatabase>,
     width_px: u32,
     height_px: u32,
     scale_factor: f64,
-
-    // State to track pending clipboard requests
+    // TODO: Arc the paste buffer for thread-safe clipboard handling
     pending_selection_request: Option<xlib::XSelectionRequestEvent>,
 }
 
-impl DisplayDriver for X11DisplayDriver {
-    fn new(config: &DriverConfig) -> Result<Self> {
+impl X11State {
+    /// Query Xft.dpi from X resources and calculate scale factor.
+    /// Standard DPI is 96, so scale_factor = dpi / 96.0
+    fn query_scale_factor(&self) -> f64 {
+        let Some(xrm_db) = self.xrm_db else {
+            info!("X11: No XRM database, using scale 1.0");
+            return 1.0;
+        };
+
         unsafe {
-            if xlib::XInitThreads() == 0 {
-                return Err(anyhow!("XInitThreads failed"));
-            }
+            let name = CString::new("Xft.dpi").unwrap();
+            let class = CString::new("Xft.Dpi").unwrap();
+            let mut type_return: *mut c_char = ptr::null_mut();
+            let mut value_return: xlib::XrmValue = mem::zeroed();
 
-            let display = xlib::XOpenDisplay(ptr::null());
-            if display.is_null() {
-                return Err(anyhow!("Failed to open X display"));
-            }
-
-            let screen = xlib::XDefaultScreen(display);
-            let root = xlib::XRootWindow(display, screen);
-            let _visual = xlib::XDefaultVisual(display, screen);
-
-            let wm_delete_name = CString::new("WM_DELETE_WINDOW").unwrap();
-            let wm_delete_window = xlib::XInternAtom(display, wm_delete_name.as_ptr(), xlib::False);
-
-            let atoms = SelectionAtoms::new(display);
-
-            // Calculate window size from config
-            let width = (config.initial_cols * config.cell_width_px) as u32;
-            let height = (config.initial_rows * config.cell_height_px) as u32;
-
-            let black = xlib::XBlackPixel(display, screen);
-            let white = xlib::XWhitePixel(display, screen);
-
-            let window =
-                xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
-
-            // Select Input Events
-            xlib::XSelectInput(
-                display,
-                window,
-                xlib::KeyPressMask
-                    | xlib::KeyReleaseMask
-                    | xlib::ButtonPressMask
-                    | xlib::ButtonReleaseMask
-                    | xlib::PointerMotionMask
-                    | xlib::StructureNotifyMask
-                    | xlib::FocusChangeMask
-                    | xlib::ExposureMask
-                    | xlib::PropertyChangeMask,
+            let found = xlib::XrmGetResource(
+                xrm_db,
+                name.as_ptr(),
+                class.as_ptr(),
+                &mut type_return,
+                &mut value_return,
             );
 
-            // Set WM Protocols
-            xlib::XSetWMProtocols(display, window, &wm_delete_window as *const _ as *mut _, 1);
-
-            // Initialize GC
-            let gc = xlib::XCreateGC(display, window, 0, ptr::null_mut());
-            xlib::XSetForeground(display, gc, white);
-            xlib::XSetBackground(display, gc, black);
-
-            // Map Window
-            xlib::XMapWindow(display, window);
-            xlib::XFlush(display);
-
-            info!("X11DisplayDriver created: {}x{} px", width, height);
-
-            Ok(Self {
-                display,
-                screen,
-                _root: root,
-                window,
-                gc,
-                wm_delete_window,
-                atoms,
-                width_px: width,
-                height_px: height,
-                scale_factor: 1.0,
-                pending_selection_request: None,
-            })
-        }
-    }
-
-    fn create_waker(&self) -> Box<dyn EventLoopWaker> {
-        Box::new(X11Waker::new(self.window))
-    }
-
-    fn handle_request(
-        &mut self,
-        request: DriverRequest,
-    ) -> std::result::Result<DriverResponse, DisplayError> {
-        match request {
-            DriverRequest::Init => Ok(self.handle_init()?),
-            DriverRequest::PollEvents => Ok(self.handle_poll_events()?),
-            DriverRequest::RequestFramebuffer => Ok(self.handle_request_framebuffer()?),
-            DriverRequest::Present(snapshot) => self.handle_present(snapshot),
-            DriverRequest::SetTitle(title) => Ok(self.handle_set_title(&title)?),
-            DriverRequest::Bell => Ok(self.handle_bell()?),
-            DriverRequest::SetCursorVisibility(_visible) => Ok(DriverResponse::CursorVisibilitySet),
-            DriverRequest::CopyToClipboard(text) => Ok(self.handle_copy_to_clipboard(&text)?),
-            DriverRequest::SubmitClipboardData(text) => {
-                Ok(self.handle_submit_clipboard_data(&text)?)
+            if found == xlib::True && !value_return.addr.is_null() {
+                let dpi_str = CStr::from_ptr(value_return.addr as *const c_char);
+                if let Ok(dpi_str) = dpi_str.to_str() {
+                    if let Ok(dpi) = dpi_str.parse::<f64>() {
+                        let scale = dpi / 96.0;
+                        info!("X11: Xft.dpi = {}, scale_factor = {:.2}", dpi, scale);
+                        return scale;
+                    }
+                }
             }
-            DriverRequest::RequestPaste => Ok(self.handle_request_paste()?),
+
+            info!("X11: Xft.dpi not found, using scale 1.0");
+            1.0
         }
     }
 }
 
-impl X11DisplayDriver {
-    fn handle_init(&mut self) -> Result<DriverResponse> {
-        info!("X11: Init - returning metrics");
-        Ok(DriverResponse::InitComplete {
-            width_px: self.width_px,
-            height_px: self.height_px,
-            scale_factor: self.scale_factor,
-        })
-    }
+impl X11State {
+    fn event_loop(
+        &mut self,
+        cmd_rx: &Receiver<DriverCommand>,
+        engine_tx: &EngineSender,
+    ) -> Result<()> {
+        loop {
+            // 1. Poll X11 events
+            unsafe {
+                while xlib::XPending(self.display) > 0 {
+                    let mut event: xlib::XEvent = mem::zeroed();
+                    xlib::XNextEvent(self.display, &mut event);
 
-    fn handle_poll_events(&mut self) -> Result<DriverResponse> {
-        let mut events = Vec::new();
-
-        unsafe {
-            while xlib::XPending(self.display) > 0 {
-                let mut event: xlib::XEvent = mem::zeroed();
-                xlib::XNextEvent(self.display, &mut event);
-
-                match event.type_ {
-                    xlib::ClientMessage => {
-                        let client = event.client_message;
-                        // Check if this is WM_DELETE_WINDOW
-                        let data0 = client.data.as_longs()[0];
-                        if data0 as xlib::Atom != self.wm_delete_window {
-                            debug!("X11: Received ClientMessage (Wake)");
-                            events.push(DisplayEvent::Wake);
-                            continue;
+                    if let Some(display_event) = self.convert_xevent(&event) {
+                        if matches!(display_event, DisplayEvent::CloseRequested) {
+                            info!("X11: CloseRequested, exiting event loop");
+                            return Ok(());
                         }
-                        events.push(DisplayEvent::CloseRequested);
-                    }
-                    xlib::SelectionRequest => {
-                        self.pending_selection_request = Some(event.selection_request);
-                        events.push(DisplayEvent::ClipboardDataRequested);
-                    }
-                    xlib::SelectionNotify => {
-                        if let Some(paste_event) = self.handle_selection_notify(&event.selection) {
-                            events.push(paste_event);
-                        }
-                    }
-                    _ => {
-                        if let Some(de) = self.convert_event(&event) {
-                            events.push(de);
-                        }
+                        let _ = engine_tx.send(EngineCommand::DisplayEvent(display_event));
                     }
                 }
             }
-        }
 
-        Ok(DriverResponse::Events(events))
+            // 2. Process commands from engine
+            while let Ok(cmd) = cmd_rx.try_recv() {
+                match cmd {
+                    DriverCommand::Configure(_) => {
+                        // Already configured, ignore
+                    }
+                    DriverCommand::Shutdown => {
+                        info!("X11: Shutdown command received");
+                        return Ok(());
+                    }
+                    DriverCommand::Present(snapshot) => {
+                        let result = self.handle_present(snapshot);
+                        if let Ok(snapshot) = result {
+                            let _ = engine_tx.send(EngineCommand::PresentComplete(snapshot));
+                        }
+                    }
+                    DriverCommand::SetTitle(title) => {
+                        self.handle_set_title(&title);
+                    }
+                    DriverCommand::CopyToClipboard(text) => {
+                        self.handle_copy_to_clipboard(&text);
+                    }
+                    DriverCommand::RequestPaste => {
+                        self.handle_request_paste();
+                    }
+                    DriverCommand::Bell => {
+                        self.handle_bell();
+                    }
+                }
+            }
+
+            // 3. Brief sleep to avoid busy-waiting
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
     }
 
-    fn convert_event(&self, event: &xlib::XEvent) -> Option<DisplayEvent> {
+    fn convert_xevent(&mut self, event: &xlib::XEvent) -> Option<DisplayEvent> {
         unsafe {
             match event.type_ {
+                xlib::ClientMessage => {
+                    let client = event.client_message;
+                    let data0 = client.data.as_longs()[0];
+                    if data0 as xlib::Atom == self.wm_delete_window {
+                        return Some(DisplayEvent::CloseRequested);
+                    }
+                    trace!("X11: ClientMessage (wake)");
+                    None
+                }
+                xlib::SelectionRequest => {
+                    self.pending_selection_request = Some(event.selection_request);
+                    Some(DisplayEvent::ClipboardDataRequested)
+                }
+                xlib::SelectionNotify => self.handle_selection_notify(&event.selection),
                 xlib::KeyPress => {
                     let key_event = event.key;
                     let mut keysym = 0;
@@ -288,58 +365,49 @@ impl X11DisplayDriver {
                 }
                 xlib::ConfigureNotify => {
                     let conf = event.configure;
+                    self.width_px = conf.width as u32;
+                    self.height_px = conf.height as u32;
                     Some(DisplayEvent::Resize {
-                        width_px: conf.width as u32,
-                        height_px: conf.height as u32,
+                        width_px: self.width_px,
+                        height_px: self.height_px,
                     })
                 }
                 xlib::FocusIn => Some(DisplayEvent::FocusGained),
                 xlib::FocusOut => Some(DisplayEvent::FocusLost),
-
-                xlib::ButtonPress | xlib::ButtonRelease | xlib::MotionNotify => {
-                    self.convert_mouse_event(event)
+                xlib::ButtonPress => {
+                    let e = event.button;
+                    let modifiers = self.extract_modifiers(e.state);
+                    Some(DisplayEvent::MouseButtonPress {
+                        button: e.button as u8,
+                        x: e.x,
+                        y: e.y,
+                        scale_factor: self.scale_factor,
+                        modifiers,
+                    })
                 }
-
+                xlib::ButtonRelease => {
+                    let e = event.button;
+                    let modifiers = self.extract_modifiers(e.state);
+                    Some(DisplayEvent::MouseButtonRelease {
+                        button: e.button as u8,
+                        x: e.x,
+                        y: e.y,
+                        scale_factor: self.scale_factor,
+                        modifiers,
+                    })
+                }
+                xlib::MotionNotify => {
+                    let e = event.motion;
+                    let modifiers = self.extract_modifiers(e.state);
+                    Some(DisplayEvent::MouseMove {
+                        x: e.x,
+                        y: e.y,
+                        scale_factor: self.scale_factor,
+                        modifiers,
+                    })
+                }
                 _ => None,
             }
-        }
-    }
-
-    unsafe fn convert_mouse_event(&self, event: &xlib::XEvent) -> Option<DisplayEvent> {
-        match event.type_ {
-            xlib::ButtonPress => {
-                let e = event.button;
-                let modifiers = self.extract_modifiers(e.state);
-                Some(DisplayEvent::MouseButtonPress {
-                    button: e.button as u8,
-                    x: e.x,
-                    y: e.y,
-                    scale_factor: self.scale_factor,
-                    modifiers,
-                })
-            }
-            xlib::ButtonRelease => {
-                let e = event.button;
-                let modifiers = self.extract_modifiers(e.state);
-                Some(DisplayEvent::MouseButtonRelease {
-                    button: e.button as u8,
-                    x: e.x,
-                    y: e.y,
-                    scale_factor: self.scale_factor,
-                    modifiers,
-                })
-            }
-            xlib::MotionNotify => {
-                let e = event.motion;
-                let modifiers = self.extract_modifiers(e.state);
-                Some(DisplayEvent::MouseMove {
-                    x: e.x,
-                    y: e.y,
-                    scale_factor: self.scale_factor,
-                    modifiers,
-                })
-            }
-            _ => None,
         }
     }
 
@@ -405,17 +473,69 @@ impl X11DisplayDriver {
         }
     }
 
-    // --- Clipboard Handling ---
+    // --- Command handlers ---
 
-    fn handle_submit_clipboard_data(&mut self, text: &str) -> Result<DriverResponse> {
-        // If we have a pending request, fulfill it
-        if let Some(req) = self.pending_selection_request.take() {
-            unsafe {
-                self.fulfill_selection_request(&req, text);
+    fn handle_present(&mut self, snapshot: RenderSnapshot) -> Result<RenderSnapshot> {
+        unsafe {
+            let depth = xlib::XDefaultDepth(self.display, self.screen);
+            let visual = xlib::XDefaultVisual(self.display, self.screen);
+            let data_ptr = snapshot.framebuffer.as_ptr() as *mut i8;
+
+            let image = xlib::XCreateImage(
+                self.display,
+                visual,
+                depth as u32,
+                xlib::ZPixmap,
+                0,
+                data_ptr,
+                snapshot.width_px,
+                snapshot.height_px,
+                32,
+                0,
+            );
+
+            if image.is_null() {
+                return Err(anyhow!("XCreateImage failed"));
             }
+
+            xlib::XPutImage(
+                self.display,
+                self.window,
+                self.gc,
+                image,
+                0,
+                0,
+                0,
+                0,
+                snapshot.width_px,
+                snapshot.height_px,
+            );
+
+            (*image).data = ptr::null_mut();
+            xlib::XDestroyImage(image);
+            xlib::XFlush(self.display);
         }
 
-        // Re-assert ownership
+        Ok(snapshot)
+    }
+
+    fn handle_set_title(&mut self, title: &str) {
+        unsafe {
+            if let Ok(c_title) = CString::new(title) {
+                xlib::XStoreName(self.display, self.window, c_title.as_ptr());
+                xlib::XFlush(self.display);
+            }
+        }
+    }
+
+    fn handle_bell(&mut self) {
+        unsafe {
+            xlib::XBell(self.display, 0);
+            xlib::XFlush(self.display);
+        }
+    }
+
+    fn handle_copy_to_clipboard(&mut self, _text: &str) {
         unsafe {
             xlib::XSetSelectionOwner(
                 self.display,
@@ -425,73 +545,26 @@ impl X11DisplayDriver {
             );
             xlib::XFlush(self.display);
         }
-        Ok(DriverResponse::ClipboardDataSubmitted)
     }
 
-    unsafe fn fulfill_selection_request(&self, req: &xlib::XSelectionRequestEvent, text: &str) {
-        let mut ev: xlib::XSelectionEvent = mem::zeroed();
-        ev.type_ = xlib::SelectionNotify;
-        ev.display = req.display;
-        ev.requestor = req.requestor;
-        ev.selection = req.selection;
-        ev.target = req.target;
-        ev.time = req.time;
-        ev.property = 0; // Reject by default
-
-        if req.target == self.atoms.utf8_string
-            || req.target == self.atoms.text
-            || req.target == self.atoms.xa_string
-        {
-            // Send data
-            xlib::XChangeProperty(
+    fn handle_request_paste(&mut self) {
+        unsafe {
+            xlib::XConvertSelection(
                 self.display,
-                req.requestor,
-                req.property,
-                req.target,
-                8,
-                xlib::PropModeReplace,
-                text.as_ptr(),
-                text.len() as c_int,
-            );
-            ev.property = req.property;
-        } else if req.target == self.atoms.targets {
-            // Send supported targets
-            let targets = [
+                self.atoms.clipboard,
                 self.atoms.utf8_string,
-                self.atoms.text,
-                self.atoms.xa_string,
-                self.atoms.targets,
-            ];
-            xlib::XChangeProperty(
-                self.display,
-                req.requestor,
-                req.property,
-                xlib::XA_ATOM,
-                32,
-                xlib::PropModeReplace,
-                targets.as_ptr() as *const u8,
-                targets.len() as c_int,
+                self.atoms.clipboard,
+                self.window,
+                xlib::CurrentTime,
             );
-            ev.property = req.property;
+            xlib::XFlush(self.display);
         }
-
-        xlib::XSendEvent(
-            self.display,
-            req.requestor,
-            xlib::False,
-            xlib::NoEventMask,
-            &mut xlib::XEvent { selection: ev },
-        );
-        xlib::XFlush(self.display);
     }
 
-    unsafe fn handle_selection_notify(
-        &self,
-        event: &xlib::XSelectionEvent,
-    ) -> Option<DisplayEvent> {
+    unsafe fn handle_selection_notify(&self, event: &xlib::XSelectionEvent) -> Option<DisplayEvent> {
         if event.property == 0 {
             return None;
-        } // Paste failed
+        }
 
         let mut type_ret = 0;
         let mut format_ret = 0;
@@ -522,117 +595,18 @@ impl X11DisplayDriver {
         }
         None
     }
-
-    fn handle_copy_to_clipboard(&mut self, _text: &str) -> Result<DriverResponse> {
-        // Just assert ownership - data will be provided when requested
-        unsafe {
-            xlib::XSetSelectionOwner(
-                self.display,
-                self.atoms.clipboard,
-                self.window,
-                xlib::CurrentTime,
-            );
-            xlib::XFlush(self.display);
-        }
-        Ok(DriverResponse::ClipboardCopied)
-    }
-
-    fn handle_request_paste(&mut self) -> Result<DriverResponse> {
-        unsafe {
-            xlib::XConvertSelection(
-                self.display,
-                self.atoms.clipboard,
-                self.atoms.utf8_string,
-                self.atoms.clipboard,
-                self.window,
-                xlib::CurrentTime,
-            );
-            xlib::XFlush(self.display);
-        }
-        Ok(DriverResponse::PasteRequested)
-    }
-
-    fn handle_request_framebuffer(&mut self) -> Result<DriverResponse> {
-        let size = (self.width_px * self.height_px * 4) as usize;
-        let buffer = vec![0u8; size].into_boxed_slice();
-        Ok(DriverResponse::Framebuffer(buffer))
-    }
-
-    fn handle_present(
-        &mut self,
-        snapshot: RenderSnapshot,
-    ) -> std::result::Result<DriverResponse, DisplayError> {
-        unsafe {
-            let depth = xlib::XDefaultDepth(self.display, self.screen);
-            let visual = xlib::XDefaultVisual(self.display, self.screen);
-            let data_ptr = snapshot.framebuffer.as_ptr() as *mut i8;
-
-            let image = xlib::XCreateImage(
-                self.display,
-                visual,
-                depth as u32,
-                xlib::ZPixmap,
-                0,
-                data_ptr,
-                snapshot.width_px,
-                snapshot.height_px,
-                32,
-                0,
-            );
-
-            if image.is_null() {
-                return Err(DisplayError::PresentationFailed(
-                    snapshot,
-                    "XCreateImage failed".into(),
-                ));
-            }
-
-            xlib::XPutImage(
-                self.display,
-                self.window,
-                self.gc,
-                image,
-                0,
-                0,
-                0,
-                0,
-                snapshot.width_px,
-                snapshot.height_px,
-            );
-
-            (*image).data = ptr::null_mut(); // Don't let XDestroyImage free our Rust buffer
-            xlib::XDestroyImage(image);
-            xlib::XFlush(self.display);
-        }
-
-        Ok(DriverResponse::PresentComplete(snapshot))
-    }
-
-    fn handle_set_title(&mut self, title: &str) -> Result<DriverResponse> {
-        unsafe {
-            let c_title = CString::new(title)?;
-            xlib::XStoreName(self.display, self.window, c_title.as_ptr());
-            xlib::XFlush(self.display);
-        }
-        Ok(DriverResponse::TitleSet)
-    }
-
-    fn handle_bell(&mut self) -> Result<DriverResponse> {
-        unsafe {
-            xlib::XBell(self.display, 0);
-            xlib::XFlush(self.display);
-        }
-        Ok(DriverResponse::BellRung)
-    }
 }
 
-impl Drop for X11DisplayDriver {
+impl Drop for X11State {
     fn drop(&mut self) {
         unsafe {
+            if let Some(xrm_db) = self.xrm_db {
+                xlib::XrmDestroyDatabase(xrm_db);
+            }
             xlib::XFreeGC(self.display, self.gc);
             xlib::XDestroyWindow(self.display, self.window);
             xlib::XCloseDisplay(self.display);
         }
-        info!("X11DisplayDriver dropped");
+        info!("X11State dropped - resources cleaned up");
     }
 }
