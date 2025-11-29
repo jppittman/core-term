@@ -86,6 +86,7 @@ features = [
 [build-dependencies]
 pkg-config = "0.3.32"
 
+
 [features]
 display_cocoa = [
     "objc2",
@@ -94,19 +95,11 @@ display_cocoa = [
     "core-foundation",
     "core-graphics",
     "core-text",
-    "pixelflow-render/fonts",
 ]
 display_x11 = [
     "x11",
     "yeslogic-fontconfig-sys",
     "freetype",
-    "pixelflow-render/fonts",
-]
-display_headless = [
-    "pixelflow-render/fonts",
-]
-display_web = [
-    "pixelflow-render/fonts",
 ]
 
-default = ["display_cocoa"]
+default = ["display_x11"]

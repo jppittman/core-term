@@ -44,12 +44,3 @@ optional = true
 
 [build-dependencies]
 fontdue = "0.9"
-
-[features]
-# Font backend features
-font_coretext = ["core-text", "core-graphics", "core-foundation"]
-font_freetype = ["freetype", "yeslogic-fontconfig-sys"]
-fonts = []
-
-# Default: use pre-baked fonts
-default = ["fonts"]

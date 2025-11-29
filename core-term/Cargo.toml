@@ -36,6 +36,5 @@ rexpect = "0.6.1"
 [features]
 display_cocoa = ["pixelflow-engine/display_cocoa"]
 display_x11 = ["pixelflow-engine/display_x11"]
-display_headless = ["pixelflow-engine/display_headless"]
 default = ["display_cocoa"]
 profiling = ["pprof"]
