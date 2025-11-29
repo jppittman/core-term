@@ -50,6 +50,6 @@ pub fn pixelflow_dispatch_event(
 /// * `app` - The application logic.
 /// * `config` - Engine configuration.
 pub fn run(app: impl Application + Send + 'static, config: EngineConfig) -> anyhow::Result<()> {
-    let platform = EnginePlatform::new(config.into())?;
+    let platform = EnginePlatform::new(config)?;
     platform.run(app)
 }

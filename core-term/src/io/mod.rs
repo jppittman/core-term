@@ -6,7 +6,6 @@
 pub mod event_monitor_actor;
 pub mod pty;
 pub mod traits;
-pub mod vsync_actor;
 
 #[cfg(test)]
 mod pty_tests;

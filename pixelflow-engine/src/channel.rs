@@ -23,6 +23,9 @@ pub enum EngineCommand {
 
     /// Doorbell - wakes engine when display events are ready
     Doorbell,
+
+    /// Periodic tick for vsync/timers
+    Tick,
 }
 
 /// Commands sent TO the driver (from engine).
