@@ -1,8 +1,8 @@
-# core-term
+# core-term (PixelFlow v11.0)
 
-**`core-term` is a correct, reasonably performant, and maintainable terminal emulator written in Rust.**
+**`core-term` is a correct, high-performance terminal emulator powered by the PixelFlow Zero-Copy Functional Kernel.**
 
-Its vision is to provide a robust and simple core terminal experience, drawing inspiration from the `st` (simple terminal) project while being designed from the ground up for **extendibility** and **modern architecture**.
+Its vision is to provide a robust and simple core terminal experience, utilizing a novel **Zero-Copy Functional Kernel** architecture (`pixelflow`) to achieve zero allocation per frame and static compilation of the entire render pipeline.
 
 ## Project Structure
 
@@ -10,7 +10,8 @@ The project is organized as a Cargo workspace with the following members:
 
 *   **`core-term`**: The main terminal emulator application. Contains the state machine, platform layers, IO handling, and actor orchestration.
 *   **`pixelflow-core`**: A high-performance, zero-cost SIMD abstraction library for pixel operations. It provides the mathematical foundation for rendering.
-*   **`pixelflow-render`**: The software rendering engine built on top of `pixelflow-core`. Handles software rasterization, glyph rendering, and blitting.
+*   **`pixelflow-engine`**: The execution core and runtime environment.
+*   **`pixelflow-render`**: The software rendering primitives (Surfaces) built on top of `pixelflow-core`.
 *   **`xtask`**: Automation scripts for building and bundling the application (especially for macOS).
 
 ## Core Philosophy
@@ -18,27 +19,20 @@ The project is organized as a Cargo workspace with the following members:
 `core-term` embraces several key philosophies:
 
 *   **`st`-Inspiration:** The feature set focuses on essential terminal functionalities.
-*   **Simplicity:** Complexity is managed through modular architecture (Actor Model) rather than monolithic structures.
+*   **Simplicity:** Complexity is managed through modular architecture rather than monolithic structures.
 *   **Correctness:** Aims for accurate VT100/VT220/XTerm emulation.
-*   **Software Rendering:** Prioritizes stability and predictability by using a high-performance CPU-based renderer (`pixelflow`), avoiding complex GPU driver dependencies while maintaining high frame rates.
+*   **Zero-Copy Functional Rendering:** Prioritizes stability and predictability by using a high-performance CPU-based functional kernel (`pixelflow`), avoiding complex GPU driver dependencies while maintaining high frame rates.
 
 ## Architecture
 
-`core-term` uses an **Actor Model** architecture to ensure concurrency safety and clean separation of concerns:
+This project implements the **PixelFlow v11.0** architecture, a synthesis of Functional Programming (Surface) and Actor Concurrency (Recycle Loop).
 
-*   **`Orchestrator`**: The central hub. It routes messages between the PTY, the Display/Renderer, and the Terminal Emulator.
-*   **`TerminalEmulator`**: A pure state machine. It accepts inputs (ANSI bytes, User actions) and produces side-effects (Draw, Write to PTY). It does not perform I/O directly.
-*   **`EventMonitorActor`**: Manages PTY I/O. It spawns dedicated read/write threads to ensure non-blocking operations using `kqueue` (macOS) or `epoll` (Linux).
-*   **`Renderer`**: Runs on a dedicated thread. It receives snapshots of the terminal state and produces frames using `pixelflow-render`.
-*   **`Platform`**: Handles window creation, input events, and displaying the rendered framebuffer.
+See [PixelFlow Architecture v11.0](docs/NORTH_STAR.md) for the complete blueprint.
 
-### Priority Model
-
-| Plane | Component | Channel | Priority | Behavior |
-| :--- | :--- | :--- | :--- | :--- |
-| **Management** | `config.rs` | N/A (Static) | N/A | Defines QoS limits (FPS, Buffer Sizes). |
-| **Control** | Orchestrator (Main Loop) | `ui_rx` (Unbounded) | **Strict High** | Handles Signaling (Resize, Quit, Input). Never blocks. |
-| **Data** | PTY Stream | `pty_rx` (Bounded) | **Weighted Low** | Handles Payload (ANSI). Subject to Backpressure. |
+Key Architectural Pillars:
+* **The Monolith (Surface)**: Everything is a function `F(u, v) -> Color`.
+* **Zero-Copy Recycle**: Ping-Pong buffer strategy for zero allocation per frame.
+* **Engine as Compiler**: Monomorphization of the scene graph for AVX-512 optimization.
 
 ## Building and Running
 
@@ -83,7 +77,7 @@ This will build `CoreTerm.app`, place it in the root directory, and launch it.
 
 Contributions are welcome!
 - **Code Style:** Follow Rust standard style. Docstrings are required for all public items.
-- **Architecture:** Respect the actor model separation. Logic should reside in the appropriate actor/module.
+- **Architecture:** Please refer to [docs/NORTH_STAR.md](docs/NORTH_STAR.md) for architectural guidelines.
 
 ## License
 
