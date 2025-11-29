@@ -3,6 +3,7 @@ use core::ops::{Add, BitAnd, BitOr, Mul, Not, Shl, Shr, Sub};
 // Use the top-level backends module.
 // Note: We assume `mod backends` is declared in lib.rs.
 use crate::backends;
+use core::mem;
 
 // Select backend based on target architecture
 #[cfg(target_arch = "x86_64")]
@@ -495,5 +496,23 @@ where
         Self {
             inner: self.inner.select(other.inner, mask.inner),
         }
+    }
+}
+
+// Transmute doesn't need SimdOps, so separate impl block
+impl<T: Copy> Batch<T> {
+    /// Reinterprets the bits of this batch as a batch of type U.
+    ///
+    /// This is safe for repr(transparent) types like Rgba <-> u32.
+    #[inline(always)]
+    #[must_use]
+    pub fn transmute<U: Copy>(self) -> Batch<U> {
+        const {
+            assert!(
+                mem::size_of::<T>() == mem::size_of::<U>(),
+                "Size mismatch"
+            );
+        }
+        unsafe { mem::transmute(self) }
     }
 }

@@ -13,6 +13,9 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 # SIMD library for optimized rendering
 pixelflow-core = { path = "../pixelflow-core" }
 
+# Font rendering library
+pixelflow-fonts = { path = "../pixelflow-fonts" }
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
@@ -42,5 +45,7 @@ optional = true
 version = "6.0.0"
 optional = true
 
-[build-dependencies]
-fontdue = "0.9"
+[features]
+default = ["fonts"]
+fonts = []
+

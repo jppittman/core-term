@@ -3,7 +3,7 @@
 //! These operations represent low-level primitives for the stateless renderer.
 //! They are platform-agnostic and operate directly on framebuffer memory.
 
-use crate::types::Color;
+use crate::color::Color;
 
 /// Low-level rendering operations for stateless processing.
 ///

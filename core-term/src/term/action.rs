@@ -72,9 +72,6 @@ pub enum ControlEvent {
     /// Request for the orchestrator to generate a snapshot for rendering.
     /// Sent by Vsync or when user input requires immediate visual feedback.
     RequestSnapshot,
-    /// Returns a rendered snapshot back to the orchestrator for reuse.
-    /// The Platform sends this after rendering to return the snapshot buffer.
-    FrameRendered(Box<crate::term::snapshot::TerminalSnapshot>),
     /// Signals a resize of the terminal display area with physical dimensions.
     /// The emulator calculates cols/rows using its Layout.
     Resize {

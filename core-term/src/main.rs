@@ -109,7 +109,7 @@ fn main() -> anyhow::Result<()> {
     let platform =
         EnginePlatform::new(engine_config.into()).context("Failed to initialize EnginePlatform")?;
 
-    let waker = platform.create_waker();
+    let engine_sender = platform.engine_sender();
 
     // Spawn Orchestrator
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
@@ -120,7 +120,7 @@ fn main() -> anyhow::Result<()> {
             pty_rx,
             display_action_tx,
             pty_action_tx,
-            waker,
+            engine_sender,
         },
     )
     .context("Failed to spawn OrchestratorActor")?;

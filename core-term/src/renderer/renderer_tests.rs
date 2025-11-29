@@ -13,6 +13,17 @@ use crate::term::snapshot::{
     CursorRenderState, CursorShape, Point, Selection, SelectionMode, SelectionRange, SnapshotLine,
     TerminalSnapshot,
 };
+use std::sync::Arc;
+
+/// Helper to set a snapshot line's cells (handles Arc wrapping)
+fn set_line_cells(snapshot: &mut TerminalSnapshot, row: usize, mut cells: Vec<Glyph>, width: usize) {
+    let fill = Glyph::Single(ContentCell {
+        c: ' ',
+        attr: Attributes::default(),
+    });
+    cells.resize(width, fill);
+    snapshot.lines[row].cells = Arc::new(cells);
+}
 
 const TEST_TERM_WIDTH: usize = 80;
 const TEST_TERM_HEIGHT: usize = 24;
@@ -43,7 +54,7 @@ fn create_empty_snapshot(width: usize, height: usize) -> TerminalSnapshot {
     let lines = (0..height)
         .map(|_| SnapshotLine {
             is_dirty: false,
-            cells: vec![empty_cell.clone(); width],
+            cells: std::sync::Arc::new(vec![empty_cell.clone(); width]),
         })
         .collect();
 
@@ -84,7 +95,7 @@ fn create_snapshot_with_text(lines_text: Vec<&str>) -> TerminalSnapshot {
 
             SnapshotLine {
                 is_dirty: true,
-                cells,
+                cells: std::sync::Arc::new(cells),
             }
         })
         .collect();
@@ -244,8 +255,7 @@ fn default_colors_resolve_to_config_foreground_and_background() {
 
     let mut snapshot = create_empty_snapshot(5, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells =
-        vec![make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()); 5];
+    set_line_cells(&mut snapshot, 0, vec![make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()); 5], 5);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -278,7 +288,7 @@ fn explicit_colors_preserved_in_output() {
 
     let mut snapshot = create_empty_snapshot(5, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![make_glyph('A', red, green, AttrFlags::empty()); 5];
+    snapshot.lines[0].cells = std::sync::Arc::new(vec![make_glyph('A', red, green, AttrFlags::empty()); 5]);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -311,7 +321,7 @@ fn reverse_video_flag_swaps_foreground_and_background() {
 
     let mut snapshot = create_empty_snapshot(5, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![make_glyph('A', red, green, AttrFlags::REVERSE); 5];
+    snapshot.lines[0].cells = std::sync::Arc::new(vec![make_glyph('A', red, green, AttrFlags::REVERSE); 5]);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -344,7 +354,7 @@ fn bold_and_italic_flags_preserved_when_reverse_removed() {
 
     let mut snapshot = create_empty_snapshot(5, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![make_glyph('A', Color::Default, Color::Default, input_flags); 5];
+    snapshot.lines[0].cells = std::sync::Arc::new(vec![make_glyph('A', Color::Default, Color::Default, input_flags); 5]);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -520,15 +530,11 @@ fn wide_characters_render_as_text_runs() {
 
     let mut snapshot = create_empty_snapshot(10, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![
+    set_line_cells(&mut snapshot, 0, vec![
         wide_primary,
         wide_spacer,
         make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()),
-    ];
-    snapshot.lines[0].cells.resize(
-        10,
-        make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
-    );
+    ], 10);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -557,13 +563,13 @@ fn wide_character_at_line_end_renders_correctly() {
 
     let mut snapshot = create_empty_snapshot(5, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![
+    snapshot.lines[0].cells = std::sync::Arc::new(vec![
         make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('B', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('C', Color::Default, Color::Default, AttrFlags::empty()),
         wide_primary,
         wide_spacer,
-    ];
+    ]);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -579,7 +585,7 @@ fn orphaned_wide_spacer_at_column_zero_fills_with_background() {
 
     let mut snapshot = create_empty_snapshot(5, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![
+    snapshot.lines[0].cells = std::sync::Arc::new(vec![
         Glyph::WideSpacer {
             primary_column_on_line: 0,
         },
@@ -587,7 +593,7 @@ fn orphaned_wide_spacer_at_column_zero_fills_with_background() {
         make_glyph('B', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('C', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('D', Color::Default, Color::Default, AttrFlags::empty()),
-    ];
+    ]);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -670,8 +676,7 @@ fn line_shorter_than_width_fills_remainder_with_background() {
 
     let mut snapshot = create_empty_snapshot(80, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells =
-        vec![make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()); 5];
+    set_line_cells(&mut snapshot, 0, vec![make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()); 5], 80);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -719,18 +724,14 @@ fn consecutive_spaces_coalesce_into_fill_rect() {
 
     let mut snapshot = create_empty_snapshot(20, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![
+    set_line_cells(&mut snapshot, 0, vec![
         make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('B', Color::Default, Color::Default, AttrFlags::empty()),
-    ];
-    snapshot.lines[0].cells.resize(
-        20,
-        make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
-    );
+    ], 20);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -746,17 +747,13 @@ fn consecutive_chars_with_same_attrs_coalesce_into_single_run() {
 
     let mut snapshot = create_empty_snapshot(20, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![
+    set_line_cells(&mut snapshot, 0, vec![
         make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('B', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('C', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('D', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('E', Color::Default, Color::Default, AttrFlags::empty()),
-    ];
-    snapshot.lines[0].cells.resize(
-        20,
-        make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
-    );
+    ], 20);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -782,7 +779,7 @@ fn attribute_change_breaks_text_run_coalescing() {
 
     let mut snapshot = create_empty_snapshot(20, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![
+    set_line_cells(&mut snapshot, 0, vec![
         make_glyph('A', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph('B', Color::Default, Color::Default, AttrFlags::empty()),
         make_glyph(
@@ -798,11 +795,7 @@ fn attribute_change_breaks_text_run_coalescing() {
             AttrFlags::empty(),
         ),
         make_glyph('E', Color::Default, Color::Default, AttrFlags::empty()),
-    ];
-    snapshot.lines[0].cells.resize(
-        20,
-        make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
-    );
+    ], 20);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -966,11 +959,7 @@ fn cursor_on_wide_character_primary_renders_correctly() {
 
     let mut snapshot = create_empty_snapshot(10, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![wide_primary, wide_spacer];
-    snapshot.lines[0].cells.resize(
-        10,
-        make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
-    );
+    set_line_cells(&mut snapshot, 0, vec![wide_primary, wide_spacer], 10);
 
     snapshot.cursor_state = Some(CursorRenderState {
         x: 0,
@@ -1037,8 +1026,7 @@ fn line_with_only_spaces_produces_fill_rect() {
 
     let mut snapshot = create_empty_snapshot(20, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells =
-        vec![make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()); 20];
+    set_line_cells(&mut snapshot, 0, vec![make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()); 20], 20);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -1095,7 +1083,7 @@ fn text_with_different_background_colors_not_coalesced() {
 
     let mut snapshot = create_empty_snapshot(10, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![
+    set_line_cells(&mut snapshot, 0, vec![
         make_glyph(
             'A',
             Color::Default,
@@ -1120,11 +1108,7 @@ fn text_with_different_background_colors_not_coalesced() {
             Color::Named(NamedColor::Blue),
             AttrFlags::empty(),
         ),
-    ];
-    snapshot.lines[0].cells.resize(
-        10,
-        make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
-    );
+    ], 10);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -1143,16 +1127,12 @@ fn single_character_with_bold_flag() {
 
     let mut snapshot = create_empty_snapshot(10, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![make_glyph(
+    set_line_cells(&mut snapshot, 0, vec![make_glyph(
         'B',
         Color::Default,
         Color::Default,
         AttrFlags::BOLD,
-    )];
-    snapshot.lines[0].cells.resize(
-        10,
-        make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
-    );
+    )], 10);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 
@@ -1184,7 +1164,7 @@ fn wide_character_followed_by_attribute_change() {
 
     let mut snapshot = create_empty_snapshot(10, 1);
     snapshot.lines[0].is_dirty = true;
-    snapshot.lines[0].cells = vec![
+    set_line_cells(&mut snapshot, 0, vec![
         wide_primary,
         wide_spacer,
         make_glyph(
@@ -1193,11 +1173,7 @@ fn wide_character_followed_by_attribute_change() {
             Color::Default,
             AttrFlags::empty(),
         ),
-    ];
-    snapshot.lines[0].cells.resize(
-        10,
-        make_glyph(' ', Color::Default, Color::Default, AttrFlags::empty()),
-    );
+    ], 10);
 
     let commands = renderer.prepare_render_commands(&snapshot, &config, &platform_state);
 

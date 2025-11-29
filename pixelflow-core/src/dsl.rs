@@ -40,21 +40,22 @@ pub trait MaskExt: Surface<u8> + Sized {
     /// Composites a foreground over a background using this surface as a mask (alpha).
     ///
     /// Generic over pixel format `P` for format-aware channel operations.
+    /// Both fg and bg must be `Surface<P>` - strongly typed throughout.
     ///
     /// # Type Parameters
     /// * `P` - The pixel format type (e.g., `Rgba`, `Bgra`).
     ///
     /// # Parameters
-    /// * `fg` - The foreground surface.
-    /// * `bg` - The background surface.
+    /// * `fg` - The foreground surface (must be `Surface<P>`).
+    /// * `bg` - The background surface (must be `Surface<P>`).
     ///
     /// # Returns
-    /// * An `Over` compositing operation parameterized by pixel format.
+    /// * An `Over` compositing operation that outputs `Surface<P>`.
     fn over<P, F, B>(self, fg: F, bg: B) -> Over<P, Self, F, B>
     where
         P: Pixel,
-        F: Surface<u32>,
-        B: Surface<u32>,
+        F: Surface<P>,
+        B: Surface<P>,
     {
         Over::new(self, fg, bg)
     }

@@ -26,6 +26,7 @@ type PlatformDriver = crate::display::drivers::WebDisplayDriver;
 pub struct EnginePlatform {
     driver: PlatformDriver,
     config: DriverConfig,
+    engine_sender: crate::channel::EngineSender,
     control_rx: Receiver<EngineCommand>,
     display_rx: Receiver<EngineCommand>,
     engine_sender: EngineSender,
@@ -48,12 +49,14 @@ impl EnginePlatform {
         info!("EnginePlatform::new() - Creating channel-based platform");
 
         let channels = create_engine_channels(64);
-        let driver = PlatformDriver::new(channels.engine_sender.clone())
+        let engine_sender = channels.engine_sender.clone();
+        let driver = PlatformDriver::new(channels.engine_sender)
             .context("Failed to create display driver")?;
 
         Ok(Self {
             driver,
             config,
+            engine_sender,
             control_rx: channels.control_rx,
             display_rx: channels.display_rx,
             engine_sender: channels.engine_sender,
@@ -64,6 +67,12 @@ impl EnginePlatform {
         Box::new(PlatformWaker {
             sender: self.engine_sender.clone(),
         })
+    }
+
+    /// Get a clone of the engine sender for external wake signaling.
+    /// External code can call `sender.send(EngineCommand::Doorbell)` to wake the engine.
+    pub fn engine_sender(&self) -> crate::channel::EngineSender {
+        self.engine_sender.clone()
     }
 
     pub fn run(self, app: impl Application + Send + 'static) -> Result<()> {
@@ -107,7 +116,15 @@ fn engine_loop(
         // 1. Drain control channel (high priority, unbounded)
         loop {
             match control_rx.try_recv() {
-                Ok(EngineCommand::Doorbell) => continue,
+                Ok(EngineCommand::Doorbell) => {
+                    // Wake the app so it can process its display_action_rx channel
+                    let action = app.on_event(EngineEvent::Wake);
+                    match handle_action(action, &driver)? {
+                        ActionResult::Continue => {}
+                        ActionResult::Redraw => needs_redraw = true,
+                        ActionResult::Shutdown => return Ok(()),
+                    }
+                }
                 Ok(EngineCommand::PresentComplete(snap)) => {
                     framebuffer = Some(snap.framebuffer);
                 }

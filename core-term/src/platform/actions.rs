@@ -11,7 +11,7 @@ pub enum PlatformAction {
     ResizePty { cols: u16, rows: u16 },
     /// Request the platform to render the provided snapshot.
     /// The orchestrator sends this in response to RequestSnapshot events.
-    /// The platform should render it and return via ControlEvent::FrameRendered.
+    /// Snapshot is disposed after rendering (CoW semantics).
     RequestRedraw(Box<crate::term::snapshot::TerminalSnapshot>),
     /// Set the title of the window.
     SetTitle(String),

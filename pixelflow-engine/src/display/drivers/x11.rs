@@ -9,13 +9,14 @@ use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, RenderSnapshot};
 use crate::input::{KeySymbol, Modifiers};
+use crate::platform::waker::{EventLoopWaker, X11Waker};
 use anyhow::{anyhow, Result};
 use log::{info, trace};
 use std::ffi::{CStr, CString};
 use std::mem;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use x11::{keysym, xlib};
 
 // --- Atoms ---
@@ -58,6 +59,7 @@ struct RunState {
 /// Clone to get a handle for sending commands. Only the original can run().
 pub struct X11DisplayDriver {
     cmd_tx: SyncSender<DriverCommand>,
+    waker: X11Waker,
     /// Only present on original, None on clones
     run_state: Option<RunState>,
 }
@@ -66,6 +68,7 @@ impl Clone for X11DisplayDriver {
     fn clone(&self) -> Self {
         Self {
             cmd_tx: self.cmd_tx.clone(),
+            waker: self.waker.clone(),
             run_state: None, // Clones can't run
         }
     }
@@ -77,12 +80,29 @@ impl DisplayDriver for X11DisplayDriver {
 
         Ok(Self {
             cmd_tx,
+            waker: X11Waker::new(),
             run_state: Some(RunState { cmd_rx, engine_tx }),
         })
     }
 
     fn send(&self, cmd: DriverCommand) -> Result<()> {
-        self.cmd_tx.send(cmd)?;
+        let mut cmd = cmd;
+        loop {
+            match self.cmd_tx.try_send(cmd) {
+                Ok(()) => break,
+                Err(TrySendError::Full(returned)) => {
+                    // Buffer full - wake event loop to drain, then retry
+                    self.waker.wake()?;
+                    cmd = returned;
+                    std::thread::yield_now();
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    return Err(anyhow!("Driver channel disconnected"));
+                }
+            }
+        }
+        // Command queued, wake event loop to process it
+        self.waker.wake()?;
         Ok(())
     }
 
@@ -92,13 +112,17 @@ impl DisplayDriver for X11DisplayDriver {
             .as_ref()
             .ok_or_else(|| anyhow!("Only original driver can run (this is a clone)"))?;
 
-        run_event_loop(&run_state.cmd_rx, &run_state.engine_tx)
+        run_event_loop(&run_state.cmd_rx, &run_state.engine_tx, &self.waker)
     }
 }
 
 // --- Event Loop ---
 
-fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) -> Result<()> {
+fn run_event_loop(
+    cmd_rx: &Receiver<DriverCommand>,
+    engine_tx: &EngineSender,
+    waker: &X11Waker,
+) -> Result<()> {
     // 1. Read Configure command first
     let config = match cmd_rx.recv()? {
         DriverCommand::Configure(c) => c,
@@ -135,6 +159,10 @@ fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) ->
 
         let window =
             xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
+
+        // Initialize waker now that we have display and window
+        waker.set_target(display, window);
+        let wake_atom = waker.wake_atom().unwrap();
 
         // Select Input Events
         xlib::XSelectInput(
@@ -180,11 +208,12 @@ fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) ->
             gc,
             wm_delete_window,
             atoms,
+            wake_atom,
             xrm_db,
             width_px: width,
             height_px: height,
             scale_factor: 1.0, // Updated below
-            pending_selection_request: None,
+            clipboard_data: String::new(),
         };
 
         // Query scale factor from Xft.dpi using initialized XRM database
@@ -212,12 +241,13 @@ struct X11State {
     gc: xlib::GC,
     wm_delete_window: xlib::Atom,
     atoms: SelectionAtoms,
+    wake_atom: xlib::Atom,
     xrm_db: Option<xlib::XrmDatabase>,
     width_px: u32,
     height_px: u32,
     scale_factor: f64,
-    // TODO: Arc the paste buffer for thread-safe clipboard handling
-    pending_selection_request: Option<xlib::XSelectionRequestEvent>,
+    /// Data we own for the CLIPBOARD selection
+    clipboard_data: String,
 }
 
 impl X11State {
@@ -267,23 +297,7 @@ impl X11State {
         engine_tx: &EngineSender,
     ) -> Result<()> {
         loop {
-            // 1. Poll X11 events
-            unsafe {
-                while xlib::XPending(self.display) > 0 {
-                    let mut event: xlib::XEvent = mem::zeroed();
-                    xlib::XNextEvent(self.display, &mut event);
-
-                    if let Some(display_event) = self.convert_xevent(&event) {
-                        if matches!(display_event, DisplayEvent::CloseRequested) {
-                            info!("X11: CloseRequested, exiting event loop");
-                            return Ok(());
-                        }
-                        let _ = engine_tx.send(EngineCommand::DisplayEvent(display_event));
-                    }
-                }
-            }
-
-            // 2. Process commands from engine
+            // 1. Process all pending commands first
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     DriverCommand::Configure(_) => {
@@ -314,8 +328,35 @@ impl X11State {
                 }
             }
 
-            // 3. Brief sleep to avoid busy-waiting
-            std::thread::sleep(std::time::Duration::from_micros(100));
+            // 2. Process all pending X11 events
+            unsafe {
+                while xlib::XPending(self.display) > 0 {
+                    let mut event: xlib::XEvent = mem::zeroed();
+                    xlib::XNextEvent(self.display, &mut event);
+
+                    if let Some(display_event) = self.convert_xevent(&event) {
+                        if matches!(display_event, DisplayEvent::CloseRequested) {
+                            info!("X11: CloseRequested, exiting event loop");
+                            return Ok(());
+                        }
+                        let _ = engine_tx.send(EngineCommand::DisplayEvent(display_event));
+                    }
+                }
+            }
+
+            // 3. Block on next X11 event (waker will post event when cmd arrives)
+            unsafe {
+                let mut event: xlib::XEvent = mem::zeroed();
+                xlib::XNextEvent(self.display, &mut event);
+
+                if let Some(display_event) = self.convert_xevent(&event) {
+                    if matches!(display_event, DisplayEvent::CloseRequested) {
+                        info!("X11: CloseRequested, exiting event loop");
+                        return Ok(());
+                    }
+                    let _ = engine_tx.send(EngineCommand::DisplayEvent(display_event));
+                }
+            }
         }
     }
 
@@ -324,16 +365,23 @@ impl X11State {
             match event.type_ {
                 xlib::ClientMessage => {
                     let client = event.client_message;
+                    // Check for window manager close request
                     let data0 = client.data.as_longs()[0];
                     if data0 as xlib::Atom == self.wm_delete_window {
                         return Some(DisplayEvent::CloseRequested);
                     }
-                    trace!("X11: ClientMessage (wake)");
+                    // Wake events are ignored - they just break us out of XNextEvent
+                    if client.message_type == self.wake_atom {
+                        trace!("X11: Wake event received");
+                        return None;
+                    }
+                    trace!("X11: Unknown ClientMessage type={}", client.message_type);
                     None
                 }
                 xlib::SelectionRequest => {
-                    self.pending_selection_request = Some(event.selection_request);
-                    Some(DisplayEvent::ClipboardDataRequested)
+                    // Respond to selection requests directly - we have the data locally
+                    self.handle_selection_request(&event.selection_request);
+                    None
                 }
                 xlib::SelectionNotify => self.handle_selection_notify(&event.selection),
                 xlib::KeyPress => {
@@ -535,13 +583,87 @@ impl X11State {
         }
     }
 
-    fn handle_copy_to_clipboard(&mut self, _text: &str) {
+    fn handle_copy_to_clipboard(&mut self, text: &str) {
+        // Store the text so we can respond to SelectionRequest events
+        self.clipboard_data = text.to_string();
+
         unsafe {
             xlib::XSetSelectionOwner(
                 self.display,
                 self.atoms.clipboard,
                 self.window,
                 xlib::CurrentTime,
+            );
+            xlib::XFlush(self.display);
+        }
+    }
+
+    /// Respond to a SelectionRequest from another app wanting to paste our data.
+    fn handle_selection_request(&mut self, event: &xlib::XSelectionRequestEvent) {
+        unsafe {
+            let mut response: xlib::XSelectionEvent = mem::zeroed();
+            response.type_ = xlib::SelectionNotify;
+            response.requestor = event.requestor;
+            response.selection = event.selection;
+            response.target = event.target;
+            response.time = event.time;
+
+            // Check what format was requested
+            if event.target == self.atoms.targets {
+                // TARGETS request: tell them what formats we support
+                let targets = [
+                    self.atoms.targets,
+                    self.atoms.utf8_string,
+                    self.atoms.text,
+                    self.atoms.xa_string,
+                ];
+                xlib::XChangeProperty(
+                    self.display,
+                    event.requestor,
+                    event.property,
+                    xlib::XA_ATOM,
+                    32,
+                    xlib::PropModeReplace,
+                    targets.as_ptr() as *const u8,
+                    targets.len() as i32,
+                );
+                response.property = event.property;
+            } else if event.target == self.atoms.utf8_string
+                || event.target == self.atoms.text
+                || event.target == self.atoms.xa_string
+            {
+                // Text data request: provide our clipboard data
+                let data = self.clipboard_data.as_bytes();
+                let target_type = if event.target == self.atoms.utf8_string {
+                    self.atoms.utf8_string
+                } else {
+                    self.atoms.xa_string
+                };
+
+                xlib::XChangeProperty(
+                    self.display,
+                    event.requestor,
+                    event.property,
+                    target_type,
+                    8,
+                    xlib::PropModeReplace,
+                    data.as_ptr(),
+                    data.len() as i32,
+                );
+                response.property = event.property;
+            } else {
+                // Unknown format - reject by setting property to None
+                response.property = 0;
+                trace!("X11: Rejecting selection request for unknown target");
+            }
+
+            // Send SelectionNotify back to requestor
+            xlib::XSendEvent(
+                self.display,
+                event.requestor,
+                xlib::False,
+                0,
+                &mut response as *mut _ as *mut xlib::XEvent,
             );
             xlib::XFlush(self.display);
         }

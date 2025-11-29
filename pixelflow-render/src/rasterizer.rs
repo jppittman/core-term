@@ -1,9 +1,12 @@
 //! Stateless frame processor for pixel-based rendering.
 
+use crate::color::Rgba;
 use crate::commands::Op;
-use crate::glyph::{self, GlyphRenderCoords, GlyphStyleOverrides, RenderTarget};
+use crate::glyph::font;
+use pixelflow_core::dsl::{MaskExt, SurfaceExt};
+use pixelflow_core::ops::Max;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::{Batch, TensorView};
+use pixelflow_core::{execute_typed, Batch, TensorView, TensorViewMut};
 
 /// Mutable view of the screen for rendering.
 ///
@@ -89,7 +92,9 @@ impl<'a> ScreenViewMut<'a> {
     }
 
     /// Draw a glyph at the given pixel position.
-    fn draw_glyph(&mut self, ch: char, pos: (usize, usize), style: GlyphStyleOverrides) {
+    fn draw_glyph(&mut self, ch: char, pos: (usize, usize), fg: u32, bg: u32, bold: bool, italic: bool) {
+        const ITALIC_SHEAR: i32 = 50;
+
         let (px, py) = pos; // Position in pixels
 
         // 1. Clear the cell background at pixel position
@@ -105,35 +110,68 @@ impl<'a> ScreenViewMut<'a> {
                 if fb_x >= self.width {
                     break;
                 }
-                self.fb[row_start + fb_x] = style.bg;
+                self.fb[row_start + fb_x] = bg;
             }
         }
 
-        // 2. Calculate Layout (Pixel Coords)
-        let metrics = glyph::get_glyph_metrics(ch, self.cell_height);
+        // 2. Get glyph Surface from pixelflow-fonts
+        let f = font();
+        let glyph = match f.glyph(ch, self.cell_height as f32) {
+            Some(g) => g,
+            None => return,
+        };
 
+        let bounds = glyph.bounds();
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
+
+        // 3. Calculate Layout (Pixel Coords)
         let baseline = (self.cell_height as f32 * 0.8) as i32;
+        let x_px = (px as i32 + bounds.bearing_x.max(0)) as usize;
+        let y_px = (py as i32 + (baseline - bounds.height as i32 - bounds.bearing_y).max(0)) as usize;
 
-        let x_px = (px as i32 + metrics.bearing_x.max(0)) as usize;
-        let y_px =
-            (py as i32 + (baseline - metrics.height as i32 - metrics.bearing_y).max(0)) as usize;
+        let width = bounds.width as usize;
+        let height = bounds.height as usize;
 
-        // 3. Render Direct (Zero Copy)
-        // Bounds check before calling unsafe slice
-        if x_px + metrics.width <= self.width && y_px + metrics.height <= self.height {
-            glyph::render_glyph_direct(
-                ch,
-                RenderTarget {
-                    dest: self.fb,
-                    stride: self.width,
-                },
-                GlyphRenderCoords {
-                    x_px,
-                    y_px,
-                    cell_height: self.cell_height,
-                },
-                style,
-            );
+        // Bounds check
+        if x_px + width > self.width || y_px + height > self.height {
+            return;
+        }
+
+        // 4. Create view and render using pixelflow
+        let mut screen_view = TensorViewMut::new(
+            self.fb,
+            self.width,
+            self.height,
+            self.width,
+        );
+
+        let mut window = unsafe { screen_view.sub_view(x_px, y_px, width, height) };
+
+        // Rgba IS a Surface<Rgba> - no wrapper needed
+        let fg_color = Rgba(fg);
+        let bg_color = Rgba(bg);
+
+        // The pixelflow way: Glyph IS the Surface<u8>, compose directly
+        // Rgba IS a Surface<Rgba> - colors can be used directly without wrappers
+        match (bold, italic) {
+            (false, false) => {
+                execute_typed(glyph.over::<Rgba, _, _>(fg_color, bg_color), &mut window);
+            }
+            (true, false) => {
+                let bold_glyph = Max(&glyph, (&glyph).offset(1, 0));
+                execute_typed(bold_glyph.over::<Rgba, _, _>(fg_color, bg_color), &mut window);
+            }
+            (false, true) => {
+                let italic_glyph = (&glyph).skew(ITALIC_SHEAR);
+                execute_typed(italic_glyph.over::<Rgba, _, _>(fg_color, bg_color), &mut window);
+            }
+            (true, true) => {
+                let italic_glyph = (&glyph).skew(ITALIC_SHEAR);
+                let bold_italic = Max(italic_glyph, italic_glyph.offset(1, 0));
+                execute_typed(bold_italic.over::<Rgba, _, _>(fg_color, bg_color), &mut window);
+            }
         }
     }
 }
@@ -242,14 +280,7 @@ pub fn process_frame<T: AsRef<[u8]>>(
                 bold,
                 italic,
             } => {
-                let style = GlyphStyleOverrides {
-                    fg: (*fg).into(),
-                    bg: (*bg).into(),
-                    bold: *bold,
-                    italic: *italic,
-                };
-
-                screen.draw_glyph(*ch, (*x, *y), style);
+                screen.draw_glyph(*ch, (*x, *y), (*fg).into(), (*bg).into(), *bold, *italic);
             }
 
             Op::Rect { x, y, w, h, color } => {

@@ -1,11 +1,17 @@
 // pixelflow-render/src/color.rs
-//! Color format types for framebuffer pixels.
+//! Unified color types for terminal rendering.
 //!
-//! Uses newtypes for type-safe color format handling with zero runtime overhead.
-//! The From trait provides conversion between formats.
+//! This module provides:
+//! - **Semantic colors**: `Color`, `NamedColor` for terminal color specification
+//! - **Text attributes**: `AttrFlags` for bold, italic, underline, etc.
+//! - **Pixel formats**: `Rgba`, `Bgra` for framebuffer pixel representation
 //!
-//! The `Pixel` trait provides SIMD-friendly batch operations for channel access,
-//! enabling zero-cost format abstraction in the render pipeline.
+//! # Design
+//!
+//! Colors flow through the system as follows:
+//! 1. Terminal escape codes specify semantic `Color` values (Named, Indexed, RGB)
+//! 2. At render time, `Color` is resolved to a concrete pixel value
+//! 3. Pixel formats (`Rgba`/`Bgra`) handle platform-specific byte ordering
 //!
 //! # Platform Format Requirements
 //!
@@ -17,22 +23,185 @@
 //! | Cocoa    | RGBA            | [`CocoaPixel`] |
 //! | Web      | RGBA            | [`WebPixel`] |
 //!
-//! When building render pipelines, use the appropriate pixel format type
-//! with combinators like [`Over`](pixelflow_core::ops::Over):
-//!
-//! ```ignore
-//! // For X11:
-//! let blend = mask.over::<Bgra, _, _>(fg, bg);
-//!
-//! // For Cocoa:
-//! let blend = mask.over::<Rgba, _, _>(fg, bg);
-//! ```
-//!
 //! The pixel format is monomorphized at compile time - no runtime conversion needed.
 
+use bitflags::bitflags;
+use pixelflow_core::pipe::Surface;
 use pixelflow_core::Batch;
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 // Re-export the Pixel trait from pixelflow-core
 pub use pixelflow_core::Pixel;
+
+// =============================================================================
+// Semantic Color Types
+// =============================================================================
+
+/// Standard ANSI named colors (indices 0-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[repr(u8)]
+pub enum NamedColor {
+    /// ANSI Black.
+    Black = 0,
+    /// ANSI Red.
+    Red = 1,
+    /// ANSI Green.
+    Green = 2,
+    /// ANSI Yellow.
+    Yellow = 3,
+    /// ANSI Blue.
+    Blue = 4,
+    /// ANSI Magenta.
+    Magenta = 5,
+    /// ANSI Cyan.
+    Cyan = 6,
+    /// ANSI White.
+    White = 7,
+    /// ANSI Bright Black.
+    BrightBlack = 8,
+    /// ANSI Bright Red.
+    BrightRed = 9,
+    /// ANSI Bright Green.
+    BrightGreen = 10,
+    /// ANSI Bright Yellow.
+    BrightYellow = 11,
+    /// ANSI Bright Blue.
+    BrightBlue = 12,
+    /// ANSI Bright Magenta.
+    BrightMagenta = 13,
+    /// ANSI Bright Cyan.
+    BrightCyan = 14,
+    /// ANSI Bright White.
+    BrightWhite = 15,
+}
+
+impl NamedColor {
+    /// Convert a u8 index (0-15) to a NamedColor.
+    ///
+    /// # Panics
+    /// Panics if `idx` >= 16.
+    pub fn from_index(idx: u8) -> Self {
+        assert!(idx < 16, "Invalid NamedColor index: {}. Must be 0-15.", idx);
+        // SAFETY: The check above ensures idx is within the valid range
+        unsafe { core::mem::transmute(idx) }
+    }
+
+    /// Returns the RGB representation of this named color.
+    pub fn to_rgb(self) -> (u8, u8, u8) {
+        match self {
+            NamedColor::Black => (0, 0, 0),
+            NamedColor::Red => (205, 0, 0),
+            NamedColor::Green => (0, 205, 0),
+            NamedColor::Yellow => (205, 205, 0),
+            NamedColor::Blue => (0, 0, 238),
+            NamedColor::Magenta => (205, 0, 205),
+            NamedColor::Cyan => (0, 205, 205),
+            NamedColor::White => (229, 229, 229),
+            NamedColor::BrightBlack => (127, 127, 127),
+            NamedColor::BrightRed => (255, 0, 0),
+            NamedColor::BrightGreen => (0, 255, 0),
+            NamedColor::BrightYellow => (255, 255, 0),
+            NamedColor::BrightBlue => (92, 92, 255),
+            NamedColor::BrightMagenta => (255, 0, 255),
+            NamedColor::BrightCyan => (0, 255, 255),
+            NamedColor::BrightWhite => (255, 255, 255),
+        }
+    }
+}
+
+/// Represents a semantic color value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Color {
+    /// Default foreground or background color.
+    Default,
+    /// A standard named ANSI color (indices 0-15).
+    Named(NamedColor),
+    /// An indexed color from the 256-color palette (indices 0-255).
+    Indexed(u8),
+    /// An RGB true color.
+    Rgb(u8, u8, u8),
+}
+
+impl Default for Color {
+    fn default() -> Self {
+        Color::Default
+    }
+}
+
+// Constants for 256-color palette conversion
+const ANSI_NAMED_COLOR_COUNT: u8 = 16;
+const COLOR_CUBE_OFFSET: u8 = 16;
+const COLOR_CUBE_SIZE: u8 = 6;
+const COLOR_CUBE_TOTAL_COLORS: u8 = COLOR_CUBE_SIZE * COLOR_CUBE_SIZE * COLOR_CUBE_SIZE;
+const GRAYSCALE_OFFSET: u8 = COLOR_CUBE_OFFSET + COLOR_CUBE_TOTAL_COLORS;
+
+impl From<Color> for u32 {
+    /// Convert a Color to a u32 pixel value (RGBA format: 0xAABBGGRR).
+    fn from(color: Color) -> u32 {
+        let (r, g, b) = match color {
+            Color::Default => (0, 0, 0),
+            Color::Named(named) => named.to_rgb(),
+            Color::Indexed(idx) => {
+                if idx < ANSI_NAMED_COLOR_COUNT {
+                    NamedColor::from_index(idx).to_rgb()
+                } else if idx < GRAYSCALE_OFFSET {
+                    // 6x6x6 Color Cube (indices 16-231)
+                    let cube_idx = idx - COLOR_CUBE_OFFSET;
+                    let r_comp = (cube_idx / (COLOR_CUBE_SIZE * COLOR_CUBE_SIZE)) % COLOR_CUBE_SIZE;
+                    let g_comp = (cube_idx / COLOR_CUBE_SIZE) % COLOR_CUBE_SIZE;
+                    let b_comp = cube_idx % COLOR_CUBE_SIZE;
+                    let r_val = if r_comp == 0 { 0 } else { r_comp * 40 + 55 };
+                    let g_val = if g_comp == 0 { 0 } else { g_comp * 40 + 55 };
+                    let b_val = if b_comp == 0 { 0 } else { b_comp * 40 + 55 };
+                    (r_val, g_val, b_val)
+                } else {
+                    // Grayscale ramp (indices 232-255)
+                    let gray_idx = idx - GRAYSCALE_OFFSET;
+                    let level = gray_idx * 10 + 8;
+                    (level, level, level)
+                }
+            }
+            Color::Rgb(r, g, b) => (r, g, b),
+        };
+        u32::from_le_bytes([r, g, b, 255])
+    }
+}
+
+// =============================================================================
+// Text Attributes
+// =============================================================================
+
+bitflags! {
+    /// Text attribute flags (bold, underline, etc.).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub struct AttrFlags: u16 {
+        /// Bold text.
+        const BOLD          = 1 << 0;
+        /// Faint (dim) text.
+        const FAINT         = 1 << 1;
+        /// Italic text.
+        const ITALIC        = 1 << 2;
+        /// Underlined text.
+        const UNDERLINE     = 1 << 3;
+        /// Blinking text.
+        const BLINK         = 1 << 4;
+        /// Reverse video (foreground and background swapped).
+        const REVERSE       = 1 << 5;
+        /// Hidden text (not visible).
+        const HIDDEN        = 1 << 6;
+        /// Strikethrough text.
+        const STRIKETHROUGH = 1 << 7;
+    }
+}
+
+// =============================================================================
+// Pixel Format Types
+// =============================================================================
 
 /// RGBA pixel: bytes are [R, G, B, A] in memory order.
 /// As a u32 on little-endian: 0xAABBGGRR
@@ -108,6 +277,10 @@ impl From<Rgba> for Bgra {
     }
 }
 
+// =============================================================================
+// Pixel Trait Implementations
+// =============================================================================
+
 impl Pixel for Rgba {
     #[inline]
     fn from_u32(v: u32) -> Self { Self(v) }
@@ -116,25 +289,21 @@ impl Pixel for Rgba {
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {
-        // RGBA: R is byte 0 (bits 0-7)
         batch & Batch::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_green(batch: Batch<u32>) -> Batch<u32> {
-        // RGBA: G is byte 1 (bits 8-15)
         (batch >> 8) & Batch::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
-        // RGBA: B is byte 2 (bits 16-23)
         (batch >> 16) & Batch::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
-        // RGBA: A is byte 3 (bits 24-31)
         batch >> 24
     }
 
@@ -157,25 +326,21 @@ impl Pixel for Bgra {
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {
-        // BGRA: R is byte 2 (bits 16-23)
         (batch >> 16) & Batch::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_green(batch: Batch<u32>) -> Batch<u32> {
-        // BGRA: G is byte 1 (bits 8-15)
         (batch >> 8) & Batch::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
-        // BGRA: B is byte 0 (bits 0-7)
         batch & Batch::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
-        // BGRA: A is byte 3 (bits 24-31)
         batch >> 24
     }
 
@@ -191,20 +356,43 @@ impl Pixel for Bgra {
 }
 
 // =============================================================================
+// Surface Implementations
+// =============================================================================
+// A Pixel type IS a constant Surface of itself.
+// Evaluating at any (x, y) returns the same color value.
+
+impl Surface<Rgba> for Rgba {
+    #[inline(always)]
+    fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<Rgba> {
+        let batch_u32 = Batch::splat(self.0);
+        batch_u32.transmute()
+    }
+}
+
+impl Surface<Bgra> for Bgra {
+    #[inline(always)]
+    fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<Bgra> {
+        let batch_u32 = Batch::splat(self.0);
+        batch_u32.transmute()
+    }
+}
+
+// =============================================================================
 // Platform-specific type aliases
 // =============================================================================
 
 /// Pixel format for X11 (XImage with ZPixmap on little-endian).
-/// X11 expects BGRA byte order.
 pub type X11Pixel = Bgra;
 
 /// Pixel format for Cocoa (CGImage with kCGImageAlphaPremultipliedLast).
-/// Cocoa expects RGBA byte order.
 pub type CocoaPixel = Rgba;
 
 /// Pixel format for Web (ImageData).
-/// Web/Canvas expects RGBA byte order.
 pub type WebPixel = Rgba;
+
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -257,7 +445,6 @@ mod tests {
 
     #[test]
     fn test_rgba_batch_channels() {
-        // Create 4 RGBA pixels with different values
         let p0 = Rgba::new(0x10, 0x20, 0x30, 0x40);
         let p1 = Rgba::new(0x11, 0x21, 0x31, 0x41);
         let p2 = Rgba::new(0x12, 0x22, 0x32, 0x42);
@@ -278,8 +465,6 @@ mod tests {
 
     #[test]
     fn test_bgra_batch_channels() {
-        // Create 4 BGRA pixels with different values
-        // Bgra::new takes (b, g, r, a)
         let p0 = Bgra::new(0x30, 0x20, 0x10, 0x40);
         let p1 = Bgra::new(0x31, 0x21, 0x11, 0x41);
         let p2 = Bgra::new(0x32, 0x22, 0x12, 0x42);
@@ -292,7 +477,6 @@ mod tests {
         let b = Bgra::batch_blue(batch);
         let a = Bgra::batch_alpha(batch);
 
-        // Even though stored as BGRA, batch_red should return R values
         assert_eq!(r.to_array_usize(), [0x10, 0x11, 0x12, 0x13]);
         assert_eq!(g.to_array_usize(), [0x20, 0x21, 0x22, 0x23]);
         assert_eq!(b.to_array_usize(), [0x30, 0x31, 0x32, 0x33]);

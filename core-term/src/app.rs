@@ -3,7 +3,6 @@ use crate::orchestrator::OrchestratorSender;
 use crate::platform::actions::PlatformAction;
 use crate::surface::{GridBuffer, TerminalSurface};
 use crate::term::snapshot::TerminalSnapshot;
-use crate::term::ControlEvent;
 use pixelflow_core::pipe::Surface;
 use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
 use std::sync::mpsc::Receiver;
@@ -67,7 +66,7 @@ impl Application for CoreTermApp {
     }
 
     fn render(&mut self, _state: &AppState) -> Option<Box<dyn Surface<u32> + Send + Sync>> {
-        // Take ownership of the snapshot (will return it after building grid)
+        // Take ownership of the snapshot (CoW - disposed after use)
         let snapshot = self.current_snapshot.take()?;
 
         // Convert config colors to u32
@@ -75,9 +74,6 @@ impl Application for CoreTermApp {
         let default_bg: u32 = self.config.colors.background.into();
 
         let grid = GridBuffer::from_snapshot(&snapshot, default_fg, default_bg);
-
-        // Return snapshot to orchestrator for reuse (completes circulation)
-        let _ = self.orchestrator_tx.send(ControlEvent::FrameRendered(snapshot));
 
         let terminal = TerminalSurface {
             grid,
@@ -93,10 +89,11 @@ impl Application for CoreTermApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrator::orchestrator_channel::{create_orchestrator_channels, OrchestratorEvent};
+    use crate::orchestrator::orchestrator_channel::create_orchestrator_channels;
     use crate::term::snapshot::{SnapshotLine, TerminalSnapshot};
     use crate::glyph::{ContentCell, Glyph, Attributes};
     use pixelflow_engine::AppState;
+    use std::sync::Arc;
 
     fn create_test_snapshot(cols: usize, rows: usize) -> Box<TerminalSnapshot> {
         let empty_glyph = Glyph::Single(ContentCell {
@@ -105,10 +102,10 @@ mod tests {
         });
 
         let lines = (0..rows)
-            .map(|_| SnapshotLine {
-                is_dirty: true,
-                cells: vec![empty_glyph.clone(); cols],
-            })
+            .map(|_| SnapshotLine::from_arc(
+                Arc::new(vec![empty_glyph.clone(); cols]),
+                true,
+            ))
             .collect();
 
         Box::new(TerminalSnapshot {
@@ -121,14 +118,10 @@ mod tests {
         })
     }
 
-    /// Regression test: Verify snapshot is returned after render() completes.
-    ///
-    /// Bug: The snapshot circulation was broken because render() consumed the snapshot
-    /// but never returned it via ControlEvent::FrameRendered. This caused subsequent
-    /// frames to fail with "No snapshot available (buffer out)".
+    /// Test that render consumes snapshot and produces a surface
     #[test]
-    fn render_returns_snapshot_via_frame_rendered() {
-        let (orchestrator_tx, ui_rx, _pty_rx) = create_orchestrator_channels(16);
+    fn render_consumes_snapshot() {
+        let (orchestrator_tx, _ui_rx, _pty_rx) = create_orchestrator_channels(16);
         let (display_tx, display_rx) = std::sync::mpsc::sync_channel(16);
 
         let mut app = CoreTermApp::new(
@@ -144,7 +137,7 @@ mod tests {
         // Process the event to store the snapshot
         app.on_event(EngineEvent::Wake);
 
-        // Call render - this should consume and return the snapshot
+        // Call render - this should consume the snapshot
         let state = AppState {
             width_px: 800,
             height_px: 384,
@@ -153,23 +146,14 @@ mod tests {
         let surface = app.render(&state);
         assert!(surface.is_some(), "render() should return a surface");
 
-        // Verify snapshot was returned via FrameRendered
-        let event = ui_rx.try_recv().expect("FrameRendered should be sent");
-        match event {
-            OrchestratorEvent::Control(ControlEvent::FrameRendered(returned_snapshot)) => {
-                assert_eq!(returned_snapshot.dimensions, (80, 24));
-            }
-            other => panic!("Expected FrameRendered, got {:?}", other),
-        }
-
         // Verify current_snapshot is now None (was consumed)
         assert!(app.current_snapshot.is_none());
     }
 
-    /// Verify multiple render cycles work (snapshot circulation is not broken)
+    /// Verify multiple render cycles work with CoW snapshots
     #[test]
     fn multiple_render_cycles_work() {
-        let (orchestrator_tx, ui_rx, _pty_rx) = create_orchestrator_channels(16);
+        let (orchestrator_tx, _ui_rx, _pty_rx) = create_orchestrator_channels(16);
         let (display_tx, display_rx) = std::sync::mpsc::sync_channel(16);
 
         let mut app = CoreTermApp::new(
@@ -184,7 +168,7 @@ mod tests {
             scale_factor: 1.0,
         };
 
-        // Simulate 3 render cycles
+        // Simulate 3 render cycles - each snapshot is independent (CoW)
         for i in 0..3 {
             // Send snapshot
             let snapshot = create_test_snapshot(80, 24);
@@ -194,13 +178,6 @@ mod tests {
             // Render
             let surface = app.render(&state);
             assert!(surface.is_some(), "Cycle {}: render() should return surface", i);
-
-            // Verify FrameRendered was sent
-            let event = ui_rx.try_recv();
-            assert!(
-                matches!(event, Ok(OrchestratorEvent::Control(ControlEvent::FrameRendered(_)))),
-                "Cycle {}: FrameRendered should be sent", i
-            );
         }
     }
 }
