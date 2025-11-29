@@ -7,7 +7,7 @@ use crate::input::MouseButton;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
 use log::info;
-use pixelflow_render::rasterizer::{process_frame, ScreenViewMut};
+use pixelflow_render::rasterizer::{materialize_into, ScreenViewMut};
 
 pub struct EnginePlatform {
     display_manager: DisplayManager,
@@ -123,6 +123,7 @@ impl EnginePlatform {
                 })
             }
             DisplayEvent::CloseRequested => Some(EngineEvent::CloseRequested),
+            DisplayEvent::Wake => Some(EngineEvent::Wake),
             DisplayEvent::ClipboardDataRequested => None, // Handled internally? Or passed to app? App handles copy/paste.
             // Wait, DisplayEvent::ClipboardDataRequested means X11 needs data.
             // CoreTermApp logic handles clipboard.
@@ -173,7 +174,10 @@ impl EnginePlatform {
             scale_factor: metrics.scale_factor,
         };
 
-        let ops = app.render(&app_state);
+        // Get the composed surface from the app
+        let Some(surface) = app.render(&app_state) else {
+            return Ok(()); // Nothing to render
+        };
 
         // Get framebuffer
         let mut framebuffer = if let Some(fb) = self.framebuffer.take() {
@@ -189,43 +193,24 @@ impl EnginePlatform {
             }
         };
 
-        // Convert u8 framebuffer to u32 slice for process_frame
-        // Wait, process_frame takes &mut [u32].
-        // The framebuffer is Box<[u8]>.
-        // I need to cast it safely.
+        // Convert u8 framebuffer to u32 slice
         let (prefix, pixels, suffix) = unsafe { framebuffer.align_to_mut::<u32>() };
         if !prefix.is_empty() || !suffix.is_empty() {
             panic!("Framebuffer not aligned to u32");
         }
 
-        // Assume cell_width/height?
-        // process_frame needs cell dims for text layout.
-        // AppState has pixels.
-        // I should probably get cell dims from Config/DriverConfig?
-        // Or pass it in AppState?
-        // DriverConfig has cell_width_px.
-        // But EnginePlatform doesn't hold Config easily visible here.
-        // self.display_manager has it? DisplayManager has metrics.
-        // metrics has width/height/scale. Not cell size.
-        // Maybe hardcode or add to DisplayMetrics.
-        // For now, let's assume arbitrary cell size or get from somewhere.
-        // Actually, `ops` are generic. `Op::Text` uses grid?
-        // I checked `process_frame`. `Op::Text` needs `cell_width` to calculate pixel pos.
-        // If `CoreTermApp` emits `Op::Text`, it assumes a grid.
-        // So `EnginePlatform` MUST know the grid size.
-        // I'll assume standard 10x20 or similar for now, or add it to `DisplayMetrics`.
-        let cell_w = 10; // Placeholder
-        let cell_h = 20; // Placeholder
-
+        // Cell dimensions not needed for Surface-based rendering
+        // (the Surface handles its own coordinate mapping)
         let mut screen = ScreenViewMut::new(
             pixels,
             metrics.width_px as usize,
             metrics.height_px as usize,
-            cell_w,
-            cell_h,
+            0, // cell_w unused
+            0, // cell_h unused
         );
 
-        process_frame(&mut screen, &ops);
+        // Materialize the surface into the framebuffer
+        materialize_into(&mut screen, surface.as_ref());
 
         // Present
         let snapshot = RenderSnapshot {

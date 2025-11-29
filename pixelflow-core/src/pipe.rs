@@ -2,9 +2,10 @@ use crate::Batch;
 
 /// A pure functional surface: `(x, y) -> T`.
 ///
-/// This is a "Lazy Array". It doesn't own memory; it describes how to
-/// compute a value at any coordinate.
-pub trait Surface<T: Copy>: Copy {
+/// This is a "Lazy Array". It describes how to compute a value at any coordinate.
+/// The output type T must be Copy (for SIMD Batch operations), but the
+/// Surface itself can own memory (like a grid buffer).
+pub trait Surface<T: Copy> {
     /// Evaluates the surface at the specified batch of coordinates.
     ///
     /// # Parameters

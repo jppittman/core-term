@@ -14,6 +14,7 @@ pub mod orchestrator;
 pub mod pixels;
 pub mod platform;
 pub mod renderer;
+pub mod surface;
 pub mod term;
 
 // Use statements for items needed in main.rs

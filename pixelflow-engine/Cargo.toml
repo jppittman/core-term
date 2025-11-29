@@ -59,9 +59,22 @@ optional = true
 version = "0.7"
 optional = true
 
+# Platform-specific dependencies for auto-detection when no feature is specified
+# These ensure the right display driver compiles on each platform by default
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSDate", "NSAutoreleasePool", "NSGeometry", "NSRunLoop"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSView", "NSEvent", "NSColor", "NSPasteboard"] }
+core-foundation = "0.9"
+core-graphics = "0.24"
+core-text = "20.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11 = "2.21.0"
+yeslogic-fontconfig-sys = "6.0.0"
+freetype = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.92"
@@ -102,4 +115,5 @@ display_x11 = [
     "freetype",
 ]
 
-default = ["display_x11"]
+# No default - let the consuming crate pick based on platform
+default = []

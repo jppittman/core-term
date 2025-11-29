@@ -1,9 +1,11 @@
 pub mod display;
+pub mod frame;
 pub mod input;
 pub mod platform;
 pub mod traits;
 
 pub use display::messages::DriverConfig as WindowConfig;
+pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
 pub use platform::EnginePlatform;
 pub use traits::{AppAction, AppState, Application, EngineEvent};
 
