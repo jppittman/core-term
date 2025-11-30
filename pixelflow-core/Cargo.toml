@@ -11,3 +11,4 @@ name = "core_bench"
 harness = false
 
 [dependencies]
+libm = "0.2.15"

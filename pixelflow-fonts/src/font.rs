@@ -1,10 +1,9 @@
 //! Font: TTF parsing and glyph Surface creation.
-//!
-//! The pixelflow way: `font.glyph('A', 24.0)` returns `Option<Glyph>` (a Surface<u8>).
 
 use thiserror::Error;
 pub use ttf_parser::GlyphId;
 use ttf_parser::{Face, FaceParsingError, OutlineBuilder};
+use std::sync::Arc;
 
 use crate::curves::{Line, Point, Quadratic, Segment};
 use crate::glyph::{Glyph, GlyphBounds};
@@ -15,8 +14,9 @@ pub enum FontError {
     ParseError(#[from] FaceParsingError),
 }
 
+#[derive(Clone)]
 pub struct Font<'a> {
-    face: Face<'a>,
+    face: Arc<Face<'a>>, // Make Font cloneable and cheap
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -30,7 +30,7 @@ pub struct FontMetrics {
 impl<'a> Font<'a> {
     pub fn from_bytes(data: &'a [u8]) -> Result<Self, FontError> {
         let face = Face::parse(data, 0)?;
-        Ok(Self { face })
+        Ok(Self { face: Arc::new(face) })
     }
 
     pub fn metrics(&self) -> FontMetrics {
@@ -43,19 +43,12 @@ impl<'a> Font<'a> {
     }
 
     /// The pixelflow way: one call, returns a Surface<u8>.
-    ///
-    /// ```ignore
-    /// let glyph = font.glyph('A', 24.0)?;
-    /// let rendered = glyph.over(fg, bg);
-    /// ```
     pub fn glyph(&self, ch: char, size: f32) -> Option<Glyph> {
         let glyph_id = self.face.glyph_index(ch)?;
 
         let scale = size / self.face.units_per_em() as f32;
         let mut builder = GlyphBuilder::new(scale);
 
-        // outline_glyph returns None for empty glyphs (like space)
-        // but we still want to return a Glyph with bounds
         let _ = self.face.outline_glyph(glyph_id, &mut builder);
 
         let bbox = self
@@ -76,12 +69,12 @@ impl<'a> Font<'a> {
         };
 
         Some(Glyph {
-            segments: builder.segments,
+            segments: Arc::from(builder.segments),
             bounds,
         })
     }
 
-    /// Get horizontal advance for a character at a given size.
+    // ... advance/kern ...
     pub fn advance(&self, ch: char, size: f32) -> f32 {
         let scale = size / self.face.units_per_em() as f32;
         self.face
@@ -91,7 +84,6 @@ impl<'a> Font<'a> {
             .unwrap_or(0.0)
     }
 
-    /// Get kerning between two characters at a given size.
     pub fn kern(&self, left: char, right: char, size: f32) -> f32 {
         let scale = size / self.face.units_per_em() as f32;
         let left_id = match self.face.glyph_index(left) {
@@ -115,7 +107,7 @@ impl<'a> Font<'a> {
 }
 
 // ============================================================================
-// Outline Builder - converts TTF outlines to Segments
+// Outline Builder
 // ============================================================================
 
 struct GlyphBuilder {

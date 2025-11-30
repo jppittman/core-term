@@ -52,3 +52,91 @@ pub trait Pixel: Copy + Default + 'static + Send + Sync {
 // Note: Surface<P> for concrete pixel types (Rgba, Bgra) is implemented
 // in pixelflow-render/src/color.rs to avoid conflicting with the closure
 // blanket impl in pipe.rs.
+
+impl Pixel for u8 {
+    #[inline(always)]
+    fn from_u32(v: u32) -> Self {
+        v as u8
+    }
+
+    #[inline(always)]
+    fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    #[inline(always)]
+    fn batch_red(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
+
+    #[inline(always)]
+    fn batch_green(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
+
+    #[inline(always)]
+    fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
+
+    #[inline(always)]
+    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
+
+    #[inline(always)]
+    fn batch_from_channels(
+        r: Batch<u32>,
+        _g: Batch<u32>,
+        _b: Batch<u32>,
+        _a: Batch<u32>,
+    ) -> Batch<u32> {
+        r
+    }
+}
+
+impl Pixel for u32 {
+    #[inline(always)]
+    fn from_u32(v: u32) -> Self {
+        v
+    }
+
+    #[inline(always)]
+    fn to_u32(self) -> u32 {
+        self
+    }
+
+    // Assume packed RGBA (Little Endian: A B G R in memory?)
+    // Actually typical u32 pixel: 0xAABBGGRR (little endian).
+    // R is low byte.
+
+    #[inline(always)]
+    fn batch_red(batch: Batch<u32>) -> Batch<u32> {
+        batch & Batch::splat(0xFF)
+    }
+
+    #[inline(always)]
+    fn batch_green(batch: Batch<u32>) -> Batch<u32> {
+        (batch >> 8) & Batch::splat(0xFF)
+    }
+
+    #[inline(always)]
+    fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
+        (batch >> 16) & Batch::splat(0xFF)
+    }
+
+    #[inline(always)]
+    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
+        (batch >> 24) & Batch::splat(0xFF)
+    }
+
+    #[inline(always)]
+    fn batch_from_channels(
+        r: Batch<u32>,
+        g: Batch<u32>,
+        b: Batch<u32>,
+        a: Batch<u32>,
+    ) -> Batch<u32> {
+        r | (g << 8) | (b << 16) | (a << 24)
+    }
+}
