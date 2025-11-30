@@ -48,7 +48,9 @@ pub use color::{
 };
 pub use frame::Frame;
 pub use glyph::font;
-pub use pixelflow_fonts::{Font, Glyph, GlyphBounds};
+pub use pixelflow_fonts::{
+    BakedExt, Font, GlyphSurface, LazyBaked, glyph, glyphs, glyphs_cached, glyphs_scaled,
+};
 pub use rasterizer::{execute, render, render_to_buffer, render_u32};
 
 // Re-export core types for convenience

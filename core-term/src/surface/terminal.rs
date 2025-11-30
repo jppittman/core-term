@@ -7,6 +7,11 @@
 use crate::surface::grid::GridBuffer;
 use pixelflow_core::pipe::Surface;
 use pixelflow_core::Batch;
+use pixelflow_render::{GlyphSurface, LazyBaked};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+pub type GlyphCache = HashMap<char, LazyBaked<GlyphSurface<'static>, u8>>;
 
 /// A terminal rendered as a functional surface.
 ///
@@ -19,15 +24,24 @@ pub struct TerminalSurface {
     pub cell_width: usize,
     /// Cell height in pixels.
     pub cell_height: usize,
+    /// Glyph cache for rendering.
+    pub glyph_cache: Arc<GlyphCache>,
 }
 
 impl TerminalSurface {
     /// Creates a new terminal surface.
-    pub fn new(cols: usize, rows: usize, cell_width: usize, cell_height: usize) -> Self {
+    pub fn new(
+        cols: usize,
+        rows: usize,
+        cell_width: usize,
+        cell_height: usize,
+        glyph_cache: Arc<GlyphCache>,
+    ) -> Self {
         Self {
             grid: GridBuffer::new(cols, rows),
             cell_width,
             cell_height,
+            glyph_cache,
         }
     }
 
@@ -57,9 +71,24 @@ impl TerminalSurface {
         let lx = (x as usize) % self.cell_width;
         let ly = (y as usize) % self.cell_height;
 
-        // Simple box rendering for now (placeholder until Loop-Blinn is wired)
-        // This just renders a solid foreground for non-space characters
-        // TODO: Wire up proper SDF glyph rendering
+        // Try to use cache
+        if let Some(baked) = self.glyph_cache.get(&cell.ch) {
+            // Sample the baked glyph at (lx, ly)
+            // baked is created with size (cell_width, cell_height).
+            // So lx, ly are valid.
+
+            let val = baked.eval(Batch::splat(lx as u32), Batch::splat(ly as u32));
+            // Cast to u32 to extract
+            let coverage = val.transmute::<u32>().extract(0);
+
+            if coverage > 100 {
+                return cell.fg;
+            } else {
+                return cell.bg;
+            }
+        }
+
+        // Fallback (tofu)
         let in_glyph = lx >= 1 && lx < self.cell_width - 1 && ly >= 2 && ly < self.cell_height - 2;
 
         if in_glyph {
@@ -95,6 +124,7 @@ impl Clone for TerminalSurface {
             grid: self.grid.clone(),
             cell_width: self.cell_width,
             cell_height: self.cell_height,
+            glyph_cache: self.glyph_cache.clone(),
         }
     }
 }
@@ -106,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_terminal_surface_new() {
-        let surface = TerminalSurface::new(80, 24, 10, 16);
+        let surface = TerminalSurface::new(80, 24, 10, 16, Arc::new(HashMap::new()));
         assert_eq!(surface.grid.cols, 80);
         assert_eq!(surface.grid.rows, 24);
         assert_eq!(surface.cell_width, 10);
@@ -115,7 +145,7 @@ mod tests {
 
     #[test]
     fn test_eval_scalar_empty() {
-        let surface = TerminalSurface::new(10, 5, 10, 16);
+        let surface = TerminalSurface::new(10, 5, 10, 16, Arc::new(HashMap::new()));
 
         // Empty cell should return background
         let color = surface.eval_scalar(5, 5);
@@ -125,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_eval_scalar_with_char() {
-        let mut surface = TerminalSurface::new(10, 5, 10, 16);
+        let mut surface = TerminalSurface::new(10, 5, 10, 16, Arc::new(HashMap::new()));
 
         // Set a character in cell (0, 0)
         let cell = Cell {
@@ -148,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_eval_batch() {
-        let surface = TerminalSurface::new(10, 5, 10, 16);
+        let surface = TerminalSurface::new(10, 5, 10, 16, Arc::new(HashMap::new()));
 
         let x = Batch::new(0, 5, 10, 15);
         let y = Batch::new(0, 8, 16, 24);
