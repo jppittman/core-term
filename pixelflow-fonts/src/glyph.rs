@@ -1,9 +1,8 @@
 //! Glyph: A Surface<u8> that lazily evaluates SDF coverage.
-//!
-//! The pixelflow way: Glyph IS the Surface, not a wrapper around one.
 
 use crate::curves::Segment;
-use pixelflow_core::{pipe::Surface, Batch};
+use pixelflow_core::{pipe::Surface, Batch, SimdFloatOps, SimdOps};
+use std::sync::Arc;
 
 /// Glyph bounds in pixel coordinates.
 #[derive(Clone, Copy, Debug, Default)]
@@ -14,12 +13,18 @@ pub struct GlyphBounds {
     pub bearing_y: i32,
 }
 
+/// A surface that exposes its underlying curves and bounds.
+pub trait CurveSurface: Surface<u8> {
+    fn curves(&self) -> &[Segment];
+    fn bounds(&self) -> GlyphBounds;
+}
+
 /// A glyph is a Surface<u8> (coverage/alpha mask).
 ///
 /// Holds scaled outline segments, evaluates SDF coverage on demand.
-/// This is the pixelflow way: lazy evaluation, composes via combinators.
+#[derive(Clone)]
 pub struct Glyph {
-    pub(crate) segments: Vec<Segment>,
+    pub(crate) segments: Arc<[Segment]>,
     pub(crate) bounds: GlyphBounds,
 }
 
@@ -31,65 +36,79 @@ impl Glyph {
     }
 }
 
-impl Surface<u8> for Glyph {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        let xs = x.to_array_usize();
-        let ys = y.to_array_usize();
-        let mut results = [0u32; 4];
-
-        // Bounds for early-out optimization
-        let bx = self.bounds.bearing_x as f32;
-        let by_top = self.bounds.bearing_y as f32;
-        let by_bottom = by_top - self.bounds.height as f32;
-        let w = self.bounds.width as f32;
-
-        let min_x = bx - 1.0;
-        let max_x = bx + w + 1.0;
-        let min_y = by_bottom - 1.0;
-        let max_y = by_top + 1.0;
-
-        for i in 0..4 {
-            let px = xs[i] as f32 + 0.5; // pixel center
-            let py = ys[i] as f32 + 0.5;
-
-            // Early-out: skip if outside bounds
-            if px < min_x || px > max_x || py < min_y || py > max_y {
-                results[i] = 0;
-                continue;
-            }
-
-            let mut winding = 0;
-            let mut min_signed_dist: f32 = 1000.0;
-
-            for segment in &self.segments {
-                winding += segment.winding(px, py);
-
-                let dist = segment.signed_pseudo_distance(px, py);
-                if dist.abs() < min_signed_dist.abs() {
-                    min_signed_dist = dist;
-                }
-            }
-
-            let inside = winding != 0;
-
-            let signed_dist = if inside {
-                -min_signed_dist.abs()
-            } else {
-                min_signed_dist.abs()
-            };
-
-            // Convert SDF to alpha: smooth step at distance 0.5
-            let alpha = (0.5 - signed_dist).clamp(0.0, 1.0);
-            results[i] = (alpha * 255.0) as u32;
-        }
-
-        Batch::new(results[0], results[1], results[2], results[3]).cast()
+impl CurveSurface for Glyph {
+    fn curves(&self) -> &[Segment] {
+        &self.segments
+    }
+    fn bounds(&self) -> GlyphBounds {
+        self.bounds
     }
 }
 
-// Also implement for &Glyph so it can be borrowed in combinators
+/// Evaluates curves at pixel coordinates to produce coverage (SDF).
+///
+/// `dilation`: Amount to subtract from distance (positive = bold).
+pub fn eval_curves(curves: &[Segment], bounds: GlyphBounds, x: Batch<u32>, y: Batch<u32>, dilation: Batch<f32>) -> Batch<u8> {
+    let bx = bounds.bearing_x as f32;
+    let by_top = bounds.bearing_y as f32;
+
+    // Coordinate mapping: pixel (0,0) -> (bx, by_top) in curve space (if Y goes UP)
+    // curve_x = pixel_x + bx
+    // curve_y = by_top - pixel_y
+
+    let py_pixel = y.to_f32() + Batch::splat(0.5);
+    let px_pixel = x.to_f32() + Batch::splat(0.5);
+
+    let cx = px_pixel + Batch::splat(bx);
+    let cy = Batch::splat(by_top) - py_pixel;
+
+    let mut winding = Batch::splat(0u32);
+    let mut min_dist = Batch::splat(1000.0f32);
+
+    for segment in curves {
+        winding = winding + segment.winding_batch(cx, cy);
+        let d = segment.min_distance_batch(cx, cy);
+        min_dist = min_dist.abs().min(d.abs());
+    }
+
+    let inside = winding.cmp_ne(Batch::splat(0));
+    let signed_dist = min_dist.select(
+        Batch::splat(0.0) - min_dist, // -dist if inside
+        inside.transmute::<f32>()
+    );
+
+    // Apply dilation (bolding)
+    // dist' = dist - dilation.
+    // If dilation > 0, dist becomes smaller (more negative if inside, less positive if outside).
+    // This expands the shape.
+    let signed_dist = signed_dist - dilation;
+
+    // Alpha = 0.5 - signed_dist
+    let alpha = Batch::splat(0.5) - signed_dist;
+    let clamped = alpha.max(Batch::splat(0.0)).min(Batch::splat(1.0));
+
+    let pixel_val = clamped * Batch::splat(255.0);
+    let pixel_u32 = pixel_val.to_u32();
+
+    let packed = pixel_u32.transmute::<u8>(); // bitcast
+    let shuffle_mask = Batch::<u8>::from_array([
+        0, 4, 8, 12,
+        0x80, 0x80, 0x80, 0x80,
+        0x80, 0x80, 0x80, 0x80,
+        0x80, 0x80, 0x80, 0x80,
+    ]);
+    packed.shuffle_bytes(shuffle_mask)
+}
+
+impl Surface<u8> for Glyph {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+        eval_curves(&self.segments, self.bounds, x, y, Batch::splat(0.0))
+    }
+}
+
+// Implement for &Glyph
 impl Surface<u8> for &Glyph {
-    #[inline]
+    #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
         (*self).eval(x, y)
     }

@@ -1,4 +1,4 @@
-use core::ops::{Add, BitAnd, BitOr, Mul, Not, Shl, Shr, Sub};
+use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
 
 // Use the top-level backends module.
 // Note: We assume `mod backends` is declared in lib.rs.
@@ -24,22 +24,13 @@ pub const LANES_U32: usize = 4;
 /// Calculates the aligned stride for a given width, ensuring SIMD compatibility.
 ///
 /// This aligns the width to the next multiple of `LANES_U32`.
-///
-/// # Parameters
-/// * `width` - The requested width in pixels.
-///
-/// # Returns
-/// * The aligned stride.
 pub const fn calculate_aligned_stride(width: usize) -> usize {
     (width + LANES_U32 - 1) & !(LANES_U32 - 1)
 }
 
 /// A SIMD batch of values of type `T`.
 ///
-/// This is the core type for vector operations. It wraps a platform-specific SIMD vector
-/// (e.g., SSE2 __m128i on x86, NEON on ARM, or a fallback array).
-// FIX: Removed Eq, Ord, PartialEq, PartialOrd derive macros.
-// SIMD types generally don't support total ordering/equality due to mask results.
+/// This is the core type for vector operations. It wraps a platform-specific SIMD vector.
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Batch<T: Copy> {
@@ -62,9 +53,6 @@ impl<T: Copy> Batch<T> {
 
 impl Batch<u32> {
     /// Casts the batch to `u16` elements.
-    ///
-    /// # Returns
-    /// * A `Batch<u16>`.
     #[inline(always)]
     #[must_use]
     pub fn as_u16(self) -> Batch<u16> {
@@ -72,11 +60,6 @@ impl Batch<u32> {
     }
 
     /// Converts the batch to a fixed-size array of `usize`.
-    ///
-    /// Useful for extracting indices for scalar operations.
-    ///
-    /// # Returns
-    /// * An array of 4 `usize` values.
     #[inline(always)]
     pub fn to_array_usize(self) -> [usize; 4] {
         let mut arr = [0u32; 4];
@@ -90,9 +73,6 @@ impl Batch<u32> {
     }
 
     /// Converts the batch to a packed array of `u8` (first 4 bytes).
-    ///
-    /// # Returns
-    /// * An array of 4 `u8` values.
     #[inline(always)]
     pub fn to_bytes_packed(self) -> [u8; 4] {
         let mut arr = [0u32; 4];
@@ -101,12 +81,6 @@ impl Batch<u32> {
     }
 
     /// Extracts a single element from the batch at the given index.
-    ///
-    /// # Parameters
-    /// * `index` - The lane index (0-3).
-    ///
-    /// # Returns
-    /// * The `u32` value at the index.
     #[inline(always)]
     pub fn extract(self, index: usize) -> u32 {
         let mut arr = [0u32; 4];
@@ -115,17 +89,6 @@ impl Batch<u32> {
     }
 
     /// Gathers values from a slice using a set of indices.
-    ///
-    /// # Parameters
-    /// * `src` - The source slice.
-    /// * `indices` - An array of 4 indices to gather from.
-    ///
-    /// # Returns
-    /// * A `Batch<u32>` containing the gathered values.
-    ///
-    /// # Safety
-    /// This function uses `get_unchecked` internally (conceptually), but the implementation here calls `get_unchecked`.
-    /// Wait, the implementation calls `src.get_unchecked`. So it is unsafe if indices are out of bounds.
     #[inline(always)]
     #[must_use]
     pub unsafe fn gather<T: Gatherable>(src: &[T], indices: [usize; 4]) -> Self {
@@ -139,18 +102,43 @@ impl Batch<u32> {
         }
     }
 
+    /// Converts u32 lanes to f32.
+    #[inline(always)]
+    #[must_use]
+    pub fn to_f32(self) -> Batch<f32> {
+        Batch {
+            inner: self.inner.to_f32(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn cmp_eq(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_eq(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_ne(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_ne(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_lt(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_lt(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_le(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_le(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_gt(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_ge(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_ge(other.inner) }
+    }
+
     // === The "Safe Lie" Primitives ===
 
     /// Loads a batch from a slice safely, handling boundary conditions.
-    ///
-    /// If the slice has fewer than 4 elements, it loads partially and pads with zeros (or garbage).
-    /// Actually, the implementation copies element by element if len < 4.
-    ///
-    /// # Parameters
-    /// * `data` - The source slice.
-    ///
-    /// # Returns
-    /// * A loaded `Batch<u32>`.
     #[inline(always)]
     pub fn load_from_slice(data: &[u32]) -> Self {
         if data.len() >= 4 {
@@ -165,9 +153,6 @@ impl Batch<u32> {
     }
 
     /// Stores the batch into a slice safely, handling boundary conditions.
-    ///
-    /// # Parameters
-    /// * `dest` - The destination mutable slice.
     #[inline(always)]
     pub fn store_into_slice(self, dest: &mut [u32]) {
         if dest.len() >= 4 {
@@ -187,14 +172,8 @@ pub trait SimdOps<T>: Copy + Clone + Sized {
     /// Creates a vector with all lanes set to `val`.
     fn splat(val: T) -> Self;
     /// Loads a vector from a pointer.
-    ///
-    /// # Safety
-    /// Pointer must be valid and properly aligned.
     unsafe fn load(ptr: *const T) -> Self;
     /// Stores the vector to a pointer.
-    ///
-    /// # Safety
-    /// Pointer must be valid and properly aligned.
     unsafe fn store(self, ptr: *mut T);
     /// Creates a vector from explicit values.
     fn new(v0: T, v1: T, v2: T, v3: T) -> Self;
@@ -228,14 +207,29 @@ pub trait SimdOps<T>: Copy + Clone + Sized {
 
 /// Extended operations for byte-level SIMD (u8 only).
 pub trait SimdOpsU8: SimdOps<u8> {
-    /// Shuffles bytes according to indices.
-    ///
-    /// For each byte position i in the result:
-    /// - If `indices[i] & 0x80` is set, result[i] = 0
-    /// - Otherwise, result[i] = self[indices[i] & 0x0F]
-    ///
-    /// This maps to `pshufb` on x86 (SSSE3) and `vqtbl1q_u8` on ARM NEON.
     fn shuffle_bytes(self, indices: Self) -> Self;
+}
+
+/// Extended operations for floating-point SIMD (f32 only).
+pub trait SimdFloatOps: SimdOps<f32> {
+    fn sqrt(self) -> Self;
+    fn div(self, other: Self) -> Self;
+    fn ceil(self) -> Self;
+    fn floor(self) -> Self;
+    fn round(self) -> Self;
+    fn abs(self) -> Self;
+    /// Converts f32 lanes to u32 (truncating).
+    /// Returns SimdVec<u32> where the bits represent the u32 value.
+    fn to_u32(self) -> backend::SimdVec<u32>;
+    /// Converts f32 lanes to i32 (truncating), then bitcast to u32.
+    fn to_i32(self) -> backend::SimdVec<u32>;
+
+    fn cmp_eq(self, other: Self) -> backend::SimdVec<u32>;
+    fn cmp_ne(self, other: Self) -> backend::SimdVec<u32>;
+    fn cmp_lt(self, other: Self) -> backend::SimdVec<u32>;
+    fn cmp_le(self, other: Self) -> backend::SimdVec<u32>;
+    fn cmp_gt(self, other: Self) -> backend::SimdVec<u32>;
+    fn cmp_ge(self, other: Self) -> backend::SimdVec<u32>;
 }
 
 impl<T: Copy> Add for Batch<T>
@@ -271,6 +265,18 @@ where
     fn mul(self, rhs: Self) -> Self {
         Self {
             inner: self.inner.mul(rhs.inner),
+        }
+    }
+}
+impl Div for Batch<f32>
+where
+    backend::SimdVec<f32>: SimdFloatOps,
+{
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self {
+        Self {
+            inner: self.inner.div(rhs.inner),
         }
     }
 }
@@ -335,6 +341,67 @@ where
     }
 }
 
+impl Batch<f32>
+where
+    backend::SimdVec<f32>: SimdFloatOps,
+{
+    #[inline(always)]
+    pub fn sqrt(self) -> Self {
+        Self { inner: self.inner.sqrt() }
+    }
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        Self { inner: self.inner.abs() }
+    }
+    #[inline(always)]
+    pub fn ceil(self) -> Self {
+        Self { inner: self.inner.ceil() }
+    }
+    #[inline(always)]
+    pub fn floor(self) -> Self {
+        Self { inner: self.inner.floor() }
+    }
+    #[inline(always)]
+    pub fn round(self) -> Self {
+        Self { inner: self.inner.round() }
+    }
+    /// Converts to i32 (truncating)
+    #[inline(always)]
+    pub fn to_i32(self) -> Batch<u32> {
+        Batch { inner: self.inner.to_i32() }
+    }
+    /// Converts to u32 (truncating)
+    #[inline(always)]
+    pub fn to_u32(self) -> Batch<u32> {
+        Batch { inner: self.inner.to_u32() }
+    }
+
+    #[inline(always)]
+    pub fn cmp_eq(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_eq(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_ne(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_ne(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_lt(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_lt(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_le(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_le(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_gt(other.inner) }
+    }
+    #[inline(always)]
+    pub fn cmp_ge(self, other: Self) -> Batch<u32> {
+        Batch { inner: self.inner.cmp_ge(other.inner) }
+    }
+}
+
 /// Trait for types that can be gathered into a `Batch<u32>`.
 pub trait Gatherable: Copy {
     /// Converts the value to `u32`.
@@ -368,13 +435,7 @@ impl Batch<u16> {
     }
 }
 
-/// Shuffle mask for RGBA↔BGRA conversion (swaps bytes 0 and 2 in each 4-byte group).
-///
-/// This mask converts between:
-/// - RGBA [R,G,B,A] → BGRA [B,G,R,A]
-/// - BGRA [B,G,R,A] → RGBA [R,G,B,A]
-///
-/// The same mask works in both directions since it's a symmetric swap.
+/// Shuffle mask for RGBA↔BGRA conversion.
 pub const SHUFFLE_RGBA_BGRA: [u8; 16] = [
     2, 1, 0, 3, // Pixel 0: swap R↔B
     6, 5, 4, 7, // Pixel 1: swap R↔B
@@ -386,11 +447,6 @@ impl Batch<u8>
 where
     backend::SimdVec<u8>: SimdOpsU8,
 {
-    /// Shuffles bytes according to indices.
-    ///
-    /// For each byte position i in the result:
-    /// - If `indices[i] & 0x80` is set, result[i] = 0
-    /// - Otherwise, result[i] = self[indices[i] & 0x0F]
     #[inline(always)]
     #[must_use]
     pub fn shuffle_bytes(self, indices: Self) -> Self {
@@ -399,7 +455,6 @@ where
         }
     }
 
-    /// Creates a batch from a 16-byte array.
     #[inline(always)]
     #[must_use]
     pub fn from_array(arr: [u8; 16]) -> Self {
@@ -410,7 +465,6 @@ impl<T: Copy> Batch<T>
 where
     backend::SimdVec<T>: SimdOps<T>,
 {
-    /// Creates a batch with all lanes set to `val`.
     #[inline(always)]
     #[must_use]
     pub fn splat(val: T) -> Self {
@@ -419,10 +473,6 @@ where
         }
     }
 
-    /// Loads a batch from a pointer.
-    ///
-    /// # Safety
-    /// Pointer must be valid and aligned.
     #[inline(always)]
     #[must_use]
     pub unsafe fn load(ptr: *const T) -> Self {
@@ -431,16 +481,11 @@ where
         }
     }
 
-    /// Stores the batch to a pointer.
-    ///
-    /// # Safety
-    /// Pointer must be valid and aligned.
     #[inline(always)]
     pub unsafe fn store(self, ptr: *mut T) {
         unsafe { self.inner.store(ptr) }
     }
 
-    /// Creates a new batch from 4 explicit values.
     #[inline(always)]
     #[must_use]
     pub fn new(v0: T, v1: T, v2: T, v3: T) -> Self {
@@ -449,7 +494,6 @@ where
         }
     }
 
-    /// Computes the minimum of two batches.
     #[inline(always)]
     #[must_use]
     pub fn min(self, other: Self) -> Self {
@@ -458,7 +502,6 @@ where
         }
     }
 
-    /// Computes the maximum of two batches.
     #[inline(always)]
     #[must_use]
     pub fn max(self, other: Self) -> Self {
@@ -467,7 +510,6 @@ where
         }
     }
 
-    /// Computes the saturating addition of two batches.
     #[inline(always)]
     #[must_use]
     pub fn saturating_add(self, other: Self) -> Self {
@@ -476,7 +518,6 @@ where
         }
     }
 
-    /// Computes the saturating subtraction of two batches.
     #[inline(always)]
     #[must_use]
     pub fn saturating_sub(self, other: Self) -> Self {
@@ -485,11 +526,6 @@ where
         }
     }
 
-    /// Selects elements from `self` or `other` based on `mask`.
-    ///
-    /// If a mask bit is 1, the corresponding bit from `other` is selected?
-    /// Typically `select(a, b, mask)` selects b where mask is set, a where mask is clear? Or similar.
-    /// Needs check on `SimdOps`. Usually `select` behaves like `(self & !mask) | (other & mask)`.
     #[inline(always)]
     #[must_use]
     pub fn select(self, other: Self, mask: Self) -> Self {
@@ -499,11 +535,8 @@ where
     }
 }
 
-// Transmute doesn't need SimdOps, so separate impl block
+// Transmute
 impl<T: Copy> Batch<T> {
-    /// Reinterprets the bits of this batch as a batch of type U.
-    ///
-    /// This is safe for repr(transparent) types like Rgba <-> u32.
     #[inline(always)]
     #[must_use]
     pub fn transmute<U: Copy>(self) -> Batch<U> {

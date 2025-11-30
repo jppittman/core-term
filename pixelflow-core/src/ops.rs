@@ -134,7 +134,6 @@ impl<S: Surface<u8>> Surface<u8> for Skew<S> {
 #[derive(Copy, Clone)]
 pub struct Max<A, B>(pub A, pub B);
 
-// Fix: Added trait bound for SimdOps so that Batch<T>::max is available
 impl<T: Copy, A: Surface<T>, B: Surface<T>> Surface<T> for Max<A, B>
 where
     SimdVec<T>: SimdOps<T>,
@@ -231,6 +230,47 @@ where
     }
 }
 
+/// A colorizing operation that multiplies a color surface by a mask (alpha).
+///
+/// This effectively masks the color surface. The result is premultiplied alpha.
+#[derive(Copy, Clone)]
+pub struct Mul<M, C> {
+    /// The mask surface (coverage).
+    pub mask: M,
+    /// The color surface.
+    pub color: C,
+}
+
+impl<P, M, C> Surface<P> for Mul<M, C>
+where
+    P: Pixel + Copy,
+    M: Surface<u8>,
+    C: Surface<P>,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        let alpha_val = self.mask.eval(x, y);
+        let alpha = alpha_val.cast::<u32>();
+
+        let color_batch = self.color.eval(x, y);
+        let color: Batch<u32> = color_batch.transmute();
+
+        let r = P::batch_red(color);
+        let g = P::batch_green(color);
+        let b = P::batch_blue(color);
+        let a = P::batch_alpha(color);
+
+        // Scale each channel by alpha: (c * alpha) >> 8
+        let r = (r * alpha) >> 8;
+        let g = (g * alpha) >> 8;
+        let b = (b * alpha) >> 8;
+        let a = (a * alpha) >> 8;
+
+        let result = P::batch_from_channels(r, g, b, a);
+        result.transmute()
+    }
+}
+
 // --- 4. Memoizers ---
 
 /// A memoized surface that caches the result of evaluating another surface.
@@ -238,13 +278,6 @@ where
 /// `Baked` materializes a lazy `Surface` into a pixel buffer, then serves
 /// as a `Surface` itself with wrap-around out-of-bounds behavior. This is
 /// the "checkpoint" combinator - use it to cache expensive surface graphs.
-///
-/// # Example
-/// ```ignore
-/// let expensive = gradient.skew(5).offset(10, 20);
-/// let cached = Baked::new(&expensive, 800, 600);
-/// // `cached` is now a Surface that samples from the baked pixels
-/// ```
 #[derive(Clone)]
 pub struct Baked<P: Pixel> {
     /// The baked pixel data.
