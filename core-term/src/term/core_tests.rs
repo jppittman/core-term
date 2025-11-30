@@ -10,13 +10,12 @@ fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
     TerminalEmulator::new(cols, rows)
 }
 
-/// Helper to create a ControlEvent::Resize with pixel dimensions based on cols/rows.
+/// Helper to create a ControlEvent::Resize with logical pixel dimensions based on cols/rows.
 /// Uses default cell dimensions from CONFIG (10x16 px).
 fn resize_event(cols: usize, rows: usize) -> ControlEvent {
     ControlEvent::Resize {
         width_px: (cols * 10) as u16,
         height_px: (rows * 16) as u16,
-        scale_factor: 1.0,
     }
 }
 

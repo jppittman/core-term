@@ -141,6 +141,7 @@ fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) ->
     let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
         width_px,
         height_px,
+        scale_factor: backing_scale,
     }));
 
     // 2. Create state and run event loop

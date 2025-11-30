@@ -29,24 +29,16 @@ pub(super) fn process_user_input_action(
                 return Some(EmulatorAction::WritePty(bytes_to_send));
             }
         }
-        UserInputAction::StartSelection {
-            x_px,
-            y_px,
-            scale_factor: _,
-        } => {
-            // Convert pixel coordinates to cell coordinates using Layout
+        UserInputAction::StartSelection { x_px, y_px } => {
+            // Convert logical pixel coordinates to cell coordinates using Layout
             if let Some((col, row)) = emulator.layout.pixels_to_cells(x_px, y_px) {
                 emulator.start_selection(Point { x: col, y: row }, SelectionMode::Cell);
                 return Some(EmulatorAction::RequestRedraw);
             }
             // If coordinates are outside the grid (e.g., in padding), ignore the event
         }
-        UserInputAction::ExtendSelection {
-            x_px,
-            y_px,
-            scale_factor: _,
-        } => {
-            // Convert pixel coordinates to cell coordinates using Layout
+        UserInputAction::ExtendSelection { x_px, y_px } => {
+            // Convert logical pixel coordinates to cell coordinates using Layout
             if let Some((col, row)) = emulator.layout.pixels_to_cells(x_px, y_px) {
                 emulator.extend_selection(Point { x: col, y: row });
                 return Some(EmulatorAction::RequestRedraw);
@@ -113,27 +105,20 @@ pub(super) fn process_control_event(
             trace!("TerminalEmulator: RequestSnapshot event received.");
             None
         }
-        ControlEvent::Resize {
-            width_px,
-            height_px,
-            scale_factor,
-        } => {
-            // Convert physical pixels to logical points
-            let width_pts = width_px as f64 / scale_factor;
-            let height_pts = height_px as f64 / scale_factor;
-
+        ControlEvent::Resize { width_px, height_px } => {
+            // width_px and height_px are in logical pixels (engine handles scaling)
             // Calculate cols/rows using the emulator's Layout
-            let cols = ((width_pts / emulator.layout.cell_width_px.max(1) as f64) as usize).max(1);
+            let cols =
+                ((width_px as f64 / emulator.layout.cell_width_px.max(1) as f64) as usize).max(1);
             let rows =
-                ((height_pts / emulator.layout.cell_height_px.max(1) as f64) as usize).max(1);
+                ((height_px as f64 / emulator.layout.cell_height_px.max(1) as f64) as usize).max(1);
 
             trace!(
-                "TerminalEmulator: ControlEvent::Resize to {}x{} cells ({}x{} px, scale={})",
+                "TerminalEmulator: ControlEvent::Resize to {}x{} cells ({}x{} logical px)",
                 cols,
                 rows,
                 width_px,
-                height_px,
-                scale_factor
+                height_px
             );
             emulator.resize(cols, rows);
             None

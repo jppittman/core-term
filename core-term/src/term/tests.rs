@@ -33,33 +33,30 @@ fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
     TerminalEmulator::new(cols, rows)
 }
 
-/// Helper to create a ControlEvent::Resize with pixel dimensions based on cols/rows.
+/// Helper to create a ControlEvent::Resize with logical pixel dimensions based on cols/rows.
 /// Uses default cell dimensions from CONFIG (10x16 px).
 fn resize_event(cols: usize, rows: usize) -> ControlEvent {
     ControlEvent::Resize {
         width_px: (cols * 10) as u16,
         height_px: (rows * 16) as u16,
-        scale_factor: 1.0,
     }
 }
 
-/// Helper to create a UserInputAction::StartSelection with pixel coordinates from cell coords.
+/// Helper to create a UserInputAction::StartSelection with logical pixel coordinates from cell coords.
 /// Uses default cell dimensions from CONFIG (10x16 px).
 fn start_selection_at(col: usize, row: usize) -> UserInputAction {
     UserInputAction::StartSelection {
         x_px: (col * 10) as u16,
         y_px: (row * 16) as u16,
-        scale_factor: 1.0,
     }
 }
 
-/// Helper to create a UserInputAction::ExtendSelection with pixel coordinates from cell coords.
+/// Helper to create a UserInputAction::ExtendSelection with logical pixel coordinates from cell coords.
 /// Uses default cell dimensions from CONFIG (10x16 px).
 fn extend_selection_to(col: usize, row: usize) -> UserInputAction {
     UserInputAction::ExtendSelection {
         x_px: (col * 10) as u16,
         y_px: (row * 16) as u16,
-        scale_factor: 1.0,
     }
 }
 

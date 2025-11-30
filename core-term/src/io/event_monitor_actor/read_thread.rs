@@ -11,11 +11,9 @@ use crate::io::event::{EpollFlags as KqueueFlags, EventMonitor};
 #[cfg(target_os = "macos")]
 use crate::io::event::{EventMonitor, KqueueFlags};
 use crate::io::traits::EventSource;
-use crate::orchestrator::OrchestratorSender;
 use anyhow::{Context, Result};
 use log::*;
-use pixelflow_engine::EngineEvent;
-use std::sync::mpsc::TrySendError;
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 
 /// Token for identifying PTY events in the EventMonitor.
@@ -45,15 +43,18 @@ impl ReadThread {
     /// # Arguments
     ///
     /// * `source` - The event source (e.g., PTY) to monitor and read from
-    /// * `orchestrator_tx` - Channel to send IOEvents to orchestrator
-    pub(super) fn spawn<S>(source: S, orchestrator_tx: OrchestratorSender) -> Result<Self>
+    /// * `pty_cmd_tx` - Channel to send parsed ANSI commands to app
+    pub(super) fn spawn<S>(
+        source: S,
+        pty_cmd_tx: SyncSender<Vec<AnsiCommand>>,
+    ) -> Result<Self>
     where
         S: EventSource + 'static,
     {
         let thread_handle = thread::Builder::new()
             .name("pty-read".to_string())
             .spawn(move || {
-                if let Err(e) = Self::read_loop(source, orchestrator_tx) {
+                if let Err(e) = Self::read_loop(source, pty_cmd_tx) {
                     error!("PTY read thread error: {:#}", e);
                 }
             })
@@ -69,8 +70,11 @@ impl ReadThread {
     /// Main read loop.
     ///
     /// Polls the PTY for read events, reads data, parses ANSI commands,
-    /// and sends them to the orchestrator.
-    fn read_loop<S: EventSource>(mut source: S, orchestrator_tx: OrchestratorSender) -> Result<()> {
+    /// and sends them to the app. Engine polls at vsync rate, no doorbell needed.
+    fn read_loop<S: EventSource>(
+        mut source: S,
+        pty_cmd_tx: SyncSender<Vec<AnsiCommand>>,
+    ) -> Result<()> {
         let fd = source.as_raw_fd();
         debug!("PTY read thread starting (fd: {})", fd);
 
@@ -103,7 +107,7 @@ impl ReadThread {
                         &mut source,
                         &mut read_buffer,
                         &mut ansi_parser,
-                        &orchestrator_tx,
+                        &pty_cmd_tx,
                         &mut command_buffer,
                     )?;
                 }
@@ -116,7 +120,7 @@ impl ReadThread {
         source: &mut S,
         read_buffer: &mut [u8],
         ansi_parser: &mut AnsiProcessor,
-        orchestrator_tx: &OrchestratorSender,
+        pty_cmd_tx: &SyncSender<Vec<AnsiCommand>>,
         command_buffer: &mut Vec<AnsiCommand>,
     ) -> Result<()> {
         loop {
@@ -137,10 +141,7 @@ impl ReadThread {
 
             if bytes_read == 0 {
                 // EOF - PTY closed
-                info!("Read thread: PTY returned EOF, sending CloseRequested");
-                orchestrator_tx
-                    .send(EngineEvent::CloseRequested)
-                    .context("Failed to send CloseRequested event")?;
+                info!("Read thread: PTY returned EOF");
                 return Ok(());
             }
 
@@ -156,16 +157,13 @@ impl ReadThread {
                 command_buffer.append(&mut ansi_commands);
 
                 // Try to send buffered commands in chunks using try_send
-                use crate::orchestrator::OrchestratorEvent;
                 while command_buffer.len() >= MAX_COMMANDS_PER_IOEVENT {
                     // Take a chunk from the buffer
                     let chunk: Vec<_> = command_buffer.drain(..MAX_COMMANDS_PER_IOEVENT).collect();
 
-                    match orchestrator_tx.try_send(OrchestratorEvent::IOEvent {
-                        commands: chunk.clone(),
-                    }) {
+                    match pty_cmd_tx.try_send(chunk.clone()) {
                         Ok(()) => {
-                            trace!("Read thread: Sent IOEvent with {} commands", chunk.len());
+                            trace!("Read thread: Sent {} commands to app", chunk.len());
                         }
                         Err(TrySendError::Full(_)) => {
                             // Channel is full, put chunk back and stop trying
@@ -177,7 +175,7 @@ impl ReadThread {
                             break;
                         }
                         Err(TrySendError::Disconnected(_)) => {
-                            return Err(anyhow::anyhow!("Orchestrator channel disconnected"));
+                            return Err(anyhow::anyhow!("App command channel disconnected"));
                         }
                     }
                 }
@@ -188,17 +186,17 @@ impl ReadThread {
                         "Read thread: Command buffer exceeded 10,000 commands ({}), forcing blocking send",
                         command_buffer.len()
                     );
-                    // Send a few chunks with blocking send (not all - orchestrator might catch up)
-                    let chunks_to_force = 3; // Send 3 chunks (~600 commands) to give orchestrator a chance
+                    // Send a few chunks with blocking send (not all - app might catch up)
+                    let chunks_to_force = 3; // Send 3 chunks (~3000 commands) to give app a chance
                     for _ in 0..chunks_to_force {
                         if command_buffer.is_empty() {
                             break;
                         }
                         let chunk_size = command_buffer.len().min(MAX_COMMANDS_PER_IOEVENT);
                         let chunk: Vec<_> = command_buffer.drain(..chunk_size).collect();
-                        orchestrator_tx
-                            .send(OrchestratorEvent::IOEvent { commands: chunk })
-                            .context("Failed to send buffered IOEvent")?;
+                        pty_cmd_tx
+                            .send(chunk)
+                            .context("Failed to send buffered commands")?;
                     }
                 }
             }
@@ -206,25 +204,20 @@ impl ReadThread {
 
         // Try to flush buffer if we have any pending commands
         if !command_buffer.is_empty() {
-            use crate::orchestrator::OrchestratorEvent;
-            match orchestrator_tx.try_send(OrchestratorEvent::IOEvent {
-                commands: std::mem::take(command_buffer),
-            }) {
+            match pty_cmd_tx.try_send(std::mem::take(command_buffer)) {
                 Ok(()) => {
                     trace!("Read thread: Flushed command buffer successfully");
                 }
-                Err(TrySendError::Full(event)) => {
+                Err(TrySendError::Full(commands)) => {
                     // Put commands back in buffer
-                    if let OrchestratorEvent::IOEvent { commands } = event {
-                        *command_buffer = commands;
-                        debug!(
-                            "Read thread: Channel still full, keeping {} commands in buffer",
-                            command_buffer.len()
-                        );
-                    }
+                    *command_buffer = commands;
+                    debug!(
+                        "Read thread: Channel still full, keeping {} commands in buffer",
+                        command_buffer.len()
+                    );
                 }
                 Err(TrySendError::Disconnected(_)) => {
-                    return Err(anyhow::anyhow!("Orchestrator channel disconnected"));
+                    return Err(anyhow::anyhow!("App command channel disconnected"));
                 }
             }
         }

@@ -17,12 +17,14 @@ pub use traits::{AppAction, AppState, Application, EngineEvent};
 #[cfg(use_web_display)]
 use wasm_bindgen::prelude::*;
 
+// This code is dogshit and should be in the platform itself....
 #[cfg(use_web_display)]
 #[wasm_bindgen]
 pub fn pixelflow_init_worker(canvas: web_sys::OffscreenCanvas, sab: js_sys::SharedArrayBuffer) {
     crate::display::drivers::web::init_resources(canvas, sab);
 }
 
+// This code is dogshit and should be in the platform itself....
 #[cfg(use_web_display)]
 #[wasm_bindgen]
 pub fn pixelflow_dispatch_event(

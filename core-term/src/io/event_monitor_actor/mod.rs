@@ -13,19 +13,19 @@
 mod read_thread;
 mod write_thread;
 
+use crate::ansi::AnsiCommand;
 use crate::io::pty::NixPty;
-use crate::orchestrator::OrchestratorSender;
-use crate::platform::actions::PlatformAction;
 use anyhow::{Context, Result};
 use log::*;
 use read_thread::ReadThread;
+use std::sync::mpsc::{Receiver, SyncSender};
 use write_thread::WriteThread;
 
 /// EventMonitor actor that manages PTY I/O across two dedicated threads.
 ///
 /// Internally spawns:
-/// - Read thread: Polls PTY for data, parses ANSI, sends to orchestrator
-/// - Write thread: Receives write/resize commands, executes on PTY
+/// - Read thread: Polls PTY for data, parses ANSI, sends to app
+/// - Write thread: Receives write commands, executes on PTY
 ///
 /// External callers see a single unified actor.
 pub struct EventMonitorActor {
@@ -39,16 +39,16 @@ impl EventMonitorActor {
     /// # Arguments
     ///
     /// * `pty` - The PTY to monitor (owned by write thread)
-    /// * `orchestrator_tx` - Channel to send events to Orchestrator (used by read thread)
-    /// * `pty_action_rx` - Channel to receive PlatformActions (used by write thread)
+    /// * `pty_cmd_tx` - Channel to send parsed ANSI commands to app
+    /// * `pty_write_rx` - Channel to receive bytes to write to PTY
     ///
     /// # Returns
     ///
     /// Returns `Self` (handle to both threads for cleanup)
     pub fn spawn(
         pty: NixPty,
-        orchestrator_tx: OrchestratorSender,
-        pty_action_rx: std::sync::mpsc::Receiver<PlatformAction>,
+        pty_cmd_tx: SyncSender<Vec<AnsiCommand>>,
+        pty_write_rx: Receiver<Vec<u8>>,
     ) -> Result<Self> {
         // Clone PTY for the read thread (shared ownership of FD)
         let pty_read = pty
@@ -56,12 +56,12 @@ impl EventMonitorActor {
             .context("Failed to clone PTY for read thread")?;
 
         // Spawn read thread (uses independent PTY clone)
-        let read_thread = ReadThread::spawn(pty_read, orchestrator_tx)
+        let read_thread = ReadThread::spawn(pty_read, pty_cmd_tx)
             .context("Failed to spawn PTY read thread")?;
 
         // Spawn write thread (owns primary PTY for writes and lifecycle management)
         let write_thread =
-            WriteThread::spawn(pty, pty_action_rx).context("Failed to spawn PTY write thread")?;
+            WriteThread::spawn(pty, pty_write_rx).context("Failed to spawn PTY write thread")?;
 
         info!("EventMonitorActor spawned with read and write threads");
 

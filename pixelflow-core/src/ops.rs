@@ -71,6 +71,47 @@ impl<T: Copy, S: Surface<T>> Surface<T> for Offset<S> {
     }
 }
 
+/// A transformer that scales a surface by dividing coordinates.
+///
+/// Used to upscale a logical-resolution surface to physical resolution.
+/// For example, with scale=2, coordinate (100, 100) samples source at (50, 50).
+///
+/// Uses 16.16 fixed-point internally for sub-pixel precision.
+#[derive(Copy, Clone)]
+pub struct Scale<S> {
+    /// The source surface.
+    pub source: S,
+    /// Inverse scale in 16.16 fixed point (65536 / scale_factor).
+    /// For scale=2.0, this is 32768.
+    pub inv_scale_fp: u32,
+}
+
+impl<S> Scale<S> {
+    /// Creates a new Scale transformer.
+    ///
+    /// # Parameters
+    /// * `source` - The source surface (at logical resolution)
+    /// * `scale_factor` - The upscale factor (e.g., 2.0 for HiDPI)
+    #[inline]
+    pub fn new(source: S, scale_factor: f64) -> Self {
+        // inv_scale = 1/scale in 16.16 fixed point
+        let inv_scale_fp = ((1.0 / scale_factor) * 65536.0) as u32;
+        Self { source, inv_scale_fp }
+    }
+}
+
+impl<T: Copy, S: Surface<T>> Surface<T> for Scale<S> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+        // Convert physical coords to logical: logical = physical / scale
+        // Using fixed point: (x * inv_scale) >> 16
+        let inv = Batch::splat(self.inv_scale_fp);
+        let lx = (x * inv) >> 16;
+        let ly = (y * inv) >> 16;
+        self.source.eval(lx, ly)
+    }
+}
+
 /// A transformer that applies a skew (shear) transformation.
 #[derive(Copy, Clone)]
 pub struct Skew<S> {

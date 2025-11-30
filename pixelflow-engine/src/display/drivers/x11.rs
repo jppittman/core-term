@@ -226,6 +226,7 @@ fn run_event_loop(
         let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
             width_px: width,
             height_px: height,
+            scale_factor: state.scale_factor,
         }));
 
         state.event_loop(cmd_rx, engine_tx)
@@ -419,6 +420,7 @@ impl X11State {
                     Some(DisplayEvent::Resize {
                         width_px: self.width_px,
                         height_px: self.height_px,
+                        scale_factor: self.scale_factor,
                     })
                 }
                 xlib::FocusIn => Some(DisplayEvent::FocusGained),

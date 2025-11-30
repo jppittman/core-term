@@ -7,8 +7,10 @@ use crate::input::MouseButton;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
 use log::info;
-use pixelflow_render::render_u32;
-use std::sync::mpsc::Receiver;
+use pixelflow_core::Scale;
+use pixelflow_render::rasterizer::render_u32;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 // Platform-specific driver type alias
 #[cfg(use_x11_display)]
@@ -26,10 +28,9 @@ type PlatformDriver = crate::display::drivers::WebDisplayDriver;
 pub struct EnginePlatform {
     driver: PlatformDriver,
     config: DriverConfig,
-    engine_sender: crate::channel::EngineSender,
+    engine_sender: EngineSender,
     control_rx: Receiver<EngineCommand>,
     display_rx: Receiver<EngineCommand>,
-    engine_sender: EngineSender,
 }
 
 struct PlatformWaker {
@@ -59,7 +60,6 @@ impl EnginePlatform {
             engine_sender,
             control_rx: channels.control_rx,
             display_rx: channels.display_rx,
-            engine_sender: channels.engine_sender,
         })
     }
 
@@ -82,10 +82,11 @@ impl EnginePlatform {
         let control_rx = self.control_rx;
         let display_rx = self.display_rx;
         let config = self.config.clone();
+        let target_fps = config.target_fps;
 
         // Spawn engine thread
         std::thread::spawn(move || {
-            if let Err(e) = engine_loop(app, driver_handle, control_rx, display_rx) {
+            if let Err(e) = engine_loop(app, driver_handle, control_rx, display_rx, target_fps) {
                 log::error!("Engine loop error: {}", e);
             }
         });
@@ -103,26 +104,35 @@ fn engine_loop(
     driver: PlatformDriver,
     control_rx: Receiver<EngineCommand>,
     display_rx: Receiver<EngineCommand>,
+    target_fps: u32,
 ) -> Result<()> {
-    info!("Engine loop started");
+    info!("Engine loop started (pull model, {} FPS)", target_fps);
 
+    let frame_duration = Duration::from_secs_f64(1.0 / target_fps as f64);
     let mut framebuffer: Option<Box<[u8]>> = None;
-    let mut width_px = 0u32;
-    let mut height_px = 0u32;
+    // Physical dimensions (for framebuffer/display)
+    let mut physical_width = 0u32;
+    let mut physical_height = 0u32;
+    // Scale factor for physical <-> logical conversion
     let mut scale_factor = 1.0f64;
-    let mut needs_redraw = false;
 
     loop {
-        // 1. Drain control channel (high priority, unbounded)
+        let frame_start = Instant::now();
+        let deadline = frame_start + frame_duration;
+
+        // 1. Process events until next frame deadline
         loop {
-            match control_rx.try_recv() {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            if timeout.is_zero() {
+                break;
+            }
+
+            // Try control channel first (high priority)
+            match control_rx.recv_timeout(timeout) {
                 Ok(EngineCommand::Doorbell) => {
-                    // Wake the app so it can process its display_action_rx channel
                     let action = app.on_event(EngineEvent::Wake);
-                    match handle_action(action, &driver)? {
-                        ActionResult::Continue => {}
-                        ActionResult::Redraw => needs_redraw = true,
-                        ActionResult::Shutdown => return Ok(()),
+                    if let ActionResult::Shutdown = handle_action(action, &driver)? {
+                        return Ok(());
                     }
                 }
                 Ok(EngineCommand::PresentComplete(snap)) => {
@@ -130,121 +140,84 @@ fn engine_loop(
                 }
                 Ok(EngineCommand::DriverAck) => {}
                 Ok(EngineCommand::DisplayEvent(_)) => {
-                    // Shouldn't happen on control channel, but handle it
+                    // Shouldn't happen on control channel
                 }
-                Err(_) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    // Deadline reached, time to render
+                    break;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    info!("Engine loop: control channel closed");
+                    return Ok(());
+                }
             }
-        }
 
-        // 2. Batch display events (low priority, bounded)
-        let mut budget = 10;
-        while budget > 0 {
-            match display_rx.try_recv() {
-                Ok(EngineCommand::DisplayEvent(evt)) => {
-                    // Track resize
-                    if let DisplayEvent::Resize {
-                        width_px: w,
-                        height_px: h,
-                    } = &evt
-                    {
-                        width_px = *w;
-                        height_px = *h;
-                        needs_redraw = true;
-                    }
-                    // Track scale factor from mouse events
-                    if let DisplayEvent::MouseButtonPress {
-                        scale_factor: sf, ..
-                    }
-                    | DisplayEvent::MouseButtonRelease {
-                        scale_factor: sf, ..
-                    }
-                    | DisplayEvent::MouseMove {
-                        scale_factor: sf, ..
-                    } = &evt
-                    {
-                        scale_factor = *sf;
-                    }
+            // Drain display events (low priority, bounded)
+            for _ in 0..10 {
+                match display_rx.try_recv() {
+                    Ok(EngineCommand::DisplayEvent(evt)) => {
+                        // Track physical dimensions and scale factor
+                        if let DisplayEvent::Resize { width_px: w, height_px: h, scale_factor: sf } = &evt {
+                            physical_width = *w;
+                            physical_height = *h;
+                            scale_factor = *sf;
+                        }
+                        // Also track scale factor from mouse events (fallback)
+                        if let DisplayEvent::MouseButtonPress { scale_factor: sf, .. }
+                            | DisplayEvent::MouseButtonRelease { scale_factor: sf, .. }
+                            | DisplayEvent::MouseMove { scale_factor: sf, .. } = &evt
+                        {
+                            scale_factor = *sf;
+                        }
 
-                    if let Some(engine_evt) = map_display_event(&evt) {
-                        let action = app.on_event(engine_evt);
-                        match handle_action(action, &driver)? {
-                            ActionResult::Continue => {}
-                            ActionResult::Redraw => needs_redraw = true,
-                            ActionResult::Shutdown => {
+                        if let Some(engine_evt) = map_display_event(&evt, scale_factor) {
+                            let action = app.on_event(engine_evt);
+                            if let ActionResult::Shutdown = handle_action(action, &driver)? {
                                 info!("Engine loop: shutdown requested");
                                 return Ok(());
                             }
                         }
-                    }
 
-                    // Handle CloseRequested
-                    if matches!(evt, DisplayEvent::CloseRequested) {
-                        info!("Engine loop: close requested");
-                        driver.send(DriverCommand::Shutdown)?;
-                        return Ok(());
+                        // Handle CloseRequested
+                        if matches!(evt, DisplayEvent::CloseRequested) {
+                            info!("Engine loop: close requested");
+                            driver.send(DriverCommand::Shutdown)?;
+                            return Ok(());
+                        }
                     }
-
-                    budget -= 1;
+                    _ => break,
                 }
-                _ => break,
             }
         }
 
-        // 3. Render if needed
-        if needs_redraw && width_px > 0 && height_px > 0 {
+        // 2. Pull frame from app at vsync tick
+        if physical_width > 0 && physical_height > 0 {
+            let logical_width = (physical_width as f64 / scale_factor) as u32;
+            let logical_height = (physical_height as f64 / scale_factor) as u32;
+
             let app_state = AppState {
-                width_px,
-                height_px,
-                scale_factor,
+                width_px: logical_width,
+                height_px: logical_height,
             };
 
+            // Pull model: app returns None if nothing to render
             if let Some(surface) = app.render(&app_state) {
                 let mut fb = framebuffer.take().unwrap_or_else(|| {
-                    vec![0u8; (width_px * height_px * 4) as usize].into_boxed_slice()
+                    vec![0u8; (physical_width * physical_height * 4) as usize].into_boxed_slice()
                 });
 
-                // Convert u8 framebuffer to u32 slice and render
                 let (prefix, pixels, suffix) = unsafe { fb.align_to_mut::<u32>() };
                 if prefix.is_empty() && suffix.is_empty() {
-                    render_u32(
-                        surface.as_ref(),
-                        pixels,
-                        width_px as usize,
-                        height_px as usize,
-                    );
+                    let scaled = Scale::new(surface, scale_factor);
+                    render_u32(&scaled, pixels, physical_width as usize, physical_height as usize);
                 }
-
-                // Convert back to Box<[u8]>
-                let fb = unsafe {
-                    let ptr = pixels.as_mut_ptr() as *mut u8;
-                    let len = pixels.len() * 4;
-                    Box::from_raw(std::slice::from_raw_parts_mut(ptr, len))
-                };
 
                 let snapshot = RenderSnapshot {
                     framebuffer: fb,
-                    width_px,
-                    height_px,
+                    width_px: physical_width,
+                    height_px: physical_height,
                 };
                 driver.send(DriverCommand::Present(snapshot))?;
-            }
-
-            needs_redraw = false;
-        }
-
-        // 4. Sleep on control channel (doorbell wakes us)
-        if budget > 0 {
-            match control_rx.recv() {
-                Ok(EngineCommand::Doorbell) => {}
-                Ok(EngineCommand::PresentComplete(snap)) => {
-                    framebuffer = Some(snap.framebuffer);
-                }
-                Ok(EngineCommand::DriverAck) => {}
-                Ok(EngineCommand::DisplayEvent(_)) => {}
-                Err(_) => {
-                    info!("Engine loop: control channel closed");
-                    return Ok(());
-                }
             }
         }
     }
@@ -252,14 +225,17 @@ fn engine_loop(
 
 enum ActionResult {
     Continue,
-    Redraw,
     Shutdown,
 }
 
 fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionResult> {
     match action {
         AppAction::Continue => Ok(ActionResult::Continue),
-        AppAction::Redraw => Ok(ActionResult::Redraw),
+        AppAction::Redraw => {
+            // Pull model: engine calls render() at vsync rate, app returns None if nothing to show
+            log::warn!("AppAction::Redraw is deprecated - engine uses pull model");
+            Ok(ActionResult::Continue)
+        }
         AppAction::Quit => Ok(ActionResult::Shutdown),
         AppAction::SetTitle(title) => {
             driver.send(DriverCommand::SetTitle(title))?;
@@ -278,22 +254,24 @@ fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionRes
     }
 }
 
-fn map_display_event(evt: &DisplayEvent) -> Option<EngineEvent> {
+/// Convert DisplayEvent to EngineEvent, converting physical to logical pixels.
+fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEvent> {
     match evt {
-        DisplayEvent::Resize {
-            width_px,
-            height_px,
-        } => Some(EngineEvent::Resize(*width_px, *height_px)),
-        DisplayEvent::Key {
-            symbol,
-            modifiers,
-            text,
-        } => Some(EngineEvent::KeyDown {
+        DisplayEvent::Resize { width_px, height_px, .. } => {
+            // Convert physical pixels to logical pixels
+            let logical_w = (*width_px as f64 / scale_factor) as u32;
+            let logical_h = (*height_px as f64 / scale_factor) as u32;
+            Some(EngineEvent::Resize(logical_w, logical_h))
+        }
+        DisplayEvent::Key { symbol, modifiers, text } => Some(EngineEvent::KeyDown {
             key: symbol.clone(),
             mods: *modifiers,
             text: text.clone(),
         }),
         DisplayEvent::MouseButtonPress { button, x, y, .. } => {
+            // Convert physical pixels to logical pixels
+            let logical_x = (*x as f64 / scale_factor) as u32;
+            let logical_y = (*y as f64 / scale_factor) as u32;
             let btn = match button {
                 1 => MouseButton::Left,
                 2 => MouseButton::Middle,
@@ -301,9 +279,33 @@ fn map_display_event(evt: &DisplayEvent) -> Option<EngineEvent> {
                 _ => MouseButton::Other(*button),
             };
             Some(EngineEvent::MouseClick {
-                x: *x as u32,
-                y: *y as u32,
+                x: logical_x,
+                y: logical_y,
                 button: btn,
+            })
+        }
+        DisplayEvent::MouseButtonRelease { button, x, y, .. } => {
+            let logical_x = (*x as f64 / scale_factor) as u32;
+            let logical_y = (*y as f64 / scale_factor) as u32;
+            let btn = match button {
+                1 => MouseButton::Left,
+                2 => MouseButton::Middle,
+                3 => MouseButton::Right,
+                _ => MouseButton::Other(*button),
+            };
+            Some(EngineEvent::MouseRelease {
+                x: logical_x,
+                y: logical_y,
+                button: btn,
+            })
+        }
+        DisplayEvent::MouseMove { x, y, modifiers, .. } => {
+            let logical_x = (*x as f64 / scale_factor) as u32;
+            let logical_y = (*y as f64 / scale_factor) as u32;
+            Some(EngineEvent::MouseMove {
+                x: logical_x,
+                y: logical_y,
+                mods: *modifiers,
             })
         }
         DisplayEvent::CloseRequested => Some(EngineEvent::CloseRequested),

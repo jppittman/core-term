@@ -29,6 +29,7 @@ pub mod pipe;
 pub mod pixel;
 
 pub use batch::{Batch, SHUFFLE_RGBA_BGRA, SimdOpsU8};
+pub use ops::Scale;
 pub use pixel::Pixel;
 
 // ============================================================================
