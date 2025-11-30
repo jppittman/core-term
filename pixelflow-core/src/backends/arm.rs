@@ -12,7 +12,7 @@
 //!
 //! We use newtype wrappers to implement the `SimdOps` trait for each type.
 
-use crate::batch::{SimdOps, SimdOpsU8};
+use crate::batch::{SimdFloatOps, SimdOps, SimdOpsU8};
 use core::arch::aarch64::*;
 use core::marker::PhantomData;
 
@@ -33,9 +33,14 @@ pub struct SimdVec<T: Copy>(pub(crate) NeonReg<T>);
 /// for each lane width.
 #[derive(Copy, Clone)]
 pub union NeonReg<T> {
+    /// 4 lanes of u32.
     pub u32: uint32x4_t,
+    /// 8 lanes of u16.
     pub u16: uint16x8_t,
+    /// 16 lanes of u8.
     pub u8: uint8x16_t,
+    /// 4 lanes of f32.
+    pub f32: float32x4_t,
     _marker: PhantomData<T>,
 }
 
@@ -231,6 +236,349 @@ impl SimdOps<u32> for SimdVec<u32> {
         unsafe {
             Self(NeonReg {
                 u32: vqsubq_u32(self.0.u32, other.0.u32),
+            })
+        }
+    }
+}
+
+// Inherent methods on SimdVec<u32>
+impl SimdVec<u32> {
+    #[inline(always)]
+    pub fn to_f32(self) -> SimdVec<f32> {
+        unsafe {
+            SimdVec(NeonReg {
+                f32: vcvtq_f32_u32(self.0.u32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    pub fn cmp_eq(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vceqq_u32(self.0.u32, other.0.u32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    pub fn cmp_ne(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vmvnq_u32(vceqq_u32(self.0.u32, other.0.u32)),
+            })
+        }
+    }
+
+    #[inline(always)]
+    pub fn cmp_lt(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcltq_u32(self.0.u32, other.0.u32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    pub fn cmp_le(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcleq_u32(self.0.u32, other.0.u32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    pub fn cmp_gt(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcgtq_u32(self.0.u32, other.0.u32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    pub fn cmp_ge(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcgeq_u32(self.0.u32, other.0.u32),
+            })
+        }
+    }
+}
+
+// ============================================================================
+// f32 Implementation (4 lanes)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vdupq_n_f32(val),
+            })
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vld1q_f32(ptr),
+            })
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        unsafe { vst1q_f32(ptr, self.0.f32) }
+    }
+
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vld1q_f32([v0, v1, v2, v3].as_ptr()),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vaddq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vsubq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vmulq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        // Reinterpret as u32 for bitwise ops
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let b = vreinterpretq_u32_f32(other.0.f32);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(vandq_u32(a, b)),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let b = vreinterpretq_u32_f32(other.0.f32);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(vorrq_u32(a, b)),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(vmvnq_u32(a)),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, _count: i32) -> Self {
+        unimplemented!("Bitwise shift not supported on float batch")
+    }
+
+    #[inline(always)]
+    fn shl(self, _count: i32) -> Self {
+        unimplemented!("Bitwise shift not supported on float batch")
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+            let m = vreinterpretq_u32_f32(mask.0.f32);
+            let a = vreinterpretq_u32_f32(self.0.f32);
+            let b = vreinterpretq_u32_f32(other.0.f32);
+            Self(NeonReg {
+                f32: vreinterpretq_f32_u32(vbslq_u32(m, a, b)),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vminq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vmaxq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        // No saturating add for floats
+        self.add(other)
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        self.sub(other)
+    }
+}
+
+impl SimdFloatOps for SimdVec<f32> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vsqrtq_f32(self.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn div(self, other: Self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vdivq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn ceil(self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vrndpq_f32(self.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vrndmq_f32(self.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn round(self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vrndnq_f32(self.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        unsafe {
+            Self(NeonReg {
+                f32: vabsq_f32(self.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn to_u32(self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcvtq_u32_f32(self.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn to_i32(self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vreinterpretq_u32_s32(vcvtq_s32_f32(self.0.f32)),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vceqq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_ne(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vmvnq_u32(vceqq_f32(self.0.f32, other.0.f32)),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_lt(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcltq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_le(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcleq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_gt(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcgtq_f32(self.0.f32, other.0.f32),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_ge(self, other: Self) -> SimdVec<u32> {
+        unsafe {
+            SimdVec(NeonReg {
+                u32: vcgeq_f32(self.0.f32, other.0.f32),
             })
         }
     }

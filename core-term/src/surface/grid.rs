@@ -2,20 +2,24 @@
 //!
 //! The GridBuffer stores cell data (character + attributes) in a flat array,
 //! optimized for SIMD sampling by the TerminalSurface.
+//!
+//! Colors are stored as semantic `Color` values (from pixelflow-render),
+//! allowing platform-specific pixel format conversion at render time.
 
 use crate::color::Color;
-use crate::glyph::{Attributes, ContentCell, Glyph};
+use crate::glyph::{ContentCell, Glyph};
 use crate::term::snapshot::TerminalSnapshot;
+use pixelflow_render::NamedColor;
 
-/// A single cell in the grid, packed for efficient access.
+/// A single cell in the grid.
 #[derive(Debug, Clone, Copy)]
 pub struct Cell {
     /// The character to render (or '\0' for empty).
     pub ch: char,
-    /// Foreground color as packed u32 (ARGB).
-    pub fg: u32,
-    /// Background color as packed u32 (ARGB).
-    pub bg: u32,
+    /// Foreground color (semantic, not raw pixel).
+    pub fg: Color,
+    /// Background color (semantic, not raw pixel).
+    pub bg: Color,
     /// Style flags (bold, italic, etc.) - simplified for now.
     pub bold: bool,
     pub italic: bool,
@@ -25,8 +29,8 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             ch: ' ',
-            fg: 0xFF_FF_FF_FF, // White
-            bg: 0xFF_00_00_00, // Black
+            fg: Color::Named(NamedColor::White),
+            bg: Color::Named(NamedColor::Black),
             bold: false,
             italic: false,
         }
@@ -35,7 +39,7 @@ impl Default for Cell {
 
 impl Cell {
     /// Creates a cell from a Glyph.
-    pub fn from_glyph(glyph: &Glyph, default_fg: u32, default_bg: u32) -> Self {
+    pub fn from_glyph(glyph: &Glyph, default_fg: Color, default_bg: Color) -> Self {
         match glyph {
             Glyph::Single(cc) | Glyph::WidePrimary(cc) => {
                 Self::from_content_cell(cc, default_fg, default_bg)
@@ -45,9 +49,16 @@ impl Cell {
     }
 
     /// Creates a cell from a ContentCell.
-    fn from_content_cell(cc: &ContentCell, default_fg: u32, default_bg: u32) -> Self {
-        let fg = color_to_u32(&cc.attr.fg, default_fg);
-        let bg = color_to_u32(&cc.attr.bg, default_bg);
+    fn from_content_cell(cc: &ContentCell, default_fg: Color, default_bg: Color) -> Self {
+        // Resolve Color::Default to actual default colors
+        let fg = match cc.attr.fg {
+            Color::Default => default_fg,
+            other => other,
+        };
+        let bg = match cc.attr.bg {
+            Color::Default => default_bg,
+            other => other,
+        };
 
         Self {
             ch: cc.c,
@@ -56,62 +67,6 @@ impl Cell {
             bold: cc.attr.flags.contains(crate::glyph::AttrFlags::BOLD),
             italic: cc.attr.flags.contains(crate::glyph::AttrFlags::ITALIC),
         }
-    }
-}
-
-/// Convert a Color to u32 ARGB format.
-fn color_to_u32(color: &Color, default: u32) -> u32 {
-    match color {
-        Color::Default => default,
-        Color::Rgb(r, g, b) => {
-            0xFF_00_00_00 | ((*r as u32) << 16) | ((*g as u32) << 8) | (*b as u32)
-        }
-        Color::Named(named) => {
-            let (r, g, b) = named.to_rgb();
-            0xFF_00_00_00 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-        }
-        Color::Indexed(idx) => indexed_color_to_rgb(*idx),
-    }
-}
-
-/// Convert indexed color (0-255) to RGB.
-fn indexed_color_to_rgb(idx: u8) -> u32 {
-    // Standard 16-color palette
-    const BASIC: [u32; 16] = [
-        0xFF_00_00_00, // 0: Black
-        0xFF_80_00_00, // 1: Red
-        0xFF_00_80_00, // 2: Green
-        0xFF_80_80_00, // 3: Yellow
-        0xFF_00_00_80, // 4: Blue
-        0xFF_80_00_80, // 5: Magenta
-        0xFF_00_80_80, // 6: Cyan
-        0xFF_C0_C0_C0, // 7: White
-        0xFF_80_80_80, // 8: Bright Black
-        0xFF_FF_00_00, // 9: Bright Red
-        0xFF_00_FF_00, // 10: Bright Green
-        0xFF_FF_FF_00, // 11: Bright Yellow
-        0xFF_00_00_FF, // 12: Bright Blue
-        0xFF_FF_00_FF, // 13: Bright Magenta
-        0xFF_00_FF_FF, // 14: Bright Cyan
-        0xFF_FF_FF_FF, // 15: Bright White
-    ];
-
-    if idx < 16 {
-        BASIC[idx as usize]
-    } else if idx < 232 {
-        // 6x6x6 color cube (indices 16-231)
-        let idx = idx - 16;
-        let r = (idx / 36) % 6;
-        let g = (idx / 6) % 6;
-        let b = idx % 6;
-        let r = if r == 0 { 0 } else { 55 + r * 40 };
-        let g = if g == 0 { 0 } else { 55 + g * 40 };
-        let b = if b == 0 { 0 } else { 55 + b * 40 };
-        0xFF_00_00_00 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-    } else {
-        // Grayscale (indices 232-255)
-        let gray = 8 + (idx - 232) * 10;
-        0xFF_00_00_00 | ((gray as u32) << 16) | ((gray as u32) << 8) | (gray as u32)
     }
 }
 
@@ -141,8 +96,8 @@ impl GridBuffer {
     /// Creates a grid buffer populated from a terminal snapshot.
     ///
     /// This is the bridge between the terminal emulator's state and the
-    /// Surface-based rendering pipeline. Only processes dirty lines.
-    pub fn from_snapshot(snapshot: &TerminalSnapshot, default_fg: u32, default_bg: u32) -> Self {
+    /// Surface-based rendering pipeline.
+    pub fn from_snapshot(snapshot: &TerminalSnapshot, default_fg: Color, default_bg: Color) -> Self {
         let (cols, rows) = snapshot.dimensions;
         let mut grid = Self::new(cols, rows);
 
@@ -231,8 +186,8 @@ mod tests {
 
         let cell = Cell {
             ch: 'X',
-            fg: 0xFF_FF_00_00,
-            bg: 0xFF_00_00_FF,
+            fg: Color::Rgb(255, 0, 0), // Red
+            bg: Color::Rgb(0, 0, 255), // Blue
             bold: true,
             italic: false,
         };
@@ -241,18 +196,14 @@ mod tests {
 
         let retrieved = grid.get(3, 2);
         assert_eq!(retrieved.ch, 'X');
-        assert_eq!(retrieved.fg, 0xFF_FF_00_00);
+        assert_eq!(retrieved.fg, Color::Rgb(255, 0, 0));
         assert!(retrieved.bold);
     }
 
     #[test]
-    fn test_indexed_color() {
-        // Test basic colors
-        assert_eq!(indexed_color_to_rgb(0), 0xFF_00_00_00); // Black
-        assert_eq!(indexed_color_to_rgb(15), 0xFF_FF_FF_FF); // Bright White
-
-        // Test grayscale
-        let gray = indexed_color_to_rgb(232); // First grayscale
-        assert_eq!(gray, 0xFF_08_08_08);
+    fn test_default_cell_colors() {
+        let cell = Cell::default();
+        assert_eq!(cell.fg, Color::Named(NamedColor::White));
+        assert_eq!(cell.bg, Color::Named(NamedColor::Black));
     }
 }

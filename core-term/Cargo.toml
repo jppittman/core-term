@@ -25,6 +25,9 @@ path = "../pixelflow-core"
 path = "../pixelflow-render"
 features = ["serde"]
 
+[dependencies.pixelflow-fonts]
+path = "../pixelflow-fonts"
+
 # Platform-specific display driver selection
 [target.'cfg(target_os = "macos")'.dependencies.pixelflow-engine]
 path = "../pixelflow-engine"
