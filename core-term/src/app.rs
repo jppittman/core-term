@@ -66,14 +66,14 @@ impl Application for CoreTermApp {
     }
 
     fn render(&mut self, _state: &AppState) -> Option<Box<dyn Surface<u32> + Send + Sync>> {
-        // Take ownership of the snapshot (CoW - disposed after use)
-        let snapshot = self.current_snapshot.take()?;
+        // Borrow the snapshot (persist for redraws like resize/expose)
+        let snapshot = self.current_snapshot.as_ref()?;
 
         // Convert config colors to u32
         let default_fg: u32 = self.config.colors.foreground.into();
         let default_bg: u32 = self.config.colors.background.into();
 
-        let grid = GridBuffer::from_snapshot(&snapshot, default_fg, default_bg);
+        let grid = GridBuffer::from_snapshot(snapshot, default_fg, default_bg);
 
         let terminal = TerminalSurface {
             grid,
@@ -115,9 +115,9 @@ mod tests {
         })
     }
 
-    /// Test that render consumes snapshot and produces a surface
+    /// Test that render uses snapshot and produces a surface
     #[test]
-    fn render_consumes_snapshot() {
+    fn render_uses_snapshot() {
         let (orchestrator_tx, _ui_rx, _pty_rx) = create_orchestrator_channels(16);
         let (display_tx, display_rx) = std::sync::mpsc::sync_channel(16);
 
@@ -132,7 +132,7 @@ mod tests {
         // Process the event to store the snapshot
         app.on_event(EngineEvent::Wake);
 
-        // Call render - this should consume the snapshot
+        // Call render
         let state = AppState {
             width_px: 800,
             height_px: 384,
@@ -141,8 +141,41 @@ mod tests {
         let surface = app.render(&state);
         assert!(surface.is_some(), "render() should return a surface");
 
-        // Verify current_snapshot is now None (was consumed)
-        assert!(app.current_snapshot.is_none());
+        // Verify current_snapshot is still present (persisted)
+        assert!(app.current_snapshot.is_some());
+    }
+
+    /// Test that snapshot persists across multiple render calls (e.g. for resize)
+    #[test]
+    fn render_persists_snapshot() {
+        let (orchestrator_tx, _ui_rx, _pty_rx) = create_orchestrator_channels(16);
+        let (display_tx, display_rx) = std::sync::mpsc::sync_channel(16);
+
+        let mut app = CoreTermApp::new(orchestrator_tx, display_rx, Config::default());
+
+        // Send ONE snapshot
+        let snapshot = create_test_snapshot(80, 24);
+        display_tx
+            .send(PlatformAction::RequestRedraw(snapshot))
+            .unwrap();
+        app.on_event(EngineEvent::Wake);
+
+        let state = AppState {
+            width_px: 800,
+            height_px: 384,
+            scale_factor: 1.0,
+        };
+
+        // First render
+        let surface1 = app.render(&state);
+        assert!(surface1.is_some(), "First render should return surface");
+
+        // Second render (simulating resize or expose without new snapshot)
+        let surface2 = app.render(&state);
+        assert!(
+            surface2.is_some(),
+            "Second render should return surface (snapshot persisted)"
+        );
     }
 
     /// Verify multiple render cycles work with CoW snapshots

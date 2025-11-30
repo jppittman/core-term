@@ -26,7 +26,6 @@ type PlatformDriver = crate::display::drivers::WebDisplayDriver;
 pub struct EnginePlatform {
     driver: PlatformDriver,
     config: DriverConfig,
-    engine_sender: crate::channel::EngineSender,
     control_rx: Receiver<EngineCommand>,
     display_rx: Receiver<EngineCommand>,
     engine_sender: EngineSender,
@@ -56,10 +55,9 @@ impl EnginePlatform {
         Ok(Self {
             driver,
             config,
-            engine_sender,
             control_rx: channels.control_rx,
             display_rx: channels.display_rx,
-            engine_sender: channels.engine_sender,
+            engine_sender,
         })
     }
 
