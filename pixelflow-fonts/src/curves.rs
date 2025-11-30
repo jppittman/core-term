@@ -6,6 +6,15 @@ pub struct Line {
     pub p1: Point,
 }
 
+impl Line {
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        self.p0[0] += dx;
+        self.p0[1] += dy;
+        self.p1[0] += dx;
+        self.p1[1] += dy;
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Quadratic {
     pub p0: Point,
@@ -52,15 +61,45 @@ impl Quadratic {
             projection: [[a, b, c], [d, e, f]],
         })
     }
+
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        self.p0[0] += dx;
+        self.p0[1] += dy;
+        self.p1[0] += dx;
+        self.p1[1] += dy;
+        self.p2[0] += dx;
+        self.p2[1] += dy;
+        // Since translation doesn't affect relative geometry,
+        // we can just update the translation component of the projection.
+        // u = ax + by + c.
+        // new_u = a(x-dx) + b(y-dy) + c = ax + by + (c - a*dx - b*dy).
+        // Wait, if we move the curve by (dx, dy), the point (x+dx, y+dy) in world should map to same u,v.
+        // P' = P + D.
+        // u = M * P_local.
+        // P_local = P_world - origin.
+        // If we change origin?
+
+        // Simpler to just recompute. It's done once per glyph load.
+        if let Some(new_q) = Self::try_new(self.p0, self.p1, self.p2) {
+             self.projection = new_q.projection;
+        }
+    }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Segment {
     Line(Line),
     Quad(Quadratic),
 }
 
 impl Segment {
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        match self {
+            Segment::Line(l) => l.translate(dx, dy),
+            Segment::Quad(q) => q.translate(dx, dy),
+        }
+    }
+
     /// Computes the winding number contribution of a ray cast from (x, y) to (+inf, y).
     #[inline(always)]
     pub fn winding(&self, x: f32, y: f32) -> i32 {

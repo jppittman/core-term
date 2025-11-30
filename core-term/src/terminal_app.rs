@@ -6,14 +6,19 @@
 use crate::ansi::commands::AnsiCommand;
 use crate::config::Config;
 use crate::keys;
+use crate::surface::terminal::GlyphCache;
 use crate::surface::{GridBuffer, TerminalSurface};
 use crate::term::{
-    ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction,
+    ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, TerminalSnapshot,
+    UserInputAction,
 };
 use pixelflow_core::pipe::Surface;
 use pixelflow_engine::input::MouseButton;
 use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
+use pixelflow_render::{font, glyph, BakedExt};
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::Arc;
 
 /// The terminal application.
 ///
@@ -28,7 +33,8 @@ pub struct TerminalApp {
     pty_tx: SyncSender<Vec<u8>>,
     /// Application configuration.
     config: Config,
-    // No dirty flag needed - TerminalSnapshot tracks per-line dirty state
+    /// Glyph cache for rendering.
+    glyph_cache: Arc<GlyphCache>,
 }
 
 impl TerminalApp {
@@ -39,11 +45,57 @@ impl TerminalApp {
         pty_tx: SyncSender<Vec<u8>>,
         config: Config,
     ) -> Self {
+        // Pre-populate cache with ASCII
+        let f = font();
+        let mut cache = HashMap::new();
+
+        let w = config.appearance.cell_width_px as u32;
+        let h = config.appearance.cell_height_px as u32;
+
+        for c in (0x20u32..=0x7Eu32).filter_map(char::from_u32) {
+            let surface = glyph(f, c).baked(w, h);
+            cache.insert(c, surface);
+        }
+
         Self {
             emulator,
             pty_rx,
             pty_tx,
             config,
+            glyph_cache: Arc::new(cache),
+        }
+    }
+
+    /// Update glyph cache with any new characters in the snapshot.
+    fn ensure_glyphs_in_cache(&mut self, snapshot: &TerminalSnapshot) {
+        let mut missing = Vec::new();
+        {
+            let cache = &*self.glyph_cache;
+            // Scan only dirty lines for performance?
+            // Safer to scan all if we want to be sure, or rely on history.
+            // For now, scanning all lines is fast enough (2k cells).
+            for line in &snapshot.lines {
+                for cell in line.cells.iter() {
+                    let c = cell.display_char();
+                    if !cache.contains_key(&c) && c != ' ' && c != '\0' {
+                        missing.push(c);
+                    }
+                }
+            }
+        }
+
+        if !missing.is_empty() {
+            let cache: &mut GlyphCache = Arc::make_mut(&mut self.glyph_cache);
+            let f = font();
+            let w = self.config.appearance.cell_width_px as u32;
+            let h = self.config.appearance.cell_height_px as u32;
+
+            for c in missing {
+                if !cache.contains_key(&c) {
+                    let surface = glyph(f, c).baked(w, h);
+                    cache.insert(c, surface);
+                }
+            }
         }
     }
 
@@ -203,6 +255,9 @@ impl Application for TerminalApp {
             return None;
         }
 
+        // Ensure glyph cache has all visible characters
+        self.ensure_glyphs_in_cache(&snapshot);
+
         // Convert config colors to u32
         let default_fg: u32 = self.config.colors.foreground.into();
         let default_bg: u32 = self.config.colors.background.into();
@@ -214,6 +269,7 @@ impl Application for TerminalApp {
             grid,
             cell_width: self.config.appearance.cell_width_px,
             cell_height: self.config.appearance.cell_height_px,
+            glyph_cache: self.glyph_cache.clone(),
         };
 
         Some(Box::new(terminal))

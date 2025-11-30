@@ -52,3 +52,45 @@ pub trait Pixel: Copy + Default + 'static + Send + Sync {
 // Note: Surface<P> for concrete pixel types (Rgba, Bgra) is implemented
 // in pixelflow-render/src/color.rs to avoid conflicting with the closure
 // blanket impl in pipe.rs.
+
+impl Pixel for u8 {
+    #[inline(always)]
+    fn from_u32(v: u32) -> Self {
+        v as u8
+    }
+
+    #[inline(always)]
+    fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    #[inline(always)]
+    fn batch_red(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
+
+    #[inline(always)]
+    fn batch_green(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
+
+    #[inline(always)]
+    fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
+
+    #[inline(always)]
+    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
+
+    #[inline(always)]
+    fn batch_from_channels(
+        r: Batch<u32>,
+        _g: Batch<u32>,
+        _b: Batch<u32>,
+        _a: Batch<u32>,
+    ) -> Batch<u32> {
+        r
+    }
+}
