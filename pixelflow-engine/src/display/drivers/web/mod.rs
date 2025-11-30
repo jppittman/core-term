@@ -111,10 +111,11 @@ fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) ->
     canvas.set_width(width_px);
     canvas.set_height(height_px);
 
-    // Send initial resize
+    // Send initial resize (web scale_factor typically comes from devicePixelRatio)
     let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
         width_px,
         height_px,
+        scale_factor: 1.0, // TODO: use window.devicePixelRatio
     }));
 
     // 2. Create state and run event loop

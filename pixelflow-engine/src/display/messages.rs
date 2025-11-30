@@ -33,6 +33,9 @@ pub struct DriverConfig {
     pub bits_per_component: usize,
     pub bits_per_pixel: usize,
     pub max_draw_latency_seconds: f64,
+    /// Target frames per second for the vsync loop.
+    /// Engine will call render() at this rate.
+    pub target_fps: u32,
 }
 
 /// Platform-agnostic display events.
@@ -45,8 +48,12 @@ pub enum DisplayEvent {
         text: Option<String>,
     },
 
-    /// Window/framebuffer resize.
-    Resize { width_px: u32, height_px: u32 },
+    /// Window/framebuffer resize (physical pixels).
+    Resize {
+        width_px: u32,
+        height_px: u32,
+        scale_factor: f64,
+    },
 
     /// User requested window close.
     CloseRequested,

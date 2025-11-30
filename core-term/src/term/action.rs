@@ -25,21 +25,13 @@ pub enum UserInputAction {
     FocusLost,
     PasteText(String), // Content from clipboard to be pasted by orchestrator
 
-    // New selection-related actions
-    /// Starts a selection at the given pixel coordinates (e.g., mouse button press).
+    // Selection-related actions (coordinates are in logical pixels)
+    /// Starts a selection at the given logical pixel coordinates (e.g., mouse button press).
     /// The emulator will convert these to cell coordinates using its Layout.
-    StartSelection {
-        x_px: u16,
-        y_px: u16,
-        scale_factor: f64,
-    },
-    /// Extends an ongoing selection to the given pixel coordinates (e.g., mouse drag).
+    StartSelection { x_px: u16, y_px: u16 },
+    /// Extends an ongoing selection to the given logical pixel coordinates (e.g., mouse drag).
     /// The emulator will convert these to cell coordinates using its Layout.
-    ExtendSelection {
-        x_px: u16,
-        y_px: u16,
-        scale_factor: f64,
-    },
+    ExtendSelection { x_px: u16, y_px: u16 },
     /// Finalizes a selection (e.g., mouse button release).
     /// If the selection start and end are the same (a click without drag),
     /// it might clear any existing selection or perform other click-based actions.
@@ -72,12 +64,11 @@ pub enum ControlEvent {
     /// Request for the orchestrator to generate a snapshot for rendering.
     /// Sent by Vsync or when user input requires immediate visual feedback.
     RequestSnapshot,
-    /// Signals a resize of the terminal display area with physical dimensions.
+    /// Signals a resize of the terminal display area in logical pixels.
     /// The emulator calculates cols/rows using its Layout.
     Resize {
         width_px: u16,
         height_px: u16,
-        scale_factor: f64,
     },
     /// Notification that data is available in the PTY queue.
     /// Acts as a "doorbell" to wake the orchestrator for low-priority bulk data.

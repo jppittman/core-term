@@ -47,3 +47,12 @@ impl Surface<u32> for u32 {
         Batch::splat(*self)
     }
 }
+
+// Box<dyn Surface> delegates to the vtable.
+// This allows combinators to wrap boxed trait objects.
+impl<T: Copy> Surface<T> for alloc::boxed::Box<dyn Surface<T> + Send + Sync> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+        (**self).eval(x, y)
+    }
+}

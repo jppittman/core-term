@@ -51,9 +51,10 @@ pub enum AppAction {
 
 #[derive(Debug, Clone)]
 pub struct AppState {
+    /// Logical width in pixels (already scaled by engine)
     pub width_px: u32,
+    /// Logical height in pixels (already scaled by engine)
     pub height_px: u32,
-    pub scale_factor: f64,
 }
 
 pub trait Application {

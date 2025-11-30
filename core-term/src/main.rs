@@ -4,17 +4,14 @@
 
 // Declare modules
 pub mod ansi;
-pub mod app;
 pub mod color;
 pub mod config;
 pub mod glyph;
 pub mod io;
 pub mod keys;
-pub mod orchestrator;
-pub mod pixels;
-pub mod platform;
 pub mod surface;
 pub mod term;
+pub mod terminal_app;
 
 // Use statements for items needed in main.rs
 use crate::config::CONFIG;
@@ -51,43 +48,17 @@ fn main() -> anyhow::Result<()> {
 
     info!("Shell command: '{}', args: {:?}", shell_command, shell_args);
 
-    use crate::orchestrator::orchestrator_actor::{OrchestratorActor, OrchestratorArgs};
-    use crate::orchestrator::orchestrator_channel::create_orchestrator_channels;
     use crate::term::TerminalEmulator;
 
     let term_cols = CONFIG.appearance.columns as usize;
     let term_rows = CONFIG.appearance.rows as usize;
     info!("Terminal dimensions: {}x{} cells", term_cols, term_rows);
 
-    let (orchestrator_sender, ui_rx, pty_rx) = create_orchestrator_channels(128);
-    let (display_action_tx, display_action_rx) = std::sync::mpsc::sync_channel(128);
-    let (pty_action_tx, pty_action_rx) = std::sync::mpsc::sync_channel(128);
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let _event_monitor_actor = {
-        use crate::io::event_monitor_actor::EventMonitorActor;
-        use crate::io::pty::{NixPty, PtyConfig};
-
-        let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
-        let pty_config = PtyConfig {
-            command_executable: &shell_command,
-            args: &shell_args_refs,
-            initial_cols: CONFIG.appearance.columns,
-            initial_rows: CONFIG.appearance.rows,
-        };
-        let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
-        info!("Spawned PTY");
-
-        EventMonitorActor::spawn(pty, orchestrator_sender.clone(), pty_action_rx)
-            .context("Failed to spawn EventMonitorActor")?
-    };
-    info!("EventMonitorActor spawned successfully");
-
-    use crate::io::vsync_actor::VsyncActor;
-    let target_fps = CONFIG.performance.target_fps;
-    let _vsync_actor = VsyncActor::spawn(orchestrator_sender.clone(), target_fps)
-        .context("Failed to spawn VsyncActor")?;
-    info!("VsyncActor spawned successfully");
+    // Create channels for PTY communication
+    // pty_cmd: read thread → app (parsed ANSI commands)
+    // pty_write: app → write thread (raw bytes to write to PTY)
+    let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
+    let (pty_write_tx, pty_write_rx) = std::sync::mpsc::sync_channel(128);
 
     // Engine Initialization
     use pixelflow_engine::{EngineConfig, EnginePlatform, WindowConfig};
@@ -108,28 +79,34 @@ fn main() -> anyhow::Result<()> {
     let platform =
         EnginePlatform::new(engine_config.into()).context("Failed to initialize EnginePlatform")?;
 
-    let engine_sender = platform.engine_sender();
+    // Spawn PTY I/O actor
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let _event_monitor_actor = {
+        use crate::io::event_monitor_actor::EventMonitorActor;
+        use crate::io::pty::{NixPty, PtyConfig};
 
-    // Spawn Orchestrator
+        let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
+        let pty_config = PtyConfig {
+            command_executable: &shell_command,
+            args: &shell_args_refs,
+            initial_cols: CONFIG.appearance.columns,
+            initial_rows: CONFIG.appearance.rows,
+        };
+        let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
+        info!("Spawned PTY");
+
+        EventMonitorActor::spawn(pty, pty_cmd_tx, pty_write_rx)
+            .context("Failed to spawn EventMonitorActor")?
+    };
+    info!("EventMonitorActor spawned successfully");
+
+    // Create app that owns emulator
+    use crate::terminal_app::TerminalApp;
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
-    let _orchestrator_actor = OrchestratorActor::spawn(
+    let app = TerminalApp::new(
         term_emulator,
-        OrchestratorArgs {
-            ui_rx,
-            pty_rx,
-            display_action_tx,
-            pty_action_tx,
-            engine_sender,
-        },
-    )
-    .context("Failed to spawn OrchestratorActor")?;
-    info!("OrchestratorActor spawned successfully");
-
-    // Create App
-    use crate::app::CoreTermApp;
-    let app = CoreTermApp::new(
-        orchestrator_sender.clone(),
-        display_action_rx,
+        pty_cmd_rx,
+        pty_write_tx,
         crate::config::Config::default(),
     );
 

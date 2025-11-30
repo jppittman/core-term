@@ -80,6 +80,7 @@ impl From<EngineConfig> for DriverConfig {
             bits_per_component: 8,
             bits_per_pixel: 32,
             max_draw_latency_seconds: config.performance.max_draw_latency_ms.as_secs_f64(),
+            target_fps: config.performance.target_fps,
         }
     }
 }
