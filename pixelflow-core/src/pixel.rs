@@ -1,22 +1,12 @@
 // pixelflow-core/src/pixel.rs
 //! Pixel format trait for generic color operations.
-//!
-//! The `Pixel` trait provides SIMD-friendly batch operations for channel access,
-//! enabling zero-cost format abstraction in the render pipeline.
 
-use crate::Batch;
+use crate::backend::{Backend, BatchArithmetic, SimdBatch};
+use crate::pipe::Surface;
+use core::fmt::Debug;
 
 /// Trait for pixel types that can be used in surfaces and frames.
-///
-/// Provides both scalar and SIMD batch operations for channel access.
-/// All batch methods should be `#[inline(always)]` in implementations
-/// for zero-cost abstraction.
-///
-/// # Channel Semantics
-/// The batch methods extract/reconstruct logical R, G, B, A channels
-/// regardless of the physical byte order. This allows format-agnostic
-/// color math in combinators like `Over`.
-pub trait Pixel: Copy + Default + 'static + Send + Sync {
+pub trait Pixel: Copy + Default + Debug + 'static + Send + Sync {
     /// Create from raw u32 value.
     fn from_u32(v: u32) -> Self;
 
@@ -24,119 +14,77 @@ pub trait Pixel: Copy + Default + 'static + Send + Sync {
     fn to_u32(self) -> u32;
 
     /// Extract red channel from a batch of 4 pixels.
-    /// Returns values in range 0-255.
-    fn batch_red(batch: Batch<u32>) -> Batch<u32>;
+    fn batch_red<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32>
+    where B::Batch<u32>: BatchArithmetic<u32>;
 
     /// Extract green channel from a batch of 4 pixels.
-    /// Returns values in range 0-255.
-    fn batch_green(batch: Batch<u32>) -> Batch<u32>;
+    fn batch_green<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32>
+    where B::Batch<u32>: BatchArithmetic<u32>;
 
     /// Extract blue channel from a batch of 4 pixels.
-    /// Returns values in range 0-255.
-    fn batch_blue(batch: Batch<u32>) -> Batch<u32>;
+    fn batch_blue<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32>
+    where B::Batch<u32>: BatchArithmetic<u32>;
 
     /// Extract alpha channel from a batch of 4 pixels.
-    /// Returns values in range 0-255.
-    fn batch_alpha(batch: Batch<u32>) -> Batch<u32>;
+    fn batch_alpha<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32>
+    where B::Batch<u32>: BatchArithmetic<u32>;
 
     /// Reconstruct a batch of pixels from individual channel batches.
-    /// Each channel batch should contain values in the range 0-255.
-    fn batch_from_channels(
-        r: Batch<u32>,
-        g: Batch<u32>,
-        b: Batch<u32>,
-        a: Batch<u32>,
-    ) -> Batch<u32>;
+    fn batch_from_channels<B: Backend>(
+        r: B::Batch<u32>,
+        g: B::Batch<u32>,
+        b: B::Batch<u32>,
+        a: B::Batch<u32>,
+    ) -> B::Batch<u32>
+    where B::Batch<u32>: BatchArithmetic<u32>;
 }
 
-// Note: Surface<P> for concrete pixel types (Rgba, Bgra) is implemented
-// in pixelflow-render/src/color.rs to avoid conflicting with the closure
-// blanket impl in pipe.rs.
+// Implement Surface for any Pixel type (Constant Surface)
+impl<P: Pixel> Surface<P> for P {
+    #[inline(always)]
+    fn eval<B: Backend>(&self, _x: B::Batch<u32>, _y: B::Batch<u32>) -> B::Batch<P>
+    where B::Batch<u32>: BatchArithmetic<u32>
+    {
+        SimdBatch::splat(*self)
+    }
+}
 
 impl Pixel for u8 {
     #[inline(always)]
-    fn from_u32(v: u32) -> Self {
-        v as u8
-    }
+    fn from_u32(v: u32) -> Self { v as u8 }
+    #[inline(always)]
+    fn to_u32(self) -> u32 { self as u32 }
 
     #[inline(always)]
-    fn to_u32(self) -> u32 {
-        self as u32
-    }
+    fn batch_red<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { batch }
+    #[inline(always)]
+    fn batch_green<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { batch }
+    #[inline(always)]
+    fn batch_blue<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { batch }
+    #[inline(always)]
+    fn batch_alpha<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { batch }
 
     #[inline(always)]
-    fn batch_red(batch: Batch<u32>) -> Batch<u32> {
-        batch
-    }
-
-    #[inline(always)]
-    fn batch_green(batch: Batch<u32>) -> Batch<u32> {
-        batch
-    }
-
-    #[inline(always)]
-    fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
-        batch
-    }
-
-    #[inline(always)]
-    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
-        batch
-    }
-
-    #[inline(always)]
-    fn batch_from_channels(
-        r: Batch<u32>,
-        _g: Batch<u32>,
-        _b: Batch<u32>,
-        _a: Batch<u32>,
-    ) -> Batch<u32> {
-        r
-    }
+    fn batch_from_channels<B: Backend>(r: B::Batch<u32>, _: B::Batch<u32>, _: B::Batch<u32>, _: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { r }
 }
 
 impl Pixel for u32 {
     #[inline(always)]
-    fn from_u32(v: u32) -> Self {
-        v
-    }
+    fn from_u32(v: u32) -> Self { v }
+    #[inline(always)]
+    fn to_u32(self) -> u32 { self }
 
     #[inline(always)]
-    fn to_u32(self) -> u32 {
-        self
-    }
-
-    // Assume packed RGBA (Little Endian: A B G R in memory?)
-    // Actually typical u32 pixel: 0xAABBGGRR (little endian).
-    // R is low byte.
+    fn batch_red<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { batch & SimdBatch::splat(0xFF) }
+    #[inline(always)]
+    fn batch_green<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { (batch >> 8) & SimdBatch::splat(0xFF) }
+    #[inline(always)]
+    fn batch_blue<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { (batch >> 16) & SimdBatch::splat(0xFF) }
+    #[inline(always)]
+    fn batch_alpha<B: Backend>(batch: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> { (batch >> 24) & SimdBatch::splat(0xFF) }
 
     #[inline(always)]
-    fn batch_red(batch: Batch<u32>) -> Batch<u32> {
-        batch & Batch::splat(0xFF)
-    }
-
-    #[inline(always)]
-    fn batch_green(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 8) & Batch::splat(0xFF)
-    }
-
-    #[inline(always)]
-    fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 16) & Batch::splat(0xFF)
-    }
-
-    #[inline(always)]
-    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 24) & Batch::splat(0xFF)
-    }
-
-    #[inline(always)]
-    fn batch_from_channels(
-        r: Batch<u32>,
-        g: Batch<u32>,
-        b: Batch<u32>,
-        a: Batch<u32>,
-    ) -> Batch<u32> {
+    fn batch_from_channels<B: Backend>(r: B::Batch<u32>, g: B::Batch<u32>, b: B::Batch<u32>, a: B::Batch<u32>) -> B::Batch<u32> where B::Batch<u32>: BatchArithmetic<u32> {
         r | (g << 8) | (b << 16) | (a << 24)
     }
 }
