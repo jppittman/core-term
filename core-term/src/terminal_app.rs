@@ -13,7 +13,9 @@ use crate::term::{
 use pixelflow_core::pipe::Surface;
 use pixelflow_engine::input::MouseButton;
 use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
+use pixelflow_render::{font, Atlas, AtlasConfig};
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::Arc;
 
 /// The terminal application.
 ///
@@ -28,7 +30,8 @@ pub struct TerminalApp {
     pty_tx: SyncSender<Vec<u8>>,
     /// Application configuration.
     config: Config,
-    // No dirty flag needed - TerminalSnapshot tracks per-line dirty state
+    /// Glyph atlas for rendering.
+    atlas: Arc<Atlas>,
 }
 
 impl TerminalApp {
@@ -39,11 +42,30 @@ impl TerminalApp {
         pty_tx: SyncSender<Vec<u8>>,
         config: Config,
     ) -> Self {
+        // Build atlas
+        let f = font();
+        // Basic ASCII + Latin-1 Supplement (0x20..0xFF) covers most western languages
+        let chars = (0x20u32..=0xFFu32).filter_map(char::from_u32);
+
+        let font_size = config.appearance.font.size_pt as f32;
+
+        let atlas = Arc::new(Atlas::build(
+            f,
+            chars,
+            AtlasConfig {
+                size: font_size,
+                max_width: 2048,
+                max_height: 2048,
+                padding: 1,
+            },
+        ));
+
         Self {
             emulator,
             pty_rx,
             pty_tx,
             config,
+            atlas,
         }
     }
 
@@ -214,6 +236,7 @@ impl Application for TerminalApp {
             grid,
             cell_width: self.config.appearance.cell_width_px,
             cell_height: self.config.appearance.cell_height_px,
+            atlas: Some(self.atlas.clone()),
         };
 
         Some(Box::new(terminal))

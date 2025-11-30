@@ -7,6 +7,8 @@
 use crate::surface::grid::GridBuffer;
 use pixelflow_core::pipe::Surface;
 use pixelflow_core::Batch;
+use pixelflow_render::Atlas;
+use std::sync::Arc;
 
 /// A terminal rendered as a functional surface.
 ///
@@ -19,15 +21,24 @@ pub struct TerminalSurface {
     pub cell_width: usize,
     /// Cell height in pixels.
     pub cell_height: usize,
+    /// Glyph atlas for rendering.
+    pub atlas: Option<Arc<Atlas>>,
 }
 
 impl TerminalSurface {
     /// Creates a new terminal surface.
-    pub fn new(cols: usize, rows: usize, cell_width: usize, cell_height: usize) -> Self {
+    pub fn new(
+        cols: usize,
+        rows: usize,
+        cell_width: usize,
+        cell_height: usize,
+        atlas: Option<Arc<Atlas>>,
+    ) -> Self {
         Self {
             grid: GridBuffer::new(cols, rows),
             cell_width,
             cell_height,
+            atlas,
         }
     }
 
@@ -56,6 +67,35 @@ impl TerminalSurface {
         // Local coordinates within the cell
         let lx = (x as usize) % self.cell_width;
         let ly = (y as usize) % self.cell_height;
+
+        // Try to use atlas
+        if let Some(atlas) = &self.atlas {
+            if let Some(sampler) = atlas.sampler(cell.ch) {
+                let w = sampler.entry.width as usize;
+                let h = sampler.entry.height as usize;
+
+                // Center the glyph in the cell
+                let off_x = (self.cell_width.saturating_sub(w)) / 2;
+                let off_y = (self.cell_height.saturating_sub(h)) / 2;
+
+                if lx >= off_x && lx < off_x + w && ly >= off_y && ly < off_y + h {
+                    let sx = lx - off_x;
+                    let sy = ly - off_y;
+
+                    let ax = sampler.entry.x as usize + sx;
+                    let ay = sampler.entry.y as usize + sy;
+
+                    let idx = ay * atlas.buffer.stride + ax;
+                    let coverage = atlas.buffer.data[idx];
+
+                    if coverage > 100 {
+                        // TODO: Proper alpha blending
+                        return cell.fg;
+                    }
+                }
+                return cell.bg;
+            }
+        }
 
         // Simple box rendering for now (placeholder until Loop-Blinn is wired)
         // This just renders a solid foreground for non-space characters
@@ -95,6 +135,7 @@ impl Clone for TerminalSurface {
             grid: self.grid.clone(),
             cell_width: self.cell_width,
             cell_height: self.cell_height,
+            atlas: self.atlas.clone(),
         }
     }
 }
@@ -106,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_terminal_surface_new() {
-        let surface = TerminalSurface::new(80, 24, 10, 16);
+        let surface = TerminalSurface::new(80, 24, 10, 16, None);
         assert_eq!(surface.grid.cols, 80);
         assert_eq!(surface.grid.rows, 24);
         assert_eq!(surface.cell_width, 10);
@@ -115,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_eval_scalar_empty() {
-        let surface = TerminalSurface::new(10, 5, 10, 16);
+        let surface = TerminalSurface::new(10, 5, 10, 16, None);
 
         // Empty cell should return background
         let color = surface.eval_scalar(5, 5);
@@ -125,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_eval_scalar_with_char() {
-        let mut surface = TerminalSurface::new(10, 5, 10, 16);
+        let mut surface = TerminalSurface::new(10, 5, 10, 16, None);
 
         // Set a character in cell (0, 0)
         let cell = Cell {
@@ -148,7 +189,7 @@ mod tests {
 
     #[test]
     fn test_eval_batch() {
-        let surface = TerminalSurface::new(10, 5, 10, 16);
+        let surface = TerminalSurface::new(10, 5, 10, 16, None);
 
         let x = Batch::new(0, 5, 10, 15);
         let y = Batch::new(0, 8, 16, 24);
