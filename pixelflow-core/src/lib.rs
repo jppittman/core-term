@@ -548,6 +548,13 @@ where
     P: pixel::Pixel,
     S: pipe::Surface<P>,
 {
+    assert!(
+        target.len() >= width * height,
+        "Buffer too small: expected at least {} elements, got {}",
+        width * height,
+        target.len()
+    );
+
     const LANES: usize = 4;
 
     for y in 0..height {

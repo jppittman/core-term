@@ -48,6 +48,13 @@ pub fn render_u32<S>(surface: &S, buffer: &mut [u32], width: usize, height: usiz
 where
     S: Surface<u32> + ?Sized,
 {
+    assert!(
+        buffer.len() >= width * height,
+        "Buffer too small: expected at least {} elements, got {}",
+        width * height,
+        buffer.len()
+    );
+
     const LANES: usize = 4;
 
     for y in 0..height {
