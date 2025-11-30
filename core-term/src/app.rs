@@ -89,9 +89,9 @@ impl Application for CoreTermApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::glyph::{Attributes, ContentCell, Glyph};
     use crate::orchestrator::orchestrator_channel::create_orchestrator_channels;
     use crate::term::snapshot::{SnapshotLine, TerminalSnapshot};
-    use crate::glyph::{ContentCell, Glyph, Attributes};
     use pixelflow_engine::AppState;
     use std::sync::Arc;
 
@@ -102,10 +102,7 @@ mod tests {
         });
 
         let lines = (0..rows)
-            .map(|_| SnapshotLine::from_arc(
-                Arc::new(vec![empty_glyph.clone(); cols]),
-                true,
-            ))
+            .map(|_| SnapshotLine::from_arc(Arc::new(vec![empty_glyph.clone(); cols]), true))
             .collect();
 
         Box::new(TerminalSnapshot {
@@ -124,15 +121,13 @@ mod tests {
         let (orchestrator_tx, _ui_rx, _pty_rx) = create_orchestrator_channels(16);
         let (display_tx, display_rx) = std::sync::mpsc::sync_channel(16);
 
-        let mut app = CoreTermApp::new(
-            orchestrator_tx,
-            display_rx,
-            Config::default(),
-        );
+        let mut app = CoreTermApp::new(orchestrator_tx, display_rx, Config::default());
 
         // Simulate orchestrator sending a snapshot
         let snapshot = create_test_snapshot(80, 24);
-        display_tx.send(PlatformAction::RequestRedraw(snapshot)).unwrap();
+        display_tx
+            .send(PlatformAction::RequestRedraw(snapshot))
+            .unwrap();
 
         // Process the event to store the snapshot
         app.on_event(EngineEvent::Wake);
@@ -156,11 +151,7 @@ mod tests {
         let (orchestrator_tx, _ui_rx, _pty_rx) = create_orchestrator_channels(16);
         let (display_tx, display_rx) = std::sync::mpsc::sync_channel(16);
 
-        let mut app = CoreTermApp::new(
-            orchestrator_tx,
-            display_rx,
-            Config::default(),
-        );
+        let mut app = CoreTermApp::new(orchestrator_tx, display_rx, Config::default());
 
         let state = AppState {
             width_px: 800,
@@ -172,12 +163,18 @@ mod tests {
         for i in 0..3 {
             // Send snapshot
             let snapshot = create_test_snapshot(80, 24);
-            display_tx.send(PlatformAction::RequestRedraw(snapshot)).unwrap();
+            display_tx
+                .send(PlatformAction::RequestRedraw(snapshot))
+                .unwrap();
             app.on_event(EngineEvent::Wake);
 
             // Render
             let surface = app.render(&state);
-            assert!(surface.is_some(), "Cycle {}: render() should return surface", i);
+            assert!(
+                surface.is_some(),
+                "Cycle {}: render() should return surface",
+                i
+            );
         }
     }
 }

@@ -33,14 +33,22 @@ impl Quadratic {
 
         let a = (0.0 * (p1[1] - p2[1]) + 0.5 * (p2[1] - p0[1]) + 1.0 * (p0[1] - p1[1])) * inv_det;
         let b = (0.0 * (p2[0] - p1[0]) + 0.5 * (p0[0] - p2[0]) + 1.0 * (p1[0] - p0[0])) * inv_det;
-        let c = (0.0 * (p1[0]*p2[1] - p2[0]*p1[1]) + 0.5 * (p2[0]*p0[1] - p0[0]*p2[1]) + 1.0 * (p0[0]*p1[1] - p1[0]*p0[1])) * inv_det;
+        let c = (0.0 * (p1[0] * p2[1] - p2[0] * p1[1])
+            + 0.5 * (p2[0] * p0[1] - p0[0] * p2[1])
+            + 1.0 * (p0[0] * p1[1] - p1[0] * p0[1]))
+            * inv_det;
 
         let d = (0.0 * (p1[1] - p2[1]) + 0.0 * (p2[1] - p0[1]) + 1.0 * (p0[1] - p1[1])) * inv_det;
         let e = (0.0 * (p2[0] - p1[0]) + 0.0 * (p0[0] - p2[0]) + 1.0 * (p1[0] - p0[0])) * inv_det;
-        let f = (0.0 * (p1[0]*p2[1] - p2[0]*p1[1]) + 0.0 * (p2[0]*p0[1] - p0[0]*p2[1]) + 1.0 * (p0[0]*p1[1] - p1[0]*p0[1])) * inv_det;
+        let f = (0.0 * (p1[0] * p2[1] - p2[0] * p1[1])
+            + 0.0 * (p2[0] * p0[1] - p0[0] * p2[1])
+            + 1.0 * (p0[0] * p1[1] - p1[0] * p0[1]))
+            * inv_det;
 
         Some(Self {
-            p0, p1, p2,
+            p0,
+            p1,
+            p2,
             projection: [[a, b, c], [d, e, f]],
         })
     }
@@ -62,7 +70,11 @@ impl Segment {
                     let t = (y - l.p0[1]) / (l.p1[1] - l.p0[1]);
                     let x_int = l.p0[0] + t * (l.p1[0] - l.p0[0]);
                     if x < x_int {
-                        if l.p0[1] < l.p1[1] { 1 } else { -1 }
+                        if l.p0[1] < l.p1[1] {
+                            1
+                        } else {
+                            -1
+                        }
                     } else {
                         0
                     }
@@ -81,9 +93,15 @@ impl Segment {
                     if b.abs() > 1e-6 {
                         let t = -c / b;
                         if t >= 0.0 && t < 1.0 {
-                            let xt = (1.0 - t).powi(2) * q.p0[0] + 2.0 * (1.0 - t) * t * q.p1[0] + t.powi(2) * q.p2[0];
+                            let xt = (1.0 - t).powi(2) * q.p0[0]
+                                + 2.0 * (1.0 - t) * t * q.p1[0]
+                                + t.powi(2) * q.p2[0];
                             if x < xt {
-                                if b > 0.0 { winding += 1; } else { winding -= 1; }
+                                if b > 0.0 {
+                                    winding += 1;
+                                } else {
+                                    winding -= 1;
+                                }
                             }
                         }
                     }
@@ -96,10 +114,16 @@ impl Segment {
 
                         for t in [t1, t2] {
                             if t >= 0.0 && t < 1.0 {
-                                let xt = (1.0 - t).powi(2) * q.p0[0] + 2.0 * (1.0 - t) * t * q.p1[0] + t.powi(2) * q.p2[0];
+                                let xt = (1.0 - t).powi(2) * q.p0[0]
+                                    + 2.0 * (1.0 - t) * t * q.p1[0]
+                                    + t.powi(2) * q.p2[0];
                                 if x < xt {
                                     let dy_dt = 2.0 * a * t + b;
-                                    if dy_dt > 0.0 { winding += 1; } else { winding -= 1; }
+                                    if dy_dt > 0.0 {
+                                        winding += 1;
+                                    } else {
+                                        winding -= 1;
+                                    }
                                 }
                             }
                         }
@@ -117,8 +141,10 @@ impl Segment {
             Segment::Line(l) => {
                 let dx = l.p1[0] - l.p0[0];
                 let dy = l.p1[1] - l.p0[1];
-                let len = (dx*dx + dy*dy).sqrt();
-                if len < 1e-6 { return 1000.0; }
+                let len = (dx * dx + dy * dy).sqrt();
+                if len < 1e-6 {
+                    return 1000.0;
+                }
                 ((x - l.p0[0]) * -dy + (y - l.p0[1]) * dx) / len
             }
             Segment::Quad(q) => {
@@ -135,7 +161,11 @@ impl Segment {
                 let df_dy = 2.0 * u * du_dy - dv_dy;
                 let grad_len = (df_dx * df_dx + df_dy * df_dy).sqrt();
 
-                if grad_len < 1e-6 { 1000.0 } else { f / grad_len }
+                if grad_len < 1e-6 {
+                    1000.0
+                } else {
+                    f / grad_len
+                }
             }
         }
     }

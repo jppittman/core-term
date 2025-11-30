@@ -37,7 +37,9 @@ impl Cell {
     /// Creates a cell from a Glyph.
     pub fn from_glyph(glyph: &Glyph, default_fg: u32, default_bg: u32) -> Self {
         match glyph {
-            Glyph::Single(cc) | Glyph::WidePrimary(cc) => Self::from_content_cell(cc, default_fg, default_bg),
+            Glyph::Single(cc) | Glyph::WidePrimary(cc) => {
+                Self::from_content_cell(cc, default_fg, default_bg)
+            }
             Glyph::WideSpacer { .. } => Self::default(),
         }
     }
@@ -61,7 +63,9 @@ impl Cell {
 fn color_to_u32(color: &Color, default: u32) -> u32 {
     match color {
         Color::Default => default,
-        Color::Rgb(r, g, b) => 0xFF_00_00_00 | ((*r as u32) << 16) | ((*g as u32) << 8) | (*b as u32),
+        Color::Rgb(r, g, b) => {
+            0xFF_00_00_00 | ((*r as u32) << 16) | ((*g as u32) << 8) | (*b as u32)
+        }
         Color::Named(named) => {
             let (r, g, b) = named.to_rgb();
             0xFF_00_00_00 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
@@ -146,7 +150,11 @@ impl GridBuffer {
             // Process ALL lines - Surface model evaluates entire screen each frame
             for (col_idx, glyph) in line.cells.iter().enumerate() {
                 if col_idx < cols && row_idx < rows {
-                    grid.set(col_idx, row_idx, Cell::from_glyph(glyph, default_fg, default_bg));
+                    grid.set(
+                        col_idx,
+                        row_idx,
+                        Cell::from_glyph(glyph, default_fg, default_bg),
+                    );
                 }
             }
         }

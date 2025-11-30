@@ -1342,19 +1342,49 @@ mod tests {
         let mut screen = create_test_screen(5, 2);
         {
             let row0 = Arc::make_mut(&mut screen.grid[0]);
-            row0[0] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
-            row0[1] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
-            row0[2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-            row0[3] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-            row0[4] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row0[0] = Glyph::Single(ContentCell {
+                c: 'a',
+                attr: Attributes::default(),
+            });
+            row0[1] = Glyph::Single(ContentCell {
+                c: 'a',
+                attr: Attributes::default(),
+            });
+            row0[2] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
+            row0[3] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
+            row0[4] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
         }
         {
             let row1 = Arc::make_mut(&mut screen.grid[1]);
-            row1[0] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
-            row1[1] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
-            row1[2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-            row1[3] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-            row1[4] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row1[0] = Glyph::Single(ContentCell {
+                c: 'b',
+                attr: Attributes::default(),
+            });
+            row1[1] = Glyph::Single(ContentCell {
+                c: 'b',
+                attr: Attributes::default(),
+            });
+            row1[2] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
+            row1[3] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
+            row1[4] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
         }
 
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell

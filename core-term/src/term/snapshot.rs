@@ -110,5 +110,4 @@ impl TerminalSnapshot {
         }
         Some(self.lines[p.y][p.x])
     }
-
 }

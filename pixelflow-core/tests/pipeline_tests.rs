@@ -1,6 +1,6 @@
 use pixelflow_core::dsl::SurfaceExt;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::{Batch, TensorViewMut, execute}; // for offset()
+use pixelflow_core::{Batch, TensorViewMut, execute_into_tensor};
 
 #[test]
 fn test_constant_surface() {
@@ -35,7 +35,7 @@ fn test_execute_pipeline() {
     // Simple fill pipeline
     let fill = Batch::<u32>::splat(0xFF);
 
-    execute(fill, &mut target);
+    execute_into_tensor(fill, &mut target);
 
     for px in data.iter() {
         assert_eq!(*px, 0xFF);

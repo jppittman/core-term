@@ -376,10 +376,10 @@ impl Batch<u16> {
 ///
 /// The same mask works in both directions since it's a symmetric swap.
 pub const SHUFFLE_RGBA_BGRA: [u8; 16] = [
-    2, 1, 0, 3,    // Pixel 0: swap R↔B
-    6, 5, 4, 7,    // Pixel 1: swap R↔B
-    10, 9, 8, 11,  // Pixel 2: swap R↔B
-    14, 13, 12, 15 // Pixel 3: swap R↔B
+    2, 1, 0, 3, // Pixel 0: swap R↔B
+    6, 5, 4, 7, // Pixel 1: swap R↔B
+    10, 9, 8, 11, // Pixel 2: swap R↔B
+    14, 13, 12, 15, // Pixel 3: swap R↔B
 ];
 
 impl Batch<u8>
@@ -508,10 +508,7 @@ impl<T: Copy> Batch<T> {
     #[must_use]
     pub fn transmute<U: Copy>(self) -> Batch<U> {
         const {
-            assert!(
-                mem::size_of::<T>() == mem::size_of::<U>(),
-                "Size mismatch"
-            );
+            assert!(mem::size_of::<T>() == mem::size_of::<U>(), "Size mismatch");
         }
         unsafe { mem::transmute(self) }
     }

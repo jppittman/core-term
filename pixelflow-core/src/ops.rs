@@ -2,6 +2,8 @@ use crate::TensorView;
 use crate::batch::{Batch, SimdOps, SimdVec};
 use crate::pipe::Surface;
 use crate::pixel::Pixel;
+use alloc::boxed::Box;
+use alloc::vec;
 use core::marker::PhantomData;
 
 // --- 1. Sources ---
@@ -185,5 +187,135 @@ where
 
         // Transmute back to Batch<P>
         result.transmute()
+    }
+}
+
+// --- 4. Memoizers ---
+
+/// A memoized surface that caches the result of evaluating another surface.
+///
+/// `Baked` materializes a lazy `Surface` into a pixel buffer, then serves
+/// as a `Surface` itself with wrap-around out-of-bounds behavior. This is
+/// the "checkpoint" combinator - use it to cache expensive surface graphs.
+///
+/// # Example
+/// ```ignore
+/// let expensive = gradient.skew(5).offset(10, 20);
+/// let cached = Baked::new(&expensive, 800, 600);
+/// // `cached` is now a Surface that samples from the baked pixels
+/// ```
+#[derive(Clone)]
+pub struct Baked<P: Pixel> {
+    /// The baked pixel data.
+    data: Box<[P]>,
+    /// Width in pixels.
+    width: u32,
+    /// Height in pixels.
+    height: u32,
+}
+
+impl<P: Pixel> Baked<P> {
+    /// Bakes a surface into a memoized buffer.
+    ///
+    /// Evaluates the source surface at every pixel coordinate and stores
+    /// the results. The returned `Baked` is itself a `Surface`.
+    ///
+    /// # Parameters
+    /// * `source` - The surface to bake.
+    /// * `width` - Width of the baked region.
+    /// * `height` - Height of the baked region.
+    pub fn new<S: Surface<P>>(source: &S, width: u32, height: u32) -> Self {
+        let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
+
+        const LANES: usize = 4;
+        let w = width as usize;
+        let h = height as usize;
+
+        for y in 0..h {
+            let row_start = y * w;
+            let y_batch = Batch::splat(y as u32);
+
+            // SIMD hot path: 4 pixels at a time
+            let mut x = 0;
+            while x + LANES <= w {
+                let x_batch = Batch::new(x as u32, (x + 1) as u32, (x + 2) as u32, (x + 3) as u32);
+
+                let result: Batch<P> = source.eval(x_batch, y_batch);
+                let result_u32: Batch<u32> = result.transmute();
+
+                unsafe {
+                    let ptr = data.as_mut_ptr().add(row_start + x) as *mut u32;
+                    result_u32.store(ptr);
+                }
+
+                x += LANES;
+            }
+
+            // Scalar cold path: remaining pixels
+            while x < w {
+                let x_batch = Batch::splat(x as u32);
+                let result: Batch<P> = source.eval(x_batch, y_batch);
+                let result_u32: Batch<u32> = result.transmute();
+                data[row_start + x] = P::from_u32(result_u32.to_array_usize()[0] as u32);
+                x += 1;
+            }
+        }
+
+        Self {
+            data,
+            width,
+            height,
+        }
+    }
+
+    /// Returns the width of the baked surface.
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Returns the height of the baked surface.
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Returns the raw pixel data.
+    #[inline]
+    pub fn data(&self) -> &[P] {
+        &self.data
+    }
+
+    /// Returns mutable access to the raw pixel data.
+    #[inline]
+    pub fn data_mut(&mut self) -> &mut [P] {
+        &mut self.data
+    }
+}
+
+impl<P: Pixel> Surface<P> for Baked<P> {
+    /// Samples from the baked buffer with wrap-around.
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        let w = self.width as usize;
+        let h = self.height as usize;
+
+        // Extract coordinates and compute wrap-around element-wise
+        let x_arr = x.to_array_usize();
+        let y_arr = y.to_array_usize();
+
+        // Calculate wrapped indices
+        let idx0 = (y_arr[0] % h) * w + (x_arr[0] % w);
+        let idx1 = (y_arr[1] % h) * w + (x_arr[1] % w);
+        let idx2 = (y_arr[2] % h) * w + (x_arr[2] % w);
+        let idx3 = (y_arr[3] % h) * w + (x_arr[3] % w);
+
+        // Gather pixels
+        let p0 = self.data[idx0].to_u32();
+        let p1 = self.data[idx1].to_u32();
+        let p2 = self.data[idx2].to_u32();
+        let p3 = self.data[idx3].to_u32();
+
+        Batch::new(p0, p1, p2, p3).transmute()
     }
 }

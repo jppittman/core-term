@@ -224,16 +224,24 @@ impl Rgba {
 
     /// Returns the red component.
     #[inline]
-    pub fn r(self) -> u8 { self.0.to_le_bytes()[0] }
+    pub fn r(self) -> u8 {
+        self.0.to_le_bytes()[0]
+    }
     /// Returns the green component.
     #[inline]
-    pub fn g(self) -> u8 { self.0.to_le_bytes()[1] }
+    pub fn g(self) -> u8 {
+        self.0.to_le_bytes()[1]
+    }
     /// Returns the blue component.
     #[inline]
-    pub fn b(self) -> u8 { self.0.to_le_bytes()[2] }
+    pub fn b(self) -> u8 {
+        self.0.to_le_bytes()[2]
+    }
     /// Returns the alpha component.
     #[inline]
-    pub fn a(self) -> u8 { self.0.to_le_bytes()[3] }
+    pub fn a(self) -> u8 {
+        self.0.to_le_bytes()[3]
+    }
 }
 
 impl Bgra {
@@ -245,16 +253,24 @@ impl Bgra {
 
     /// Returns the blue component.
     #[inline]
-    pub fn b(self) -> u8 { self.0.to_le_bytes()[0] }
+    pub fn b(self) -> u8 {
+        self.0.to_le_bytes()[0]
+    }
     /// Returns the green component.
     #[inline]
-    pub fn g(self) -> u8 { self.0.to_le_bytes()[1] }
+    pub fn g(self) -> u8 {
+        self.0.to_le_bytes()[1]
+    }
     /// Returns the red component.
     #[inline]
-    pub fn r(self) -> u8 { self.0.to_le_bytes()[2] }
+    pub fn r(self) -> u8 {
+        self.0.to_le_bytes()[2]
+    }
     /// Returns the alpha component.
     #[inline]
-    pub fn a(self) -> u8 { self.0.to_le_bytes()[3] }
+    pub fn a(self) -> u8 {
+        self.0.to_le_bytes()[3]
+    }
 }
 
 // Swizzle: swap bytes 0 and 2 (R and B)
@@ -283,9 +299,13 @@ impl From<Rgba> for Bgra {
 
 impl Pixel for Rgba {
     #[inline]
-    fn from_u32(v: u32) -> Self { Self(v) }
+    fn from_u32(v: u32) -> Self {
+        Self(v)
+    }
     #[inline]
-    fn to_u32(self) -> u32 { self.0 }
+    fn to_u32(self) -> u32 {
+        self.0
+    }
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {
@@ -320,9 +340,13 @@ impl Pixel for Rgba {
 
 impl Pixel for Bgra {
     #[inline]
-    fn from_u32(v: u32) -> Self { Self(v) }
+    fn from_u32(v: u32) -> Self {
+        Self(v)
+    }
     #[inline]
-    fn to_u32(self) -> u32 { self.0 }
+    fn to_u32(self) -> u32 {
+        self.0
+    }
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {

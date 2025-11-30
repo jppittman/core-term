@@ -45,7 +45,12 @@ impl SharedRingBuffer {
 
             if read_pos == write_pos {
                 // Buffer is empty. Wait for notification.
-                match Atomics::wait_with_timeout(&self.indices, IDX_WRITE, write_pos, timeout_ms as f64) {
+                match Atomics::wait_with_timeout(
+                    &self.indices,
+                    IDX_WRITE,
+                    write_pos,
+                    timeout_ms as f64,
+                ) {
                     Ok(val) => {
                         // val is "ok", "not-equal", or "timed-out"
                         if val.as_string().as_deref() == Some("timed-out") {
@@ -73,11 +78,13 @@ impl SharedRingBuffer {
             // Note: We need to align to 4 bytes? No, byte level is fine for data.
             // But strict alignment helps. Let's assume byte alignment.
             let next_read_pos = (read_pos + 4 + len as i32) % (self.capacity as i32);
-            Atomics::store(&self.indices, IDX_READ, next_read_pos).map_err(|e| anyhow!("Atomics store failed: {:?}", e))?;
+            Atomics::store(&self.indices, IDX_READ, next_read_pos)
+                .map_err(|e| anyhow!("Atomics store failed: {:?}", e))?;
 
             // Notify writer (if it was waiting for space) - optional for unbounded writer?
             // Better to notify.
-            Atomics::notify(&self.indices, IDX_READ).map_err(|e| anyhow!("Atomics notify failed: {:?}", e))?;
+            Atomics::notify(&self.indices, IDX_READ)
+                .map_err(|e| anyhow!("Atomics notify failed: {:?}", e))?;
 
             let event: DisplayEvent = bincode::deserialize(&payload)?;
             return Ok(Some(event));
@@ -139,10 +146,12 @@ impl SharedRingBuffer {
 
             // Update Write Index
             let next_write_pos = (write_pos + 4 + len as i32) % (self.capacity as i32);
-            Atomics::store(&self.indices, IDX_WRITE, next_write_pos).map_err(|e| anyhow!("Atomics store failed: {:?}", e))?;
+            Atomics::store(&self.indices, IDX_WRITE, next_write_pos)
+                .map_err(|e| anyhow!("Atomics store failed: {:?}", e))?;
 
             // Notify Reader (Worker)
-            Atomics::notify(&self.indices, IDX_WRITE).map_err(|e| anyhow!("Atomics notify failed: {:?}", e))?;
+            Atomics::notify(&self.indices, IDX_WRITE)
+                .map_err(|e| anyhow!("Atomics notify failed: {:?}", e))?;
 
             return Ok(());
         }

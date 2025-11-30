@@ -23,12 +23,7 @@ use crate::{
         modes::DecPrivateModes,
         screen::Screen,
         snapshot::{
-            CursorRenderState,
-            CursorShape,
-            Point,
-            SelectionMode,
-            SnapshotLine,
-            TerminalSnapshot,
+            CursorRenderState, CursorShape, Point, SelectionMode, SnapshotLine, TerminalSnapshot,
         },
         EmulatorInput, // Added EmulatorInput
     },

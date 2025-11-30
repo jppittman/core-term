@@ -2,33 +2,55 @@
 //!
 //! A high-performance, software-based rendering engine built on top of `pixelflow-core`.
 //!
-//! This crate provides functionality for:
-//! - Rasterizing graphical primitives (rectangles, blits).
-//! - Font access via pixelflow-fonts (glyphs are Surfaces).
-//! - Managing rendering commands and types.
-//! - Type-safe color format handling (Rgba, Bgra).
+//! ## Architecture
+//!
+//! Everything is a lazy, infinite Surface until materialization:
+//! - `Frame<P>` is both a target (write into) AND a Surface (read from)
+//! - Colors (`Rgba`, `Bgra`) are constant Surfaces
+//! - Compose with `Over`, `Offset`, `Skew`, `Max`, etc.
+//! - Materialize via `execute()` or `render()`
+//!
+//! ## Example
+//! ```ignore
+//! use pixelflow_render::{Frame, Rgba, render};
+//! use pixelflow_core::dsl::MaskExt;
+//!
+//! let mut frame = Frame::<Rgba>::new(800, 600);
+//! let fg = Rgba::new(255, 0, 0, 255);
+//! let bg = Rgba::new(0, 0, 255, 255);
+//! let surface = glyph_mask.over::<Rgba>(fg, bg);
+//! render(&surface, &mut frame);
+//! ```
 
 #![warn(missing_docs)]
 
 /// Unified color types: semantic colors (Color, NamedColor), text attributes, and pixel formats.
 pub mod color;
-/// Rendering commands and operation definitions.
-pub mod commands;
 /// Framebuffer type generic over color format.
 pub mod frame;
 /// Embedded font access.
 pub mod glyph;
-/// Rasterization logic and frame processing.
+/// Rasterization utilities.
 pub mod rasterizer;
 
 pub use color::{
     // Semantic colors
-    AttrFlags, Color, NamedColor,
+    AttrFlags,
     // Pixel formats
-    Bgra, CocoaPixel, Pixel, Rgba, WebPixel, X11Pixel,
+    Bgra,
+    CocoaPixel,
+    Color,
+    NamedColor,
+    Pixel,
+    Rgba,
+    WebPixel,
+    X11Pixel,
 };
-pub use commands::Op;
 pub use frame::Frame;
 pub use glyph::font;
 pub use pixelflow_fonts::{Font, Glyph, GlyphBounds};
-pub use rasterizer::{process_frame, ScreenView, ScreenViewMut};
+pub use rasterizer::{execute, render, render_to_buffer, render_u32};
+
+// Re-export core types for convenience
+pub use pixelflow_core::pipe::Surface;
+pub use pixelflow_core::Batch;

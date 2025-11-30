@@ -1,5 +1,11 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{TensorView, TensorViewMut, batch::Batch, execute, ops::{SampleAtlas, Offset, Skew, Max, Over}, dsl::{SurfaceExt, MaskExt}};
+use pixelflow_core::{
+    TensorView, TensorViewMut,
+    batch::Batch,
+    dsl::{MaskExt, SurfaceExt},
+    execute,
+    ops::{Max, Offset, Over, SampleAtlas, Skew},
+};
 
 // Benchmark constants to avoid magic numbers
 const WIDTH: usize = 256;
@@ -42,7 +48,11 @@ fn bench_pipeline_execution(c: &mut Criterion) {
 
     let mut target_data = vec![0u8; BUFFER_SIZE];
 
-    let pipeline = SampleAtlas { atlas: atlas_view, step_x_fp: 65536, step_y_fp: 65536 };
+    let pipeline = SampleAtlas {
+        atlas: atlas_view,
+        step_x_fp: 65536,
+        step_y_fp: 65536,
+    };
 
     c.bench_function("pipeline_simple_sample", |b| {
         b.iter(|| {
@@ -68,7 +78,11 @@ fn bench_blend_math(c: &mut Criterion) {
 
     c.bench_function("blend_math", |b| {
         b.iter(|| {
-            black_box(blend_math_impl(black_box(fg), black_box(bg), black_box(alpha)));
+            black_box(blend_math_impl(
+                black_box(fg),
+                black_box(bg),
+                black_box(alpha),
+            ));
         })
     });
 }
@@ -79,7 +93,11 @@ fn bench_operators(c: &mut Criterion) {
 
     let atlas_data = vec![0u8; BUFFER_SIZE];
     let atlas_view = TensorView::new(&atlas_data, WIDTH, HEIGHT, STRIDE);
-    let source = SampleAtlas { atlas: atlas_view, step_x_fp: 65536, step_y_fp: 65536 };
+    let source = SampleAtlas {
+        atlas: atlas_view,
+        step_x_fp: 65536,
+        step_y_fp: 65536,
+    };
 
     let mut target_data = vec![0u8; BUFFER_SIZE];
 
@@ -125,7 +143,11 @@ fn bench_sampling_scaling(c: &mut Criterion) {
     group.bench_function("0.5x", |b| {
         b.iter(|| {
             let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-             let pipe = SampleAtlas { atlas: atlas_view, step_x_fp: 131072, step_y_fp: 131072 };
+            let pipe = SampleAtlas {
+                atlas: atlas_view,
+                step_x_fp: 131072,
+                step_y_fp: 131072,
+            };
             execute(pipe, &mut target_view);
         })
     });
@@ -134,7 +156,11 @@ fn bench_sampling_scaling(c: &mut Criterion) {
     group.bench_function("1.0x", |b| {
         b.iter(|| {
             let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-             let pipe = SampleAtlas { atlas: atlas_view, step_x_fp: 65536, step_y_fp: 65536 };
+            let pipe = SampleAtlas {
+                atlas: atlas_view,
+                step_x_fp: 65536,
+                step_y_fp: 65536,
+            };
             execute(pipe, &mut target_view);
         })
     });
@@ -143,7 +169,11 @@ fn bench_sampling_scaling(c: &mut Criterion) {
     group.bench_function("2.0x", |b| {
         b.iter(|| {
             let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-             let pipe = SampleAtlas { atlas: atlas_view, step_x_fp: 32768, step_y_fp: 32768 };
+            let pipe = SampleAtlas {
+                atlas: atlas_view,
+                step_x_fp: 32768,
+                step_y_fp: 32768,
+            };
             execute(pipe, &mut target_view);
         })
     });
@@ -157,7 +187,11 @@ fn bench_text_pipelines(c: &mut Criterion) {
 
     let atlas_data = vec![0u8; BUFFER_SIZE];
     let atlas_view = TensorView::new(&atlas_data, WIDTH, HEIGHT, STRIDE);
-    let source = SampleAtlas { atlas: atlas_view, step_x_fp: 65536, step_y_fp: 65536 };
+    let source = SampleAtlas {
+        atlas: atlas_view,
+        step_x_fp: 65536,
+        step_y_fp: 65536,
+    };
 
     let mut target_data = vec![0u32; BUFFER_SIZE]; // u32 for colored output
     let fg = Batch::splat(0xFFFFFFFF);

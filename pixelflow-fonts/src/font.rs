@@ -2,11 +2,11 @@
 //!
 //! The pixelflow way: `font.glyph('A', 24.0)` returns `Option<Glyph>` (a Surface<u8>).
 
-use ttf_parser::{Face, FaceParsingError, OutlineBuilder};
-pub use ttf_parser::GlyphId;
 use thiserror::Error;
+pub use ttf_parser::GlyphId;
+use ttf_parser::{Face, FaceParsingError, OutlineBuilder};
 
-use crate::curves::{Segment, Line, Quadratic, Point};
+use crate::curves::{Line, Point, Quadratic, Segment};
 use crate::glyph::{Glyph, GlyphBounds};
 
 #[derive(Error, Debug)]
@@ -58,8 +58,15 @@ impl<'a> Font<'a> {
         // but we still want to return a Glyph with bounds
         let _ = self.face.outline_glyph(glyph_id, &mut builder);
 
-        let bbox = self.face.glyph_bounding_box(glyph_id)
-            .unwrap_or(ttf_parser::Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 0 });
+        let bbox = self
+            .face
+            .glyph_bounding_box(glyph_id)
+            .unwrap_or(ttf_parser::Rect {
+                x_min: 0,
+                y_min: 0,
+                x_max: 0,
+                y_max: 0,
+            });
 
         let bounds = GlyphBounds {
             width: ((bbox.x_max - bbox.x_min) as f32 * scale).ceil() as u32,
@@ -77,7 +84,8 @@ impl<'a> Font<'a> {
     /// Get horizontal advance for a character at a given size.
     pub fn advance(&self, ch: char, size: f32) -> f32 {
         let scale = size / self.face.units_per_em() as f32;
-        self.face.glyph_index(ch)
+        self.face
+            .glyph_index(ch)
             .and_then(|id| self.face.glyph_hor_advance(id))
             .map(|adv| adv as f32 * scale)
             .unwrap_or(0.0)
@@ -156,7 +164,10 @@ impl OutlineBuilder for GlyphBuilder {
 
     fn line_to(&mut self, x: f32, y: f32) {
         let p1 = [x * self.scale, y * self.scale];
-        self.segments.push(Segment::Line(Line { p0: self.current, p1 }));
+        self.segments.push(Segment::Line(Line {
+            p0: self.current,
+            p1,
+        }));
         self.current = p1;
     }
 
@@ -167,7 +178,10 @@ impl OutlineBuilder for GlyphBuilder {
         if let Some(q) = Quadratic::try_new(self.current, p1, p2) {
             self.segments.push(Segment::Quad(q));
         } else {
-            self.segments.push(Segment::Line(Line { p0: self.current, p1: p2 }));
+            self.segments.push(Segment::Line(Line {
+                p0: self.current,
+                p1: p2,
+            }));
         }
         self.current = p2;
     }
@@ -185,7 +199,10 @@ impl OutlineBuilder for GlyphBuilder {
         if (self.current[0] - self.start[0]).abs() > 1e-4
             || (self.current[1] - self.start[1]).abs() > 1e-4
         {
-            self.segments.push(Segment::Line(Line { p0: self.current, p1: self.start }));
+            self.segments.push(Segment::Line(Line {
+                p0: self.current,
+                p1: self.start,
+            }));
             self.current = self.start;
         }
     }
@@ -193,10 +210,7 @@ impl OutlineBuilder for GlyphBuilder {
 
 #[inline]
 fn lerp(p0: Point, p1: Point, t: f32) -> Point {
-    [
-        p0[0] * (1.0 - t) + p1[0] * t,
-        p0[1] * (1.0 - t) + p1[1] * t,
-    ]
+    [p0[0] * (1.0 - t) + p1[0] * t, p0[1] * (1.0 - t) + p1[1] * t]
 }
 
 #[inline]
