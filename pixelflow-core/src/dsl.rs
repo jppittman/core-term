@@ -1,4 +1,5 @@
-use crate::ops::{Offset, Over, Skew};
+use crate::batch::{SimdOps, SimdVec};
+use crate::ops::{Max, Mul, Offset, Over, Skew};
 use crate::pipe::Surface;
 use crate::pixel::Pixel;
 
@@ -33,6 +34,21 @@ pub trait SurfaceExt<T: Copy>: Surface<T> + Sized {
             shear,
         }
     }
+
+    /// Computes the maximum of this surface and another.
+    ///
+    /// # Parameters
+    /// * `other` - The other surface.
+    ///
+    /// # Returns
+    /// * A `Max` composite surface.
+    fn max<O>(self, other: O) -> Max<Self, O>
+    where
+        O: Surface<T>,
+        SimdVec<T>: SimdOps<T>,
+    {
+        Max(self, other)
+    }
 }
 
 /// Extensions for 8-bit Masks (Blending).
@@ -58,6 +74,24 @@ pub trait MaskExt: Surface<u8> + Sized {
         B: Surface<P>,
     {
         Over::new(self, fg, bg)
+    }
+
+    /// Multiplies a color surface by this mask.
+    ///
+    /// # Parameters
+    /// * `color` - The color surface (must be `Surface<P>`).
+    ///
+    /// # Returns
+    /// * A `Mul` operation that outputs `Surface<P>`.
+    fn mul<P, C>(self, color: C) -> Mul<Self, C>
+    where
+        P: Pixel + Copy,
+        C: Surface<P>,
+    {
+        Mul {
+            mask: self,
+            color,
+        }
     }
 }
 

@@ -28,7 +28,7 @@ pub mod pipe;
 /// Pixel format trait for generic color operations.
 pub mod pixel;
 
-pub use batch::{Batch, SHUFFLE_RGBA_BGRA, SimdOpsU8};
+pub use batch::{Batch, SimdFloatOps, SimdOps, SHUFFLE_RGBA_BGRA, SimdOpsU8};
 pub use ops::Scale;
 pub use pixel::Pixel;
 
