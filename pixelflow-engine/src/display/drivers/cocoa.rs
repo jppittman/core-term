@@ -119,7 +119,8 @@ fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) ->
     let window_height_pts = (config.initial_rows * config.cell_height_px) as f64;
 
     // Create window and view
-    let (window, view, _delegate) = create_window_and_view(mtm, window_width_pts, window_height_pts)?;
+    let (window, view, _delegate) =
+        create_window_and_view(mtm, window_width_pts, window_height_pts)?;
 
     let backing_scale: CGFloat = unsafe { msg_send![&window, backingScaleFactor] };
     let width_px = (window_width_pts * backing_scale) as u32;
@@ -383,8 +384,7 @@ impl CocoaState {
             let pasteboard = NSPasteboard::generalPasteboard();
             pasteboard.clearContents();
             let ns_string = NSString::from_str(text);
-            let _: bool =
-                msg_send![&pasteboard, setString: &*ns_string, forType: ns_pasteboard_type_string()];
+            let _: bool = msg_send![&pasteboard, setString: &*ns_string, forType: ns_pasteboard_type_string()];
         }
     }
 
@@ -485,7 +485,8 @@ fn register_delegate_class() {
         unsafe {
             builder.add_method(
                 sel!(windowShouldClose:),
-                window_should_close as unsafe extern "C" fn(*mut AnyObject, Sel, *mut NSWindow) -> Bool,
+                window_should_close
+                    as unsafe extern "C" fn(*mut AnyObject, Sel, *mut NSWindow) -> Bool,
             );
         }
 

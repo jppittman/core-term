@@ -55,8 +55,8 @@ pub enum DriverCommand {
 /// Display events go to `display_tx` (bounded), responses/control go to `control_tx` (unbounded).
 #[derive(Clone)]
 pub struct EngineSender {
-    control_tx: Sender<EngineCommand>,      // Unbounded, High Priority
-    display_tx: SyncSender<EngineCommand>,  // Bounded, Low Priority (backpressure)
+    control_tx: Sender<EngineCommand>,     // Unbounded, High Priority
+    display_tx: SyncSender<EngineCommand>, // Bounded, Low Priority (backpressure)
 }
 
 impl EngineSender {
@@ -106,7 +106,6 @@ impl EngineSender {
     }
 }
 
-
 /// Channel bundle for engine-side communication.
 pub struct EngineChannels {
     /// Sender for driver -> engine (display events, responses)
@@ -153,12 +152,24 @@ mod tests {
     fn test_responses_go_to_fast_lane() {
         let channels = create_engine_channels(16);
 
-        channels.engine_sender.send(EngineCommand::DriverAck).unwrap();
-        channels.engine_sender.send(EngineCommand::Doorbell).unwrap();
+        channels
+            .engine_sender
+            .send(EngineCommand::DriverAck)
+            .unwrap();
+        channels
+            .engine_sender
+            .send(EngineCommand::Doorbell)
+            .unwrap();
 
         // Should be in control channel
-        assert!(matches!(channels.control_rx.try_recv(), Ok(EngineCommand::DriverAck)));
-        assert!(matches!(channels.control_rx.try_recv(), Ok(EngineCommand::Doorbell)));
+        assert!(matches!(
+            channels.control_rx.try_recv(),
+            Ok(EngineCommand::DriverAck)
+        ));
+        assert!(matches!(
+            channels.control_rx.try_recv(),
+            Ok(EngineCommand::Doorbell)
+        ));
 
         // Display channel should be empty
         assert!(channels.display_rx.try_recv().is_err());
@@ -173,7 +184,10 @@ mod tests {
             modifiers: Modifiers::empty(),
             text: Some("a".to_string()),
         };
-        channels.engine_sender.send(EngineCommand::DisplayEvent(event)).unwrap();
+        channels
+            .engine_sender
+            .send(EngineCommand::DisplayEvent(event))
+            .unwrap();
 
         // Display event should be in display channel
         assert!(matches!(
@@ -195,11 +209,19 @@ mod tests {
         let event = || DisplayEvent::CloseRequested;
 
         // Fill the buffer
-        channels.engine_sender.send(EngineCommand::DisplayEvent(event())).unwrap();
-        channels.engine_sender.send(EngineCommand::DisplayEvent(event())).unwrap();
+        channels
+            .engine_sender
+            .send(EngineCommand::DisplayEvent(event()))
+            .unwrap();
+        channels
+            .engine_sender
+            .send(EngineCommand::DisplayEvent(event()))
+            .unwrap();
 
         // Third should fail with try_send (buffer full)
-        let result = channels.engine_sender.try_send(EngineCommand::DisplayEvent(event()));
+        let result = channels
+            .engine_sender
+            .try_send(EngineCommand::DisplayEvent(event()));
         assert!(matches!(result, Err(TrySendError::Full(_))));
     }
 }

@@ -32,8 +32,9 @@ pub fn pixelflow_dispatch_event(
     use crate::display::drivers::web::ipc::SharedRingBuffer;
     use crate::display::DisplayEvent;
 
-    let event: DisplayEvent = serde_wasm_bindgen::from_value(event_val)
-        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to deserialize event: {}", e)))?;
+    let event: DisplayEvent = serde_wasm_bindgen::from_value(event_val).map_err(|e| {
+        wasm_bindgen::JsValue::from_str(&format!("Failed to deserialize event: {}", e))
+    })?;
 
     let ipc = SharedRingBuffer::new(&sab);
     ipc.write(&event)

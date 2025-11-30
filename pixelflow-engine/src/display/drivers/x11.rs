@@ -45,7 +45,6 @@ impl SelectionAtoms {
     }
 }
 
-
 // --- Run State (only original driver has this) ---
 struct RunState {
     cmd_rx: Receiver<DriverCommand>,
@@ -157,8 +156,7 @@ fn run_event_loop(
         let black = xlib::XBlackPixel(display, screen);
         let white = xlib::XWhitePixel(display, screen);
 
-        let window =
-            xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
+        let window = xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
 
         // Initialize waker now that we have display and window
         waker.set_target(display, window);
@@ -219,7 +217,10 @@ fn run_event_loop(
         // Query scale factor from Xft.dpi using initialized XRM database
         state.scale_factor = state.query_scale_factor();
 
-        info!("X11: Window created {}x{} px, scale {:.2}", width, height, state.scale_factor);
+        info!(
+            "X11: Window created {}x{} px, scale {:.2}",
+            width, height, state.scale_factor
+        );
 
         // Send initial resize
         let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
@@ -683,7 +684,10 @@ impl X11State {
         }
     }
 
-    unsafe fn handle_selection_notify(&self, event: &xlib::XSelectionEvent) -> Option<DisplayEvent> {
+    unsafe fn handle_selection_notify(
+        &self,
+        event: &xlib::XSelectionEvent,
+    ) -> Option<DisplayEvent> {
         if event.property == 0 {
             return None;
         }

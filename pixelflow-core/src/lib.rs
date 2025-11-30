@@ -23,12 +23,12 @@ pub mod batch;
 pub mod dsl;
 /// Core operations and surface implementations.
 pub mod ops;
-/// Pixel format trait for generic color operations.
-pub mod pixel;
 /// Pipeline abstractions and surface traits.
 pub mod pipe;
+/// Pixel format trait for generic color operations.
+pub mod pixel;
 
-pub use batch::{Batch, SimdOpsU8, SHUFFLE_RGBA_BGRA};
+pub use batch::{Batch, SHUFFLE_RGBA_BGRA, SimdOpsU8};
 pub use pixel::Pixel;
 
 // ============================================================================
@@ -527,45 +527,76 @@ impl<'a> MapPixels<u32> for TensorViewMut<'a, u32> {
 // Execution
 // ============================================================================
 
-/// Executes a pipeline operation onto a target tensor.
+/// Materialize a Surface into a mutable pixel buffer.
+///
+/// This is THE entry point for all rendering. Evaluates the surface lazily
+/// at every pixel coordinate and writes results to the target buffer.
+///
+/// Processing is done in batches of 4 pixels (SIMD lanes) for efficiency.
 ///
 /// # Parameters
-/// * `pipe` - The pipeline to evaluate.
-/// * `target` - The target mutable tensor view.
+/// * `surface` - The surface to evaluate (lazy, infinite).
+/// * `target` - The mutable pixel buffer to write into.
+/// * `width` - Width of the target in pixels.
+/// * `height` - Height of the target in pixels.
 ///
 /// # Type Parameters
-/// * `T` - The pixel type (e.g., `u8`, `u32`).
-/// * `P` - The pipeline type which implements `pipe::Surface`.
-pub fn execute<T, P>(pipe: P, target: &mut TensorViewMut<T>)
-where
-    T: Copy,
-    P: pipe::Surface<T>,
-    for<'a> TensorViewMut<'a, T>: MapPixels<T>, // Constrain T to types that support mapping
-{
-    target.map_pixels(|x, y| pipe.eval(x, y));
-}
-
-/// Executes a typed pixel pipeline onto a u32 target tensor.
-///
-/// This allows strongly-typed pixel surfaces (e.g., `Surface<Rgba>`) to write
-/// to a u32 framebuffer by transmuting the output.
-///
-/// # Parameters
-/// * `pipe` - The pipeline to evaluate (outputs `Batch<P>`).
-/// * `target` - The target mutable tensor view (u32 buffer).
-///
-/// # Type Parameters
-/// * `P` - The pixel type (e.g., `Rgba`, `Bgra`). Must be repr(transparent) over u32.
-/// * `S` - The surface type which implements `Surface<P>`.
-pub fn execute_typed<P, S>(pipe: S, target: &mut TensorViewMut<u32>)
+/// * `P` - The pixel type (must implement `Pixel`).
+/// * `S` - The surface type (must implement `Surface<P>`).
+pub fn execute<P, S>(surface: S, target: &mut [P], width: usize, height: usize)
 where
     P: pixel::Pixel,
     S: pipe::Surface<P>,
 {
-    target.map_pixels(|x, y| {
-        let result: Batch<P> = pipe.eval(x, y);
-        result.transmute()
-    });
+    const LANES: usize = 4;
+
+    for y in 0..height {
+        let row_start = y * width;
+        let y_batch = batch::Batch::splat(y as u32);
+
+        // Hot path: process 4 pixels at a time (SIMD)
+        let mut x = 0;
+        while x + LANES <= width {
+            let x_batch =
+                batch::Batch::new(x as u32, (x + 1) as u32, (x + 2) as u32, (x + 3) as u32);
+
+            let result: batch::Batch<P> = surface.eval(x_batch, y_batch);
+
+            // Transmute to u32 for storage (P is repr(transparent) over u32)
+            let result_u32: batch::Batch<u32> = result.transmute();
+
+            // Store 4 pixels
+            unsafe {
+                let ptr = target.as_mut_ptr().add(row_start + x) as *mut u32;
+                result_u32.store(ptr);
+            }
+
+            x += LANES;
+        }
+
+        // Cold path: handle remaining pixels (< 4)
+        while x < width {
+            let x_batch = batch::Batch::splat(x as u32);
+            let result: batch::Batch<P> = surface.eval(x_batch, y_batch);
+            let result_u32: batch::Batch<u32> = result.transmute();
+
+            // Extract first lane only
+            target[row_start + x] = P::from_u32(result_u32.to_array_usize()[0] as u32);
+            x += 1;
+        }
+    }
+}
+
+/// Legacy execute function for TensorViewMut compatibility.
+///
+/// Prefer using `execute()` directly with slices for new code.
+pub fn execute_into_tensor<T, S>(surface: S, target: &mut TensorViewMut<T>)
+where
+    T: Copy,
+    S: pipe::Surface<T>,
+    for<'a> TensorViewMut<'a, T>: MapPixels<T>,
+{
+    target.map_pixels(|x, y| surface.eval(x, y));
 }
 
 #[cfg(test)]

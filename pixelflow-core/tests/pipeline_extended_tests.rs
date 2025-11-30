@@ -1,8 +1,8 @@
 use pixelflow_core::Batch;
+use pixelflow_core::Pixel;
 use pixelflow_core::dsl::{MaskExt, SurfaceExt};
 use pixelflow_core::ops::Max;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::Pixel;
 
 // A simple test surface that returns x coordinate as u8
 #[derive(Copy, Clone)]
@@ -29,8 +29,12 @@ impl Surface<u32> for Constant {
 struct TestRgba(u32);
 
 impl Pixel for TestRgba {
-    fn from_u32(v: u32) -> Self { Self(v) }
-    fn to_u32(self) -> u32 { self.0 }
+    fn from_u32(v: u32) -> Self {
+        Self(v)
+    }
+    fn to_u32(self) -> u32 {
+        self.0
+    }
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {

@@ -7,7 +7,7 @@ use crate::input::MouseButton;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
 use log::info;
-use pixelflow_render::rasterizer::{materialize_into, ScreenViewMut};
+use pixelflow_render::render_u32;
 use std::sync::mpsc::Receiver;
 
 // Platform-specific driver type alias
@@ -142,15 +142,25 @@ fn engine_loop(
             match display_rx.try_recv() {
                 Ok(EngineCommand::DisplayEvent(evt)) => {
                     // Track resize
-                    if let DisplayEvent::Resize { width_px: w, height_px: h } = &evt {
+                    if let DisplayEvent::Resize {
+                        width_px: w,
+                        height_px: h,
+                    } = &evt
+                    {
                         width_px = *w;
                         height_px = *h;
                         needs_redraw = true;
                     }
                     // Track scale factor from mouse events
-                    if let DisplayEvent::MouseButtonPress { scale_factor: sf, .. }
-                        | DisplayEvent::MouseButtonRelease { scale_factor: sf, .. }
-                        | DisplayEvent::MouseMove { scale_factor: sf, .. } = &evt
+                    if let DisplayEvent::MouseButtonPress {
+                        scale_factor: sf, ..
+                    }
+                    | DisplayEvent::MouseButtonRelease {
+                        scale_factor: sf, ..
+                    }
+                    | DisplayEvent::MouseMove {
+                        scale_factor: sf, ..
+                    } = &evt
                     {
                         scale_factor = *sf;
                     }
@@ -193,17 +203,15 @@ fn engine_loop(
                     vec![0u8; (width_px * height_px * 4) as usize].into_boxed_slice()
                 });
 
-                // Convert u8 framebuffer to u32 slice
+                // Convert u8 framebuffer to u32 slice and render
                 let (prefix, pixels, suffix) = unsafe { fb.align_to_mut::<u32>() };
                 if prefix.is_empty() && suffix.is_empty() {
-                    let mut screen = ScreenViewMut::new(
+                    render_u32(
+                        surface.as_ref(),
                         pixels,
                         width_px as usize,
                         height_px as usize,
-                        0,
-                        0,
                     );
-                    materialize_into(&mut screen, surface.as_ref());
                 }
 
                 // Convert back to Box<[u8]>
@@ -272,10 +280,15 @@ fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionRes
 
 fn map_display_event(evt: &DisplayEvent) -> Option<EngineEvent> {
     match evt {
-        DisplayEvent::Resize { width_px, height_px } => {
-            Some(EngineEvent::Resize(*width_px, *height_px))
-        }
-        DisplayEvent::Key { symbol, modifiers, text } => Some(EngineEvent::KeyDown {
+        DisplayEvent::Resize {
+            width_px,
+            height_px,
+        } => Some(EngineEvent::Resize(*width_px, *height_px)),
+        DisplayEvent::Key {
+            symbol,
+            modifiers,
+            text,
+        } => Some(EngineEvent::KeyDown {
             key: symbol.clone(),
             mods: *modifiers,
             text: text.clone(),

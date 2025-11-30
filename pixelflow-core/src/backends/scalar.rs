@@ -950,10 +950,10 @@ mod tests {
         ];
         // Shuffle mask: swap bytes 0↔2 in each 4-byte group
         let shuffle_mask: [u8; 16] = [
-            2, 1, 0, 3,    // Pixel 0
-            6, 5, 4, 7,    // Pixel 1
-            10, 9, 8, 11,  // Pixel 2
-            14, 13, 12, 15 // Pixel 3
+            2, 1, 0, 3, // Pixel 0
+            6, 5, 4, 7, // Pixel 1
+            10, 9, 8, 11, // Pixel 2
+            14, 13, 12, 15, // Pixel 3
         ];
 
         let data = unsafe { SimdVec::<u8>::load(rgba_bytes.as_ptr()) };

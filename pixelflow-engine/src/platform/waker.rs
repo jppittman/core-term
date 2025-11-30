@@ -74,11 +74,7 @@ mod x11_waker {
         /// Initialize the waker with the X11 display and window.
         ///
         /// Call this from `run()` after creating the window.
-        pub fn set_target(
-            &self,
-            display: *mut xlib::Display,
-            window: xlib::Window,
-        ) {
+        pub fn set_target(&self, display: *mut xlib::Display, window: xlib::Window) {
             unsafe {
                 let wake_atom = xlib::XInternAtom(
                     display,

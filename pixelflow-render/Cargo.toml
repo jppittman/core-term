@@ -16,13 +16,6 @@ pixelflow-core = { path = "../pixelflow-core" }
 # Font rendering library
 pixelflow-fonts = { path = "../pixelflow-fonts" }
 
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "render_bench"
-harness = false
-
 # Font rendering - CoreText (macOS)
 [dependencies.core-text]
 version = "20.1"

@@ -1190,7 +1190,6 @@ dependencies = [
  "core-foundation 0.9.4",
  "core-graphics 0.24.0",
  "core-text",
- "criterion",
  "freetype",
  "log",
  "pixelflow-core",

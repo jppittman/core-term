@@ -3,7 +3,7 @@
 //! The pixelflow way: Glyph IS the Surface, not a wrapper around one.
 
 use crate::curves::Segment;
-use pixelflow_core::{Batch, pipe::Surface};
+use pixelflow_core::{pipe::Surface, Batch};
 
 /// Glyph bounds in pixel coordinates.
 #[derive(Clone, Copy, Debug, Default)]

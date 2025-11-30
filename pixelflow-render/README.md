@@ -1,63 +1,46 @@
 # PixelFlow Render
 
-**PixelFlow Render** is a high-performance, software-based rendering engine built on top of `pixelflow-core`. It provides a flexible API for 2D graphics, including primitive rasterization, text rendering, and frame management.
+High-performance, software-based rendering built on `pixelflow-core`.
 
-## Key Features
+## Architecture
 
-*   **Software Rasterization**: Efficient CPU-based rendering leveraging SIMD optimizations from `pixelflow-core`.
-*   **Primitive Operations**: Supports drawing rectangles, blitting images, and clearing buffers via the `Op` enum.
-*   **Text Rendering**: Integrated text rendering with support for font atlases and glyph positioning.
-*   **Command-Based API**: Stateless rendering via a list of `Op` commands, allowing for batch processing and easy integration.
+Everything is a lazy, infinite **Surface** until materialization:
 
-## Coordinate Systems
+- `Frame<P>` is both a target (write into) AND a Surface (read from)
+- Colors (`Rgba`, `Bgra`) are constant Surfaces
+- Compose with `Over`, `Offset`, `Skew`, `Max`, `Baked`, etc.
+- Materialize via `render()` or `execute()`
 
-*   **Pixel Coordinates**: Used by `Op::Blit` and similar operations. These map directly to the framebuffer pixels.
-*   **Grid Coordinates**: Used by `Op::Text`. The `x` and `y` parameters represent column and row indices, which are multiplied by `cell_width` and `cell_height` to determine the pixel position.
-
-## Example Usage
-
-Here's how to use `pixelflow-render` to process a frame:
+## Example
 
 ```rust
-use pixelflow_render::{process_frame, Color, NamedColor, Op};
+use pixelflow_render::{Frame, Rgba, render, font};
+use pixelflow_core::dsl::MaskExt;
 
-fn main() {
-    let width = 800;
-    let height = 600;
-    let cell_width = 10;
-    let cell_height = 20;
-    let mut framebuffer = vec![0u32; width * height];
+// Get a glyph mask (Surface<u8>)
+let glyph = font().glyph('A', 24.0).unwrap();
 
-    let ops: Vec<Op<&[u8]>> = vec![
-        // Clear the screen to Blue
-        Op::Clear {
-            color: Color::Named(NamedColor::Blue),
-        },
-        // Draw text at grid column 1, row 1
-        Op::Text {
-            ch: 'A',
-            x: 1, // Grid column
-            y: 1, // Grid row
-            fg: Color::Named(NamedColor::White),
-            bg: Color::Named(NamedColor::Black),
-        },
-    ];
+// Compose: mask blends fg over bg
+let fg = Rgba::new(255, 255, 255, 255);
+let bg = Rgba::new(0, 0, 0, 255);
+let surface = glyph.over::<Rgba>(fg, bg);
 
-    // Process the frame
-    process_frame(
-        &mut framebuffer,
-        width,
-        height,
-        cell_width,
-        cell_height,
-        &ops
-    );
-}
+// Materialize into a frame
+let mut frame = Frame::<Rgba>::new(800, 600);
+render(surface, &mut frame);
 ```
 
 ## Modules
 
-*   **`commands`**: Defines the `Op` enum and rendering commands.
-*   **`glyph`**: Handles font loading, atlas management, and glyph rendering.
-*   **`rasterizer`**: Contains the core logic for processing frames and executing commands.
-*   **`types`**: Common data structures like `Color`.
+- **`color`**: Semantic colors (`Color`, `NamedColor`) and pixel formats (`Rgba`, `Bgra`)
+- **`frame`**: `Frame<P>` buffer, implements `Surface<P>`
+- **`glyph`**: Embedded font access via `font()`
+- **`rasterizer`**: `render()`, `execute()`, `render_u32()`
+
+## Pixel Formats
+
+| Platform | Format | Type Alias |
+|----------|--------|------------|
+| X11      | BGRA   | `X11Pixel` |
+| Cocoa    | RGBA   | `CocoaPixel` |
+| Web      | RGBA   | `WebPixel` |
