@@ -1,24 +1,20 @@
-//! Terminal application implementing the pixelflow-engine Application trait.
-//!
-//! This is the new simplified architecture where the app owns the TerminalEmulator
-//! directly, eliminating the need for the orchestrator middleman.
-
 use crate::ansi::commands::AnsiCommand;
 use crate::config::Config;
 use crate::keys;
+use crate::surface::terminal::GlyphCache;
 use crate::surface::{GridBuffer, TerminalSurface};
 use crate::term::{
-    ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction,
+    ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, TerminalSnapshot,
+    UserInputAction,
 };
 use pixelflow_core::pipe::Surface;
 use pixelflow_engine::input::MouseButton;
 use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
+use pixelflow_render::{font, glyphs_scaled, BakedMask, Memoize};
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::Arc;
 
 /// The terminal application.
-///
-/// This struct owns the terminal emulator and handles all terminal-specific logic.
-/// It implements the pixelflow-engine `Application` trait for integration with the engine.
 pub struct TerminalApp {
     /// The terminal emulator - owns all terminal state.
     emulator: TerminalEmulator,
@@ -28,7 +24,8 @@ pub struct TerminalApp {
     pty_tx: SyncSender<Vec<u8>>,
     /// Application configuration.
     config: Config,
-    // No dirty flag needed - TerminalSnapshot tracks per-line dirty state
+    /// Glyph cache for rendering.
+    glyph_cache: GlyphCache,
 }
 
 impl TerminalApp {
@@ -39,21 +36,29 @@ impl TerminalApp {
         pty_tx: SyncSender<Vec<u8>>,
         config: Config,
     ) -> Self {
+        let f = font();
+
+        let w = config.appearance.cell_width_px as u32;
+        let h = config.appearance.cell_height_px as u32;
+        let font_size = config.appearance.font.size_pt as f32;
+
+        let glyph_cache: GlyphCache = Memoize::new(Arc::new(move |c| {
+            let g = glyphs_scaled(f, font_size)(c);
+            Arc::new(BakedMask::new(&g, w, h))
+        }));
+
         Self {
             emulator,
             pty_rx,
             pty_tx,
             config,
+            glyph_cache,
         }
     }
 
     /// Maximum number of command batches to process per drain cycle.
-    /// Limits work per event to stay responsive to input.
     const MAX_BATCHES_PER_DRAIN: usize = 10;
 
-    /// Drain PTY command channel and apply ANSI commands to emulator.
-    /// Limited to MAX_BATCHES_PER_DRAIN to stay responsive.
-    /// The emulator tracks dirty lines internally.
     fn drain_pty(&mut self) -> Vec<EmulatorAction> {
         let mut actions = Vec::new();
         for _ in 0..Self::MAX_BATCHES_PER_DRAIN {
@@ -71,8 +76,6 @@ impl TerminalApp {
         actions
     }
 
-    /// Process an engine event and return emulator actions.
-    /// The emulator tracks dirty lines internally when input is applied.
     fn process_engine_event(&mut self, event: EngineEvent) -> Vec<EmulatorAction> {
         let mut actions = Vec::new();
 
@@ -138,7 +141,6 @@ impl TerminalApp {
         actions
     }
 
-    /// Handle emulator actions, returning an AppAction if needed.
     fn handle_emulator_actions(&mut self, actions: Vec<EmulatorAction>) -> AppAction {
         for action in actions {
             match action {
@@ -179,11 +181,9 @@ impl TerminalApp {
 
 impl Application for TerminalApp {
     fn on_event(&mut self, event: EngineEvent) -> AppAction {
-        // Always drain PTY commands first to keep terminal state up to date
         let pty_actions = self.drain_pty();
         let _ = self.handle_emulator_actions(pty_actions);
 
-        // Then handle the specific event
         match event {
             EngineEvent::Wake => AppAction::Continue,
             EngineEvent::CloseRequested => AppAction::Quit,
@@ -195,25 +195,22 @@ impl Application for TerminalApp {
     }
 
     fn render(&mut self, _state: &AppState) -> Option<Box<dyn Surface<u32> + Send + Sync>> {
-        // Get logical snapshot from emulator (has per-line dirty flags)
         let snapshot = self.emulator.get_render_snapshot()?;
 
-        // Check if any lines are dirty - if not, skip this frame
         if !snapshot.lines.iter().any(|line| line.is_dirty) {
             return None;
         }
 
-        // Convert config colors to u32
         let default_fg: u32 = self.config.colors.foreground.into();
         let default_bg: u32 = self.config.colors.background.into();
 
-        // Build Surface from logical snapshot
         let grid = GridBuffer::from_snapshot(&snapshot, default_fg, default_bg);
 
         let terminal = TerminalSurface {
             grid,
             cell_width: self.config.appearance.cell_width_px,
             cell_height: self.config.appearance.cell_height_px,
+            glyph_cache: self.glyph_cache.clone(),
         };
 
         Some(Box::new(terminal))

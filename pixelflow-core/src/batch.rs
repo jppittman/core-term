@@ -226,6 +226,30 @@ pub trait SimdOps<T>: Copy + Clone + Sized {
     fn saturating_sub(self, other: Self) -> Self;
 }
 
+/// Extended operations for floating-point SIMD (f32 only).
+pub trait SimdFloatOps: SimdOps<f32> {
+    /// Computes the square root.
+    fn sqrt(self) -> Self;
+    /// Computes the absolute value.
+    fn abs(self) -> Self;
+    /// Computes the floor.
+    fn floor(self) -> Self;
+    /// Computes the ceiling.
+    fn ceil(self) -> Self;
+    /// Division.
+    fn div(self, other: Self) -> Self;
+    /// Greater than comparison (returns mask).
+    fn cmp_gt(self, other: Self) -> Self;
+    /// Greater than or equal comparison (returns mask).
+    fn cmp_ge(self, other: Self) -> Self;
+    /// Less than comparison (returns mask).
+    fn cmp_lt(self, other: Self) -> Self;
+    /// Less than or equal comparison (returns mask).
+    fn cmp_le(self, other: Self) -> Self;
+    /// Equal comparison (returns mask).
+    fn cmp_eq(self, other: Self) -> Self;
+}
+
 /// Extended operations for byte-level SIMD (u8 only).
 pub trait SimdOpsU8: SimdOps<u8> {
     /// Shuffles bytes according to indices.
@@ -310,6 +334,19 @@ where
         }
     }
 }
+
+impl core::ops::Neg for Batch<f32>
+where
+    backend::SimdVec<f32>: SimdOps<f32>,
+{
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self::Output {
+        // 0 - self
+        Batch::splat(0.0) - self
+    }
+}
+
 impl<T: Copy> Shr<i32> for Batch<T>
 where
     backend::SimdVec<T>: SimdOps<T>,
@@ -331,6 +368,105 @@ where
     fn shl(self, count: i32) -> Self {
         Self {
             inner: self.inner.shl(count),
+        }
+    }
+}
+
+impl Batch<f32>
+where
+    backend::SimdVec<f32>: SimdFloatOps,
+{
+    /// Computes the square root.
+    #[inline(always)]
+    #[must_use]
+    pub fn sqrt(self) -> Self {
+        Self {
+            inner: self.inner.sqrt(),
+        }
+    }
+
+    /// Computes the absolute value.
+    #[inline(always)]
+    #[must_use]
+    pub fn abs(self) -> Self {
+        Self {
+            inner: self.inner.abs(),
+        }
+    }
+
+    /// Computes the floor.
+    #[inline(always)]
+    #[must_use]
+    pub fn floor(self) -> Self {
+        Self {
+            inner: self.inner.floor(),
+        }
+    }
+
+    /// Computes the ceiling.
+    #[inline(always)]
+    #[must_use]
+    pub fn ceil(self) -> Self {
+        Self {
+            inner: self.inner.ceil(),
+        }
+    }
+
+    /// Greater than comparison (returns mask).
+    #[inline(always)]
+    #[must_use]
+    pub fn gt(self, other: Self) -> Self {
+        Self {
+            inner: self.inner.cmp_gt(other.inner),
+        }
+    }
+
+    /// Greater than or equal comparison (returns mask).
+    #[inline(always)]
+    #[must_use]
+    pub fn ge(self, other: Self) -> Self {
+        Self {
+            inner: self.inner.cmp_ge(other.inner),
+        }
+    }
+
+    /// Less than comparison (returns mask).
+    #[inline(always)]
+    #[must_use]
+    pub fn lt(self, other: Self) -> Self {
+        Self {
+            inner: self.inner.cmp_lt(other.inner),
+        }
+    }
+
+    /// Less than or equal comparison (returns mask).
+    #[inline(always)]
+    #[must_use]
+    pub fn le(self, other: Self) -> Self {
+        Self {
+            inner: self.inner.cmp_le(other.inner),
+        }
+    }
+
+    /// Equal comparison (returns mask).
+    #[inline(always)]
+    #[must_use]
+    pub fn eq(self, other: Self) -> Self {
+        Self {
+            inner: self.inner.cmp_eq(other.inner),
+        }
+    }
+}
+
+impl core::ops::Div for Batch<f32>
+where
+    backend::SimdVec<f32>: SimdFloatOps,
+{
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self::Output {
+        Self {
+            inner: self.inner.div(rhs.inner),
         }
     }
 }

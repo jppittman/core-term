@@ -1,96 +1,74 @@
-//! Glyph: A Surface<u8> that lazily evaluates SDF coverage.
-//!
-//! The pixelflow way: Glyph IS the Surface, not a wrapper around one.
+use crate::Font;
+use crate::surface::CurveSurface;
+use crate::lazy::Lazy;
+use pixelflow_core::ops::{Offset, Scale};
+use alloc::sync::Arc;
 
-use crate::curves::Segment;
-use pixelflow_core::{pipe::Surface, Batch};
+extern crate alloc;
 
-/// Glyph bounds in pixel coordinates.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GlyphBounds {
-    pub width: u32,
-    pub height: u32,
-    pub bearing_x: i32,
-    pub bearing_y: i32,
-}
-
-/// A glyph is a Surface<u8> (coverage/alpha mask).
-///
-/// Holds scaled outline segments, evaluates SDF coverage on demand.
-/// This is the pixelflow way: lazy evaluation, composes via combinators.
-pub struct Glyph {
-    pub(crate) segments: Vec<Segment>,
-    pub(crate) bounds: GlyphBounds,
-}
-
-impl Glyph {
-    /// Get the bounds of this glyph.
-    #[inline]
-    pub fn bounds(&self) -> GlyphBounds {
-        self.bounds
+// Raw glyph (no offset, segments in font units)
+fn glyph_raw(font: &Font, c: char, scale: f32) -> CurveSurface {
+    let glyph_id = font.glyph_index(c).unwrap_or(ttf_parser::GlyphId(0));
+    let segments = font.outline_segments(glyph_id, 1.0);
+    CurveSurface {
+        segments: Arc::from(segments),
+        scale,
     }
 }
 
-impl Surface<u8> for Glyph {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        let xs = x.to_array_usize();
-        let ys = y.to_array_usize();
-        let mut results = [0u32; 4];
+// Glyph with offset (normalized to 0,0)
+pub fn glyph<'a>(font: &'a Font<'a>, c: char) -> impl pixelflow_core::pipe::Surface<u8> + 'a {
+    // We capture font and char, but defer parsing.
+    // The Lazy surface expects a closure that returns a Surface.
+    let font = font.clone();
 
-        // Bounds for early-out optimization
-        let bx = self.bounds.bearing_x as f32;
-        let by_top = self.bounds.bearing_y as f32;
-        let by_bottom = by_top - self.bounds.height as f32;
-        let w = self.bounds.width as f32;
+    // We need to return something that implements Surface<u8>.
+    // Lazy<T> implements Surface<P> if T: Surface<P>.
+    // So we need Lazy to produce Offset<CurveSurface>.
+    Lazy::new(move || {
+        let raw = glyph_raw(&font, c, 1.0);
+        let glyph_id = font.glyph_index(c).unwrap_or(ttf_parser::GlyphId(0));
+        let bbox = font.glyph_bounding_box(glyph_id).unwrap_or(ttf_parser::Rect{x_min:0, y_min:0, x_max:0, y_max:0});
 
-        let min_x = bx - 1.0;
-        let max_x = bx + w + 1.0;
-        let min_y = by_bottom - 1.0;
-        let max_y = by_top + 1.0;
-
-        for i in 0..4 {
-            let px = xs[i] as f32 + 0.5; // pixel center
-            let py = ys[i] as f32 + 0.5;
-
-            // Early-out: skip if outside bounds
-            if px < min_x || px > max_x || py < min_y || py > max_y {
-                results[i] = 0;
-                continue;
-            }
-
-            let mut winding = 0;
-            let mut min_signed_dist: f32 = 1000.0;
-
-            for segment in &self.segments {
-                winding += segment.winding(px, py);
-
-                let dist = segment.signed_pseudo_distance(px, py);
-                if dist.abs() < min_signed_dist.abs() {
-                    min_signed_dist = dist;
-                }
-            }
-
-            let inside = winding != 0;
-
-            let signed_dist = if inside {
-                -min_signed_dist.abs()
-            } else {
-                min_signed_dist.abs()
-            };
-
-            // Convert SDF to alpha: smooth step at distance 0.5
-            let alpha = (0.5 - signed_dist).clamp(0.0, 1.0);
-            results[i] = (alpha * 255.0) as u32;
+        Offset {
+            source: raw,
+            dx: bbox.x_min as i32,
+            dy: bbox.y_min as i32,
         }
+    })
+}
 
-        Batch::new(results[0], results[1], results[2], results[3]).cast()
+// Helper: Box the factory closure to avoid unnamable types in return signature
+pub fn glyphs<'a>(font: &'a Font<'a>) -> impl Fn(char) -> Lazy<Box<dyn Fn() -> Offset<CurveSurface> + Send + Sync + 'a>, Offset<CurveSurface>> + 'a {
+    let font = font.clone();
+    move |c| {
+        let font = font.clone();
+        Lazy::new(Box::new(move || {
+            let raw = glyph_raw(&font, c, 1.0);
+            let glyph_id = font.glyph_index(c).unwrap_or(ttf_parser::GlyphId(0));
+            let bbox = font.glyph_bounding_box(glyph_id).unwrap_or(ttf_parser::Rect{x_min:0, y_min:0, x_max:0, y_max:0});
+
+            Offset {
+                source: raw,
+                dx: bbox.x_min as i32,
+                dy: bbox.y_min as i32,
+            }
+        }))
     }
 }
 
-// Also implement for &Glyph so it can be borrowed in combinators
-impl Surface<u8> for &Glyph {
-    #[inline]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        (*self).eval(x, y)
+pub fn glyphs_scaled<'a>(font: &'a Font<'a>, size_px: f32) -> impl Fn(char) -> Lazy<Box<dyn Fn() -> Scale<Offset<CurveSurface>> + Send + Sync + 'a>, Scale<Offset<CurveSurface>>> + 'a {
+    let s = size_px / font.units_per_em() as f32;
+    let font = font.clone();
+    move |c| {
+        let font = font.clone();
+        Lazy::new(Box::new(move || {
+            let raw = glyph_raw(&font, c, s);
+            let glyph_id = font.glyph_index(c).unwrap_or(ttf_parser::GlyphId(0));
+            let bbox = font.glyph_bounding_box(glyph_id).unwrap_or(ttf_parser::Rect{x_min:0, y_min:0, x_max:0, y_max:0});
+
+            let offset = Offset { source: raw, dx: bbox.x_min as i32, dy: bbox.y_min as i32 };
+            Scale::new(offset, s as f64)
+        }))
     }
 }

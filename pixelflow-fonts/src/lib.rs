@@ -1,19 +1,14 @@
-//! pixelflow-fonts: TTF parsing and glyph Surface generation.
+//! pixelflow-fonts: Functional glyph factory.
 //!
-//! The pixelflow way: `font.glyph('A', 24.0)` returns a `Surface<u8>`.
-//!
-//! ```ignore
-//! use pixelflow_fonts::Font;
-//! use pixelflow_core::dsl::MaskExt;
-//!
-//! let font = Font::from_bytes(font_data)?;
-//! let glyph = font.glyph('A', 24.0)?;  // Surface<u8>
-//! let rendered = glyph.over(fg, bg);   // Surface<u32>
-//! ```
+//! char -> Surface<u8>.
 
 pub mod curves;
 pub mod font;
 pub mod glyph;
+pub mod lazy;
+pub mod surface;
 
 pub use font::{Font, FontError, FontMetrics};
-pub use glyph::{Glyph, GlyphBounds};
+pub use glyph::{glyph, glyphs, glyphs_scaled};
+pub use lazy::Lazy;
+pub use surface::CurveSurface;

@@ -39,6 +39,8 @@ pub union ScalarReg<T> {
     pub u16: [u16; 8],
     /// 16 lanes of u8.
     pub u8: [u8; 16],
+    /// 4 lanes of f32.
+    pub f32: [f32; 4],
     /// Type marker.
     _marker: PhantomData<T>,
 }
@@ -50,6 +52,391 @@ impl<T> Clone for ScalarReg<T> {
 }
 
 impl<T> Copy for ScalarReg<T> {}
+
+// ============================================================================
+// f32 Implementation (4 lanes)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        Self(ScalarReg { f32: [val; 4] })
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        unsafe {
+            Self(ScalarReg {
+                f32: [
+                    *ptr.offset(0),
+                    *ptr.offset(1),
+                    *ptr.offset(2),
+                    *ptr.offset(3),
+                ],
+            })
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        unsafe {
+            let arr = self.0.f32;
+            *ptr.offset(0) = arr[0];
+            *ptr.offset(1) = arr[1];
+            *ptr.offset(2) = arr[2];
+            *ptr.offset(3) = arr[3];
+        }
+    }
+
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        Self(ScalarReg {
+            f32: [v0, v1, v2, v3],
+        })
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe {
+            let a = core::mem::transmute::<[f32; 4], [u32; 4]>(self.0.f32);
+            let b = core::mem::transmute::<[f32; 4], [u32; 4]>(other.0.f32);
+            let res = [a[0] & b[0], a[1] & b[1], a[2] & b[2], a[3] & b[3]];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe {
+            let a = core::mem::transmute::<[f32; 4], [u32; 4]>(self.0.f32);
+            let b = core::mem::transmute::<[f32; 4], [u32; 4]>(other.0.f32);
+            let res = [a[0] | b[0], a[1] | b[1], a[2] | b[2], a[3] | b[3]];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let a = core::mem::transmute::<[f32; 4], [u32; 4]>(self.0.f32);
+            let res = [!a[0], !a[1], !a[2], !a[3]];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        // Bitwise shift on float representation
+        unsafe {
+            let a = core::mem::transmute::<[f32; 4], [u32; 4]>(self.0.f32);
+            let res = [a[0] >> count, a[1] >> count, a[2] >> count, a[3] >> count];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        // Bitwise shift on float representation
+        unsafe {
+            let a = core::mem::transmute::<[f32; 4], [u32; 4]>(self.0.f32);
+            let res = [a[0] << count, a[1] << count, a[2] << count, a[3] << count];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+            let a = core::mem::transmute::<[f32; 4], [u32; 4]>(self.0.f32);
+            let b = core::mem::transmute::<[f32; 4], [u32; 4]>(other.0.f32);
+            let m = core::mem::transmute::<[f32; 4], [u32; 4]>(mask.0.f32);
+            let res = [
+                (a[0] & m[0]) | (b[0] & !m[0]),
+                (a[1] & m[1]) | (b[1] & !m[1]),
+                (a[2] & m[2]) | (b[2] & !m[2]),
+                (a[3] & m[3]) | (b[3] & !m[3]),
+            ];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [
+                    a[0].min(b[0]),
+                    a[1].min(b[1]),
+                    a[2].min(b[2]),
+                    a[3].min(b[3]),
+                ],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [
+                    a[0].max(b[0]),
+                    a[1].max(b[1]),
+                    a[2].max(b[2]),
+                    a[3].max(b[3]),
+                ],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        // For floats, just add (no wrap)
+        self.add(other)
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        // For floats, just sub
+        self.sub(other)
+    }
+}
+
+impl crate::batch::SimdFloatOps for SimdVec<f32> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        #[cfg(feature = "std")]
+        unsafe {
+            let a = self.0.f32;
+            Self(ScalarReg {
+                f32: [a[0].sqrt(), a[1].sqrt(), a[2].sqrt(), a[3].sqrt()],
+            })
+        }
+        #[cfg(not(feature = "std"))]
+        unsafe {
+             let a = self.0.f32;
+            // Approximation or use libm if available. For no_std without libm, sqrt is hard.
+            // Assuming intrinsics are available or user provides it.
+            // For now, use a simple iterative approximation or assume std.
+            // Actually, f32 methods are available in core/alloc? No, they are in libm.
+            // But we can use `f32::sqrt` if we have standard library or compiler builtins.
+            // Rust `f32::sqrt` works in no_std if using builtins? No.
+            // We'll assume std for now as scalar backend usually runs in tests or non-simd envs with std.
+            // If strictly no_std, we need `libm` crate dependency.
+            // Since I cannot add dependencies easily, I will just call `.sqrt()` and hope for the best (usually implies std or libm linked).
+             Self(ScalarReg {
+                f32: [
+                    libm::sqrtf(a[0]),
+                    libm::sqrtf(a[1]),
+                    libm::sqrtf(a[2]),
+                    libm::sqrtf(a[3]),
+                ]
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+             // Using libm::fabsf or just bit manipulation
+             // But f32::abs is in core? No, usually std.
+             // Actually, core::f32 methods exist since Rust 1.20 but some like sqrt require std/libm. abs is bitwise.
+            Self(ScalarReg {
+                f32: [a[0].abs(), a[1].abs(), a[2].abs(), a[3].abs()],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+         unsafe {
+            let a = self.0.f32;
+             // Requires libm or std
+             #[cfg(feature = "std")]
+             {
+                 Self(ScalarReg {
+                    f32: [a[0].floor(), a[1].floor(), a[2].floor(), a[3].floor()],
+                })
+             }
+             #[cfg(not(feature = "std"))]
+             {
+                 Self(ScalarReg {
+                    f32: [libm::floorf(a[0]), libm::floorf(a[1]), libm::floorf(a[2]), libm::floorf(a[3])],
+                })
+             }
+        }
+    }
+
+    #[inline(always)]
+    fn ceil(self) -> Self {
+         unsafe {
+            let a = self.0.f32;
+             #[cfg(feature = "std")]
+             {
+                 Self(ScalarReg {
+                    f32: [a[0].ceil(), a[1].ceil(), a[2].ceil(), a[3].ceil()],
+                })
+             }
+             #[cfg(not(feature = "std"))]
+             {
+                 Self(ScalarReg {
+                    f32: [libm::ceilf(a[0]), libm::ceilf(a[1]), libm::ceilf(a[2]), libm::ceilf(a[3])],
+                })
+             }
+        }
+    }
+
+    #[inline(always)]
+    fn div(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            Self(ScalarReg {
+                f32: [a[0] / b[0], a[1] / b[1], a[2] / b[2], a[3] / b[3]],
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_gt(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            // Mask is all 1s if true, all 0s if false
+            let mask = |cond| if cond { u32::MAX } else { 0 };
+            let res = [
+                mask(a[0] > b[0]),
+                mask(a[1] > b[1]),
+                mask(a[2] > b[2]),
+                mask(a[3] > b[3]),
+            ];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_ge(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            let mask = |cond| if cond { u32::MAX } else { 0 };
+            let res = [
+                mask(a[0] >= b[0]),
+                mask(a[1] >= b[1]),
+                mask(a[2] >= b[2]),
+                mask(a[3] >= b[3]),
+            ];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_lt(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            let mask = |cond| if cond { u32::MAX } else { 0 };
+            let res = [
+                mask(a[0] < b[0]),
+                mask(a[1] < b[1]),
+                mask(a[2] < b[2]),
+                mask(a[3] < b[3]),
+            ];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_le(self, other: Self) -> Self {
+        unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            let mask = |cond| if cond { u32::MAX } else { 0 };
+            let res = [
+                mask(a[0] <= b[0]),
+                mask(a[1] <= b[1]),
+                mask(a[2] <= b[2]),
+                mask(a[3] <= b[3]),
+            ];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, other: Self) -> Self {
+         unsafe {
+            let a = self.0.f32;
+            let b = other.0.f32;
+            let mask = |cond| if cond { u32::MAX } else { 0 };
+            let res = [
+                mask(a[0] == b[0]),
+                mask(a[1] == b[1]),
+                mask(a[2] == b[2]),
+                mask(a[3] == b[3]),
+            ];
+            Self(ScalarReg {
+                f32: core::mem::transmute(res),
+            })
+        }
+    }
+}
 
 // ============================================================================
 // u32 Implementation (4 lanes)

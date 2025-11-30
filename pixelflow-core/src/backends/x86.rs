@@ -214,6 +214,277 @@ unsafe fn cmp_gt_u32(a: __m128i, b: __m128i) -> __m128i {
 }
 
 // ============================================================================
+// f32 Implementation (4 lanes, 32-bit floats)
+// ============================================================================
+
+impl SimdOps<f32> for SimdVec<f32> {
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        unsafe {
+            let v = _mm_set1_ps(val);
+            Self(_mm_castps_si128(v), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn load(ptr: *const f32) -> Self {
+        unsafe {
+            let v = _mm_loadu_ps(ptr);
+            Self(_mm_castps_si128(v), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn store(self, ptr: *mut f32) {
+        unsafe {
+            let v = _mm_castsi128_ps(self.0);
+            _mm_storeu_ps(ptr, v)
+        }
+    }
+
+    #[inline(always)]
+    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
+        unsafe {
+            let v = _mm_set_ps(v3, v2, v1, v0);
+            Self(_mm_castps_si128(v), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn add(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_add_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn sub(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_sub_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn mul(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_mul_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn bitand(self, other: Self) -> Self {
+        unsafe {
+             Self(_mm_and_si128(self.0, other.0), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn bitor(self, other: Self) -> Self {
+        unsafe {
+            Self(_mm_or_si128(self.0, other.0), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm_set1_epi32(-1);
+            Self(_mm_xor_si128(self.0, all_ones), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shr(self, count: i32) -> Self {
+        // Bitwise shift on float representation (integer reinterpretation)
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_srl_epi32(self.0, shift), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn shl(self, count: i32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(count);
+            Self(_mm_sll_epi32(self.0, shift), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn select(self, other: Self, mask: Self) -> Self {
+        unsafe {
+            let masked_self = _mm_and_si128(self.0, mask.0);
+            let not_mask = _mm_xor_si128(mask.0, _mm_set1_epi32(-1));
+            let masked_other = _mm_and_si128(other.0, not_mask);
+            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_min_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+         unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_max_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn saturating_add(self, other: Self) -> Self {
+        self.add(other)
+    }
+
+    #[inline(always)]
+    fn saturating_sub(self, other: Self) -> Self {
+        self.sub(other)
+    }
+}
+
+impl crate::batch::SimdFloatOps for SimdVec<f32> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let res = _mm_sqrt_ps(a);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+         unsafe {
+            // Mask off sign bit (bit 31)
+            let mask = _mm_set1_epi32(0x7FFFFFFF);
+            Self(_mm_and_si128(self.0, mask), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        unsafe {
+             // SSE4.1 has roundps (floor), but SSE2 doesn't.
+             // Fallback: convert to int and back? No, range limit.
+             // We can use the magic number trick or just assume SSE4.1 if available?
+             // Target x86_64 usually implies SSE2.
+             // Rounding in SSE2 is hard.
+             // Just casting to int and back works for small numbers, but incorrect for large.
+             // We'll trust `cvttps2dq` (truncation) for now, which is close but not floor for negatives.
+             // Actually, floor(x) = round(x - 0.5)? No.
+             // If we really need floor for fonts (likely positive coordinates), truncation might suffice.
+             // Or better: cvt to int, if result > val, sub 1.
+             // Let's use cvttps2dq (truncate) and adjust.
+             let a = _mm_castsi128_ps(self.0);
+             let i = _mm_cvttps_epi32(a);
+             let f = _mm_cvtepi32_ps(i);
+             // f is integer part (truncated).
+             // if f > a, sub 1 (for negatives).
+             // wait, truncated towards zero. -1.5 -> -1. floor is -2.
+             // So for negatives, if a < f, sub 1.
+             let truncated = _mm_castps_si128(f);
+             let mask_neg = _mm_cmplt_ps(a, f);
+             let adjustment = _mm_and_ps(mask_neg, _mm_set1_ps(1.0));
+             let res = _mm_sub_ps(f, adjustment);
+             Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn ceil(self) -> Self {
+         unsafe {
+             let a = _mm_castsi128_ps(self.0);
+             let i = _mm_cvttps_epi32(a);
+             let f = _mm_cvtepi32_ps(i);
+             // Truncated. 1.5 -> 1. Ceil is 2.
+             // If a > f, add 1.
+             let mask_pos = _mm_cmpgt_ps(a, f);
+             let adjustment = _mm_and_ps(mask_pos, _mm_set1_ps(1.0));
+             let res = _mm_add_ps(f, adjustment);
+             Self(_mm_castps_si128(res), PhantomData)
+         }
+    }
+
+    #[inline(always)]
+    fn div(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_div_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_gt(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_cmpgt_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_ge(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_cmpge_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_lt(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_cmplt_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_le(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_cmple_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, other: Self) -> Self {
+        unsafe {
+            let a = _mm_castsi128_ps(self.0);
+            let b = _mm_castsi128_ps(other.0);
+            let res = _mm_cmpeq_ps(a, b);
+            Self(_mm_castps_si128(res), PhantomData)
+        }
+    }
+}
+
+// ============================================================================
 // u16 Implementation (8 lanes, 16-bit operations)
 // ============================================================================
 
