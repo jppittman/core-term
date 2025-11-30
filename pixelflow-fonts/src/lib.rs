@@ -11,9 +11,11 @@
 //! let rendered = glyph.over(fg, bg);   // Surface<u32>
 //! ```
 
+pub mod atlas;
 pub mod curves;
 pub mod font;
 pub mod glyph;
 
+pub use atlas::{Atlas, AtlasConfig, AtlasEntry, AtlasSampler};
 pub use font::{Font, FontError, FontMetrics};
 pub use glyph::{Glyph, GlyphBounds};

@@ -38,15 +38,14 @@ impl Surface<u8> for Glyph {
         let mut results = [0u32; 4];
 
         // Bounds for early-out optimization
-        let bx = self.bounds.bearing_x as f32;
-        let by_top = self.bounds.bearing_y as f32;
-        let by_bottom = by_top - self.bounds.height as f32;
+        // Segments are normalized to [0, width] x [0, height] (relative to bbox origin)
         let w = self.bounds.width as f32;
+        let h = self.bounds.height as f32;
 
-        let min_x = bx - 1.0;
-        let max_x = bx + w + 1.0;
-        let min_y = by_bottom - 1.0;
-        let max_y = by_top + 1.0;
+        let min_x = -1.0;
+        let max_x = w + 1.0;
+        let min_y = -1.0;
+        let max_y = h + 1.0;
 
         for i in 0..4 {
             let px = xs[i] as f32 + 0.5; // pixel center

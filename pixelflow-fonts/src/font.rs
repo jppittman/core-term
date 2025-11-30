@@ -75,8 +75,17 @@ impl<'a> Font<'a> {
             bearing_y: (bbox.y_max as f32 * scale).round() as i32,
         };
 
+        // Normalize segments to be relative to (0,0) instead of (bearing_x, bearing_y)
+        let min_x = bbox.x_min as f32 * scale;
+        let min_y = bbox.y_min as f32 * scale;
+
+        let mut segments = builder.segments;
+        for seg in &mut segments {
+            seg.translate(-min_x, -min_y);
+        }
+
         Some(Glyph {
-            segments: builder.segments,
+            segments,
             bounds,
         })
     }
