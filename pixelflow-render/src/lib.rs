@@ -29,7 +29,7 @@ pub mod color;
 /// Framebuffer type generic over color format.
 pub mod frame;
 /// Embedded font access.
-pub mod glyph;
+pub mod embedded_font;
 /// Rasterization utilities.
 pub mod rasterizer;
 
@@ -47,8 +47,11 @@ pub use color::{
     X11Pixel,
 };
 pub use frame::Frame;
-pub use glyph::font;
-pub use pixelflow_fonts::{Font, Glyph, GlyphBounds};
+pub use embedded_font::font;
+pub use pixelflow_fonts::{
+    BakedExt, BakedFactory, BakedMask, Font, GlyphCache, GlyphSurface, Lazy, glyph, glyphs,
+    glyphs_cached, glyphs_scaled,
+};
 pub use rasterizer::{execute, render, render_to_buffer, render_u32};
 
 // Re-export core types for convenience

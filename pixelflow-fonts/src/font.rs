@@ -1,13 +1,10 @@
-//! Font: TTF parsing and glyph Surface creation.
-//!
-//! The pixelflow way: `font.glyph('A', 24.0)` returns `Option<Glyph>` (a Surface<u8>).
+//! Font: TTF parsing wrapper.
 
 use thiserror::Error;
 pub use ttf_parser::GlyphId;
 use ttf_parser::{Face, FaceParsingError, OutlineBuilder};
 
 use crate::curves::{Line, Point, Quadratic, Segment};
-use crate::glyph::{Glyph, GlyphBounds};
 
 #[derive(Error, Debug)]
 pub enum FontError {
@@ -15,8 +12,9 @@ pub enum FontError {
     ParseError(#[from] FaceParsingError),
 }
 
+#[derive(Clone)]
 pub struct Font<'a> {
-    face: Face<'a>,
+    pub(crate) face: Face<'a>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,46 +40,14 @@ impl<'a> Font<'a> {
         }
     }
 
-    /// The pixelflow way: one call, returns a Surface<u8>.
-    ///
-    /// ```ignore
-    /// let glyph = font.glyph('A', 24.0)?;
-    /// let rendered = glyph.over(fg, bg);
-    /// ```
-    pub fn glyph(&self, ch: char, size: f32) -> Option<Glyph> {
-        let glyph_id = self.face.glyph_index(ch)?;
-
-        let scale = size / self.face.units_per_em() as f32;
-        let mut builder = GlyphBuilder::new(scale);
-
-        // outline_glyph returns None for empty glyphs (like space)
-        // but we still want to return a Glyph with bounds
-        let _ = self.face.outline_glyph(glyph_id, &mut builder);
-
-        let bbox = self
-            .face
-            .glyph_bounding_box(glyph_id)
-            .unwrap_or(ttf_parser::Rect {
-                x_min: 0,
-                y_min: 0,
-                x_max: 0,
-                y_max: 0,
-            });
-
-        let bounds = GlyphBounds {
-            width: ((bbox.x_max - bbox.x_min) as f32 * scale).ceil() as u32,
-            height: ((bbox.y_max - bbox.y_min) as f32 * scale).ceil() as u32,
-            bearing_x: (bbox.x_min as f32 * scale).round() as i32,
-            bearing_y: (bbox.y_max as f32 * scale).round() as i32,
-        };
-
-        Some(Glyph {
-            segments: builder.segments,
-            bounds,
-        })
+    pub fn units_per_em(&self) -> u16 {
+        self.face.units_per_em()
     }
 
-    /// Get horizontal advance for a character at a given size.
+    pub fn glyph_index(&self, c: char) -> Option<GlyphId> {
+        self.face.glyph_index(c)
+    }
+
     pub fn advance(&self, ch: char, size: f32) -> f32 {
         let scale = size / self.face.units_per_em() as f32;
         self.face
@@ -91,7 +57,6 @@ impl<'a> Font<'a> {
             .unwrap_or(0.0)
     }
 
-    /// Get kerning between two characters at a given size.
     pub fn kern(&self, left: char, right: char, size: f32) -> f32 {
         let scale = size / self.face.units_per_em() as f32;
         let left_id = match self.face.glyph_index(left) {
@@ -112,11 +77,17 @@ impl<'a> Font<'a> {
         }
         0.0
     }
-}
 
-// ============================================================================
-// Outline Builder - converts TTF outlines to Segments
-// ============================================================================
+    pub fn outline_segments(&self, glyph_id: GlyphId, scale: f32) -> Vec<Segment> {
+        let mut builder = GlyphBuilder::new(scale);
+        let _ = self.face.outline_glyph(glyph_id, &mut builder);
+        builder.segments
+    }
+
+    pub fn glyph_bounding_box(&self, glyph_id: GlyphId) -> Option<ttf_parser::Rect> {
+        self.face.glyph_bounding_box(glyph_id)
+    }
+}
 
 struct GlyphBuilder {
     segments: Vec<Segment>,
@@ -137,7 +108,7 @@ impl GlyphBuilder {
 
     fn subdivide_cubic(&mut self, p0: Point, p1: Point, p2: Point, p3: Point, depth: u32) {
         let d03 = dist_sq(p0, p3);
-        const MIN_LEN_SQ: f32 = 0.25; // 0.5 px
+        const MIN_LEN_SQ: f32 = 0.25;
 
         if depth > 8 || d03 < MIN_LEN_SQ {
             self.segments.push(Segment::Line(Line { p0, p1: p3 }));
