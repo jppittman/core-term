@@ -101,18 +101,36 @@ fn main() -> anyhow::Result<()> {
     info!("EventMonitorActor spawned successfully");
 
     // Create app that owns emulator
+    // Use platform-specific pixel type for correct color format
     use crate::terminal_app::TerminalApp;
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
-    let app = TerminalApp::new(
-        term_emulator,
-        pty_cmd_rx,
-        pty_write_tx,
-        crate::config::Config::default(),
-    );
 
     info!("Platform initialized. Starting main event loop...");
 
-    platform.run(app).context("Platform event loop failed")?;
+    // Platform-specific pixel format
+    #[cfg(target_os = "macos")]
+    {
+        use pixelflow_render::CocoaPixel;
+        let app: TerminalApp<CocoaPixel> = TerminalApp::new(
+            term_emulator,
+            pty_cmd_rx,
+            pty_write_tx,
+            crate::config::Config::default(),
+        );
+        platform.run(app).context("Platform event loop failed")?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use pixelflow_render::X11Pixel;
+        let app: TerminalApp<X11Pixel> = TerminalApp::new(
+            term_emulator,
+            pty_cmd_rx,
+            pty_write_tx,
+            crate::config::Config::default(),
+        );
+        platform.run(app).context("Platform event loop failed")?;
+    }
 
     info!("core-term exited successfully.");
 

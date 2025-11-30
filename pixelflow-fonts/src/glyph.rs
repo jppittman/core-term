@@ -90,14 +90,8 @@ pub fn eval_curves(curves: &[Segment], bounds: GlyphBounds, x: Batch<u32>, y: Ba
     let pixel_val = clamped * Batch::splat(255.0);
     let pixel_u32 = pixel_val.to_u32();
 
-    let packed = pixel_u32.transmute::<u8>(); // bitcast
-    let shuffle_mask = Batch::<u8>::from_array([
-        0, 4, 8, 12,
-        0x80, 0x80, 0x80, 0x80,
-        0x80, 0x80, 0x80, 0x80,
-        0x80, 0x80, 0x80, 0x80,
-    ]);
-    packed.shuffle_bytes(shuffle_mask)
+    // Return as Batch<u8> - values in u32 lanes (natural SIMD layout)
+    pixel_u32.transmute()
 }
 
 impl Surface<u8> for Glyph {

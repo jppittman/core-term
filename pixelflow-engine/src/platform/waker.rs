@@ -131,7 +131,6 @@ mod cocoa_waker {
     use objc2::runtime::{AnyObject, Bool};
     use objc2::{class, msg_send};
     use objc2_foundation::NSPoint;
-    use std::ffi::c_void;
 
     /// macOS implementation of EventLoopWaker using NSEvent posting.
     ///
@@ -160,6 +159,8 @@ mod cocoa_waker {
 
                 // Create a lightweight dummy event
                 // Note: allocated raw pointer, autoreleased by factory method
+                // context: nil (pass null object pointer, not void pointer)
+                let nil_context: *mut AnyObject = std::ptr::null_mut();
                 let event: *mut AnyObject = msg_send![
                     ns_event_class,
                     otherEventWithType: event_type,
@@ -167,7 +168,7 @@ mod cocoa_waker {
                     modifierFlags: 0 as NSUInteger,
                     timestamp: 0.0,
                     windowNumber: 0 as NSUInteger,
-                    context: std::ptr::null_mut::<c_void>(),
+                    context: nil_context,
                     subtype: 0 as i16,
                     data1: 0 as isize,
                     data2: 0 as isize

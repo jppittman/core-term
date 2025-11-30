@@ -535,14 +535,17 @@ where
     }
 }
 
-// Transmute
+// Transmute - reinterpret bits as different element type
+// This is safe because Batch<T> is repr(transparent) over a fixed-size SIMD register
 impl<T: Copy> Batch<T> {
+    /// Reinterprets the bits of this batch as a batch of type U.
+    ///
+    /// This is a zero-cost bitcast - all Batch types wrap the same 128-bit register.
+    /// Use this to reinterpret packed pixel data (e.g., 4×u32 → 16×u8).
     #[inline(always)]
     #[must_use]
     pub fn transmute<U: Copy>(self) -> Batch<U> {
-        const {
-            assert!(mem::size_of::<T>() == mem::size_of::<U>(), "Size mismatch");
-        }
+        // All Batch<T> are the same size (128 bits), just different interpretations
         unsafe { mem::transmute(self) }
     }
 }

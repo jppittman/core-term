@@ -132,6 +132,24 @@ impl Default for Color {
     }
 }
 
+impl Color {
+    /// Convert to an Rgba pixel.
+    ///
+    /// Uses the `From<Color> for u32` implementation which produces RGBA format.
+    #[inline]
+    pub fn to_rgba(self) -> Rgba {
+        Rgba(u32::from(self))
+    }
+
+    /// Convert to a Bgra pixel.
+    ///
+    /// Converts via Rgba, then swizzles R and B channels.
+    #[inline]
+    pub fn to_bgra(self) -> Bgra {
+        Bgra::from(self.to_rgba())
+    }
+}
+
 // Constants for 256-color palette conversion
 const ANSI_NAMED_COLOR_COUNT: u8 = 16;
 const COLOR_CUBE_OFFSET: u8 = 16;
@@ -541,5 +559,36 @@ mod tests {
 
         let reconstructed = Bgra::batch_from_channels(r, g, b, a);
         assert_eq!(reconstructed.to_array_usize(), batch.to_array_usize());
+    }
+
+    #[test]
+    fn test_color_to_rgba() {
+        let color = Color::Rgb(0xAA, 0xBB, 0xCC);
+        let rgba = color.to_rgba();
+        assert_eq!(rgba.r(), 0xAA);
+        assert_eq!(rgba.g(), 0xBB);
+        assert_eq!(rgba.b(), 0xCC);
+        assert_eq!(rgba.a(), 0xFF);
+    }
+
+    #[test]
+    fn test_color_to_bgra() {
+        let color = Color::Rgb(0xAA, 0xBB, 0xCC);
+        let bgra = color.to_bgra();
+        // BGRA memory order: [B, G, R, A]
+        assert_eq!(bgra.r(), 0xAA);
+        assert_eq!(bgra.g(), 0xBB);
+        assert_eq!(bgra.b(), 0xCC);
+        assert_eq!(bgra.a(), 0xFF);
+    }
+
+    #[test]
+    fn test_named_color_to_rgba() {
+        let color = Color::Named(NamedColor::Red);
+        let rgba = color.to_rgba();
+        // NamedColor::Red = (205, 0, 0)
+        assert_eq!(rgba.r(), 205);
+        assert_eq!(rgba.g(), 0);
+        assert_eq!(rgba.b(), 0);
     }
 }

@@ -4,22 +4,38 @@
 //! directly, eliminating the need for the orchestrator middleman.
 
 use crate::ansi::commands::AnsiCommand;
+use crate::color::Color;
 use crate::config::Config;
 use crate::keys;
 use crate::surface::{GridBuffer, TerminalSurface};
 use crate::term::{
     ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction,
 };
+use core::marker::PhantomData;
+use pixelflow_core::ops::Baked;
 use pixelflow_core::pipe::Surface;
 use pixelflow_engine::input::MouseButton;
 use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
+use pixelflow_fonts::{glyphs, Lazy};
+use pixelflow_render::font;
+use pixelflow_render::Pixel;
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::Arc;
+
+/// Glyph factory type - closure that returns lazily-baked glyphs.
+type GlyphFactory = Arc<dyn Fn(char) -> Lazy<'static, Baked<u8>> + Send + Sync>;
 
 /// The terminal application.
 ///
 /// This struct owns the terminal emulator and handles all terminal-specific logic.
 /// It implements the pixelflow-engine `Application` trait for integration with the engine.
-pub struct TerminalApp {
+///
+/// Generic over pixel format `P` for platform-specific rendering:
+/// - `Rgba` for Cocoa (macOS)
+/// - `Bgra` for X11 (Linux)
+///
+/// The `P: Surface<P>` bound ensures colors can be used as constant surfaces.
+pub struct TerminalApp<P: Pixel + Surface<P>> {
     /// The terminal emulator - owns all terminal state.
     emulator: TerminalEmulator,
     /// Channel to receive parsed ANSI commands from the PTY read thread.
@@ -28,10 +44,14 @@ pub struct TerminalApp {
     pty_tx: SyncSender<Vec<u8>>,
     /// Application configuration.
     config: Config,
+    /// Glyph factory - shared across frames, caching is automatic via Lazy.
+    glyph: GlyphFactory,
+    /// Phantom data for pixel format.
+    _pixel: PhantomData<P>,
     // No dirty flag needed - TerminalSnapshot tracks per-line dirty state
 }
 
-impl TerminalApp {
+impl<P: Pixel + Surface<P>> TerminalApp<P> {
     /// Creates a new TerminalApp.
     pub fn new(
         emulator: TerminalEmulator,
@@ -39,11 +59,19 @@ impl TerminalApp {
         pty_tx: SyncSender<Vec<u8>>,
         config: Config,
     ) -> Self {
+        let f = font();
+        let glyph_fn = glyphs(
+            f.clone(),
+            config.appearance.cell_width_px as u32,
+            config.appearance.cell_height_px as u32,
+        );
         Self {
             emulator,
             pty_rx,
             pty_tx,
             config,
+            glyph: Arc::new(glyph_fn),
+            _pixel: PhantomData,
         }
     }
 
@@ -177,7 +205,7 @@ impl TerminalApp {
     }
 }
 
-impl Application for TerminalApp {
+impl<P: Pixel + Surface<P>> Application<P> for TerminalApp<P> {
     fn on_event(&mut self, event: EngineEvent) -> AppAction {
         // Always drain PTY commands first to keep terminal state up to date
         let pty_actions = self.drain_pty();
@@ -194,7 +222,7 @@ impl Application for TerminalApp {
         }
     }
 
-    fn render(&mut self, _state: &AppState) -> Option<Box<dyn Surface<u32> + Send + Sync>> {
+    fn render(&mut self, _state: &AppState) -> Option<Box<dyn Surface<P> + Send + Sync>> {
         // Get logical snapshot from emulator (has per-line dirty flags)
         let snapshot = self.emulator.get_render_snapshot()?;
 
@@ -203,18 +231,19 @@ impl Application for TerminalApp {
             return None;
         }
 
-        // Convert config colors to u32
-        let default_fg: u32 = self.config.colors.foreground.into();
-        let default_bg: u32 = self.config.colors.background.into();
+        // Use semantic Color for defaults (not raw u32)
+        let default_fg: Color = self.config.colors.foreground;
+        let default_bg: Color = self.config.colors.background;
 
         // Build Surface from logical snapshot
         let grid = GridBuffer::from_snapshot(&snapshot, default_fg, default_bg);
 
-        let terminal = TerminalSurface {
+        let terminal: TerminalSurface<P> = TerminalSurface::with_grid(
             grid,
-            cell_width: self.config.appearance.cell_width_px,
-            cell_height: self.config.appearance.cell_height_px,
-        };
+            self.glyph.clone(),
+            self.config.appearance.cell_width_px as u32,
+            self.config.appearance.cell_height_px as u32,
+        );
 
         Some(Box::new(terminal))
     }
