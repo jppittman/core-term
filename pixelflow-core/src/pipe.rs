@@ -20,7 +20,7 @@ where T: Copy + Debug + Default + Send + Sync + 'static
     /// a different reduction (average, etc).
     #[inline]
     fn eval_one(&self, x: u32, y: u32) -> T {
-        self.eval(Batch::splat(x), Batch::splat(y)).first()
+        self.eval(Batch::<u32>::splat(x), Batch::<u32>::splat(y)).first()
     }
 }
 

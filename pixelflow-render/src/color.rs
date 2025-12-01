@@ -347,17 +347,17 @@ impl Pixel for Rgba {
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {
-        batch & Batch::splat(0xFF)
+        batch & Batch::<u32>::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_green(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 8) & Batch::splat(0xFF)
+        (batch >> 8) & Batch::<u32>::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 16) & Batch::splat(0xFF)
+        (batch >> 16) & Batch::<u32>::splat(0xFF)
     }
 
     #[inline(always)]
@@ -368,6 +368,14 @@ impl Pixel for Rgba {
     #[inline(always)]
     fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32> {
         r | (g << 8) | (b << 16) | (a << 24)
+    }
+
+    #[inline(always)]
+    fn batch_store(batch: Batch<Self>, slice: &mut [Self]) {
+        // SAFETY: Rgba is repr(transparent) over u32, same size and alignment
+        let u32_slice: &mut [u32] = unsafe { core::mem::transmute(slice) };
+        let u32_batch: Batch<u32> = unsafe { core::mem::transmute_copy(&batch) };
+        SimdBatch::store(&u32_batch, u32_slice);
     }
 }
 
@@ -403,17 +411,17 @@ impl Pixel for Bgra {
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 16) & Batch::splat(0xFF)
+        (batch >> 16) & Batch::<u32>::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_green(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 8) & Batch::splat(0xFF)
+        (batch >> 8) & Batch::<u32>::splat(0xFF)
     }
 
     #[inline(always)]
     fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
-        batch & Batch::splat(0xFF)
+        batch & Batch::<u32>::splat(0xFF)
     }
 
     #[inline(always)]
@@ -424,6 +432,14 @@ impl Pixel for Bgra {
     #[inline(always)]
     fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32> {
         b | (g << 8) | (r << 16) | (a << 24)
+    }
+
+    #[inline(always)]
+    fn batch_store(batch: Batch<Self>, slice: &mut [Self]) {
+        // SAFETY: Bgra is repr(transparent) over u32, same size and alignment
+        let u32_slice: &mut [u32] = unsafe { core::mem::transmute(slice) };
+        let u32_batch: Batch<u32> = unsafe { core::mem::transmute_copy(&batch) };
+        SimdBatch::store(&u32_batch, u32_slice);
     }
 }
 

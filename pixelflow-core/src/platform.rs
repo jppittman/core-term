@@ -20,9 +20,9 @@ impl PixelFormat {
         match self {
             PixelFormat::Rgba => batch,
             PixelFormat::Bgra => {
-                let mask_ga = Batch::splat(0xFF00FF00u32);
-                let mask_r = Batch::splat(0x000000FFu32);
-                let mask_b = Batch::splat(0x00FF0000u32);
+                let mask_ga = Batch::<u32>::splat(0xFF00FF00u32);
+                let mask_r = Batch::<u32>::splat(0x000000FFu32);
+                let mask_b = Batch::<u32>::splat(0x00FF0000u32);
 
                 let ga = batch & mask_ga;
                 let r = batch & mask_r;
@@ -99,7 +99,7 @@ impl Platform {
                 let sy = (y as u32) / self.scale;
                 let rgba = surface.eval_one(sx, sy);
                 // Need to swizzle single pixel - just use batch with first lane
-                let out = self.format.swizzle(Batch::splat(rgba));
+                let out = self.format.swizzle(Batch::<u32>::splat(rgba));
                 row_slice[x] = out.first();
                 x += 1;
             }

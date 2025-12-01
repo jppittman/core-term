@@ -20,8 +20,8 @@ pub struct SampleAtlas<'a> {
 impl<'a> Surface<u8> for SampleAtlas<'a> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        let u = x * Batch::splat(self.step_x_fp);
-        let v = y * Batch::splat(self.step_y_fp);
+        let u = x * Batch::<u32>::splat(self.step_x_fp);
+        let v = y * Batch::<u32>::splat(self.step_y_fp);
         unsafe {
             let res = self.atlas.sample_4bit_bilinear::<NativeBackend>(u, v);
             NativeBackend::downcast_u32_to_u8(res)
@@ -44,8 +44,8 @@ where T: Copy + Debug + Default + Send + Sync + 'static,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
-        let ox = Batch::splat(self.dx as u32);
-        let oy = Batch::splat(self.dy as u32);
+        let ox = Batch::<u32>::splat(self.dx as u32);
+        let oy = Batch::<u32>::splat(self.dy as u32);
         self.source.eval(x + ox, y + oy)
     }
 }
@@ -70,7 +70,7 @@ where T: Copy + Debug + Default + Send + Sync + 'static,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
-        let inv = Batch::splat(self.inv_scale_fp);
+        let inv = Batch::<u32>::splat(self.inv_scale_fp);
         let lx = (x * inv) >> 16;
         let ly = (y * inv) >> 16;
         self.source.eval(lx, ly)
@@ -86,7 +86,7 @@ pub struct Skew<S> {
 impl<S: Surface<u8>> Surface<u8> for Skew<S> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        let offset = (y * Batch::splat(self.shear as u32)) >> 8;
+        let offset = (y * Batch::<u32>::splat(self.shear as u32)) >> 8;
         self.source.eval(x.saturating_sub(offset), y)
     }
 }
@@ -137,7 +137,7 @@ impl<P, M, F, B> Over<P, M, F, B> {
 
 #[inline(always)]
 fn blend_channel(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -> Batch<u32> {
-    let inv_alpha = Batch::splat(256u32) - alpha;
+    let inv_alpha = Batch::<u32>::splat(256u32) - alpha;
     ((fg * alpha) + (bg * inv_alpha)) >> 8
 }
 
@@ -246,8 +246,8 @@ impl<P: Pixel> Surface<P> for Baked<P> {
         let w = self.width;
         let h = self.height;
 
-        let w_batch = Batch::splat(w);
-        let h_batch = Batch::splat(h);
+        let w_batch = Batch::<u32>::splat(w);
+        let h_batch = Batch::<u32>::splat(h);
 
         let x_mod = x - (x / w_batch) * w_batch;
         let y_mod = y - (y / h_batch) * h_batch;
