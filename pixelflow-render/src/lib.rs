@@ -49,7 +49,7 @@ pub use color::{
 pub use frame::Frame;
 pub use glyph::font;
 pub use pixelflow_fonts::{Font, Glyph, GlyphBounds};
-pub use rasterizer::{execute, render, render_to_buffer, render_u32};
+pub use rasterizer::{execute, render, render_pixel, render_to_buffer, render_u32};
 
 // Re-export core types for convenience
 pub use pixelflow_core::pipe::Surface;

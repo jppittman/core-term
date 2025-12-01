@@ -40,10 +40,54 @@ where
     pixelflow_core::execute(surface, buffer, width, height);
 }
 
+/// Render a Surface<P> into a u32 buffer.
+///
+/// This is the main render function for platform integration.
+/// Since Pixel types are `repr(transparent)` wrappers around u32,
+/// we can safely write them to a u32 buffer.
+pub fn render_pixel<P, S>(surface: &S, buffer: &mut [u32], width: usize, height: usize)
+where
+    P: Pixel,
+    S: Surface<P> + ?Sized,
+{
+    const LANES: usize = 4;
+
+    for y in 0..height {
+        let row_start = y * width;
+        let y_batch = Batch::splat(y as u32);
+
+        // Hot path: process 4 pixels at a time (SIMD)
+        let mut x = 0;
+        while x + LANES <= width {
+            let x_batch = Batch::new(x as u32, (x + 1) as u32, (x + 2) as u32, (x + 3) as u32);
+
+            let result: Batch<P> = surface.eval(x_batch, y_batch);
+            // Transmute to u32 for storage (P is repr(transparent) u32)
+            let result_u32: Batch<u32> = result.transmute();
+
+            // Store 4 pixels
+            unsafe {
+                result_u32.store(buffer.as_mut_ptr().add(row_start + x));
+            }
+
+            x += LANES;
+        }
+
+        // Cold path: handle remaining pixels (< 4)
+        while x < width {
+            let x_batch = Batch::splat(x as u32);
+            let result: Batch<P> = surface.eval(x_batch, y_batch);
+            let result_u32: Batch<u32> = result.transmute();
+            buffer[row_start + x] = result_u32.to_array_usize()[0] as u32;
+            x += 1;
+        }
+    }
+}
+
 /// Render a Surface<u32> directly into a u32 buffer.
 ///
 /// This is for backward compatibility with code that uses raw u32 surfaces.
-/// For new code, prefer the typed `render()` or `render_to_buffer()`.
+/// For new code, prefer the typed `render_pixel()` or `render_to_buffer()`.
 pub fn render_u32<S>(surface: &S, buffer: &mut [u32], width: usize, height: usize)
 where
     S: Surface<u32> + ?Sized,
