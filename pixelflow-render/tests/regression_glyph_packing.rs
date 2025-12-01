@@ -1,4 +1,17 @@
-use pixelflow_core::{batch::Batch, TensorView};
+use pixelflow_core::{batch::{Batch, NativeBackend}, TensorView};
+use pixelflow_core::backend::SimdBatch;
+
+trait BatchExt {
+    fn to_array_usize(&self) -> [usize; 4];
+}
+
+impl<T: SimdBatch<u32>> BatchExt for T {
+    fn to_array_usize(&self) -> [usize; 4] {
+        let mut arr = [0u32; 4];
+        self.store(&mut arr);
+        [arr[0] as usize, arr[1] as usize, arr[2] as usize, arr[3] as usize]
+    }
+}
 
 // Simulate the FIXED build.rs packing logic (Padded per row)
 fn pack_4bit_padded(bitmap: &[u8], width: usize) -> Vec<u8> {
@@ -71,19 +84,19 @@ fn test_odd_width_glyph_rendering_correctness() {
     unsafe {
         // (0, 0) -> 0
         let val = view
-            .gather_4bit(Batch::splat(0), Batch::splat(0))
+            .gather_4bit::<NativeBackend>(Batch::<u32>::splat(0), Batch::<u32>::splat(0))
             .to_array_usize()[0];
         assert_eq!(val, 0);
 
         // (1, 0) -> F
         let val = view
-            .gather_4bit(Batch::splat(1), Batch::splat(0))
+            .gather_4bit::<NativeBackend>(Batch::<u32>::splat(1), Batch::<u32>::splat(0))
             .to_array_usize()[0];
         assert_eq!(val, 0xFF);
 
         // (0, 1) -> F (Previously failed here)
         let val = view
-            .gather_4bit(Batch::splat(0), Batch::splat(1))
+            .gather_4bit::<NativeBackend>(Batch::<u32>::splat(0), Batch::<u32>::splat(1))
             .to_array_usize()[0];
         assert_eq!(
             val, 0xFF,
@@ -93,13 +106,13 @@ fn test_odd_width_glyph_rendering_correctness() {
 
         // (1, 1) -> 0
         let val = view
-            .gather_4bit(Batch::splat(1), Batch::splat(1))
+            .gather_4bit::<NativeBackend>(Batch::<u32>::splat(1), Batch::<u32>::splat(1))
             .to_array_usize()[0];
         assert_eq!(val, 0);
 
         // (2, 1) -> F
         let val = view
-            .gather_4bit(Batch::splat(2), Batch::splat(1))
+            .gather_4bit::<NativeBackend>(Batch::<u32>::splat(2), Batch::<u32>::splat(1))
             .to_array_usize()[0];
         assert_eq!(val, 0xFF);
     }

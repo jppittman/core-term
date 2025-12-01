@@ -6,6 +6,7 @@ use core::marker::PhantomData;
 use core::fmt::{Debug, Formatter};
 use core::ops::*;
 use core::any;
+use core::ptr;
 
 /// SSE2 Backend (4 lanes for u32/f32).
 #[derive(Copy, Clone, Debug, Default)]
@@ -18,12 +19,26 @@ impl Backend for Sse2 {
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: SimdVec<u32>) -> SimdVec<u8> {
-        unsafe { b.transmute() }
+        unsafe {
+            // Pack 32-bit integers to 16-bit integers (signed saturation)
+            // Note: Since values are 0-255, signed/unsigned saturation to 16-bit doesn't matter much,
+            // but we use packs_epi32 which treats inputs as signed.
+            let b16 = _mm_packs_epi32(b.0, b.0);
+            // Pack 16-bit integers to 8-bit integers (unsigned saturation)
+            let b8 = _mm_packus_epi16(b16, b16);
+            SimdVec(b8, PhantomData)
+        }
     }
 
     #[inline(always)]
     fn upcast_u8_to_u32(b: SimdVec<u8>) -> SimdVec<u32> {
-        unsafe { b.transmute() }
+        unsafe {
+            // Unpack low 8 bits to 16 bits
+            let b16 = _mm_unpacklo_epi8(b.0, _mm_setzero_si128());
+            // Unpack low 16 bits to 32 bits
+            let b32 = _mm_unpacklo_epi16(b16, _mm_setzero_si128());
+            SimdVec(b32, PhantomData)
+        }
     }
 
     #[inline(always)]
@@ -198,11 +213,39 @@ impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec
     }
 
     fn load(slice: &[T]) -> Self {
-        unsafe { Self(_mm_loadu_si128(slice.as_ptr() as *const _), PhantomData) }
+        unsafe {
+            if core::mem::size_of::<T>() == 1 {
+                // Load 4 bytes for u8 packed
+                let ptr = slice.as_ptr() as *const i32;
+                let v = ptr::read_unaligned(ptr);
+                Self(_mm_cvtsi32_si128(v), PhantomData)
+            } else if core::mem::size_of::<T>() == 2 {
+                // Load 8 bytes for u16 packed
+                let ptr = slice.as_ptr() as *const i64;
+                let v = ptr::read_unaligned(ptr);
+                Self(_mm_cvtsi64_si128(v), PhantomData)
+            } else {
+                Self(_mm_loadu_si128(slice.as_ptr() as *const _), PhantomData)
+            }
+        }
     }
 
     fn store(&self, slice: &mut [T]) {
-        unsafe { _mm_storeu_si128(slice.as_mut_ptr() as *mut _, self.0) }
+        unsafe {
+            if core::mem::size_of::<T>() == 1 {
+                // Store 4 bytes for u8 packed
+                let v = _mm_cvtsi128_si32(self.0);
+                let ptr = slice.as_mut_ptr() as *mut i32;
+                ptr::write_unaligned(ptr, v);
+            } else if core::mem::size_of::<T>() == 2 {
+                // Store 8 bytes for u16 packed
+                let v = _mm_cvtsi128_si64(self.0);
+                let ptr = slice.as_mut_ptr() as *mut i64;
+                ptr::write_unaligned(ptr, v);
+            } else {
+                _mm_storeu_si128(slice.as_mut_ptr() as *mut _, self.0)
+            }
+        }
     }
 
     fn first(&self) -> T {
