@@ -1,138 +1,229 @@
-//! x86_64 SSE backend using `std::arch` intrinsics.
-//!
-//! This backend uses SSE2 instructions (guaranteed on all x86_64 CPUs).
-//!
-//! ## Type-Driven Instruction Selection
-//!
-//! On x86, all SIMD registers are just `__m128i` (128 bits of untyped data).
-//! We use `PhantomData<T>` to track the logical type at compile time:
-//!
-//! - `SimdVec<u32>` → `paddd`, `pmulld` (32-bit ops, 4 lanes)
-//! - `SimdVec<u16>` → `paddw`, `pmullw` (16-bit ops, 8 lanes)
-//! - `SimdVec<u8>` → `paddb`, `pmullb` (8-bit ops, 16 lanes)
-//! - `SimdVec<f32>` → `addps`, `mulps` (32-bit float ops, 4 lanes)
-//!
-//! The type `T` is purely a compile-time marker - bitcasting is free.
+//! x86_64 SSE backend.
 
-use crate::batch::{SimdFloatOps, SimdOps, SimdOpsU8};
+use crate::backend::{Backend, SimdBatch, BatchArithmetic};
 use core::arch::x86_64::*;
 use core::marker::PhantomData;
+use core::fmt::{Debug, Formatter};
+use core::ops::*;
+use core::any;
+
+/// SSE2 Backend (4 lanes for u32/f32).
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Sse2;
+
+impl Backend for Sse2 {
+    const LANES: usize = 4;
+    const GATHER_IS_SLOW: bool = true;
+    type Batch<T: Copy + Debug + Default + Send + Sync + 'static> = SimdVec<T>;
+
+    #[inline(always)]
+    fn downcast_u32_to_u8(b: SimdVec<u32>) -> SimdVec<u8> {
+        unsafe { b.transmute() }
+    }
+
+    #[inline(always)]
+    fn upcast_u8_to_u32(b: SimdVec<u8>) -> SimdVec<u32> {
+        unsafe { b.transmute() }
+    }
+}
 
 /// Platform-specific SIMD vector wrapper.
-///
-/// On x86: All types are stored as `__m128i`. Float operations cast to `__m128` internally.
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct SimdVec<T>(pub(crate) __m128i, PhantomData<T>);
 
-// ============================================================================
-// u32 Implementation (4 lanes, 32-bit operations)
-// ============================================================================
+impl<T> Default for SimdVec<T> {
+    fn default() -> Self {
+        unsafe { Self(_mm_setzero_si128(), PhantomData) }
+    }
+}
 
-impl SimdOps<u32> for SimdVec<u32> {
+impl<T> Debug for SimdVec<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "SimdVec({:?})", any::type_name::<T>())
+    }
+}
+
+// Inherent methods for compatibility
+impl<T: Copy> SimdVec<T> {
     #[inline(always)]
-    fn splat(val: u32) -> Self {
-        unsafe { Self(_mm_set1_epi32(val as i32), PhantomData) }
+    pub unsafe fn transmute<U>(self) -> SimdVec<U> {
+        SimdVec(self.0, PhantomData)
+    }
+
+    // Deprecated cast alias for transmute
+    #[inline(always)]
+    pub fn cast<U>(self) -> SimdVec<U> {
+         unsafe { self.transmute() }
     }
 
     #[inline(always)]
-    unsafe fn load(ptr: *const u32) -> Self {
-        unsafe { Self(_mm_loadu_si128(ptr as *const __m128i), PhantomData) }
-    }
-
-    #[inline(always)]
-    unsafe fn store(self, ptr: *mut u32) {
+    pub unsafe fn store(self, ptr: *mut T) {
         unsafe { _mm_storeu_si128(ptr as *mut __m128i, self.0) }
     }
+}
+
+impl SimdVec<u32> {
+    #[inline(always)]
+    pub fn splat(val: u32) -> Self { unsafe { Self(_mm_set1_epi32(val as i32), PhantomData) } }
 
     #[inline(always)]
-    fn new(v0: u32, v1: u32, v2: u32, v3: u32) -> Self {
+    pub fn new(v0: u32, v1: u32, v2: u32, v3: u32) -> Self {
+        unsafe { Self(_mm_set_epi32(v3 as i32, v2 as i32, v1 as i32, v0 as i32), PhantomData) }
+    }
+}
+
+impl SimdVec<u16> {
+    #[inline(always)]
+    pub fn splat(val: u16) -> Self { unsafe { Self(_mm_set1_epi16(val as i16), PhantomData) } }
+}
+
+impl SimdVec<u8> {
+    #[inline(always)]
+    pub fn splat(val: u8) -> Self { unsafe { Self(_mm_set1_epi8(val as i8), PhantomData) } }
+}
+
+impl SimdVec<f32> {
+    #[inline(always)]
+    pub fn splat(val: f32) -> Self { unsafe { Self(cast_from_ps(_mm_set1_ps(val)), PhantomData) } }
+}
+
+// Helpers
+#[inline(always)]
+unsafe fn cast_to_ps(i: __m128i) -> __m128 {
+    unsafe { _mm_castsi128_ps(i) }
+}
+#[inline(always)]
+unsafe fn cast_from_ps(f: __m128) -> __m128i {
+    unsafe { _mm_castps_si128(f) }
+}
+
+// ============================================================================
+// u32 Implementation
+// ============================================================================
+
+impl Add for SimdVec<u32> { type Output = Self; fn add(self, rhs: Self) -> Self { unsafe { Self(_mm_add_epi32(self.0, rhs.0), PhantomData) } } }
+impl Sub for SimdVec<u32> { type Output = Self; fn sub(self, rhs: Self) -> Self { unsafe { Self(_mm_sub_epi32(self.0, rhs.0), PhantomData) } } }
+impl Mul for SimdVec<u32> { type Output = Self; fn mul(self, rhs: Self) -> Self { unsafe { Self(_mm_mullo_epi32(self.0, rhs.0), PhantomData) } } }
+impl Div for SimdVec<u32> {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self {
+        let mut a = [0u32; 4];
+        let mut b = [0u32; 4];
+        unsafe { _mm_storeu_si128(a.as_mut_ptr() as *mut _, self.0) };
+        unsafe { _mm_storeu_si128(b.as_mut_ptr() as *mut _, rhs.0) };
+        let res = [
+            if b[0] != 0 { a[0]/b[0] } else { 0 },
+            if b[1] != 0 { a[1]/b[1] } else { 0 },
+            if b[2] != 0 { a[2]/b[2] } else { 0 },
+            if b[3] != 0 { a[3]/b[3] } else { 0 },
+        ];
+        unsafe { Self(_mm_loadu_si128(res.as_ptr() as *const _), PhantomData) }
+    }
+}
+impl BitAnd for SimdVec<u32> { type Output = Self; fn bitand(self, rhs: Self) -> Self { unsafe { Self(_mm_and_si128(self.0, rhs.0), PhantomData) } } }
+impl BitOr for SimdVec<u32> { type Output = Self; fn bitor(self, rhs: Self) -> Self { unsafe { Self(_mm_or_si128(self.0, rhs.0), PhantomData) } } }
+impl BitXor for SimdVec<u32> { type Output = Self; fn bitxor(self, rhs: Self) -> Self { unsafe { Self(_mm_xor_si128(self.0, rhs.0), PhantomData) } } }
+impl Not for SimdVec<u32> { type Output = Self; fn not(self) -> Self { unsafe { Self(_mm_xor_si128(self.0, _mm_set1_epi32(-1)), PhantomData) } } }
+impl Shl<i32> for SimdVec<u32> { type Output = Self; fn shl(self, rhs: i32) -> Self { unsafe { Self(_mm_sll_epi32(self.0, _mm_cvtsi32_si128(rhs)), PhantomData) } } }
+impl Shr<i32> for SimdVec<u32> { type Output = Self; fn shr(self, rhs: i32) -> Self { unsafe { Self(_mm_srl_epi32(self.0, _mm_cvtsi32_si128(rhs)), PhantomData) } } }
+
+// Generic SimdBatch implementation
+impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec<T> {
+    fn splat(val: T) -> Self {
         unsafe {
-            Self(
-                _mm_set_epi32(v3 as i32, v2 as i32, v1 as i32, v0 as i32),
-                PhantomData,
-            )
+            if core::mem::size_of::<T>() == 4 {
+                let v: u32 = core::mem::transmute_copy(&val);
+                Self(_mm_set1_epi32(v as i32), PhantomData)
+            } else if core::mem::size_of::<T>() == 2 {
+                 let v: u16 = core::mem::transmute_copy(&val);
+                Self(_mm_set1_epi16(v as i16), PhantomData)
+            } else if core::mem::size_of::<T>() == 1 {
+                let v: u8 = core::mem::transmute_copy(&val);
+                Self(_mm_set1_epi8(v as i8), PhantomData)
+            } else {
+                Self(_mm_setzero_si128(), PhantomData)
+            }
         }
     }
 
-    #[inline(always)]
-    fn add(self, other: Self) -> Self {
-        unsafe { Self(_mm_add_epi32(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn sub(self, other: Self) -> Self {
-        unsafe { Self(_mm_sub_epi32(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn mul(self, other: Self) -> Self {
-        unsafe { Self(_mm_mullo_epi32(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn bitand(self, other: Self) -> Self {
-        unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn bitor(self, other: Self) -> Self {
-        unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn not(self) -> Self {
+    fn sequential_from(start: T) -> Self {
         unsafe {
-            let all_ones = _mm_set1_epi32(-1);
-            Self(_mm_xor_si128(self.0, all_ones), PhantomData)
+            if core::mem::size_of::<T>() == 4 {
+                let s: u32 = core::mem::transmute_copy(&start);
+                Self(_mm_set_epi32((s+3) as i32, (s+2) as i32, (s+1) as i32, s as i32), PhantomData)
+            } else if core::mem::size_of::<T>() == 1 {
+                // u8 seq
+                let s: u8 = core::mem::transmute_copy(&start);
+                let mut arr = [0u8; 16];
+                for i in 0..16 { arr[i] = s.wrapping_add(i as u8); }
+                Self(_mm_loadu_si128(arr.as_ptr() as *const _), PhantomData)
+            } else {
+                Self(_mm_setzero_si128(), PhantomData)
+            }
         }
     }
 
-    #[inline(always)]
-    fn shr(self, count: i32) -> Self {
+    fn load(slice: &[T]) -> Self {
+        unsafe { Self(_mm_loadu_si128(slice.as_ptr() as *const _), PhantomData) }
+    }
+
+    fn store(&self, slice: &mut [T]) {
+        unsafe { _mm_storeu_si128(slice.as_mut_ptr() as *mut _, self.0) }
+    }
+}
+
+impl BatchArithmetic<u32> for SimdVec<u32> {
+    fn select(self, if_true: Self, if_false: Self) -> Self {
         unsafe {
-            let shift = _mm_cvtsi32_si128(count);
-            Self(_mm_srl_epi32(self.0, shift), PhantomData)
+            let masked_true = _mm_and_si128(self.0, if_true.0);
+            let masked_false = _mm_andnot_si128(self.0, if_false.0);
+            Self(_mm_or_si128(masked_true, masked_false), PhantomData)
         }
     }
 
-    #[inline(always)]
-    fn shl(self, count: i32) -> Self {
+    fn gather(base: &[u32], indices: Self) -> Self {
         unsafe {
-            let shift = _mm_cvtsi32_si128(count);
-            Self(_mm_sll_epi32(self.0, shift), PhantomData)
+            let mut idx = [0u32; 4];
+            _mm_storeu_si128(idx.as_mut_ptr() as *mut _, indices.0);
+            let v0 = base.get(idx[0] as usize).unwrap_or(&0);
+            let v1 = base.get(idx[1] as usize).unwrap_or(&0);
+            let v2 = base.get(idx[2] as usize).unwrap_or(&0);
+            let v3 = base.get(idx[3] as usize).unwrap_or(&0);
+            Self(_mm_set_epi32(*v3 as i32, *v2 as i32, *v1 as i32, *v0 as i32), PhantomData)
         }
     }
 
-    #[inline(always)]
-    fn select(self, other: Self, mask: Self) -> Self {
+    fn gather_u8(base: &[u8], indices: Self) -> Self {
         unsafe {
-            let masked_self = _mm_and_si128(self.0, mask.0);
-            let not_mask = _mm_xor_si128(mask.0, _mm_set1_epi32(-1));
-            let masked_other = _mm_and_si128(other.0, not_mask);
-            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
+            let mut idx = [0u32; 4];
+            _mm_storeu_si128(idx.as_mut_ptr() as *mut _, indices.0);
+            let v0 = base.get(idx[0] as usize).unwrap_or(&0);
+            let v1 = base.get(idx[1] as usize).unwrap_or(&0);
+            let v2 = base.get(idx[2] as usize).unwrap_or(&0);
+            let v3 = base.get(idx[3] as usize).unwrap_or(&0);
+            Self(_mm_set_epi32(*v3 as i32, *v2 as i32, *v1 as i32, *v0 as i32), PhantomData)
         }
     }
 
     #[inline(always)]
     fn min(self, other: Self) -> Self {
         unsafe {
-            let mask = cmp_gt_u32(self.0, other.0);
-            let masked_other = _mm_and_si128(other.0, mask);
-            let not_mask = _mm_xor_si128(mask, _mm_set1_epi32(-1));
-            let masked_self = _mm_and_si128(self.0, not_mask);
-            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
+             let mask = cmp_gt_u32(self.0, other.0);
+             let masked_other = _mm_and_si128(mask, other.0);
+             let masked_self = _mm_andnot_si128(mask, self.0);
+             Self(_mm_or_si128(masked_self, masked_other), PhantomData)
         }
     }
 
     #[inline(always)]
     fn max(self, other: Self) -> Self {
         unsafe {
-            let mask = cmp_gt_u32(self.0, other.0);
-            let masked_self = _mm_and_si128(self.0, mask);
-            let not_mask = _mm_xor_si128(mask, _mm_set1_epi32(-1));
-            let masked_other = _mm_and_si128(other.0, not_mask);
-            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
+             let mask = cmp_gt_u32(self.0, other.0);
+             let masked_self = _mm_and_si128(mask, self.0);
+             let masked_other = _mm_andnot_si128(mask, other.0);
+             Self(_mm_or_si128(masked_self, masked_other), PhantomData)
         }
     }
 
@@ -150,8 +241,41 @@ impl SimdOps<u32> for SimdVec<u32> {
         unsafe {
             let diff = _mm_sub_epi32(self.0, other.0);
             let mask = cmp_gt_u32(other.0, self.0);
-            let not_mask = _mm_xor_si128(mask, _mm_set1_epi32(-1));
-            Self(_mm_and_si128(diff, not_mask), PhantomData)
+            Self(_mm_andnot_si128(mask, diff), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, other: Self) -> Self {
+        unsafe { Self(_mm_cmpeq_epi32(self.0, other.0), PhantomData) }
+    }
+    #[inline(always)]
+    fn cmp_ne(self, other: Self) -> Self {
+        unsafe {
+            let eq = _mm_cmpeq_epi32(self.0, other.0);
+            Self(_mm_xor_si128(eq, _mm_set1_epi32(-1)), PhantomData)
+        }
+    }
+    #[inline(always)]
+    fn cmp_lt(self, other: Self) -> Self {
+         unsafe { Self(cmp_gt_u32(other.0, self.0), PhantomData) }
+    }
+    #[inline(always)]
+    fn cmp_le(self, other: Self) -> Self {
+        unsafe {
+             let gt = cmp_gt_u32(self.0, other.0);
+             Self(_mm_xor_si128(gt, _mm_set1_epi32(-1)), PhantomData)
+        }
+    }
+    #[inline(always)]
+    fn cmp_gt(self, other: Self) -> Self {
+        unsafe { Self(cmp_gt_u32(self.0, other.0), PhantomData) }
+    }
+    #[inline(always)]
+    fn cmp_ge(self, other: Self) -> Self {
+        unsafe {
+             let lt = cmp_gt_u32(other.0, self.0);
+             Self(_mm_xor_si128(lt, _mm_set1_epi32(-1)), PhantomData)
         }
     }
 }
@@ -160,629 +284,165 @@ impl SimdOps<u32> for SimdVec<u32> {
 #[inline(always)]
 unsafe fn cmp_gt_u32(a: __m128i, b: __m128i) -> __m128i {
     unsafe {
-        let sign_flip = _mm_set1_epi32(0x80000000u32 as i32);
-        let a_flipped = _mm_xor_si128(a, sign_flip);
-        let b_flipped = _mm_xor_si128(b, sign_flip);
-        _mm_cmpgt_epi32(a_flipped, b_flipped)
-    }
-}
-
-impl SimdVec<u32> {
-    #[inline(always)]
-    pub fn to_f32(self) -> SimdVec<f32> {
-        unsafe {
-            let f = _mm_cvtepi32_ps(self.0);
-            let i = _mm_castps_si128(f);
-            SimdVec(i, PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    pub fn cmp_eq(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmpeq_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    pub fn cmp_ne(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmpneq_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    pub fn cmp_lt(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmplt_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    pub fn cmp_le(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmple_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    pub fn cmp_gt(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmpgt_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    pub fn cmp_ge(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmpge_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
+        let offset = _mm_set1_epi32(i32::MIN);
+        let a_off = _mm_add_epi32(a, offset);
+        let b_off = _mm_add_epi32(b, offset);
+        _mm_cmpgt_epi32(a_off, b_off)
     }
 }
 
 // ============================================================================
-// f32 Implementation (4 lanes)
+// u16 Implementation
 // ============================================================================
 
-impl SimdOps<f32> for SimdVec<f32> {
-    #[inline(always)]
-    fn splat(val: f32) -> Self {
-        unsafe {
-            let f = _mm_set1_ps(val);
-            Self(_mm_castps_si128(f), PhantomData)
+impl Add for SimdVec<u16> { type Output = Self; fn add(self, rhs: Self) -> Self { unsafe { Self(_mm_add_epi16(self.0, rhs.0), PhantomData) } } }
+impl Sub for SimdVec<u16> { type Output = Self; fn sub(self, rhs: Self) -> Self { unsafe { Self(_mm_sub_epi16(self.0, rhs.0), PhantomData) } } }
+impl Mul for SimdVec<u16> { type Output = Self; fn mul(self, rhs: Self) -> Self { unsafe { Self(_mm_mullo_epi16(self.0, rhs.0), PhantomData) } } }
+impl Div for SimdVec<u16> { type Output = Self; fn div(self, _rhs: Self) -> Self { unimplemented!("u16 div") } }
+impl BitAnd for SimdVec<u16> { type Output = Self; fn bitand(self, rhs: Self) -> Self { unsafe { Self(_mm_and_si128(self.0, rhs.0), PhantomData) } } }
+impl BitOr for SimdVec<u16> { type Output = Self; fn bitor(self, rhs: Self) -> Self { unsafe { Self(_mm_or_si128(self.0, rhs.0), PhantomData) } } }
+impl BitXor for SimdVec<u16> { type Output = Self; fn bitxor(self, rhs: Self) -> Self { unsafe { Self(_mm_xor_si128(self.0, rhs.0), PhantomData) } } }
+impl Not for SimdVec<u16> { type Output = Self; fn not(self) -> Self { unsafe { Self(_mm_xor_si128(self.0, _mm_set1_epi32(-1)), PhantomData) } } }
+impl Shl<i32> for SimdVec<u16> { type Output = Self; fn shl(self, rhs: i32) -> Self { unsafe { Self(_mm_sll_epi16(self.0, _mm_cvtsi32_si128(rhs)), PhantomData) } } }
+impl Shr<i32> for SimdVec<u16> { type Output = Self; fn shr(self, rhs: i32) -> Self { unsafe { Self(_mm_srl_epi16(self.0, _mm_cvtsi32_si128(rhs)), PhantomData) } } }
+
+impl BatchArithmetic<u16> for SimdVec<u16> {
+    fn select(self, if_true: Self, if_false: Self) -> Self {
+         unsafe {
+            let masked_true = _mm_and_si128(self.0, if_true.0);
+            let masked_false = _mm_andnot_si128(self.0, if_false.0);
+            Self(_mm_or_si128(masked_true, masked_false), PhantomData)
         }
     }
-
-    #[inline(always)]
-    unsafe fn load(ptr: *const f32) -> Self {
-        unsafe {
-            let f = _mm_loadu_ps(ptr);
-            Self(_mm_castps_si128(f), PhantomData)
-        }
+    fn gather(base: &[u16], _indices: Self) -> Self {
+         unimplemented!("u16 gather")
     }
 
-    #[inline(always)]
-    unsafe fn store(self, ptr: *mut f32) {
-        unsafe {
-            let f = _mm_castsi128_ps(self.0);
-            _mm_storeu_ps(ptr, f);
-        }
+    fn min(self, other: Self) -> Self { unsafe { Self(_mm_min_epi16(self.0, other.0), PhantomData) } }
+    fn max(self, other: Self) -> Self { unsafe { Self(_mm_max_epi16(self.0, other.0), PhantomData) } }
+
+    fn saturating_add(self, other: Self) -> Self { unsafe { Self(_mm_adds_epu16(self.0, other.0), PhantomData) } }
+    fn saturating_sub(self, other: Self) -> Self { unsafe { Self(_mm_subs_epu16(self.0, other.0), PhantomData) } }
+
+    fn cmp_eq(self, other: Self) -> Self { unsafe { Self(_mm_cmpeq_epi16(self.0, other.0), PhantomData) } }
+    fn cmp_ne(self, other: Self) -> Self {
+         unsafe {
+             let eq = _mm_cmpeq_epi16(self.0, other.0);
+             Self(_mm_xor_si128(eq, _mm_set1_epi32(-1)), PhantomData)
+         }
     }
-
-    #[inline(always)]
-    fn new(v0: f32, v1: f32, v2: f32, v3: f32) -> Self {
-        unsafe {
-            let f = _mm_set_ps(v3, v2, v1, v0);
-            Self(_mm_castps_si128(f), PhantomData)
-        }
+    fn cmp_lt(self, other: Self) -> Self { unsafe { Self(_mm_cmplt_epi16(self.0, other.0), PhantomData) } }
+    fn cmp_le(self, other: Self) -> Self {
+         let lt = self.cmp_lt(other);
+         let eq = self.cmp_eq(other);
+         lt | eq
     }
-
-    #[inline(always)]
-    fn add(self, other: Self) -> Self {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let res = _mm_add_ps(a, b);
-            Self(_mm_castps_si128(res), PhantomData)
-        }
+    fn cmp_gt(self, other: Self) -> Self {
+         unsafe { Self(_mm_cmpgt_epi16(self.0, other.0), PhantomData) }
     }
-
-    #[inline(always)]
-    fn sub(self, other: Self) -> Self {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let res = _mm_sub_ps(a, b);
-            Self(_mm_castps_si128(res), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn mul(self, other: Self) -> Self {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let res = _mm_mul_ps(a, b);
-            Self(_mm_castps_si128(res), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn bitand(self, other: Self) -> Self {
-        unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn bitor(self, other: Self) -> Self {
-        unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn not(self) -> Self {
-        unsafe {
-            let all_ones = _mm_set1_epi32(-1);
-            Self(_mm_xor_si128(self.0, all_ones), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn shr(self, _count: i32) -> Self {
-        unimplemented!("Bitwise shift not supported on float batch")
-    }
-
-    #[inline(always)]
-    fn shl(self, _count: i32) -> Self {
-        unimplemented!("Bitwise shift not supported on float batch")
-    }
-
-    #[inline(always)]
-    fn select(self, other: Self, mask: Self) -> Self {
-        // Reuse integer selection logic
-        unsafe {
-            let masked_self = _mm_and_si128(self.0, mask.0);
-            let not_mask = _mm_xor_si128(mask.0, _mm_set1_epi32(-1));
-            let masked_other = _mm_and_si128(other.0, not_mask);
-            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn min(self, other: Self) -> Self {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let res = _mm_min_ps(a, b);
-            Self(_mm_castps_si128(res), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn max(self, other: Self) -> Self {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let res = _mm_max_ps(a, b);
-            Self(_mm_castps_si128(res), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn saturating_add(self, other: Self) -> Self {
-        self.add(other)
-    }
-
-    #[inline(always)]
-    fn saturating_sub(self, other: Self) -> Self {
-        self.sub(other)
-    }
-}
-
-impl SimdFloatOps for SimdVec<f32> {
-    #[inline(always)]
-    fn sqrt(self) -> Self {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let res = _mm_sqrt_ps(a);
-            Self(_mm_castps_si128(res), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn div(self, other: Self) -> Self {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let res = _mm_div_ps(a, b);
-            Self(_mm_castps_si128(res), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn ceil(self) -> Self {
-        // SSE4.1 has roundps, but for SSE2 we need a trick or emulation.
-        // Assuming SSE2 is the baseline.
-        // Emulation: cvttps2dq (truncate) then adjust?
-        // Actually, without SSE4.1 `round`, ceil/floor is annoying.
-        // For this task, I'll rely on a simple trick or `libm` via unsafe transmute to array?
-        // But `Batch` is performance critical.
-        // Most "modern" x86_64 has SSE4.1 (since 2007/2008).
-        // I'll check if I can assume SSE4.1.
-        // If not, I can use a standard trick: add/sub a large number?
-        // Or just map to scalar for now if SSE4.1 is missing.
-        // I'll assume SSE4.1 for `ceil`/`floor`/`round` via `_mm_round_ps` (which is SSE4.1).
-        // If I can't use SSE4.1, I'll use the scalar fallback (extract, compute, pack).
-        // Wait, I can't easily extract/pack efficiently without scalar implementation available.
-        // But I can implement it.
-        // I'll use `_mm_ceil_ps` (SSE4.1) if available?
-        // Rust enables features based on target cpu.
-        // I'll check if `sse4.1` feature is enabled?
-        // I'll try to use `_mm_round_ps` inside a `#[cfg(target_feature = "sse4.1")]` block, else fallback.
-        // But implementing fallback is tedious.
-        // Given I must produce working code, I'll use a scalar loop fallback for these ops on x86 if SSE4.1 is missing.
-        // Actually, I'll just use the scalar fallback unconditionally for `ceil`/`floor`/`round` for now to be safe,
-        // unless I am sure about SSE4.1.
-        // But wait, `scalar.rs` uses `libm`.
-        // I can just cast to array, loop `libm`, and cast back.
-
-        // Better: use `ceil` only where strictly needed.
-        // But I need to implement the trait.
-        // I'll use a helper to map 4 floats.
-
-        self.map_scalar(|f| libm::ceilf(f))
-    }
-
-    #[inline(always)]
-    fn floor(self) -> Self {
-        self.map_scalar(|f| libm::floorf(f))
-    }
-
-    #[inline(always)]
-    fn round(self) -> Self {
-        self.map_scalar(|f| libm::roundf(f))
-    }
-
-    #[inline(always)]
-    fn abs(self) -> Self {
-        // abs = x & 0x7FFFFFFF
-        unsafe {
-            let mask = _mm_set1_epi32(0x7FFFFFFF);
-            Self(_mm_and_si128(self.0, mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn to_u32(self) -> SimdVec<u32> {
-        unsafe {
-            let f = _mm_castsi128_ps(self.0);
-            // cvttps2dq: truncate float to integer
-            let i = _mm_cvttps_epi32(f);
-            SimdVec(i, PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn to_i32(self) -> SimdVec<u32> {
-        // same instruction `cvttps2dq` produces signed integers
-        unsafe {
-            let f = _mm_castsi128_ps(self.0);
-            let i = _mm_cvttps_epi32(f);
-            SimdVec(i, PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_eq(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmpeq_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_ne(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmpneq_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_lt(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmplt_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_le(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmple_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_gt(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmpgt_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_ge(self, other: Self) -> SimdVec<u32> {
-        unsafe {
-            let a = _mm_castsi128_ps(self.0);
-            let b = _mm_castsi128_ps(other.0);
-            let mask = _mm_cmpge_ps(a, b);
-            SimdVec(_mm_castps_si128(mask), PhantomData)
-        }
-    }
-}
-
-impl SimdVec<f32> {
-    #[inline(always)]
-    fn map_scalar<F>(self, f: F) -> Self
-    where F: Fn(f32) -> f32
-    {
-        unsafe {
-            // Store to aligned array
-            let mut arr = [0.0f32; 4];
-            _mm_storeu_ps(arr.as_mut_ptr(), _mm_castsi128_ps(self.0));
-            // Map
-            arr[0] = f(arr[0]);
-            arr[1] = f(arr[1]);
-            arr[2] = f(arr[2]);
-            arr[3] = f(arr[3]);
-            // Load back
-            let res = _mm_loadu_ps(arr.as_ptr());
-            Self(_mm_castps_si128(res), PhantomData)
-        }
+    fn cmp_ge(self, other: Self) -> Self {
+         let gt = self.cmp_gt(other);
+         let eq = self.cmp_eq(other);
+         gt | eq
     }
 }
 
 // ============================================================================
-// u16 Implementation (8 lanes, 16-bit operations)
+// u8 Implementation
 // ============================================================================
 
-impl SimdOps<u16> for SimdVec<u16> {
-    #[inline(always)]
-    fn splat(val: u16) -> Self {
-        unsafe { Self(_mm_set1_epi16(val as i16), PhantomData) }
-    }
+impl Add for SimdVec<u8> { type Output = Self; fn add(self, rhs: Self) -> Self { unsafe { Self(_mm_add_epi8(self.0, rhs.0), PhantomData) } } }
+impl Sub for SimdVec<u8> { type Output = Self; fn sub(self, rhs: Self) -> Self { unsafe { Self(_mm_sub_epi8(self.0, rhs.0), PhantomData) } } }
+impl Mul for SimdVec<u8> { type Output = Self; fn mul(self, _rhs: Self) -> Self { unimplemented!("u8 mul") } }
+impl Div for SimdVec<u8> { type Output = Self; fn div(self, _rhs: Self) -> Self { unimplemented!("u8 div") } }
+impl BitAnd for SimdVec<u8> { type Output = Self; fn bitand(self, rhs: Self) -> Self { unsafe { Self(_mm_and_si128(self.0, rhs.0), PhantomData) } } }
+impl BitOr for SimdVec<u8> { type Output = Self; fn bitor(self, rhs: Self) -> Self { unsafe { Self(_mm_or_si128(self.0, rhs.0), PhantomData) } } }
+impl BitXor for SimdVec<u8> { type Output = Self; fn bitxor(self, rhs: Self) -> Self { unsafe { Self(_mm_xor_si128(self.0, rhs.0), PhantomData) } } }
+impl Not for SimdVec<u8> { type Output = Self; fn not(self) -> Self { unsafe { Self(_mm_xor_si128(self.0, _mm_set1_epi32(-1)), PhantomData) } } }
+impl Shl<i32> for SimdVec<u8> { type Output = Self; fn shl(self, _rhs: i32) -> Self { unimplemented!("u8 shl") } }
+impl Shr<i32> for SimdVec<u8> { type Output = Self; fn shr(self, _rhs: i32) -> Self { unimplemented!("u8 shr") } }
 
-    #[inline(always)]
-    unsafe fn load(ptr: *const u16) -> Self {
-        unsafe { Self(_mm_loadu_si128(ptr as *const __m128i), PhantomData) }
+impl BatchArithmetic<u8> for SimdVec<u8> {
+    fn select(self, if_true: Self, if_false: Self) -> Self {
+         unsafe {
+            let masked_true = _mm_and_si128(self.0, if_true.0);
+            let masked_false = _mm_andnot_si128(self.0, if_false.0);
+            Self(_mm_or_si128(masked_true, masked_false), PhantomData)
+        }
     }
-
-    #[inline(always)]
-    unsafe fn store(self, ptr: *mut u16) {
-        unsafe { _mm_storeu_si128(ptr as *mut __m128i, self.0) }
-    }
-
-    #[inline(always)]
-    fn new(v0: u16, v1: u16, v2: u16, v3: u16) -> Self {
+    fn gather(base: &[u8], indices: Self) -> Self {
         unsafe {
-            Self(
-                _mm_set_epi16(0, 0, 0, 0, v3 as i16, v2 as i16, v1 as i16, v0 as i16),
-                PhantomData,
-            )
+             let mut idx = [0u8; 16];
+             _mm_storeu_si128(idx.as_mut_ptr() as *mut _, indices.0);
+             let mut res = [0u8; 16];
+             for i in 0..16 { res[i] = base[idx[i] as usize]; }
+             Self::load(&res)
         }
     }
 
-    #[inline(always)]
-    fn add(self, other: Self) -> Self {
-        unsafe { Self(_mm_add_epi16(self.0, other.0), PhantomData) }
-    }
+    fn min(self, other: Self) -> Self { unsafe { Self(_mm_min_epu8(self.0, other.0), PhantomData) } }
+    fn max(self, other: Self) -> Self { unsafe { Self(_mm_max_epu8(self.0, other.0), PhantomData) } }
+    fn saturating_add(self, other: Self) -> Self { unsafe { Self(_mm_adds_epu8(self.0, other.0), PhantomData) } }
+    fn saturating_sub(self, other: Self) -> Self { unsafe { Self(_mm_subs_epu8(self.0, other.0), PhantomData) } }
 
-    #[inline(always)]
-    fn sub(self, other: Self) -> Self {
-        unsafe { Self(_mm_sub_epi16(self.0, other.0), PhantomData) }
+    fn cmp_eq(self, other: Self) -> Self { unsafe { Self(_mm_cmpeq_epi8(self.0, other.0), PhantomData) } }
+    fn cmp_ne(self, other: Self) -> Self {
+         unsafe {
+             let eq = _mm_cmpeq_epi8(self.0, other.0);
+             Self(_mm_xor_si128(eq, _mm_set1_epi32(-1)), PhantomData)
+         }
     }
-
-    #[inline(always)]
-    fn mul(self, other: Self) -> Self {
-        unsafe { Self(_mm_mullo_epi16(self.0, other.0), PhantomData) }
+    fn cmp_lt(self, other: Self) -> Self { unsafe { Self(_mm_cmplt_epi8(self.0, other.0), PhantomData) } }
+    fn cmp_le(self, other: Self) -> Self {
+         let lt = self.cmp_lt(other);
+         let eq = self.cmp_eq(other);
+         lt | eq
     }
-
-    #[inline(always)]
-    fn bitand(self, other: Self) -> Self {
-        unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
+    fn cmp_gt(self, other: Self) -> Self {
+         unsafe { Self(_mm_cmpgt_epi8(self.0, other.0), PhantomData) }
     }
-
-    #[inline(always)]
-    fn bitor(self, other: Self) -> Self {
-        unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn not(self) -> Self {
-        unsafe {
-            let all_ones = _mm_set1_epi16(-1);
-            Self(_mm_xor_si128(self.0, all_ones), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn shr(self, count: i32) -> Self {
-        unsafe {
-            let shift = _mm_cvtsi32_si128(count);
-            Self(_mm_srl_epi16(self.0, shift), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn shl(self, count: i32) -> Self {
-        unsafe {
-            let shift = _mm_cvtsi32_si128(count);
-            Self(_mm_sll_epi16(self.0, shift), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn select(self, other: Self, mask: Self) -> Self {
-        unsafe {
-            let masked_self = _mm_and_si128(self.0, mask.0);
-            let not_mask = _mm_xor_si128(mask.0, _mm_set1_epi16(-1));
-            let masked_other = _mm_and_si128(other.0, not_mask);
-            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn min(self, other: Self) -> Self {
-        // SSE4.1 _mm_min_epu16. Fallback if needed?
-        // x86_64 v2 implies SSE4.1? No, x86_64 baseline is SSE2.
-        // I should use SSE2 compatible implementation or check feature.
-        // The original file used `_mm_min_epu16`.
-        // I will stick to what was there.
-        unsafe { Self(_mm_min_epu16(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn max(self, other: Self) -> Self {
-        unsafe { Self(_mm_max_epu16(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn saturating_add(self, other: Self) -> Self {
-        unsafe { Self(_mm_adds_epu16(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn saturating_sub(self, other: Self) -> Self {
-        unsafe { Self(_mm_subs_epu16(self.0, other.0), PhantomData) }
+    fn cmp_ge(self, other: Self) -> Self {
+         let gt = self.cmp_gt(other);
+         let eq = self.cmp_eq(other);
+         gt | eq
     }
 }
 
 // ============================================================================
-// u8 Implementation (16 lanes, 8-bit operations)
+// f32 Implementation
 // ============================================================================
 
-impl SimdOps<u8> for SimdVec<u8> {
-    #[inline(always)]
-    fn splat(val: u8) -> Self {
-        unsafe { Self(_mm_set1_epi8(val as i8), PhantomData) }
-    }
+impl Add for SimdVec<f32> { type Output = Self; fn add(self, rhs: Self) -> Self { unsafe { Self(cast_from_ps(_mm_add_ps(cast_to_ps(self.0), cast_to_ps(rhs.0))), PhantomData) } } }
+impl Sub for SimdVec<f32> { type Output = Self; fn sub(self, rhs: Self) -> Self { unsafe { Self(cast_from_ps(_mm_sub_ps(cast_to_ps(self.0), cast_to_ps(rhs.0))), PhantomData) } } }
+impl Mul for SimdVec<f32> { type Output = Self; fn mul(self, rhs: Self) -> Self { unsafe { Self(cast_from_ps(_mm_mul_ps(cast_to_ps(self.0), cast_to_ps(rhs.0))), PhantomData) } } }
+impl Div for SimdVec<f32> { type Output = Self; fn div(self, rhs: Self) -> Self { unsafe { Self(cast_from_ps(_mm_div_ps(cast_to_ps(self.0), cast_to_ps(rhs.0))), PhantomData) } } }
+impl BitAnd for SimdVec<f32> { type Output = Self; fn bitand(self, rhs: Self) -> Self { unsafe { Self(_mm_and_si128(self.0, rhs.0), PhantomData) } } }
+impl BitOr for SimdVec<f32> { type Output = Self; fn bitor(self, rhs: Self) -> Self { unsafe { Self(_mm_or_si128(self.0, rhs.0), PhantomData) } } }
+impl BitXor for SimdVec<f32> { type Output = Self; fn bitxor(self, rhs: Self) -> Self { unsafe { Self(_mm_xor_si128(self.0, rhs.0), PhantomData) } } }
+impl Not for SimdVec<f32> { type Output = Self; fn not(self) -> Self { unsafe { Self(_mm_xor_si128(self.0, _mm_set1_epi32(-1)), PhantomData) } } }
+impl Shl<i32> for SimdVec<f32> { type Output = Self; fn shl(self, _rhs: i32) -> Self { unimplemented!() } }
+impl Shr<i32> for SimdVec<f32> { type Output = Self; fn shr(self, _rhs: i32) -> Self { unimplemented!() } }
 
-    #[inline(always)]
-    unsafe fn load(ptr: *const u8) -> Self {
-        unsafe { Self(_mm_loadu_si128(ptr as *const __m128i), PhantomData) }
-    }
-
-    #[inline(always)]
-    unsafe fn store(self, ptr: *mut u8) {
-        unsafe { _mm_storeu_si128(ptr as *mut __m128i, self.0) }
-    }
-
-    #[inline(always)]
-    fn new(v0: u8, v1: u8, v2: u8, v3: u8) -> Self {
-        unsafe {
-            Self(
-                _mm_set_epi8(
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, v3 as i8, v2 as i8, v1 as i8, v0 as i8,
-                ),
-                PhantomData,
-            )
+impl BatchArithmetic<f32> for SimdVec<f32> {
+    fn select(self, if_true: Self, if_false: Self) -> Self {
+         unsafe {
+            let masked_true = _mm_and_si128(self.0, if_true.0);
+            let masked_false = _mm_andnot_si128(self.0, if_false.0);
+            Self(_mm_or_si128(masked_true, masked_false), PhantomData)
         }
     }
 
-    #[inline(always)]
-    fn add(self, other: Self) -> Self {
-        unsafe { Self(_mm_add_epi8(self.0, other.0), PhantomData) }
-    }
+    fn gather(base: &[f32], indices: Self) -> Self { unimplemented!() }
 
-    #[inline(always)]
-    fn sub(self, other: Self) -> Self {
-        unsafe { Self(_mm_sub_epi8(self.0, other.0), PhantomData) }
-    }
+    fn min(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_min_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
+    fn max(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_max_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
+    fn saturating_add(self, other: Self) -> Self { self + other }
+    fn saturating_sub(self, other: Self) -> Self { self - other }
 
-    #[inline(always)]
-    fn mul(self, _other: Self) -> Self {
-        unimplemented!("8-bit multiply not supported in SSE2")
-    }
-
-    #[inline(always)]
-    fn bitand(self, other: Self) -> Self {
-        unsafe { Self(_mm_and_si128(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn bitor(self, other: Self) -> Self {
-        unsafe { Self(_mm_or_si128(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn not(self) -> Self {
-        unsafe {
-            let all_ones = _mm_set1_epi8(-1);
-            Self(_mm_xor_si128(self.0, all_ones), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn shr(self, _count: i32) -> Self {
-        unimplemented!("8-bit shift not supported in SSE2")
-    }
-
-    #[inline(always)]
-    fn shl(self, _count: i32) -> Self {
-        unimplemented!("8-bit shift not supported in SSE2")
-    }
-
-    #[inline(always)]
-    fn select(self, other: Self, mask: Self) -> Self {
-        unsafe {
-            let masked_self = _mm_and_si128(self.0, mask.0);
-            let not_mask = _mm_xor_si128(mask.0, _mm_set1_epi8(-1));
-            let masked_other = _mm_and_si128(other.0, not_mask);
-            Self(_mm_or_si128(masked_self, masked_other), PhantomData)
-        }
-    }
-
-    #[inline(always)]
-    fn min(self, other: Self) -> Self {
-        unsafe { Self(_mm_min_epu8(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn max(self, other: Self) -> Self {
-        unsafe { Self(_mm_max_epu8(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn saturating_add(self, other: Self) -> Self {
-        unsafe { Self(_mm_adds_epu8(self.0, other.0), PhantomData) }
-    }
-
-    #[inline(always)]
-    fn saturating_sub(self, other: Self) -> Self {
-        unsafe { Self(_mm_subs_epu8(self.0, other.0), PhantomData) }
-    }
-}
-
-impl SimdOpsU8 for SimdVec<u8> {
-    #[inline(always)]
-    fn shuffle_bytes(self, indices: Self) -> Self {
-        unsafe { Self(_mm_shuffle_epi8(self.0, indices.0), PhantomData) }
-    }
-}
-
-// ============================================================================
-// Bitcasting (Zero-Cost Type Conversion)
-// ============================================================================
-
-#[inline(always)]
-pub fn cast<T, U>(v: SimdVec<T>) -> SimdVec<U> {
-    SimdVec(v.0, PhantomData)
+    fn cmp_eq(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmpeq_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
+    fn cmp_ne(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmpneq_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
+    fn cmp_lt(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmplt_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
+    fn cmp_le(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmple_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
+    fn cmp_gt(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmpgt_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
+    fn cmp_ge(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmpge_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
 }

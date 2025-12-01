@@ -1,6 +1,6 @@
 use pixelflow_core::ops::SampleAtlas;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::{Batch, TensorView};
+use pixelflow_core::{Batch, TensorView, SimdOps};
 
 #[test]
 fn test_sample_atlas_integer_coords_bug() {
@@ -25,15 +25,21 @@ fn test_sample_atlas_integer_coords_bug() {
 
     // Sample at (1, 0)
     // We expect value from x=1, y=0 -> 34 (0x22)
-    let x = Batch::splat(1);
-    let y = Batch::splat(0);
+    let x = Batch::<u32>::splat(1);
+    let y = Batch::<u32>::splat(0);
 
-    let result = sampler.eval(x, y);
+    // Using NativeBackend explicitly inferred
+    let result = sampler.eval::<pixelflow_core::batch::NativeBackend>(x, y);
 
     // Cast to u32 to extract. SampleAtlas returns Batch<u8> which is a bitcast of Batch<u32>
     // containing 0x000000VV. So casting back to u32 recovers the value.
-    let result_u32: Batch<u32> = result.cast();
-    let val = result_u32.extract(0);
+    let result_u32: Batch<u32> = unsafe { result.transmute() };
+
+    // We need to extract the first element. SimdVec doesn't expose extract directly easily in API,
+    // but we can store to array.
+    let mut out = [0u32; 4]; // Assumes LANES=4 for x86. For Scalar it will just use first.
+    unsafe { result_u32.store(out.as_mut_ptr()) };
+    let val = out[0];
 
     // If bug exists (interpreting 1 as fixed point 1/65536):
     // integer part = 0. fractional part = 0.
