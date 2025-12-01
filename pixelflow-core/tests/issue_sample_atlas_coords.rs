@@ -1,6 +1,6 @@
 use pixelflow_core::ops::SampleAtlas;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::{Batch, TensorView, SimdOps};
+use pixelflow_core::{Batch, SimdOps, TensorView};
 
 #[test]
 fn test_sample_atlas_integer_coords_bug() {

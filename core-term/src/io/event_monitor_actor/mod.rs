@@ -56,8 +56,8 @@ impl EventMonitorActor {
             .context("Failed to clone PTY for read thread")?;
 
         // Spawn read thread (uses independent PTY clone)
-        let read_thread = ReadThread::spawn(pty_read, pty_cmd_tx)
-            .context("Failed to spawn PTY read thread")?;
+        let read_thread =
+            ReadThread::spawn(pty_read, pty_cmd_tx).context("Failed to spawn PTY read thread")?;
 
         // Spawn write thread (owns primary PTY for writes and lifecycle management)
         let write_thread =

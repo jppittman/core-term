@@ -28,10 +28,16 @@ pub enum UserInputAction {
     // Selection-related actions (coordinates are in logical pixels)
     /// Starts a selection at the given logical pixel coordinates (e.g., mouse button press).
     /// The emulator will convert these to cell coordinates using its Layout.
-    StartSelection { x_px: u16, y_px: u16 },
+    StartSelection {
+        x_px: u16,
+        y_px: u16,
+    },
     /// Extends an ongoing selection to the given logical pixel coordinates (e.g., mouse drag).
     /// The emulator will convert these to cell coordinates using its Layout.
-    ExtendSelection { x_px: u16, y_px: u16 },
+    ExtendSelection {
+        x_px: u16,
+        y_px: u16,
+    },
     /// Finalizes a selection (e.g., mouse button release).
     /// If the selection start and end are the same (a click without drag),
     /// it might clear any existing selection or perform other click-based actions.
@@ -66,10 +72,7 @@ pub enum ControlEvent {
     RequestSnapshot,
     /// Signals a resize of the terminal display area in logical pixels.
     /// The emulator calculates cols/rows using its Layout.
-    Resize {
-        width_px: u16,
-        height_px: u16,
-    },
+    Resize { width_px: u16, height_px: u16 },
     /// Notification that data is available in the PTY queue.
     /// Acts as a "doorbell" to wake the orchestrator for low-priority bulk data.
     PtyDataReady,

@@ -97,7 +97,11 @@ impl GridBuffer {
     ///
     /// This is the bridge between the terminal emulator's state and the
     /// Surface-based rendering pipeline.
-    pub fn from_snapshot(snapshot: &TerminalSnapshot, default_fg: Color, default_bg: Color) -> Self {
+    pub fn from_snapshot(
+        snapshot: &TerminalSnapshot,
+        default_fg: Color,
+        default_bg: Color,
+    ) -> Self {
         let (cols, rows) = snapshot.dimensions;
         let mut grid = Self::new(cols, rows);
 

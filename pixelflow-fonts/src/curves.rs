@@ -1,5 +1,5 @@
-use pixelflow_core::batch::{Batch, NativeBackend};
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps};
+use pixelflow_core::batch::{Batch, NativeBackend};
 use pixelflow_core::curve::Mat3;
 
 pub type Point = [f32; 2];
@@ -34,7 +34,7 @@ impl Quadratic {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Segment {
     Line(Line),
     Quad(Quadratic),
@@ -62,7 +62,11 @@ impl Segment {
                 let x_int = p0x + t * (p1x - p0x);
 
                 if x < x_int {
-                    if l.p0[1] < l.p1[1] { 1 } else { -1 }
+                    if l.p0[1] < l.p1[1] {
+                        1
+                    } else {
+                        -1
+                    }
                 } else {
                     0
                 }
@@ -121,8 +125,14 @@ impl Segment {
             Segment::Line(l) => {
                 let dx = l.p1[0] - l.p0[0];
                 let dy = l.p1[1] - l.p0[1];
-                let len = (dx * dx + dy * dy).sqrt();
+                let len_sq = dx * dx + dy * dy;
+                let len = len_sq.sqrt();
                 if len < 1e-6 {
+                    return 1000.0;
+                }
+                // Check if point projects onto the segment (t in [0, 1])
+                let t = ((x - l.p0[0]) * dx + (y - l.p0[1]) * dy) / len_sq;
+                if t < 0.0 || t > 1.0 {
                     return 1000.0;
                 }
                 ((x - l.p0[0]) * -dy + (y - l.p0[1]) * dx) / len
@@ -142,7 +152,11 @@ impl Segment {
                 let df_dy = 2.0 * u * du_dy - dv_dy;
                 let grad_len = (df_dx * df_dx + df_dy * df_dy).sqrt();
 
-                if grad_len < 1e-6 { 1000.0 } else { f / grad_len }
+                if grad_len < 1e-6 {
+                    1000.0
+                } else {
+                    f / grad_len
+                }
             }
         }
     }
@@ -269,21 +283,38 @@ impl Segment {
                 let p0y = Batch::<f32>::splat(l.p0[1]);
                 let dx_batch = Batch::<f32>::splat(dx);
                 let dy_batch = Batch::<f32>::splat(dy);
+                let len_sq_batch = Batch::<f32>::splat(len_sq);
                 let len_batch = Batch::<f32>::splat(len);
                 let zero = Batch::<f32>::splat(0.0);
+                let one = Batch::<f32>::splat(1.0);
 
-                ((x - p0x) * (zero - dy_batch) + (y - p0y) * dx_batch) / len_batch
+                // Compute parameter t for closest point on infinite line
+                // t = dot(p - p0, p1 - p0) / |p1 - p0|^2
+                let t = ((x - p0x) * dx_batch + (y - p0y) * dy_batch) / len_sq_batch;
+
+                // Check if t is in [0, 1] (point projects onto segment)
+                let in_segment = t.cmp_ge(zero) & t.cmp_le(one);
+
+                // Perpendicular (signed) distance to infinite line
+                let perp_dist = ((x - p0x) * (zero - dy_batch) + (y - p0y) * dx_batch) / len_batch;
+
+                // Return perpendicular distance only if in segment, else large distance
+                let large_dist = Batch::<f32>::splat(1000.0);
+                let mask = NativeBackend::transmute_f32_to_u32(in_segment);
+                let perp_u32 = NativeBackend::transmute_f32_to_u32(perp_dist);
+                let large_u32 = NativeBackend::transmute_f32_to_u32(large_dist);
+                NativeBackend::transmute_u32_to_f32(mask.select(perp_u32, large_u32))
             }
             Segment::Quad(q) => {
                 let m = q.projection.m;
 
                 let u = x * Batch::<f32>::splat(m[0][0])
-                      + y * Batch::<f32>::splat(m[0][1])
-                      + Batch::<f32>::splat(m[0][2]);
+                    + y * Batch::<f32>::splat(m[0][1])
+                    + Batch::<f32>::splat(m[0][2]);
 
                 let v = x * Batch::<f32>::splat(m[1][0])
-                      + y * Batch::<f32>::splat(m[1][1])
-                      + Batch::<f32>::splat(m[1][2]);
+                    + y * Batch::<f32>::splat(m[1][1])
+                    + Batch::<f32>::splat(m[1][2]);
 
                 let f = u * u - v;
 
@@ -305,11 +336,316 @@ impl Segment {
                 let dist = f / grad_len;
                 let large_dist = Batch::<f32>::splat(1000.0);
 
+                // If gradient is zero, return large distance
                 let mask = NativeBackend::transmute_f32_to_u32(zero_grad);
                 let large_u32 = NativeBackend::transmute_f32_to_u32(large_dist);
                 let dist_u32 = NativeBackend::transmute_f32_to_u32(dist);
                 NativeBackend::transmute_u32_to_f32(mask.select(large_u32, dist_u32))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A CCW unit square from (0,0) to (1,1).
+    fn ccw_unit_square() -> [Segment; 4] {
+        [
+            Segment::Line(Line {
+                p0: [0.0, 0.0],
+                p1: [1.0, 0.0],
+            }), // bottom
+            Segment::Line(Line {
+                p0: [1.0, 0.0],
+                p1: [1.0, 1.0],
+            }), // right
+            Segment::Line(Line {
+                p0: [1.0, 1.0],
+                p1: [0.0, 1.0],
+            }), // top
+            Segment::Line(Line {
+                p0: [0.0, 1.0],
+                p1: [0.0, 0.0],
+            }), // left
+        ]
+    }
+
+    fn total_winding(segments: &[Segment], x: f32, y: f32) -> i32 {
+        segments.iter().map(|s| s.winding(x, y)).sum()
+    }
+
+    fn total_winding_batch(segments: &[Segment], x: f32, y: f32) -> i32 {
+        let x_batch = Batch::<f32>::splat(x);
+        let y_batch = Batch::<f32>::splat(y);
+        let mut winding = Batch::<u32>::splat(0);
+        for s in segments {
+            winding = winding + s.winding_batch(x_batch, y_batch);
+        }
+        winding.first() as i32
+    }
+
+    // ========================================================================
+    // Winding Number Tests
+    // ========================================================================
+
+    #[test]
+    fn returns_nonzero_winding_inside_ccw_square() {
+        let square = ccw_unit_square();
+        let w = total_winding(&square, 0.5, 0.5);
+        assert_ne!(
+            w, 0,
+            "Point (0.5, 0.5) should be inside square, winding={}",
+            w
+        );
+    }
+
+    #[test]
+    fn returns_zero_winding_outside_ccw_square() {
+        let square = ccw_unit_square();
+
+        let w_left = total_winding(&square, -1.0, 0.5);
+        assert_eq!(
+            w_left, 0,
+            "Point (-1, 0.5) should be outside, winding={}",
+            w_left
+        );
+
+        let w_right = total_winding(&square, 2.0, 0.5);
+        assert_eq!(
+            w_right, 0,
+            "Point (2, 0.5) should be outside, winding={}",
+            w_right
+        );
+
+        let w_above = total_winding(&square, 0.5, 2.0);
+        assert_eq!(
+            w_above, 0,
+            "Point (0.5, 2) should be outside, winding={}",
+            w_above
+        );
+
+        let w_below = total_winding(&square, 0.5, -1.0);
+        assert_eq!(
+            w_below, 0,
+            "Point (0.5, -1) should be outside, winding={}",
+            w_below
+        );
+    }
+
+    #[test]
+    fn returns_zero_winding_for_horizontal_line() {
+        let horiz = Segment::Line(Line {
+            p0: [0.0, 5.0],
+            p1: [10.0, 5.0],
+        });
+        let w = horiz.winding(5.0, 5.0);
+        assert_eq!(w, 0, "Horizontal line should never contribute winding");
+    }
+
+    #[test]
+    fn matches_scalar_winding_for_ccw_square() {
+        let square = ccw_unit_square();
+
+        let test_points = [
+            (0.5, 0.5),  // inside
+            (-1.0, 0.5), // outside left
+            (2.0, 0.5),  // outside right
+            (0.5, 2.0),  // outside above
+            (0.5, -1.0), // outside below
+            (0.1, 0.1),  // inside near corner
+            (0.9, 0.9),  // inside near corner
+        ];
+
+        for (x, y) in test_points {
+            let scalar = total_winding(&square, x, y);
+            let batch = total_winding_batch(&square, x, y);
+            assert_eq!(
+                scalar, batch,
+                "Winding mismatch at ({}, {}): scalar={}, batch={}",
+                x, y, scalar, batch
+            );
+        }
+    }
+
+    #[test]
+    fn handles_horizontal_line_in_batch_without_nan() {
+        let horiz = Segment::Line(Line {
+            p0: [0.0, 5.0],
+            p1: [10.0, 5.0],
+        });
+        let x = Batch::<f32>::splat(5.0);
+        let y = Batch::<f32>::splat(5.0);
+        let w = horiz.winding_batch(x, y);
+        let result = w.first();
+        assert!(
+            !f32::from_bits(result).is_nan(),
+            "Horizontal line winding should not produce NaN"
+        );
+        assert_eq!(result, 0, "Horizontal line should contribute 0 winding");
+    }
+
+    // ========================================================================
+    // Distance Tests
+    // ========================================================================
+
+    #[test]
+    fn returns_positive_distance_on_positive_side_of_line() {
+        let line = Segment::Line(Line {
+            p0: [0.0, 0.0],
+            p1: [10.0, 0.0],
+        });
+        let d = line.min_distance(5.0, 1.0);
+        assert!(
+            d > 0.0,
+            "Point above horizontal line should have positive distance, got {}",
+            d
+        );
+    }
+
+    #[test]
+    fn returns_negative_distance_on_negative_side_of_line() {
+        let line = Segment::Line(Line {
+            p0: [0.0, 0.0],
+            p1: [10.0, 0.0],
+        });
+        let d = line.min_distance(5.0, -1.0);
+        assert!(
+            d < 0.0,
+            "Point below horizontal line should have negative distance, got {}",
+            d
+        );
+    }
+
+    #[test]
+    fn returns_large_distance_for_degenerate_line() {
+        let degen = Segment::Line(Line {
+            p0: [5.0, 5.0],
+            p1: [5.0, 5.0],
+        });
+        let d = degen.min_distance(0.0, 0.0);
+        assert!(
+            d > 100.0,
+            "Degenerate line should return large distance, got {}",
+            d
+        );
+    }
+
+    #[test]
+    fn matches_scalar_distance_for_lines() {
+        // Line from (0,0) to (10,5)
+        let line = Segment::Line(Line {
+            p0: [0.0, 0.0],
+            p1: [10.0, 5.0],
+        });
+
+        // Only test points that project onto the segment (t in [0, 1])
+        // For this line: direction is (10, 5), length^2 = 125
+        // t = dot(p - p0, dir) / 125
+        let test_points = [
+            (5.0, 2.5), // on line, t = 0.5
+            (5.0, 3.5), // above line middle, t ~ 0.5
+            (5.0, 1.5), // below line middle, t ~ 0.5
+            (2.0, 1.0), // on line, t = 0.2
+            (8.0, 4.0), // on line, t = 0.8
+        ];
+
+        for (x, y) in test_points {
+            let scalar = line.min_distance(x, y);
+            let x_batch = Batch::<f32>::splat(x);
+            let y_batch = Batch::<f32>::splat(y);
+            let batch = line.min_distance_batch(x_batch, y_batch).first();
+
+            let diff = (scalar - batch).abs();
+            assert!(
+                diff < 1e-5,
+                "Distance mismatch at ({}, {}): scalar={}, batch={}",
+                x,
+                y,
+                scalar,
+                batch
+            );
+        }
+    }
+
+    #[test]
+    fn handles_horizontal_line_distance_without_nan() {
+        let horiz = Segment::Line(Line {
+            p0: [0.0, 5.0],
+            p1: [10.0, 5.0],
+        });
+        let x = Batch::<f32>::splat(5.0);
+        let y = Batch::<f32>::splat(6.0);
+        let d = horiz.min_distance_batch(x, y).first();
+        assert!(!d.is_nan(), "Distance should not be NaN");
+        assert!((d - 1.0).abs() < 1e-5, "Distance should be ~1.0, got {}", d);
+    }
+
+    // ========================================================================
+    // Quadratic Tests
+    // ========================================================================
+
+    #[test]
+    fn creates_valid_quadratic_for_non_degenerate_curve() {
+        let q = Quadratic::try_new([0.0, 0.0], [0.5, 1.0], [1.0, 0.0]);
+        assert!(q.is_some(), "Non-degenerate quadratic should be created");
+    }
+
+    #[test]
+    fn rejects_degenerate_collinear_quadratic() {
+        let q = Quadratic::try_new([0.0, 0.0], [0.5, 0.5], [1.0, 1.0]);
+        assert!(q.is_none(), "Collinear points should be rejected");
+    }
+
+    #[test]
+    fn matches_scalar_winding_for_quadratic() {
+        let q = Quadratic::try_new([0.0, 0.0], [0.5, 1.0], [1.0, 0.0]).unwrap();
+        let seg = Segment::Quad(q);
+
+        let test_points = [
+            (0.5, 0.3),  // inside curve
+            (0.5, 0.8),  // above curve
+            (-1.0, 0.5), // left
+            (2.0, 0.5),  // right
+        ];
+
+        for (x, y) in test_points {
+            let scalar = seg.winding(x, y);
+            let x_batch = Batch::<f32>::splat(x);
+            let y_batch = Batch::<f32>::splat(y);
+            let batch = seg.winding_batch(x_batch, y_batch).first() as i32;
+
+            assert_eq!(
+                scalar, batch,
+                "Quad winding mismatch at ({}, {}): scalar={}, batch={}",
+                x, y, scalar, batch
+            );
+        }
+    }
+
+    #[test]
+    fn matches_scalar_distance_for_quadratic() {
+        let q = Quadratic::try_new([0.0, 0.0], [0.5, 1.0], [1.0, 0.0]).unwrap();
+        let seg = Segment::Quad(q);
+
+        let test_points = [(0.5, 0.5), (0.5, 0.0), (0.0, 0.0), (1.0, 0.0)];
+
+        for (x, y) in test_points {
+            let scalar = seg.min_distance(x, y);
+            let x_batch = Batch::<f32>::splat(x);
+            let y_batch = Batch::<f32>::splat(y);
+            let batch = seg.min_distance_batch(x_batch, y_batch).first();
+
+            let diff = (scalar - batch).abs();
+            assert!(
+                diff < 1e-5,
+                "Quad distance mismatch at ({}, {}): scalar={}, batch={}",
+                x,
+                y,
+                scalar,
+                batch
+            );
         }
     }
 }

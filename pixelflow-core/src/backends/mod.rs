@@ -6,9 +6,8 @@ pub mod scalar;
 #[cfg(target_arch = "x86_64")]
 pub mod x86;
 
-// TODO: ARM backend needs to be updated for new Backend trait
-// #[cfg(target_arch = "aarch64")]
-// pub mod arm;
+#[cfg(target_arch = "aarch64")]
+pub mod arm;
 
 // Legacy scalar fallback (simulating SIMD)
 // pub mod scalar_simd;

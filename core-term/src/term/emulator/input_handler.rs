@@ -105,7 +105,10 @@ pub(super) fn process_control_event(
             trace!("TerminalEmulator: RequestSnapshot event received.");
             None
         }
-        ControlEvent::Resize { width_px, height_px } => {
+        ControlEvent::Resize {
+            width_px,
+            height_px,
+        } => {
             // width_px and height_px are in logical pixels (engine handles scaling)
             // Calculate cols/rows using the emulator's Layout
             let cols =

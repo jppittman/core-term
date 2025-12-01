@@ -1,5 +1,5 @@
-use crate::batch::{Batch, NativeBackend, LANES};
 use crate::backend::SimdBatch;
+use crate::batch::{Batch, LANES};
 use crate::pipe::Surface;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -69,7 +69,12 @@ impl Platform {
     }
 
     /// Materializes a surface into a buffer.
-    pub fn materialize<S: Surface<u32>>(&self, surface: &S, width: usize, height: usize) -> Buffer<u32> {
+    pub fn materialize<S: Surface<u32>>(
+        &self,
+        surface: &S,
+        width: usize,
+        height: usize,
+    ) -> Buffer<u32> {
         let mut data = vec![0u32; width * height];
 
         for y in 0..height {
@@ -105,7 +110,11 @@ impl Platform {
             }
         }
 
-        Buffer { data, width, height }
+        Buffer {
+            data,
+            width,
+            height,
+        }
     }
 }
 

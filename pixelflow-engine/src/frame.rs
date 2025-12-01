@@ -4,7 +4,6 @@
 //! between the logic thread and render thread without copying pixel data.
 
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::Batch;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 

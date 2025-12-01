@@ -1,7 +1,7 @@
 //! Backend trait and Batch operations.
 
-use core::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Not, Shl, Shr, Sub};
 use core::fmt::Debug;
+use core::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Not, Shl, Shr, Sub};
 
 /// A backend provides the SIMD implementation.
 pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
@@ -36,8 +36,8 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
     /// Computes the inverse of a 3x3 matrix.
     fn inverse_mat3(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
         let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
 
         let det_abs = if det < 0.0 { -det } else { det };
         if det_abs < 1e-6 {
@@ -65,14 +65,7 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
 }
 
 /// Basic operations supported by any SIMD batch (storage/movement).
-pub trait SimdBatch<T: Copy>:
-    Copy
-    + Clone
-    + Debug
-    + Default
-    + Send
-    + Sync
-{
+pub trait SimdBatch<T: Copy>: Copy + Clone + Debug + Default + Send + Sync {
     fn splat(val: T) -> Self;
     fn sequential_from(start: T) -> Self;
     fn load(slice: &[T]) -> Self;
@@ -102,7 +95,7 @@ pub trait BatchArithmetic<T: Copy>:
 {
     fn select(self, if_true: Self, if_false: Self) -> Self;
     fn gather(base: &[T], indices: Self) -> Self;
-    fn gather_u8(base: &[u8], indices: Self) -> Self {
+    fn gather_u8(_base: &[u8], _indices: Self) -> Self {
         unimplemented!("gather_u8 not implemented for this type")
     }
 

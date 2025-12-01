@@ -44,10 +44,7 @@ impl ReadThread {
     ///
     /// * `source` - The event source (e.g., PTY) to monitor and read from
     /// * `pty_cmd_tx` - Channel to send parsed ANSI commands to app
-    pub(super) fn spawn<S>(
-        source: S,
-        pty_cmd_tx: SyncSender<Vec<AnsiCommand>>,
-    ) -> Result<Self>
+    pub(super) fn spawn<S>(source: S, pty_cmd_tx: SyncSender<Vec<AnsiCommand>>) -> Result<Self>
     where
         S: EventSource + 'static,
     {

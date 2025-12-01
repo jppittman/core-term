@@ -2,8 +2,8 @@
 //!
 //! Shows how `gather` works with different source types (u8, u32)
 
-use pixelflow_core::{Batch, SimdOps};
-use pixelflow_core::backend::SimdBatch; // Import SimdBatch for load
+use pixelflow_core::backend::SimdBatch;
+use pixelflow_core::{Batch, SimdOps}; // Import SimdBatch for load
 
 fn main() {
     println!("Generic Gather Demonstration\n");

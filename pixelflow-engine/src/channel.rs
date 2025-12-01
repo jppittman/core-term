@@ -5,18 +5,20 @@
 //! slow lane with backpressure, and control commands to an unbounded fast lane.
 //! Uses a "Doorbell" signal to wake the engine when display events are ready.
 
-use crate::display::messages::{DriverConfig, RenderSnapshot};
+use crate::display::messages::DriverConfig;
 use crate::display::DisplayEvent;
+use pixelflow_core::Pixel;
+use pixelflow_render::Frame;
 use std::sync::mpsc::{self, Receiver, SendError, Sender, SyncSender, TrySendError};
 
 /// Commands sent TO the engine (from driver or external control).
 #[derive(Debug)]
-pub enum EngineCommand {
+pub enum EngineCommand<P: Pixel> {
     /// Display events from driver (slow lane, backpressure)
     DisplayEvent(DisplayEvent),
 
-    /// Response: Presentation complete, framebuffer returned
-    PresentComplete(RenderSnapshot),
+    /// Response: Presentation complete, framebuffer returned for reuse
+    PresentComplete(Frame<P>),
 
     /// Response: Driver operation completed (SetTitle, etc.)
     DriverAck,
@@ -27,13 +29,14 @@ pub enum EngineCommand {
 
 /// Commands sent TO the driver (from engine).
 #[derive(Debug)]
-pub enum DriverCommand {
+pub enum DriverCommand<P: Pixel> {
     /// Configure the driver with window settings.
     /// Must be sent before run(). Event loop reads this first to create resources.
     Configure(DriverConfig),
 
-    /// Present a frame to the display
-    Present(RenderSnapshot),
+    /// Present a frame to the display.
+    /// The Frame contains typed pixel data matching the driver's Pixel type.
+    Present(Frame<P>),
 
     /// Set window title
     SetTitle(String),
@@ -53,16 +56,27 @@ pub enum DriverCommand {
 
 /// Type-safe sender wrapper that routes commands to the appropriate channel.
 /// Display events go to `display_tx` (bounded), responses/control go to `control_tx` (unbounded).
-#[derive(Clone)]
-pub struct EngineSender {
-    control_tx: Sender<EngineCommand>,     // Unbounded, High Priority
-    display_tx: SyncSender<EngineCommand>, // Bounded, Low Priority (backpressure)
+pub struct EngineSender<P: Pixel> {
+    control_tx: Sender<EngineCommand<P>>, // Unbounded, High Priority
+    display_tx: SyncSender<EngineCommand<P>>, // Bounded, Low Priority (backpressure)
 }
 
-impl EngineSender {
+impl<P: Pixel> Clone for EngineSender<P> {
+    fn clone(&self) -> Self {
+        Self {
+            control_tx: self.control_tx.clone(),
+            display_tx: self.display_tx.clone(),
+        }
+    }
+}
+
+impl<P: Pixel> EngineSender<P> {
     /// Create a new EngineSender.
     /// Internal use only - use create_engine_channels() instead.
-    pub fn new(control_tx: Sender<EngineCommand>, display_tx: SyncSender<EngineCommand>) -> Self {
+    pub fn new(
+        control_tx: Sender<EngineCommand<P>>,
+        display_tx: SyncSender<EngineCommand<P>>,
+    ) -> Self {
         Self {
             control_tx,
             display_tx,
@@ -71,7 +85,7 @@ impl EngineSender {
 
     /// Send a command, automatically routing to the appropriate channel.
     /// Blocks if sending display events and the slow lane is full (backpressure).
-    pub fn send(&self, cmd: EngineCommand) -> Result<(), SendError<EngineCommand>> {
+    pub fn send(&self, cmd: EngineCommand<P>) -> Result<(), SendError<EngineCommand<P>>> {
         match cmd {
             EngineCommand::DisplayEvent(_) => {
                 // 1. Block on Slow Lane (Backpressure applies here)
@@ -88,7 +102,7 @@ impl EngineSender {
 
     /// Try to send a command without blocking.
     /// Returns Err if channel is full (display events only) or disconnected.
-    pub fn try_send(&self, cmd: EngineCommand) -> Result<(), TrySendError<EngineCommand>> {
+    pub fn try_send(&self, cmd: EngineCommand<P>) -> Result<(), TrySendError<EngineCommand<P>>> {
         match cmd {
             EngineCommand::DisplayEvent(_) => {
                 // 1. Try Send to Slow Lane (Backpressure)
@@ -107,13 +121,13 @@ impl EngineSender {
 }
 
 /// Channel bundle for engine-side communication.
-pub struct EngineChannels {
+pub struct EngineChannels<P: Pixel> {
     /// Sender for driver -> engine (display events, responses)
-    pub engine_sender: EngineSender,
+    pub engine_sender: EngineSender<P>,
     /// Engine receives control/responses here (high priority)
-    pub control_rx: Receiver<EngineCommand>,
+    pub control_rx: Receiver<EngineCommand<P>>,
     /// Engine receives display events here (low priority, backpressure)
-    pub display_rx: Receiver<EngineCommand>,
+    pub display_rx: Receiver<EngineCommand<P>>,
 }
 
 /// Create channels for driver -> engine communication.
@@ -126,7 +140,7 @@ pub struct EngineChannels {
 ///
 /// # Arguments
 /// * `display_buffer_size` - Size of the bounded display event buffer (backpressure threshold)
-pub fn create_engine_channels(display_buffer_size: usize) -> EngineChannels {
+pub fn create_engine_channels<P: Pixel>(display_buffer_size: usize) -> EngineChannels<P> {
     let (control_tx, control_rx) = mpsc::channel();
     let (display_tx, display_rx) = mpsc::sync_channel(display_buffer_size);
     let engine_sender = EngineSender::new(control_tx, display_tx);
@@ -142,15 +156,16 @@ pub fn create_engine_channels(display_buffer_size: usize) -> EngineChannels {
 mod tests {
     use super::*;
     use crate::input::{KeySymbol, Modifiers};
+    use pixelflow_render::color::Rgba;
 
     #[test]
     fn test_create_channels() {
-        let _channels = create_engine_channels(16);
+        let _channels: EngineChannels<Rgba> = create_engine_channels(16);
     }
 
     #[test]
     fn test_responses_go_to_fast_lane() {
-        let channels = create_engine_channels(16);
+        let channels: EngineChannels<Rgba> = create_engine_channels(16);
 
         channels
             .engine_sender
@@ -177,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_display_event_goes_to_slow_lane_with_doorbell() {
-        let channels = create_engine_channels(16);
+        let channels: EngineChannels<Rgba> = create_engine_channels(16);
 
         let event = DisplayEvent::Key {
             symbol: KeySymbol::Char('a'),
@@ -204,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_backpressure() {
-        let channels = create_engine_channels(2);
+        let channels: EngineChannels<Rgba> = create_engine_channels(2);
 
         let event = || DisplayEvent::CloseRequested;
 

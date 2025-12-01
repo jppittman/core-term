@@ -1,12 +1,15 @@
 //! SIMD batch types and backend selection.
 
-use crate::backend::{Backend, BatchOps};
+use crate::backend::Backend;
 
 // Select NativeBackend based on architecture
 #[cfg(target_arch = "x86_64")]
 pub use crate::backends::x86::Sse2 as NativeBackend;
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+pub use crate::backends::arm::Neon as NativeBackend;
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub use crate::backends::scalar::Scalar as NativeBackend;
 
 /// The platform-native SIMD batch type.
@@ -24,9 +27,4 @@ pub const fn calculate_aligned_stride(width: usize) -> usize {
 }
 
 /// Shuffle mask for RGBA↔BGRA conversion.
-pub const SHUFFLE_RGBA_BGRA: [u8; 16] = [
-    2, 1, 0, 3,
-    6, 5, 4, 7,
-    10, 9, 8, 11,
-    14, 13, 12, 15,
-];
+pub const SHUFFLE_RGBA_BGRA: [u8; 16] = [2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15];

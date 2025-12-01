@@ -26,8 +26,8 @@
 //! The pixel format is monomorphized at compile time - no runtime conversion needed.
 
 use bitflags::bitflags;
-use pixelflow_core::batch::Batch;
 use pixelflow_core::backend::{BatchArithmetic, SimdBatch};
+use pixelflow_core::batch::Batch;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -366,7 +366,12 @@ impl Pixel for Rgba {
     }
 
     #[inline(always)]
-    fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32> {
+    fn batch_from_channels(
+        r: Batch<u32>,
+        g: Batch<u32>,
+        b: Batch<u32>,
+        a: Batch<u32>,
+    ) -> Batch<u32> {
         r | (g << 8) | (b << 16) | (a << 24)
     }
 
@@ -430,7 +435,12 @@ impl Pixel for Bgra {
     }
 
     #[inline(always)]
-    fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32> {
+    fn batch_from_channels(
+        r: Batch<u32>,
+        g: Batch<u32>,
+        b: Batch<u32>,
+        a: Batch<u32>,
+    ) -> Batch<u32> {
         b | (g << 8) | (r << 16) | (a << 24)
     }
 

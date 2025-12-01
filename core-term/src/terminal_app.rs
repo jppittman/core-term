@@ -12,9 +12,7 @@ use crate::config::Config;
 use crate::keys;
 use crate::messages::{AppEvent, RenderRequest};
 use crate::surface::{GridBuffer, TerminalSurface};
-use crate::term::{
-    ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction,
-};
+use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
 use core::marker::PhantomData;
 use pixelflow_core::ops::Baked;
 use pixelflow_core::pipe::Surface;
@@ -301,9 +299,7 @@ impl<P: Pixel + Surface<P>> TerminalAppWorker<P> {
             }
             EngineEvent::FocusGained => Some(EmulatorInput::User(UserInputAction::FocusGained)),
             EngineEvent::FocusLost => Some(EmulatorInput::User(UserInputAction::FocusLost)),
-            EngineEvent::Paste(text) => {
-                Some(EmulatorInput::User(UserInputAction::PasteText(text)))
-            }
+            EngineEvent::Paste(text) => Some(EmulatorInput::User(UserInputAction::PasteText(text))),
             EngineEvent::Wake => return None,
             EngineEvent::CloseRequested => return Some(AppAction::Quit),
         };

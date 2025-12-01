@@ -1,5 +1,5 @@
-use crate::batch::{Batch, NativeBackend};
 use crate::backend::{Backend, SimdBatch};
+use crate::batch::{Batch, NativeBackend};
 use crate::pipe::Surface;
 
 /// A 3x3 matrix for 2D affine transformations.
@@ -17,11 +17,7 @@ impl Mat3 {
     /// Identity matrix.
     pub fn identity() -> Self {
         Self {
-            m: [
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0],
-            ],
+            m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         }
     }
 
@@ -42,11 +38,7 @@ impl Mat3 {
         let e = p2[1] - d - f;
 
         let forward = Self {
-            m: [
-                [a, b, c],
-                [d, e, f],
-                [0.0, 0.0, 1.0],
-            ]
+            m: [[a, b, c], [d, e, f], [0.0, 0.0, 1.0]],
         };
 
         forward.inverse()
@@ -103,8 +95,8 @@ impl<C: AsRef<[f32]>> Poly<C> {
 
 /// A 2D parametric curve: t → (x, y)
 pub struct Curve2D<X, Y> {
-    pub x: X,  // Poly for x(t)
-    pub y: Y,  // Poly for y(t)
+    pub x: X, // Poly for x(t)
+    pub y: Y, // Poly for y(t)
 }
 
 /// Trait for defining the implicit equation of a curve.
@@ -116,7 +108,7 @@ pub trait ImplicitEvaluator {
 /// The implicit form: (x, y) → f where f=0 is the curve
 pub struct Implicit<C> {
     pub curve: C,
-    pub projection: Mat3,  // Screen → parameter space
+    pub projection: Mat3, // Screen → parameter space
 }
 
 impl<C: ImplicitEvaluator + Send + Sync + 'static> Surface<f32> for Implicit<C> {

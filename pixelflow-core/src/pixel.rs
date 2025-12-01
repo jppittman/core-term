@@ -1,8 +1,8 @@
 // pixelflow-core/src/pixel.rs
 //! Pixel format trait for generic color operations.
 
-use crate::batch::{Batch, NativeBackend};
 use crate::backend::{Backend, BatchArithmetic, SimdBatch};
+use crate::batch::{Batch, NativeBackend};
 use crate::pipe::Surface;
 use core::fmt::Debug;
 
@@ -36,7 +36,12 @@ pub trait Pixel: Copy + Default + Debug + 'static + Send + Sync {
     fn batch_alpha(batch: Batch<u32>) -> Batch<u32>;
 
     /// Reconstruct a batch of pixels from individual channel batches.
-    fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32>;
+    fn batch_from_channels(
+        r: Batch<u32>,
+        g: Batch<u32>,
+        b: Batch<u32>,
+        a: Batch<u32>,
+    ) -> Batch<u32>;
 
     /// Store a batch of pixels into a slice.
     fn batch_store(batch: Batch<Self>, slice: &mut [Self]);
@@ -52,9 +57,13 @@ impl<P: Pixel> Surface<P> for P {
 
 impl Pixel for u8 {
     #[inline(always)]
-    fn from_u32(v: u32) -> Self { v as u8 }
+    fn from_u32(v: u32) -> Self {
+        v as u8
+    }
     #[inline(always)]
-    fn to_u32(self) -> u32 { self as u32 }
+    fn to_u32(self) -> u32 {
+        self as u32
+    }
 
     #[inline(always)]
     fn batch_to_u32(batch: Batch<Self>) -> Batch<u32> {
@@ -73,16 +82,31 @@ impl Pixel for u8 {
     }
 
     #[inline(always)]
-    fn batch_red(batch: Batch<u32>) -> Batch<u32> { batch }
+    fn batch_red(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
     #[inline(always)]
-    fn batch_green(batch: Batch<u32>) -> Batch<u32> { batch }
+    fn batch_green(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
     #[inline(always)]
-    fn batch_blue(batch: Batch<u32>) -> Batch<u32> { batch }
+    fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
     #[inline(always)]
-    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> { batch }
+    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
+        batch
+    }
 
     #[inline(always)]
-    fn batch_from_channels(r: Batch<u32>, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> { r }
+    fn batch_from_channels(
+        r: Batch<u32>,
+        _: Batch<u32>,
+        _: Batch<u32>,
+        _: Batch<u32>,
+    ) -> Batch<u32> {
+        r
+    }
 
     #[inline(always)]
     fn batch_store(batch: Batch<Self>, slice: &mut [Self]) {
@@ -92,9 +116,13 @@ impl Pixel for u8 {
 
 impl Pixel for u32 {
     #[inline(always)]
-    fn from_u32(v: u32) -> Self { v }
+    fn from_u32(v: u32) -> Self {
+        v
+    }
     #[inline(always)]
-    fn to_u32(self) -> u32 { self }
+    fn to_u32(self) -> u32 {
+        self
+    }
 
     #[inline(always)]
     fn batch_to_u32(batch: Batch<Self>) -> Batch<u32> {
@@ -112,16 +140,29 @@ impl Pixel for u32 {
     }
 
     #[inline(always)]
-    fn batch_red(batch: Batch<u32>) -> Batch<u32> { batch & Batch::<u32>::splat(0xFF) }
+    fn batch_red(batch: Batch<u32>) -> Batch<u32> {
+        batch & Batch::<u32>::splat(0xFF)
+    }
     #[inline(always)]
-    fn batch_green(batch: Batch<u32>) -> Batch<u32> { (batch >> 8) & Batch::<u32>::splat(0xFF) }
+    fn batch_green(batch: Batch<u32>) -> Batch<u32> {
+        (batch >> 8) & Batch::<u32>::splat(0xFF)
+    }
     #[inline(always)]
-    fn batch_blue(batch: Batch<u32>) -> Batch<u32> { (batch >> 16) & Batch::<u32>::splat(0xFF) }
+    fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
+        (batch >> 16) & Batch::<u32>::splat(0xFF)
+    }
     #[inline(always)]
-    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> { (batch >> 24) & Batch::<u32>::splat(0xFF) }
+    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> {
+        (batch >> 24) & Batch::<u32>::splat(0xFF)
+    }
 
     #[inline(always)]
-    fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32> {
+    fn batch_from_channels(
+        r: Batch<u32>,
+        g: Batch<u32>,
+        b: Batch<u32>,
+        a: Batch<u32>,
+    ) -> Batch<u32> {
         r | (g << 8) | (b << 16) | (a << 24)
     }
 

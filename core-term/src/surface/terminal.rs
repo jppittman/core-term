@@ -62,7 +62,12 @@ impl<P: Pixel + Surface<P>> TerminalSurface<P> {
     }
 
     /// Creates a terminal surface with an existing grid and glyph factory.
-    pub fn with_grid(grid: GridBuffer, glyph: GlyphFactory, cell_width: u32, cell_height: u32) -> Self {
+    pub fn with_grid(
+        grid: GridBuffer,
+        glyph: GlyphFactory,
+        cell_width: u32,
+        cell_height: u32,
+    ) -> Self {
         Self {
             grid,
             glyph,
@@ -281,7 +286,12 @@ mod tests {
                     (pixel.r(), pixel.g(), pixel.b(), pixel.a()),
                     (0, 0, 0, 255),
                     "Pixel at ({}, {}) should be black, got RGBA({}, {}, {}, {})",
-                    x, y, pixel.r(), pixel.g(), pixel.b(), pixel.a()
+                    x,
+                    y,
+                    pixel.r(),
+                    pixel.g(),
+                    pixel.b(),
+                    pixel.a()
                 );
             }
         }
@@ -308,7 +318,12 @@ mod tests {
                     (pixel.r(), pixel.g(), pixel.b(), pixel.a()),
                     (255, 255, 255, 255),
                     "Pixel at ({}, {}) should be white, got RGBA({}, {}, {}, {})",
-                    x, y, pixel.r(), pixel.g(), pixel.b(), pixel.a()
+                    x,
+                    y,
+                    pixel.r(),
+                    pixel.g(),
+                    pixel.b(),
+                    pixel.a()
                 );
             }
         }
@@ -331,7 +346,11 @@ mod tests {
         let pixel = surface.eval_scalar(5, 8);
         assert_eq!(pixel.r(), 255, "Red channel should be 255");
         assert_eq!(pixel.g(), 0, "Green channel should be 0");
-        assert_eq!(pixel.b(), 0, "Blue channel should be 0 (not swapped with red)");
+        assert_eq!(
+            pixel.b(),
+            0,
+            "Blue channel should be 0 (not swapped with red)"
+        );
         assert_eq!(pixel.a(), 255, "Alpha should be 255");
     }
 
@@ -350,7 +369,11 @@ mod tests {
         surface.grid.set(0, 0, cell);
 
         let pixel = surface.eval_scalar(5, 8);
-        assert_eq!(pixel.r(), 0, "Red channel should be 0 (not swapped with blue)");
+        assert_eq!(
+            pixel.r(),
+            0,
+            "Red channel should be 0 (not swapped with blue)"
+        );
         assert_eq!(pixel.g(), 0, "Green channel should be 0");
         assert_eq!(pixel.b(), 255, "Blue channel should be 255");
         assert_eq!(pixel.a(), 255, "Alpha should be 255");
@@ -399,7 +422,12 @@ mod tests {
         let composed = ConstAlpha(0).over::<Rgba, _, _>(fg, bg);
         let result: Batch<Rgba> = composed.eval(Batch::splat(0), Batch::splat(0));
         let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
-        println!("\nAlpha=0 (expect pure blue bg): r={}, g={}, b={}", pixel.r(), pixel.g(), pixel.b());
+        println!(
+            "\nAlpha=0 (expect pure blue bg): r={}, g={}, b={}",
+            pixel.r(),
+            pixel.g(),
+            pixel.b()
+        );
         assert_eq!(pixel.r(), 0, "With alpha=0, red should be 0");
         assert_eq!(pixel.b(), 255, "With alpha=0, blue should be 255");
 
@@ -408,18 +436,44 @@ mod tests {
         let composed = ConstAlpha(255).over::<Rgba, _, _>(fg, bg);
         let result: Batch<Rgba> = composed.eval(Batch::splat(0), Batch::splat(0));
         let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
-        println!("Alpha=255 (expect ~pure red fg): r={}, g={}, b={}", pixel.r(), pixel.g(), pixel.b());
-        assert!(pixel.r() >= 254, "With alpha=255, red should be ~255, got {}", pixel.r());
-        assert!(pixel.b() <= 1, "With alpha=255, blue should be ~0, got {}", pixel.b());
+        println!(
+            "Alpha=255 (expect ~pure red fg): r={}, g={}, b={}",
+            pixel.r(),
+            pixel.g(),
+            pixel.b()
+        );
+        assert!(
+            pixel.r() >= 254,
+            "With alpha=255, red should be ~255, got {}",
+            pixel.r()
+        );
+        assert!(
+            pixel.b() <= 1,
+            "With alpha=255, blue should be ~0, got {}",
+            pixel.b()
+        );
 
         // Test with 128 alpha (should be ~50/50)
         let composed = ConstAlpha(128).over::<Rgba, _, _>(fg, bg);
         let result: Batch<Rgba> = composed.eval(Batch::splat(0), Batch::splat(0));
         let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
-        println!("Alpha=128 (expect ~50/50): r={}, g={}, b={}", pixel.r(), pixel.g(), pixel.b());
+        println!(
+            "Alpha=128 (expect ~50/50): r={}, g={}, b={}",
+            pixel.r(),
+            pixel.g(),
+            pixel.b()
+        );
         // Should be roughly 128 for both red and blue
-        assert!(pixel.r() > 100 && pixel.r() < 150, "Red should be ~128, got {}", pixel.r());
-        assert!(pixel.b() > 100 && pixel.b() < 150, "Blue should be ~128, got {}", pixel.b());
+        assert!(
+            pixel.r() > 100 && pixel.r() < 150,
+            "Red should be ~128, got {}",
+            pixel.r()
+        );
+        assert!(
+            pixel.b() > 100 && pixel.b() < 150,
+            "Blue should be ~128, got {}",
+            pixel.b()
+        );
     }
 
     #[test]
@@ -432,20 +486,28 @@ mod tests {
         let mut surface: TerminalSurface<Rgba> = TerminalSurface::new(2, 1, 10, 16);
 
         // Red and blue cells
-        surface.grid.set(0, 0, Cell {
-            ch: ' ',
-            fg: Color::Rgb(0, 0, 0),
-            bg: Color::Rgb(255, 0, 0), // Red
-            bold: false,
-            italic: false,
-        });
-        surface.grid.set(1, 0, Cell {
-            ch: ' ',
-            fg: Color::Rgb(0, 0, 0),
-            bg: Color::Rgb(0, 0, 255), // Blue
-            bold: false,
-            italic: false,
-        });
+        surface.grid.set(
+            0,
+            0,
+            Cell {
+                ch: ' ',
+                fg: Color::Rgb(0, 0, 0),
+                bg: Color::Rgb(255, 0, 0), // Red
+                bold: false,
+                italic: false,
+            },
+        );
+        surface.grid.set(
+            1,
+            0,
+            Cell {
+                ch: ' ',
+                fg: Color::Rgb(0, 0, 0),
+                bg: Color::Rgb(0, 0, 255), // Blue
+                bold: false,
+                italic: false,
+            },
+        );
 
         // Render to u32 buffer (20x16 pixels)
         let mut buffer = vec![0u32; 20 * 16];
@@ -454,8 +516,13 @@ mod tests {
         // Check a pixel in the red cell (center of cell 0)
         let red_pixel_idx = 8 * 20 + 5; // y=8, x=5
         let red_pixel = Rgba(buffer[red_pixel_idx]);
-        println!("Red cell pixel: r={}, g={}, b={}, a={}",
-                 red_pixel.r(), red_pixel.g(), red_pixel.b(), red_pixel.a());
+        println!(
+            "Red cell pixel: r={}, g={}, b={}, a={}",
+            red_pixel.r(),
+            red_pixel.g(),
+            red_pixel.b(),
+            red_pixel.a()
+        );
         assert_eq!(red_pixel.r(), 255, "Red cell should have r=255");
         assert_eq!(red_pixel.g(), 0, "Red cell should have g=0");
         assert_eq!(red_pixel.b(), 0, "Red cell should have b=0");
@@ -463,8 +530,13 @@ mod tests {
         // Check a pixel in the blue cell (center of cell 1)
         let blue_pixel_idx = 8 * 20 + 15; // y=8, x=15
         let blue_pixel = Rgba(buffer[blue_pixel_idx]);
-        println!("Blue cell pixel: r={}, g={}, b={}, a={}",
-                 blue_pixel.r(), blue_pixel.g(), blue_pixel.b(), blue_pixel.a());
+        println!(
+            "Blue cell pixel: r={}, g={}, b={}, a={}",
+            blue_pixel.r(),
+            blue_pixel.g(),
+            blue_pixel.b(),
+            blue_pixel.a()
+        );
         assert_eq!(blue_pixel.r(), 0, "Blue cell should have r=0");
         assert_eq!(blue_pixel.g(), 0, "Blue cell should have g=0");
         assert_eq!(blue_pixel.b(), 255, "Blue cell should have b=255");
@@ -476,8 +548,11 @@ mod tests {
 
         // For RGBA little-endian: Red = 0xFF0000FF (A=FF, B=00, G=00, R=FF)
         // The low byte (R) should be 255 for red
-        assert_eq!(buffer[red_pixel_idx] & 0xFF, 255,
-                   "Red pixel low byte should be 255 (RGBA format)");
+        assert_eq!(
+            buffer[red_pixel_idx] & 0xFF,
+            255,
+            "Red pixel low byte should be 255 (RGBA format)"
+        );
     }
 
     #[test]
@@ -488,55 +563,80 @@ mod tests {
         let mut surface: TerminalSurface<Rgba> = TerminalSurface::new(2, 2, 10, 16);
 
         // Set up a 2x2 grid with different background colors
-        surface.grid.set(0, 0, Cell {
-            ch: ' ',
-            fg: Color::Rgb(0, 0, 0),
-            bg: Color::Rgb(255, 0, 0), // Red
-            bold: false,
-            italic: false,
-        });
-        surface.grid.set(1, 0, Cell {
-            ch: ' ',
-            fg: Color::Rgb(0, 0, 0),
-            bg: Color::Rgb(0, 255, 0), // Green
-            bold: false,
-            italic: false,
-        });
-        surface.grid.set(0, 1, Cell {
-            ch: ' ',
-            fg: Color::Rgb(0, 0, 0),
-            bg: Color::Rgb(0, 0, 255), // Blue
-            bold: false,
-            italic: false,
-        });
-        surface.grid.set(1, 1, Cell {
-            ch: ' ',
-            fg: Color::Rgb(0, 0, 0),
-            bg: Color::Rgb(255, 255, 255), // White
-            bold: false,
-            italic: false,
-        });
+        surface.grid.set(
+            0,
+            0,
+            Cell {
+                ch: ' ',
+                fg: Color::Rgb(0, 0, 0),
+                bg: Color::Rgb(255, 0, 0), // Red
+                bold: false,
+                italic: false,
+            },
+        );
+        surface.grid.set(
+            1,
+            0,
+            Cell {
+                ch: ' ',
+                fg: Color::Rgb(0, 0, 0),
+                bg: Color::Rgb(0, 255, 0), // Green
+                bold: false,
+                italic: false,
+            },
+        );
+        surface.grid.set(
+            0,
+            1,
+            Cell {
+                ch: ' ',
+                fg: Color::Rgb(0, 0, 0),
+                bg: Color::Rgb(0, 0, 255), // Blue
+                bold: false,
+                italic: false,
+            },
+        );
+        surface.grid.set(
+            1,
+            1,
+            Cell {
+                ch: ' ',
+                fg: Color::Rgb(0, 0, 0),
+                bg: Color::Rgb(255, 255, 255), // White
+                bold: false,
+                italic: false,
+            },
+        );
 
         // Bake the surface (20x32 pixels for 2x2 cells at 10x16)
         let baked: Baked<Rgba> = Baked::new(&surface, 20, 32);
 
         // Sample center of each cell
-        let check = |cx: u32, cy: u32, expected_r: u8, expected_g: u8, expected_b: u8, name: &str| {
-            let x_batch = Batch::splat(cx);
-            let y_batch = Batch::splat(cy);
-            let result: Batch<Rgba> = baked.eval(x_batch, y_batch);
-            let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
-            assert_eq!(
-                (pixel.r(), pixel.g(), pixel.b()),
-                (expected_r, expected_g, expected_b),
-                "{} cell at ({}, {}) - expected RGB({}, {}, {}), got RGB({}, {}, {})",
-                name, cx, cy, expected_r, expected_g, expected_b, pixel.r(), pixel.g(), pixel.b()
-            );
-        };
+        let check =
+            |cx: u32, cy: u32, expected_r: u8, expected_g: u8, expected_b: u8, name: &str| {
+                let x_batch = Batch::splat(cx);
+                let y_batch = Batch::splat(cy);
+                let result: Batch<Rgba> = baked.eval(x_batch, y_batch);
+                let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
+                assert_eq!(
+                    (pixel.r(), pixel.g(), pixel.b()),
+                    (expected_r, expected_g, expected_b),
+                    "{} cell at ({}, {}) - expected RGB({}, {}, {}), got RGB({}, {}, {})",
+                    name,
+                    cx,
+                    cy,
+                    expected_r,
+                    expected_g,
+                    expected_b,
+                    pixel.r(),
+                    pixel.g(),
+                    pixel.b()
+                );
+            };
 
-        check(5, 8, 255, 0, 0, "Red");     // Cell (0,0) center
-        check(15, 8, 0, 255, 0, "Green");  // Cell (1,0) center
-        check(5, 24, 0, 0, 255, "Blue");   // Cell (0,1) center
+        check(5, 8, 255, 0, 0, "Red"); // Cell (0,0) center
+        check(15, 8, 0, 255, 0, "Green"); // Cell (1,0) center
+        check(5, 24, 0, 0, 255, "Blue"); // Cell (0,1) center
         check(15, 24, 255, 255, 255, "White"); // Cell (1,1) center
     }
 
@@ -556,29 +656,31 @@ mod tests {
         use pixelflow_render::rasterizer::render_pixel;
 
         let mut surface: TerminalSurface<Rgba> = TerminalSurface::new(1, 1, 4, 4);
-        surface.grid.set(0, 0, Cell {
-            ch: ' ',
-            fg: Color::Rgb(0, 0, 0),
-            bg: Color::Rgb(255, 0, 0), // Pure red
-            bold: false,
-            italic: false,
-        });
+        surface.grid.set(
+            0,
+            0,
+            Cell {
+                ch: ' ',
+                fg: Color::Rgb(0, 0, 0),
+                bg: Color::Rgb(255, 0, 0), // Pure red
+                bold: false,
+                italic: false,
+            },
+        );
 
         let mut buffer = vec![0u32; 16];
         render_pixel::<Rgba, _>(&surface, &mut buffer, 4, 4);
 
         // Get the raw bytes as CGDataProvider would see them
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                buffer.as_ptr() as *const u8,
-                buffer.len() * 4
-            )
-        };
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, buffer.len() * 4) };
 
         // For a red pixel, we expect memory bytes [255, 0, 0, 255] = [R, G, B, A]
         let pixel_bytes = &bytes[0..4];
-        println!("Red pixel raw bytes: [{}, {}, {}, {}]",
-                 pixel_bytes[0], pixel_bytes[1], pixel_bytes[2], pixel_bytes[3]);
+        println!(
+            "Red pixel raw bytes: [{}, {}, {}, {}]",
+            pixel_bytes[0], pixel_bytes[1], pixel_bytes[2], pixel_bytes[3]
+        );
         println!("Expected for RGBA: [255, 0, 0, 255]");
         println!("If CGImage shows BLUE, it's interpreting as BGRA");
 
