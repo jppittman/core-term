@@ -32,6 +32,36 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
 
     /// Bitcast/transmute between f32 and u32 (reinterpret bits).
     fn transmute_f32_to_u32(b: Self::Batch<f32>) -> Self::Batch<u32>;
+
+    /// Computes the inverse of a 3x3 matrix.
+    fn inverse_mat3(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+        let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+
+        let det_abs = if det < 0.0 { -det } else { det };
+        if det_abs < 1e-6 {
+            return None;
+        }
+
+        let inv_det = 1.0 / det;
+
+        let mut inv = [[0.0; 3]; 3];
+
+        inv[0][0] = (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv_det;
+        inv[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv_det;
+        inv[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_det;
+
+        inv[1][0] = (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv_det;
+        inv[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv_det;
+        inv[1][2] = (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * inv_det;
+
+        inv[2][0] = (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * inv_det;
+        inv[2][1] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * inv_det;
+        inv[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inv_det;
+
+        Some(inv)
+    }
 }
 
 /// Basic operations supported by any SIMD batch (storage/movement).

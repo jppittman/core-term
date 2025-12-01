@@ -57,6 +57,61 @@ impl Backend for Sse2 {
     fn transmute_f32_to_u32(b: SimdVec<f32>) -> SimdVec<u32> {
         unsafe { b.transmute() }
     }
+
+    fn inverse_mat3(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+        unsafe {
+            let b4 = |v0, v1, v2, v3| -> SimdVec<f32> {
+                SimdVec(cast_from_ps(_mm_set_ps(v3, v2, v1, v0)), PhantomData)
+            };
+
+            // Group 1: Row 0 of Inverse (Cols 0 signs applied)
+            let v1 = b4(m[1][1], m[1][2], m[1][0], 0.0);
+            let v2 = b4(m[2][2], m[2][0], m[2][1], 0.0);
+            let v3 = b4(m[1][2], m[1][0], m[1][1], 0.0);
+            let v4 = b4(m[2][1], m[2][2], m[2][0], 0.0);
+            let col0_inv = v1 * v2 - v3 * v4;
+
+            // Group 2: Row 1 of Inverse
+            let v1 = b4(m[0][2], m[0][0], m[0][1], 0.0);
+            let v2 = b4(m[2][1], m[2][2], m[2][0], 0.0);
+            let v3 = b4(m[0][1], m[0][2], m[0][0], 0.0);
+            let v4 = b4(m[2][2], m[2][0], m[2][1], 0.0);
+            let col1_inv = v1 * v2 - v3 * v4;
+
+            // Group 3: Row 2 of Inverse
+            let v1 = b4(m[0][1], m[0][2], m[0][0], 0.0);
+            let v2 = b4(m[1][2], m[1][0], m[1][1], 0.0);
+            let v3 = b4(m[0][2], m[0][0], m[0][1], 0.0);
+            let v4 = b4(m[1][1], m[1][2], m[1][0], 0.0);
+            let col2_inv = v1 * v2 - v3 * v4;
+
+            // Determinant
+            let mut tmp = [0.0; 4];
+            col0_inv.store(&mut tmp as *mut _ as *mut f32);
+            let det = m[0][0] * tmp[0] + m[0][1] * tmp[1] + m[0][2] * tmp[2];
+
+            let det_abs = if det < 0.0 { -det } else { det };
+            if det_abs < 1e-6 {
+                return None;
+            }
+
+            let inv_det = SimdVec::<f32>::splat(1.0 / det);
+
+            let col0_res = col0_inv * inv_det;
+            let col1_res = col1_inv * inv_det;
+            let col2_res = col2_inv * inv_det;
+
+            let mut c0 = [0.0; 4]; col0_res.store(&mut c0 as *mut _ as *mut f32);
+            let mut c1 = [0.0; 4]; col1_res.store(&mut c1 as *mut _ as *mut f32);
+            let mut c2 = [0.0; 4]; col2_res.store(&mut c2 as *mut _ as *mut f32);
+
+            Some([
+                [c0[0], c1[0], c2[0]],
+                [c0[1], c1[1], c2[1]],
+                [c0[2], c1[2], c2[2]],
+            ])
+        }
+    }
 }
 
 /// Platform-specific SIMD vector wrapper.
