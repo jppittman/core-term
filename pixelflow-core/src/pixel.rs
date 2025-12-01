@@ -37,13 +37,16 @@ pub trait Pixel: Copy + Default + Debug + 'static + Send + Sync {
 
     /// Reconstruct a batch of pixels from individual channel batches.
     fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32>;
+
+    /// Store a batch of pixels into a slice.
+    fn batch_store(batch: Batch<Self>, slice: &mut [Self]);
 }
 
 // Implement Surface for any Pixel type (Constant Surface)
 impl<P: Pixel> Surface<P> for P {
     #[inline(always)]
     fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<P> {
-        Batch::splat(*self)
+        Batch::<P>::splat(*self)
     }
 }
 
@@ -80,6 +83,11 @@ impl Pixel for u8 {
 
     #[inline(always)]
     fn batch_from_channels(r: Batch<u32>, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> { r }
+
+    #[inline(always)]
+    fn batch_store(batch: Batch<Self>, slice: &mut [Self]) {
+        SimdBatch::store(&batch, slice);
+    }
 }
 
 impl Pixel for u32 {
@@ -104,16 +112,21 @@ impl Pixel for u32 {
     }
 
     #[inline(always)]
-    fn batch_red(batch: Batch<u32>) -> Batch<u32> { batch & Batch::splat(0xFF) }
+    fn batch_red(batch: Batch<u32>) -> Batch<u32> { batch & Batch::<u32>::splat(0xFF) }
     #[inline(always)]
-    fn batch_green(batch: Batch<u32>) -> Batch<u32> { (batch >> 8) & Batch::splat(0xFF) }
+    fn batch_green(batch: Batch<u32>) -> Batch<u32> { (batch >> 8) & Batch::<u32>::splat(0xFF) }
     #[inline(always)]
-    fn batch_blue(batch: Batch<u32>) -> Batch<u32> { (batch >> 16) & Batch::splat(0xFF) }
+    fn batch_blue(batch: Batch<u32>) -> Batch<u32> { (batch >> 16) & Batch::<u32>::splat(0xFF) }
     #[inline(always)]
-    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> { (batch >> 24) & Batch::splat(0xFF) }
+    fn batch_alpha(batch: Batch<u32>) -> Batch<u32> { (batch >> 24) & Batch::<u32>::splat(0xFF) }
 
     #[inline(always)]
     fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32> {
         r | (g << 8) | (b << 16) | (a << 24)
+    }
+
+    #[inline(always)]
+    fn batch_store(batch: Batch<Self>, slice: &mut [Self]) {
+        SimdBatch::store(&batch, slice);
     }
 }

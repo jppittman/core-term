@@ -48,7 +48,34 @@ impl Backend for Scalar {
 #[repr(transparent)]
 pub struct ScalarBatch<T>(pub T);
 
-macro_rules! impl_arithmetic {
+// Integer arithmetic uses wrapping to match SIMD semantics
+macro_rules! impl_arithmetic_int {
+    ($t:ty) => {
+        impl Add for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn add(self, rhs: Self) -> Self { ScalarBatch(self.0.wrapping_add(rhs.0)) }
+        }
+        impl Sub for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn sub(self, rhs: Self) -> Self { ScalarBatch(self.0.wrapping_sub(rhs.0)) }
+        }
+        impl Mul for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn mul(self, rhs: Self) -> Self { ScalarBatch(self.0.wrapping_mul(rhs.0)) }
+        }
+        impl Div for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn div(self, rhs: Self) -> Self { ScalarBatch(self.0.wrapping_div(rhs.0)) }
+        }
+    };
+}
+
+// Float arithmetic (no wrapping needed)
+macro_rules! impl_arithmetic_float {
     ($t:ty) => {
         impl Add for ScalarBatch<$t> {
             type Output = Self;
@@ -162,16 +189,16 @@ macro_rules! impl_bitwise_float {
     };
 }
 
-impl_arithmetic!(u8);
+impl_arithmetic_int!(u8);
 impl_bitwise_int!(u8);
-impl_arithmetic!(u16);
+impl_arithmetic_int!(u16);
 impl_bitwise_int!(u16);
-impl_arithmetic!(u32);
+impl_arithmetic_int!(u32);
 impl_bitwise_int!(u32);
-impl_arithmetic!(i32);
+impl_arithmetic_int!(i32);
 impl_bitwise_int!(i32);
 
-impl_arithmetic!(f32);
+impl_arithmetic_float!(f32);
 impl_bitwise_float!(f32, u32);
 
 impl<T: Copy + Send + Sync + Debug + Default + 'static> SimdBatch<T> for ScalarBatch<T> {

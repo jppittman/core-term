@@ -273,6 +273,11 @@ where
 {
     use crate::batch::{Batch, LANES};
 
+    // Early return for zero-size targets to avoid UB with from_raw_parts_mut
+    if width == 0 || height == 0 {
+        return;
+    }
+
     for y in 0..height {
         let row_start = y * width;
         let y_batch = Batch::<u32>::splat(y as u32);
@@ -282,14 +287,7 @@ where
         while x + LANES <= width {
             let x_batch = Batch::<u32>::sequential_from(x as u32);
             let result = surface.eval(x_batch, y_batch);
-            let result_u32 = P::batch_to_u32(result);
-
-            unsafe {
-                let ptr = target.as_mut_ptr().add(row_start + x) as *mut u32;
-                let slice = core::slice::from_raw_parts_mut(ptr, LANES);
-                SimdBatch::store(&result_u32, slice);
-            }
-
+            P::batch_store(result, &mut target[row_start + x..row_start + x + LANES]);
             x += LANES;
         }
 

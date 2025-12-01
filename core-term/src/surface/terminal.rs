@@ -114,8 +114,8 @@ impl<P: Pixel + Surface<P>> TerminalSurface<P> {
 
         // Use DSL: glyph.over(fg, bg) - evaluated at single point via batch
         // Create single-value batches for scalar evaluation
-        let x_batch = Batch::splat(lx);
-        let y_batch = Batch::splat(ly);
+        let x_batch = Batch::<u32>::splat(lx);
+        let y_batch = Batch::<u32>::splat(ly);
 
         // Compose using pixelflow DSL
         let composed = baked.over::<P, _, _>(fg_pixel, bg_pixel);
