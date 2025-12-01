@@ -5,8 +5,8 @@
 //! This enables Frame-to-Frame compositing operations.
 
 use crate::color::Pixel;
-use pixelflow_core::batch::Batch;
 use pixelflow_core::backend::SimdBatch;
+use pixelflow_core::batch::Batch;
 use pixelflow_core::pipe::Surface;
 
 /// A framebuffer of pixels in a specific format.

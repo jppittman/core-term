@@ -8,17 +8,6 @@
 use crate::input::{KeySymbol, Modifiers};
 use serde::{Deserialize, Serialize};
 
-/// A snapshot containing all data needed to present a frame to the display.
-#[derive(Debug)]
-pub struct RenderSnapshot {
-    /// The framebuffer pixel data (BGRA format).
-    pub framebuffer: Box<[u8]>,
-    /// Width of the framebuffer in pixels.
-    pub width_px: u32,
-    /// Height of the framebuffer in pixels.
-    pub height_px: u32,
-}
-
 /// Configuration passed to the driver via Configure command.
 /// Contains parameters needed to set up the display window.
 #[derive(Debug, Clone)]

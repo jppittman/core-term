@@ -7,7 +7,7 @@
 
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, RenderSnapshot};
+use crate::display::messages::DisplayEvent;
 use crate::input::{KeySymbol, Modifiers};
 use crate::platform::waker::{CocoaWaker, EventLoopWaker};
 use anyhow::{anyhow, Context, Result};
@@ -27,7 +27,9 @@ use objc2_app_kit::{
 use objc2_foundation::{
     MainThreadMarker, NSDate, NSDefaultRunLoopMode, NSObject, NSPoint, NSRect, NSSize, NSString,
 };
-use std::ffi::{c_void, CStr};
+use pixelflow_render::color::Rgba;
+use pixelflow_render::Frame;
+use std::ffi::CStr;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 
@@ -41,8 +43,8 @@ const EVENT_TIMEOUT_SECONDS: f64 = 1.0;
 
 // --- Run State (only original driver has this) ---
 struct RunState {
-    cmd_rx: Receiver<DriverCommand>,
-    engine_tx: EngineSender,
+    cmd_rx: Receiver<DriverCommand<Rgba>>,
+    engine_tx: EngineSender<Rgba>,
 }
 
 // --- Display Driver ---
@@ -51,7 +53,7 @@ struct RunState {
 ///
 /// Clone to get a handle for sending commands. Only the original can run().
 pub struct CocoaDisplayDriver {
-    cmd_tx: SyncSender<DriverCommand>,
+    cmd_tx: SyncSender<DriverCommand<Rgba>>,
     waker: CocoaWaker,
     /// Only present on original, None on clones
     run_state: Option<RunState>,
@@ -68,7 +70,10 @@ impl Clone for CocoaDisplayDriver {
 }
 
 impl DisplayDriver for CocoaDisplayDriver {
-    fn new(engine_tx: EngineSender) -> Result<Self> {
+    /// Cocoa requires RGBA pixel format (CGImage with kCGImageAlphaPremultipliedLast).
+    type Pixel = Rgba;
+
+    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -78,7 +83,7 @@ impl DisplayDriver for CocoaDisplayDriver {
         })
     }
 
-    fn send(&self, cmd: DriverCommand) -> Result<()> {
+    fn send(&self, cmd: DriverCommand<Rgba>) -> Result<()> {
         self.cmd_tx.send(cmd)?;
         // Wake the main thread's event loop so it checks cmd_rx
         let _ = self.waker.wake();
@@ -97,7 +102,10 @@ impl DisplayDriver for CocoaDisplayDriver {
 
 // --- Event Loop ---
 
-fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) -> Result<()> {
+fn run_event_loop(
+    cmd_rx: &Receiver<DriverCommand<Rgba>>,
+    engine_tx: &EngineSender<Rgba>,
+) -> Result<()> {
     // Must be on main thread for Cocoa
     let mtm = MainThreadMarker::new().context("Cocoa driver must run on main thread")?;
 
@@ -171,8 +179,8 @@ struct CocoaState {
 impl CocoaState {
     fn event_loop(
         &mut self,
-        cmd_rx: &Receiver<DriverCommand>,
-        engine_tx: &EngineSender,
+        cmd_rx: &Receiver<DriverCommand<Rgba>>,
+        engine_tx: &EngineSender<Rgba>,
     ) -> Result<()> {
         loop {
             // 1. Poll Cocoa events
@@ -228,9 +236,9 @@ impl CocoaState {
                         info!("Cocoa: Shutdown command received");
                         return Ok(());
                     }
-                    DriverCommand::Present(snapshot) => {
-                        if let Ok(snapshot) = self.handle_present(snapshot) {
-                            let _ = engine_tx.send(EngineCommand::PresentComplete(snapshot));
+                    DriverCommand::Present(frame) => {
+                        if let Ok(frame) = self.handle_present(frame) {
+                            let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
                         }
                     }
                     DriverCommand::SetTitle(title) => {
@@ -335,13 +343,15 @@ impl CocoaState {
         }
     }
 
-    fn handle_present(&mut self, snapshot: RenderSnapshot) -> Result<RenderSnapshot> {
+    fn handle_present(&mut self, frame: Frame<Rgba>) -> Result<Frame<Rgba>> {
         unsafe {
-            let width = snapshot.width_px as usize;
-            let height = snapshot.height_px as usize;
+            let width = frame.width as usize;
+            let height = frame.height as usize;
             let bytes_per_row = width * BYTES_PER_PIXEL;
 
-            let data = Arc::new(snapshot.framebuffer.as_ref());
+            // Frame<Rgba> has typed pixel data - get raw bytes for CGImage
+            let bytes = frame.as_bytes();
+            let data = Arc::new(bytes);
             let provider = CGDataProvider::from_buffer(data);
             let color_space = CGColorSpace::create_device_rgb();
             let image = CGImage::new(
@@ -366,7 +376,8 @@ impl CocoaState {
             let _: () = msg_send![layer, setContents: image_ref];
             let _: () = msg_send![layer, setContentsScale: self.backing_scale];
         }
-        Ok(snapshot)
+        // Return the frame for reuse
+        Ok(frame)
     }
 
     fn handle_set_title(&self, title: &str) {

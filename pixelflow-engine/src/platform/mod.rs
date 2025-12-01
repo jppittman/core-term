@@ -2,15 +2,14 @@ pub mod waker;
 
 use crate::channel::{create_engine_channels, DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, DriverConfig, RenderSnapshot};
+use crate::display::messages::{DisplayEvent, DriverConfig};
 use crate::input::MouseButton;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
 use log::info;
-use pixelflow_core::pipe::Surface;
-use pixelflow_core::Pixel;
 use pixelflow_core::Scale;
-use pixelflow_render::rasterizer::render_pixel;
+use pixelflow_render::rasterizer::render;
+use pixelflow_render::Frame;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -27,16 +26,19 @@ type PlatformDriver = crate::display::drivers::HeadlessDisplayDriver;
 #[cfg(use_web_display)]
 type PlatformDriver = crate::display::drivers::WebDisplayDriver;
 
+/// The platform's native pixel type (determined by the display driver).
+pub type PlatformPixel = <PlatformDriver as DisplayDriver>::Pixel;
+
 pub struct EnginePlatform {
     driver: PlatformDriver,
     config: DriverConfig,
-    engine_sender: EngineSender,
-    control_rx: Receiver<EngineCommand>,
-    display_rx: Receiver<EngineCommand>,
+    engine_sender: EngineSender<PlatformPixel>,
+    control_rx: Receiver<EngineCommand<PlatformPixel>>,
+    display_rx: Receiver<EngineCommand<PlatformPixel>>,
 }
 
 struct PlatformWaker {
-    sender: EngineSender,
+    sender: EngineSender<PlatformPixel>,
 }
 
 impl crate::platform::waker::EventLoopWaker for PlatformWaker {
@@ -51,7 +53,7 @@ impl EnginePlatform {
     pub fn new(config: DriverConfig) -> Result<Self> {
         info!("EnginePlatform::new() - Creating channel-based platform");
 
-        let channels = create_engine_channels(64);
+        let channels = create_engine_channels::<PlatformPixel>(64);
         let engine_sender = channels.engine_sender.clone();
         let driver = PlatformDriver::new(channels.engine_sender)
             .context("Failed to create display driver")?;
@@ -73,11 +75,15 @@ impl EnginePlatform {
 
     /// Get a clone of the engine sender for external wake signaling.
     /// External code can call `sender.send(EngineCommand::Doorbell)` to wake the engine.
-    pub fn engine_sender(&self) -> crate::channel::EngineSender {
+    pub fn engine_sender(&self) -> EngineSender<PlatformPixel> {
         self.engine_sender.clone()
     }
 
-    pub fn run<P: Pixel + Surface<P>>(self, app: impl Application<P> + Send + 'static) -> Result<()> {
+    /// Run the engine with the given application.
+    ///
+    /// The application's pixel type must match the platform's pixel type
+    /// (e.g., `Rgba` for Cocoa, `Bgra` for X11).
+    pub fn run(self, app: impl Application<PlatformPixel> + Send + 'static) -> Result<()> {
         info!("EnginePlatform::run() - Starting");
 
         let driver_handle = self.driver.clone();
@@ -88,7 +94,7 @@ impl EnginePlatform {
 
         // Spawn engine thread
         std::thread::spawn(move || {
-            if let Err(e) = engine_loop::<P, _>(app, driver_handle, control_rx, display_rx, target_fps) {
+            if let Err(e) = engine_loop(app, driver_handle, control_rx, display_rx, target_fps) {
                 log::error!("Engine loop error: {}", e);
             }
         });
@@ -101,17 +107,18 @@ impl EnginePlatform {
     }
 }
 
-fn engine_loop<P: Pixel + Surface<P>, A: Application<P>>(
+fn engine_loop<A: Application<PlatformPixel>>(
     mut app: A,
     driver: PlatformDriver,
-    control_rx: Receiver<EngineCommand>,
-    display_rx: Receiver<EngineCommand>,
+    control_rx: Receiver<EngineCommand<PlatformPixel>>,
+    display_rx: Receiver<EngineCommand<PlatformPixel>>,
     target_fps: u32,
 ) -> Result<()> {
     info!("Engine loop started (pull model, {} FPS)", target_fps);
 
     let frame_duration = Duration::from_secs_f64(1.0 / target_fps as f64);
-    let mut framebuffer: Option<Box<[u8]>> = None;
+    // Typed framebuffer - no alignment games, just Vec<PlatformPixel>
+    let mut framebuffer: Option<Frame<PlatformPixel>> = None;
     // Physical dimensions (for framebuffer/display)
     let mut physical_width = 0u32;
     let mut physical_height = 0u32;
@@ -137,8 +144,9 @@ fn engine_loop<P: Pixel + Surface<P>, A: Application<P>>(
                         return Ok(());
                     }
                 }
-                Ok(EngineCommand::PresentComplete(snap)) => {
-                    framebuffer = Some(snap.framebuffer);
+                Ok(EngineCommand::PresentComplete(frame)) => {
+                    // Reuse the returned frame for next render
+                    framebuffer = Some(frame);
                 }
                 Ok(EngineCommand::DriverAck) => {}
                 Ok(EngineCommand::DisplayEvent(_)) => {
@@ -159,15 +167,28 @@ fn engine_loop<P: Pixel + Surface<P>, A: Application<P>>(
                 match display_rx.try_recv() {
                     Ok(EngineCommand::DisplayEvent(evt)) => {
                         // Track physical dimensions and scale factor
-                        if let DisplayEvent::Resize { width_px: w, height_px: h, scale_factor: sf } = &evt {
+                        if let DisplayEvent::Resize {
+                            width_px: w,
+                            height_px: h,
+                            scale_factor: sf,
+                        } = &evt
+                        {
                             physical_width = *w;
                             physical_height = *h;
                             scale_factor = *sf;
+                            // Invalidate framebuffer on resize - size changed
+                            framebuffer = None;
                         }
                         // Also track scale factor from mouse events (fallback)
-                        if let DisplayEvent::MouseButtonPress { scale_factor: sf, .. }
-                            | DisplayEvent::MouseButtonRelease { scale_factor: sf, .. }
-                            | DisplayEvent::MouseMove { scale_factor: sf, .. } = &evt
+                        if let DisplayEvent::MouseButtonPress {
+                            scale_factor: sf, ..
+                        }
+                        | DisplayEvent::MouseButtonRelease {
+                            scale_factor: sf, ..
+                        }
+                        | DisplayEvent::MouseMove {
+                            scale_factor: sf, ..
+                        } = &evt
                         {
                             scale_factor = *sf;
                         }
@@ -204,22 +225,17 @@ fn engine_loop<P: Pixel + Surface<P>, A: Application<P>>(
 
             // Pull model: app returns None if nothing to render
             if let Some(surface) = app.render(&app_state) {
-                let mut fb = framebuffer.take().unwrap_or_else(|| {
-                    vec![0u8; (physical_width * physical_height * 4) as usize].into_boxed_slice()
-                });
+                // Get or create typed framebuffer - no alignment issues!
+                let mut frame = framebuffer
+                    .take()
+                    .unwrap_or_else(|| Frame::new(physical_width, physical_height));
 
-                let (prefix, pixels, suffix) = unsafe { fb.align_to_mut::<u32>() };
-                if prefix.is_empty() && suffix.is_empty() {
-                    let scaled = Scale::new(surface, scale_factor);
-                    render_pixel::<P, _>(&scaled, pixels, physical_width as usize, physical_height as usize);
-                }
+                // Render directly into the typed frame
+                let scaled = Scale::new(surface, scale_factor);
+                render::<PlatformPixel, _>(&scaled, &mut frame);
 
-                let snapshot = RenderSnapshot {
-                    framebuffer: fb,
-                    width_px: physical_width,
-                    height_px: physical_height,
-                };
-                driver.send(DriverCommand::Present(snapshot))?;
+                // Send typed frame to driver
+                driver.send(DriverCommand::Present(frame))?;
             }
         }
     }
@@ -259,13 +275,21 @@ fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionRes
 /// Convert DisplayEvent to EngineEvent, converting physical to logical pixels.
 fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEvent> {
     match evt {
-        DisplayEvent::Resize { width_px, height_px, .. } => {
+        DisplayEvent::Resize {
+            width_px,
+            height_px,
+            ..
+        } => {
             // Convert physical pixels to logical pixels
             let logical_w = (*width_px as f64 / scale_factor) as u32;
             let logical_h = (*height_px as f64 / scale_factor) as u32;
             Some(EngineEvent::Resize(logical_w, logical_h))
         }
-        DisplayEvent::Key { symbol, modifiers, text } => Some(EngineEvent::KeyDown {
+        DisplayEvent::Key {
+            symbol,
+            modifiers,
+            text,
+        } => Some(EngineEvent::KeyDown {
             key: symbol.clone(),
             mods: *modifiers,
             text: text.clone(),
@@ -301,7 +325,9 @@ fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEven
                 button: btn,
             })
         }
-        DisplayEvent::MouseMove { x, y, modifiers, .. } => {
+        DisplayEvent::MouseMove {
+            x, y, modifiers, ..
+        } => {
             let logical_x = (*x as f64 / scale_factor) as u32;
             let logical_y = (*y as f64 / scale_factor) as u32;
             Some(EngineEvent::MouseMove {

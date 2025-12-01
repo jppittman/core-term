@@ -3,10 +3,10 @@
 //! This module provides the [`Font`] struct, which serves as the entry point
 //! for loading font data and extracting glyph geometry.
 
+use std::sync::Arc;
 use thiserror::Error;
 pub use ttf_parser::GlyphId;
 use ttf_parser::{Face, FaceParsingError, OutlineBuilder};
-use std::sync::Arc;
 
 use crate::curves::{Line, Point, Quadratic, Segment};
 use crate::glyph::{Glyph, GlyphBounds};
@@ -52,7 +52,9 @@ impl<'a> Font<'a> {
     /// Returns a `Result` containing the `Font` or a `FontError` if parsing fails.
     pub fn from_bytes(data: &'a [u8]) -> Result<Self, FontError> {
         let face = Face::parse(data, 0)?;
-        Ok(Self { face: Arc::new(face) })
+        Ok(Self {
+            face: Arc::new(face),
+        })
     }
 
     /// Returns the global metrics for this font.

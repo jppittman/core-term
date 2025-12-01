@@ -2,8 +2,8 @@ use pixelflow_core::curve::Mat3;
 
 fn naive_inverse(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
 
     if det.abs() < 1e-6 {
         return None;
@@ -54,11 +54,19 @@ fn test_mat3_inverse_correctness() {
                 for r in 0..3 {
                     for c in 0..3 {
                         let diff = (n[r][c] - o.m[r][c]).abs();
-                        assert!(diff < 1e-5, "Mismatch at case #{}, elem [{}][{}]: naive={}, optimized={}", i, r, c, n[r][c], o.m[r][c]);
+                        assert!(
+                            diff < 1e-5,
+                            "Mismatch at case #{}, elem [{}][{}]: naive={}, optimized={}",
+                            i,
+                            r,
+                            c,
+                            n[r][c],
+                            o.m[r][c]
+                        );
                     }
                 }
-            },
-            (None, None) => {},
+            }
+            (None, None) => {}
             _ => panic!("Mismatch in singularity detection at case #{}", i),
         }
     }

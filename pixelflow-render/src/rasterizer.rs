@@ -50,9 +50,8 @@ where
     S: Surface<P> + ?Sized,
 {
     // SAFETY: P is repr(transparent) over u32
-    let typed_buffer: &mut [P] = unsafe {
-        core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut P, buffer.len())
-    };
+    let typed_buffer: &mut [P] =
+        unsafe { core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut P, buffer.len()) };
     pixelflow_core::execute(surface, typed_buffer, width, height);
 }
 

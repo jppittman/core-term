@@ -44,21 +44,25 @@ pub fn pixelflow_dispatch_event(
     Ok(())
 }
 
-use pixelflow_core::pipe::Surface;
-use pixelflow_core::Pixel;
+pub use platform::PlatformPixel;
 
 /// Entry point for the Pixelflow Engine.
 ///
 /// This function initializes the platform (windowing, display) and starts the event loop.
 /// It takes an implementation of the `Application` trait, which defines the logic.
 ///
-/// # Type Parameters
-/// * `P` - The pixel format (e.g., `Rgba` for Cocoa, `Bgra` for X11).
+/// The pixel type is determined by the platform:
+/// - Cocoa (macOS): `Rgba`
+/// - X11 (Linux): `Bgra`
+/// - Web: `Rgba`
 ///
 /// # Arguments
-/// * `app` - The application logic.
+/// * `app` - The application logic implementing `Application<PlatformPixel>`.
 /// * `config` - Engine configuration.
-pub fn run<P: Pixel + Surface<P>>(app: impl Application<P> + Send + 'static, config: EngineConfig) -> anyhow::Result<()> {
+pub fn run(
+    app: impl Application<PlatformPixel> + Send + 'static,
+    config: EngineConfig,
+) -> anyhow::Result<()> {
     let platform = EnginePlatform::new(config.into())?;
     platform.run(app)
 }

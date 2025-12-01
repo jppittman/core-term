@@ -1,12 +1,12 @@
 use crate::TensorView;
+use crate::backend::{Backend, BatchArithmetic, SimdBatch};
 use crate::batch::{Batch, NativeBackend};
-use crate::backend::{Backend, SimdBatch, BatchArithmetic};
 use crate::pipe::Surface;
 use crate::pixel::Pixel;
 use alloc::boxed::Box;
 use alloc::vec;
-use core::marker::PhantomData;
 use core::fmt::Debug;
+use core::marker::PhantomData;
 
 // --- 1. Sources ---
 
@@ -39,8 +39,9 @@ pub struct Offset<S> {
 }
 
 impl<T, S> Surface<T> for Offset<S>
-where T: Copy + Debug + Default + Send + Sync + 'static,
-      S: Surface<T>
+where
+    T: Copy + Debug + Default + Send + Sync + 'static,
+    S: Surface<T>,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
@@ -60,13 +61,17 @@ impl<S> Scale<S> {
     #[inline]
     pub fn new(source: S, scale_factor: f64) -> Self {
         let inv_scale_fp = ((1.0 / scale_factor) * 65536.0) as u32;
-        Self { source, inv_scale_fp }
+        Self {
+            source,
+            inv_scale_fp,
+        }
     }
 }
 
 impl<T, S> Surface<T> for Scale<S>
-where T: Copy + Debug + Default + Send + Sync + 'static,
-      S: Surface<T>
+where
+    T: Copy + Debug + Default + Send + Sync + 'static,
+    S: Surface<T>,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
@@ -227,17 +232,29 @@ impl<P: Pixel> Baked<P> {
     pub fn new<S: Surface<P>>(source: &S, width: u32, height: u32) -> Self {
         let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
         crate::execute(source, &mut data, width as usize, height as usize);
-        Self { data, width, height }
+        Self {
+            data,
+            width,
+            height,
+        }
     }
 
     #[inline]
-    pub fn width(&self) -> u32 { self.width }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
     #[inline]
-    pub fn height(&self) -> u32 { self.height }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
     #[inline]
-    pub fn data(&self) -> &[P] { &self.data }
+    pub fn data(&self) -> &[P] {
+        &self.data
+    }
     #[inline]
-    pub fn data_mut(&mut self) -> &mut [P] { &mut self.data }
+    pub fn data_mut(&mut self) -> &mut [P] {
+        &mut self.data
+    }
 }
 
 impl<P: Pixel> Surface<P> for Baked<P> {

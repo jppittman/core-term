@@ -9,7 +9,7 @@ pub mod drivers;
 pub mod messages;
 
 pub use driver::DisplayDriver;
-pub use messages::{DisplayEvent, DriverConfig, RenderSnapshot};
+pub use messages::{DisplayEvent, DriverConfig};
 
 // Re-export the active display driver for convenience
 #[cfg(use_cocoa_display)]

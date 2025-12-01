@@ -21,6 +21,7 @@
 
 use crate::channel::{DriverCommand, EngineSender};
 use anyhow::Result;
+use pixelflow_core::Pixel;
 
 /// Platform-specific display driver.
 ///
@@ -28,12 +29,22 @@ use anyhow::Result;
 /// Clone it to give the engine a handle.
 /// - `send()` queues commands (non-blocking)
 /// - `run()` blocks, reads Configure, creates resources, runs event loop
+///
+/// ## Pixel Type
+/// Each platform declares its required pixel format via the `Pixel` associated type.
+/// This ensures type safety: the engine renders to the correct format for the platform.
+/// - Cocoa: `Rgba` (CGImage with kCGImageAlphaPremultipliedLast)
+/// - X11: `Bgra` (XImage with ZPixmap on little-endian)
+/// - Web: `Rgba` (ImageData)
 pub trait DisplayDriver: Clone + Send {
+    /// The pixel format required by this display driver.
+    type Pixel: Pixel;
+
     /// Create a new driver with engine channel.
     ///
     /// This only creates channels. Platform resources (window, etc.) are
     /// created when `run()` reads the Configure command.
-    fn new(engine_tx: EngineSender) -> Result<Self>;
+    fn new(engine_tx: EngineSender<Self::Pixel>) -> Result<Self>;
 
     /// Send a command to the driver (non-blocking).
     ///
@@ -44,7 +55,7 @@ pub trait DisplayDriver: Clone + Send {
     /// - `RequestPaste`: Request paste, data arrives via DisplayEvent::PasteData
     /// - `Bell`: Ring the terminal bell
     /// - `Shutdown`: Stop the event loop
-    fn send(&self, cmd: DriverCommand) -> Result<()>;
+    fn send(&self, cmd: DriverCommand<Self::Pixel>) -> Result<()>;
 
     /// Run the driver event loop (blocking).
     ///

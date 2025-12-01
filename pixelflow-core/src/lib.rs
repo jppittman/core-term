@@ -18,11 +18,11 @@ pub mod pipe;
 pub mod pixel;
 pub mod platform;
 
-pub use batch::{Batch, SimdOps, SHUFFLE_RGBA_BGRA};
-pub use backend::{SimdBatch, FloatBatchOps}; // Export SimdBatch and FloatBatchOps
+pub use backend::{FloatBatchOps, SimdBatch}; // Export SimdBatch and FloatBatchOps
+pub use batch::{Batch, SHUFFLE_RGBA_BGRA, SimdOps};
 pub use ops::Scale;
 pub use pixel::Pixel;
-pub use platform::{Platform, PixelFormat};
+pub use platform::{PixelFormat, Platform};
 
 use crate::backend::{Backend, BatchArithmetic};
 use core::fmt::Debug;
@@ -36,12 +36,14 @@ macro_rules! define_tensor {
         #[doc = $doc]
         #[derive(Copy, Clone)]
         pub struct $name<T, B: Backend>
-        where T: Copy + Debug + Default + Send + Sync + 'static
+        where
+            T: Copy + Debug + Default + Send + Sync + 'static,
         {
             pub elements: [B::Batch<T>; $rows * $cols],
         }
         impl<T, B: Backend> $name<T, B>
-        where T: Copy + Debug + Default + Send + Sync + 'static
+        where
+            T: Copy + Debug + Default + Send + Sync + 'static,
         {
             #[inline(always)]
             pub fn new(elements: [B::Batch<T>; $rows * $cols]) -> Self {
@@ -71,7 +73,7 @@ macro_rules! impl_matmul {
         impl<T, B: Backend> $left<T, B>
         where
             T: Copy + Debug + Default + Send + Sync + 'static,
-            B::Batch<T>: BatchArithmetic<T>
+            B::Batch<T>: BatchArithmetic<T>,
         {
             #[inline(always)]
             pub fn matmul(&self, other: &$right<T, B>) -> $output<T, B> {
@@ -92,7 +94,7 @@ macro_rules! impl_matmul {
         impl<T, B: Backend> core::ops::Mul<$right<T, B>> for $left<T, B>
         where
             T: Copy + Debug + Default + Send + Sync + 'static,
-            B::Batch<T>: BatchArithmetic<T>
+            B::Batch<T>: BatchArithmetic<T>,
         {
             type Output = $output<T, B>;
             #[inline(always)]
@@ -137,12 +139,9 @@ impl<'a, T> TensorView<'a, T> {
 
 impl<'a> TensorView<'a, u32> {
     #[inline(always)]
-    pub unsafe fn gather_2d<B: Backend>(
-        &self,
-        x: B::Batch<u32>,
-        y: B::Batch<u32>,
-    ) -> B::Batch<u32>
-    where B::Batch<u32>: BatchArithmetic<u32>
+    pub unsafe fn gather_2d<B: Backend>(&self, x: B::Batch<u32>, y: B::Batch<u32>) -> B::Batch<u32>
+    where
+        B::Batch<u32>: BatchArithmetic<u32>,
     {
         let stride_vec = <B::Batch<u32> as SimdBatch<u32>>::splat(self.stride as u32);
         let idx_vec = (y * stride_vec) + x;
@@ -155,12 +154,9 @@ impl<'a> TensorView<'a, u32> {
 
 impl<'a> TensorView<'a, u8> {
     #[inline(always)]
-    pub unsafe fn gather_2d<B: Backend>(
-        &self,
-        x: B::Batch<u32>,
-        y: B::Batch<u32>,
-    ) -> B::Batch<u32>
-    where B::Batch<u32>: BatchArithmetic<u32>
+    pub unsafe fn gather_2d<B: Backend>(&self, x: B::Batch<u32>, y: B::Batch<u32>) -> B::Batch<u32>
+    where
+        B::Batch<u32>: BatchArithmetic<u32>,
     {
         let stride_vec = <B::Batch<u32> as SimdBatch<u32>>::splat(self.stride as u32);
         let idx_vec = (y * stride_vec) + x;
@@ -176,7 +172,8 @@ impl<'a> TensorView<'a, u8> {
         x: B::Batch<u32>,
         y: B::Batch<u32>,
     ) -> B::Batch<u32>
-    where B::Batch<u32>: BatchArithmetic<u32>
+    where
+        B::Batch<u32>: BatchArithmetic<u32>,
     {
         let byte_x = x >> 1;
         let is_odd = x & <B::Batch<u32> as SimdBatch<u32>>::splat(1);
@@ -197,7 +194,8 @@ impl<'a> TensorView<'a, u8> {
         y0: B::Batch<u32>,
         y1: B::Batch<u32>,
     ) -> Tensor2x2<u32, B>
-    where B::Batch<u32>: BatchArithmetic<u32>
+    where
+        B::Batch<u32>: BatchArithmetic<u32>,
     {
         Tensor2x2::new([
             unsafe { self.gather_2d::<B>(x0, y0) },
@@ -215,7 +213,8 @@ impl<'a> TensorView<'a, u8> {
         y0: B::Batch<u32>,
         y1: B::Batch<u32>,
     ) -> Tensor2x2<u32, B>
-    where B::Batch<u32>: BatchArithmetic<u32>
+    where
+        B::Batch<u32>: BatchArithmetic<u32>,
     {
         Tensor2x2::new([
             unsafe { self.gather_4bit::<B>(x0, y0) },
@@ -232,7 +231,7 @@ impl<'a> TensorView<'a, u8> {
         v_fp: B::Batch<u32>,
     ) -> B::Batch<u32>
     where
-        B::Batch<u32>: BatchArithmetic<u32>
+        B::Batch<u32>: BatchArithmetic<u32>,
     {
         let u0_raw = u_fp >> 16;
         let v0_raw = v_fp >> 16;
@@ -250,11 +249,9 @@ impl<'a> TensorView<'a, u8> {
         let weights_x = Tensor2x1::new([inv_du, du]);
         let weights_y = Tensor1x2::new([inv_dv, dv]);
 
-        let horizontal: Tensor2x1<u32, B> =
-            (pixels * weights_x).map(|v| v >> 8);
+        let horizontal: Tensor2x1<u32, B> = (pixels * weights_x).map(|v| v >> 8);
 
-        let result: Tensor1x1<u32, B> =
-            (weights_y * horizontal).map(|v| v >> 8);
+        let result: Tensor1x1<u32, B> = (weights_y * horizontal).map(|v| v >> 8);
 
         result.get(0, 0)
     }
