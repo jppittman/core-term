@@ -1,8 +1,8 @@
-use crate::backend::{Backend, BatchArithmetic, SimdBatch};
+use crate::batch::{Batch, NativeBackend, LANES};
+use crate::backend::SimdBatch;
 use crate::pipe::Surface;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 
 /// Pixel format descriptor.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -15,29 +15,20 @@ pub enum PixelFormat {
 
 impl PixelFormat {
     /// Swizzles a generic RGBA batch to this format.
-    ///
-    /// Assumes input `batch` is in RGBA format (0xAABBGGRR).
     #[inline(always)]
-    pub fn swizzle<B: Backend>(self, batch: B::Batch<u32>) -> B::Batch<u32>
-    where B::Batch<u32>: BatchArithmetic<u32>
-    {
+    pub fn swizzle(self, batch: Batch<u32>) -> Batch<u32> {
         match self {
             PixelFormat::Rgba => batch,
             PixelFormat::Bgra => {
-                // Swap R and B
-                // R is at 0, B is at 16
-                let mask_ga = <B::Batch<u32> as SimdBatch<u32>>::splat(0xFF00FF00);
-                let mask_r = <B::Batch<u32> as SimdBatch<u32>>::splat(0x000000FF);
-                let mask_b = <B::Batch<u32> as SimdBatch<u32>>::splat(0x00FF0000);
+                let mask_ga = Batch::splat(0xFF00FF00u32);
+                let mask_r = Batch::splat(0x000000FFu32);
+                let mask_b = Batch::splat(0x00FF0000u32);
 
                 let ga = batch & mask_ga;
                 let r = batch & mask_r;
                 let b = batch & mask_b;
 
-                let new_b = r << 16;
-                let new_r = b >> 16;
-
-                ga | new_b | new_r
+                ga | (r << 16) | (b >> 16)
             }
         }
     }
@@ -50,20 +41,18 @@ pub struct Buffer<T> {
     pub height: usize,
 }
 
-/// The Platform combinator that binds a backend to a surface.
-pub struct Platform<B: Backend> {
+/// The Platform configuration for rendering.
+pub struct Platform {
     pub scale: u32,
     pub format: PixelFormat,
-    pub _backend: PhantomData<B>,
 }
 
-impl<B: Backend> Platform<B> {
+impl Platform {
     /// Creates a new Platform configuration.
     pub fn new() -> Self {
         Self {
             scale: 1,
             format: PixelFormat::Rgba,
-            _backend: PhantomData,
         }
     }
 
@@ -80,76 +69,48 @@ impl<B: Backend> Platform<B> {
     }
 
     /// Materializes a surface into a buffer.
-    ///
-    /// This runs the render loop using the bound Backend `B`.
-    pub fn materialize<S: Surface<u32>>(
-        &self,
-        surface: &S,
-        width: usize,
-        height: usize,
-    ) -> Buffer<u32>
-    where
-        B::Batch<u32>: BatchArithmetic<u32>,
-        B::Batch<f32>: BatchArithmetic<f32>,
-        B::Batch<u8>: BatchArithmetic<u8>,
-    {
+    pub fn materialize<S: Surface<u32>>(&self, surface: &S, width: usize, height: usize) -> Buffer<u32> {
         let mut data = vec![0u32; width * height];
-        let lanes = B::LANES;
 
         for y in 0..height {
             let row_start = y * width;
-            let row_end = row_start + width;
-            let row_slice = &mut data[row_start..row_end];
+            let row_slice = &mut data[row_start..row_start + width];
 
             let mut x = 0;
             // Hot path: SIMD loop
-            while x + lanes <= width {
-                let bx = B::Batch::<u32>::sequential_from(x as u32);
-                let by = B::Batch::<u32>::splat(y as u32);
+            while x + LANES <= width {
+                let bx = Batch::<u32>::sequential_from(x as u32);
+                let by = Batch::<u32>::splat(y as u32);
 
-                // Apply scale (logical = physical / scale)
-                let scale_factor = B::Batch::<u32>::splat(self.scale);
-                // Div requires BatchArithmetic.
+                let scale_factor = Batch::<u32>::splat(self.scale);
                 let sx = bx / scale_factor;
                 let sy = by / scale_factor;
 
-                // Evaluate surface
-                let rgba = surface.eval::<B>(sx, sy);
+                let rgba = surface.eval(sx, sy);
+                let out = self.format.swizzle(rgba);
 
-                // Swizzle
-                let out = self.format.swizzle::<B>(rgba);
-
-                // Store
-                SimdBatch::store(&out, &mut row_slice[x..x + lanes]);
-
-                x += lanes;
+                SimdBatch::store(&out, &mut row_slice[x..x + LANES]);
+                x += LANES;
             }
 
-            // Cold path: Scalar fallback
-            if x < width {
-                while x < width {
-                   use crate::backends::scalar::{Scalar, ScalarBatch};
-
-                   let bx = ScalarBatch(x as u32);
-                   let by = ScalarBatch(y as u32);
-
-                   let scale = ScalarBatch(self.scale);
-                   let sx = bx / scale;
-                   let sy = by / scale;
-
-                   let rgba = surface.eval::<Scalar>(sx, sy);
-
-                   // Scalar backend doesn't need swizzle call via platform format if we call Scalar directly?
-                   // format.swizzle::<Scalar> works.
-                   let out = self.format.swizzle::<Scalar>(rgba);
-
-                   // Store ScalarBatch
-                   SimdBatch::store(&out, &mut row_slice[x..x+1]);
-                   x += 1;
-                }
+            // Cold path: remainder pixels one at a time
+            while x < width {
+                let sx = (x as u32) / self.scale;
+                let sy = (y as u32) / self.scale;
+                let rgba = surface.eval_one(sx, sy);
+                // Need to swizzle single pixel - just use batch with first lane
+                let out = self.format.swizzle(Batch::splat(rgba));
+                row_slice[x] = out.first();
+                x += 1;
             }
         }
 
         Buffer { data, width, height }
+    }
+}
+
+impl Default for Platform {
+    fn default() -> Self {
+        Self::new()
     }
 }

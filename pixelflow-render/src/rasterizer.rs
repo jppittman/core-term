@@ -7,7 +7,6 @@
 use crate::color::Pixel;
 use crate::frame::Frame;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::Batch;
 
 /// Render a surface into a Frame.
 ///
@@ -19,10 +18,10 @@ use pixelflow_core::Batch;
 /// let surface = mask.over::<Rgba>(fg, bg);
 /// render(surface, &mut frame);
 /// ```
-pub fn render<P, S>(surface: S, frame: &mut Frame<P>)
+pub fn render<P, S>(surface: &S, frame: &mut Frame<P>)
 where
     P: Pixel,
-    S: Surface<P>,
+    S: Surface<P> + ?Sized,
 {
     let width = frame.width as usize;
     let height = frame.height as usize;
@@ -32,10 +31,10 @@ where
 /// Render a surface into a typed pixel buffer.
 ///
 /// The buffer must have at least `width * height` elements.
-pub fn render_to_buffer<P, S>(surface: S, buffer: &mut [P], width: usize, height: usize)
+pub fn render_to_buffer<P, S>(surface: &S, buffer: &mut [P], width: usize, height: usize)
 where
     P: Pixel,
-    S: Surface<P>,
+    S: Surface<P> + ?Sized,
 {
     pixelflow_core::execute(surface, buffer, width, height);
 }
@@ -50,38 +49,11 @@ where
     P: Pixel,
     S: Surface<P> + ?Sized,
 {
-    const LANES: usize = 4;
-
-    for y in 0..height {
-        let row_start = y * width;
-        let y_batch = Batch::splat(y as u32);
-
-        // Hot path: process 4 pixels at a time (SIMD)
-        let mut x = 0;
-        while x + LANES <= width {
-            let x_batch = Batch::new(x as u32, (x + 1) as u32, (x + 2) as u32, (x + 3) as u32);
-
-            let result: Batch<P> = surface.eval(x_batch, y_batch);
-            // Transmute to u32 for storage (P is repr(transparent) u32)
-            let result_u32: Batch<u32> = result.transmute();
-
-            // Store 4 pixels
-            unsafe {
-                result_u32.store(buffer.as_mut_ptr().add(row_start + x));
-            }
-
-            x += LANES;
-        }
-
-        // Cold path: handle remaining pixels (< 4)
-        while x < width {
-            let x_batch = Batch::splat(x as u32);
-            let result: Batch<P> = surface.eval(x_batch, y_batch);
-            let result_u32: Batch<u32> = result.transmute();
-            buffer[row_start + x] = result_u32.to_array_usize()[0] as u32;
-            x += 1;
-        }
-    }
+    // SAFETY: P is repr(transparent) over u32
+    let typed_buffer: &mut [P] = unsafe {
+        core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut P, buffer.len())
+    };
+    pixelflow_core::execute(surface, typed_buffer, width, height);
 }
 
 /// Render a Surface<u32> directly into a u32 buffer.
@@ -92,35 +64,7 @@ pub fn render_u32<S>(surface: &S, buffer: &mut [u32], width: usize, height: usiz
 where
     S: Surface<u32> + ?Sized,
 {
-    const LANES: usize = 4;
-
-    for y in 0..height {
-        let row_start = y * width;
-        let y_batch = Batch::splat(y as u32);
-
-        // Hot path: process 4 pixels at a time (SIMD)
-        let mut x = 0;
-        while x + LANES <= width {
-            let x_batch = Batch::new(x as u32, (x + 1) as u32, (x + 2) as u32, (x + 3) as u32);
-
-            let result = surface.eval(x_batch, y_batch);
-
-            // Store 4 pixels
-            unsafe {
-                result.store(buffer.as_mut_ptr().add(row_start + x));
-            }
-
-            x += LANES;
-        }
-
-        // Cold path: handle remaining pixels (< 4)
-        while x < width {
-            let x_batch = Batch::splat(x as u32);
-            let result = surface.eval(x_batch, y_batch);
-            buffer[row_start + x] = result.to_array_usize()[0] as u32;
-            x += 1;
-        }
-    }
+    pixelflow_core::execute(surface, buffer, width, height);
 }
 
 // Re-export execute for convenience

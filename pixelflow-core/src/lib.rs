@@ -18,7 +18,7 @@ pub mod pixel;
 pub mod platform;
 
 pub use batch::{Batch, SimdOps, SHUFFLE_RGBA_BGRA};
-pub use backend::SimdBatch; // Export SimdBatch
+pub use backend::{SimdBatch, FloatBatchOps}; // Export SimdBatch and FloatBatchOps
 pub use ops::Scale;
 pub use pixel::Pixel;
 pub use platform::{Platform, PixelFormat};
@@ -271,21 +271,18 @@ where
     P: pixel::Pixel,
     S: pipe::Surface<P> + ?Sized,
 {
-    use crate::batch::{NativeBackend, LANES};
+    use crate::batch::{Batch, LANES};
 
     for y in 0..height {
         let row_start = y * width;
-        let y_batch = <NativeBackend as Backend>::Batch::<u32>::splat(y as u32);
+        let y_batch = Batch::<u32>::splat(y as u32);
 
         let mut x = 0;
+        // Hot path: SIMD loop
         while x + LANES <= width {
-            let x_batch = <NativeBackend as Backend>::Batch::<u32>::sequential_from(x as u32);
-
-            let result = surface.eval::<NativeBackend>(x_batch, y_batch);
-
-            // Convert result (Batch<P>) to Batch<u32> for store
-            // NativeBackend::Batch<u32> implies arithmetic
-            let result_u32 = P::batch_to_u32::<NativeBackend>(result);
+            let x_batch = Batch::<u32>::sequential_from(x as u32);
+            let result = surface.eval(x_batch, y_batch);
+            let result_u32 = P::batch_to_u32(result);
 
             unsafe {
                 let ptr = target.as_mut_ptr().add(row_start + x) as *mut u32;
@@ -296,18 +293,10 @@ where
             x += LANES;
         }
 
+        // Cold path: remainder pixels
         while x < width {
-             use crate::backends::scalar::{Scalar, ScalarBatch};
-             let x_scalar = ScalarBatch(x as u32);
-             let y_scalar = ScalarBatch(y as u32);
-             let result = surface.eval::<Scalar>(x_scalar, y_scalar);
-             // Downcast result to u32? No result is Batch<P>.
-             // P::batch_to_u32::<Scalar>(result) returns ScalarBatch<u32>
-             let res_u32 = P::batch_to_u32::<Scalar>(result);
-             // Scalar store writes 1 u32.
-             // Target is [P]. P::from_u32.
-             target[row_start + x] = P::from_u32(res_u32.0);
-             x += 1;
+            target[row_start + x] = surface.eval_one(x as u32, y as u32);
+            x += 1;
         }
     }
 }

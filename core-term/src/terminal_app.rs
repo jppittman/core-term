@@ -1,12 +1,16 @@
-//! Terminal application implementing the pixelflow-engine Application trait.
+//! Terminal application with Proxy + Worker architecture.
 //!
-//! This is the new simplified architecture where the app owns the TerminalEmulator
-//! directly, eliminating the need for the orchestrator middleman.
+//! The app is split into two parts:
+//! - `TerminalAppProxy`: Thin wrapper implementing `Application` trait, lives in engine thread.
+//! - `TerminalAppWorker`: Actual terminal logic, runs in its own thread.
+//!
+//! Communication is via typed channels - engine is oblivious to the threading model.
 
 use crate::ansi::commands::AnsiCommand;
 use crate::color::Color;
 use crate::config::Config;
 use crate::keys;
+use crate::messages::{AppEvent, RenderRequest};
 use crate::surface::{GridBuffer, TerminalSurface};
 use crate::term::{
     ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction,
@@ -19,23 +23,105 @@ use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
 use pixelflow_fonts::{glyphs, Lazy};
 use pixelflow_render::font;
 use pixelflow_render::Pixel;
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Glyph factory type - closure that returns lazily-baked glyphs.
 type GlyphFactory = Arc<dyn Fn(char) -> Lazy<'static, Baked<u8>> + Send + Sync>;
 
-/// The terminal application.
+// =============================================================================
+// Proxy (lives in engine thread, implements Application trait)
+// =============================================================================
+
+/// Thin proxy that forwards Application trait calls to the worker thread.
 ///
-/// This struct owns the terminal emulator and handles all terminal-specific logic.
-/// It implements the pixelflow-engine `Application` trait for integration with the engine.
+/// This struct lives in the engine thread and implements `Application`.
+/// All calls are forwarded via channels to the actual `TerminalAppWorker`
+/// running in its own thread.
+pub struct TerminalAppProxy<P: Pixel + Surface<P>> {
+    /// Channel to send events to worker.
+    event_tx: SyncSender<AppEvent>,
+    /// Channel to send render requests to worker.
+    render_req_tx: SyncSender<RenderRequest>,
+    /// Channel to receive rendered surfaces from worker.
+    render_resp_rx: Receiver<Option<Box<dyn Surface<P> + Send + Sync>>>,
+    /// Channel to receive actions from worker.
+    action_rx: Receiver<AppAction>,
+    /// Phantom for pixel type.
+    _pixel: PhantomData<P>,
+}
+
+impl<P: Pixel + Surface<P>> TerminalAppProxy<P> {
+    /// Creates a new proxy with the given channels.
+    pub fn new(
+        event_tx: SyncSender<AppEvent>,
+        render_req_tx: SyncSender<RenderRequest>,
+        render_resp_rx: Receiver<Option<Box<dyn Surface<P> + Send + Sync>>>,
+        action_rx: Receiver<AppAction>,
+    ) -> Self {
+        Self {
+            event_tx,
+            render_req_tx,
+            render_resp_rx,
+            action_rx,
+            _pixel: PhantomData,
+        }
+    }
+}
+
+impl<P: Pixel + Surface<P>> Application<P> for TerminalAppProxy<P> {
+    fn on_event(&mut self, event: EngineEvent) -> AppAction {
+        // Forward event to worker (non-blocking send)
+        let _ = self.event_tx.try_send(AppEvent::Engine(event));
+
+        // Check for any pending actions from worker (non-blocking)
+        match self.action_rx.try_recv() {
+            Ok(action) => action,
+            Err(TryRecvError::Empty) => AppAction::Continue,
+            Err(TryRecvError::Disconnected) => {
+                log::warn!("TerminalAppProxy: Worker disconnected");
+                AppAction::Quit
+            }
+        }
+    }
+
+    fn render(&mut self, state: &AppState) -> Option<Box<dyn Surface<P> + Send + Sync>> {
+        // Send render request to worker
+        let req = RenderRequest {
+            width_px: state.width_px,
+            height_px: state.height_px,
+        };
+        if self.render_req_tx.try_send(req).is_err() {
+            log::warn!("TerminalAppProxy: Failed to send render request");
+            return None;
+        }
+
+        // Wait for response (blocking - engine expects surface at vsync rate)
+        // Timeout prevents deadlock if worker is slow/blocked
+        match self.render_resp_rx.recv_timeout(Duration::from_millis(16)) {
+            Ok(surface) => surface,
+            Err(RecvTimeoutError::Timeout) => {
+                log::trace!("TerminalAppProxy: Render timeout, skipping frame");
+                None
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                log::warn!("TerminalAppProxy: Worker disconnected during render");
+                None
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Worker (runs in its own thread)
+// =============================================================================
+
+/// The actual terminal application logic running in its own thread.
 ///
-/// Generic over pixel format `P` for platform-specific rendering:
-/// - `Rgba` for Cocoa (macOS)
-/// - `Bgra` for X11 (Linux)
-///
-/// The `P: Surface<P>` bound ensures colors can be used as constant surfaces.
-pub struct TerminalApp<P: Pixel + Surface<P>> {
+/// Processes PTY commands at its own rate, handles events from the proxy,
+/// and responds to render requests.
+pub struct TerminalAppWorker<P: Pixel + Surface<P>> {
     /// The terminal emulator - owns all terminal state.
     emulator: TerminalEmulator,
     /// Channel to receive parsed ANSI commands from the PTY read thread.
@@ -46,18 +132,36 @@ pub struct TerminalApp<P: Pixel + Surface<P>> {
     config: Config,
     /// Glyph factory - shared across frames, caching is automatic via Lazy.
     glyph: GlyphFactory,
-    /// Phantom data for pixel format.
+
+    // Channels from proxy
+    /// Receive events from proxy.
+    event_rx: Receiver<AppEvent>,
+    /// Receive render requests from proxy.
+    render_req_rx: Receiver<RenderRequest>,
+    /// Send rendered surfaces to proxy.
+    render_resp_tx: SyncSender<Option<Box<dyn Surface<P> + Send + Sync>>>,
+    /// Send actions to proxy.
+    action_tx: SyncSender<AppAction>,
+
+    /// Phantom for pixel type.
     _pixel: PhantomData<P>,
-    // No dirty flag needed - TerminalSnapshot tracks per-line dirty state
 }
 
-impl<P: Pixel + Surface<P>> TerminalApp<P> {
-    /// Creates a new TerminalApp.
+impl<P: Pixel + Surface<P>> TerminalAppWorker<P> {
+    /// Maximum number of command batches to process per drain cycle.
+    const MAX_BATCHES_PER_DRAIN: usize = 10;
+
+    /// Creates a new worker.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         emulator: TerminalEmulator,
         pty_rx: Receiver<Vec<AnsiCommand>>,
         pty_tx: SyncSender<Vec<u8>>,
         config: Config,
+        event_rx: Receiver<AppEvent>,
+        render_req_rx: Receiver<RenderRequest>,
+        render_resp_tx: SyncSender<Option<Box<dyn Surface<P> + Send + Sync>>>,
+        action_tx: SyncSender<AppAction>,
     ) -> Self {
         let f = font();
         let glyph_fn = glyphs(
@@ -71,43 +175,84 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
             pty_tx,
             config,
             glyph: Arc::new(glyph_fn),
+            event_rx,
+            render_req_rx,
+            render_resp_tx,
+            action_tx,
             _pixel: PhantomData,
         }
     }
 
-    /// Maximum number of command batches to process per drain cycle.
-    /// Limits work per event to stay responsive to input.
-    const MAX_BATCHES_PER_DRAIN: usize = 10;
+    /// Worker main loop - runs until shutdown.
+    pub fn run(mut self) {
+        log::info!("TerminalAppWorker: Starting event loop");
 
-    /// Drain PTY command channel and apply ANSI commands to emulator.
-    /// Limited to MAX_BATCHES_PER_DRAIN to stay responsive.
-    /// The emulator tracks dirty lines internally.
-    fn drain_pty(&mut self) -> Vec<EmulatorAction> {
-        let mut actions = Vec::new();
+        loop {
+            // 1. Drain PTY commands (non-blocking, high priority)
+            self.drain_pty_nonblocking();
+
+            // 2. Check for events from proxy (non-blocking)
+            match self.event_rx.try_recv() {
+                Ok(AppEvent::Engine(event)) => {
+                    if let Some(action) = self.handle_engine_event(event) {
+                        let _ = self.action_tx.try_send(action);
+                    }
+                }
+                Ok(AppEvent::Shutdown) => {
+                    log::info!("TerminalAppWorker: Shutdown received");
+                    break;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    log::info!("TerminalAppWorker: Proxy disconnected");
+                    break;
+                }
+            }
+
+            // 3. Check for render requests (non-blocking)
+            match self.render_req_rx.try_recv() {
+                Ok(req) => {
+                    let surface = self.build_surface(req.width_px, req.height_px);
+                    let _ = self.render_resp_tx.try_send(surface);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    log::info!("TerminalAppWorker: Render channel disconnected");
+                    break;
+                }
+            }
+
+            // 4. Small sleep to avoid busy loop when idle
+            std::thread::sleep(Duration::from_micros(100));
+        }
+
+        log::info!("TerminalAppWorker: Event loop exited");
+    }
+
+    /// Drain PTY commands (non-blocking).
+    fn drain_pty_nonblocking(&mut self) {
         for _ in 0..Self::MAX_BATCHES_PER_DRAIN {
             match self.pty_rx.try_recv() {
                 Ok(commands) => {
                     for cmd in commands {
-                        if let Some(action) = self.emulator.interpret_input(EmulatorInput::Ansi(cmd)) {
-                            actions.push(action);
+                        if let Some(action) =
+                            self.emulator.interpret_input(EmulatorInput::Ansi(cmd))
+                        {
+                            self.handle_emulator_action(action);
                         }
                     }
                 }
-                Err(_) => break, // Channel empty or disconnected
+                Err(_) => break,
             }
         }
-        actions
     }
 
-    /// Process an engine event and return emulator actions.
-    /// The emulator tracks dirty lines internally when input is applied.
-    fn process_engine_event(&mut self, event: EngineEvent) -> Vec<EmulatorAction> {
-        let mut actions = Vec::new();
-
+    /// Handle an engine event, returning an AppAction if needed.
+    fn handle_engine_event(&mut self, event: EngineEvent) -> Option<AppAction> {
         let emulator_input = match event {
             EngineEvent::Resize(width_px, height_px) => {
                 log::info!(
-                    "TerminalApp: Resize {}x{} logical px",
+                    "TerminalAppWorker: Resize {}x{} logical px",
                     width_px,
                     height_px
                 );
@@ -117,7 +262,12 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
                 }))
             }
             EngineEvent::KeyDown { key, mods, text } => {
-                log::debug!("TerminalApp: Key: {:?} + {:?}, text: {:?}", mods, key, text);
+                log::debug!(
+                    "TerminalAppWorker: Key: {:?} + {:?}, text: {:?}",
+                    mods,
+                    key,
+                    text
+                );
                 let key_input_action = keys::map_key_event_to_action(key, mods, &self.config)
                     .unwrap_or(UserInputAction::KeyInput {
                         symbol: key,
@@ -154,75 +304,50 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
             EngineEvent::Paste(text) => {
                 Some(EmulatorInput::User(UserInputAction::PasteText(text)))
             }
-            EngineEvent::Wake | EngineEvent::CloseRequested => None,
+            EngineEvent::Wake => return None,
+            EngineEvent::CloseRequested => return Some(AppAction::Quit),
         };
 
         if let Some(input) = emulator_input {
             if let Some(action) = self.emulator.interpret_input(input) {
-                actions.push(action);
+                return self.handle_emulator_action(action);
             }
         }
 
-        actions
+        None
     }
 
-    /// Handle emulator actions, returning an AppAction if needed.
-    fn handle_emulator_actions(&mut self, actions: Vec<EmulatorAction>) -> AppAction {
-        for action in actions {
-            match action {
-                EmulatorAction::WritePty(data) => {
-                    if self.pty_tx.send(data).is_err() {
-                        log::warn!("TerminalApp: Failed to send to PTY");
-                    }
+    /// Handle an emulator action, returning an AppAction if needed.
+    fn handle_emulator_action(&mut self, action: EmulatorAction) -> Option<AppAction> {
+        match action {
+            EmulatorAction::WritePty(data) => {
+                if self.pty_tx.send(data).is_err() {
+                    log::warn!("TerminalAppWorker: Failed to send to PTY");
                 }
-                EmulatorAction::SetTitle(title) => {
-                    return AppAction::SetTitle(title);
-                }
-                EmulatorAction::CopyToClipboard(text) => {
-                    return AppAction::CopyToClipboard(text);
-                }
-                EmulatorAction::RequestClipboardContent => {
-                    return AppAction::RequestPaste;
-                }
-                EmulatorAction::ResizePty { cols, rows } => {
-                    log::info!("TerminalApp: PTY resize request {}x{}", cols, rows);
-                    // TODO: Send resize to PTY
-                }
-                EmulatorAction::RingBell => {
-                    log::debug!("TerminalApp: Bell");
-                    // TODO: Implement bell notification
-                }
-                EmulatorAction::RequestRedraw => {
-                    // In pull model, emulator's dirty line tracking handles this
-                    // No action needed
-                }
-                EmulatorAction::SetCursorVisibility(_) => {
-                    // TODO: Implement cursor visibility
-                }
+                None
             }
-        }
-        AppAction::Continue
-    }
-}
-
-impl<P: Pixel + Surface<P>> Application<P> for TerminalApp<P> {
-    fn on_event(&mut self, event: EngineEvent) -> AppAction {
-        // Always drain PTY commands first to keep terminal state up to date
-        let pty_actions = self.drain_pty();
-        let _ = self.handle_emulator_actions(pty_actions);
-
-        // Then handle the specific event
-        match event {
-            EngineEvent::Wake => AppAction::Continue,
-            EngineEvent::CloseRequested => AppAction::Quit,
-            other => {
-                let actions = self.process_engine_event(other);
-                self.handle_emulator_actions(actions)
+            EmulatorAction::SetTitle(title) => Some(AppAction::SetTitle(title)),
+            EmulatorAction::CopyToClipboard(text) => Some(AppAction::CopyToClipboard(text)),
+            EmulatorAction::RequestClipboardContent => Some(AppAction::RequestPaste),
+            EmulatorAction::ResizePty { cols, rows } => {
+                log::info!("TerminalAppWorker: PTY resize request {}x{}", cols, rows);
+                None
             }
+            EmulatorAction::RingBell => {
+                log::debug!("TerminalAppWorker: Bell");
+                None
+            }
+            EmulatorAction::RequestRedraw => None,
+            EmulatorAction::SetCursorVisibility(_) => None,
         }
     }
 
-    fn render(&mut self, _state: &AppState) -> Option<Box<dyn Surface<P> + Send + Sync>> {
+    /// Build a surface for rendering.
+    fn build_surface(
+        &mut self,
+        _width_px: u32,
+        _height_px: u32,
+    ) -> Option<Box<dyn Surface<P> + Send + Sync>> {
         // Get logical snapshot from emulator (has per-line dirty flags)
         let snapshot = self.emulator.get_render_snapshot()?;
 
@@ -231,7 +356,7 @@ impl<P: Pixel + Surface<P>> Application<P> for TerminalApp<P> {
             return None;
         }
 
-        // Use semantic Color for defaults (not raw u32)
+        // Use semantic Color for defaults
         let default_fg: Color = self.config.colors.foreground;
         let default_bg: Color = self.config.colors.background;
 
@@ -247,4 +372,48 @@ impl<P: Pixel + Surface<P>> Application<P> for TerminalApp<P> {
 
         Some(Box::new(terminal))
     }
+}
+
+// =============================================================================
+// Factory function to create both proxy and worker
+// =============================================================================
+
+/// Creates a proxy-worker pair and spawns the worker thread.
+///
+/// Returns the proxy (to be passed to the engine) and a handle to the worker thread.
+pub fn spawn_terminal_app<P: Pixel + Surface<P> + 'static>(
+    emulator: TerminalEmulator,
+    pty_rx: Receiver<Vec<AnsiCommand>>,
+    pty_tx: SyncSender<Vec<u8>>,
+    config: Config,
+) -> std::io::Result<(TerminalAppProxy<P>, std::thread::JoinHandle<()>)> {
+    use std::sync::mpsc::sync_channel;
+
+    // Create channels for proxy <-> worker communication
+    let (event_tx, event_rx) = sync_channel(64);
+    let (render_req_tx, render_req_rx) = sync_channel(1);
+    let (render_resp_tx, render_resp_rx) = sync_channel(1);
+    let (action_tx, action_rx) = sync_channel(16);
+
+    // Create worker
+    let worker = TerminalAppWorker::new(
+        emulator,
+        pty_rx,
+        pty_tx,
+        config,
+        event_rx,
+        render_req_rx,
+        render_resp_tx,
+        action_tx,
+    );
+
+    // Spawn worker thread
+    let handle = std::thread::Builder::new()
+        .name("terminal-app".to_string())
+        .spawn(move || worker.run())?;
+
+    // Create proxy
+    let proxy = TerminalAppProxy::new(event_tx, render_req_tx, render_resp_rx, action_rx);
+
+    Ok((proxy, handle))
 }

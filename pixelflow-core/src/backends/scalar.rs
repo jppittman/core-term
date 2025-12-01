@@ -1,6 +1,6 @@
 //! Scalar backend implementation (LANES=1).
 
-use crate::backend::{Backend, SimdBatch, BatchArithmetic};
+use crate::backend::{Backend, SimdBatch, BatchArithmetic, FloatBatchOps};
 use core::fmt::Debug;
 use core::ops::*;
 
@@ -20,6 +20,26 @@ impl Backend for Scalar {
     #[inline(always)]
     fn upcast_u8_to_u32(b: ScalarBatch<u8>) -> ScalarBatch<u32> {
         ScalarBatch(b.0 as u32)
+    }
+
+    #[inline(always)]
+    fn u32_to_f32(b: ScalarBatch<u32>) -> ScalarBatch<f32> {
+        ScalarBatch(b.0 as f32)
+    }
+
+    #[inline(always)]
+    fn f32_to_u32(b: ScalarBatch<f32>) -> ScalarBatch<u32> {
+        ScalarBatch(b.0 as u32)
+    }
+
+    #[inline(always)]
+    fn transmute_u32_to_f32(b: ScalarBatch<u32>) -> ScalarBatch<f32> {
+        ScalarBatch(f32::from_bits(b.0))
+    }
+
+    #[inline(always)]
+    fn transmute_f32_to_u32(b: ScalarBatch<f32>) -> ScalarBatch<u32> {
+        ScalarBatch(b.0.to_bits())
     }
 }
 
@@ -159,6 +179,7 @@ impl<T: Copy + Send + Sync + Debug + Default + 'static> SimdBatch<T> for ScalarB
     fn sequential_from(start: T) -> Self { ScalarBatch(start) }
     fn load(slice: &[T]) -> Self { ScalarBatch(slice[0]) }
     fn store(&self, slice: &mut [T]) { slice[0] = self.0; }
+    fn first(&self) -> T { self.0 }
 }
 
 impl BatchArithmetic<u32> for ScalarBatch<u32> {
@@ -259,5 +280,17 @@ impl BatchArithmetic<f32> for ScalarBatch<f32> {
     fn cmp_ge(self, other: Self) -> Self {
         let mask = if self.0 >= other.0 { !0u32 } else { 0 };
         ScalarBatch(f32::from_bits(mask))
+    }
+}
+
+impl FloatBatchOps for ScalarBatch<f32> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        ScalarBatch(libm::sqrtf(self.0))
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        ScalarBatch(libm::fabsf(self.0))
     }
 }

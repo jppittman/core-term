@@ -9,6 +9,7 @@ pub mod config;
 pub mod glyph;
 pub mod io;
 pub mod keys;
+pub mod messages;
 pub mod surface;
 pub mod term;
 pub mod terminal_app;
@@ -100,37 +101,46 @@ fn main() -> anyhow::Result<()> {
     };
     info!("EventMonitorActor spawned successfully");
 
-    // Create app that owns emulator
-    // Use platform-specific pixel type for correct color format
-    use crate::terminal_app::TerminalApp;
+    // Create terminal emulator
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
 
     info!("Platform initialized. Starting main event loop...");
 
+    // Spawn app worker in its own thread, get proxy for engine
     // Platform-specific pixel format
     #[cfg(target_os = "macos")]
-    {
+    let _worker_handle = {
+        use crate::terminal_app::spawn_terminal_app;
         use pixelflow_render::CocoaPixel;
-        let app: TerminalApp<CocoaPixel> = TerminalApp::new(
+
+        let (proxy, handle) = spawn_terminal_app::<CocoaPixel>(
             term_emulator,
             pty_cmd_rx,
             pty_write_tx,
             crate::config::Config::default(),
-        );
-        platform.run(app).context("Platform event loop failed")?;
-    }
+        )
+        .context("Failed to spawn terminal app worker")?;
+
+        platform.run(proxy).context("Platform event loop failed")?;
+        handle
+    };
 
     #[cfg(target_os = "linux")]
-    {
+    let _worker_handle = {
+        use crate::terminal_app::spawn_terminal_app;
         use pixelflow_render::X11Pixel;
-        let app: TerminalApp<X11Pixel> = TerminalApp::new(
+
+        let (proxy, handle) = spawn_terminal_app::<X11Pixel>(
             term_emulator,
             pty_cmd_rx,
             pty_write_tx,
             crate::config::Config::default(),
-        );
-        platform.run(app).context("Platform event loop failed")?;
-    }
+        )
+        .context("Failed to spawn terminal app worker")?;
+
+        platform.run(proxy).context("Platform event loop failed")?;
+        handle
+    };
 
     info!("core-term exited successfully.");
 

@@ -1,6 +1,6 @@
 //! x86_64 SSE backend.
 
-use crate::backend::{Backend, SimdBatch, BatchArithmetic};
+use crate::backend::{Backend, SimdBatch, BatchArithmetic, FloatBatchOps};
 use core::arch::x86_64::*;
 use core::marker::PhantomData;
 use core::fmt::{Debug, Formatter};
@@ -23,6 +23,38 @@ impl Backend for Sse2 {
 
     #[inline(always)]
     fn upcast_u8_to_u32(b: SimdVec<u8>) -> SimdVec<u32> {
+        unsafe { b.transmute() }
+    }
+
+    #[inline(always)]
+    fn u32_to_f32(b: SimdVec<u32>) -> SimdVec<f32> {
+        unsafe {
+            // _mm_cvtepi32_ps converts signed i32 to f32
+            // For u32, we need to handle the high bit carefully for values > i32::MAX
+            // For simplicity, cast through scalar (font values won't exceed i32::MAX)
+            let mut vals = [0u32; 4];
+            _mm_storeu_si128(vals.as_mut_ptr() as *mut _, b.0);
+            let floats = [vals[0] as f32, vals[1] as f32, vals[2] as f32, vals[3] as f32];
+            SimdVec(cast_from_ps(_mm_loadu_ps(floats.as_ptr())), PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn f32_to_u32(b: SimdVec<f32>) -> SimdVec<u32> {
+        unsafe {
+            // _mm_cvttps_epi32 truncates f32 to i32
+            let i32_vec = _mm_cvttps_epi32(cast_to_ps(b.0));
+            SimdVec(i32_vec, PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn transmute_u32_to_f32(b: SimdVec<u32>) -> SimdVec<f32> {
+        unsafe { b.transmute() }
+    }
+
+    #[inline(always)]
+    fn transmute_f32_to_u32(b: SimdVec<f32>) -> SimdVec<u32> {
         unsafe { b.transmute() }
     }
 }
@@ -171,6 +203,14 @@ impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec
 
     fn store(&self, slice: &mut [T]) {
         unsafe { _mm_storeu_si128(slice.as_mut_ptr() as *mut _, self.0) }
+    }
+
+    fn first(&self) -> T {
+        unsafe {
+            // Extract the first lane
+            let v = _mm_cvtsi128_si32(self.0) as u32;
+            core::mem::transmute_copy(&v)
+        }
     }
 }
 
@@ -445,4 +485,20 @@ impl BatchArithmetic<f32> for SimdVec<f32> {
     fn cmp_le(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmple_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
     fn cmp_gt(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmpgt_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
     fn cmp_ge(self, other: Self) -> Self { unsafe { Self(cast_from_ps(_mm_cmpge_ps(cast_to_ps(self.0), cast_to_ps(other.0))), PhantomData) } }
+}
+
+impl FloatBatchOps for SimdVec<f32> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        unsafe { Self(cast_from_ps(_mm_sqrt_ps(cast_to_ps(self.0))), PhantomData) }
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        unsafe {
+            // Clear sign bit: AND with 0x7FFFFFFF
+            let sign_mask = _mm_set1_epi32(0x7FFFFFFF_u32 as i32);
+            Self(_mm_and_si128(self.0, sign_mask), PhantomData)
+        }
+    }
 }
