@@ -7,8 +7,10 @@ use crate::input::MouseButton;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
 use log::info;
+use pixelflow_core::pipe::Surface;
+use pixelflow_core::Pixel;
 use pixelflow_core::Scale;
-use pixelflow_render::rasterizer::render_u32;
+use pixelflow_render::rasterizer::render_pixel;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -75,7 +77,7 @@ impl EnginePlatform {
         self.engine_sender.clone()
     }
 
-    pub fn run(self, app: impl Application + Send + 'static) -> Result<()> {
+    pub fn run<P: Pixel + Surface<P>>(self, app: impl Application<P> + Send + 'static) -> Result<()> {
         info!("EnginePlatform::run() - Starting");
 
         let driver_handle = self.driver.clone();
@@ -86,7 +88,7 @@ impl EnginePlatform {
 
         // Spawn engine thread
         std::thread::spawn(move || {
-            if let Err(e) = engine_loop(app, driver_handle, control_rx, display_rx, target_fps) {
+            if let Err(e) = engine_loop::<P, _>(app, driver_handle, control_rx, display_rx, target_fps) {
                 log::error!("Engine loop error: {}", e);
             }
         });
@@ -99,8 +101,8 @@ impl EnginePlatform {
     }
 }
 
-fn engine_loop(
-    mut app: impl Application,
+fn engine_loop<P: Pixel + Surface<P>, A: Application<P>>(
+    mut app: A,
     driver: PlatformDriver,
     control_rx: Receiver<EngineCommand>,
     display_rx: Receiver<EngineCommand>,
@@ -209,7 +211,7 @@ fn engine_loop(
                 let (prefix, pixels, suffix) = unsafe { fb.align_to_mut::<u32>() };
                 if prefix.is_empty() && suffix.is_empty() {
                     let scaled = Scale::new(surface, scale_factor);
-                    render_u32(&scaled, pixels, physical_width as usize, physical_height as usize);
+                    render_pixel::<P, _>(&scaled, pixels, physical_width as usize, physical_height as usize);
                 }
 
                 let snapshot = RenderSnapshot {

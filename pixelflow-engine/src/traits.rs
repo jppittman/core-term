@@ -1,5 +1,6 @@
 use crate::input::{CursorIcon, KeySymbol, Modifiers, MouseButton};
 use pixelflow_core::pipe::Surface;
+use pixelflow_core::Pixel;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -57,12 +58,19 @@ pub struct AppState {
     pub height_px: u32,
 }
 
-pub trait Application {
+/// The Application trait defines the interface between the engine and the app.
+///
+/// Generic over pixel format `P` for platform-specific rendering:
+/// - `Rgba` for Cocoa (macOS), Web
+/// - `Bgra` for X11 (Linux)
+///
+/// The `P: Surface<P>` bound ensures colors can be used as constant surfaces.
+pub trait Application<P: Pixel + Surface<P>> {
     /// THE DATA PLANE
     /// The Hot Path: Produce a frame based on current state.
     /// Returns a composed surface that will be materialized into the framebuffer.
     /// One vtable call per surface, then pure SIMD execution.
-    fn render(&mut self, state: &AppState) -> Option<Box<dyn Surface<u32> + Send + Sync>>;
+    fn render(&mut self, state: &AppState) -> Option<Box<dyn Surface<P> + Send + Sync>>;
 
     /// THE CONTROL PLANE
     /// The Control Path: Process input or wake signals.

@@ -316,3 +316,107 @@ impl<'a, P: Pixel> Surface<P> for &'a Baked<P> {
         (*self).eval::<B>(x, y)
     }
 }
+
+// Allow using a reference to a Baked surface in the DSL.
+// This enables `glyph.over(fg, bg)` without cloning.
+impl<P: Pixel> Surface<P> for &Baked<P> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        (*self).eval(x, y)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_baked_u8_stores_correctly() {
+        // Surface returns values in u32 lanes (natural SIMD layout)
+        struct TestSurface;
+        impl Surface<u8> for TestSurface {
+            fn eval(&self, x: Batch<u32>, _y: Batch<u32>) -> Batch<u8> {
+                // Values in u32 lanes - just cast
+                x.cast::<u8>()
+            }
+        }
+
+        let baked = Baked::new(&TestSurface, 8, 2);
+
+        // Row 0 should be: [0, 1, 2, 3, 4, 5, 6, 7]
+        assert_eq!(baked.data()[0], 0, "data[0] should be 0");
+        assert_eq!(baked.data()[1], 1, "data[1] should be 1");
+        assert_eq!(baked.data()[2], 2, "data[2] should be 2");
+        assert_eq!(baked.data()[3], 3, "data[3] should be 3");
+        assert_eq!(baked.data()[4], 4, "data[4] should be 4");
+        assert_eq!(baked.data()[5], 5, "data[5] should be 5");
+        assert_eq!(baked.data()[6], 6, "data[6] should be 6");
+        assert_eq!(baked.data()[7], 7, "data[7] should be 7");
+
+        // Check second row
+        assert_eq!(baked.data()[8], 0, "data[8] (row 1, col 0) should be 0");
+        assert_eq!(baked.data()[9], 1, "data[9] (row 1, col 1) should be 1");
+    }
+
+    #[test]
+    fn test_over_compositor_blends_correctly() {
+        use crate::dsl::MaskExt;
+        use crate::pixel::Pixel;
+
+        // A simple Pixel implementation for testing (RGBA format)
+        #[derive(Copy, Clone, Default, Debug, PartialEq)]
+        #[repr(transparent)]
+        struct TestRgba(u32);
+
+        impl Pixel for TestRgba {
+            fn from_u32(v: u32) -> Self { Self(v) }
+            fn to_u32(self) -> u32 { self.0 }
+            fn batch_red(batch: Batch<u32>) -> Batch<u32> { batch & Batch::splat(0xFF) }
+            fn batch_green(batch: Batch<u32>) -> Batch<u32> { (batch >> 8) & Batch::splat(0xFF) }
+            fn batch_blue(batch: Batch<u32>) -> Batch<u32> { (batch >> 16) & Batch::splat(0xFF) }
+            fn batch_alpha(batch: Batch<u32>) -> Batch<u32> { batch >> 24 }
+            fn batch_from_channels(r: Batch<u32>, g: Batch<u32>, b: Batch<u32>, a: Batch<u32>) -> Batch<u32> {
+                r | (g << 8) | (b << 16) | (a << 24)
+            }
+        }
+
+        impl Surface<TestRgba> for TestRgba {
+            fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<TestRgba> {
+                Batch::splat(self.0).transmute()
+            }
+        }
+
+        // Constant mask surface (128 = 50% alpha)
+        struct ConstMask(u8);
+        impl Surface<u8> for ConstMask {
+            fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<u8> {
+                Batch::splat(self.0 as u32).transmute()
+            }
+        }
+
+        let mask = ConstMask(128); // 50% alpha
+        let fg = TestRgba(0xFF_00_00_FF); // Red (RGBA: R=255, G=0, B=0, A=255)
+        let bg = TestRgba(0xFF_FF_00_00); // Blue (RGBA: R=0, G=0, B=255, A=255)
+
+        // Compose: mask.over(fg, bg)
+        let composed = mask.over::<TestRgba, _, _>(fg, bg);
+
+        // Evaluate at (0, 0)
+        let result = composed.eval(Batch::splat(0), Batch::splat(0));
+        let result_u32: Batch<u32> = result.transmute();
+        let pixel = result_u32.to_array_usize()[0] as u32;
+
+        // Extract channels
+        let r = pixel & 0xFF;
+        let g = (pixel >> 8) & 0xFF;
+        let b = (pixel >> 16) & 0xFF;
+        let a = (pixel >> 24) & 0xFF;
+
+        // 50% blend of red (255) and blue (0) for R channel: ~127-128
+        // 50% blend of blue (0) and red (255) for B channel: ~127-128
+        assert!(r > 120 && r < 136, "Red channel should be ~128, got {}", r);
+        assert_eq!(g, 0, "Green should be 0");
+        assert!(b > 120 && b < 136, "Blue channel should be ~128, got {}", b);
+        assert!(a > 250, "Alpha should be ~255, got {}", a);
+    }
+}

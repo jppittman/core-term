@@ -9,7 +9,7 @@ use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, RenderSnapshot};
 use crate::input::{KeySymbol, Modifiers};
-use crate::platform::waker::CocoaWaker;
+use crate::platform::waker::{CocoaWaker, EventLoopWaker};
 use anyhow::{anyhow, Context, Result};
 use core_graphics::base::CGFloat;
 use core_graphics::color_space::CGColorSpace;
@@ -19,7 +19,7 @@ use foreign_types_shared::ForeignType;
 use log::{debug, info, trace};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, Bool, Sel};
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask,
     NSEventModifierFlags, NSEventType, NSPasteboard, NSWindow, NSWindowStyleMask,
@@ -361,8 +361,9 @@ impl CocoaState {
             if layer.is_null() {
                 return Err(anyhow!("View has no layer"));
             }
-            let image_ref = image.as_ptr();
-            let _: () = msg_send![layer, setContents: image_ref as *mut c_void];
+            // CGImageRef is toll-free bridged with id for setContents:
+            let image_ref: *mut AnyObject = image.as_ptr() as *mut AnyObject;
+            let _: () = msg_send![layer, setContents: image_ref];
             let _: () = msg_send![layer, setContentsScale: self.backing_scale];
         }
         Ok(snapshot)
