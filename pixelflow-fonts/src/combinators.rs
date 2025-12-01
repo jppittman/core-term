@@ -1,19 +1,29 @@
-use crate::curves::{Segment, Line, Point, Quadratic};
-use crate::glyph::{CurveSurface, Glyph, GlyphBounds, eval_curves};
+//! Functional combinators for glyph manipulation.
+//!
+//! This module provides tools to transform glyphs and manage their lifecycles.
+//! It includes the [`glyphs`] factory for caching, [`Lazy`] for deferred evaluation,
+//! and traits/structs for styling (Bold, Slant, Scale).
+
+use crate::curves::{Segment, Line, Quadratic};
+use crate::glyph::{CurveSurface, GlyphBounds, eval_curves};
 use crate::font::Font;
 use pixelflow_core::batch::Batch;
-use pixelflow_core::backend::SimdBatch;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::ops::{Baked, Max};
+use pixelflow_core::ops::Baked;
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ============================================================================
 // Lazy
 // ============================================================================
 
-/// A surface that lazily evaluates and caches its result.
+/// A surface wrapper that lazily evaluates and caches its result on the first use.
 ///
-/// Clones share the same underlying cache.
+/// This is particularly useful for font rendering, where we want to defer the
+/// costly "baking" (rasterizing to a texture) of a glyph until it is actually
+/// requested by the render engine, and then share that baked texture across
+/// all subsequent uses.
+///
+/// `Lazy` is thread-safe and cloneable (clones share the underlying cache).
 pub struct Lazy<'a, S> {
     inner: Arc<LazyInner<'a, S>>,
 }
@@ -30,6 +40,7 @@ impl<'a, S> Clone for Lazy<'a, S> {
 }
 
 impl<'a, S> Lazy<'a, S> {
+    /// Creates a new `Lazy` surface from a factory function.
     pub fn new<F>(f: F) -> Self
     where
         F: FnOnce() -> S + Send + Sync + 'a,
@@ -67,11 +78,28 @@ where
 // Glyphs Factory
 // ============================================================================
 
-/// Returns a closure that yields shared, lazily-baked glyphs.
+/// Creates a caching glyph factory.
+///
+/// Returns a closure that takes a `char` and returns a `Lazy<Baked<u8>>`.
+/// The `Baked<u8>` is a cached texture of the rendered glyph.
+///
+/// # Arguments
+///
+/// * `font` - The source font.
+/// * `w`, `h` - The dimensions to bake the glyphs at.
+///
+/// # Usage
+///
+/// ```ignore
+/// let get_glyph = glyphs(font, 20, 30);
+/// let glyph_a = get_glyph('A'); // Lazy<Baked<u8>>
+/// // Rendering glyph_a multiple times uses the cached texture.
+/// ```
 pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, Baked<u8>> {
     use std::collections::HashMap;
     use std::sync::RwLock;
 
+    // Pre-populate ASCII range to avoid locks/allocations for common chars
     let ascii: Vec<Lazy<'a, Baked<u8>>> = (0..128).map(|i| {
         let c = i as u8 as char;
         let font = font.clone();
@@ -79,6 +107,7 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
             match font.glyph(c, h as f32) {
                 Some(g) => Baked::new(&g, w, h),
                 None => {
+                    // Fallback for missing glyphs: return empty transparent surface
                     struct Empty;
                     impl Surface<u8> for Empty {
                         fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u8> {
@@ -97,13 +126,13 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
         if (c as u32) < 128 {
             ascii[c as usize].clone()
         } else {
-            // Check other cache
+            // Check secondary cache for non-ASCII
             if let Ok(read) = other_cache.read() {
                 if let Some(lazy) = read.get(&c) {
                     return lazy.clone();
                 }
             }
-            // Write lock
+            // Write lock to insert new glyph
             let mut write = other_cache.write().unwrap();
             if let Some(lazy) = write.get(&c) {
                 return lazy.clone();
@@ -136,6 +165,9 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
 
 // --- Bold ---
 
+/// A surface combinator that simulates bold weight.
+///
+/// It works by dilating the Signed Distance Field of the underlying curve surface.
 pub struct Bold<S> {
     pub source: S,
     pub amount: f32,
@@ -164,6 +196,9 @@ impl<S: CurveSurface> Bold<S> {
 
 // --- Hint (Stub) ---
 
+/// A placeholder combinator for grid-fitting hints.
+///
+/// Currently a pass-through.
 pub struct Hint<S> {
     source: S,
 }
@@ -185,9 +220,12 @@ impl<S: CurveSurface> Surface<u8> for Hint<S> {
 
 // --- Slant ---
 
+/// A surface combinator that applies a slant (shear) transformation.
+///
+/// Useful for synthesizing italic styles.
 pub struct Slant<S> {
     source: S,
-    factor: f32,
+    _factor: f32,
     curves: Arc<[Segment]>,
 }
 
@@ -208,6 +246,7 @@ impl<S: CurveSurface> Surface<u8> for Slant<S> {
 
 impl<S: CurveSurface> Slant<S> {
     pub fn new(source: S, factor: f32) -> Self {
+        // Transform the curves eagerly
         let curves = source.curves().iter().map(|seg| {
             match seg {
                 Segment::Line(l) => Segment::Line(Line {
@@ -221,6 +260,7 @@ impl<S: CurveSurface> Slant<S> {
                     if let Some(new_q) = Quadratic::try_new(p0, p1, p2) {
                         Segment::Quad(new_q)
                     } else {
+                        // Fallback to line if quadratic becomes degenerate (unlikely with shear)
                         Segment::Line(Line { p0, p1: p2 })
                     }
                 }
@@ -229,7 +269,7 @@ impl<S: CurveSurface> Slant<S> {
 
         Self {
             source,
-            factor,
+            _factor: factor,
             curves: Arc::from(curves),
         }
     }
@@ -237,6 +277,7 @@ impl<S: CurveSurface> Slant<S> {
 
 // --- Scale ---
 
+/// A surface combinator that scales the geometry of the glyph.
 pub struct Scale<S> {
     source: S,
     factor: f32,
@@ -297,19 +338,30 @@ impl<S: CurveSurface> Scale<S> {
 // Extensions
 // ============================================================================
 
+/// Extension trait for `CurveSurface` types.
+///
+/// Provides a fluent API for applying combinators.
 pub trait CurveSurfaceExt: CurveSurface + Sized {
+    /// Applies a grid-fitting hint (currently a no-op).
     fn hint(self, _grid_size: f32) -> Hint<Self> {
         Hint { source: self }
     }
 
+    /// Makes the glyph bolder by dilating the shape.
+    ///
+    /// `amount` is in pixels (e.g. 0.5 for half a pixel width increase).
     fn bold(self, amount: f32) -> Bold<Self> {
         Bold::new(self, amount)
     }
 
+    /// Slants the glyph (simulated italic).
+    ///
+    /// `factor` is the shear amount (e.g. 0.2).
     fn slant(self, factor: f32) -> Slant<Self> {
         Slant::new(self, factor)
     }
 
+    /// Scales the glyph curves.
     fn scale_curve(self, factor: f32) -> Scale<Self> {
         Scale::new(self, factor)
     }
