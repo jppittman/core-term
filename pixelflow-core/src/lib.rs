@@ -11,6 +11,7 @@ extern crate alloc;
 pub mod backend;
 pub mod backends;
 pub mod batch;
+pub mod curve;
 pub mod dsl;
 pub mod ops;
 pub mod pipe;
