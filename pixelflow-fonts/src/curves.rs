@@ -1,5 +1,6 @@
 use pixelflow_core::batch::{Batch, NativeBackend};
-use pixelflow_core::backend::{Backend, SimdBatch, BatchArithmetic, FloatBatchOps};
+use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps};
+use pixelflow_core::curve::Mat3;
 
 pub type Point = [f32; 2];
 
@@ -15,38 +16,20 @@ pub struct Quadratic {
     pub p1: Point,
     pub p2: Point,
     // Precomputed projection matrix for Loop-Blinn
-    pub projection: [[f32; 3]; 2],
+    pub projection: Mat3,
 }
 
 impl Quadratic {
     pub fn try_new(p0: Point, p1: Point, p2: Point) -> Option<Self> {
-        let det = p0[0] * (p1[1] - p2[1]) + p1[0] * (p2[1] - p0[1]) + p2[0] * (p0[1] - p1[1]);
-
-        if det.abs() < 1e-6 {
-            return None;
-        }
-
-        let inv_det = 1.0 / det;
-
-        let a = (0.0 * (p1[1] - p2[1]) + 0.5 * (p2[1] - p0[1]) + 1.0 * (p0[1] - p1[1])) * inv_det;
-        let b = (0.0 * (p2[0] - p1[0]) + 0.5 * (p0[0] - p2[0]) + 1.0 * (p1[0] - p0[0])) * inv_det;
-        let c = (0.0 * (p1[0] * p2[1] - p2[0] * p1[1])
-            + 0.5 * (p2[0] * p0[1] - p0[0] * p2[1])
-            + 1.0 * (p0[0] * p1[1] - p1[0] * p0[1]))
-            * inv_det;
-
-        let d = (0.0 * (p1[1] - p2[1]) + 0.0 * (p2[1] - p0[1]) + 1.0 * (p0[1] - p1[1])) * inv_det;
-        let e = (0.0 * (p2[0] - p1[0]) + 0.0 * (p0[0] - p2[0]) + 1.0 * (p1[0] - p0[0])) * inv_det;
-        let f = (0.0 * (p1[0] * p2[1] - p2[0] * p1[1])
-            + 0.0 * (p2[0] * p0[1] - p0[0] * p2[1])
-            + 1.0 * (p0[0] * p1[1] - p1[0] * p0[1]))
-            * inv_det;
+        // Compute projection matrix mapping (x, y) -> (u, v)
+        // such that p0 -> (0,0), p1 -> (0.5, 0), p2 -> (1,1)
+        let projection = Mat3::from_affine_points(p0, p1, p2)?;
 
         Some(Self {
             p0,
             p1,
             p2,
-            projection: [[a, b, c], [d, e, f]],
+            projection,
         })
     }
 }
@@ -145,14 +128,15 @@ impl Segment {
                 ((x - l.p0[0]) * -dy + (y - l.p0[1]) * dx) / len
             }
             Segment::Quad(q) => {
-                let u = x * q.projection[0][0] + y * q.projection[0][1] + q.projection[0][2];
-                let v = x * q.projection[1][0] + y * q.projection[1][1] + q.projection[1][2];
+                let m = q.projection.m;
+                let u = x * m[0][0] + y * m[0][1] + m[0][2];
+                let v = x * m[1][0] + y * m[1][1] + m[1][2];
                 let f = u * u - v;
 
-                let du_dx = q.projection[0][0];
-                let du_dy = q.projection[0][1];
-                let dv_dx = q.projection[1][0];
-                let dv_dy = q.projection[1][1];
+                let du_dx = m[0][0];
+                let du_dy = m[0][1];
+                let dv_dx = m[1][0];
+                let dv_dy = m[1][1];
 
                 let df_dx = 2.0 * u * du_dx - dv_dx;
                 let df_dy = 2.0 * u * du_dy - dv_dy;
@@ -291,20 +275,22 @@ impl Segment {
                 ((x - p0x) * (zero - dy_batch) + (y - p0y) * dx_batch) / len_batch
             }
             Segment::Quad(q) => {
-                let u = x * Batch::<f32>::splat(q.projection[0][0])
-                      + y * Batch::<f32>::splat(q.projection[0][1])
-                      + Batch::<f32>::splat(q.projection[0][2]);
+                let m = q.projection.m;
 
-                let v = x * Batch::<f32>::splat(q.projection[1][0])
-                      + y * Batch::<f32>::splat(q.projection[1][1])
-                      + Batch::<f32>::splat(q.projection[1][2]);
+                let u = x * Batch::<f32>::splat(m[0][0])
+                      + y * Batch::<f32>::splat(m[0][1])
+                      + Batch::<f32>::splat(m[0][2]);
+
+                let v = x * Batch::<f32>::splat(m[1][0])
+                      + y * Batch::<f32>::splat(m[1][1])
+                      + Batch::<f32>::splat(m[1][2]);
 
                 let f = u * u - v;
 
-                let du_dx = Batch::<f32>::splat(q.projection[0][0]);
-                let du_dy = Batch::<f32>::splat(q.projection[0][1]);
-                let dv_dx = Batch::<f32>::splat(q.projection[1][0]);
-                let dv_dy = Batch::<f32>::splat(q.projection[1][1]);
+                let du_dx = Batch::<f32>::splat(m[0][0]);
+                let du_dy = Batch::<f32>::splat(m[0][1]);
+                let dv_dx = Batch::<f32>::splat(m[1][0]);
+                let dv_dy = Batch::<f32>::splat(m[1][1]);
 
                 let two = Batch::<f32>::splat(2.0);
                 let df_dx = two * u * du_dx - dv_dx;
