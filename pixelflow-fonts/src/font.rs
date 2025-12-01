@@ -1,4 +1,7 @@
-//! Font: TTF parsing and glyph Surface creation.
+//! Font parsing and glyph retrieval.
+//!
+//! This module provides the [`Font`] struct, which serves as the entry point
+//! for loading font data and extracting glyph geometry.
 
 use thiserror::Error;
 pub use ttf_parser::GlyphId;
@@ -8,31 +11,51 @@ use std::sync::Arc;
 use crate::curves::{Line, Point, Quadratic, Segment};
 use crate::glyph::{Glyph, GlyphBounds};
 
+/// Errors that can occur when parsing a font.
 #[derive(Error, Debug)]
 pub enum FontError {
     #[error("Failed to parse font: {0}")]
     ParseError(#[from] FaceParsingError),
 }
 
+/// A handle to a parsed font.
+///
+/// `Font` is cheap to clone (wraps an `Arc`) and thread-safe.
+/// It uses `ttf-parser` internally to extract outline data.
 #[derive(Clone)]
 pub struct Font<'a> {
-    face: Arc<Face<'a>>, // Make Font cloneable and cheap
+    face: Arc<Face<'a>>,
 }
 
+/// Metrics describing the font's vertical layout.
 #[derive(Debug, Clone, Copy)]
 pub struct FontMetrics {
+    /// The number of font units per EM square.
     pub units_per_em: u16,
+    /// Distance from the baseline to the top of the highest glyph.
     pub ascent: i16,
+    /// Distance from the baseline to the bottom of the lowest glyph.
     pub descent: i16,
+    /// Recommended vertical distance between lines.
     pub line_gap: i16,
 }
 
 impl<'a> Font<'a> {
+    /// Creates a new `Font` from raw TTF/OTF byte data.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A byte slice containing the font file data.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the `Font` or a `FontError` if parsing fails.
     pub fn from_bytes(data: &'a [u8]) -> Result<Self, FontError> {
         let face = Face::parse(data, 0)?;
         Ok(Self { face: Arc::new(face) })
     }
 
+    /// Returns the global metrics for this font.
     pub fn metrics(&self) -> FontMetrics {
         FontMetrics {
             units_per_em: self.face.units_per_em(),
@@ -42,7 +65,21 @@ impl<'a> Font<'a> {
         }
     }
 
-    /// The pixelflow way: one call, returns a Surface<u8>.
+    /// Retrieves the geometry for a specific character.
+    ///
+    /// This method extracts the outline of the character, subdivides cubic Bézier curves
+    /// into quadratics (since the renderer supports quadratics natively), and returns
+    /// a [`Glyph`] which implements [`Surface<u8>`](pixelflow_core::pipe::Surface).
+    ///
+    /// # Arguments
+    ///
+    /// * `ch` - The character to retrieve.
+    /// * `size` - The desired font size in pixels. This scales the geometry.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Glyph)` if the character exists in the font.
+    /// * `None` if the character is not found.
     pub fn glyph(&self, ch: char, size: f32) -> Option<Glyph> {
         let glyph_id = self.face.glyph_index(ch)?;
 
@@ -61,6 +98,7 @@ impl<'a> Font<'a> {
                 y_max: 0,
             });
 
+        // Compute integer bounds for the glyph surface
         let bounds = GlyphBounds {
             width: ((bbox.x_max - bbox.x_min) as f32 * scale).ceil() as u32,
             height: ((bbox.y_max - bbox.y_min) as f32 * scale).ceil() as u32,
@@ -74,7 +112,14 @@ impl<'a> Font<'a> {
         })
     }
 
-    // ... advance/kern ...
+    /// Calculates the horizontal advance for a character.
+    ///
+    /// The advance is the distance the cursor should move after drawing this character.
+    ///
+    /// # Arguments
+    ///
+    /// * `ch` - The character.
+    /// * `size` - The font size in pixels.
     pub fn advance(&self, ch: char, size: f32) -> f32 {
         let scale = size / self.face.units_per_em() as f32;
         self.face
@@ -84,6 +129,17 @@ impl<'a> Font<'a> {
             .unwrap_or(0.0)
     }
 
+    /// Calculates the kerning adjustment between two characters.
+    ///
+    /// # Arguments
+    ///
+    /// * `left` - The left character.
+    /// * `right` - The right character.
+    /// * `size` - The font size in pixels.
+    ///
+    /// # Returns
+    ///
+    /// The kerning offset in pixels. Add this to the advance of the left character.
     pub fn kern(&self, left: char, right: char, size: f32) -> f32 {
         let scale = size / self.face.units_per_em() as f32;
         let left_id = match self.face.glyph_index(left) {
@@ -127,6 +183,10 @@ impl GlyphBuilder {
         }
     }
 
+    // Recursively subdivide cubic curves into line segments if they are small enough,
+    // or eventually approximate with quadratics (though here it seems to just degenerate to lines).
+    // Note: The comment in original code mentioned approximation, but the implementation
+    // subdivides until flat enough for lines.
     fn subdivide_cubic(&mut self, p0: Point, p1: Point, p2: Point, p3: Point, depth: u32) {
         let d03 = dist_sq(p0, p3);
         const MIN_LEN_SQ: f32 = 0.25; // 0.5 px
