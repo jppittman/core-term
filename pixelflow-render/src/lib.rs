@@ -53,4 +53,3 @@ pub use rasterizer::{execute, render, render_pixel, render_to_buffer, render_u32
 
 // Re-export core types for convenience
 pub use pixelflow_core::pipe::Surface;
-pub use pixelflow_core::Batch;

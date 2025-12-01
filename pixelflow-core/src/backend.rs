@@ -20,6 +20,18 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
     /// Casts a batch of u8 to u32 (widening/bitcast depending on backend).
     /// Used for adapting Surface<u8> masks to u32 operations.
     fn upcast_u8_to_u32(b: Self::Batch<u8>) -> Self::Batch<u32>;
+
+    /// Converts a batch of u32 to f32 (integer to float).
+    fn u32_to_f32(b: Self::Batch<u32>) -> Self::Batch<f32>;
+
+    /// Converts a batch of f32 to u32 (float to integer, truncating).
+    fn f32_to_u32(b: Self::Batch<f32>) -> Self::Batch<u32>;
+
+    /// Bitcast/transmute between u32 and f32 (reinterpret bits).
+    fn transmute_u32_to_f32(b: Self::Batch<u32>) -> Self::Batch<f32>;
+
+    /// Bitcast/transmute between f32 and u32 (reinterpret bits).
+    fn transmute_f32_to_u32(b: Self::Batch<f32>) -> Self::Batch<u32>;
 }
 
 /// Basic operations supported by any SIMD batch (storage/movement).
@@ -35,6 +47,13 @@ pub trait SimdBatch<T: Copy>:
     fn sequential_from(start: T) -> Self;
     fn load(slice: &[T]) -> Self;
     fn store(&self, slice: &mut [T]);
+    /// Extract the first lane.
+    ///
+    /// Named `first` rather than `scalar` to be honest: when you splat(x)
+    /// and call first(), you're doing a point sample. The lanes could be
+    /// used for supersampling (different subpixel offsets) with a different
+    /// reduction (average, min, max, etc).
+    fn first(&self) -> T;
 }
 
 /// Arithmetic operations supported by numeric SIMD batches.
@@ -68,6 +87,15 @@ pub trait BatchArithmetic<T: Copy>:
     fn cmp_le(self, other: Self) -> Self;
     fn cmp_gt(self, other: Self) -> Self;
     fn cmp_ge(self, other: Self) -> Self;
+}
+
+/// Float-specific batch operations (sqrt, abs, etc.).
+pub trait FloatBatchOps: BatchArithmetic<f32> {
+    /// Square root of each element.
+    fn sqrt(self) -> Self;
+
+    /// Absolute value of each element.
+    fn abs(self) -> Self;
 }
 
 pub use BatchArithmetic as BatchOps;

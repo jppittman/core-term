@@ -1,7 +1,9 @@
 use crate::curves::{Segment, Line, Point, Quadratic};
 use crate::glyph::{CurveSurface, Glyph, GlyphBounds, eval_curves};
 use crate::font::Font;
-use pixelflow_core::{pipe::Surface, Batch};
+use pixelflow_core::batch::Batch;
+use pixelflow_core::backend::SimdBatch;
+use pixelflow_core::pipe::Surface;
 use pixelflow_core::ops::{Baked, Max};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -79,7 +81,9 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                 None => {
                     struct Empty;
                     impl Surface<u8> for Empty {
-                        fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u8> { Batch::splat(0) }
+                        fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u8> {
+                            Batch::<u8>::splat(0)
+                        }
                     }
                     Baked::new(&Empty, w, h)
                 }
@@ -112,7 +116,9 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                     None => {
                         struct Empty;
                         impl Surface<u8> for Empty {
-                            fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u8> { Batch::splat(0) }
+                            fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u8> {
+                                Batch::<u8>::splat(0)
+                            }
                         }
                         Baked::new(&Empty, w, h)
                     }
@@ -146,7 +152,7 @@ impl<S: CurveSurface> CurveSurface for Bold<S> {
 
 impl<S: CurveSurface> Surface<u8> for Bold<S> {
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        eval_curves(self.curves(), self.bounds(), x, y, Batch::splat(self.amount))
+        eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(self.amount))
     }
 }
 
@@ -196,7 +202,7 @@ impl<S: CurveSurface> CurveSurface for Slant<S> {
 
 impl<S: CurveSurface> Surface<u8> for Slant<S> {
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        eval_curves(self.curves(), self.bounds(), x, y, Batch::splat(0.0))
+        eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
     }
 }
 
@@ -254,7 +260,7 @@ impl<S: CurveSurface> CurveSurface for Scale<S> {
 
 impl<S: CurveSurface> Surface<u8> for Scale<S> {
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        eval_curves(self.curves(), self.bounds(), x, y, Batch::splat(0.0))
+        eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
     }
 }
 

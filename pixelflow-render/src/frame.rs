@@ -5,8 +5,9 @@
 //! This enables Frame-to-Frame compositing operations.
 
 use crate::color::Pixel;
+use pixelflow_core::batch::Batch;
+use pixelflow_core::backend::SimdBatch;
 use pixelflow_core::pipe::Surface;
-use pixelflow_core::Batch;
 
 /// A framebuffer of pixels in a specific format.
 ///
@@ -109,27 +110,17 @@ impl<P: Pixel> Frame<P> {
 impl<P: Pixel> Surface<P> for Frame<P> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
-        let w = self.width as usize;
-        let h = self.height as usize;
+        let w_batch = Batch::<u32>::splat(self.width);
+        let h_batch = Batch::<u32>::splat(self.height);
 
-        // Extract coordinates and compute wrap-around element-wise
-        let x_arr = x.to_array_usize();
-        let y_arr = y.to_array_usize();
+        // Wrap coordinates (x % w, y % h)
+        let x_mod = x - (x / w_batch) * w_batch;
+        let y_mod = y - (y / h_batch) * h_batch;
 
-        // Calculate wrapped indices
-        let idx0 = (y_arr[0] % h) * w + (x_arr[0] % w);
-        let idx1 = (y_arr[1] % h) * w + (x_arr[1] % w);
-        let idx2 = (y_arr[2] % h) * w + (x_arr[2] % w);
-        let idx3 = (y_arr[3] % h) * w + (x_arr[3] % w);
+        // Linear index: y * w + x
+        let idx = y_mod * w_batch + x_mod;
 
-        // Gather pixels from buffer as u32
-        let p0 = self.data[idx0].to_u32();
-        let p1 = self.data[idx1].to_u32();
-        let p2 = self.data[idx2].to_u32();
-        let p3 = self.data[idx3].to_u32();
-
-        // Create u32 batch and transmute to P (P is repr(transparent) over u32)
-        let result_u32: Batch<u32> = Batch::new(p0, p1, p2, p3);
-        result_u32.transmute()
+        // Gather pixels
+        P::batch_gather(&self.data, idx)
     }
 }

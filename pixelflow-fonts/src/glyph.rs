@@ -1,7 +1,9 @@
 //! Glyph: A Surface<u8> that lazily evaluates SDF coverage.
 
 use crate::curves::Segment;
-use pixelflow_core::{pipe::Surface, Batch, SimdFloatOps, SimdOps};
+use pixelflow_core::batch::{Batch, NativeBackend};
+use pixelflow_core::backend::{Backend, SimdBatch, BatchArithmetic, FloatBatchOps};
+use pixelflow_core::pipe::Surface;
 use std::sync::Arc;
 
 /// Glyph bounds in pixel coordinates.
@@ -48,55 +50,76 @@ impl CurveSurface for Glyph {
 /// Evaluates curves at pixel coordinates to produce coverage (SDF).
 ///
 /// `dilation`: Amount to subtract from distance (positive = bold).
-pub fn eval_curves(curves: &[Segment], bounds: GlyphBounds, x: Batch<u32>, y: Batch<u32>, dilation: Batch<f32>) -> Batch<u8> {
+pub fn eval_curves(
+    curves: &[Segment],
+    bounds: GlyphBounds,
+    x: Batch<u32>,
+    y: Batch<u32>,
+    dilation: Batch<f32>,
+) -> Batch<u8> {
     let bx = bounds.bearing_x as f32;
     let by_top = bounds.bearing_y as f32;
 
-    // Coordinate mapping: pixel (0,0) -> (bx, by_top) in curve space (if Y goes UP)
-    // curve_x = pixel_x + bx
-    // curve_y = by_top - pixel_y
+    // Convert pixel coordinates to f32
+    let px_f32 = NativeBackend::u32_to_f32(x);
+    let py_f32 = NativeBackend::u32_to_f32(y);
 
-    let py_pixel = y.to_f32() + Batch::splat(0.5);
-    let px_pixel = x.to_f32() + Batch::splat(0.5);
+    // Add 0.5 for pixel center
+    let half = Batch::<f32>::splat(0.5);
+    let px_pixel = px_f32 + half;
+    let py_pixel = py_f32 + half;
 
-    let cx = px_pixel + Batch::splat(bx);
-    let cy = Batch::splat(by_top) - py_pixel;
+    // Coordinate mapping: pixel (0,0) -> (bx, by_top) in curve space (Y goes UP)
+    let bx_batch = Batch::<f32>::splat(bx);
+    let by_batch = Batch::<f32>::splat(by_top);
 
-    let mut winding = Batch::splat(0u32);
-    let mut min_dist = Batch::splat(1000.0f32);
+    let cx = px_pixel + bx_batch;
+    let cy = by_batch - py_pixel;
 
+    // Initialize winding and min distance
+    let mut winding = Batch::<u32>::splat(0u32);
+    let mut min_dist = Batch::<f32>::splat(1000.0f32);
+
+    // Evaluate all curve segments
     for segment in curves {
         winding = winding + segment.winding_batch(cx, cy);
         let d = segment.min_distance_batch(cx, cy);
         min_dist = min_dist.abs().min(d.abs());
     }
 
-    let inside = winding.cmp_ne(Batch::splat(0));
-    let signed_dist = min_dist.select(
-        Batch::splat(0.0) - min_dist, // -dist if inside
-        inside.transmute::<f32>()
-    );
+    // Determine inside/outside based on winding
+    let zero_u = Batch::<u32>::splat(0);
+    let inside = winding.cmp_ne(zero_u);
 
-    // Apply dilation (bolding)
-    // dist' = dist - dilation.
-    // If dilation > 0, dist becomes smaller (more negative if inside, less positive if outside).
-    // This expands the shape.
+    // signed_dist = inside ? -min_dist : min_dist
+    let neg_min_dist = Batch::<f32>::splat(0.0) - min_dist;
+    let neg_dist_u32 = NativeBackend::transmute_f32_to_u32(neg_min_dist);
+    let min_dist_u32 = NativeBackend::transmute_f32_to_u32(min_dist);
+    let signed_dist = NativeBackend::transmute_u32_to_f32(inside.select(neg_dist_u32, min_dist_u32));
+
+    // Apply dilation (bolding): dist' = dist - dilation
     let signed_dist = signed_dist - dilation;
 
     // Alpha = 0.5 - signed_dist
-    let alpha = Batch::splat(0.5) - signed_dist;
-    let clamped = alpha.max(Batch::splat(0.0)).min(Batch::splat(1.0));
+    let alpha = half - signed_dist;
 
-    let pixel_val = clamped * Batch::splat(255.0);
-    let pixel_u32 = pixel_val.to_u32();
+    // Clamp to [0, 1]
+    let zero_f = Batch::<f32>::splat(0.0);
+    let one_f = Batch::<f32>::splat(1.0);
+    let clamped = alpha.max(zero_f).min(one_f);
 
-    // Return as Batch<u8> - values in u32 lanes (natural SIMD layout)
-    pixel_u32.transmute()
+    // Convert to pixel value (0-255)
+    let scale = Batch::<f32>::splat(255.0);
+    let pixel_val = clamped * scale;
+    let pixel_u32 = NativeBackend::f32_to_u32(pixel_val);
+
+    // Return as Batch<u8>
+    NativeBackend::downcast_u32_to_u8(pixel_u32)
 }
 
 impl Surface<u8> for Glyph {
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
-        eval_curves(&self.segments, self.bounds, x, y, Batch::splat(0.0))
+        eval_curves(&self.segments, self.bounds, x, y, Batch::<f32>::splat(0.0))
     }
 }
 
