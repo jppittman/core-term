@@ -6,9 +6,9 @@
 //! - Target OS defaults
 
 #[cfg(use_cocoa_display)]
-pub mod cocoa;
+pub mod metal;
 #[cfg(use_cocoa_display)]
-pub use cocoa::CocoaDisplayDriver;
+pub use metal::MetalDisplayDriver;
 
 #[cfg(use_x11_display)]
 pub mod x11;

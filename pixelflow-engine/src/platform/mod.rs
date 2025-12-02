@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 type PlatformDriver = crate::display::drivers::X11DisplayDriver;
 
 #[cfg(use_cocoa_display)]
-type PlatformDriver = crate::display::drivers::CocoaDisplayDriver;
+type PlatformDriver = crate::display::drivers::MetalDisplayDriver;
 
 #[cfg(use_headless_display)]
 type PlatformDriver = crate::display::drivers::HeadlessDisplayDriver;

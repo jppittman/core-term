@@ -13,7 +13,7 @@ pub use messages::{DisplayEvent, DriverConfig};
 
 // Re-export the active display driver for convenience
 #[cfg(use_cocoa_display)]
-pub use drivers::CocoaDisplayDriver;
+pub use drivers::MetalDisplayDriver;
 
 #[cfg(use_x11_display)]
 pub use drivers::X11DisplayDriver;

@@ -252,10 +252,12 @@ impl BatchArithmetic<u32> for ScalarBatch<u32> {
         (if_true & self) | (if_false & !self)
     }
     fn gather(base: &[u32], indices: Self) -> Self {
-        ScalarBatch(base[indices.0 as usize])
+        let idx = indices.0 as usize;
+        ScalarBatch(if idx < base.len() { base[idx] } else { 0 })
     }
     fn gather_u8(base: &[u8], indices: Self) -> Self {
-        ScalarBatch(base[indices.0 as usize] as u32)
+        let idx = indices.0 as usize;
+        ScalarBatch(if idx < base.len() { base[idx] as u32 } else { 0 })
     }
     fn min(self, other: Self) -> Self {
         ScalarBatch(self.0.min(other.0))
@@ -319,7 +321,8 @@ impl BatchArithmetic<u8> for ScalarBatch<u8> {
         (if_true & self) | (if_false & !self)
     }
     fn gather(base: &[u8], indices: Self) -> Self {
-        ScalarBatch(base[indices.0 as usize])
+        let idx = indices.0 as usize;
+        ScalarBatch(if idx < base.len() { base[idx] } else { 0 })
     }
     fn min(self, other: Self) -> Self {
         ScalarBatch(self.0.min(other.0))
@@ -497,5 +500,38 @@ impl FloatBatchOps for ScalarBatch<f32> {
     #[inline(always)]
     fn abs(self) -> Self {
         ScalarBatch(libm::fabsf(self.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+    use alloc::vec;
+
+    use super::*;
+
+    #[test]
+    fn gather_out_of_bounds_returns_zero() {
+        // Bug: gather with out-of-bounds indices should return 0, not panic
+        // or return garbage. This is important because coordinate calculations
+        // can overflow, producing invalid indices.
+        let data = vec![0xDEADBEEFu32, 0xCAFEBABE, 0x12345678, 0xABCDEF00];
+
+        // Index 100 is out of bounds
+        let idx = ScalarBatch::<u32>(100);
+        let result = ScalarBatch::<u32>::gather(&data, idx);
+
+        // Should return 0 for out-of-bounds, not panic
+        assert_eq!(result.0, 0, "Out-of-bounds gather should return 0");
+    }
+
+    #[test]
+    fn gather_u8_out_of_bounds_returns_zero() {
+        let data = vec![0xAAu8, 0xBB, 0xCC, 0xDD];
+
+        let idx = ScalarBatch::<u32>(100);
+        let result = ScalarBatch::<u32>::gather_u8(&data, idx);
+
+        assert_eq!(result.0, 0, "Out-of-bounds gather_u8 should return 0");
     }
 }
