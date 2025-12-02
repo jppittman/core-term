@@ -3,19 +3,21 @@
 //! Headless mock display driver implementation.
 //!
 //! Driver struct is just cmd_tx - trivially Clone.
-//! run() reads Configure, runs a simple event loop.
+//! run() reads CreateWindow, runs a simple event loop.
 
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, RenderSnapshot};
+use crate::display::messages::{DisplayEvent, WindowId};
+use pixelflow_render::color::Rgba;
+use pixelflow_render::Frame;
 use anyhow::{anyhow, Result};
 use log::info;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 // --- Run State (only original driver has this) ---
 struct RunState {
-    cmd_rx: Receiver<DriverCommand>,
-    engine_tx: EngineSender,
+    cmd_rx: Receiver<DriverCommand<Rgba>>,
+    engine_tx: EngineSender<Rgba>,
 }
 
 // --- Display Driver ---
@@ -24,7 +26,7 @@ struct RunState {
 ///
 /// Clone to get a handle for sending commands. Only the original can run().
 pub struct HeadlessDisplayDriver {
-    cmd_tx: SyncSender<DriverCommand>,
+    cmd_tx: SyncSender<DriverCommand<Rgba>>,
     /// Only present on original, None on clones
     run_state: Option<RunState>,
 }
@@ -39,7 +41,9 @@ impl Clone for HeadlessDisplayDriver {
 }
 
 impl DisplayDriver for HeadlessDisplayDriver {
-    fn new(engine_tx: EngineSender) -> Result<Self> {
+    type Pixel = Rgba;
+
+    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -48,7 +52,7 @@ impl DisplayDriver for HeadlessDisplayDriver {
         })
     }
 
-    fn send(&self, cmd: DriverCommand) -> Result<()> {
+    fn send(&self, cmd: DriverCommand<Rgba>) -> Result<()> {
         self.cmd_tx.send(cmd)?;
         Ok(())
     }
@@ -65,43 +69,50 @@ impl DisplayDriver for HeadlessDisplayDriver {
 
 // --- Event Loop ---
 
-fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) -> Result<()> {
-    // 1. Read Configure command first
-    let config = match cmd_rx.recv()? {
-        DriverCommand::Configure(c) => c,
-        other => return Err(anyhow!("Expected Configure, got {:?}", other)),
+fn run_event_loop(
+    cmd_rx: &Receiver<DriverCommand<Rgba>>,
+    engine_tx: &EngineSender<Rgba>,
+) -> Result<()> {
+    // 1. Read CreateWindow command first
+    let (window_id, width_px, height_px, title) = match cmd_rx.recv()? {
+        DriverCommand::CreateWindow { id, width, height, title } => (id, width, height, title),
+        other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
     };
 
-    info!("Headless: Creating resources with config");
+    info!("Headless: Creating window '{}' {}x{}", title, width_px, height_px);
 
-    let width_px = (config.initial_cols * config.cell_width_px) as u32;
-    let height_px = (config.initial_rows * config.cell_height_px) as u32;
-
-    info!("Headless: Virtual window {}x{} px", width_px, height_px);
-
-    // Send initial resize
-    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
+    // Send WindowCreated event
+    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+        id: window_id,
         width_px,
         height_px,
-        scale_factor: 1.0,
+        scale: 1.0,
     }));
 
     // 2. Run simple event loop
     loop {
         match cmd_rx.recv()? {
-            DriverCommand::Configure(_) => {
-                // Already configured, ignore
+            DriverCommand::CreateWindow { .. } => {
+                // Already created, ignore
+            }
+            DriverCommand::DestroyWindow { id } => {
+                info!("Headless: DestroyWindow {:?}", id);
+                return Ok(());
             }
             DriverCommand::Shutdown => {
                 info!("Headless: Shutdown command received");
                 return Ok(());
             }
-            DriverCommand::Present(snapshot) => {
+            DriverCommand::Present { frame, .. } => {
                 // Just return the framebuffer
-                let _ = engine_tx.send(EngineCommand::PresentComplete(snapshot));
+                let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
             }
-            DriverCommand::SetTitle(title) => {
+            DriverCommand::SetTitle { title, .. } => {
                 info!("Headless: SetTitle '{}'", title);
+                let _ = engine_tx.send(EngineCommand::DriverAck);
+            }
+            DriverCommand::SetSize { width, height, .. } => {
+                info!("Headless: SetSize {}x{}", width, height);
                 let _ = engine_tx.send(EngineCommand::DriverAck);
             }
             DriverCommand::CopyToClipboard(text) => {

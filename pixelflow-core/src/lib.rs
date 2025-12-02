@@ -143,12 +143,27 @@ impl<'a> TensorView<'a, u32> {
     where
         B::Batch<u32>: BatchArithmetic<u32>,
     {
+        let w = <B::Batch<u32> as SimdBatch<u32>>::splat(self.width as u32);
+        let h = <B::Batch<u32> as SimdBatch<u32>>::splat(self.height as u32);
+        let zero = <B::Batch<u32> as SimdBatch<u32>>::splat(0);
+
+        // Strict 2D bounds check: x < width && y < height
+        // This handles large wrapped negative values because they appear as large u32 > width.
+        let in_bounds = x.cmp_lt(w) & y.cmp_lt(h);
+
+        // Use 0 for coordinate calculation if out of bounds to prevent overflow/wrapping issues
+        // in the index calculation itself.
+        let safe_x = in_bounds.select(x, zero);
+        let safe_y = in_bounds.select(y, zero);
+
         let stride_vec = <B::Batch<u32> as SimdBatch<u32>>::splat(self.stride as u32);
-        let idx_vec = (y * stride_vec) + x;
-        let max_idx = self.data.len().saturating_sub(1) as u32;
-        let max_idx_vec = <B::Batch<u32> as SimdBatch<u32>>::splat(max_idx);
-        let clamped_idx_vec = idx_vec.min(max_idx_vec);
-        <B::Batch<u32> as BatchArithmetic<u32>>::gather(self.data, clamped_idx_vec)
+        let idx_vec = (safe_y * stride_vec) + safe_x;
+
+        // gather handles slice bounds safety (returns 0 if idx >= len),
+        // but we also mask with in_bounds to ensure 2D geometric correctness.
+        let val = <B::Batch<u32> as BatchArithmetic<u32>>::gather(self.data, idx_vec);
+        
+        in_bounds.select(val, zero)
     }
 }
 
@@ -158,12 +173,21 @@ impl<'a> TensorView<'a, u8> {
     where
         B::Batch<u32>: BatchArithmetic<u32>,
     {
+        let w = <B::Batch<u32> as SimdBatch<u32>>::splat(self.width as u32);
+        let h = <B::Batch<u32> as SimdBatch<u32>>::splat(self.height as u32);
+        let zero = <B::Batch<u32> as SimdBatch<u32>>::splat(0);
+
+        let in_bounds = x.cmp_lt(w) & y.cmp_lt(h);
+
+        let safe_x = in_bounds.select(x, zero);
+        let safe_y = in_bounds.select(y, zero);
+
         let stride_vec = <B::Batch<u32> as SimdBatch<u32>>::splat(self.stride as u32);
-        let idx_vec = (y * stride_vec) + x;
-        let max_idx = self.data.len().saturating_sub(1) as u32;
-        let max_idx_vec = <B::Batch<u32> as SimdBatch<u32>>::splat(max_idx);
-        let clamped_idx_vec = idx_vec.min(max_idx_vec);
-        <B::Batch<u32> as BatchArithmetic<u32>>::gather_u8(self.data, clamped_idx_vec)
+        let idx_vec = (safe_y * stride_vec) + safe_x;
+
+        let val = <B::Batch<u32> as BatchArithmetic<u32>>::gather_u8(self.data, idx_vec);
+        
+        in_bounds.select(val, zero)
     }
 
     #[inline(always)]
@@ -175,15 +199,31 @@ impl<'a> TensorView<'a, u8> {
     where
         B::Batch<u32>: BatchArithmetic<u32>,
     {
-        let byte_x = x >> 1;
-        let is_odd = x & <B::Batch<u32> as SimdBatch<u32>>::splat(1);
-        let packed = unsafe { self.gather_2d::<B>(byte_x, y) };
+        // Strict bounds check on PIXEL coordinates
+        let w = <B::Batch<u32> as SimdBatch<u32>>::splat(self.width as u32);
+        let h = <B::Batch<u32> as SimdBatch<u32>>::splat(self.height as u32);
+        let in_bounds = x.cmp_lt(w) & y.cmp_lt(h);
+        let zero = <B::Batch<u32> as SimdBatch<u32>>::splat(0);
+
+        // Use safe coordinates for calculation
+        let safe_x = in_bounds.select(x, zero);
+        let safe_y = in_bounds.select(y, zero);
+
+        let byte_x = safe_x >> 1;
+        let is_odd = safe_x & <B::Batch<u32> as SimdBatch<u32>>::splat(1);
+        
+        // gather_2d will perform its own check, but safe_x/safe_y ensure we are within valid range
+        // even if gather_2d's check is loose (due to width mismatch).
+        let packed = unsafe { self.gather_2d::<B>(byte_x, safe_y) };
+        
         let high_nibble = (packed >> 4) & <B::Batch<u32> as SimdBatch<u32>>::splat(0x0F);
         let low_nibble = packed & <B::Batch<u32> as SimdBatch<u32>>::splat(0x0F);
         let all_ones = <B::Batch<u32> as SimdBatch<u32>>::splat(0xFFFFFFFF);
         let mask = is_odd * all_ones;
         let nibble = (high_nibble & !mask) | (low_nibble & mask);
-        (nibble << 4) | nibble
+        let val = (nibble << 4) | nibble;
+
+        in_bounds.select(val, zero)
     }
 
     #[inline(always)]

@@ -2,7 +2,8 @@ pub mod waker;
 
 use crate::channel::{create_engine_channels, DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, DriverConfig};
+use crate::config::EngineConfig;
+use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::MouseButton;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
@@ -31,7 +32,7 @@ pub type PlatformPixel = <PlatformDriver as DisplayDriver>::Pixel;
 
 pub struct EnginePlatform {
     driver: PlatformDriver,
-    config: DriverConfig,
+    config: EngineConfig,
     engine_sender: EngineSender<PlatformPixel>,
     control_rx: Receiver<EngineCommand<PlatformPixel>>,
     display_rx: Receiver<EngineCommand<PlatformPixel>>,
@@ -50,7 +51,7 @@ impl crate::platform::waker::EventLoopWaker for PlatformWaker {
 }
 
 impl EnginePlatform {
-    pub fn new(config: DriverConfig) -> Result<Self> {
+    pub fn new(config: EngineConfig) -> Result<Self> {
         info!("EnginePlatform::new() - Creating channel-based platform");
 
         let channels = create_engine_channels::<PlatformPixel>(64);
@@ -89,8 +90,7 @@ impl EnginePlatform {
         let driver_handle = self.driver.clone();
         let control_rx = self.control_rx;
         let display_rx = self.display_rx;
-        let config = self.config.clone();
-        let target_fps = config.target_fps;
+        let target_fps = self.config.performance.target_fps;
 
         // Spawn engine thread
         std::thread::spawn(move || {
@@ -99,8 +99,15 @@ impl EnginePlatform {
             }
         });
 
-        // Send Configure before running
-        self.driver.send(DriverCommand::Configure(config))?;
+        // Send CreateWindow command
+        let width = (self.config.window.columns as usize * self.config.window.cell_width_px) as u32;
+        let height = (self.config.window.rows as usize * self.config.window.cell_height_px) as u32;
+        self.driver.send(DriverCommand::CreateWindow {
+            id: WindowId::PRIMARY,
+            width,
+            height,
+            title: self.config.window.title.clone(),
+        })?;
 
         // Run driver on main thread (blocks)
         self.driver.run()
@@ -166,31 +173,24 @@ fn engine_loop<A: Application<PlatformPixel>>(
             for _ in 0..10 {
                 match display_rx.try_recv() {
                     Ok(EngineCommand::DisplayEvent(evt)) => {
-                        // Track physical dimensions and scale factor
-                        if let DisplayEvent::Resize {
-                            width_px: w,
-                            height_px: h,
-                            scale_factor: sf,
-                        } = &evt
-                        {
-                            physical_width = *w;
-                            physical_height = *h;
-                            scale_factor = *sf;
-                            // Invalidate framebuffer on resize - size changed
-                            framebuffer = None;
-                        }
-                        // Also track scale factor from mouse events (fallback)
-                        if let DisplayEvent::MouseButtonPress {
-                            scale_factor: sf, ..
-                        }
-                        | DisplayEvent::MouseButtonRelease {
-                            scale_factor: sf, ..
-                        }
-                        | DisplayEvent::MouseMove {
-                            scale_factor: sf, ..
-                        } = &evt
-                        {
-                            scale_factor = *sf;
+                        // Track physical dimensions and scale factor from window events
+                        match &evt {
+                            DisplayEvent::WindowCreated { width_px: w, height_px: h, scale: sf, .. } => {
+                                physical_width = *w;
+                                physical_height = *h;
+                                scale_factor = *sf;
+                                framebuffer = None;
+                            }
+                            DisplayEvent::Resized { width_px: w, height_px: h, .. } => {
+                                physical_width = *w;
+                                physical_height = *h;
+                                framebuffer = None;
+                            }
+                            DisplayEvent::ScaleChanged { scale: sf, .. } => {
+                                scale_factor = *sf;
+                                framebuffer = None;
+                            }
+                            _ => {}
                         }
 
                         if let Some(engine_evt) = map_display_event(&evt, scale_factor) {
@@ -202,7 +202,7 @@ fn engine_loop<A: Application<PlatformPixel>>(
                         }
 
                         // Handle CloseRequested
-                        if matches!(evt, DisplayEvent::CloseRequested) {
+                        if matches!(evt, DisplayEvent::CloseRequested { .. }) {
                             info!("Engine loop: close requested");
                             driver.send(DriverCommand::Shutdown)?;
                             return Ok(());
@@ -235,7 +235,7 @@ fn engine_loop<A: Application<PlatformPixel>>(
                 render::<PlatformPixel, _>(&scaled, &mut frame);
 
                 // Send typed frame to driver
-                driver.send(DriverCommand::Present(frame))?;
+                driver.send(DriverCommand::Present { id: WindowId::PRIMARY, frame })?;
             }
         }
     }
@@ -256,7 +256,7 @@ fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionRes
         }
         AppAction::Quit => Ok(ActionResult::Shutdown),
         AppAction::SetTitle(title) => {
-            driver.send(DriverCommand::SetTitle(title))?;
+            driver.send(DriverCommand::SetTitle { id: WindowId::PRIMARY, title })?;
             Ok(ActionResult::Continue)
         }
         AppAction::CopyToClipboard(text) => {
@@ -275,20 +275,26 @@ fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionRes
 /// Convert DisplayEvent to EngineEvent, converting physical to logical pixels.
 fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEvent> {
     match evt {
-        DisplayEvent::Resize {
-            width_px,
-            height_px,
-            ..
-        } => {
+        DisplayEvent::WindowCreated { width_px, height_px, .. }
+        | DisplayEvent::Resized { width_px, height_px, .. } => {
             // Convert physical pixels to logical pixels
             let logical_w = (*width_px as f64 / scale_factor) as u32;
             let logical_h = (*height_px as f64 / scale_factor) as u32;
             Some(EngineEvent::Resize(logical_w, logical_h))
         }
+        DisplayEvent::WindowDestroyed { id } => {
+            log::info!("Engine: WindowDestroyed {:?}", id);
+            None
+        }
+        DisplayEvent::CloseRequested { .. } => Some(EngineEvent::CloseRequested),
+        DisplayEvent::ScaleChanged { scale, .. } => {
+            Some(EngineEvent::ScaleChanged(*scale))
+        }
         DisplayEvent::Key {
             symbol,
             modifiers,
             text,
+            ..
         } => Some(EngineEvent::KeyDown {
             key: symbol.clone(),
             mods: *modifiers,
@@ -296,8 +302,8 @@ fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEven
         }),
         DisplayEvent::MouseButtonPress { button, x, y, .. } => {
             // Convert physical pixels to logical pixels
-            let logical_x = (*x as f64 / scale_factor) as u32;
-            let logical_y = (*y as f64 / scale_factor) as u32;
+            let logical_x = (*x as f64 / scale_factor).max(0.0) as u32;
+            let logical_y = (*y as f64 / scale_factor).max(0.0) as u32;
             let btn = match button {
                 1 => MouseButton::Left,
                 2 => MouseButton::Middle,
@@ -311,8 +317,8 @@ fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEven
             })
         }
         DisplayEvent::MouseButtonRelease { button, x, y, .. } => {
-            let logical_x = (*x as f64 / scale_factor) as u32;
-            let logical_y = (*y as f64 / scale_factor) as u32;
+            let logical_x = (*x as f64 / scale_factor).max(0.0) as u32;
+            let logical_y = (*y as f64 / scale_factor).max(0.0) as u32;
             let btn = match button {
                 1 => MouseButton::Left,
                 2 => MouseButton::Middle,
@@ -328,18 +334,33 @@ fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEven
         DisplayEvent::MouseMove {
             x, y, modifiers, ..
         } => {
-            let logical_x = (*x as f64 / scale_factor) as u32;
-            let logical_y = (*y as f64 / scale_factor) as u32;
+            let logical_x = (*x as f64 / scale_factor).max(0.0) as u32;
+            let logical_y = (*y as f64 / scale_factor).max(0.0) as u32;
             Some(EngineEvent::MouseMove {
                 x: logical_x,
                 y: logical_y,
                 mods: *modifiers,
             })
         }
-        DisplayEvent::CloseRequested => Some(EngineEvent::CloseRequested),
-        DisplayEvent::FocusGained => Some(EngineEvent::FocusGained),
-        DisplayEvent::FocusLost => Some(EngineEvent::FocusLost),
+        DisplayEvent::MouseScroll {
+            dx, dy, x, y, modifiers, ..
+        } => {
+            let logical_x = (*x as f64 / scale_factor).max(0.0) as u32;
+            let logical_y = (*y as f64 / scale_factor).max(0.0) as u32;
+            Some(EngineEvent::MouseScroll {
+                x: logical_x,
+                y: logical_y,
+                dx: *dx,
+                dy: *dy,
+                mods: *modifiers,
+            })
+        }
+        DisplayEvent::FocusGained { .. } => Some(EngineEvent::FocusGained),
+        DisplayEvent::FocusLost { .. } => Some(EngineEvent::FocusLost),
         DisplayEvent::PasteData { text } => Some(EngineEvent::Paste(text.clone())),
-        _ => None,
+        DisplayEvent::ClipboardDataRequested => {
+            log::trace!("Engine: ClipboardDataRequested (ignored)");
+            None
+        }
     }
 }

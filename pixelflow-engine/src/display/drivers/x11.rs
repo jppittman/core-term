@@ -7,8 +7,10 @@
 
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, RenderSnapshot};
+use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::{KeySymbol, Modifiers};
+use pixelflow_render::color::Bgra;
+use pixelflow_render::Frame;
 use crate::platform::waker::{EventLoopWaker, X11Waker};
 use anyhow::{anyhow, Result};
 use log::{info, trace};
@@ -47,8 +49,8 @@ impl SelectionAtoms {
 
 // --- Run State (only original driver has this) ---
 struct RunState {
-    cmd_rx: Receiver<DriverCommand>,
-    engine_tx: EngineSender,
+    cmd_rx: Receiver<DriverCommand<Bgra>>,
+    engine_tx: EngineSender<Bgra>,
 }
 
 // --- Display Driver ---
@@ -57,7 +59,7 @@ struct RunState {
 ///
 /// Clone to get a handle for sending commands. Only the original can run().
 pub struct X11DisplayDriver {
-    cmd_tx: SyncSender<DriverCommand>,
+    cmd_tx: SyncSender<DriverCommand<Bgra>>,
     waker: X11Waker,
     /// Only present on original, None on clones
     run_state: Option<RunState>,
@@ -74,7 +76,9 @@ impl Clone for X11DisplayDriver {
 }
 
 impl DisplayDriver for X11DisplayDriver {
-    fn new(engine_tx: EngineSender) -> Result<Self> {
+    type Pixel = Bgra;
+
+    fn new(engine_tx: EngineSender<Bgra>) -> Result<Self> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -84,7 +88,7 @@ impl DisplayDriver for X11DisplayDriver {
         })
     }
 
-    fn send(&self, cmd: DriverCommand) -> Result<()> {
+    fn send(&self, cmd: DriverCommand<Bgra>) -> Result<()> {
         let mut cmd = cmd;
         loop {
             match self.cmd_tx.try_send(cmd) {
@@ -118,17 +122,17 @@ impl DisplayDriver for X11DisplayDriver {
 // --- Event Loop ---
 
 fn run_event_loop(
-    cmd_rx: &Receiver<DriverCommand>,
-    engine_tx: &EngineSender,
+    cmd_rx: &Receiver<DriverCommand<Bgra>>,
+    engine_tx: &EngineSender<Bgra>,
     waker: &X11Waker,
 ) -> Result<()> {
-    // 1. Read Configure command first
-    let config = match cmd_rx.recv()? {
-        DriverCommand::Configure(c) => c,
-        other => return Err(anyhow!("Expected Configure, got {:?}", other)),
+    // 1. Read CreateWindow command first
+    let (window_id, width, height, title) = match cmd_rx.recv()? {
+        DriverCommand::CreateWindow { id, width, height, title } => (id, width, height, title),
+        other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
     };
 
-    info!("X11: Creating resources with config");
+    info!("X11: Creating window '{}' {}x{}", title, width, height);
 
     // 2. Create X11 resources
     unsafe {
@@ -149,23 +153,24 @@ fn run_event_loop(
 
         let atoms = SelectionAtoms::new(display);
 
-        // Calculate window size from config
-        let width = (config.initial_cols * config.cell_width_px) as u32;
-        let height = (config.initial_rows * config.cell_height_px) as u32;
-
         let black = xlib::XBlackPixel(display, screen);
         let white = xlib::XWhitePixel(display, screen);
 
-        let window = xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
+        let x11_window = xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
+
+        // Set window title
+        if let Ok(c_title) = CString::new(title.as_str()) {
+            xlib::XStoreName(display, x11_window, c_title.as_ptr());
+        }
 
         // Initialize waker now that we have display and window
-        waker.set_target(display, window);
+        waker.set_target(display, x11_window);
         let wake_atom = waker.wake_atom().unwrap();
 
         // Select Input Events
         xlib::XSelectInput(
             display,
-            window,
+            x11_window,
             xlib::KeyPressMask
                 | xlib::KeyReleaseMask
                 | xlib::ButtonPressMask
@@ -178,15 +183,15 @@ fn run_event_loop(
         );
 
         // Set WM Protocols
-        xlib::XSetWMProtocols(display, window, &wm_delete_window as *const _ as *mut _, 1);
+        xlib::XSetWMProtocols(display, x11_window, &wm_delete_window as *const _ as *mut _, 1);
 
         // Initialize GC
-        let gc = xlib::XCreateGC(display, window, 0, ptr::null_mut());
+        let gc = xlib::XCreateGC(display, x11_window, 0, ptr::null_mut());
         xlib::XSetForeground(display, gc, white);
         xlib::XSetBackground(display, gc, black);
 
         // Map Window
-        xlib::XMapWindow(display, window);
+        xlib::XMapWindow(display, x11_window);
         xlib::XFlush(display);
 
         // Initialize XRM database for querying Xft.dpi
@@ -200,9 +205,10 @@ fn run_event_loop(
 
         // 3. Run event loop
         let mut state = X11State {
+            window_id,
             display,
             screen,
-            window,
+            x11_window,
             gc,
             wm_delete_window,
             atoms,
@@ -222,11 +228,12 @@ fn run_event_loop(
             width, height, state.scale_factor
         );
 
-        // Send initial resize
-        let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
+        // Send WindowCreated event
+        let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+            id: window_id,
             width_px: width,
             height_px: height,
-            scale_factor: state.scale_factor,
+            scale: state.scale_factor,
         }));
 
         state.event_loop(cmd_rx, engine_tx)
@@ -237,9 +244,10 @@ fn run_event_loop(
 // --- X11 State (only exists during run) ---
 
 struct X11State {
+    window_id: WindowId,
     display: *mut xlib::Display,
     screen: c_int,
-    window: xlib::Window,
+    x11_window: xlib::Window,
     gc: xlib::GC,
     wm_delete_window: xlib::Atom,
     atoms: SelectionAtoms,
@@ -295,28 +303,35 @@ impl X11State {
 impl X11State {
     fn event_loop(
         &mut self,
-        cmd_rx: &Receiver<DriverCommand>,
-        engine_tx: &EngineSender,
+        cmd_rx: &Receiver<DriverCommand<Bgra>>,
+        engine_tx: &EngineSender<Bgra>,
     ) -> Result<()> {
         loop {
             // 1. Process all pending commands first
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
-                    DriverCommand::Configure(_) => {
-                        // Already configured, ignore
+                    DriverCommand::CreateWindow { .. } => {
+                        // Already created, ignore
+                    }
+                    DriverCommand::DestroyWindow { .. } => {
+                        info!("X11: DestroyWindow received");
+                        return Ok(());
                     }
                     DriverCommand::Shutdown => {
                         info!("X11: Shutdown command received");
                         return Ok(());
                     }
-                    DriverCommand::Present(snapshot) => {
-                        let result = self.handle_present(snapshot);
-                        if let Ok(snapshot) = result {
-                            let _ = engine_tx.send(EngineCommand::PresentComplete(snapshot));
+                    DriverCommand::Present { frame, .. } => {
+                        let result = self.handle_present(frame);
+                        if let Ok(frame) = result {
+                            let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
                         }
                     }
-                    DriverCommand::SetTitle(title) => {
+                    DriverCommand::SetTitle { title, .. } => {
                         self.handle_set_title(&title);
+                    }
+                    DriverCommand::SetSize { width, height, .. } => {
+                        self.handle_set_size(width, height);
                     }
                     DriverCommand::CopyToClipboard(text) => {
                         self.handle_copy_to_clipboard(&text);
@@ -337,7 +352,7 @@ impl X11State {
                     xlib::XNextEvent(self.display, &mut event);
 
                     if let Some(display_event) = self.convert_xevent(&event) {
-                        if matches!(display_event, DisplayEvent::CloseRequested) {
+                        if matches!(display_event, DisplayEvent::CloseRequested { .. }) {
                             info!("X11: CloseRequested, exiting event loop");
                             return Ok(());
                         }
@@ -352,7 +367,7 @@ impl X11State {
                 xlib::XNextEvent(self.display, &mut event);
 
                 if let Some(display_event) = self.convert_xevent(&event) {
-                    if matches!(display_event, DisplayEvent::CloseRequested) {
+                    if matches!(display_event, DisplayEvent::CloseRequested { .. }) {
                         info!("X11: CloseRequested, exiting event loop");
                         return Ok(());
                     }
@@ -363,6 +378,7 @@ impl X11State {
     }
 
     fn convert_xevent(&mut self, event: &xlib::XEvent) -> Option<DisplayEvent> {
+        let id = self.window_id;
         unsafe {
             match event.type_ {
                 xlib::ClientMessage => {
@@ -370,7 +386,7 @@ impl X11State {
                     // Check for window manager close request
                     let data0 = client.data.as_longs()[0];
                     if data0 as xlib::Atom == self.wm_delete_window {
-                        return Some(DisplayEvent::CloseRequested);
+                        return Some(DisplayEvent::CloseRequested { id });
                     }
                     // Wake events are ignored - they just break us out of XNextEvent
                     if client.message_type == self.wake_atom {
@@ -408,6 +424,7 @@ impl X11State {
                     let symbol = self.xkeysym_to_keysymbol(keysym, text.as_deref().unwrap_or(""));
 
                     Some(DisplayEvent::Key {
+                        id,
                         symbol,
                         modifiers,
                         text,
@@ -417,33 +434,72 @@ impl X11State {
                     let conf = event.configure;
                     self.width_px = conf.width as u32;
                     self.height_px = conf.height as u32;
-                    Some(DisplayEvent::Resize {
+                    Some(DisplayEvent::Resized {
+                        id,
                         width_px: self.width_px,
                         height_px: self.height_px,
-                        scale_factor: self.scale_factor,
                     })
                 }
-                xlib::FocusIn => Some(DisplayEvent::FocusGained),
-                xlib::FocusOut => Some(DisplayEvent::FocusLost),
+                xlib::FocusIn => Some(DisplayEvent::FocusGained { id }),
+                xlib::FocusOut => Some(DisplayEvent::FocusLost { id }),
                 xlib::ButtonPress => {
                     let e = event.button;
                     let modifiers = self.extract_modifiers(e.state);
-                    Some(DisplayEvent::MouseButtonPress {
-                        button: e.button as u8,
-                        x: e.x,
-                        y: e.y,
-                        scale_factor: self.scale_factor,
-                        modifiers,
-                    })
+                    // X11 uses buttons 4/5 for scroll wheel
+                    match e.button {
+                        4 => Some(DisplayEvent::MouseScroll {
+                            id,
+                            dx: 0.0,
+                            dy: 1.0, // Scroll up
+                            x: e.x,
+                            y: e.y,
+                            modifiers,
+                        }),
+                        5 => Some(DisplayEvent::MouseScroll {
+                            id,
+                            dx: 0.0,
+                            dy: -1.0, // Scroll down
+                            x: e.x,
+                            y: e.y,
+                            modifiers,
+                        }),
+                        6 => Some(DisplayEvent::MouseScroll {
+                            id,
+                            dx: -1.0, // Scroll left
+                            dy: 0.0,
+                            x: e.x,
+                            y: e.y,
+                            modifiers,
+                        }),
+                        7 => Some(DisplayEvent::MouseScroll {
+                            id,
+                            dx: 1.0, // Scroll right
+                            dy: 0.0,
+                            x: e.x,
+                            y: e.y,
+                            modifiers,
+                        }),
+                        _ => Some(DisplayEvent::MouseButtonPress {
+                            id,
+                            button: e.button as u8,
+                            x: e.x,
+                            y: e.y,
+                            modifiers,
+                        }),
+                    }
                 }
                 xlib::ButtonRelease => {
                     let e = event.button;
+                    // Skip release events for scroll buttons
+                    if e.button >= 4 && e.button <= 7 {
+                        return None;
+                    }
                     let modifiers = self.extract_modifiers(e.state);
                     Some(DisplayEvent::MouseButtonRelease {
+                        id,
                         button: e.button as u8,
                         x: e.x,
                         y: e.y,
-                        scale_factor: self.scale_factor,
                         modifiers,
                     })
                 }
@@ -451,9 +507,9 @@ impl X11State {
                     let e = event.motion;
                     let modifiers = self.extract_modifiers(e.state);
                     Some(DisplayEvent::MouseMove {
+                        id,
                         x: e.x,
                         y: e.y,
-                        scale_factor: self.scale_factor,
                         modifiers,
                     })
                 }
@@ -526,11 +582,11 @@ impl X11State {
 
     // --- Command handlers ---
 
-    fn handle_present(&mut self, snapshot: RenderSnapshot) -> Result<RenderSnapshot> {
+    fn handle_present(&mut self, frame: Frame<Bgra>) -> Result<Frame<Bgra>> {
         unsafe {
             let depth = xlib::XDefaultDepth(self.display, self.screen);
             let visual = xlib::XDefaultVisual(self.display, self.screen);
-            let data_ptr = snapshot.framebuffer.as_ptr() as *mut i8;
+            let data_ptr = frame.data().as_ptr() as *mut i8;
 
             let image = xlib::XCreateImage(
                 self.display,
@@ -539,8 +595,8 @@ impl X11State {
                 xlib::ZPixmap,
                 0,
                 data_ptr,
-                snapshot.width_px,
-                snapshot.height_px,
+                frame.width(),
+                frame.height(),
                 32,
                 0,
             );
@@ -551,15 +607,15 @@ impl X11State {
 
             xlib::XPutImage(
                 self.display,
-                self.window,
+                self.x11_window,
                 self.gc,
                 image,
                 0,
                 0,
                 0,
                 0,
-                snapshot.width_px,
-                snapshot.height_px,
+                frame.width(),
+                frame.height(),
             );
 
             (*image).data = ptr::null_mut();
@@ -567,13 +623,20 @@ impl X11State {
             xlib::XFlush(self.display);
         }
 
-        Ok(snapshot)
+        Ok(frame)
+    }
+
+    fn handle_set_size(&mut self, width: u32, height: u32) {
+        unsafe {
+            xlib::XResizeWindow(self.display, self.x11_window, width, height);
+            xlib::XFlush(self.display);
+        }
     }
 
     fn handle_set_title(&mut self, title: &str) {
         unsafe {
             if let Ok(c_title) = CString::new(title) {
-                xlib::XStoreName(self.display, self.window, c_title.as_ptr());
+                xlib::XStoreName(self.display, self.x11_window, c_title.as_ptr());
                 xlib::XFlush(self.display);
             }
         }
@@ -594,7 +657,7 @@ impl X11State {
             xlib::XSetSelectionOwner(
                 self.display,
                 self.atoms.clipboard,
-                self.window,
+                self.x11_window,
                 xlib::CurrentTime,
             );
             xlib::XFlush(self.display);
@@ -679,7 +742,7 @@ impl X11State {
                 self.atoms.clipboard,
                 self.atoms.utf8_string,
                 self.atoms.clipboard,
-                self.window,
+                self.x11_window,
                 xlib::CurrentTime,
             );
             xlib::XFlush(self.display);
@@ -732,7 +795,7 @@ impl Drop for X11State {
                 xlib::XrmDestroyDatabase(xrm_db);
             }
             xlib::XFreeGC(self.display, self.gc);
-            xlib::XDestroyWindow(self.display, self.window);
+            xlib::XDestroyWindow(self.display, self.x11_window);
             xlib::XCloseDisplay(self.display);
         }
         info!("X11State dropped - resources cleaned up");
