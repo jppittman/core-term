@@ -18,12 +18,23 @@ impl Backend for Sse2 {
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: SimdVec<u32>) -> SimdVec<u8> {
-        unsafe { b.transmute() }
+        unsafe {
+            // Pack 4 u32s into lower 32 bits (4 u8s)
+            let b16 = _mm_packs_epi32(b.0, b.0); // u32 -> i16 (sat)
+            let b8 = _mm_packus_epi16(b16, b16); // i16 -> u8 (sat)
+            SimdVec(b8, PhantomData)
+        }
     }
 
     #[inline(always)]
     fn upcast_u8_to_u32(b: SimdVec<u8>) -> SimdVec<u32> {
-        unsafe { b.transmute() }
+        unsafe {
+            // Unpack lower 32 bits (4 u8s) to 4 u32s
+            let zero = _mm_setzero_si128();
+            let u16s = _mm_unpacklo_epi8(b.0, zero);
+            let u32s = _mm_unpacklo_epi16(u16s, zero);
+            SimdVec(u32s, PhantomData)
+        }
     }
 
     #[inline(always)]
@@ -253,11 +264,25 @@ impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec
     }
 
     fn load(slice: &[T]) -> Self {
-        unsafe { Self(_mm_loadu_si128(slice.as_ptr() as *const _), PhantomData) }
+        unsafe {
+            if core::mem::size_of::<T>() == 1 {
+                let val = *(slice.as_ptr() as *const i32);
+                Self(_mm_cvtsi32_si128(val), PhantomData)
+            } else {
+                Self(_mm_loadu_si128(slice.as_ptr() as *const _), PhantomData)
+            }
+        }
     }
 
     fn store(&self, slice: &mut [T]) {
-        unsafe { _mm_storeu_si128(slice.as_mut_ptr() as *mut _, self.0) }
+        unsafe {
+            if core::mem::size_of::<T>() == 1 {
+                let val = _mm_cvtsi128_si32(self.0);
+                *(slice.as_mut_ptr() as *mut i32) = val;
+            } else {
+                _mm_storeu_si128(slice.as_mut_ptr() as *mut _, self.0)
+            }
+        }
     }
 
     fn first(&self) -> T {

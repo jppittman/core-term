@@ -267,6 +267,18 @@ pub struct TensorViewMut<'a, T> {
     pub stride: usize,
 }
 
+impl<'a, T> TensorViewMut<'a, T> {
+    #[inline(always)]
+    pub fn new(data: &'a mut [T], width: usize, height: usize, stride: usize) -> Self {
+        Self {
+            data,
+            width,
+            height,
+            stride,
+        }
+    }
+}
+
 pub fn execute<P, S>(surface: &S, target: &mut [P], width: usize, height: usize)
 where
     P: pixel::Pixel,

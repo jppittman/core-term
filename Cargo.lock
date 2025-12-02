@@ -1185,6 +1185,7 @@ dependencies = [
 name = "pixelflow-fonts"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "pixelflow-core",
  "thiserror 1.0.69",
  "ttf-parser",
