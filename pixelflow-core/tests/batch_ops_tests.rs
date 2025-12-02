@@ -1,4 +1,16 @@
-use pixelflow_core::Batch;
+use pixelflow_core::{Batch, SimdOps, SimdBatch};
+
+trait BatchTestExt {
+    fn to_array_usize(&self) -> [usize; 4];
+}
+
+impl BatchTestExt for Batch<u32> {
+    fn to_array_usize(&self) -> [usize; 4] {
+        let mut arr = [0u32; 4];
+        self.store(&mut arr);
+        [arr[0] as usize, arr[1] as usize, arr[2] as usize, arr[3] as usize]
+    }
+}
 
 #[test]
 fn test_batch_u32_saturating_add() {
@@ -78,9 +90,10 @@ fn test_batch_select_masking() {
     let mask_false = Batch::<u32>::splat(0);
     let mask_mixed = Batch::<u32>::new(u32::MAX, 0, u32::MAX, 0);
 
-    assert_eq!(a.select(b, mask_true).to_array_usize(), [10, 10, 10, 10]);
-    assert_eq!(a.select(b, mask_false).to_array_usize(), [20, 20, 20, 20]);
-    assert_eq!(a.select(b, mask_mixed).to_array_usize(), [10, 20, 10, 20]);
+    // Usage: mask.select(if_true, if_false)
+    assert_eq!(mask_true.select(a, b).to_array_usize(), [10, 10, 10, 10]);
+    assert_eq!(mask_false.select(a, b).to_array_usize(), [20, 20, 20, 20]);
+    assert_eq!(mask_mixed.select(a, b).to_array_usize(), [10, 20, 10, 20]);
 }
 
 #[test]

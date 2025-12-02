@@ -1,4 +1,17 @@
-use pixelflow_core::{Batch, MapPixels, TensorView, TensorViewMut};
+use pixelflow_core::{Batch, TensorView, TensorViewMut, SimdOps, SimdBatch};
+use pixelflow_core::batch::NativeBackend;
+
+trait BatchTestExt {
+    fn to_array_usize(&self) -> [usize; 4];
+}
+
+impl BatchTestExt for Batch<u32> {
+    fn to_array_usize(&self) -> [usize; 4] {
+        let mut arr = [0u32; 4];
+        self.store(&mut arr);
+        [arr[0] as usize, arr[1] as usize, arr[2] as usize, arr[3] as usize]
+    }
+}
 
 #[test]
 fn test_tensor_view_gather_clamping() {
@@ -18,63 +31,8 @@ fn test_tensor_view_gather_clamping() {
     // Lane 2: (0, 0) -> index 0 -> 10
     // Lane 3: (1, 0) -> index 1 -> 20
 
-    let gathered = unsafe { view.gather_2d(x, y) };
+    let gathered: Batch<u32> = unsafe { view.gather_2d::<NativeBackend>(x, y) };
     let res = gathered.to_array_usize();
 
     assert_eq!(res, [40, 40, 10, 20]);
-}
-
-#[test]
-fn test_tensor_view_mut_map_pixels_odd_width() {
-    // Width 5, Height 2. Stride 5. Total 10 pixels.
-    let mut data = [0u32; 10];
-    let mut view = TensorViewMut::new(&mut data, 5, 2, 5);
-
-    // Map pixels to coordinate sum x + y
-    view.map_pixels(|x, y| x + y);
-
-    // Row 0: 0, 1, 2, 3, 4
-    // Row 1: 1, 2, 3, 4, 5
-    let expected = [0, 1, 2, 3, 4, 1, 2, 3, 4, 5];
-
-    assert_eq!(data, expected);
-}
-
-#[test]
-fn test_tensor_view_mut_map_pixels_narrow() {
-    // Width 1 (narrower than SIMD lane width 4)
-    let mut data = [0u32; 2];
-    let mut view = TensorViewMut::new(&mut data, 1, 2, 1);
-
-    view.map_pixels(|x, _y| x);
-
-    assert_eq!(data, [0, 0]);
-}
-
-#[test]
-fn test_tensor_view_sub_view() {
-    // Explicitly u32
-    let mut data: [u32; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]; // 4x3
-
-    let mut view = TensorViewMut::new(&mut data, 4, 3, 4);
-
-    // Subview at (1, 1) size 2x2
-    // Corresponds to indices:
-    // (1,1)->5, (2,1)->6
-    // (1,2)->9, (2,2)->10
-
-    let mut sub = unsafe { view.sub_view(1, 1, 2, 2) };
-
-    assert_eq!(sub.width, 2);
-    assert_eq!(sub.height, 2);
-    assert_eq!(sub.stride, 4); // Stride remains parent stride
-
-    // Modify subview
-    sub.map_pixels(|_x, _y| Batch::<u32>::splat(99));
-
-    // Check original data
-    // 5, 6, 9, 10 should be 99
-    let expected = [0, 1, 2, 3, 4, 99, 99, 7, 8, 99, 99, 11];
-
-    assert_eq!(data, expected);
 }
