@@ -281,3 +281,92 @@ impl<'a, P: Pixel> Surface<P> for &'a Baked<P> {
         (*self).eval(x, y)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::batch::Batch;
+    use crate::pipe::Surface;
+
+    /// A simple test surface that returns x + y * 10 as u32
+    struct TestSurface;
+
+    impl Surface<u32> for TestSurface {
+        fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+            x + y * Batch::<u32>::splat(10)
+        }
+    }
+
+    #[test]
+    fn offset_positive_values_work() {
+        let source = TestSurface;
+        let offset = Offset {
+            source,
+            dx: 2,
+            dy: 3,
+        };
+
+        // Sampling at (5, 5) should read from (7, 8) in source
+        // Expected: 7 + 8 * 10 = 87
+        let result = offset.eval(Batch::<u32>::splat(5), Batch::<u32>::splat(5));
+        assert_eq!(result.first(), 87);
+    }
+
+    #[test]
+    fn offset_negative_values_work() {
+        // Bug: negative offsets cast to u32 wrap to huge values
+        // dx=-2 becomes 0xFFFFFFFE, so x + dx wraps around
+        let source = TestSurface;
+        let offset = Offset {
+            source,
+            dx: -2,
+            dy: -3,
+        };
+
+        // Sampling at (5, 5) should read from (3, 2) in source
+        // Expected: 3 + 2 * 10 = 23
+        //
+        // With the bug: 5 + 0xFFFFFFFE wraps to 3 (wrapping_add)
+        // So this actually "works" due to wrapping semantics!
+        // Let's test the edge case where it breaks:
+        let result = offset.eval(Batch::<u32>::splat(5), Batch::<u32>::splat(5));
+
+        // This passes due to wrapping, but let's verify
+        assert_eq!(
+            result.first(),
+            23,
+            "Offset with negative values should work"
+        );
+    }
+
+    #[test]
+    fn offset_negative_values_underflow_case() {
+        // The real bug: when x < |dx|, we get underflow
+        // x=1, dx=-2 should give negative coordinate, but wraps to u32::MAX-1
+        let source = TestSurface;
+        let offset = Offset {
+            source,
+            dx: -2,
+            dy: 0,
+        };
+
+        // Sampling at (1, 0) with dx=-2 should ideally clamp or error
+        // But currently wraps to (u32::MAX - 1, 0)
+        let result = offset.eval(Batch::<u32>::splat(1), Batch::<u32>::splat(0));
+
+        // With wrapping: 1 + (-2 as u32) = 1 + 0xFFFFFFFE = 0xFFFFFFFF
+        // This is a giant coordinate that will cause issues
+        //
+        // For now, this test documents the current behavior.
+        // The fix depends on whether we want saturation or wrapping.
+        //
+        // Expected with saturation: 0 (clamped to 0)
+        // Current with wrapping: 0xFFFFFFFF
+        let expected_with_wrapping = 0xFFFFFFFFu32;
+        assert_eq!(
+            result.first(),
+            expected_with_wrapping,
+            "Documenting current wrapping behavior - this may need fixing"
+        );
+    }
+}

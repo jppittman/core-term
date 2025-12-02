@@ -349,6 +349,7 @@ impl Segment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_core::backend::SimdBatch;
 
     /// A CCW unit square from (0,0) to (1,1).
     fn ccw_unit_square() -> [Segment; 4] {
@@ -647,5 +648,50 @@ mod tests {
                 batch
             );
         }
+    }
+
+    // ========================================================================
+    // Bug Regression Tests
+    // ========================================================================
+
+    #[test]
+    fn quadratic_distance_far_outside_segment_returns_large() {
+        // Bug: Loop-Blinn implicit distance returns small values for points
+        // far outside the curve segment's parameter range [0, 1].
+        //
+        // This causes spurious glyph coverage - pixels far from glyphs
+        // get non-zero alpha because the implicit equation u² - v doesn't
+        // care about parameter bounds.
+        let q = Quadratic::try_new([0.0, 0.0], [0.5, 1.0], [1.0, 0.0]).unwrap();
+        let seg = Segment::Quad(q);
+
+        // Point 10 units above the curve apex (which is at y=1.0)
+        // This point should NOT be considered close to the curve
+        let dist = seg.min_distance(0.5, 10.0);
+
+        // The actual distance to the curve is at least 9.0 (10 - 1 = 9)
+        // With the bug, this returns a small value like ~0.4
+        assert!(
+            dist > 5.0,
+            "Point 10 units above curve should have large distance, got {}",
+            dist
+        );
+    }
+
+    #[test]
+    fn quadratic_distance_batch_far_outside_returns_large() {
+        // Same test for the batch version
+        let q = Quadratic::try_new([0.0, 0.0], [0.5, 1.0], [1.0, 0.0]).unwrap();
+        let seg = Segment::Quad(q);
+
+        let x = Batch::<f32>::splat(0.5);
+        let y = Batch::<f32>::splat(10.0);
+        let dist = seg.min_distance_batch(x, y).first();
+
+        assert!(
+            dist > 5.0,
+            "Batch: Point 10 units above curve should have large distance, got {}",
+            dist
+        );
     }
 }

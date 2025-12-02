@@ -506,11 +506,12 @@ impl BatchArithmetic<u32> for SimdVec<u32> {
         unsafe {
             let mut idx = [0u32; 4];
             vst1q_u32(idx.as_mut_ptr(), indices.0.u32);
-            let v0 = base.get(idx[0] as usize).unwrap_or(&0);
-            let v1 = base.get(idx[1] as usize).unwrap_or(&0);
-            let v2 = base.get(idx[2] as usize).unwrap_or(&0);
-            let v3 = base.get(idx[3] as usize).unwrap_or(&0);
-            let arr = [*v0, *v1, *v2, *v3];
+            let len = base.len();
+            let v0 = if (idx[0] as usize) < len { base[idx[0] as usize] } else { 0 };
+            let v1 = if (idx[1] as usize) < len { base[idx[1] as usize] } else { 0 };
+            let v2 = if (idx[2] as usize) < len { base[idx[2] as usize] } else { 0 };
+            let v3 = if (idx[3] as usize) < len { base[idx[3] as usize] } else { 0 };
+            let arr = [v0, v1, v2, v3];
             Self(
                 NeonReg {
                     u32: vld1q_u32(arr.as_ptr()),
@@ -524,11 +525,12 @@ impl BatchArithmetic<u32> for SimdVec<u32> {
         unsafe {
             let mut idx = [0u32; 4];
             vst1q_u32(idx.as_mut_ptr(), indices.0.u32);
-            let v0 = base.get(idx[0] as usize).unwrap_or(&0);
-            let v1 = base.get(idx[1] as usize).unwrap_or(&0);
-            let v2 = base.get(idx[2] as usize).unwrap_or(&0);
-            let v3 = base.get(idx[3] as usize).unwrap_or(&0);
-            let arr = [*v0 as u32, *v1 as u32, *v2 as u32, *v3 as u32];
+            let len = base.len();
+            let v0 = if (idx[0] as usize) < len { base[idx[0] as usize] as u32 } else { 0 };
+            let v1 = if (idx[1] as usize) < len { base[idx[1] as usize] as u32 } else { 0 };
+            let v2 = if (idx[2] as usize) < len { base[idx[2] as usize] as u32 } else { 0 };
+            let v3 = if (idx[3] as usize) < len { base[idx[3] as usize] as u32 } else { 0 };
+            let arr = [v0, v1, v2, v3];
             Self(
                 NeonReg {
                     u32: vld1q_u32(arr.as_ptr()),
