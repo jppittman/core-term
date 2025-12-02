@@ -170,6 +170,7 @@ impl<P: Pixel + Surface<P>> Clone for TerminalSurface<P> {
 mod tests {
     use super::*;
     use crate::surface::grid::Cell;
+    use pixelflow_core::backend::SimdBatch;
     use pixelflow_render::{NamedColor, Rgba};
 
     #[test]
@@ -220,24 +221,22 @@ mod tests {
     fn test_eval_batch() {
         let surface: TerminalSurface<Rgba> = TerminalSurface::new(10, 5, 10, 16);
 
-        let x = Batch::new(0, 5, 10, 15);
-        let y = Batch::new(0, 8, 16, 24);
+        // Test with splat - all lanes same value
+        let x = Batch::<u32>::splat(5);
+        let y = Batch::<u32>::splat(8);
 
         let result: Batch<Rgba> = surface.eval(x, y);
 
-        // All should be background (black) for empty grid
-        let result_u32: Batch<u32> = result.transmute();
-        let arr = result_u32.to_array_usize();
-
-        for &c in &arr {
-            let c = c as u32;
-            let pixel = Rgba(c);
-            // Black with full alpha
-            assert_eq!(pixel.a(), 0xFF);
-            assert_eq!(pixel.r(), 0);
-            assert_eq!(pixel.g(), 0);
-            assert_eq!(pixel.b(), 0);
-        }
+        // Should be background (black) for empty grid
+        // SAFETY: transmute between same-sized SIMD register types
+        let result_u32: Batch<u32> = unsafe { result.transmute() };
+        let c = result_u32.first();
+        let pixel = Rgba(c);
+        // Black with full alpha
+        assert_eq!(pixel.a(), 0xFF);
+        assert_eq!(pixel.r(), 0);
+        assert_eq!(pixel.g(), 0);
+        assert_eq!(pixel.b(), 0);
     }
 
     #[test]
@@ -396,10 +395,10 @@ mod tests {
         let corners = [(0u32, 0u32), (9, 0), (0, 15), (9, 15)];
         println!("Glyph 'A' coverage at corners (cell 10x16):");
         for (x, y) in corners {
-            let x_batch = Batch::splat(x);
-            let y_batch = Batch::splat(y);
+            let x_batch = Batch::<u32>::splat(x);
+            let y_batch = Batch::<u32>::splat(y);
             let coverage: Batch<u8> = baked.eval(x_batch, y_batch);
-            let alpha = coverage.transmute::<u32>().to_array_usize()[0] as u8;
+            let alpha = coverage.first();
             println!("  ({}, {}): coverage = {}", x, y, alpha);
         }
 
@@ -411,7 +410,7 @@ mod tests {
         struct ConstAlpha(u8);
         impl Surface<u8> for ConstAlpha {
             fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<u8> {
-                Batch::splat(self.0 as u32).transmute()
+                Batch::<u8>::splat(self.0)
             }
         }
 
@@ -420,8 +419,9 @@ mod tests {
 
         // Test with 0% alpha (should be pure bg)
         let composed = ConstAlpha(0).over::<Rgba, _, _>(fg, bg);
-        let result: Batch<Rgba> = composed.eval(Batch::splat(0), Batch::splat(0));
-        let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
+        let result: Batch<Rgba> = composed.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
+        // SAFETY: transmute between same-sized SIMD register types
+        let pixel = Rgba(unsafe { result.transmute::<u32>() }.first());
         println!(
             "\nAlpha=0 (expect pure blue bg): r={}, g={}, b={}",
             pixel.r(),
@@ -434,8 +434,8 @@ mod tests {
         // Test with 255 alpha (should be pure fg)
         // Note: blend_math does (fg * 255 + bg * 1) / 256, so 255*255/256 = 254
         let composed = ConstAlpha(255).over::<Rgba, _, _>(fg, bg);
-        let result: Batch<Rgba> = composed.eval(Batch::splat(0), Batch::splat(0));
-        let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
+        let result: Batch<Rgba> = composed.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
+        let pixel = Rgba(unsafe { result.transmute::<u32>() }.first());
         println!(
             "Alpha=255 (expect ~pure red fg): r={}, g={}, b={}",
             pixel.r(),
@@ -455,8 +455,8 @@ mod tests {
 
         // Test with 128 alpha (should be ~50/50)
         let composed = ConstAlpha(128).over::<Rgba, _, _>(fg, bg);
-        let result: Batch<Rgba> = composed.eval(Batch::splat(0), Batch::splat(0));
-        let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
+        let result: Batch<Rgba> = composed.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
+        let pixel = Rgba(unsafe { result.transmute::<u32>() }.first());
         println!(
             "Alpha=128 (expect ~50/50): r={}, g={}, b={}",
             pixel.r(),
@@ -614,10 +614,10 @@ mod tests {
         // Sample center of each cell
         let check =
             |cx: u32, cy: u32, expected_r: u8, expected_g: u8, expected_b: u8, name: &str| {
-                let x_batch = Batch::splat(cx);
-                let y_batch = Batch::splat(cy);
+                let x_batch = Batch::<u32>::splat(cx);
+                let y_batch = Batch::<u32>::splat(cy);
                 let result: Batch<Rgba> = baked.eval(x_batch, y_batch);
-                let pixel = Rgba(result.transmute::<u32>().to_array_usize()[0] as u32);
+                let pixel = Rgba(unsafe { result.transmute::<u32>() }.first());
                 assert_eq!(
                     (pixel.r(), pixel.g(), pixel.b()),
                     (expected_r, expected_g, expected_b),
