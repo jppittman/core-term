@@ -142,6 +142,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_core::Batch;
 
     // A minimal test surface
     #[derive(Clone, Copy)]
@@ -151,7 +152,7 @@ mod tests {
 
     impl Surface<u32> for TestSurface {
         fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<u32> {
-            Batch::splat(self.color)
+            Batch::<u32>::splat(self.color)
         }
     }
 

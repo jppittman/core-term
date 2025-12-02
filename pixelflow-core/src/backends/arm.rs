@@ -22,7 +22,14 @@ impl Backend for Neon {
 
     #[inline(always)]
     fn upcast_u8_to_u32(b: SimdVec<u8>) -> SimdVec<u32> {
-        unsafe { b.transmute() }
+        // Zero-extend the low 4 bytes of the u8x16 to u32x4.
+        // u8x16 → u16x8 (low half) → u32x4 (low half)
+        unsafe {
+            let u8x16 = b.0.u8;
+            let u16x8 = vmovl_u8(vget_low_u8(u8x16)); // u8x8 → u16x8
+            let u32x4 = vmovl_u16(vget_low_u16(u16x8)); // u16x4 → u32x4
+            SimdVec(NeonReg { u32: u32x4 }, PhantomData)
+        }
     }
 
     #[inline(always)]
