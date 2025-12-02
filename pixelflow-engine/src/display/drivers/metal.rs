@@ -11,7 +11,7 @@
 
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::DisplayEvent;
+use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::{KeySymbol, Modifiers};
 use crate::platform::waker::{CocoaWaker, EventLoopWaker};
 use anyhow::{anyhow, Context, Result};
@@ -45,6 +45,14 @@ const MTL_RESOURCE_STORAGE_MODE_SHARED: u64 = 0;
 const DEFAULT_WINDOW_X: f64 = 100.0;
 const DEFAULT_WINDOW_Y: f64 = 100.0;
 const EVENT_TIMEOUT_SECONDS: f64 = 1.0;
+
+// --- Window ---
+struct Window {
+    id: WindowId,
+    width: u32,
+    height: u32,
+    title: String,
+}
 
 // --- Run State ---
 struct RunState {
@@ -286,28 +294,37 @@ fn run_event_loop(
 ) -> Result<()> {
     let mtm = MainThreadMarker::new().context("Must run on main thread")?;
 
-    // Read config
-    let config = match cmd_rx.recv()? {
-        DriverCommand::Configure(c) => c,
-        other => return Err(anyhow!("Expected Configure, got {:?}", other)),
+    // Wait for CreateWindow command
+    #[allow(deprecated)]
+    let win = match cmd_rx.recv()? {
+        DriverCommand::CreateWindow { id, width, height, title } => Window { id, width, height, title },
+        DriverCommand::Configure(c) => {
+            // Legacy fallback
+            Window {
+                id: WindowId::PRIMARY,
+                width: (c.initial_cols * c.cell_width_px) as u32,
+                height: (c.initial_rows * c.cell_height_px) as u32,
+                title: "PixelFlow Metal".to_string(),
+            }
+        }
+        other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
     };
 
-    info!("Metal: Creating resources");
+    info!("Metal: Creating resources for window {:?}", win.id);
 
     // Init app
     register_view_class();
     register_delegate_class();
     init_app(mtm)?;
 
-    let window_width_pts = (config.initial_cols * config.cell_width_px) as f64;
-    let window_height_pts = (config.initial_rows * config.cell_height_px) as f64;
-
-    let (window, view, _delegate) = create_window_and_view(mtm, window_width_pts, window_height_pts)?;
+    let (window, view, _delegate) = create_window_and_view(mtm, &win)?;
 
     // Get layer from view and set up Metal
     let layer: *mut AnyObject = unsafe { msg_send![&*view, layer] };
 
     let backing_scale: f64 = unsafe { msg_send![&window, backingScaleFactor] };
+    let window_width_pts = win.width as f64;
+    let window_height_pts = win.height as f64;
     let width_px = (window_width_pts * backing_scale) as u32;
     let height_px = (window_height_pts * backing_scale) as u32;
 
@@ -332,11 +349,12 @@ fn run_event_loop(
         let _: Bool = msg_send![&window, makeFirstResponder: &*view];
     }
 
-    // Send initial resize
-    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
+    // Send WindowCreated event
+    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+        id: win.id,
         width_px,
         height_px,
-        scale_factor: backing_scale,
+        scale: backing_scale,
     }));
 
     // Event loop state
@@ -344,6 +362,7 @@ fn run_event_loop(
         mtm,
         window,
         view,
+        window_id: win.id,
         window_width_pts,
         window_height_pts,
         backing_scale,
@@ -376,7 +395,7 @@ fn run_event_loop(
                     }
 
                     if let Some(display_event) = state.convert_event(&event) {
-                        if matches!(display_event, DisplayEvent::CloseRequested) {
+                        if matches!(display_event, DisplayEvent::CloseRequested { .. }) {
                             info!("Metal: CloseRequested");
                             return Ok(());
                         }
@@ -391,23 +410,38 @@ fn run_event_loop(
         }
 
         // Process commands
+        #[allow(deprecated)]
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                DriverCommand::Configure(_) => {}
+                DriverCommand::CreateWindow { .. } => {
+                    // Already handled at startup
+                }
+                DriverCommand::DestroyWindow { id } => {
+                    info!("Metal: DestroyWindow {:?}", id);
+                    // TODO: multi-window support
+                }
+                DriverCommand::Configure(_) => {
+                    // Legacy, ignored
+                }
                 DriverCommand::Shutdown => {
                     info!("Metal: Shutdown");
                     return Ok(());
                 }
-                DriverCommand::Present(frame) => {
+                DriverCommand::Present { id: _, frame } => {
                     if let Err(e) = unsafe { metal.present(&frame) } {
                         log::error!("Metal present error: {}", e);
                     }
                     // Return frame for reuse
                     let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
                 }
-                DriverCommand::SetTitle(title) => {
+                DriverCommand::SetTitle { id: _, title } => {
                     let ns_title = NSString::from_str(&title);
                     state.window.setTitle(&ns_title);
+                    let _ = engine_tx.send(EngineCommand::DriverAck);
+                }
+                DriverCommand::SetSize { id: _, width, height } => {
+                    let size = NSSize::new(width as f64, height as f64);
+                    state.window.setContentSize(size);
                     let _ = engine_tx.send(EngineCommand::DriverAck);
                 }
                 DriverCommand::CopyToClipboard(text) => {
@@ -437,6 +471,7 @@ struct CocoaEventState {
     mtm: MainThreadMarker,
     window: Retained<NSWindow>,
     view: Retained<NSObject>,
+    window_id: WindowId,
     window_width_pts: f64,
     window_height_pts: f64,
     backing_scale: f64,
@@ -446,6 +481,7 @@ impl CocoaEventState {
     fn convert_event(&self, event: &NSEvent) -> Option<DisplayEvent> {
         let event_type = event.r#type();
         trace!("Metal: event type={:?}", event_type);
+        let id = self.window_id;
 
         match event_type {
             NSEventType::KeyDown => {
@@ -454,16 +490,16 @@ impl CocoaEventState {
                 let key_code = event.keyCode();
                 let symbol = map_keycode_to_symbol(key_code);
                 let modifiers = extract_modifiers(event);
-                Some(DisplayEvent::Key { symbol, modifiers, text })
+                Some(DisplayEvent::Key { id, symbol, modifiers, text })
             }
             NSEventType::LeftMouseDown => {
                 let location = event.locationInWindow();
                 let modifiers = extract_modifiers(event);
                 Some(DisplayEvent::MouseButtonPress {
+                    id,
                     button: 1,
                     x: location.x as i32,
                     y: (self.window_height_pts - location.y) as i32,
-                    scale_factor: self.backing_scale,
                     modifiers,
                 })
             }
@@ -471,10 +507,10 @@ impl CocoaEventState {
                 let location = event.locationInWindow();
                 let modifiers = extract_modifiers(event);
                 Some(DisplayEvent::MouseButtonPress {
+                    id,
                     button: 3,
                     x: location.x as i32,
                     y: (self.window_height_pts - location.y) as i32,
-                    scale_factor: self.backing_scale,
                     modifiers,
                 })
             }
@@ -482,10 +518,10 @@ impl CocoaEventState {
                 let location = event.locationInWindow();
                 let modifiers = extract_modifiers(event);
                 Some(DisplayEvent::MouseButtonRelease {
+                    id,
                     button: 1,
                     x: location.x as i32,
                     y: (self.window_height_pts - location.y) as i32,
-                    scale_factor: self.backing_scale,
                     modifiers,
                 })
             }
@@ -493,10 +529,10 @@ impl CocoaEventState {
                 let location = event.locationInWindow();
                 let modifiers = extract_modifiers(event);
                 Some(DisplayEvent::MouseButtonRelease {
+                    id,
                     button: 3,
                     x: location.x as i32,
                     y: (self.window_height_pts - location.y) as i32,
-                    scale_factor: self.backing_scale,
                     modifiers,
                 })
             }
@@ -506,9 +542,23 @@ impl CocoaEventState {
                 let location = event.locationInWindow();
                 let modifiers = extract_modifiers(event);
                 Some(DisplayEvent::MouseMove {
+                    id,
                     x: location.x as i32,
                     y: (self.window_height_pts - location.y) as i32,
-                    scale_factor: self.backing_scale,
+                    modifiers,
+                })
+            }
+            NSEventType::ScrollWheel => {
+                let location = event.locationInWindow();
+                let modifiers = extract_modifiers(event);
+                let dx = event.scrollingDeltaX() as f32;
+                let dy = event.scrollingDeltaY() as f32;
+                Some(DisplayEvent::MouseScroll {
+                    id,
+                    dx,
+                    dy,
+                    x: location.x as i32,
+                    y: (self.window_height_pts - location.y) as i32,
                     modifiers,
                 })
             }
@@ -625,9 +675,11 @@ fn init_app(mtm: MainThreadMarker) -> Result<()> {
 
 fn create_window_and_view(
     mtm: MainThreadMarker,
-    width: f64,
-    height: f64,
+    win: &Window,
 ) -> Result<(Retained<NSWindow>, Retained<NSObject>, Retained<NSObject>)> {
+    let width = win.width as f64;
+    let height = win.height as f64;
+
     unsafe {
         let content_rect = NSRect::new(
             NSPoint::new(DEFAULT_WINDOW_X, DEFAULT_WINDOW_Y),
@@ -646,7 +698,7 @@ fn create_window_and_view(
             false,
         );
 
-        let title = NSString::from_str("PixelFlow Metal");
+        let title = NSString::from_str(&win.title);
         window.setTitle(&title);
         window.center();
         let _: () = msg_send![&window, setOpaque: Bool::YES];

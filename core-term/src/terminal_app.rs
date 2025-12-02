@@ -297,6 +297,16 @@ impl<P: Pixel + Surface<P>> TerminalAppWorker<P> {
                     y_px: y as u16,
                 }))
             }
+            EngineEvent::MouseScroll { x, y, dx, dy, .. } => {
+                // TODO: Implement scroll handling (e.g., alternate screen scrollback)
+                log::trace!("MouseScroll at ({}, {}) delta ({}, {})", x, y, dx, dy);
+                None
+            }
+            EngineEvent::ScaleChanged(scale) => {
+                log::info!("TerminalAppWorker: Scale changed to {:.2}", scale);
+                // Scale changes are handled by the engine, we just need to know about them
+                None
+            }
             EngineEvent::FocusGained => Some(EmulatorInput::User(UserInputAction::FocusGained)),
             EngineEvent::FocusLost => Some(EmulatorInput::User(UserInputAction::FocusLost)),
             EngineEvent::Paste(text) => Some(EmulatorInput::User(UserInputAction::PasteText(text))),

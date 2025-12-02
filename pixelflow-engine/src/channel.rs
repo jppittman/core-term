@@ -5,7 +5,9 @@
 //! slow lane with backpressure, and control commands to an unbounded fast lane.
 //! Uses a "Doorbell" signal to wake the engine when display events are ready.
 
+#[allow(deprecated)]
 use crate::display::messages::DriverConfig;
+use crate::display::messages::WindowId;
 use crate::display::DisplayEvent;
 use pixelflow_core::Pixel;
 use pixelflow_render::Frame;
@@ -30,28 +32,65 @@ pub enum EngineCommand<P: Pixel> {
 /// Commands sent TO the driver (from engine).
 #[derive(Debug)]
 pub enum DriverCommand<P: Pixel> {
-    /// Configure the driver with window settings.
-    /// Must be sent before run(). Event loop reads this first to create resources.
-    Configure(DriverConfig),
+    // ========================================================================
+    // Lifecycle
+    // ========================================================================
+    /// Create a new window with the given ID and dimensions.
+    CreateWindow {
+        id: WindowId,
+        width: u32,
+        height: u32,
+        title: String,
+    },
 
-    /// Present a frame to the display.
+    /// Destroy a window.
+    DestroyWindow { id: WindowId },
+
+    // ========================================================================
+    // Rendering
+    // ========================================================================
+    /// Present a frame to a window.
     /// The Frame contains typed pixel data matching the driver's Pixel type.
-    Present(Frame<P>),
+    Present { id: WindowId, frame: Frame<P> },
 
-    /// Set window title
-    SetTitle(String),
+    // ========================================================================
+    // Window properties
+    // ========================================================================
+    /// Set window title.
+    SetTitle { id: WindowId, title: String },
 
-    /// Copy text to clipboard
+    /// Set window size.
+    SetSize { id: WindowId, width: u32, height: u32 },
+
+    // ========================================================================
+    // Clipboard
+    // ========================================================================
+    /// Copy text to clipboard.
     CopyToClipboard(String),
 
-    /// Request paste from clipboard
+    /// Request paste from clipboard.
     RequestPaste,
 
-    /// Ring the terminal bell
+    // ========================================================================
+    // Audio
+    // ========================================================================
+    /// Ring the terminal bell.
     Bell,
 
-    /// Shutdown the driver
+    // ========================================================================
+    // Control
+    // ========================================================================
+    /// Shutdown the driver.
     Shutdown,
+
+    // ========================================================================
+    // Legacy (deprecated)
+    // ========================================================================
+    /// Configure the driver with window settings.
+    /// **DEPRECATED**: Use `CreateWindow` instead.
+    #[deprecated(note = "Use CreateWindow instead")]
+    #[allow(deprecated)]
+    Configure(DriverConfig),
 }
 
 /// Type-safe sender wrapper that routes commands to the appropriate channel.
@@ -195,6 +234,7 @@ mod tests {
         let channels: EngineChannels<Rgba> = create_engine_channels(16);
 
         let event = DisplayEvent::Key {
+            id: WindowId::PRIMARY,
             symbol: KeySymbol::Char('a'),
             modifiers: Modifiers::empty(),
             text: Some("a".to_string()),
@@ -221,7 +261,9 @@ mod tests {
     fn test_backpressure() {
         let channels: EngineChannels<Rgba> = create_engine_channels(2);
 
-        let event = || DisplayEvent::CloseRequested;
+        let event = || DisplayEvent::CloseRequested {
+            id: WindowId::PRIMARY,
+        };
 
         // Fill the buffer
         channels

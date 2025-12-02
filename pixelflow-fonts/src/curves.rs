@@ -141,6 +141,15 @@ impl Segment {
                 let m = q.projection.m;
                 let u = x * m[0][0] + y * m[0][1] + m[0][2];
                 let v = x * m[1][0] + y * m[1][1] + m[1][2];
+
+                // Check if projection falls outside the curve segment [0, 1].
+                // If so, use endpoint distance instead of implicit distance.
+                if u < 0.0 || u > 1.0 {
+                    let d0_sq = (x - q.p0[0]).powi(2) + (y - q.p0[1]).powi(2);
+                    let d2_sq = (x - q.p2[0]).powi(2) + (y - q.p2[1]).powi(2);
+                    return d0_sq.min(d2_sq).sqrt();
+                }
+
                 let f = u * u - v;
 
                 let du_dx = m[0][0];
@@ -316,6 +325,36 @@ impl Segment {
                     + y * Batch::<f32>::splat(m[1][1])
                     + Batch::<f32>::splat(m[1][2]);
 
+                let zero = Batch::<f32>::splat(0.0);
+                let one = Batch::<f32>::splat(1.0);
+
+                // Check if u is outside [0, 1] - use endpoint distance instead
+                let u_in_range = u.cmp_ge(zero) & u.cmp_le(one);
+
+                // Compute endpoint distances
+                let p0x = Batch::<f32>::splat(q.p0[0]);
+                let p0y = Batch::<f32>::splat(q.p0[1]);
+                let p2x = Batch::<f32>::splat(q.p2[0]);
+                let p2y = Batch::<f32>::splat(q.p2[1]);
+
+                let dx0 = x - p0x;
+                let dy0 = y - p0y;
+                let d0_sq = dx0 * dx0 + dy0 * dy0;
+
+                let dx2 = x - p2x;
+                let dy2 = y - p2y;
+                let d2_sq = dx2 * dx2 + dy2 * dy2;
+
+                // Min of endpoint distances
+                let d0_sq_u32 = NativeBackend::transmute_f32_to_u32(d0_sq);
+                let d2_sq_u32 = NativeBackend::transmute_f32_to_u32(d2_sq);
+                let d0_lt_d2 = d0_sq.cmp_lt(d2_sq);
+                let d0_lt_d2_mask = NativeBackend::transmute_f32_to_u32(d0_lt_d2);
+                let min_endpoint_sq =
+                    NativeBackend::transmute_u32_to_f32(d0_lt_d2_mask.select(d0_sq_u32, d2_sq_u32));
+                let endpoint_dist = min_endpoint_sq.sqrt();
+
+                // Compute implicit distance
                 let f = u * u - v;
 
                 let du_dx = Batch::<f32>::splat(m[0][0]);
@@ -333,14 +372,21 @@ impl Segment {
                 let epsilon = Batch::<f32>::splat(1e-6);
                 let zero_grad = grad_len.cmp_lt(epsilon);
 
-                let dist = f / grad_len;
+                let implicit_dist = f / grad_len;
                 let large_dist = Batch::<f32>::splat(1000.0);
 
-                // If gradient is zero, return large distance
-                let mask = NativeBackend::transmute_f32_to_u32(zero_grad);
+                // If gradient is zero, use large distance for implicit
+                let zero_grad_mask = NativeBackend::transmute_f32_to_u32(zero_grad);
                 let large_u32 = NativeBackend::transmute_f32_to_u32(large_dist);
-                let dist_u32 = NativeBackend::transmute_f32_to_u32(dist);
-                NativeBackend::transmute_u32_to_f32(mask.select(large_u32, dist_u32))
+                let implicit_u32 = NativeBackend::transmute_f32_to_u32(implicit_dist);
+                let safe_implicit =
+                    NativeBackend::transmute_u32_to_f32(zero_grad_mask.select(large_u32, implicit_u32));
+
+                // Select: if u in range use implicit, else use endpoint distance
+                let in_range_mask = NativeBackend::transmute_f32_to_u32(u_in_range);
+                let safe_implicit_u32 = NativeBackend::transmute_f32_to_u32(safe_implicit);
+                let endpoint_u32 = NativeBackend::transmute_f32_to_u32(endpoint_dist);
+                NativeBackend::transmute_u32_to_f32(in_range_mask.select(safe_implicit_u32, endpoint_u32))
             }
         }
     }

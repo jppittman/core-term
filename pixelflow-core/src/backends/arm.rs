@@ -17,7 +17,19 @@ impl Backend for Neon {
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: SimdVec<u32>) -> SimdVec<u8> {
-        unsafe { b.transmute() }
+        unsafe {
+            // Pack u32x4 -> u16x4 -> u8x8 -> u8x16
+            // 1. Narrow u32x4 to u16x4 (saturating)
+            let u16_low = vqmovn_u32(b.0.u32);
+            // 2. Expand to u16x8 (low half valid, high half zero)
+            let u16_combined = vcombine_u16(u16_low, vdup_n_u16(0));
+            // 3. Narrow u16x8 to u8x8 (saturating)
+            let u8_low = vqmovn_u16(u16_combined);
+            // 4. Expand to u8x16 (low half valid)
+            let u8_combined = vcombine_u8(u8_low, vdup_n_u8(0));
+            
+            SimdVec(NeonReg { u8: u8_combined }, PhantomData)
+        }
     }
 
     #[inline(always)]
@@ -121,9 +133,13 @@ impl<T: Copy> SimdVec<T> {
             if core::mem::size_of::<T>() == 4 {
                 vst1q_u32(ptr as *mut u32, self.0.u32)
             } else if core::mem::size_of::<T>() == 2 {
-                vst1q_u16(ptr as *mut u16, self.0.u16)
+                // Store 4x u16 (64 bits) from low half
+                let low = vget_low_u16(self.0.u16);
+                vst1_u16(ptr as *mut u16, low)
             } else if core::mem::size_of::<T>() == 1 {
-                vst1q_u8(ptr as *mut u8, self.0.u8)
+                // Store 4x u8 (32 bits) -> interpreted as 1x u32
+                // We use lane 0 of the u32 view, which corresponds to bytes 0..3
+                vst1q_lane_u32(ptr as *mut u32, self.0.u32, 0)
             }
         }
     }
@@ -153,6 +169,16 @@ impl SimdVec<u32> {
                 PhantomData,
             )
         }
+    }
+
+    #[inline(always)]
+    pub fn to_array(self) -> [u32; 4] {
+        unsafe { core::mem::transmute(self) }
+    }
+
+    #[inline(always)]
+    pub fn from_array(arr: [u32; 4]) -> Self {
+        unsafe { core::mem::transmute(arr) }
     }
 }
 
@@ -433,6 +459,7 @@ impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec
         }
     }
 
+    #[inline(always)]
     fn load(slice: &[T]) -> Self {
         unsafe {
             if core::mem::size_of::<T>() == 4 {
@@ -443,17 +470,25 @@ impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec
                     PhantomData,
                 )
             } else if core::mem::size_of::<T>() == 2 {
+                // Load 4x u16 (64 bits) -> low half of vector
+                let ptr = slice.as_ptr() as *const u16;
+                let low = vld1_u16(ptr);
+                // Combine with zero high half
+                let zero = vdup_n_u16(0);
                 Self(
                     NeonReg {
-                        u16: vld1q_u16(slice.as_ptr() as *const u16),
+                        u16: vcombine_u16(low, zero),
                     },
                     PhantomData,
                 )
             } else if core::mem::size_of::<T>() == 1 {
+                // Load 4x u8 (32 bits) -> interpreted as 1x u32
+                let ptr = slice.as_ptr() as *const u32;
+                // Load single u32 into lane 0, other lanes zero
+                let zero = vdupq_n_u32(0);
+                let val = vld1q_lane_u32(ptr, zero, 0);
                 Self(
-                    NeonReg {
-                        u8: vld1q_u8(slice.as_ptr() as *const u8),
-                    },
+                    NeonReg { u32: val },
                     PhantomData,
                 )
             } else {
@@ -467,15 +502,11 @@ impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec
         }
     }
 
+    #[inline(always)]
     fn store(&self, slice: &mut [T]) {
+        // Delegate to inherent store which handles safe partial storage
         unsafe {
-            if core::mem::size_of::<T>() == 4 {
-                vst1q_u32(slice.as_mut_ptr() as *mut u32, self.0.u32)
-            } else if core::mem::size_of::<T>() == 2 {
-                vst1q_u16(slice.as_mut_ptr() as *mut u16, self.0.u16)
-            } else if core::mem::size_of::<T>() == 1 {
-                vst1q_u8(slice.as_mut_ptr() as *mut u8, self.0.u8)
-            }
+            SimdVec::store(*self, slice.as_mut_ptr());
         }
     }
 
@@ -510,41 +541,13 @@ impl BatchArithmetic<u32> for SimdVec<u32> {
     }
 
     fn gather(base: &[u32], indices: Self) -> Self {
-        unsafe {
-            let mut idx = [0u32; 4];
-            vst1q_u32(idx.as_mut_ptr(), indices.0.u32);
-            let len = base.len();
-            let v0 = if (idx[0] as usize) < len { base[idx[0] as usize] } else { 0 };
-            let v1 = if (idx[1] as usize) < len { base[idx[1] as usize] } else { 0 };
-            let v2 = if (idx[2] as usize) < len { base[idx[2] as usize] } else { 0 };
-            let v3 = if (idx[3] as usize) < len { base[idx[3] as usize] } else { 0 };
-            let arr = [v0, v1, v2, v3];
-            Self(
-                NeonReg {
-                    u32: vld1q_u32(arr.as_ptr()),
-                },
-                PhantomData,
-            )
-        }
+        let idx = indices.to_array();
+        Self::from_array(idx.map(|i| base.get(i as usize).copied().unwrap_or(0)))
     }
 
     fn gather_u8(base: &[u8], indices: Self) -> Self {
-        unsafe {
-            let mut idx = [0u32; 4];
-            vst1q_u32(idx.as_mut_ptr(), indices.0.u32);
-            let len = base.len();
-            let v0 = if (idx[0] as usize) < len { base[idx[0] as usize] as u32 } else { 0 };
-            let v1 = if (idx[1] as usize) < len { base[idx[1] as usize] as u32 } else { 0 };
-            let v2 = if (idx[2] as usize) < len { base[idx[2] as usize] as u32 } else { 0 };
-            let v3 = if (idx[3] as usize) < len { base[idx[3] as usize] as u32 } else { 0 };
-            let arr = [v0, v1, v2, v3];
-            Self(
-                NeonReg {
-                    u32: vld1q_u32(arr.as_ptr()),
-                },
-                PhantomData,
-            )
-        }
+        let idx = indices.to_array();
+        Self::from_array(idx.map(|i| base.get(i as usize).copied().unwrap_or(0) as u32))
     }
 
     #[inline(always)]

@@ -6,6 +6,8 @@ use pixelflow_core::Pixel;
 pub enum EngineEvent {
     /// Window was resized by the user or OS.
     Resize(u32, u32),
+    /// Display scale factor changed (e.g., moved to different DPI monitor).
+    ScaleChanged(f64),
     /// User pressed a key.
     KeyDown {
         key: KeySymbol,
@@ -18,6 +20,14 @@ pub enum EngineEvent {
     MouseMove { x: u32, y: u32, mods: Modifiers },
     /// Mouse release
     MouseRelease { x: u32, y: u32, button: MouseButton },
+    /// Mouse scroll wheel.
+    MouseScroll {
+        x: u32,
+        y: u32,
+        dx: f32,
+        dy: f32,
+        mods: Modifiers,
+    },
     /// Paste text.
     Paste(String),
     /// Focus gained.
