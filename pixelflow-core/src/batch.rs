@@ -4,7 +4,7 @@ use crate::backend::Backend;
 
 // Select NativeBackend based on architecture
 #[cfg(target_arch = "x86_64")]
-pub use crate::backends::x86::Sse2 as NativeBackend;
+pub use crate::backends::x86::Avx512 as NativeBackend;
 
 #[cfg(target_arch = "aarch64")]
 pub use crate::backends::arm::Neon as NativeBackend;
