@@ -12,6 +12,32 @@ use core::marker::PhantomData;
 
 /// Samples from an atlas texture using bilinear interpolation.
 #[derive(Copy, Clone)]
+pub struct FnSurface<F, T> {
+    pub func: F,
+    pub _marker: PhantomData<T>,
+}
+
+impl<F, T> FnSurface<F, T> {
+    pub fn new(func: F) -> Self {
+        Self {
+            func,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F, T> Surface<T> for FnSurface<F, T>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    F: Fn(Batch<u32>, Batch<u32>) -> Batch<T> + Send + Sync,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+        (self.func)(x, y)
+    }
+}
+
+#[derive(Copy, Clone)]
 pub struct SampleAtlas<'a> {
     /// The source texture atlas.
     pub atlas: TensorView<'a, u8>,
@@ -33,6 +59,42 @@ impl<'a> Surface<u8> for SampleAtlas<'a> {
     }
 }
 
+/// A rectangular mask (returns 0 or !0).
+#[derive(Copy, Clone, Debug)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Rect {
+    pub fn new(x: i32, y: i32, w: u32, h: u32) -> Self {
+        Self { x, y, w, h }
+    }
+}
+
+impl Surface<u32> for Rect {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+        let left = Batch::<u32>::splat(self.x as u32);
+        let right = Batch::<u32>::splat((self.x + self.w as i32) as u32);
+        let top = Batch::<u32>::splat(self.y as u32);
+        let bottom = Batch::<u32>::splat((self.y + self.h as i32) as u32);
+        
+        // Logic: (x >= left) & (x < right) & (y >= top) & (y < bottom)
+        x.cmp_ge(left) & x.cmp_lt(right) & y.cmp_ge(top) & y.cmp_lt(bottom)
+    }
+}
+
+impl Surface<u8> for Rect {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+        let mask = <Self as Surface<u32>>::eval(self, x, y);
+        NativeBackend::downcast_u32_to_u8(mask)
+    }
+}
+
 // --- 2. Transformers ---
 
 /// Offsets the coordinate system by a fixed amount.
@@ -48,7 +110,7 @@ pub struct Offset<S> {
 
 impl<T, S> Surface<T> for Offset<S>
 where
-    T: Copy + Debug + Default + Send + Sync + 'static,
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     S: Surface<T>,
 {
     #[inline(always)]
@@ -86,7 +148,7 @@ impl<S> Scale<S> {
 
 impl<T, S> Surface<T> for Scale<S>
 where
-    T: Copy + Debug + Default + Send + Sync + 'static,
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     S: Surface<T>,
 {
     #[inline(always)]
@@ -174,7 +236,7 @@ fn blend_channel(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -> Batch<u32
 
 impl<P, M, F, Back> Surface<P> for Over<P, M, F, Back>
 where
-    P: Pixel + Copy,
+    P: Pixel + Copy + PartialEq,
     M: Surface<u8>,
     F: Surface<P>,
     Back: Surface<P>,
@@ -221,7 +283,7 @@ pub struct Mul<M, C> {
 
 impl<P, M, C> Surface<P> for Mul<M, C>
 where
-    P: Pixel + Copy,
+    P: Pixel + Copy + PartialEq,
     M: Surface<u8>,
     C: Surface<P>,
 {
@@ -248,23 +310,87 @@ where
     }
 }
 
-// --- 4. Memoizers ---
+// --- 4. Control Flow ---
+
+#[derive(Copy, Clone)]
+pub struct Select<M, T, F> {
+    pub mask: M,
+    pub if_true: T,
+    pub if_false: F,
+}
+
+impl<P, M, T, F> Surface<P> for Select<M, T, F>
+where
+    P: Pixel + PartialEq,
+    M: Surface<u32>, // Mask must return u32 (0 or !0 usually, but select uses bitwise)
+    T: Surface<P>,
+    F: Surface<P>,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        let m = self.mask.eval(x, y);
+        if m.all() {
+            return self.if_true.eval(x, y)
+        }
+        if !m.any() {
+            return self.if_false.eval(x, y)
+        }
+        
+        // Use church combinator for lazy evaluation / short-circuiting
+        let res_u32 = m.church(
+            || P::batch_to_u32(self.if_true.eval(x, y)),
+            || P::batch_to_u32(self.if_false.eval(x, y)),
+        );
+        P::batch_from_u32(res_u32)
+    }
+}
+
+pub struct Fix<P, F> {
+    func: F,
+    _marker: PhantomData<P>,
+}
+
+impl<P, F> Fix<P, F> {
+    pub fn new(func: F) -> Self {
+        Self {
+            func,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<P, F> Surface<P> for Fix<P, F>
+where
+    P: Pixel + PartialEq,
+    F: Fn(&dyn Surface<P>, Batch<u32>, Batch<u32>) -> Batch<P> + Send + Sync,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        (self.func)(self, x, y)
+    }
+}
+
+// --- 5. Memoizers ---
 
 /// A surface that is pre-rendered (baked) into a buffer.
 #[derive(Clone)]
-pub struct Baked<P: Pixel> {
-    data: Box<[P]>,
+pub struct Baked<P: Pixel + PartialEq> {
+    data: alloc::sync::Arc<[P]>,
     width: u32,
     height: u32,
 }
 
+<<<<<<< HEAD
 impl<P: Pixel> Baked<P> {
     /// Creates a new `Baked` surface by rasterizing the source.
+=======
+impl<P: Pixel + PartialEq> Baked<P> {
+>>>>>>> 546a8c0 (update core to use idiomatic graphics)
     pub fn new<S: Surface<P>>(source: &S, width: u32, height: u32) -> Self {
         let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
         crate::execute(source, &mut data, width as usize, height as usize);
         Self {
-            data,
+            data: alloc::sync::Arc::from(data),
             width,
             height,
         }
@@ -285,14 +411,17 @@ impl<P: Pixel> Baked<P> {
     pub fn data(&self) -> &[P] {
         &self.data
     }
+<<<<<<< HEAD
     /// Returns a mutable reference to the raw pixel data.
     #[inline]
     pub fn data_mut(&mut self) -> &mut [P] {
         &mut self.data
     }
+=======
+>>>>>>> 546a8c0 (update core to use idiomatic graphics)
 }
 
-impl<P: Pixel> Surface<P> for Baked<P> {
+impl<P: Pixel + PartialEq> Surface<P> for Baked<P> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
         let w = self.width;
@@ -310,7 +439,11 @@ impl<P: Pixel> Surface<P> for Baked<P> {
     }
 }
 
+<<<<<<< HEAD
 impl<P: Pixel> Surface<P> for &Baked<P> {
+=======
+impl<'a, P: Pixel + PartialEq> Surface<P> for &'a Baked<P> {
+>>>>>>> 546a8c0 (update core to use idiomatic graphics)
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
         (*self).eval(x, y)

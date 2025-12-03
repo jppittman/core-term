@@ -14,11 +14,11 @@ use crate::messages::{AppEvent, RenderRequest};
 use crate::surface::{GridBuffer, TerminalSurface};
 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
 use core::marker::PhantomData;
-use pixelflow_core::ops::Baked;
+use pixelflow_core::ops::Baked; // Re-add Baked import
 use pixelflow_core::pipe::Surface;
 use pixelflow_engine::input::MouseButton;
 use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
-use pixelflow_fonts::{glyphs, Lazy};
+use pixelflow_fonts::{glyphs, Lazy}; // No longer need CellGlyph here
 use pixelflow_render::font;
 use pixelflow_render::Pixel;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
@@ -187,7 +187,12 @@ impl<P: Pixel + Surface<P>> TerminalAppWorker<P> {
 
         loop {
             // 1. Drain PTY commands (non-blocking, high priority)
-            self.drain_pty_nonblocking();
+            if !self.drain_pty_nonblocking() {
+                // PTY closed (shell exited) - request quit
+                log::info!("TerminalAppWorker: Requesting quit due to PTY closure");
+                let _ = self.action_tx.try_send(AppAction::Quit);
+                break;
+            }
 
             // 2. Check for events from proxy (non-blocking)
             match self.event_rx.try_recv() {
@@ -228,7 +233,9 @@ impl<P: Pixel + Surface<P>> TerminalAppWorker<P> {
     }
 
     /// Drain PTY commands (non-blocking).
-    fn drain_pty_nonblocking(&mut self) {
+    ///
+    /// Returns `true` if the PTY channel is still connected, `false` if disconnected (PTY closed).
+    fn drain_pty_nonblocking(&mut self) -> bool {
         for _ in 0..Self::MAX_BATCHES_PER_DRAIN {
             match self.pty_rx.try_recv() {
                 Ok(commands) => {
@@ -240,9 +247,14 @@ impl<P: Pixel + Surface<P>> TerminalAppWorker<P> {
                         }
                     }
                 }
-                Err(_) => break,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    log::info!("TerminalAppWorker: PTY channel disconnected (shell exited)");
+                    return false;
+                }
             }
         }
+        true
     }
 
     /// Handle an engine event, returning an AppAction if needed.
@@ -370,7 +382,7 @@ impl<P: Pixel + Surface<P>> TerminalAppWorker<P> {
         let grid = GridBuffer::from_snapshot(&snapshot, default_fg, default_bg);
 
         let terminal: TerminalSurface<P> = TerminalSurface::with_grid(
-            grid,
+            &grid,
             self.glyph.clone(),
             self.config.appearance.cell_width_px as u32,
             self.config.appearance.cell_height_px as u32,

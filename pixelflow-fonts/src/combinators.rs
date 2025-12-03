@@ -29,6 +29,7 @@ struct LazyInner<'a, S> {
 }
 
 impl<'a, S> Clone for Lazy<'a, S> {
+    /// Clones this `Lazy` instance. The cloned instance shares the same underlying cache.
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),

@@ -13,7 +13,7 @@ pub struct Neon;
 
 impl Backend for Neon {
     const LANES: usize = 4;
-    type Batch<T: Copy + Debug + Default + Send + Sync + 'static> = SimdVec<T>;
+    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> = SimdVec<T>;
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: SimdVec<u32>) -> SimdVec<u8> {
@@ -392,7 +392,9 @@ impl Shr<i32> for SimdVec<u32> {
 }
 
 // Generic SimdBatch implementation
-impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec<T> {
+impl<T: Copy + Debug + Default + PartialEq + Send + Sync + 'static> SimdBatch<T> for SimdVec<T> {
+    const LANES: usize = 4;
+
     fn splat(val: T) -> Self {
         unsafe {
             if core::mem::size_of::<T>() == 4 {
@@ -522,6 +524,54 @@ impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec
                 T::default()
             }
         }
+    }
+
+    fn any(&self) -> bool {
+        // Use max across lanes to check if any is non-zero
+        unsafe {
+            if core::mem::size_of::<T>() == 4 {
+                let max = vmaxvq_u32(self.0.u32);
+                max != 0
+            } else if core::mem::size_of::<T>() == 2 {
+                // maxv for u16 requires wrapping because NEON intrinsic naming is inconsistent
+                // vmaxvq_u16 doesn't exist in Rust's aarch64 module? It should.
+                // Checking docs... neon::vmaxvq_u16
+                // Assuming it exists or we use fallback
+                let vec_u16: SimdVec<u16> = core::mem::transmute_copy(self);
+                let arr = vec_u16.to_array_u16();
+                arr.iter().any(|&x| x != 0)
+            } else if core::mem::size_of::<T>() == 1 {
+                let max = vmaxvq_u8(self.0.u8);
+                max != 0
+            } else {
+                false
+            }
+        }
+    }
+
+    fn all(&self) -> bool {
+        unsafe {
+            if core::mem::size_of::<T>() == 4 {
+                let min = vminvq_u32(self.0.u32);
+                min != 0
+            } else if core::mem::size_of::<T>() == 2 {
+                let vec_u16: SimdVec<u16> = core::mem::transmute_copy(self);
+                let arr = vec_u16.to_array_u16();
+                arr.iter().all(|&x| x != 0)
+            } else if core::mem::size_of::<T>() == 1 {
+                let min = vminvq_u8(self.0.u8);
+                min != 0
+            } else {
+                false
+            }
+        }
+    }
+}
+
+impl SimdVec<u16> {
+    #[inline(always)]
+    fn to_array_u16(self) -> [u16; 8] {
+        unsafe { core::mem::transmute(self) }
     }
 }
 
