@@ -27,7 +27,7 @@ impl Backend for Neon {
             let u8_low = vqmovn_u16(u16_combined);
             // 4. Expand to u8x16 (low half valid)
             let u8_combined = vcombine_u8(u8_low, vdup_n_u8(0));
-            
+
             SimdVec(NeonReg { u8: u8_combined }, PhantomData)
         }
     }
@@ -487,10 +487,7 @@ impl<T: Copy + Debug + Default + Send + Sync + 'static> SimdBatch<T> for SimdVec
                 // Load single u32 into lane 0, other lanes zero
                 let zero = vdupq_n_u32(0);
                 let val = vld1q_lane_u32(ptr, zero, 0);
-                Self(
-                    NeonReg { u32: val },
-                    PhantomData,
-                )
+                Self(NeonReg { u32: val }, PhantomData)
             } else {
                 Self(
                     NeonReg {

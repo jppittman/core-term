@@ -10,10 +10,14 @@ use core::marker::PhantomData;
 
 // --- 1. Sources ---
 
+/// Samples from an atlas texture using bilinear interpolation.
 #[derive(Copy, Clone)]
 pub struct SampleAtlas<'a> {
+    /// The source texture atlas.
     pub atlas: TensorView<'a, u8>,
+    /// The horizontal step size in fixed-point format (16.16).
     pub step_x_fp: u32,
+    /// The vertical step size in fixed-point format (16.16).
     pub step_y_fp: u32,
 }
 
@@ -31,10 +35,14 @@ impl<'a> Surface<u8> for SampleAtlas<'a> {
 
 // --- 2. Transformers ---
 
+/// Offsets the coordinate system by a fixed amount.
 #[derive(Copy, Clone)]
 pub struct Offset<S> {
+    /// The source surface to offset.
     pub source: S,
+    /// Horizontal offset.
     pub dx: i32,
+    /// Vertical offset.
     pub dy: i32,
 }
 
@@ -51,13 +59,21 @@ where
     }
 }
 
+/// Scales the coordinate system by a fixed factor.
 #[derive(Copy, Clone)]
 pub struct Scale<S> {
+    /// The source surface to scale.
     pub source: S,
+    /// Inverse scale factor in fixed-point format (16.16).
     pub inv_scale_fp: u32,
 }
 
 impl<S> Scale<S> {
+    /// Creates a new `Scale` wrapper.
+    ///
+    /// # Arguments
+    /// * `source` - The source surface.
+    /// * `scale_factor` - The scaling factor (e.g., 2.0 for 2x zoom).
     #[inline]
     pub fn new(source: S, scale_factor: f64) -> Self {
         let inv_scale_fp = ((1.0 / scale_factor) * 65536.0) as u32;
@@ -82,9 +98,12 @@ where
     }
 }
 
+/// Skews the coordinate system horizontally based on the Y coordinate.
 #[derive(Copy, Clone)]
 pub struct Skew<S> {
+    /// The source surface to skew.
     pub source: S,
+    /// Shear factor (horizontal displacement per vertical pixel) in fixed point (24.8).
     pub shear: i32,
 }
 
@@ -96,6 +115,7 @@ impl<S: Surface<u8>> Surface<u8> for Skew<S> {
     }
 }
 
+/// Computes the maximum value of two surfaces.
 #[derive(Copy, Clone)]
 pub struct Max<A, B>(pub A, pub B);
 
@@ -120,15 +140,21 @@ impl_max_surface!(u32, u8, f32);
 
 // --- 3. Finalizers (Blend) ---
 
+/// Composites a foreground surface over a background surface using a mask.
 #[derive(Copy, Clone)]
 pub struct Over<P, M, F, B> {
+    /// The alpha mask surface.
     pub mask: M,
+    /// The foreground surface.
     pub fg: F,
+    /// The background surface.
     pub bg: B,
+    /// Phantom data for pixel type.
     pub _pixel: PhantomData<P>,
 }
 
 impl<P, M, F, B> Over<P, M, F, B> {
+    /// Creates a new `Over` compositing surface.
     #[inline]
     pub fn new(mask: M, fg: F, bg: B) -> Self {
         Self {
@@ -184,9 +210,12 @@ where
     }
 }
 
+/// Multiplies a color surface by a mask (alpha).
 #[derive(Copy, Clone)]
 pub struct Mul<M, C> {
+    /// The mask surface.
     pub mask: M,
+    /// The color surface.
     pub color: C,
 }
 
@@ -221,6 +250,7 @@ where
 
 // --- 4. Memoizers ---
 
+/// A surface that is pre-rendered (baked) into a buffer.
 #[derive(Clone)]
 pub struct Baked<P: Pixel> {
     data: Box<[P]>,
@@ -229,6 +259,7 @@ pub struct Baked<P: Pixel> {
 }
 
 impl<P: Pixel> Baked<P> {
+    /// Creates a new `Baked` surface by rasterizing the source.
     pub fn new<S: Surface<P>>(source: &S, width: u32, height: u32) -> Self {
         let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
         crate::execute(source, &mut data, width as usize, height as usize);
@@ -239,18 +270,22 @@ impl<P: Pixel> Baked<P> {
         }
     }
 
+    /// Returns the width of the baked surface.
     #[inline]
     pub fn width(&self) -> u32 {
         self.width
     }
+    /// Returns the height of the baked surface.
     #[inline]
     pub fn height(&self) -> u32 {
         self.height
     }
+    /// Returns the raw pixel data.
     #[inline]
     pub fn data(&self) -> &[P] {
         &self.data
     }
+    /// Returns a mutable reference to the raw pixel data.
     #[inline]
     pub fn data_mut(&mut self) -> &mut [P] {
         &mut self.data
@@ -275,7 +310,7 @@ impl<P: Pixel> Surface<P> for Baked<P> {
     }
 }
 
-impl<'a, P: Pixel> Surface<P> for &'a Baked<P> {
+impl<P: Pixel> Surface<P> for &Baked<P> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
         (*self).eval(x, y)
@@ -434,17 +469,9 @@ mod tests {
 
         // blend_channel formula: (fg * alpha + bg * (256 - alpha)) >> 8
         // With alpha=255: (255 * 255 + 0 * 1) >> 8 = 65025 >> 8 = 254
-        assert!(
-            r >= 254,
-            "With alpha=255, red should be ~255, got {}",
-            r
-        );
+        assert!(r >= 254, "With alpha=255, red should be ~255, got {}", r);
         assert_eq!(g, 0, "With alpha=255, green should be 0");
-        assert!(
-            b <= 1,
-            "With alpha=255, blue should be ~0, got {}",
-            b
-        );
+        assert!(b <= 1, "With alpha=255, blue should be ~0, got {}", b);
     }
 
     #[test]
@@ -488,26 +515,10 @@ mod tests {
         // G: (100 * 128 + 150 * 128) >> 8 = 32000 >> 8 = 125
         // B: (50 * 128 + 200 * 128) >> 8 = 32000 >> 8 = 125
         // A: (255 * 128 + 128 * 128) >> 8 = 49024 >> 8 = 191
-        assert!(
-            r > 115 && r < 135,
-            "Red should be ~125, got {}",
-            r
-        );
-        assert!(
-            g > 115 && g < 135,
-            "Green should be ~125, got {}",
-            g
-        );
-        assert!(
-            b > 115 && b < 135,
-            "Blue should be ~125, got {}",
-            b
-        );
-        assert!(
-            a > 180 && a < 200,
-            "Alpha should be ~191, got {}",
-            a
-        );
+        assert!(r > 115 && r < 135, "Red should be ~125, got {}", r);
+        assert!(g > 115 && g < 135, "Green should be ~125, got {}", g);
+        assert!(b > 115 && b < 135, "Blue should be ~125, got {}", b);
+        assert!(a > 180 && a < 200, "Alpha should be ~191, got {}", a);
     }
 
     #[test]
@@ -524,13 +535,21 @@ mod tests {
         // Alpha = 255: (255 * 255 + 0 * 1) >> 8 = 65025 >> 8 = 254
         let alpha_255 = Batch::<u32>::splat(255);
         let result_255 = blend_channel(fg, bg, alpha_255);
-        assert_eq!(result_255.first(), 254, "blend(255, 0, alpha=255) should be 254");
+        assert_eq!(
+            result_255.first(),
+            254,
+            "blend(255, 0, alpha=255) should be 254"
+        );
 
         // Alpha = 128: should be midpoint
         let alpha_128 = Batch::<u32>::splat(128);
         let result_128 = blend_channel(fg, bg, alpha_128);
         // (255 * 128 + 0 * 128) >> 8 = 32640 >> 8 = 127
-        assert_eq!(result_128.first(), 127, "blend(255, 0, alpha=128) should be 127");
+        assert_eq!(
+            result_128.first(),
+            127,
+            "blend(255, 0, alpha=128) should be 127"
+        );
     }
 
     #[test]
@@ -576,7 +595,10 @@ mod tests {
         let reconstructed = <u32 as Pixel>::batch_from_channels(r, g, b, a).first();
         let expected = pack_rgba(200, 100, 50, 255);
 
-        assert_eq!(reconstructed, expected, "batch_from_channels should match pack_rgba");
+        assert_eq!(
+            reconstructed, expected,
+            "batch_from_channels should match pack_rgba"
+        );
     }
 
     #[test]
@@ -586,7 +608,11 @@ mod tests {
         let color = ConstColor(packed);
         let result = color.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
 
-        assert_eq!(result.first(), packed, "ConstColor should return the packed value");
+        assert_eq!(
+            result.first(),
+            packed,
+            "ConstColor should return the packed value"
+        );
     }
 
     #[test]
@@ -595,7 +621,11 @@ mod tests {
         let mask = ConstMask(128);
         let result = mask.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
 
-        assert_eq!(result.first(), 128, "ConstMask should return the mask value");
+        assert_eq!(
+            result.first(),
+            128,
+            "ConstMask should return the mask value"
+        );
     }
 
     #[test]
@@ -603,7 +633,11 @@ mod tests {
         // Verify upcast preserves the byte value in the low bits
         let u8_batch = Batch::<u8>::splat(255);
         let u32_batch = NativeBackend::upcast_u8_to_u32(u8_batch);
-        assert_eq!(u32_batch.first(), 255, "upcast_u8_to_u32(255) should be 255");
+        assert_eq!(
+            u32_batch.first(),
+            255,
+            "upcast_u8_to_u32(255) should be 255"
+        );
 
         let u8_batch = Batch::<u8>::splat(0);
         let u32_batch = NativeBackend::upcast_u8_to_u32(u8_batch);
@@ -611,7 +645,11 @@ mod tests {
 
         let u8_batch = Batch::<u8>::splat(128);
         let u32_batch = NativeBackend::upcast_u8_to_u32(u8_batch);
-        assert_eq!(u32_batch.first(), 128, "upcast_u8_to_u32(128) should be 128");
+        assert_eq!(
+            u32_batch.first(),
+            128,
+            "upcast_u8_to_u32(128) should be 128"
+        );
     }
 
     #[test]
@@ -635,11 +673,19 @@ mod tests {
         // Step 3: fg.eval
         let fg_surface = ConstColor(fg_packed);
         let fg_batch = fg_surface.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
-        assert_eq!(fg_batch.first(), fg_packed, "Step 3: fg should be red packed");
+        assert_eq!(
+            fg_batch.first(),
+            fg_packed,
+            "Step 3: fg should be red packed"
+        );
 
         // Step 4: P::batch_to_u32 (identity for u32)
         let fg = <u32 as Pixel>::batch_to_u32(fg_batch);
-        assert_eq!(fg.first(), fg_packed, "Step 4: batch_to_u32 should be identity");
+        assert_eq!(
+            fg.first(),
+            fg_packed,
+            "Step 4: batch_to_u32 should be identity"
+        );
 
         // Step 5: Extract channels
         let fg_r = <u32 as Pixel>::batch_red(fg);
@@ -674,7 +720,8 @@ mod tests {
         let result_g = blend_channel(fg_g, <u32 as Pixel>::batch_green(bg), alpha);
         let result_a = blend_channel(fg_a, bg_a, alpha);
 
-        let reconstructed = <u32 as Pixel>::batch_from_channels(result_r, result_g, result_b, result_a);
+        let reconstructed =
+            <u32 as Pixel>::batch_from_channels(result_r, result_g, result_b, result_a);
         let (r, g, b, _a) = unpack_rgba(reconstructed.first());
 
         assert_eq!(r, 254, "Step 9a: final red should be 254");

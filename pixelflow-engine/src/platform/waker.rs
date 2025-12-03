@@ -61,6 +61,12 @@ mod x11_waker {
         inner: Arc<Mutex<Option<WakerInner>>>,
     }
 
+    impl Default for X11Waker {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl X11Waker {
         /// Create a new uninitialized waker.
         ///
@@ -74,13 +80,12 @@ mod x11_waker {
         /// Initialize the waker with the X11 display and window.
         ///
         /// Call this from `run()` after creating the window.
-        pub fn set_target(&self, display: *mut xlib::Display, window: xlib::Window) {
+        ///
+        /// # Safety
+        /// The display pointer must be valid.
+        pub unsafe fn set_target(&self, display: *mut xlib::Display, window: xlib::Window) {
             unsafe {
-                let wake_atom = xlib::XInternAtom(
-                    display,
-                    b"PIXELFLOW_WAKE\0".as_ptr() as *const i8,
-                    xlib::False,
-                );
+                let wake_atom = xlib::XInternAtom(display, c"PIXELFLOW_WAKE".as_ptr(), xlib::False);
 
                 let mut guard = self.inner.lock().unwrap();
                 *guard = Some(WakerInner {

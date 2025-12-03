@@ -78,7 +78,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let platform =
-        EnginePlatform::new(engine_config.into()).context("Failed to initialize EnginePlatform")?;
+        EnginePlatform::new(engine_config).context("Failed to initialize EnginePlatform")?;
 
     // Spawn PTY I/O actor
     #[cfg(any(target_os = "macos", target_os = "linux"))]

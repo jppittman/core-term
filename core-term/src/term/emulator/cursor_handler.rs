@@ -84,12 +84,8 @@ impl TerminalEmulator {
     ) -> Option<EmulatorAction> {
         match ps1 {
             XTWINOPS_RESIZE_TEXT_AREA => {
-                let Some(rows) = ps2 else {
-                    return None;
-                };
-                let Some(cols) = ps3 else {
-                    return None;
-                };
+                let rows = ps2?;
+                let cols = ps3?;
 
                 if rows == 0 || cols == 0 {
                     return None;

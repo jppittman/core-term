@@ -36,14 +36,19 @@ impl PixelFormat {
 
 /// A container for a rendered buffer.
 pub struct Buffer<T> {
+    /// The linear buffer data.
     pub data: Vec<T>,
+    /// The width of the buffer in pixels.
     pub width: usize,
+    /// The height of the buffer in pixels.
     pub height: usize,
 }
 
 /// The Platform configuration for rendering.
 pub struct Platform {
+    /// The scale factor (integer scaling).
     pub scale: u32,
+    /// The output pixel format.
     pub format: PixelFormat,
 }
 

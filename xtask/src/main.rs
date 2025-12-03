@@ -41,7 +41,7 @@ fn bundle_run(extra_args: &[String]) {
 
     // Build the project with extra args (e.g., --features profiling)
     let mut cmd = Command::new("cargo");
-    cmd.args(&["build", "--release"]);
+    cmd.args(["build", "--release"]);
 
     // Filter out --release since we already added it
     let filtered_args: Vec<&String> = extra_args

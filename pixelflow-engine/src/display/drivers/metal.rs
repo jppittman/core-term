@@ -152,7 +152,10 @@ impl MetalState {
         }
 
         let buffer_ptr: *mut u8 = msg_send![buffer, contents];
-        info!("Metal: Buffer created {}x{} ({} bytes)", width, height, buffer_size);
+        info!(
+            "Metal: Buffer created {}x{} ({} bytes)",
+            width, height, buffer_size
+        );
 
         Ok(Self {
             device,
@@ -221,31 +224,48 @@ impl MetalState {
         // Copy from buffer to texture using replaceRegion (CPU -> texture, no encoder needed)
         #[repr(C)]
         #[derive(Copy, Clone)]
-        struct MTLOrigin { x: u64, y: u64, z: u64 }
+        struct MTLOrigin {
+            x: u64,
+            y: u64,
+            z: u64,
+        }
         #[repr(C)]
         #[derive(Copy, Clone)]
-        struct MTLSize { width: u64, height: u64, depth: u64 }
+        struct MTLSize {
+            width: u64,
+            height: u64,
+            depth: u64,
+        }
         #[repr(C)]
         #[derive(Copy, Clone)]
-        struct MTLRegion { origin: MTLOrigin, size: MTLSize }
+        struct MTLRegion {
+            origin: MTLOrigin,
+            size: MTLSize,
+        }
 
         unsafe impl objc2::Encode for MTLOrigin {
             const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
                 "MTLOrigin",
-                &[objc2::Encoding::ULongLong, objc2::Encoding::ULongLong, objc2::Encoding::ULongLong]
+                &[
+                    objc2::Encoding::ULongLong,
+                    objc2::Encoding::ULongLong,
+                    objc2::Encoding::ULongLong,
+                ],
             );
         }
         unsafe impl objc2::Encode for MTLSize {
             const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
                 "MTLSize",
-                &[objc2::Encoding::ULongLong, objc2::Encoding::ULongLong, objc2::Encoding::ULongLong]
+                &[
+                    objc2::Encoding::ULongLong,
+                    objc2::Encoding::ULongLong,
+                    objc2::Encoding::ULongLong,
+                ],
             );
         }
         unsafe impl objc2::Encode for MTLRegion {
-            const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-                "MTLRegion",
-                &[MTLOrigin::ENCODING, MTLSize::ENCODING]
-            );
+            const ENCODING: objc2::Encoding =
+                objc2::Encoding::Struct("MTLRegion", &[MTLOrigin::ENCODING, MTLSize::ENCODING]);
         }
 
         let region = MTLRegion {
@@ -253,8 +273,8 @@ impl MetalState {
             size: MTLSize {
                 width: self.width as u64,
                 height: self.height as u64,
-                depth: 1
-            }
+                depth: 1,
+            },
         };
         let bytes_per_row = (self.width * 4) as u64;
 
@@ -297,7 +317,17 @@ fn run_event_loop(
     // Wait for CreateWindow command
     #[allow(deprecated)]
     let win = match cmd_rx.recv()? {
-        DriverCommand::CreateWindow { id, width, height, title } => Window { id, width, height, title },
+        DriverCommand::CreateWindow {
+            id,
+            width,
+            height,
+            title,
+        } => Window {
+            id,
+            width,
+            height,
+            title,
+        },
         DriverCommand::Configure(c) => {
             // Legacy fallback
             Window {
@@ -340,8 +370,10 @@ fn run_event_loop(
 
     let mut metal = unsafe { MetalState::new(layer, width_px as usize, height_px as usize)? };
 
-    info!("Metal: Window {}x{} pts ({}x{} px), scale {}",
-          window_width_pts, window_height_pts, width_px, height_px, backing_scale);
+    info!(
+        "Metal: Window {}x{} pts ({}x{} px), scale {}",
+        window_width_pts, window_height_pts, width_px, height_px, backing_scale
+    );
 
     // Show window
     unsafe {
@@ -439,7 +471,11 @@ fn run_event_loop(
                     state.window.setTitle(&ns_title);
                     let _ = engine_tx.send(EngineCommand::DriverAck);
                 }
-                DriverCommand::SetSize { id: _, width, height } => {
+                DriverCommand::SetSize {
+                    id: _,
+                    width,
+                    height,
+                } => {
                     let size = NSSize::new(width as f64, height as f64);
                     state.window.setContentSize(size);
                     let _ = engine_tx.send(EngineCommand::DriverAck);
@@ -450,9 +486,10 @@ fn run_event_loop(
                 }
                 DriverCommand::RequestPaste => {
                     if let Some(text) = state.request_paste() {
-                        let _ = engine_tx.send(EngineCommand::DisplayEvent(
-                            DisplayEvent::PasteData { text },
-                        ));
+                        let _ =
+                            engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::PasteData {
+                                text,
+                            }));
                     }
                     let _ = engine_tx.send(EngineCommand::DriverAck);
                 }
@@ -490,7 +527,12 @@ impl CocoaEventState {
                 let key_code = event.keyCode();
                 let symbol = map_keycode_to_symbol(key_code);
                 let modifiers = extract_modifiers(event);
-                Some(DisplayEvent::Key { id, symbol, modifiers, text })
+                Some(DisplayEvent::Key {
+                    id,
+                    symbol,
+                    modifiers,
+                    text,
+                })
             }
             NSEventType::LeftMouseDown => {
                 let location = event.locationInWindow();
@@ -600,8 +642,8 @@ fn register_view_class() {
     static REGISTER_ONCE: Once = Once::new();
     REGISTER_ONCE.call_once(|| {
         let name = CStr::from_bytes_with_nul(b"MetalTermView\0").unwrap();
-        let mut builder = ClassBuilder::new(name, class!(NSView))
-            .expect("Failed to create MetalTermView class");
+        let mut builder =
+            ClassBuilder::new(name, class!(NSView)).expect("Failed to create MetalTermView class");
 
         unsafe extern "C" fn is_flipped(_this: *mut AnyObject, _cmd: Sel) -> Bool {
             Bool::YES
@@ -618,11 +660,23 @@ fn register_view_class() {
         }
 
         unsafe {
-            builder.add_method(sel!(isFlipped), is_flipped as unsafe extern "C" fn(_, _) -> Bool);
-            builder.add_method(sel!(acceptsFirstResponder), accepts_first_responder as unsafe extern "C" fn(_, _) -> Bool);
-            builder.add_method(sel!(becomeFirstResponder), become_first_responder as unsafe extern "C" fn(_, _) -> Bool);
+            builder.add_method(
+                sel!(isFlipped),
+                is_flipped as unsafe extern "C" fn(_, _) -> Bool,
+            );
+            builder.add_method(
+                sel!(acceptsFirstResponder),
+                accepts_first_responder as unsafe extern "C" fn(_, _) -> Bool,
+            );
+            builder.add_method(
+                sel!(becomeFirstResponder),
+                become_first_responder as unsafe extern "C" fn(_, _) -> Bool,
+            );
             builder.add_method(sel!(keyDown:), key_down as unsafe extern "C" fn(_, _, _));
-            builder.add_method(sel!(wantsUpdateLayer), wants_update_layer as unsafe extern "C" fn(_, _) -> Bool);
+            builder.add_method(
+                sel!(wantsUpdateLayer),
+                wants_update_layer as unsafe extern "C" fn(_, _) -> Bool,
+            );
         }
 
         builder.register();
@@ -636,10 +690,14 @@ fn register_delegate_class() {
     static REGISTER_ONCE: Once = Once::new();
     REGISTER_ONCE.call_once(|| {
         let name = CStr::from_bytes_with_nul(b"MetalTermWindowDelegate\0").unwrap();
-        let mut builder = ClassBuilder::new(name, class!(NSObject))
-            .expect("Failed to create delegate class");
+        let mut builder =
+            ClassBuilder::new(name, class!(NSObject)).expect("Failed to create delegate class");
 
-        unsafe extern "C" fn window_should_close(_: *mut AnyObject, _: Sel, _: *mut NSWindow) -> Bool {
+        unsafe extern "C" fn window_should_close(
+            _: *mut AnyObject,
+            _: Sel,
+            _: *mut NSWindow,
+        ) -> Bool {
             info!("MetalTermWindowDelegate: windowShouldClose");
             Bool::YES
         }

@@ -11,11 +11,16 @@ extern crate alloc;
 pub mod backend;
 pub mod backends;
 pub mod batch;
+/// Curve and matrix primitives for vector graphics.
 pub mod curve;
+/// Domain-specific language extensions (fluent combinators).
 pub mod dsl;
+/// Surface combinators and operations (Scale, Offset, Over, etc.).
 pub mod ops;
+/// The core Surface trait and pipeline definitions.
 pub mod pipe;
 pub mod pixel;
+/// Platform configuration and rendering utilities.
 pub mod platform;
 
 pub use backend::{FloatBatchOps, SimdBatch}; // Export SimdBatch and FloatBatchOps
@@ -39,22 +44,26 @@ macro_rules! define_tensor {
         where
             T: Copy + Debug + Default + Send + Sync + 'static,
         {
+            /// The underlying elements of the tensor.
             pub elements: [B::Batch<T>; $rows * $cols],
         }
         impl<T, B: Backend> $name<T, B>
         where
             T: Copy + Debug + Default + Send + Sync + 'static,
         {
+            /// Creates a new tensor from an array of batches.
             #[inline(always)]
             pub fn new(elements: [B::Batch<T>; $rows * $cols]) -> Self {
                 Self { elements }
             }
 
+            /// Gets the element at the specified row and column.
             #[inline(always)]
             pub fn get(&self, row: usize, col: usize) -> B::Batch<T> {
                 self.elements[row * $cols + col]
             }
 
+            /// Maps a function over all elements of the tensor.
             #[inline(always)]
             pub fn map<U, F>(self, mut f: F) -> $name<U, B>
             where
@@ -75,7 +84,9 @@ macro_rules! impl_matmul {
             T: Copy + Debug + Default + Send + Sync + 'static,
             B::Batch<T>: BatchArithmetic<T>,
         {
+            /// Performs matrix multiplication.
             #[inline(always)]
+            #[allow(clippy::modulo_one)]
             pub fn matmul(&self, other: &$right<T, B>) -> $output<T, B> {
                 let elements = core::array::from_fn(|i| {
                     let r = i / $n;
@@ -117,15 +128,21 @@ impl_matmul!(Tensor1x2, Tensor2x1, Tensor1x1, 1, 2, 1);
 // Tensor Views
 // ============================================================================
 
+/// A read-only view into a 2D tensor (e.g. image buffer).
 #[derive(Copy, Clone)]
 pub struct TensorView<'a, T> {
+    /// Slice of data.
     pub data: &'a [T],
+    /// Width of the tensor.
     pub width: usize,
+    /// Height of the tensor.
     pub height: usize,
+    /// Stride (elements per row).
     pub stride: usize,
 }
 
 impl<'a, T> TensorView<'a, T> {
+    /// Creates a new `TensorView`.
     #[inline(always)]
     pub const fn new(data: &'a [T], width: usize, height: usize, stride: usize) -> Self {
         Self {
@@ -138,6 +155,11 @@ impl<'a, T> TensorView<'a, T> {
 }
 
 impl<'a> TensorView<'a, u32> {
+    /// Gathers 2D data from the tensor using generic backend indices.
+    ///
+    /// # Safety
+    /// This function is unsafe because it performs gather operations which might
+    /// exceed bounds if logic is incorrect, although it includes bounds checks.
     #[inline(always)]
     pub unsafe fn gather_2d<B: Backend>(&self, x: B::Batch<u32>, y: B::Batch<u32>) -> B::Batch<u32>
     where
@@ -162,12 +184,16 @@ impl<'a> TensorView<'a, u32> {
         // gather handles slice bounds safety (returns 0 if idx >= len),
         // but we also mask with in_bounds to ensure 2D geometric correctness.
         let val = <B::Batch<u32> as BatchArithmetic<u32>>::gather(self.data, idx_vec);
-        
+
         in_bounds.select(val, zero)
     }
 }
 
 impl<'a> TensorView<'a, u8> {
+    /// Gathers 2D data from a u8 tensor (e.g. alpha mask) using generic backend indices.
+    ///
+    /// # Safety
+    /// Unsafe due to raw gather operations.
     #[inline(always)]
     pub unsafe fn gather_2d<B: Backend>(&self, x: B::Batch<u32>, y: B::Batch<u32>) -> B::Batch<u32>
     where
@@ -186,10 +212,14 @@ impl<'a> TensorView<'a, u8> {
         let idx_vec = (safe_y * stride_vec) + safe_x;
 
         let val = <B::Batch<u32> as BatchArithmetic<u32>>::gather_u8(self.data, idx_vec);
-        
+
         in_bounds.select(val, zero)
     }
 
+    /// Gathers 4-bit packed data (e.g. font atlas) as u32 values.
+    ///
+    /// # Safety
+    /// Unsafe due to raw gather operations.
     #[inline(always)]
     pub unsafe fn gather_4bit<B: Backend>(
         &self,
@@ -211,11 +241,11 @@ impl<'a> TensorView<'a, u8> {
 
         let byte_x = safe_x >> 1;
         let is_odd = safe_x & <B::Batch<u32> as SimdBatch<u32>>::splat(1);
-        
+
         // gather_2d will perform its own check, but safe_x/safe_y ensure we are within valid range
         // even if gather_2d's check is loose (due to width mismatch).
         let packed = unsafe { self.gather_2d::<B>(byte_x, safe_y) };
-        
+
         let high_nibble = (packed >> 4) & <B::Batch<u32> as SimdBatch<u32>>::splat(0x0F);
         let low_nibble = packed & <B::Batch<u32> as SimdBatch<u32>>::splat(0x0F);
         let all_ones = <B::Batch<u32> as SimdBatch<u32>>::splat(0xFFFFFFFF);
@@ -226,6 +256,10 @@ impl<'a> TensorView<'a, u8> {
         in_bounds.select(val, zero)
     }
 
+    /// Gathers a 2x2 neighborhood of pixels.
+    ///
+    /// # Safety
+    /// Unsafe due to raw gather operations.
     #[inline(always)]
     pub unsafe fn gather_tensor2x2<B: Backend>(
         &self,
@@ -245,6 +279,10 @@ impl<'a> TensorView<'a, u8> {
         ])
     }
 
+    /// Gathers a 2x2 neighborhood of 4-bit packed pixels.
+    ///
+    /// # Safety
+    /// Unsafe due to raw gather operations.
     #[inline(always)]
     pub unsafe fn gather_tensor2x2_4bit<B: Backend>(
         &self,
@@ -264,6 +302,10 @@ impl<'a> TensorView<'a, u8> {
         ])
     }
 
+    /// Samples the surface using bilinear interpolation on 4-bit packed data.
+    ///
+    /// # Safety
+    /// Unsafe due to raw gather operations.
     #[inline(always)]
     pub unsafe fn sample_4bit_bilinear<B: Backend>(
         &self,
@@ -297,13 +339,22 @@ impl<'a> TensorView<'a, u8> {
     }
 }
 
+/// A mutable view into a 2D tensor (e.g. image buffer).
 pub struct TensorViewMut<'a, T> {
+    /// Mutable slice of data.
     pub data: &'a mut [T],
+    /// Width of the tensor.
     pub width: usize,
+    /// Height of the tensor.
     pub height: usize,
+    /// Stride (elements per row).
     pub stride: usize,
 }
 
+/// Rasterizes a surface into a target buffer.
+///
+/// This function iterates over the target buffer, evaluating the surface
+/// for each pixel using SIMD batches where possible.
 pub fn execute<P, S>(surface: &S, target: &mut [P], width: usize, height: usize)
 where
     P: pixel::Pixel,

@@ -8,10 +8,10 @@
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
-use pixelflow_render::color::Rgba;
-use pixelflow_render::Frame;
 use anyhow::{anyhow, Result};
 use log::info;
+use pixelflow_render::color::Rgba;
+use pixelflow_render::Frame;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 // --- Run State (only original driver has this) ---
@@ -75,11 +75,19 @@ fn run_event_loop(
 ) -> Result<()> {
     // 1. Read CreateWindow command first
     let (window_id, width_px, height_px, title) = match cmd_rx.recv()? {
-        DriverCommand::CreateWindow { id, width, height, title } => (id, width, height, title),
+        DriverCommand::CreateWindow {
+            id,
+            width,
+            height,
+            title,
+        } => (id, width, height, title),
         other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
     };
 
-    info!("Headless: Creating window '{}' {}x{}", title, width_px, height_px);
+    info!(
+        "Headless: Creating window '{}' {}x{}",
+        title, width_px, height_px
+    );
 
     // Send WindowCreated event
     let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {

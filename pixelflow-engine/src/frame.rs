@@ -142,7 +142,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_core::Batch;
+    use pixelflow_core::{Batch, SimdBatch};
 
     // A minimal test surface
     #[derive(Clone, Copy)]

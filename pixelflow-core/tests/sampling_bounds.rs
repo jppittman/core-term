@@ -1,6 +1,6 @@
-use pixelflow_core::backend::{Backend, SimdBatch, BatchArithmetic};
-use pixelflow_core::batch::{Batch, NativeBackend};
 use pixelflow_core::TensorView;
+use pixelflow_core::backend::{Backend, BatchArithmetic, SimdBatch};
+use pixelflow_core::batch::{Batch, NativeBackend};
 
 #[test]
 fn test_tensor_view_wrapping_corruption() {
@@ -12,7 +12,7 @@ fn test_tensor_view_wrapping_corruption() {
 
     // Case 1: Sample at (-1, 0) via wrapping.
     // x = -1 cast to u32 = u32::MAX
-    let x_neg = Batch::<u32>::splat(u32::MAX); 
+    let x_neg = Batch::<u32>::splat(u32::MAX);
     let y_zero = Batch::<u32>::splat(0);
 
     // Current behavior prediction:
@@ -35,7 +35,7 @@ fn test_tensor_view_wrapping_corruption() {
     // This is "wrapping" behavior (row overflow).
     //
     // Desired behavior: 0 (strict 2D bounds)
-    
+
     let x_overflow = Batch::<u32>::splat(2);
     let result_overflow = unsafe { view.gather_2d::<NativeBackend>(x_overflow, y_zero) };
     let val_overflow = result_overflow.first();
@@ -44,6 +44,12 @@ fn test_tensor_view_wrapping_corruption() {
 
     // Assertions to fail if bug is present
     // We expect these to be 0 for correct "Border" sampling
-    assert_eq!(val_neg, 0, "Negative x should return 0 (border), got corruption/clamping");
-    assert_eq!(val_overflow, 0, "Row overflow x should return 0 (border), got next row");
+    assert_eq!(
+        val_neg, 0,
+        "Negative x should return 0 (border), got corruption/clamping"
+    );
+    assert_eq!(
+        val_overflow, 0,
+        "Row overflow x should return 0 (border), got next row"
+    );
 }
