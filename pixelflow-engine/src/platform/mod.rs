@@ -1,8 +1,8 @@
 pub mod waker;
 
 use crate::channel::{create_engine_channels, DriverCommand, EngineCommand, EngineSender};
-use crate::display::driver::DisplayDriver;
 use crate::config::EngineConfig;
+use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::MouseButton;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
@@ -175,13 +175,22 @@ fn engine_loop<A: Application<PlatformPixel>>(
                     Ok(EngineCommand::DisplayEvent(evt)) => {
                         // Track physical dimensions and scale factor from window events
                         match &evt {
-                            DisplayEvent::WindowCreated { width_px: w, height_px: h, scale: sf, .. } => {
+                            DisplayEvent::WindowCreated {
+                                width_px: w,
+                                height_px: h,
+                                scale: sf,
+                                ..
+                            } => {
                                 physical_width = *w;
                                 physical_height = *h;
                                 scale_factor = *sf;
                                 framebuffer = None;
                             }
-                            DisplayEvent::Resized { width_px: w, height_px: h, .. } => {
+                            DisplayEvent::Resized {
+                                width_px: w,
+                                height_px: h,
+                                ..
+                            } => {
                                 physical_width = *w;
                                 physical_height = *h;
                                 framebuffer = None;
@@ -235,7 +244,10 @@ fn engine_loop<A: Application<PlatformPixel>>(
                 render::<PlatformPixel, _>(&scaled, &mut frame);
 
                 // Send typed frame to driver
-                driver.send(DriverCommand::Present { id: WindowId::PRIMARY, frame })?;
+                driver.send(DriverCommand::Present {
+                    id: WindowId::PRIMARY,
+                    frame,
+                })?;
             }
         }
     }
@@ -256,7 +268,10 @@ fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionRes
         }
         AppAction::Quit => Ok(ActionResult::Shutdown),
         AppAction::SetTitle(title) => {
-            driver.send(DriverCommand::SetTitle { id: WindowId::PRIMARY, title })?;
+            driver.send(DriverCommand::SetTitle {
+                id: WindowId::PRIMARY,
+                title,
+            })?;
             Ok(ActionResult::Continue)
         }
         AppAction::CopyToClipboard(text) => {
@@ -275,8 +290,16 @@ fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionRes
 /// Convert DisplayEvent to EngineEvent, converting physical to logical pixels.
 fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEvent> {
     match evt {
-        DisplayEvent::WindowCreated { width_px, height_px, .. }
-        | DisplayEvent::Resized { width_px, height_px, .. } => {
+        DisplayEvent::WindowCreated {
+            width_px,
+            height_px,
+            ..
+        }
+        | DisplayEvent::Resized {
+            width_px,
+            height_px,
+            ..
+        } => {
             // Convert physical pixels to logical pixels
             let logical_w = (*width_px as f64 / scale_factor) as u32;
             let logical_h = (*height_px as f64 / scale_factor) as u32;
@@ -287,16 +310,14 @@ fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEven
             None
         }
         DisplayEvent::CloseRequested { .. } => Some(EngineEvent::CloseRequested),
-        DisplayEvent::ScaleChanged { scale, .. } => {
-            Some(EngineEvent::ScaleChanged(*scale))
-        }
+        DisplayEvent::ScaleChanged { scale, .. } => Some(EngineEvent::ScaleChanged(*scale)),
         DisplayEvent::Key {
             symbol,
             modifiers,
             text,
             ..
         } => Some(EngineEvent::KeyDown {
-            key: symbol.clone(),
+            key: *symbol,
             mods: *modifiers,
             text: text.clone(),
         }),
@@ -343,7 +364,12 @@ fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEven
             })
         }
         DisplayEvent::MouseScroll {
-            dx, dy, x, y, modifiers, ..
+            dx,
+            dy,
+            x,
+            y,
+            modifiers,
+            ..
         } => {
             let logical_x = (*x as f64 / scale_factor).max(0.0) as u32;
             let logical_y = (*y as f64 / scale_factor).max(0.0) as u32;

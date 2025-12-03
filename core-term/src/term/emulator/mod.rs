@@ -169,7 +169,7 @@ impl TerminalEmulator {
         // Build lines by cloning Arc references (cheap ref count bump)
         let lines: Vec<SnapshotLine> = (0..height)
             .map(|y_idx| {
-                let is_dirty = self.screen.dirty.get(y_idx).map_or(true, |&d| d != 0);
+                let is_dirty = self.screen.dirty.get(y_idx).is_none_or(|&d| d != 0);
                 SnapshotLine::from_arc(active_grid[y_idx].clone(), is_dirty)
             })
             .collect();
@@ -222,7 +222,7 @@ impl TerminalEmulator {
             dimensions: (width, height),
             lines,
             cursor_state,
-            selection: self.screen.selection.clone(),
+            selection: self.screen.selection,
             cell_width_px: self.layout.cell_width_px,
             cell_height_px: self.layout.cell_height_px,
         })

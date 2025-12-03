@@ -125,10 +125,10 @@ impl Screen {
         );
 
         let grid: Grid = (0..h)
-            .map(|_| Arc::new(vec![default_fill_char.clone(); w]))
+            .map(|_| Arc::new(vec![default_fill_char; w]))
             .collect();
         let alt_grid: Grid = (0..h)
-            .map(|_| Arc::new(vec![default_fill_char.clone(); w]))
+            .map(|_| Arc::new(vec![default_fill_char; w]))
             .collect();
         let scrollback = VecDeque::with_capacity(scrollback_limit_from_config);
 
@@ -235,7 +235,7 @@ impl Screen {
         if start_clamped < end_clamped {
             let row = Arc::make_mut(row_arc);
             for cell in row[start_clamped..end_clamped].iter_mut() {
-                *cell = fill_glyph.clone();
+                *cell = fill_glyph;
             }
         }
         self.mark_line_dirty(y);
@@ -283,7 +283,7 @@ impl Screen {
         for y_idx in (bot.saturating_sub(n_val) + 1)..=bot {
             if let Some(row_arc) = active_grid.get_mut(y_idx) {
                 // Create a fresh row rather than mutating (avoids CoW clone if shared)
-                *row_arc = Arc::new(vec![fill_glyph.clone(); width]);
+                *row_arc = Arc::new(vec![fill_glyph; width]);
             } else {
                 // This should ideally not happen if bounds are correct
                 warn!(
@@ -339,7 +339,7 @@ impl Screen {
         for y_idx in top..(top + n_val) {
             if let Some(row_arc) = active_grid.get_mut(y_idx) {
                 // Create a fresh row rather than mutating (avoids CoW clone if shared)
-                *row_arc = Arc::new(vec![fill_glyph.clone(); width]);
+                *row_arc = Arc::new(vec![fill_glyph; width]);
             } else {
                 // This should ideally not happen if bounds are correct
                 warn!(
@@ -390,7 +390,7 @@ impl Screen {
         row[x..].rotate_right(count);
         for fill_x_idx in x..(x + count) {
             if let Some(cell) = row.get_mut(fill_x_idx) {
-                *cell = fill_glyph.clone();
+                *cell = fill_glyph;
             }
         }
         self.mark_line_dirty(y);
@@ -432,7 +432,7 @@ impl Screen {
         let fill_start_idx = width.saturating_sub(count);
         for fill_x_idx in fill_start_idx..width {
             if let Some(cell) = row.get_mut(fill_x_idx) {
-                *cell = fill_glyph.clone();
+                *cell = fill_glyph;
             }
         }
         self.mark_line_dirty(y);
@@ -476,7 +476,7 @@ impl Screen {
                 // self.width is still old_width here
                 for row_arc in self.scrollback.iter_mut() {
                     let row = Arc::make_mut(row_arc);
-                    row.resize(nw, fill_glyph.clone());
+                    row.resize(nw, fill_glyph);
                 }
             }
             while self.scrollback.len() > self.scrollback_limit {
@@ -486,18 +486,20 @@ impl Screen {
 
         // 3. Create new primary grid and copy content
         //    Content is anchored to the top-left.
-        let mut new_primary_grid: Grid = (0..nh)
-            .map(|_| Arc::new(vec![fill_glyph.clone(); nw]))
-            .collect();
-        for y in 0..std_min(old_height, nh) {
+        let mut new_primary_grid: Grid = (0..nh).map(|_| Arc::new(vec![fill_glyph; nw])).collect();
+        for (y, row_slot) in new_primary_grid
+            .iter_mut()
+            .enumerate()
+            .take(std_min(old_height, nh))
+        {
             // Check if the row y exists in the old grid
             if let Some(old_row_content) = self.grid.get(y) {
-                let mut new_row = vec![fill_glyph.clone(); nw];
+                let mut new_row = vec![fill_glyph; nw];
                 for x in 0..std_min(old_row_content.len(), nw) {
-                    new_row[x] = old_row_content[x].clone();
+                    new_row[x] = old_row_content[x];
                 }
                 // new_primary_grid[y] is guaranteed to exist due to initialization size
-                new_primary_grid[y] = Arc::new(new_row);
+                *row_slot = Arc::new(new_row);
             }
             // If old_height > nh, lines beyond nh-1 are truncated.
             // If old_height < nh, new lines at the bottom remain as fill_glyph.
@@ -505,16 +507,18 @@ impl Screen {
         self.grid = new_primary_grid;
 
         // 4. Create new alternate grid and copy content (similarly)
-        let mut new_alt_grid: Grid = (0..nh)
-            .map(|_| Arc::new(vec![fill_glyph.clone(); nw]))
-            .collect();
-        for y in 0..std_min(old_height, nh) {
+        let mut new_alt_grid: Grid = (0..nh).map(|_| Arc::new(vec![fill_glyph; nw])).collect();
+        for (y, row_slot) in new_alt_grid
+            .iter_mut()
+            .enumerate()
+            .take(std_min(old_height, nh))
+        {
             if let Some(old_row_content) = self.alt_grid.get(y) {
-                let mut new_row = vec![fill_glyph.clone(); nw];
+                let mut new_row = vec![fill_glyph; nw];
                 for x in 0..std_min(old_row_content.len(), nw) {
-                    new_row[x] = old_row_content[x].clone();
+                    new_row[x] = old_row_content[x];
                 }
-                new_alt_grid[y] = Arc::new(new_row);
+                *row_slot = Arc::new(new_row);
             }
         }
         self.alt_grid = new_alt_grid;
@@ -578,7 +582,7 @@ impl Screen {
         if clear_alt_screen {
             let fill_glyph = self.get_default_fill_glyph();
             for y_idx in 0..self.height {
-                self.fill_region_with_glyph(y_idx, 0, self.width, fill_glyph.clone());
+                self.fill_region_with_glyph(y_idx, 0, self.width, fill_glyph);
             }
         }
         self.mark_all_dirty();
@@ -870,7 +874,7 @@ impl Screen {
                 }
                 // Point is on a line between the start and end lines.
                 // In 'Cell' mode, this means the entire line is selected.
-                return true;
+                true
             } // TODO: Implement other selection modes like Block if they are added.
               // For now, Block, SemanticLine, SemanticWord are commented out or not present
               // in the SelectionMode enum used by this logic.
@@ -991,15 +995,15 @@ impl Screen {
                     // 1. It's a multi-line selection (norm_start_point.y != norm_end_point.y)
                     // 2. This is NOT the last line of the multi-line selection (y_abs < norm_end_point.y)
                     // 3. The selection on this line went all the way to the end of the screen width (line_col_end included self.width - 1)
-                    if norm_start_point.y != norm_end_point.y && y_abs < norm_end_point.y {
-                        if line_col_end >= self.width.saturating_sub(1) {
-                            // Check if selection extended to line end
-                            if let Some(last_char_idx) = current_line_text.rfind(|c: char| c != ' ')
-                            {
-                                current_line_text.truncate(last_char_idx + 1);
-                            } else {
-                                current_line_text.clear(); // Line was all spaces
-                            }
+                    if norm_start_point.y != norm_end_point.y
+                        && y_abs < norm_end_point.y
+                        && line_col_end >= self.width.saturating_sub(1)
+                    {
+                        // Check if selection extended to line end
+                        if let Some(last_char_idx) = current_line_text.rfind(|c: char| c != ' ') {
+                            current_line_text.truncate(last_char_idx + 1);
+                        } else {
+                            current_line_text.clear(); // Line was all spaces
                         }
                     }
 

@@ -1,5 +1,3 @@
-#![cfg(use_x11_display)]
-
 //! X11 DisplayDriver implementation using xlib.
 //!
 //! Driver struct is just cmd_tx - trivially Clone.
@@ -9,11 +7,11 @@ use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::{KeySymbol, Modifiers};
-use pixelflow_render::color::Bgra;
-use pixelflow_render::Frame;
 use crate::platform::waker::{EventLoopWaker, X11Waker};
 use anyhow::{anyhow, Result};
 use log::{info, trace};
+use pixelflow_render::color::Bgra;
+use pixelflow_render::Frame;
 use std::ffi::{CStr, CString};
 use std::mem;
 use std::os::raw::{c_char, c_int};
@@ -128,7 +126,12 @@ fn run_event_loop(
 ) -> Result<()> {
     // 1. Read CreateWindow command first
     let (window_id, width, height, title) = match cmd_rx.recv()? {
-        DriverCommand::CreateWindow { id, width, height, title } => (id, width, height, title),
+        DriverCommand::CreateWindow {
+            id,
+            width,
+            height,
+            title,
+        } => (id, width, height, title),
         other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
     };
 
@@ -156,7 +159,8 @@ fn run_event_loop(
         let black = xlib::XBlackPixel(display, screen);
         let white = xlib::XWhitePixel(display, screen);
 
-        let x11_window = xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
+        let x11_window =
+            xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
 
         // Set window title
         if let Ok(c_title) = CString::new(title.as_str()) {
@@ -183,7 +187,12 @@ fn run_event_loop(
         );
 
         // Set WM Protocols
-        xlib::XSetWMProtocols(display, x11_window, &wm_delete_window as *const _ as *mut _, 1);
+        xlib::XSetWMProtocols(
+            display,
+            x11_window,
+            &wm_delete_window as *const _ as *mut _,
+            1,
+        );
 
         // Initialize GC
         let gc = xlib::XCreateGC(display, x11_window, 0, ptr::null_mut());
@@ -313,6 +322,7 @@ impl X11State {
                     DriverCommand::CreateWindow { .. } => {
                         // Already created, ignore
                     }
+                    #[allow(deprecated)]
                     DriverCommand::Configure(_) => {
                         trace!("X11: Configure command received (ignored)");
                     }

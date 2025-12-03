@@ -229,7 +229,7 @@ mod tests {
 
         // Should be background (black) for empty grid
         // SAFETY: transmute between same-sized SIMD register types
-        let result_u32: Batch<u32> = unsafe { result.transmute() };
+        let result_u32: Batch<u32> = unsafe { core::mem::transmute(result) };
         let c = result_u32.first();
         let pixel = Rgba(c);
         // Black with full alpha
@@ -421,7 +421,7 @@ mod tests {
         let composed = ConstAlpha(0).over::<Rgba, _, _>(fg, bg);
         let result: Batch<Rgba> = composed.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
         // SAFETY: transmute between same-sized SIMD register types
-        let pixel = Rgba(unsafe { result.transmute::<u32>() }.first());
+        let pixel = Rgba(unsafe { core::mem::transmute::<Batch<Rgba>, Batch<u32>>(result) }.first());
         println!(
             "\nAlpha=0 (expect pure blue bg): r={}, g={}, b={}",
             pixel.r(),
@@ -435,7 +435,7 @@ mod tests {
         // Note: blend_math does (fg * 255 + bg * 1) / 256, so 255*255/256 = 254
         let composed = ConstAlpha(255).over::<Rgba, _, _>(fg, bg);
         let result: Batch<Rgba> = composed.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
-        let pixel = Rgba(unsafe { result.transmute::<u32>() }.first());
+        let pixel = Rgba(unsafe { core::mem::transmute::<Batch<Rgba>, Batch<u32>>(result) }.first());
         println!(
             "Alpha=255 (expect ~pure red fg): r={}, g={}, b={}",
             pixel.r(),
@@ -456,7 +456,7 @@ mod tests {
         // Test with 128 alpha (should be ~50/50)
         let composed = ConstAlpha(128).over::<Rgba, _, _>(fg, bg);
         let result: Batch<Rgba> = composed.eval(Batch::<u32>::splat(0), Batch::<u32>::splat(0));
-        let pixel = Rgba(unsafe { result.transmute::<u32>() }.first());
+        let pixel = Rgba(unsafe { core::mem::transmute::<Batch<Rgba>, Batch<u32>>(result) }.first());
         println!(
             "Alpha=128 (expect ~50/50): r={}, g={}, b={}",
             pixel.r(),
@@ -617,7 +617,7 @@ mod tests {
                 let x_batch = Batch::<u32>::splat(cx);
                 let y_batch = Batch::<u32>::splat(cy);
                 let result: Batch<Rgba> = baked.eval(x_batch, y_batch);
-                let pixel = Rgba(unsafe { result.transmute::<u32>() }.first());
+                let pixel = Rgba(unsafe { core::mem::transmute::<Batch<Rgba>, Batch<u32>>(result) }.first());
                 assert_eq!(
                     (pixel.r(), pixel.g(), pixel.b()),
                     (expected_r, expected_g, expected_b),

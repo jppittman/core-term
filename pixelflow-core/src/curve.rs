@@ -10,6 +10,7 @@ use crate::pipe::Surface;
 /// [ m20 m21 m22 ]
 #[derive(Clone, Copy, Debug)]
 pub struct Mat3 {
+    /// Row-major matrix elements.
     pub m: [[f32; 3]; 3],
 }
 
@@ -75,6 +76,7 @@ impl Mat3 {
 
 /// A polynomial curve. Degree is coefficients.len() - 1
 pub struct Poly<C: AsRef<[f32]>> {
+    /// Coefficients of the polynomial, from lowest to highest degree.
     pub coefficients: C,
 }
 
@@ -95,8 +97,10 @@ impl<C: AsRef<[f32]>> Poly<C> {
 
 /// A 2D parametric curve: t → (x, y)
 pub struct Curve2D<X, Y> {
-    pub x: X, // Poly for x(t)
-    pub y: Y, // Poly for y(t)
+    /// Polynomial for x(t)
+    pub x: X,
+    /// Polynomial for y(t)
+    pub y: Y,
 }
 
 /// Trait for defining the implicit equation of a curve.
@@ -107,8 +111,10 @@ pub trait ImplicitEvaluator {
 
 /// The implicit form: (x, y) → f where f=0 is the curve
 pub struct Implicit<C> {
+    /// The curve evaluator (e.g. quadratic or cubic).
     pub curve: C,
-    pub projection: Mat3, // Screen → parameter space
+    /// Matrix projecting screen space to parameter space.
+    pub projection: Mat3,
 }
 
 impl<C: ImplicitEvaluator + Send + Sync + 'static> Surface<f32> for Implicit<C> {

@@ -119,15 +119,13 @@ impl TerminalEmulator {
                         _ => false, // Not a WidePrimary, so no spacer to clear based on this logic.
                     };
 
-                    if clear_spacer {
-                        if physical_x + 1 < screen_ctx.width {
-                            // Using default_space() for simplicity, assuming default attributes are desired.
-                            // If specific default_attrs are needed, they should be defined as per original code.
-                            let default_glyph = Glyph::Single(ContentCell::default_space());
-                            self.screen
-                                .set_glyph(physical_x + 1, physical_y, default_glyph);
-                            // Line will be marked dirty anyway by the new char.
-                        }
+                    if clear_spacer && physical_x + 1 < screen_ctx.width {
+                        // Using default_space() for simplicity, assuming default attributes are desired.
+                        // If specific default_attrs are needed, they should be defined as per original code.
+                        let default_glyph = Glyph::Single(ContentCell::default_space());
+                        self.screen
+                            .set_glyph(physical_x + 1, physical_y, default_glyph);
+                        // Line will be marked dirty anyway by the new char.
                     }
                 }
             }

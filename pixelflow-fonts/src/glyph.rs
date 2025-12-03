@@ -67,6 +67,7 @@ impl Surface<u8> for CellGlyph {
 /// Cell coordinate (0, 0) is top-left of the cell.
 /// Curve coordinate y = ascender is the top of the cell.
 /// The baseline is at curve y = 0.
+#[allow(clippy::too_many_arguments)]
 pub fn eval_curves_cell(
     curves: &[Segment],
     bounds: GlyphBounds,

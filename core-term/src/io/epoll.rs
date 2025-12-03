@@ -174,8 +174,7 @@ impl EventMonitor {
         );
 
         events_out.clear();
-        for i in 0..num_events as usize {
-            let ev = &libc_events[i];
+        for ev in libc_events.iter().take(num_events as usize) {
             events_out.push(EpollEvent {
                 token: ev.u64,
                 flags: EpollFlags::from_bits_truncate(ev.events),

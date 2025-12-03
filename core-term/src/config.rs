@@ -127,6 +127,7 @@ impl Default for KeybindingsConfig {
 /// Represents the complete configuration for the terminal emulator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Config {
     pub appearance: AppearanceConfig,
     pub behavior: BehaviorConfig,
@@ -135,20 +136,6 @@ pub struct Config {
     pub shell: ShellConfig,
     pub mouse: MouseConfig,
     pub keybindings: KeybindingsConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            appearance: AppearanceConfig::default(),
-            behavior: BehaviorConfig::default(),
-            performance: PerformanceConfig::default(),
-            colors: ColorScheme::default(),
-            shell: ShellConfig::default(),
-            mouse: MouseConfig::default(),
-            keybindings: KeybindingsConfig::default(),
-        }
-    }
 }
 
 /// Defines settings related to the visual appearance of the terminal.
