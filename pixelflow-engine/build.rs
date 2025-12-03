@@ -5,6 +5,7 @@ fn main() {
     // Declare custom cfg names to avoid warnings
     println!("cargo::rustc-check-cfg=cfg(use_cocoa_display)");
     println!("cargo::rustc-check-cfg=cfg(use_x11_display)");
+    println!("cargo::rustc-check-cfg=cfg(use_wayland_display)");
     println!("cargo::rustc-check-cfg=cfg(use_headless_display)");
     println!("cargo::rustc-check-cfg=cfg(use_web_display)");
 
@@ -29,6 +30,9 @@ fn main() {
                 }
             }
         }
+        "wayland" => {
+            println!("cargo:rustc-cfg=use_wayland_display");
+        }
         "headless" => {
             println!("cargo:rustc-cfg=use_headless_display");
         }
@@ -51,6 +55,8 @@ fn determine_display_driver(target_os: &str) -> String {
         cfg!(feature = "display_cocoa") || std::env::var("CARGO_FEATURE_DISPLAY_COCOA").is_ok();
     let has_x11 =
         cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok();
+    let has_wayland =
+        cfg!(feature = "display_wayland") || std::env::var("CARGO_FEATURE_DISPLAY_WAYLAND").is_ok();
     let has_headless = cfg!(feature = "display_headless")
         || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
     let has_web =
@@ -59,10 +65,13 @@ fn determine_display_driver(target_os: &str) -> String {
     if has_web {
         return "web".to_string();
     }
-    if has_headless && !has_x11 && !has_cocoa {
+    if has_headless && !has_x11 && !has_cocoa && !has_wayland {
         return "headless".to_string();
     }
-    if has_x11 && !has_headless {
+    if has_wayland {
+        return "wayland".to_string();
+    }
+    if has_x11 {
         return "x11".to_string();
     }
     if has_cocoa {

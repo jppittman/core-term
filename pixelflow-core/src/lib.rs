@@ -43,14 +43,14 @@ macro_rules! define_tensor {
         #[derive(Copy, Clone)]
         pub struct $name<T, B: Backend>
         where
-            T: Copy + Debug + Default + Send + Sync + 'static,
+            T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
         {
             /// The underlying elements of the tensor.
             pub elements: [B::Batch<T>; $rows * $cols],
         }
         impl<T, B: Backend> $name<T, B>
         where
-            T: Copy + Debug + Default + Send + Sync + 'static,
+            T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
         {
             /// Creates a new tensor from an array of batches.
             #[inline(always)]
@@ -68,7 +68,7 @@ macro_rules! define_tensor {
             #[inline(always)]
             pub fn map<U, F>(self, mut f: F) -> $name<U, B>
             where
-                U: Copy + Debug + Default + Send + Sync + 'static,
+                U: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
                 F: FnMut(B::Batch<T>) -> B::Batch<U>,
             {
                 let elements = core::array::from_fn(|i| f(self.elements[i]));
@@ -82,7 +82,7 @@ macro_rules! impl_matmul {
     ($left:ident, $right:ident, $output:ident, $m:literal, $k:literal, $n:literal) => {
         impl<T, B: Backend> $left<T, B>
         where
-            T: Copy + Debug + Default + Send + Sync + 'static,
+            T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
             B::Batch<T>: BatchArithmetic<T>,
         {
             /// Performs matrix multiplication.
@@ -105,7 +105,7 @@ macro_rules! impl_matmul {
         }
         impl<T, B: Backend> core::ops::Mul<$right<T, B>> for $left<T, B>
         where
-            T: Copy + Debug + Default + Send + Sync + 'static,
+            T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
             B::Batch<T>: BatchArithmetic<T>,
         {
             type Output = $output<T, B>;
@@ -276,7 +276,7 @@ impl<'a> TensorView<'a, u8> {
         y1: B::Batch<u32>,
     ) -> Tensor2x2<u32, B>
     where
-        B::Batch<u32>: BatchArithmetic<u32>,
+        B::Batch<u32>: BatchArithmetic<u32> + BitAnd<Output = B::Batch<u32>>,
     {
         Tensor2x2::new([
             unsafe { self.gather_2d::<B>(x0, y0) },
