@@ -15,6 +15,11 @@ pub mod x11;
 #[cfg(use_x11_display)]
 pub use x11::X11DisplayDriver;
 
+#[cfg(use_wayland_display)]
+pub mod wayland;
+#[cfg(use_wayland_display)]
+pub use wayland::WaylandDisplayDriver;
+
 #[cfg(use_headless_display)]
 pub mod headless;
 #[cfg(use_headless_display)]
