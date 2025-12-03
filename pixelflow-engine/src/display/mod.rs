@@ -9,6 +9,7 @@ pub mod drivers;
 pub mod messages;
 
 pub use driver::DisplayDriver;
+#[allow(deprecated)]
 pub use messages::{DisplayEvent, DriverConfig};
 
 // Re-export the active display driver for convenience

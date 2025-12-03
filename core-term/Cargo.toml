@@ -15,8 +15,6 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 termios = "0.3.3"
 pprof = { version = "0.14", features = ["flamegraph", "criterion"], optional = true }
-foreign-types = "0.5.0"
-foreign-types-shared = "0.3.1"
 
 [dependencies.pixelflow-core]
 path = "../pixelflow-core"
@@ -55,5 +53,6 @@ rexpect = "0.6.1"
 # Manual override features (optional - platform auto-detects)
 display_cocoa = ["pixelflow-engine/display_cocoa"]
 display_x11 = ["pixelflow-engine/display_x11"]
+display_headless = ["pixelflow-engine/display_headless"]
 default = []
 profiling = ["pprof"]

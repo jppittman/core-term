@@ -43,20 +43,8 @@ optional = true
 version = "0.24"
 optional = true
 
-[dependencies.core-text]
-version = "20.1"
-optional = true
-
 [dependencies.x11]
 version = "2.21.0"
-optional = true
-
-[dependencies.yeslogic-fontconfig-sys]
-version = "6.0.0"
-optional = true
-
-[dependencies.freetype]
-version = "0.7"
 optional = true
 
 # Platform-specific dependencies for auto-detection when no feature is specified
@@ -69,13 +57,9 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSDate", "NSAutor
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSView", "NSEvent", "NSColor", "NSPasteboard"] }
 core-foundation = "0.9"
 core-graphics = "0.24"
-core-text = "20.1"
-foreign-types-shared = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11 = "2.21.0"
-yeslogic-fontconfig-sys = "6.0.0"
-freetype = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.92"
@@ -108,13 +92,12 @@ display_cocoa = [
     "objc2-app-kit",
     "core-foundation",
     "core-graphics",
-    "core-text",
 ]
 display_x11 = [
     "x11",
-    "yeslogic-fontconfig-sys",
-    "freetype",
 ]
+display_headless = []
+display_web = []
 
 # No default - let the consuming crate pick based on platform
 default = []

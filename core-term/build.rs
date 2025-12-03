@@ -36,7 +36,7 @@ fn main() {
             println!("cargo:rustc-cfg=use_x11_display");
             println!("cargo:warning=Building with X11 display driver");
             // Probe for X11 libraries using pkg-config
-            let required_libs = ["x11", "fontconfig", "freetype2"];
+            let required_libs = ["x11"];
             for lib in required_libs {
                 if let Err(e) = pkg_config::probe_library(lib) {
                     eprintln!("Warning: Failed to find library `{}`: {}", lib, e);

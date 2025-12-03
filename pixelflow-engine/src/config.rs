@@ -1,21 +1,13 @@
+#[allow(deprecated)]
 use crate::display::messages::DriverConfig;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct EngineConfig {
     pub window: WindowConfig,
     pub performance: PerformanceConfig,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self {
-            window: WindowConfig::default(),
-            performance: PerformanceConfig::default(),
-        }
-    }
 }
 
 /// Defines settings related to performance and rendering.
@@ -67,6 +59,7 @@ impl Default for WindowConfig {
     }
 }
 
+#[allow(deprecated)]
 impl From<EngineConfig> for DriverConfig {
     fn from(config: EngineConfig) -> Self {
         DriverConfig {

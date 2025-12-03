@@ -63,6 +63,6 @@ pub fn run(
     app: impl Application<PlatformPixel> + Send + 'static,
     config: EngineConfig,
 ) -> anyhow::Result<()> {
-    let platform = EnginePlatform::new(config.into())?;
+    let platform = EnginePlatform::new(config)?;
     platform.run(app)
 }

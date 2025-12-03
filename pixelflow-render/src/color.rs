@@ -113,10 +113,11 @@ impl NamedColor {
 }
 
 /// Represents a semantic color value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Color {
     /// Default foreground or background color.
+    #[default]
     Default,
     /// A standard named ANSI color (indices 0-15).
     Named(NamedColor),
@@ -124,12 +125,6 @@ pub enum Color {
     Indexed(u8),
     /// An RGB true color.
     Rgb(u8, u8, u8),
-}
-
-impl Default for Color {
-    fn default() -> Self {
-        Color::Default
-    }
 }
 
 impl Color {

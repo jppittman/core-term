@@ -60,7 +60,11 @@ pub enum DriverCommand<P: Pixel> {
     SetTitle { id: WindowId, title: String },
 
     /// Set window size.
-    SetSize { id: WindowId, width: u32, height: u32 },
+    SetSize {
+        id: WindowId,
+        width: u32,
+        height: u32,
+    },
 
     // ========================================================================
     // Clipboard
