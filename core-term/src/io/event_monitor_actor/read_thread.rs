@@ -79,7 +79,7 @@ impl ReadThread {
             EventMonitor::new().context("Failed to create EventMonitor in read thread")?;
 
         event_monitor
-            .add(fd, PTY_TOKEN, KqueueFlags::EPOLLIN)
+            .add(&source, PTY_TOKEN, KqueueFlags::EPOLLIN)
             .context("Failed to register PTY with EventMonitor")?;
 
         debug!("Read thread registered PTY fd {} for EPOLLIN", fd);
