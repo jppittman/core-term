@@ -257,7 +257,11 @@ impl BatchArithmetic<u32> for ScalarBatch<u32> {
     }
     fn gather_u8(base: &[u8], indices: Self) -> Self {
         let idx = indices.0 as usize;
-        ScalarBatch(if idx < base.len() { base[idx] as u32 } else { 0 })
+        ScalarBatch(if idx < base.len() {
+            base[idx] as u32
+        } else {
+            0
+        })
     }
     fn min(self, other: Self) -> Self {
         ScalarBatch(self.0.min(other.0))

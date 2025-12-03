@@ -189,6 +189,7 @@ impl GlyphBuilder {
     // or eventually approximate with quadratics (though here it seems to just degenerate to lines).
     // Note: The comment in original code mentioned approximation, but the implementation
     // subdivides until flat enough for lines.
+    #[allow(clippy::too_many_arguments)]
     fn subdivide_cubic(&mut self, p0: Point, p1: Point, p2: Point, p3: Point, depth: u32) {
         let d03 = dist_sq(p0, p3);
         const MIN_LEN_SQ: f32 = 0.25; // 0.5 px

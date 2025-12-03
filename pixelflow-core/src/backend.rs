@@ -66,10 +66,21 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
 
 /// Basic operations supported by any SIMD batch (storage/movement).
 pub trait SimdBatch<T: Copy>: Copy + Clone + Debug + Default + Send + Sync {
+    /// Create a batch with all lanes set to `val`.
     fn splat(val: T) -> Self;
+
+    /// Create a batch with sequential values starting from `start`.
+    /// E.g. [start, start+1, start+2, ...]
     fn sequential_from(start: T) -> Self;
+
+    /// Load a batch from a slice.
+    /// The slice must have at least `LANES` elements.
     fn load(slice: &[T]) -> Self;
+
+    /// Store the batch to a slice.
+    /// The slice must have at least `LANES` elements.
     fn store(&self, slice: &mut [T]);
+
     /// Extract the first lane.
     ///
     /// Named `first` rather than `scalar` to be honest: when you splat(x)
@@ -93,22 +104,48 @@ pub trait BatchArithmetic<T: Copy>:
     + Shl<i32, Output = Self>
     + Shr<i32, Output = Self>
 {
+    /// Select values from `if_true` or `if_false` based on the mask (self).
+    /// If a bit is 1, take from `if_true`. If 0, take from `if_false`.
+    /// Note: `self` acts as the mask.
     fn select(self, if_true: Self, if_false: Self) -> Self;
+
+    /// Gather values from a slice using indices in this batch.
     fn gather(base: &[T], indices: Self) -> Self;
+
+    /// Gather u8 values from a slice using indices in this batch.
+    /// This is used when T is u32 but we want to gather bytes (e.g. from an atlas).
     fn gather_u8(_base: &[u8], _indices: Self) -> Self {
         unimplemented!("gather_u8 not implemented for this type")
     }
 
+    /// Lane-wise minimum.
     fn min(self, other: Self) -> Self;
+
+    /// Lane-wise maximum.
     fn max(self, other: Self) -> Self;
+
+    /// Saturating addition.
     fn saturating_add(self, other: Self) -> Self;
+
+    /// Saturating subtraction.
     fn saturating_sub(self, other: Self) -> Self;
 
+    /// Compare equal. Returns a mask.
     fn cmp_eq(self, other: Self) -> Self;
+
+    /// Compare not equal. Returns a mask.
     fn cmp_ne(self, other: Self) -> Self;
+
+    /// Compare less than. Returns a mask.
     fn cmp_lt(self, other: Self) -> Self;
+
+    /// Compare less than or equal. Returns a mask.
     fn cmp_le(self, other: Self) -> Self;
+
+    /// Compare greater than. Returns a mask.
     fn cmp_gt(self, other: Self) -> Self;
+
+    /// Compare greater than or equal. Returns a mask.
     fn cmp_ge(self, other: Self) -> Self;
 }
 

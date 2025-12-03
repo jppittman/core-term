@@ -84,7 +84,7 @@ impl Segment {
                 if a_val.abs() < 1e-6 {
                     if b_val.abs() > 1e-6 {
                         let t = (y - p0y) / b_val;
-                        if t >= 0.0 && t < 1.0 {
+                        if (0.0..1.0).contains(&t) {
                             let omt = 1.0 - t;
                             let xt = omt * omt * p0x + 2.0 * omt * t * p1x + t * t * p2x;
                             if x < xt {
@@ -102,7 +102,7 @@ impl Segment {
                         let t2 = (-b_val + sqrt_disc) / two_a;
 
                         for t in [t1, t2] {
-                            if t >= 0.0 && t < 1.0 {
+                            if (0.0..1.0).contains(&t) {
                                 let omt = 1.0 - t;
                                 let xt = omt * omt * p0x + 2.0 * omt * t * p1x + t * t * p2x;
                                 if x < xt {
@@ -132,7 +132,7 @@ impl Segment {
                 }
                 // Check if point projects onto the segment (t in [0, 1])
                 let t = ((x - l.p0[0]) * dx + (y - l.p0[1]) * dy) / len_sq;
-                if t < 0.0 || t > 1.0 {
+                if !(0.0..=1.0).contains(&t) {
                     return 1000.0;
                 }
                 ((x - l.p0[0]) * -dy + (y - l.p0[1]) * dx) / len
@@ -144,7 +144,7 @@ impl Segment {
 
                 // Check if projection falls outside the curve segment [0, 1].
                 // If so, use endpoint distance instead of implicit distance.
-                if u < 0.0 || u > 1.0 {
+                if !(0.0..=1.0).contains(&u) {
                     let d0_sq = (x - q.p0[0]).powi(2) + (y - q.p0[1]).powi(2);
                     let d2_sq = (x - q.p2[0]).powi(2) + (y - q.p2[1]).powi(2);
                     return d0_sq.min(d2_sq).sqrt();
@@ -379,14 +379,17 @@ impl Segment {
                 let zero_grad_mask = NativeBackend::transmute_f32_to_u32(zero_grad);
                 let large_u32 = NativeBackend::transmute_f32_to_u32(large_dist);
                 let implicit_u32 = NativeBackend::transmute_f32_to_u32(implicit_dist);
-                let safe_implicit =
-                    NativeBackend::transmute_u32_to_f32(zero_grad_mask.select(large_u32, implicit_u32));
+                let safe_implicit = NativeBackend::transmute_u32_to_f32(
+                    zero_grad_mask.select(large_u32, implicit_u32),
+                );
 
                 // Select: if u in range use implicit, else use endpoint distance
                 let in_range_mask = NativeBackend::transmute_f32_to_u32(u_in_range);
                 let safe_implicit_u32 = NativeBackend::transmute_f32_to_u32(safe_implicit);
                 let endpoint_u32 = NativeBackend::transmute_f32_to_u32(endpoint_dist);
-                NativeBackend::transmute_u32_to_f32(in_range_mask.select(safe_implicit_u32, endpoint_u32))
+                NativeBackend::transmute_u32_to_f32(
+                    in_range_mask.select(safe_implicit_u32, endpoint_u32),
+                )
             }
         }
     }

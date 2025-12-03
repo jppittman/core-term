@@ -96,6 +96,8 @@ display_cocoa = [
 display_x11 = [
     "x11",
 ]
+display_headless = []
+display_web = []
 
 # No default - let the consuming crate pick based on platform
 default = []
