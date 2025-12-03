@@ -132,6 +132,15 @@ fn engine_loop<A: Application<PlatformPixel>>(
     // Scale factor for physical <-> logical conversion
     let mut scale_factor = 1.0f64;
 
+    // Helper to cleanly shutdown - sends DestroyWindow + Shutdown to driver
+    let shutdown = |driver: &PlatformDriver, reason: &str| -> Result<()> {
+        info!("Engine loop: shutting down ({})", reason);
+        // Best-effort cleanup - ignore send errors since driver may already be gone
+        let _ = driver.send(DriverCommand::DestroyWindow { id: WindowId::PRIMARY });
+        let _ = driver.send(DriverCommand::Shutdown);
+        Ok(())
+    };
+
     loop {
         let frame_start = Instant::now();
         let deadline = frame_start + frame_duration;
@@ -148,7 +157,7 @@ fn engine_loop<A: Application<PlatformPixel>>(
                 Ok(EngineCommand::Doorbell) => {
                     let action = app.on_event(EngineEvent::Wake);
                     if let ActionResult::Shutdown = handle_action(action, &driver)? {
-                        return Ok(());
+                        return shutdown(&driver, "app requested quit on wake");
                     }
                 }
                 Ok(EngineCommand::PresentComplete(frame)) => {
@@ -164,8 +173,8 @@ fn engine_loop<A: Application<PlatformPixel>>(
                     break;
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    info!("Engine loop: control channel closed");
-                    return Ok(());
+                    info!("Engine loop: control channel closed (driver gone)");
+                    return Ok(()); // Driver already dead, no shutdown needed
                 }
             }
 
@@ -202,19 +211,16 @@ fn engine_loop<A: Application<PlatformPixel>>(
                             _ => {}
                         }
 
+                        // Handle CloseRequested first (before mapping to EngineEvent)
+                        if matches!(evt, DisplayEvent::CloseRequested { .. }) {
+                            return shutdown(&driver, "close requested");
+                        }
+
                         if let Some(engine_evt) = map_display_event(&evt, scale_factor) {
                             let action = app.on_event(engine_evt);
                             if let ActionResult::Shutdown = handle_action(action, &driver)? {
-                                info!("Engine loop: shutdown requested");
-                                return Ok(());
+                                return shutdown(&driver, "app requested quit");
                             }
-                        }
-
-                        // Handle CloseRequested
-                        if matches!(evt, DisplayEvent::CloseRequested { .. }) {
-                            info!("Engine loop: close requested");
-                            driver.send(DriverCommand::Shutdown)?;
-                            return Ok(());
                         }
                     }
                     _ => break,

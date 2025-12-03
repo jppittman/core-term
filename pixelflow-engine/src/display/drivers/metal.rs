@@ -450,7 +450,8 @@ fn run_event_loop(
                 }
                 DriverCommand::DestroyWindow { id } => {
                     info!("Metal: DestroyWindow {:?}", id);
-                    // TODO: multi-window support
+                    // Close the window (for single-window, this is the main window)
+                    state.window.close();
                 }
                 DriverCommand::Configure(_) => {
                     // Legacy, ignored
