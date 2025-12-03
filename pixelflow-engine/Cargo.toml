@@ -47,6 +47,24 @@ optional = true
 version = "2.21.0"
 optional = true
 
+[dependencies.wayland-client]
+version = "0.31"
+optional = true
+
+[dependencies.wayland-protocols]
+version = "0.31"
+features = ["client"]
+optional = true
+
+[dependencies.wayland-cursor]
+version = "0.31"
+optional = true
+
+[dependencies.xkbcommon]
+version = "0.7"
+features = ["wayland"]
+optional = true
+
 # Platform-specific dependencies for auto-detection when no feature is specified
 # These ensure the right display driver compiles on each platform by default
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -95,6 +113,12 @@ display_cocoa = [
 ]
 display_x11 = [
     "x11",
+]
+display_wayland = [
+    "wayland-client",
+    "wayland-protocols",
+    "wayland-cursor",
+    "xkbcommon",
 ]
 display_headless = []
 display_web = []
