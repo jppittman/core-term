@@ -10,7 +10,7 @@ pub struct Scalar;
 
 impl Backend for Scalar {
     const LANES: usize = 1;
-    type Batch<T: Copy + Debug + Default + Send + Sync + 'static> = ScalarBatch<T>;
+    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> = ScalarBatch<T>;
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: ScalarBatch<u32>) -> ScalarBatch<u8> {
@@ -44,7 +44,7 @@ impl Backend for Scalar {
 }
 
 /// A batch containing a single value.
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 #[repr(transparent)]
 pub struct ScalarBatch<T>(pub T);
 
@@ -229,7 +229,9 @@ impl_bitwise_int!(i32);
 impl_arithmetic_float!(f32);
 impl_bitwise_float!(f32, u32);
 
-impl<T: Copy + Send + Sync + Debug + Default + 'static> SimdBatch<T> for ScalarBatch<T> {
+impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T> for ScalarBatch<T> {
+    const LANES: usize = 1;
+
     fn splat(val: T) -> Self {
         ScalarBatch(val)
     }
@@ -244,6 +246,14 @@ impl<T: Copy + Send + Sync + Debug + Default + 'static> SimdBatch<T> for ScalarB
     }
     fn first(&self) -> T {
         self.0
+    }
+
+    fn any(&self) -> bool {
+        self.0 != T::default()
+    }
+
+    fn all(&self) -> bool {
+        self.0 != T::default()
     }
 }
 

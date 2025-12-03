@@ -31,6 +31,7 @@ pub use platform::{PixelFormat, Platform};
 
 use crate::backend::{Backend, BatchArithmetic};
 use core::fmt::Debug;
+use core::ops::{BitAnd, BitOr, Not, Shl, Shr};
 
 // ============================================================================
 // Tensor Macros
@@ -163,7 +164,7 @@ impl<'a> TensorView<'a, u32> {
     #[inline(always)]
     pub unsafe fn gather_2d<B: Backend>(&self, x: B::Batch<u32>, y: B::Batch<u32>) -> B::Batch<u32>
     where
-        B::Batch<u32>: BatchArithmetic<u32>,
+        B::Batch<u32>: BatchArithmetic<u32> + BitAnd<Output = B::Batch<u32>>,
     {
         let w = <B::Batch<u32> as SimdBatch<u32>>::splat(self.width as u32);
         let h = <B::Batch<u32> as SimdBatch<u32>>::splat(self.height as u32);
@@ -197,7 +198,7 @@ impl<'a> TensorView<'a, u8> {
     #[inline(always)]
     pub unsafe fn gather_2d<B: Backend>(&self, x: B::Batch<u32>, y: B::Batch<u32>) -> B::Batch<u32>
     where
-        B::Batch<u32>: BatchArithmetic<u32>,
+        B::Batch<u32>: BatchArithmetic<u32> + BitAnd<Output = B::Batch<u32>>,
     {
         let w = <B::Batch<u32> as SimdBatch<u32>>::splat(self.width as u32);
         let h = <B::Batch<u32> as SimdBatch<u32>>::splat(self.height as u32);
@@ -227,7 +228,12 @@ impl<'a> TensorView<'a, u8> {
         y: B::Batch<u32>,
     ) -> B::Batch<u32>
     where
-        B::Batch<u32>: BatchArithmetic<u32>,
+        B::Batch<u32>: BatchArithmetic<u32>
+            + BitAnd<Output = B::Batch<u32>>
+            + BitOr<Output = B::Batch<u32>>
+            + Not<Output = B::Batch<u32>>
+            + Shr<i32, Output = B::Batch<u32>>
+            + Shl<i32, Output = B::Batch<u32>>,
     {
         // Strict bounds check on PIXEL coordinates
         let w = <B::Batch<u32> as SimdBatch<u32>>::splat(self.width as u32);
@@ -243,13 +249,14 @@ impl<'a> TensorView<'a, u8> {
         let is_odd = safe_x & <B::Batch<u32> as SimdBatch<u32>>::splat(1);
 
         // gather_2d will perform its own check, but safe_x/safe_y ensure we are within valid range
-        // even if gather_2d's check is loose (due to width mismatch).
         let packed = unsafe { self.gather_2d::<B>(byte_x, safe_y) };
 
         let high_nibble = (packed >> 4) & <B::Batch<u32> as SimdBatch<u32>>::splat(0x0F);
         let low_nibble = packed & <B::Batch<u32> as SimdBatch<u32>>::splat(0x0F);
+        
         let all_ones = <B::Batch<u32> as SimdBatch<u32>>::splat(0xFFFFFFFF);
         let mask = is_odd * all_ones;
+        // Need explicit !mask because Not isn't always inferred on B::Batch<u32>
         let nibble = (high_nibble & !mask) | (low_nibble & mask);
         let val = (nibble << 4) | nibble;
 
@@ -292,7 +299,12 @@ impl<'a> TensorView<'a, u8> {
         y1: B::Batch<u32>,
     ) -> Tensor2x2<u32, B>
     where
-        B::Batch<u32>: BatchArithmetic<u32>,
+        B::Batch<u32>: BatchArithmetic<u32>
+            + BitAnd<Output = B::Batch<u32>>
+            + BitOr<Output = B::Batch<u32>>
+            + Not<Output = B::Batch<u32>>
+            + Shr<i32, Output = B::Batch<u32>>
+            + Shl<i32, Output = B::Batch<u32>>,
     {
         Tensor2x2::new([
             unsafe { self.gather_4bit::<B>(x0, y0) },
@@ -313,29 +325,37 @@ impl<'a> TensorView<'a, u8> {
         v_fp: B::Batch<u32>,
     ) -> B::Batch<u32>
     where
-        B::Batch<u32>: BatchArithmetic<u32>,
+        B::Batch<u32>: BatchArithmetic<u32>
+            + BitAnd<Output = B::Batch<u32>>
+            + Shr<i32, Output = B::Batch<u32>>
+            + BitOr<Output = B::Batch<u32>>
+            + Not<Output = B::Batch<u32>>
+            + Shl<i32, Output = B::Batch<u32>>,
     {
         let u0_raw = u_fp >> 16;
         let v0_raw = v_fp >> 16;
         let max_x = <B::Batch<u32> as SimdBatch<u32>>::splat((self.width - 1) as u32);
         let max_y = <B::Batch<u32> as SimdBatch<u32>>::splat((self.height - 1) as u32);
+        
         let u0 = u0_raw.min(max_x);
         let v0 = v0_raw.min(max_y);
         let u1 = (u0 + <B::Batch<u32> as SimdBatch<u32>>::splat(1)).min(max_x);
         let v1 = (v0 + <B::Batch<u32> as SimdBatch<u32>>::splat(1)).min(max_y);
+        
         let du = (u_fp >> 8) & <B::Batch<u32> as SimdBatch<u32>>::splat(0xFF);
         let dv = (v_fp >> 8) & <B::Batch<u32> as SimdBatch<u32>>::splat(0xFF);
         let inv_du = <B::Batch<u32> as SimdBatch<u32>>::splat(256) - du;
         let inv_dv = <B::Batch<u32> as SimdBatch<u32>>::splat(256) - dv;
-        let pixels = unsafe { self.gather_tensor2x2_4bit::<B>(u0, u1, v0, v1) };
-        let weights_x = Tensor2x1::new([inv_du, du]);
-        let weights_y = Tensor1x2::new([inv_dv, dv]);
-
-        let horizontal: Tensor2x1<u32, B> = (pixels * weights_x).map(|v| v >> 8);
-
-        let result: Tensor1x1<u32, B> = (weights_y * horizontal).map(|v| v >> 8);
-
-        result.get(0, 0)
+        
+        let p00 = unsafe { self.gather_4bit::<B>(u0, v0) };
+        let p10 = unsafe { self.gather_4bit::<B>(u1, v0) };
+        let p01 = unsafe { self.gather_4bit::<B>(u0, v1) };
+        let p11 = unsafe { self.gather_4bit::<B>(u1, v1) };
+        
+        let top = (p00 * inv_du + p10 * du) >> 8;
+        let bot = (p01 * inv_du + p11 * du) >> 8;
+        
+        (top * inv_dv + bot * dv) >> 8
     }
 }
 

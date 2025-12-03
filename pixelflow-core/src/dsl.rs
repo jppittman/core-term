@@ -6,7 +6,7 @@ use core::fmt::Debug;
 /// Extensions for any surface (Coordinate transforms).
 pub trait SurfaceExt<T>: Surface<T> + Sized
 where
-    T: Copy + Debug + Default + Send + Sync + 'static,
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     /// Applies a translation offset to the surface.
     fn offset(self, dx: i32, dy: i32) -> Offset<Self> {
@@ -57,5 +57,5 @@ pub trait MaskExt: Surface<u8> + Sized {
 }
 
 // Blanket implementations
-impl<T, S: Surface<T>> SurfaceExt<T> for S where T: Copy + Debug + Default + Send + Sync + 'static {}
+impl<T, S: Surface<T>> SurfaceExt<T> for S where T: Copy + Debug + Default + PartialEq + Send + Sync + 'static {}
 impl<S: Surface<u8>> MaskExt for S {}

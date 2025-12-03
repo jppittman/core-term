@@ -7,7 +7,7 @@ use crate::pipe::Surface;
 use core::fmt::Debug;
 
 /// Trait for pixel types that can be used in surfaces and frames.
-pub trait Pixel: Copy + Default + Debug + 'static + Send + Sync {
+pub trait Pixel: Copy + Default + Debug + PartialEq + 'static + Send + Sync {
     /// Create from raw u32 value.
     fn from_u32(v: u32) -> Self;
 

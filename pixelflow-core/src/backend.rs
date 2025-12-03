@@ -11,7 +11,7 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
     const GATHER_IS_SLOW: bool = false;
 
     /// The SIMD vector type.
-    type Batch<T: Copy + Debug + Default + Send + Sync + 'static>: SimdBatch<T>;
+    type Batch<T: Copy + Debug + Default + PartialEq + Send + Sync + 'static>: SimdBatch<T>;
 
     /// Casts a batch of u32 to u8 (narrowing/bitcast depending on backend).
     /// Used for adapting Surface<u32> logic to Surface<u8> interfaces.
@@ -65,7 +65,10 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
 }
 
 /// Basic operations supported by any SIMD batch (storage/movement).
-pub trait SimdBatch<T: Copy>: Copy + Clone + Debug + Default + Send + Sync {
+pub trait SimdBatch<T: Copy + Debug + Default + PartialEq + Send + Sync + 'static>: Copy + Clone + Debug + Default + Send + Sync {
+    /// Number of lanes in this batch.
+    const LANES: usize;
+
     /// Create a batch with all lanes set to `val`.
     fn splat(val: T) -> Self;
 
@@ -82,27 +85,36 @@ pub trait SimdBatch<T: Copy>: Copy + Clone + Debug + Default + Send + Sync {
     fn store(&self, slice: &mut [T]);
 
     /// Extract the first lane.
-    ///
-    /// Named `first` rather than `scalar` to be honest: when you splat(x)
-    /// and call first(), you're doing a point sample. The lanes could be
-    /// used for supersampling (different subpixel offsets) with a different
-    /// reduction (average, min, max, etc).
     fn first(&self) -> T;
+
+    /// Returns true if any lane is non-zero.
+    fn any(&self) -> bool;
+
+    /// Returns true if all lanes are non-zero.
+    fn all(&self) -> bool;
+
+    /// Church boolean / conditional execution optimization.
+    fn church<F1, F2>(self, t: F1, f: F2) -> Self
+    where
+        Self: BatchArithmetic<T>,
+        F1: FnOnce() -> Self,
+        F2: FnOnce() -> Self,
+    {
+        if self.all() {
+            t()
+        } else if !self.any() {
+            f()
+        } else {
+            self.select(t(), f())
+        }
+    }
 }
 
-/// Arithmetic operations supported by numeric SIMD batches.
-pub trait BatchArithmetic<T: Copy>:
-    SimdBatch<T>
-    + Add<Output = Self>
-    + Sub<Output = Self>
-    + Mul<Output = Self>
-    + Div<Output = Self>
-    + BitAnd<Output = Self>
-    + BitOr<Output = Self>
-    + BitXor<Output = Self>
-    + Not<Output = Self>
-    + Shl<i32, Output = Self>
-    + Shr<i32, Output = Self>
+/// Arithmetic operations for batches.
+pub trait BatchArithmetic<T>:
+    SimdBatch<T> + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + Div<Output = Self>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     /// Select values from `if_true` or `if_false` based on the mask (self).
     /// If a bit is 1, take from `if_true`. If 0, take from `if_false`.
