@@ -313,6 +313,9 @@ impl X11State {
                     DriverCommand::CreateWindow { .. } => {
                         // Already created, ignore
                     }
+                    DriverCommand::Configure(_) => {
+                        trace!("X11: Configure command received (ignored)");
+                    }
                     DriverCommand::DestroyWindow { .. } => {
                         info!("X11: DestroyWindow received");
                         return Ok(());
@@ -586,7 +589,7 @@ impl X11State {
         unsafe {
             let depth = xlib::XDefaultDepth(self.display, self.screen);
             let visual = xlib::XDefaultVisual(self.display, self.screen);
-            let data_ptr = frame.data().as_ptr() as *mut i8;
+            let data_ptr = frame.data.as_ptr() as *mut i8;
 
             let image = xlib::XCreateImage(
                 self.display,
@@ -595,8 +598,8 @@ impl X11State {
                 xlib::ZPixmap,
                 0,
                 data_ptr,
-                frame.width(),
-                frame.height(),
+                frame.width,
+                frame.height,
                 32,
                 0,
             );
@@ -614,8 +617,8 @@ impl X11State {
                 0,
                 0,
                 0,
-                frame.width(),
-                frame.height(),
+                frame.width,
+                frame.height,
             );
 
             (*image).data = ptr::null_mut();

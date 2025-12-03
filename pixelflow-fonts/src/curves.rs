@@ -1,4 +1,4 @@
-use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps};
+use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
 use pixelflow_core::batch::{Batch, NativeBackend};
 use pixelflow_core::curve::Mat3;
 
