@@ -93,6 +93,9 @@ pub trait SimdBatch<T: Copy + Debug + Default + PartialEq + Send + Sync + 'stati
     /// Returns true if all lanes are non-zero.
     fn all(&self) -> bool;
 
+    /// Extract a single lane by index (0 to LANES-1).
+    fn extract_lane(&self, lane: usize) -> T;
+
     /// Church boolean / conditional execution optimization.
     fn church<F1, F2>(self, t: F1, f: F2) -> Self
     where

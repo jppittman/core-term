@@ -23,6 +23,14 @@ use log::{info, warn};
 fn main() -> anyhow::Result<()> {
     use std::fs::OpenOptions;
 
+    // Start CPU profiler if feature enabled
+    #[cfg(feature = "profiling")]
+    let profiler_guard = pprof::ProfilerGuardBuilder::default()
+        .frequency(1000)
+        .blocklist(&["libc", "libsystem", "pthread", "vdso"])
+        .build()
+        .expect("Failed to start profiler");
+
     let log_file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -36,6 +44,8 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     info!("Starting core-term...");
+    #[cfg(feature = "profiling")]
+    info!("CPU profiling enabled - flamegraph.svg will be written on exit");
 
     if std::env::var_os("TERM").is_none() {
         std::env::set_var("TERM", "screen-256color");
@@ -143,6 +153,28 @@ fn main() -> anyhow::Result<()> {
     };
 
     info!("core-term exited successfully.");
+
+    // Write flamegraph on exit if profiling enabled
+    #[cfg(feature = "profiling")]
+    {
+        let path = "/tmp/core-term-flamegraph.svg";
+        info!("Writing flamegraph to {}...", path);
+        match profiler_guard.report().build() {
+            Ok(report) => {
+                match std::fs::File::create(path) {
+                    Ok(file) => {
+                        if let Err(e) = report.flamegraph(file) {
+                            warn!("Failed to write flamegraph: {}", e);
+                        } else {
+                            info!("Flamegraph written to {}", path);
+                        }
+                    }
+                    Err(e) => warn!("Failed to create {}: {}", path, e),
+                }
+            }
+            Err(e) => warn!("Failed to build profiler report: {:?}", e),
+        }
+    }
 
     Ok(())
 }
