@@ -4,6 +4,7 @@ use crate::glyph::{eval_curves, CellGlyph, CurveSurface, GlyphBounds};
 use pixelflow_core::batch::Batch;
 use pixelflow_core::surfaces::Baked;
 use pixelflow_core::traits::Surface;
+use pixelflow_core::SimdBatch;
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ============================================================================

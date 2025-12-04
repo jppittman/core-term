@@ -25,7 +25,7 @@ use log::{trace, warn};
 // Snapshots clone the Arc (cheap), mutations use make_mut (clones if shared)
 pub type Row = Arc<Vec<Glyph>>;
 // Define a type alias for the grid itself (for primary and alternate screens)
-pub type Grid = Vec<Row>;
+pub type Grid = VecDeque<Row>;
 
 /// Defines the modes for clearing tab stops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,12 +243,13 @@ impl Screen {
 
     /// Scrolls lines within the defined scrolling region upwards by `n` lines.
     /// New lines at the bottom of the region are filled with the default fill glyph.
-    /// Lines scrolled off the top of the region are discarded (no scrollback).
-    pub fn scroll_up_serial(&mut self, n: usize) {
+    /// If `save_to_history` is true AND we are scrolling from the top of the screen (top=0),
+    /// lines scrolled off are moved to the scrollback buffer.
+    pub fn scroll_up(&mut self, n: usize, save_to_history: bool) {
         let fill_glyph = self.get_default_fill_glyph();
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
             warn!(
-                "scroll_up_serial: Invalid scroll region top={}, bot={}, height={}",
+                "scroll_up: Invalid scroll region top={}, bot={}, height={}",
                 self.scroll_top, self.scroll_bot, self.height
             );
             return;
@@ -259,53 +260,63 @@ impl Screen {
             return; // No scrolling needed
         }
         trace!(
-            "Scrolling up by {} lines in region ({}, {}) with default fill (NO SCROLLBACK)",
+            "Scrolling up by {} lines in region ({}, {})",
             n_val,
             self.scroll_top,
             self.scroll_bot
         );
 
-        let top = self.scroll_top;
-        let bot = self.scroll_bot;
         let width = self.width;
+        let scroll_top = self.scroll_top;
+        let scroll_bot = self.scroll_bot;
+        let alt_screen_active = self.alt_screen_active;
+        let scrollback_limit = self.scrollback_limit;
 
-        // Get a mutable reference to the currently active grid
-        let active_grid = self.active_grid_mut();
+        // Borrow fields disjointly to allow concurrent access
+        let active_grid = if alt_screen_active {
+            &mut self.alt_grid
+        } else {
+            &mut self.grid
+        };
+        let dirty = &mut self.dirty;
 
-        // Perform the rotation: lines from `top + n_val` to `bot` move to `top` to `bot - n_val`.
-        // The `rotate_left` method on a slice shifts elements to the left,
-        // and elements shifted off the beginning are wrapped around to the end.
-        active_grid[top..=bot].rotate_left(n_val);
-
-        // Fill the newly vacated lines at the bottom of the scrolling region
-        // The lines that were wrapped around by rotate_left are now at the end of the slice.
-        // These are the lines that need to be cleared - create fresh Arc rows.
-        for y_idx in (bot.saturating_sub(n_val) + 1)..=bot {
-            if let Some(row_arc) = active_grid.get_mut(y_idx) {
-                // Create a fresh row rather than mutating (avoids CoW clone if shared)
-                *row_arc = Arc::new(vec![fill_glyph; width]);
-            } else {
-                // This should ideally not happen if bounds are correct
-                warn!(
-                    "scroll_up_serial: Attempted to fill non-existent row {} during scroll.",
-                    y_idx
-                );
+        // Optimized scrolling using VecDeque
+        for _ in 0..n_val {
+            // Remove line from top of scrolling region
+            // If scroll_top == 0 (full screen), this is pop_front() which is O(1)
+            if let Some(row) = active_grid.remove(scroll_top) {
+                // Save to history if requested and scrolling from top
+                if save_to_history && scroll_top == 0 && !alt_screen_active && scrollback_limit > 0 {
+                    self.scrollback.push_back(row);
+                    if self.scrollback.len() > scrollback_limit {
+                        self.scrollback.pop_front();
+                    }
+                }
             }
         }
 
+        // Insert new lines at the bottom of the scrolling region.
+        let insert_idx = scroll_bot + 1 - n_val;
+
+        for _ in 0..n_val {
+            active_grid.insert(insert_idx, Arc::new(vec![fill_glyph; width]));
+        }
+
         // Mark all lines within the scrolled region as dirty
-        for y_idx in top..=bot {
-            self.mark_line_dirty(y_idx);
+        for y_idx in scroll_top..=scroll_bot {
+            if y_idx < dirty.len() {
+                dirty[y_idx] = 1;
+            }
         }
     }
 
     /// Scrolls lines within the defined scrolling region downwards by `n` lines.
     /// New lines at the top of the region are filled with the default fill glyph.
-    pub fn scroll_down_serial(&mut self, n: usize) {
+    pub fn scroll_down(&mut self, n: usize) {
         let fill_glyph = self.get_default_fill_glyph();
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
             warn!(
-                "scroll_down_serial: Invalid scroll region top={}, bot={}, height={}",
+                "scroll_down: Invalid scroll region top={}, bot={}, height={}",
                 self.scroll_top, self.scroll_bot, self.height
             );
             return;
@@ -322,36 +333,32 @@ impl Screen {
             self.scroll_bot
         );
 
-        let top = self.scroll_top;
-        let bot = self.scroll_bot;
         let width = self.width;
+        let scroll_top = self.scroll_top;
+        let scroll_bot = self.scroll_bot;
+        let alt_screen_active = self.alt_screen_active;
 
-        // Get a mutable reference to the currently active grid
-        let active_grid = self.active_grid_mut();
+        // Borrow fields disjointly
+        let active_grid = if alt_screen_active {
+            &mut self.alt_grid
+        } else {
+            &mut self.grid
+        };
+        let dirty = &mut self.dirty;
 
-        // Perform the rotation: lines from `top` to `bot - n_val` move to `top + n_val` to `bot`.
-        // The `rotate_right` method on a slice shifts elements to the right,
-        // and elements shifted off the end are wrapped around to the beginning.
-        active_grid[top..=bot].rotate_right(n_val);
-
-        // Fill the newly vacated lines at the top of the scrolling region.
-        // These are the lines that were wrapped around by rotate_right - create fresh Arc rows.
-        for y_idx in top..(top + n_val) {
-            if let Some(row_arc) = active_grid.get_mut(y_idx) {
-                // Create a fresh row rather than mutating (avoids CoW clone if shared)
-                *row_arc = Arc::new(vec![fill_glyph; width]);
-            } else {
-                // This should ideally not happen if bounds are correct
-                warn!(
-                    "scroll_down_serial: Attempted to fill non-existent row {} during scroll.",
-                    y_idx
-                );
-            }
+        // Optimized scrolling using VecDeque
+        for _ in 0..n_val {
+            // Remove from bottom of scrolling region
+            active_grid.remove(scroll_bot);
+            // Insert at top of scrolling region
+            active_grid.insert(scroll_top, Arc::new(vec![fill_glyph; width]));
         }
 
         // Mark all lines within the scrolled region as dirty
-        for y_idx in top..=bot {
-            self.mark_line_dirty(y_idx);
+        for y_idx in scroll_top..=scroll_bot {
+            if y_idx < dirty.len() {
+                dirty[y_idx] = 1;
+            }
         }
     }
 
@@ -1469,5 +1476,14 @@ mod tests {
         assert!(screen.selection.range.is_some());
         screen.resize(20, 10); // Removed scrollback limit argument
         assert_eq!(screen.selection, Selection::default());
+    }
+
+    #[test]
+    fn test_scroll_up_populates_scrollback() {
+        let mut screen = create_test_screen_with_scrollback(10, 5, 10);
+        fill_screen_with_pattern(&mut screen);
+        // scroll up 1 line. Top line should go to scrollback.
+        screen.scroll_up(1, true);
+        assert_eq!(screen.scrollback.len(), 1, "Scrollback should contain 1 line after scroll up");
     }
 }
