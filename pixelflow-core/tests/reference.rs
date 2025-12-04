@@ -35,7 +35,7 @@ pub fn ref_gather_4bit_single(
     width: usize,
     stride: usize,
 ) -> u8 {
-    let pixel_idx = y * width + x;
+    let _pixel_idx = y * width + x;
     let byte_idx = y * stride + (x / 2);
     let is_odd = x % 2 == 1;
 
@@ -52,6 +52,7 @@ pub fn ref_gather_4bit_single(
 /// Bilinear interpolation (scalar float reference).
 ///
 /// Samples from a 2x2 neighborhood with fractional coordinates.
+#[allow(clippy::too_many_arguments)]
 pub fn ref_bilinear_interpolate(p00: u8, p10: u8, p01: u8, p11: u8, dx: f32, dy: f32) -> u8 {
     let top = p00 as f32 * (1.0 - dx) + p10 as f32 * dx;
     let bottom = p01 as f32 * (1.0 - dx) + p11 as f32 * dx;
@@ -60,6 +61,7 @@ pub fn ref_bilinear_interpolate(p00: u8, p10: u8, p01: u8, p11: u8, dx: f32, dy:
 }
 
 /// Sample from 4-bit packed image with bilinear filtering (scalar reference).
+#[allow(clippy::too_many_arguments)]
 pub fn ref_sample_4bit_bilinear(
     packed: &[u8],
     width: usize,

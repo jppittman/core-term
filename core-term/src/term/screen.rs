@@ -286,7 +286,8 @@ impl Screen {
             // If scroll_top == 0 (full screen), this is pop_front() which is O(1)
             if let Some(row) = active_grid.remove(scroll_top) {
                 // Save to history if requested and scrolling from top
-                if save_to_history && scroll_top == 0 && !alt_screen_active && scrollback_limit > 0 {
+                if save_to_history && scroll_top == 0 && !alt_screen_active && scrollback_limit > 0
+                {
                     self.scrollback.push_back(row);
                     if self.scrollback.len() > scrollback_limit {
                         self.scrollback.pop_front();
@@ -1164,7 +1165,7 @@ mod tests {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.selection.is_active = false;
-        let original_selection_state = screen.selection.clone();
+        let original_selection_state = screen.selection;
         screen.update_selection(Point { x: 5, y: 2 });
         assert_eq!(screen.selection, original_selection_state);
     }
@@ -1484,6 +1485,10 @@ mod tests {
         fill_screen_with_pattern(&mut screen);
         // scroll up 1 line. Top line should go to scrollback.
         screen.scroll_up(1, true);
-        assert_eq!(screen.scrollback.len(), 1, "Scrollback should contain 1 line after scroll up");
+        assert_eq!(
+            screen.scrollback.len(),
+            1,
+            "Scrollback should contain 1 line after scroll up"
+        );
     }
 }

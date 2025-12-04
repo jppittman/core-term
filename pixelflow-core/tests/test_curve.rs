@@ -29,7 +29,7 @@ fn naive_inverse(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
 
 #[test]
 fn test_mat3_inverse_correctness() {
-    let test_cases = vec![
+    let test_cases = [
         // Identity
         [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         // Scaling
@@ -51,16 +51,16 @@ fn test_mat3_inverse_correctness() {
 
         match (naive, optimized) {
             (Some(n), Some(o)) => {
-                for r in 0..3 {
-                    for c in 0..3 {
-                        let diff = (n[r][c] - o.m[r][c]).abs();
+                for (r, row) in n.iter().enumerate() {
+                    for (c, &val) in row.iter().enumerate() {
+                        let diff = (val - o.m[r][c]).abs();
                         assert!(
                             diff < 1e-5,
                             "Mismatch at case #{}, elem [{}][{}]: naive={}, optimized={}",
                             i,
                             r,
                             c,
-                            n[r][c],
+                            val,
                             o.m[r][c]
                         );
                     }

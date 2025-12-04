@@ -1,20 +1,23 @@
+use crate::TensorView;
 use crate::backend::{Backend, SimdBatch};
 use crate::batch::{Batch, NativeBackend};
-use crate::traits::Surface;
 use crate::pixel::Pixel;
-use crate::TensorView;
+use crate::traits::Surface;
 use alloc::vec;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
-/// Samples from an atlas texture using bilinear interpolation.
+/// A surface defined by a closure or function pointer.
 #[derive(Copy, Clone)]
 pub struct FnSurface<F, T> {
+    /// The function that defines the surface.
     pub func: F,
+    /// Marker for the return type.
     pub _marker: PhantomData<T>,
 }
 
 impl<F, T> FnSurface<F, T> {
+    /// Creates a new `FnSurface`.
     pub fn new(func: F) -> Self {
         Self {
             func,
@@ -35,6 +38,7 @@ where
     }
 }
 
+/// Samples from an atlas texture using bilinear interpolation.
 #[derive(Copy, Clone)]
 pub struct SampleAtlas<'a> {
     /// The source texture atlas.
@@ -54,6 +58,15 @@ impl<'a> Surface<u8> for SampleAtlas<'a> {
             let res = self.atlas.sample_4bit_bilinear::<NativeBackend>(u, v);
             NativeBackend::downcast_u32_to_u8(res)
         }
+    }
+}
+
+impl<'a> Surface<u32> for SampleAtlas<'a> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+        let u8_val = <Self as Surface<u8>>::eval(self, x, y);
+        let val_u32 = NativeBackend::upcast_u8_to_u32(u8_val);
+        val_u32 << 24
     }
 }
 

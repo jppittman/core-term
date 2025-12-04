@@ -117,4 +117,3 @@ pub enum DisplayEvent {
     /// Clipboard data requested by another application (X11 SelectionRequest).
     ClipboardDataRequested,
 }
-

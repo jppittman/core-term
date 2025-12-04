@@ -1,6 +1,6 @@
+use crate::backend::{BatchArithmetic, SimdBatch};
 use crate::batch::Batch;
 use crate::traits::Surface;
-use crate::backend::{BatchArithmetic, SimdBatch};
 use core::fmt::Debug;
 
 /// Offsets the coordinate system by a fixed amount.
@@ -122,9 +122,13 @@ pub struct Skew<S> {
     pub shear: i32,
 }
 
-impl<S: Surface<u8, u32>> Surface<u8, u32> for Skew<S> {
+impl<T, S> Surface<T, u32> for Skew<S>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T, u32>,
+{
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
         let offset = (y * Batch::<u32>::splat(self.shear as u32)) >> 8;
         self.source.eval(x.saturating_sub(offset), y)
     }

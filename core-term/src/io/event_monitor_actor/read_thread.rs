@@ -107,7 +107,7 @@ impl ReadThread {
                         &pty_cmd_tx,
                         &mut command_buffer,
                     )?;
-                    
+
                     if !should_continue {
                         info!("Read thread: PTY closed, stopping read loop");
                         return Ok(());

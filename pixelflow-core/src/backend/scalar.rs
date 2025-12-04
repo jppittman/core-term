@@ -1,6 +1,7 @@
 //! Scalar backend implementation (LANES=1).
 
 use crate::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
+use crate::traits::Surface;
 use core::fmt::Debug;
 use core::ops::*;
 
@@ -10,7 +11,8 @@ pub struct Scalar;
 
 impl Backend for Scalar {
     const LANES: usize = 1;
-    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> = ScalarBatch<T>;
+    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> =
+        ScalarBatch<T>;
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: ScalarBatch<u32>) -> ScalarBatch<u8> {
@@ -47,6 +49,23 @@ impl Backend for Scalar {
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct ScalarBatch<T>(pub T);
+
+impl<T: Copy> ScalarBatch<T> {
+    /// Converts the batch to an array.
+    pub fn to_array(&self) -> [T; 1] {
+        [self.0]
+    }
+}
+
+impl<T> Surface<T> for ScalarBatch<T>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    #[inline(always)]
+    fn eval(&self, _x: ScalarBatch<u32>, _y: ScalarBatch<u32>) -> ScalarBatch<T> {
+        *self
+    }
+}
 
 // PartialEq only for types that support it
 impl<T: PartialEq> PartialEq for ScalarBatch<T> {
@@ -250,7 +269,9 @@ impl_bitwise_int!(i32);
 impl_arithmetic_float!(f32);
 impl_bitwise_float!(f32, u32);
 
-impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T> for ScalarBatch<T> {
+impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T>
+    for ScalarBatch<T>
+{
     const LANES: usize = 1;
 
     fn splat(val: T) -> Self {

@@ -1,13 +1,17 @@
 use crate::backend::SimdBatch;
 use crate::batch::Batch;
-use crate::traits::Surface;
 use crate::pixel::Pixel;
+use crate::traits::Surface;
 use core::marker::PhantomData;
 
+/// Selects between two surfaces based on a mask.
 #[derive(Copy, Clone)]
 pub struct Select<M, T, F> {
+    /// The mask surface.
     pub mask: M,
+    /// The surface to evaluate if the mask is true.
     pub if_true: T,
+    /// The surface to evaluate if the mask is false.
     pub if_false: F,
 }
 
@@ -22,10 +26,10 @@ where
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
         let m = self.mask.eval(x, y);
         if m.all() {
-            return self.if_true.eval(x, y)
+            return self.if_true.eval(x, y);
         }
         if !m.any() {
-            return self.if_false.eval(x, y)
+            return self.if_false.eval(x, y);
         }
 
         // Use church combinator for lazy evaluation / short-circuiting
@@ -37,12 +41,14 @@ where
     }
 }
 
+/// A fixed-point combinator for recursive surfaces.
 pub struct Fix<P, F> {
     func: F,
     _marker: PhantomData<P>,
 }
 
 impl<P, F> Fix<P, F> {
+    /// Creates a new `Fix` combinator.
     pub fn new(func: F) -> Self {
         Self {
             func,

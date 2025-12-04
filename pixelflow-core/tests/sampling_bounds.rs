@@ -1,5 +1,5 @@
 use pixelflow_core::TensorView;
-use pixelflow_core::backend::{Backend, BatchArithmetic, SimdBatch};
+use pixelflow_core::backend::SimdBatch;
 use pixelflow_core::batch::{Batch, NativeBackend};
 
 #[test]

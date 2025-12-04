@@ -136,7 +136,9 @@ fn engine_loop<A: Application<PlatformPixel>>(
     let shutdown = |driver: &PlatformDriver, reason: &str| -> Result<()> {
         info!("Engine loop: shutting down ({})", reason);
         // Best-effort cleanup - ignore send errors since driver may already be gone
-        let _ = driver.send(DriverCommand::DestroyWindow { id: WindowId::PRIMARY });
+        let _ = driver.send(DriverCommand::DestroyWindow {
+            id: WindowId::PRIMARY,
+        });
         let _ = driver.send(DriverCommand::Shutdown);
         Ok(())
     };

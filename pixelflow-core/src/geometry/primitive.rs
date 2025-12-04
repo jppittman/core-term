@@ -5,13 +5,18 @@ use crate::traits::Surface;
 /// A rectangular mask (returns 0 or !0).
 #[derive(Copy, Clone, Debug)]
 pub struct Rect {
+    /// The x coordinate of the top-left corner.
     pub x: i32,
+    /// The y coordinate of the top-left corner.
     pub y: i32,
+    /// The width of the rectangle.
     pub w: u32,
+    /// The height of the rectangle.
     pub h: u32,
 }
 
 impl Rect {
+    /// Creates a new `Rect`.
     pub fn new(x: i32, y: i32, w: u32, h: u32) -> Self {
         Self { x, y, w, h }
     }

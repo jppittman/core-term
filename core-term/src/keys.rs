@@ -35,9 +35,10 @@ mod tests {
     use crate::term::action::UserInputAction;
 
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
-        let mut cfg = Config::default();
-        cfg.keybindings = KeybindingsConfig { bindings };
-        cfg
+        Config {
+            keybindings: KeybindingsConfig { bindings },
+            ..Config::default()
+        }
     }
 
     #[test]

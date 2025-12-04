@@ -343,6 +343,19 @@ pub struct TensorViewMut<'a, T> {
     pub stride: usize,
 }
 
+impl<'a, T> TensorViewMut<'a, T> {
+    /// Creates a new `TensorViewMut`.
+    #[inline(always)]
+    pub fn new(data: &'a mut [T], width: usize, height: usize, stride: usize) -> Self {
+        Self {
+            data,
+            width,
+            height,
+            stride,
+        }
+    }
+}
+
 /// Rasterizes a surface into a target buffer.
 ///
 /// This function iterates over the target buffer, evaluating the surface

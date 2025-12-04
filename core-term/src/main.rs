@@ -160,18 +160,16 @@ fn main() -> anyhow::Result<()> {
         let path = "/tmp/core-term-flamegraph.svg";
         info!("Writing flamegraph to {}...", path);
         match profiler_guard.report().build() {
-            Ok(report) => {
-                match std::fs::File::create(path) {
-                    Ok(file) => {
-                        if let Err(e) = report.flamegraph(file) {
-                            warn!("Failed to write flamegraph: {}", e);
-                        } else {
-                            info!("Flamegraph written to {}", path);
-                        }
+            Ok(report) => match std::fs::File::create(path) {
+                Ok(file) => {
+                    if let Err(e) = report.flamegraph(file) {
+                        warn!("Failed to write flamegraph: {}", e);
+                    } else {
+                        info!("Flamegraph written to {}", path);
                     }
-                    Err(e) => warn!("Failed to create {}: {}", path, e),
                 }
-            }
+                Err(e) => warn!("Failed to create {}: {}", path, e),
+            },
             Err(e) => warn!("Failed to build profiler report: {:?}", e),
         }
     }

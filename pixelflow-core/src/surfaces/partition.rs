@@ -1,7 +1,7 @@
+use crate::backend::SimdBatch;
 use crate::batch::{Batch, LANES};
-use crate::traits::Surface;
 use crate::pixel::Pixel;
-use crate::backend::{SimdBatch};
+use crate::traits::Surface;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Debug;
@@ -55,13 +55,13 @@ where
         // Mixed case - evaluate each lane through its surface
         let mut result_array = [P::default(); LANES];
 
-        for i in 0..LANES {
+        for (i, res) in result_array.iter_mut().enumerate() {
             let idx = indices.extract_lane(i) as usize;
             if idx < self.surfaces.len() {
                 let xi = Batch::<C>::splat(x.extract_lane(i));
                 let yi = Batch::<C>::splat(y.extract_lane(i));
                 let pixel_batch = self.surfaces[idx].eval(xi, yi);
-                result_array[i] = pixel_batch.first();
+                *res = pixel_batch.first();
             }
             // else: out of bounds, use default value (already set)
         }

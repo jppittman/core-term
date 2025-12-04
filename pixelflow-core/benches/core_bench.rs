@@ -1,10 +1,10 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use pixelflow_core::{
-    TensorView, TensorViewMut,
-    batch::Batch,
+    SampleAtlas, SimdBatch, TensorView, TensorViewMut,
+    batch::{Batch, NativeBackend},
     dsl::{MaskExt, SurfaceExt},
     execute,
-    ops::{Max, Offset, Over, SampleAtlas, Skew},
+    surfaces::Max,
 };
 
 // Benchmark constants to avoid magic numbers
@@ -17,12 +17,12 @@ fn bench_gather_2d(c: &mut Criterion) {
     let data = vec![0u8; BUFFER_SIZE];
     let view = TensorView::new(&data, WIDTH, HEIGHT, STRIDE);
 
-    let x = Batch::<u32>::new(0, 10, 20, 30);
+    let x = Batch::<u32>::sequential_from(0) * Batch::<u32>::splat(10);
     let y = Batch::<u32>::splat(10);
 
     c.bench_function("gather_2d", |b| {
         b.iter(|| unsafe {
-            black_box(view.gather_2d(black_box(x), black_box(y)));
+            black_box(view.gather_2d::<NativeBackend>(black_box(x), black_box(y)));
         })
     });
 }
@@ -32,12 +32,12 @@ fn bench_sample_4bit_bilinear(c: &mut Criterion) {
     let view = TensorView::new(&data, WIDTH, HEIGHT, STRIDE);
 
     // 16.16 fixed point coordinates
-    let u = Batch::<u32>::new(10 << 16, 20 << 16, 30 << 16, 40 << 16);
+    let u = (Batch::<u32>::sequential_from(1) * Batch::<u32>::splat(10)) << 16;
     let v = Batch::<u32>::splat(50 << 16);
 
     c.bench_function("sample_4bit_bilinear", |b| {
         b.iter(|| unsafe {
-            black_box(view.sample_4bit_bilinear(black_box(u), black_box(v)));
+            black_box(view.sample_4bit_bilinear::<NativeBackend>(black_box(u), black_box(v)));
         })
     });
 }
@@ -56,8 +56,13 @@ fn bench_pipeline_execution(c: &mut Criterion) {
 
     c.bench_function("pipeline_simple_sample", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-            execute(pipeline, &mut target_view);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            execute(
+                &pipeline,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 }
@@ -104,27 +109,42 @@ fn bench_operators(c: &mut Criterion) {
     // Offset
     group.bench_function("Offset", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-            let pipe = source.offset(10, 10);
-            execute(pipe, &mut target_view);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let pipe = SurfaceExt::<u8>::offset(source, 10, 10);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
     // Skew
     group.bench_function("Skew", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-            let pipe = source.skew(50);
-            execute(pipe, &mut target_view);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let pipe = SurfaceExt::<u8>::skew(source, 50);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
     // Max
     group.bench_function("Max", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-            let pipe = Max(source, source.offset(1, 0));
-            execute(pipe, &mut target_view);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let pipe = Max(source, SurfaceExt::<u8>::offset(source, 1, 0));
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
@@ -142,39 +162,54 @@ fn bench_sampling_scaling(c: &mut Criterion) {
     // 0.5x Scale (Minification) - Step = 2.0 (131072)
     group.bench_function("0.5x", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
             let pipe = SampleAtlas {
                 atlas: atlas_view,
                 step_x_fp: 131072,
                 step_y_fp: 131072,
             };
-            execute(pipe, &mut target_view);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
     // 1.0x Scale - Step = 1.0 (65536)
     group.bench_function("1.0x", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
             let pipe = SampleAtlas {
                 atlas: atlas_view,
                 step_x_fp: 65536,
                 step_y_fp: 65536,
             };
-            execute(pipe, &mut target_view);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
     // 2.0x Scale (Magnification) - Step = 0.5 (32768)
     group.bench_function("2.0x", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
             let pipe = SampleAtlas {
                 atlas: atlas_view,
                 step_x_fp: 32768,
                 step_y_fp: 32768,
             };
-            execute(pipe, &mut target_view);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
@@ -200,40 +235,60 @@ fn bench_text_pipelines(c: &mut Criterion) {
     // Normal: Sampler -> Over
     group.bench_function("Normal", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-            let pipe = source.over(fg, bg);
-            execute(pipe, &mut target_view);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let pipe = MaskExt::<u32>::over(source, fg, bg);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
     // Bold: Max(Sampler, Sampler.offset) -> Over
     group.bench_function("Bold", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-            let bold = Max(source, source.offset(1, 0));
-            let pipe = bold.over(fg, bg);
-            execute(pipe, &mut target_view);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let bold = Max(source, SurfaceExt::<u32>::offset(source, 1, 0));
+            let pipe = MaskExt::<u32>::over(bold, fg, bg);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
     // Italic: Skew(Sampler) -> Over
     group.bench_function("Italic", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-            let italic = source.skew(50);
-            let pipe = italic.over(fg, bg);
-            execute(pipe, &mut target_view);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let italic = SurfaceExt::<u32>::skew(source, 50);
+            let pipe = MaskExt::<u32>::over(italic, fg, bg);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 
     // Bold Italic: Max(Italic, Italic.offset) -> Over
     group.bench_function("BoldItalic", |b| {
         b.iter(|| {
-            let mut target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
-            let italic = source.skew(50);
-            let bold_italic = Max(italic, italic.offset(1, 0));
-            let pipe = bold_italic.over(fg, bg);
-            execute(pipe, &mut target_view);
+            let target_view = TensorViewMut::new(&mut target_data, WIDTH, HEIGHT, STRIDE);
+            let italic = SurfaceExt::<u32>::skew(source, 50);
+            let bold_italic = Max(italic, SurfaceExt::<u32>::offset(italic, 1, 0));
+            let pipe = MaskExt::<u32>::over(bold_italic, fg, bg);
+            execute(
+                &pipe,
+                target_view.data,
+                target_view.width,
+                target_view.height,
+            );
         })
     });
 

@@ -203,8 +203,10 @@ mod tests {
 
     #[test]
     fn test_arrow_keys_normal_mode() {
-        let mut modes = DecPrivateModes::default();
-        modes.cursor_keys_app_mode = false;
+        let modes = DecPrivateModes {
+            cursor_keys_app_mode: false,
+            ..Default::default()
+        };
         assert_eq!(
             translate_key_input(KeySymbol::Up, Modifiers::empty(), None, &modes),
             b"\x1b[A".to_vec()
@@ -225,8 +227,10 @@ mod tests {
 
     #[test]
     fn test_arrow_keys_app_mode() {
-        let mut modes = DecPrivateModes::default();
-        modes.cursor_keys_app_mode = true;
+        let modes = DecPrivateModes {
+            cursor_keys_app_mode: true,
+            ..Default::default()
+        };
         assert_eq!(
             translate_key_input(KeySymbol::Up, Modifiers::empty(), None, &modes),
             b"\x1bOA".to_vec()

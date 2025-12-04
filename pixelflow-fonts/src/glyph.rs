@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn produces_transparent_pixels_outside_square() {
-        let (segments, bounds) = square_glyph();
+        let (segments, _bounds) = square_glyph();
 
         // Pixel way outside should be transparent
         // Note: We need to extend bounds to test outside
@@ -451,15 +451,9 @@ mod tests {
         // Test a grid of pixels
         for py in 0..bounds.height {
             for px in 0..bounds.width {
-                let alpha = eval_pixel(&segments, bounds, px, py);
-                // Alpha should be in valid range, not garbage
-                assert!(
-                    alpha <= 255,
-                    "Alpha out of range at ({}, {}): {}",
-                    px,
-                    py,
-                    alpha
-                );
+                let _alpha = eval_pixel(&segments, bounds, px, py);
+                // Alpha is u8, so it's always in range. The calculation inside
+                // eval_pixel ensures it doesn't overflow or produce garbage.
             }
         }
     }
@@ -576,7 +570,6 @@ mod tests {
         // The period glyph is a small dot near the baseline.
         // The top half of the glyph bounds should be completely transparent.
         use crate::font::Font;
-        use crate::glyph::CurveSurface;
         use pixelflow_core::traits::Surface;
 
         let font_bytes = include_bytes!("../assets/NotoSansMono-Regular.ttf");
@@ -632,7 +625,6 @@ mod tests {
     fn real_font_letter_a_top_is_transparent() {
         // Use 'A' - the top of the letter should be transparent (above the apex)
         use crate::font::Font;
-        use crate::glyph::CurveSurface;
         use pixelflow_core::traits::Surface;
 
         let font_bytes = include_bytes!("../assets/NotoSansMono-Regular.ttf");
@@ -720,10 +712,22 @@ mod tests {
 
         // Create a vertical bar that spans the full cell height
         let segments = vec![
-            Segment::Line(Line { p0: [2.0, descender as f32], p1: [8.0, descender as f32] }),
-            Segment::Line(Line { p0: [8.0, descender as f32], p1: [8.0, ascender as f32] }),
-            Segment::Line(Line { p0: [8.0, ascender as f32], p1: [2.0, ascender as f32] }),
-            Segment::Line(Line { p0: [2.0, ascender as f32], p1: [2.0, descender as f32] }),
+            Segment::Line(Line {
+                p0: [2.0, descender as f32],
+                p1: [8.0, descender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [8.0, descender as f32],
+                p1: [8.0, ascender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [8.0, ascender as f32],
+                p1: [2.0, ascender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [2.0, ascender as f32],
+                p1: [2.0, descender as f32],
+            }),
         ];
         let bounds = GlyphBounds {
             width: 10,
@@ -773,8 +777,10 @@ mod tests {
 
         // Print font metrics
         let metrics = font.metrics();
-        eprintln!("Font metrics: ascent={}, descent={}, line_gap={}, units_per_em={}",
-            metrics.ascent, metrics.descent, metrics.line_gap, metrics.units_per_em);
+        eprintln!(
+            "Font metrics: ascent={}, descent={}, line_gap={}, units_per_em={}",
+            metrics.ascent, metrics.descent, metrics.line_gap, metrics.units_per_em
+        );
 
         let line_height = metrics.ascent as f32 - metrics.descent as f32;
         eprintln!("Line height (ascent - descent): {}", line_height);
@@ -784,7 +790,10 @@ mod tests {
 
         let ascender = (metrics.ascent as f32 * cell_h as f32 / line_height).round() as i32;
         eprintln!("Calculated ascender for {}px cell: {}", cell_h, ascender);
-        eprintln!("Calculated descender (ascender - cell_h): {}", ascender - cell_h as i32);
+        eprintln!(
+            "Calculated descender (ascender - cell_h): {}",
+            ascender - cell_h as i32
+        );
 
         let glyph_fn = glyphs(font.clone(), cell_w, cell_h);
         let baked: Baked<u32> = glyph_fn('g').get().clone();
@@ -871,10 +880,13 @@ mod tests {
         let bounds = glyph.bounds();
 
         eprintln!("'g' bounds at corrected size: {:?}", bounds);
-        eprintln!("bearing_y (top of glyph in curve space): {}", bounds.bearing_y);
+        eprintln!(
+            "bearing_y (top of glyph in curve space): {}",
+            bounds.bearing_y
+        );
 
         // Calculate where the bottom of the glyph is in curve space
-        let glyph_bottom = bounds.bearing_y as i32 - bounds.height as i32;
+        let glyph_bottom = bounds.bearing_y - bounds.height as i32;
         eprintln!("Glyph bottom in curve space: {}", glyph_bottom);
 
         // Calculate the cell's sampling range (using floor to match combinators.rs)
@@ -883,7 +895,10 @@ mod tests {
         let cell_bottom_sample = ascender as f32 - (cell_h as f32 - 0.5); // pixel (h-1) center
 
         eprintln!("Cell ascender: {}", ascender);
-        eprintln!("Cell samples from curve y={} to y={}", cell_top_sample, cell_bottom_sample);
+        eprintln!(
+            "Cell samples from curve y={} to y={}",
+            cell_top_sample, cell_bottom_sample
+        );
 
         // The glyph bottom should be within the cell's sampling range
         assert!(
