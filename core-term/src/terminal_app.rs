@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Glyph factory type - closure that returns lazily-baked glyphs.
-type GlyphFactory = Arc<dyn Fn(char) -> Lazy<'static, Baked<u8>> + Send + Sync>;
+type GlyphFactory = Arc<dyn Fn(char) -> Lazy<'static, Baked<u32>> + Send + Sync>;
 
 // =============================================================================
 // Proxy (lives in engine thread, implements Application trait)

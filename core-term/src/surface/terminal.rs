@@ -16,8 +16,28 @@ use pixelflow_render::font;
 use pixelflow_render::Pixel;
 use std::sync::Arc;
 
+/// Converts a Surface<u32> to Surface<P> by applying P::batch_from_u32.
+struct PixelConvert<S, P> {
+    source: S,
+    _pixel: PhantomData<P>,
+}
+
+impl<S, P: Pixel> PixelConvert<S, P> {
+    fn new(source: S) -> Self {
+        Self { source, _pixel: PhantomData }
+    }
+}
+
+impl<S: Surface<u32>, P: Pixel> Surface<P> for PixelConvert<S, P> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        P::batch_from_u32(self.source.eval(x, y))
+    }
+}
+
 /// Glyph factory type - closure that returns lazily-baked glyphs.
-type GlyphFactory = Arc<dyn Fn(char) -> Lazy<'static, Baked<u8>> + Send + Sync>;
+/// Glyphs are u32 pixels with coverage in alpha channel (R=G=B=255, A=coverage).
+type GlyphFactory = Arc<dyn Fn(char) -> Lazy<'static, Baked<u32>> + Send + Sync>;
 
 /// A terminal rendered as a functional surface.
 ///
@@ -35,7 +55,8 @@ pub struct TerminalSurface<P: Pixel + Surface<P>> {
 impl<P: Pixel + Surface<P> + 'static> TerminalSurface<P> {
     /// Creates a new terminal surface from a grid.
     ///
-    /// This builds the entire scene graph.
+    /// This builds the entire scene graph. Internally composes with u32 pixels,
+    /// then converts to P at the end.
     pub fn with_grid(
         grid: &GridBuffer,
         glyph_factory: GlyphFactory,
@@ -43,8 +64,8 @@ impl<P: Pixel + Surface<P> + 'static> TerminalSurface<P> {
         cell_height: u32,
     ) -> Self {
         let rows = grid.rows;
-        // Build all rows from scratch
-        let row_surfaces: Vec<Arc<dyn Surface<P> + Send + Sync>> = (0..rows)
+        // Build all rows as u32 surfaces
+        let row_surfaces: Vec<Arc<dyn Surface<u32> + Send + Sync>> = (0..rows)
             .map(|row_idx| {
                 build_cells(
                     row_idx,
@@ -58,58 +79,66 @@ impl<P: Pixel + Surface<P> + 'static> TerminalSurface<P> {
             })
             .collect();
 
-        Self::from_rows(row_surfaces, cell_height)
+        // Build the row tree as u32
+        let u32_root = build_row_tree(0, row_surfaces.len(), &row_surfaces, cell_height);
+
+        // Convert to P
+        Self {
+            pipeline: Arc::new(PixelConvert::<_, P>::new(u32_root)),
+            _pixel: PhantomData,
+        }
     }
 
-    /// Creates a terminal surface from a pre-computed list of row surfaces.
+    /// Creates a terminal surface from a pre-computed list of u32 row surfaces.
     /// This allows for incremental updates (caching rows).
     pub fn from_rows(
-        rows: Vec<Arc<dyn Surface<P> + Send + Sync>>,
+        rows: Vec<Arc<dyn Surface<u32> + Send + Sync>>,
         cell_height: u32,
     ) -> Self {
-        let root = build_row_tree(0, rows.len(), &rows, cell_height);
-        
+        let u32_root = build_row_tree(0, rows.len(), &rows, cell_height);
+
         Self {
-            pipeline: root,
+            pipeline: Arc::new(PixelConvert::<_, P>::new(u32_root)),
             _pixel: PhantomData,
         }
     }
 }
 
 // Recursive builder for the Tree of Rows (combines pre-built row surfaces)
-fn build_row_tree<P: Pixel + Surface<P> + 'static>(
+// Works entirely in u32 pixel space.
+fn build_row_tree(
     start_row_idx: usize,
     count: usize,
-    rows: &[Arc<dyn Surface<P> + Send + Sync>],
+    rows: &[Arc<dyn Surface<u32> + Send + Sync>],
     cell_h: u32,
-) -> Arc<dyn Surface<P> + Send + Sync> {
+) -> Arc<dyn Surface<u32> + Send + Sync> {
     if count == 0 {
-        return Arc::new(P::from_u32(0)) as Arc<dyn Surface<P> + Send + Sync>;
+        return Arc::new(0u32) as Arc<dyn Surface<u32> + Send + Sync>;
     }
     if count == 1 {
         // Leaf of the row tree is one of our pre-built rows
         let row_surface = rows[start_row_idx].clone();
-        
+
         // Mask to row height
         let row_y_start = (start_row_idx as u32) * cell_h;
         let mask = Rect::new(0, row_y_start as i32, u32::MAX, cell_h);
-        
+
         return Arc::new(Select {
             mask,
             if_true: row_surface,
-            if_false: Arc::new(P::from_u32(0)) as Arc<dyn Surface<P> + Send + Sync>
+            if_false: Arc::new(0u32) as Arc<dyn Surface<u32> + Send + Sync>
         });
     }
-    
+
     // Split
     let half = count / 2;
     let top = build_row_tree(start_row_idx, half, rows, cell_h);
     let bottom = build_row_tree(start_row_idx + half, count - half, rows, cell_h);
-    
+
     // Split Y at boundary
     let split_y = ((start_row_idx + half) as u32) * cell_h;
     let split_mask = Rect::new(0, 0, u32::MAX, split_y);
-    
+
     Arc::new(Select {
         mask: split_mask,
         if_true: top,
@@ -118,8 +147,9 @@ fn build_row_tree<P: Pixel + Surface<P> + 'static>(
 }
 
 // Recursive builder for Cells within a Row (Balanced Tree)
+// Works entirely in u32 pixel space.
 // Note: This is now public so the Worker can call it incrementally
-pub fn build_cells<P: Pixel + Surface<P> + 'static>(
+pub fn build_cells(
     row_idx: usize,
     start_col: usize,
     count: usize,
@@ -127,59 +157,60 @@ pub fn build_cells<P: Pixel + Surface<P> + 'static>(
     glyph_factory: &GlyphFactory,
     cell_w: u32,
     cell_h: u32,
-) -> Arc<dyn Surface<P> + Send + Sync> {
+) -> Arc<dyn Surface<u32> + Send + Sync> {
     if count == 0 {
-        return Arc::new(P::from_u32(0)) as Arc<dyn Surface<P> + Send + Sync>;
+        return Arc::new(0u32) as Arc<dyn Surface<u32> + Send + Sync>;
     }
-    
+
     if count == 1 {
         let current_col_idx = start_col;
         let cell = grid.get(current_col_idx, row_idx);
-        
+
         let cx = (current_col_idx as u32) * cell_w;
         let cy = (row_idx as u32) * cell_h;
-        
-        // 1. Glyph Mask
-        let glyph_surface: Arc<dyn Surface<u8> + Send + Sync> = if cell.ch == ' ' || cell.ch == '\0' {
-            Arc::new(Rect::new(0, 0, 0, 0))
+
+        // 1. Glyph Mask (u32 pixels with coverage in alpha channel)
+        let glyph_surface: Arc<dyn Surface<u32> + Send + Sync> = if cell.ch == ' ' || cell.ch == '\0' {
+            // Empty glyph - fully transparent (alpha = 0)
+            Arc::new(0u32)
         } else {
             // Use the Lazy surface directly - it caches itself on first eval
             let glyph_lazy = (glyph_factory)(cell.ch);
-            
+
             Arc::new(pixelflow_core::surfaces::Offset {
-                source: glyph_lazy, // No .get().clone() or Baked wrapper needed
+                source: glyph_lazy,
                 dx: -(cx as i32),
                 dy: -(cy as i32),
             })
         };
-        
-        // 2. Colors
-        let fg = P::from_u32(cell.fg.to_rgba().0);
-        let bg = P::from_u32(cell.bg.to_rgba().0);
-        
+
+        // 2. Colors (as u32 packed RGBA)
+        let fg = cell.fg.to_rgba().0;
+        let bg = cell.bg.to_rgba().0;
+
         // 3. Compose: Glyph.over(FG, BG)
-        // Note: .over() creates an Over struct. We box (Arc) it to erase the type.
+        // Glyph is Surface<u32> with coverage in alpha. MaskExt<u32>::over() extracts alpha.
         let cell_surface = glyph_surface.over(fg, bg);
-        
-        // 4. Mask
+
+        // 4. Mask to cell bounds
         let cell_mask = Rect::new(cx as i32, 0, cell_w, u32::MAX);
-        
+
         return Arc::new(Select {
             mask: cell_mask,
-            if_true: Arc::new(cell_surface) as Arc<dyn Surface<P> + Send + Sync>,
-            if_false: Arc::new(P::from_u32(0)) as Arc<dyn Surface<P> + Send + Sync>
+            if_true: Arc::new(cell_surface) as Arc<dyn Surface<u32> + Send + Sync>,
+            if_false: Arc::new(0u32) as Arc<dyn Surface<u32> + Send + Sync>
         });
     }
-    
+
     // Split
     let half = count / 2;
     let left = build_cells(row_idx, start_col, half, grid, glyph_factory, cell_w, cell_h);
     let right = build_cells(row_idx, start_col + half, count - half, grid, glyph_factory, cell_w, cell_h);
-    
+
     // Split X at boundary
     let split_x = ((start_col + half) as u32) * cell_w;
     let split_mask = Rect::new(0, 0, split_x, u32::MAX);
-    
+
     Arc::new(Select {
         mask: split_mask,
         if_true: left,

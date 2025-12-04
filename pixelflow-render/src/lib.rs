@@ -47,7 +47,7 @@ pub use color::{
     X11Pixel,
 };
 pub use frame::Frame;
-pub use glyph::{font, subpixel, SubpixelMap};
+pub use glyph::{font, gamma_decode, gamma_encode, subpixel, SubpixelBlend, SubpixelMap};
 pub use pixelflow_fonts::{Font, Glyph, GlyphBounds};
 pub use rasterizer::{execute, render, render_pixel, render_to_buffer, render_u32};
 

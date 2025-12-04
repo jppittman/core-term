@@ -1,7 +1,7 @@
 //! Backend trait and Batch operations.
 
 use core::fmt::Debug;
-use core::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Not, Shl, Shr, Sub};
+use core::ops::{Add, Div, Mul, Sub};
 
 /// A backend provides the SIMD implementation.
 pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
