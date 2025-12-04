@@ -7,9 +7,11 @@
 
 use crate::display::messages::WindowId;
 use crate::display::DisplayEvent;
+use crate::vsync_actor::VsyncActor;
 use pixelflow_core::Pixel;
 use pixelflow_render::Frame;
 use std::sync::mpsc::{self, Receiver, SendError, Sender, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
 
 /// Commands sent TO the engine (from driver or external control).
 #[derive(Debug)]
@@ -25,6 +27,22 @@ pub enum EngineCommand<P: Pixel> {
 
     /// Doorbell - wakes engine when display events are ready
     Doorbell,
+
+    /// VSync signal from display driver with timing information.
+    /// Routes through fast lane (control channel) for high-priority delivery.
+    /// DEPRECATED: Use VsyncActorReady instead.
+    VSync {
+        /// Timestamp when this vsync occurred (monotonic clock)
+        timestamp: Instant,
+        /// When the next frame should be ready for display
+        target_timestamp: Instant,
+        /// Current refresh interval (may vary with VRR displays)
+        refresh_interval: Duration,
+    },
+
+    /// VSync actor provided by platform/display driver.
+    /// Engine will use this actor to receive vsync signals.
+    VsyncActorReady(VsyncActor),
 }
 
 /// Commands sent TO the driver (from engine).

@@ -134,6 +134,11 @@ fn engine_loop<A: Application<PlatformPixel>>(
     // Scale factor for physical <-> logical conversion
     let mut scale_factor = 1.0f64;
 
+    // VSync timing state
+    let mut next_vsync_deadline = Instant::now() + frame_duration; // Start with first frame deadline
+    let mut refresh_interval = frame_duration; // Start with configured FPS, update from vsync
+    let mut vsync_actor: Option<crate::vsync_actor::VsyncActor> = None;
+
     // Helper to cleanly shutdown - sends DestroyWindow + Shutdown to driver
     let shutdown = |driver: &PlatformDriver, reason: &str| -> Result<()> {
         info!("Engine loop: shutting down ({})", reason);
@@ -144,12 +149,17 @@ fn engine_loop<A: Application<PlatformPixel>>(
     };
 
     loop {
-        let frame_start = Instant::now();
-        let deadline = frame_start + frame_duration;
+        // Check for vsync signals from actor (if available)
+        if let Some(ref actor) = vsync_actor {
+            if let Ok(signal) = actor.try_recv_signal() {
+                next_vsync_deadline = signal.target_timestamp;
+                refresh_interval = signal.refresh_interval;
+            }
+        }
 
-        // 1. Process events until next frame deadline
+        // 1. Process events until next frame deadline (from vsync or fallback)
         loop {
-            let timeout = deadline.saturating_duration_since(Instant::now());
+            let timeout = next_vsync_deadline.saturating_duration_since(Instant::now());
             if timeout.is_zero() {
                 break;
             }
@@ -170,8 +180,25 @@ fn engine_loop<A: Application<PlatformPixel>>(
                 Ok(EngineCommand::DisplayEvent(_)) => {
                     // Shouldn't happen on control channel
                 }
+                Ok(EngineCommand::VSync {
+                    timestamp: _,
+                    target_timestamp,
+                    refresh_interval: interval,
+                }) => {
+                    // DEPRECATED: Direct vsync signals
+                    // Update timing for next frame from display driver's vsync signal
+                    next_vsync_deadline = target_timestamp;
+                    refresh_interval = interval;
+                    // VSync received - proceed to render
+                    break;
+                }
+                Ok(EngineCommand::VsyncActorReady(actor)) => {
+                    info!("Engine: VSync actor received from platform");
+                    vsync_actor = Some(actor);
+                }
                 Err(RecvTimeoutError::Timeout) => {
-                    // Deadline reached, time to render
+                    // Deadline reached without vsync signal - use fallback timing
+                    next_vsync_deadline = Instant::now() + refresh_interval;
                     break;
                 }
                 Err(RecvTimeoutError::Disconnected) => {
@@ -213,11 +240,7 @@ fn engine_loop<A: Application<PlatformPixel>>(
                             _ => {}
                         }
 
-                        // Handle CloseRequested first (before mapping to EngineEvent)
-                        if matches!(evt, DisplayEvent::CloseRequested { .. }) {
-                            return shutdown(&driver, "close requested");
-                        }
-
+                        // Map display event to engine event and let app handle it
                         if let Some(engine_evt) = map_display_event(&evt, scale_factor) {
                             let action = app.on_event(engine_evt);
                             if let ActionResult::Shutdown = handle_action(action, &driver)? {

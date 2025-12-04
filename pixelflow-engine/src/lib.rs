@@ -6,6 +6,7 @@ pub mod input;
 pub mod platform;
 pub mod render_pool;
 pub mod traits;
+pub mod vsync_actor;
 
 pub use channel::{
     create_engine_channels, DriverCommand, EngineChannels, EngineCommand, EngineSender,
@@ -14,6 +15,7 @@ pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
 pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
 pub use platform::EnginePlatform;
 pub use traits::{AppAction, AppState, Application, EngineEvent};
+pub use vsync_actor::{VsyncActor, VsyncCommand, VsyncSignal};
 
 #[cfg(use_web_display)]
 use wasm_bindgen::prelude::*;

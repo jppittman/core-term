@@ -4,7 +4,7 @@
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Entry point for xtask.
@@ -31,16 +31,45 @@ fn main() {
     }
 }
 
+/// Find the workspace root by looking for Cargo.toml with [workspace]
+fn find_workspace_root() -> PathBuf {
+    let mut current = env::current_dir().expect("Failed to get current directory");
+
+    loop {
+        let cargo_toml = current.join("Cargo.toml");
+
+        if cargo_toml.exists() {
+            // Check if this is the workspace root by reading Cargo.toml
+            if let Ok(contents) = fs::read_to_string(&cargo_toml) {
+                if contents.contains("[workspace]") {
+                    return current;
+                }
+            }
+        }
+
+        // Move up to parent directory
+        if !current.pop() {
+            eprintln!("Could not find workspace root (no Cargo.toml with [workspace] found)");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Builds the project in release mode and bundles it into a macOS .app structure.
 /// Then launches the application.
 ///
 /// # Parameters
 /// * `extra_args` - Additional arguments to pass to `cargo build`.
 fn bundle_run(extra_args: &[String]) {
+    // Find workspace root so this works from any subdirectory
+    let workspace_root = find_workspace_root();
+    println!("Workspace root: {}", workspace_root.display());
+
     println!("Building core-term in release mode...");
 
     // Build the project with extra args (e.g., --features profiling)
     let mut cmd = Command::new("cargo");
+    cmd.current_dir(&workspace_root); // Run from workspace root
     cmd.args(["build", "--release"]);
 
     // Filter out --release since we already added it
@@ -62,45 +91,46 @@ fn bundle_run(extra_args: &[String]) {
     }
 
     // Copy binary to bundle (build.rs creates the bundle structure)
-    let binary_src = "target/release/core-term";
-    let binary_dest = "CoreTerm.app/Contents/MacOS/CoreTerm";
+    let binary_src = workspace_root.join("target/release/core-term");
+    let binary_dest = workspace_root.join("CoreTerm.app/Contents/MacOS/CoreTerm");
 
-    if !Path::new(binary_src).exists() {
-        eprintln!("Binary not found at {}", binary_src);
+    if !binary_src.exists() {
+        eprintln!("Binary not found at {}", binary_src.display());
         std::process::exit(1);
     }
 
     println!("Copying binary to bundle...");
-    fs::copy(binary_src, binary_dest).expect("Failed to copy binary to bundle");
+    fs::copy(&binary_src, &binary_dest).expect("Failed to copy binary to bundle");
 
     // Make it executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(binary_dest)
+        let mut perms = fs::metadata(&binary_dest)
             .expect("Failed to get binary metadata")
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(binary_dest, perms).expect("Failed to set executable permission");
+        fs::set_permissions(&binary_dest, perms).expect("Failed to set executable permission");
     }
 
     // Copy icon file to bundle Resources
-    let icon_src = "assets/icons/icon.icns";
-    let icon_dest = "CoreTerm.app/Contents/Resources/icon.icns";
+    let icon_src = workspace_root.join("assets/icons/icon.icns");
+    let icon_dest = workspace_root.join("CoreTerm.app/Contents/Resources/icon.icns");
 
-    if Path::new(icon_src).exists() {
+    if icon_src.exists() {
         println!("Copying icon to bundle...");
-        fs::create_dir_all("CoreTerm.app/Contents/Resources")
+        fs::create_dir_all(icon_dest.parent().unwrap())
             .expect("Failed to create Resources directory");
-        fs::copy(icon_src, icon_dest).expect("Failed to copy icon to bundle");
+        fs::copy(&icon_src, &icon_dest).expect("Failed to copy icon to bundle");
     } else {
-        println!("Warning: Icon not found at {}", icon_src);
+        println!("Warning: Icon not found at {}", icon_src.display());
     }
 
     // Touch the app bundle to invalidate macOS icon cache
+    let app_bundle = workspace_root.join("CoreTerm.app");
     println!("Refreshing app bundle metadata...");
     Command::new("touch")
-        .arg("CoreTerm.app")
+        .arg(&app_bundle)
         .status()
         .expect("Failed to touch app bundle");
 
@@ -110,7 +140,7 @@ fn bundle_run(extra_args: &[String]) {
     // Launch the bundled app using 'open'
     // Logs are written to /tmp/core-term.log (configured in main.rs)
     let status = Command::new("open")
-        .arg("CoreTerm.app")
+        .arg(&app_bundle)
         .status()
         .expect("Failed to launch app");
 
