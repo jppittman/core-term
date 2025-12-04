@@ -357,8 +357,23 @@ where
         return;
     }
 
-    for y in 0..height {
-        let row_start = y * width;
+    render_stripe(surface, target, width, 0, height);
+}
+
+/// Render a horizontal stripe of rows [start_y, end_y)
+#[inline(always)]
+fn render_stripe<P, S>(
+    surface: &S,
+    target: &mut [P],
+    width: usize,
+    start_y: usize,
+    end_y: usize,
+) where
+    P: pixel::Pixel,
+    S: Surface<P> + ?Sized,
+{
+    for (row_idx, y) in (start_y..end_y).enumerate() {
+        let row_start = row_idx * width;
         let y_batch = Batch::<u32>::splat(y as u32);
 
         let mut x = 0;
@@ -376,4 +391,22 @@ where
             x += 1;
         }
     }
+}
+
+/// Render a specific row range [start_y, end_y) into the target buffer.
+///
+/// This is exposed for parallel rendering: external code can partition
+/// the framebuffer into stripes and call this function from multiple threads,
+/// as long as the stripes don't overlap.
+pub fn execute_stripe<P, S>(
+    surface: &S,
+    target: &mut [P],
+    width: usize,
+    start_y: usize,
+    end_y: usize,
+) where
+    P: pixel::Pixel,
+    S: Surface<P> + ?Sized,
+{
+    render_stripe(surface, target, width, start_y, end_y);
 }
