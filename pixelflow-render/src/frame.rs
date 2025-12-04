@@ -7,6 +7,7 @@
 use crate::color::Pixel;
 use pixelflow_core::batch::Batch;
 use pixelflow_core::traits::Surface;
+use pixelflow_core::SimdBatch;
 
 /// A framebuffer of pixels in a specific format.
 ///
