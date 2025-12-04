@@ -1,13 +1,13 @@
 //! Glyph surface representation.
 //!
-//! This module defines the [`Glyph`] struct, which implements the [`Surface`](pixelflow_core::pipe::Surface)
+//! This module defines the [`Glyph`] struct, which implements the [`Surface`](pixelflow_core::traits::Surface)
 //! trait. This allows glyphs to be directly evaluated (rasterized) into buffers using `pixelflow-core`'s
 //! rendering pipeline.
 
 use crate::curves::Segment;
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
 use pixelflow_core::batch::{Batch, NativeBackend};
-use pixelflow_core::pipe::Surface;
+use pixelflow_core::traits::Surface;
 use std::sync::Arc;
 
 /// The bounding box of a glyph in pixel coordinates.
@@ -578,7 +578,7 @@ mod tests {
         // The top half of the glyph bounds should be completely transparent.
         use crate::font::Font;
         use crate::glyph::CurveSurface;
-        use pixelflow_core::pipe::Surface;
+        use pixelflow_core::traits::Surface;
 
         let font_bytes = include_bytes!("../assets/NotoSansMono-Regular.ttf");
         let font = Font::from_bytes(font_bytes).expect("Failed to load font");
@@ -670,7 +670,7 @@ mod tests {
         // Use 'A' - the top of the letter should be transparent (above the apex)
         use crate::font::Font;
         use crate::glyph::CurveSurface;
-        use pixelflow_core::pipe::Surface;
+        use pixelflow_core::traits::Surface;
 
         let font_bytes = include_bytes!("../assets/NotoSansMono-Regular.ttf");
         let font = Font::from_bytes(font_bytes).expect("Failed to load font");

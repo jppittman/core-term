@@ -58,3 +58,12 @@ where
         (**self).eval(x, y)
     }
 }
+
+/// A pure functional volume: `(x, y, z) -> T`.
+pub trait Volume<T>: Send + Sync
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    /// Evaluate the volume at the given coordinates.
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>) -> Batch<T>;
+}
