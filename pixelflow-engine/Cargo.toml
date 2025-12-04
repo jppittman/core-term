@@ -47,17 +47,10 @@ optional = true
 version = "2.21.0"
 optional = true
 
-[dependencies.wayland-client]
+[dependencies.wayland-sys]
 version = "0.31"
-optional = true
-
-[dependencies.wayland-protocols]
-version = "0.31"
+default-features = false
 features = ["client"]
-optional = true
-
-[dependencies.wayland-cursor]
-version = "0.31"
 optional = true
 
 [dependencies.xkbcommon]
@@ -115,9 +108,7 @@ display_x11 = [
     "x11",
 ]
 display_wayland = [
-    "wayland-client",
-    "wayland-protocols",
-    "wayland-cursor",
+    "wayland-sys",
     "xkbcommon",
 ]
 display_headless = []
