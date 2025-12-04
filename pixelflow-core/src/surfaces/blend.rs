@@ -1,5 +1,5 @@
-use crate::backend::{Backend, BatchArithmetic, SimdBatch};
-use crate::batch::{Batch, NativeBackend};
+use crate::backend::{BatchArithmetic, SimdBatch};
+use crate::batch::Batch;
 use crate::traits::Surface;
 use crate::pixel::Pixel;
 use core::marker::PhantomData;
@@ -62,14 +62,15 @@ pub(crate) fn blend_channel(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -
 impl<P, M, F, Back> Surface<P> for Over<P, M, F, Back>
 where
     P: Pixel + Copy + PartialEq,
-    M: Surface<u8>,
+    M: Surface<P>,
     F: Surface<P>,
     Back: Surface<P>,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
-        let alpha_val = self.mask.eval(x, y);
-        let alpha = NativeBackend::upcast_u8_to_u32(alpha_val);
+        // Extract alpha from the mask pixel (coverage in alpha channel)
+        let mask_pixel = P::batch_to_u32(self.mask.eval(x, y));
+        let alpha = P::batch_alpha(mask_pixel);
 
         let fg_batch = self.fg.eval(x, y);
         let bg_batch = self.bg.eval(x, y);
@@ -109,13 +110,14 @@ pub struct Mul<M, C> {
 impl<P, M, C> Surface<P> for Mul<M, C>
 where
     P: Pixel + Copy + PartialEq,
-    M: Surface<u8>,
+    M: Surface<P>,
     C: Surface<P>,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
-        let alpha_val = self.mask.eval(x, y);
-        let alpha = NativeBackend::upcast_u8_to_u32(alpha_val);
+        // Extract alpha from the mask pixel (coverage in alpha channel)
+        let mask_pixel = P::batch_to_u32(self.mask.eval(x, y));
+        let alpha = P::batch_alpha(mask_pixel);
 
         let color_batch = self.color.eval(x, y);
         let color = P::batch_to_u32(color_batch);

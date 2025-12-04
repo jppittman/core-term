@@ -8,8 +8,8 @@
 
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
 use pixelflow_core::batch::{Batch, NativeBackend};
-use pixelflow_core::ops::Scale;
-use pixelflow_core::pipe::Surface;
+use pixelflow_core::surfaces::Scale;
+use pixelflow_core::traits::Surface;
 use pixelflow_core::pixel::Pixel;
 use pixelflow_fonts::Font;
 use std::sync::OnceLock;

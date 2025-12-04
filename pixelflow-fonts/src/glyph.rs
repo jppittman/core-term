@@ -849,8 +849,8 @@ mod tests {
         // Test that 'g' (which has a descender) renders fully within a cell.
         use crate::combinators::glyphs;
         use crate::font::Font;
-        use pixelflow_core::ops::Baked;
-        use pixelflow_core::pipe::Surface;
+        use pixelflow_core::surfaces::Baked;
+        use pixelflow_core::traits::Surface;
 
         let font_bytes = include_bytes!("../assets/NotoSansMono-Regular.ttf");
         let font = Font::from_bytes(font_bytes).expect("Failed to load font");
