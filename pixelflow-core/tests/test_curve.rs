@@ -1,4 +1,4 @@
-use pixelflow_core::curve::Mat3;
+use pixelflow_core::geometry::Mat3;
 
 fn naive_inverse(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])

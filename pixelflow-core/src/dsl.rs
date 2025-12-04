@@ -1,5 +1,5 @@
-use crate::ops::{Max, Mul, Offset, Over, Skew};
-use crate::pipe::Surface;
+use crate::surfaces::{Max, Mul, Offset, Over, Skew};
+use crate::traits::Surface;
 use crate::pixel::Pixel;
 use core::fmt::Debug;
 

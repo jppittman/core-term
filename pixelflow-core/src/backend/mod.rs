@@ -171,3 +171,9 @@ pub trait FloatBatchOps: BatchArithmetic<f32> {
 }
 
 pub use BatchArithmetic as BatchOps;
+
+#[cfg(target_arch = "x86_64")]
+pub mod x86;
+pub mod scalar;
+#[cfg(target_arch = "aarch64")]
+pub mod arm;

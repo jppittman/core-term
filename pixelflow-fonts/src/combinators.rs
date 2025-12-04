@@ -3,8 +3,8 @@ use crate::font::Font;
 use crate::glyph::{eval_curves, CellGlyph, CurveSurface, GlyphBounds};
 use pixelflow_core::backend::SimdBatch;
 use pixelflow_core::batch::Batch;
-use pixelflow_core::ops::Baked;
-use pixelflow_core::pipe::Surface;
+use pixelflow_core::surfaces::Baked;
+use pixelflow_core::traits::Surface;
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ============================================================================

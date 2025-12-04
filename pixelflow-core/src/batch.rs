@@ -4,13 +4,13 @@ use crate::backend::Backend;
 
 // Select NativeBackend based on architecture
 #[cfg(target_arch = "x86_64")]
-pub use crate::backends::x86::Sse2 as NativeBackend;
+pub use crate::backend::x86::Sse2 as NativeBackend;
 
 #[cfg(target_arch = "aarch64")]
-pub use crate::backends::arm::Neon as NativeBackend;
+pub use crate::backend::arm::Neon as NativeBackend;
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub use crate::backends::scalar::Scalar as NativeBackend;
+pub use crate::backend::scalar::Scalar as NativeBackend;
 
 /// The platform-native SIMD batch type.
 pub type Batch<T> = <NativeBackend as Backend>::Batch<T>;

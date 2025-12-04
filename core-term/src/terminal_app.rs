@@ -14,8 +14,8 @@ use crate::messages::{AppEvent, RenderRequest};
 use crate::surface::{GridBuffer, TerminalSurface};
 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
 use core::marker::PhantomData;
-use pixelflow_core::ops::Baked; // Re-add Baked import
-use pixelflow_core::pipe::Surface;
+use pixelflow_core::surfaces::Baked; // Re-add Baked import
+use pixelflow_core::traits::Surface;
 use pixelflow_engine::input::MouseButton;
 use pixelflow_engine::{AppAction, AppState, Application, EngineEvent};
 use pixelflow_fonts::{glyphs, Lazy}; // No longer need CellGlyph here

@@ -3,7 +3,7 @@
 
 use crate::backend::{Backend, BatchArithmetic, SimdBatch};
 use crate::batch::{Batch, NativeBackend};
-use crate::pipe::Surface;
+use crate::traits::Surface;
 use core::fmt::Debug;
 
 /// Trait for pixel types that can be used in surfaces and frames.

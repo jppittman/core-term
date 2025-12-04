@@ -1,5 +1,5 @@
 use crate::input::{CursorIcon, KeySymbol, Modifiers, MouseButton};
-use pixelflow_core::pipe::Surface;
+use pixelflow_core::traits::Surface;
 use pixelflow_core::Pixel;
 
 #[derive(Debug, Clone)]

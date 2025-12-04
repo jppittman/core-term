@@ -7,8 +7,9 @@
 use crate::surface::grid::GridBuffer;
 use core::marker::PhantomData;
 use pixelflow_core::dsl::MaskExt; // for .over()
-use pixelflow_core::ops::{Baked, Rect, Select};
-use pixelflow_core::pipe::Surface;
+use pixelflow_core::geometry::Rect;
+use pixelflow_core::surfaces::{Baked, Select};
+use pixelflow_core::traits::Surface;
 use pixelflow_core::batch::Batch;
 use pixelflow_fonts::{glyphs, Lazy};
 use pixelflow_render::font;
@@ -145,7 +146,7 @@ pub fn build_cells<P: Pixel + Surface<P> + 'static>(
             // Use the Lazy surface directly - it caches itself on first eval
             let glyph_lazy = (glyph_factory)(cell.ch);
             
-            Arc::new(pixelflow_core::ops::Offset {
+            Arc::new(pixelflow_core::surfaces::Offset {
                 source: glyph_lazy, // No .get().clone() or Baked wrapper needed
                 dx: -(cx as i32),
                 dy: -(cy as i32),

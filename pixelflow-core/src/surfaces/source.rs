@@ -1,0 +1,124 @@
+use crate::backend::{Backend, SimdBatch};
+use crate::batch::{Batch, NativeBackend};
+use crate::traits::Surface;
+use crate::pixel::Pixel;
+use crate::TensorView;
+use alloc::vec;
+use core::fmt::Debug;
+use core::marker::PhantomData;
+
+/// Samples from an atlas texture using bilinear interpolation.
+#[derive(Copy, Clone)]
+pub struct FnSurface<F, T> {
+    pub func: F,
+    pub _marker: PhantomData<T>,
+}
+
+impl<F, T> FnSurface<F, T> {
+    pub fn new(func: F) -> Self {
+        Self {
+            func,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F, T> Surface<T> for FnSurface<F, T>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    F: Fn(Batch<u32>, Batch<u32>) -> Batch<T> + Send + Sync,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+        (self.func)(x, y)
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct SampleAtlas<'a> {
+    /// The source texture atlas.
+    pub atlas: TensorView<'a, u8>,
+    /// The horizontal step size in fixed-point format (16.16).
+    pub step_x_fp: u32,
+    /// The vertical step size in fixed-point format (16.16).
+    pub step_y_fp: u32,
+}
+
+impl<'a> Surface<u8> for SampleAtlas<'a> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+        let u = x * Batch::<u32>::splat(self.step_x_fp);
+        let v = y * Batch::<u32>::splat(self.step_y_fp);
+        unsafe {
+            let res = self.atlas.sample_4bit_bilinear::<NativeBackend>(u, v);
+            NativeBackend::downcast_u32_to_u8(res)
+        }
+    }
+}
+
+/// A surface that is pre-rendered (baked) into a buffer.
+#[derive(Clone)]
+pub struct Baked<P: Pixel> {
+    data: alloc::sync::Arc<[P]>,
+    width: u32,
+    height: u32,
+}
+
+impl<P: Pixel> Baked<P> {
+    /// Creates a new `Baked` surface by rasterizing the source.
+    pub fn new<S: Surface<P>>(source: &S, width: u32, height: u32) -> Self {
+        let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
+        crate::execute(source, &mut data, width as usize, height as usize);
+        Self {
+            data: alloc::sync::Arc::from(data),
+            width,
+            height,
+        }
+    }
+
+    /// Returns the width of the baked surface.
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    /// Returns the height of the baked surface.
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+    /// Returns the raw pixel data.
+    #[inline]
+    pub fn data(&self) -> &[P] {
+        &self.data
+    }
+    /// Returns a mutable reference to the raw pixel data.
+    #[inline]
+    pub fn data_mut(&mut self) -> &mut [P] {
+        alloc::sync::Arc::get_mut(&mut self.data).unwrap()
+    }
+}
+
+impl<P: Pixel> Surface<P> for Baked<P> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        let w = self.width;
+        let h = self.height;
+
+        let w_batch = Batch::<u32>::splat(w);
+        let h_batch = Batch::<u32>::splat(h);
+
+        let x_mod = x - (x / w_batch) * w_batch;
+        let y_mod = y - (y / h_batch) * h_batch;
+
+        let idx = (y_mod * w_batch) + x_mod;
+
+        P::batch_gather(&self.data, idx)
+    }
+}
+
+impl<P: Pixel> Surface<P> for &Baked<P> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        (*self).eval(x, y)
+    }
+}

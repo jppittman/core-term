@@ -6,7 +6,7 @@
 
 use crate::color::Pixel;
 use crate::frame::Frame;
-use pixelflow_core::pipe::Surface;
+use pixelflow_core::traits::Surface;
 
 /// Render a surface into a Frame.
 ///
