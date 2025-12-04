@@ -380,12 +380,8 @@ pub struct Baked<P: Pixel + PartialEq> {
     height: u32,
 }
 
-<<<<<<< HEAD
-impl<P: Pixel> Baked<P> {
-    /// Creates a new `Baked` surface by rasterizing the source.
-=======
 impl<P: Pixel + PartialEq> Baked<P> {
->>>>>>> 546a8c0 (update core to use idiomatic graphics)
+    /// Creates a new `Baked` surface by rasterizing the source.
     pub fn new<S: Surface<P>>(source: &S, width: u32, height: u32) -> Self {
         let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
         crate::execute(source, &mut data, width as usize, height as usize);
@@ -411,14 +407,6 @@ impl<P: Pixel + PartialEq> Baked<P> {
     pub fn data(&self) -> &[P] {
         &self.data
     }
-<<<<<<< HEAD
-    /// Returns a mutable reference to the raw pixel data.
-    #[inline]
-    pub fn data_mut(&mut self) -> &mut [P] {
-        &mut self.data
-    }
-=======
->>>>>>> 546a8c0 (update core to use idiomatic graphics)
 }
 
 impl<P: Pixel + PartialEq> Surface<P> for Baked<P> {
@@ -439,11 +427,7 @@ impl<P: Pixel + PartialEq> Surface<P> for Baked<P> {
     }
 }
 
-<<<<<<< HEAD
-impl<P: Pixel> Surface<P> for &Baked<P> {
-=======
 impl<'a, P: Pixel + PartialEq> Surface<P> for &'a Baked<P> {
->>>>>>> 546a8c0 (update core to use idiomatic graphics)
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
         (*self).eval(x, y)
