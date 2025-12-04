@@ -1,39 +1,41 @@
 use crate::batch::{Batch, LANES};
 use crate::traits::Surface;
 use crate::pixel::Pixel;
-use crate::backend::{BatchArithmetic, SimdBatch};
+use crate::backend::{SimdBatch};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::fmt::Debug;
 
 /// Partitions evaluation across dynamically indexed surfaces.
 ///
-/// Uses an indexer `Surface<u32>` that returns indices into a table of surfaces.
+/// Uses an indexer `Surface<u32, C>` that returns indices into a table of surfaces.
 /// Enables O(1) lookup instead of O(log n) Select tree traversal.
 ///
 /// Implements coherence optimization: if all lanes have the same index,
 /// evaluate once instead of scalar evaluations.
 #[derive(Clone)]
-pub struct Partition<I, P> {
+pub struct Partition<I, P, C = u32> {
     /// Indexer surface that returns indices for each pixel
     pub indexer: I,
     /// Table of surfaces indexed by the indexer
-    pub surfaces: Vec<Arc<dyn Surface<P>>>,
+    pub surfaces: Vec<Arc<dyn Surface<P, C>>>,
 }
 
-impl<I, P> Partition<I, P> {
+impl<I, P, C> Partition<I, P, C> {
     /// Creates a new Partition combinator.
-    pub fn new(indexer: I, surfaces: Vec<Arc<dyn Surface<P>>>) -> Self {
+    pub fn new(indexer: I, surfaces: Vec<Arc<dyn Surface<P, C>>>) -> Self {
         Self { indexer, surfaces }
     }
 }
 
-impl<I, P> Surface<P> for Partition<I, P>
+impl<I, P, C> Surface<P, C> for Partition<I, P, C>
 where
-    I: Surface<u32>,
+    I: Surface<u32, C>,
     P: Pixel,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<P> {
         let indices: Batch<u32> = self.indexer.eval(x, y);
 
         // Extract indices for each lane
@@ -51,13 +53,13 @@ where
         }
 
         // Mixed case - evaluate each lane through its surface
-        let mut result_array = [P::default(); 4];
+        let mut result_array = [P::default(); LANES];
 
         for i in 0..LANES {
             let idx = indices.extract_lane(i) as usize;
             if idx < self.surfaces.len() {
-                let xi = Batch::<u32>::splat(x.extract_lane(i));
-                let yi = Batch::<u32>::splat(y.extract_lane(i));
+                let xi = Batch::<C>::splat(x.extract_lane(i));
+                let yi = Batch::<C>::splat(y.extract_lane(i));
                 let pixel_batch = self.surfaces[idx].eval(xi, yi);
                 result_array[i] = pixel_batch.first();
             }

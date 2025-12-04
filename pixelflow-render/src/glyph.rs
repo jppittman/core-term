@@ -8,7 +8,6 @@
 
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
 use pixelflow_core::batch::{Batch, NativeBackend};
-use pixelflow_core::surfaces::Scale;
 use pixelflow_core::traits::Surface;
 use pixelflow_core::pixel::Pixel;
 use pixelflow_fonts::Font;
@@ -56,16 +55,29 @@ impl<S> SubpixelMap<S> {
     }
 }
 
-impl<S: Surface<u32>> Surface<u32> for SubpixelMap<S> {
+// Implement for Continuous Source (f32) -> Discrete Output (u32)
+impl<S> Surface<u32, u32> for SubpixelMap<S>
+where
+    S: Surface<u32, f32>,
+{
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
-        let x3 = x * Batch::<u32>::splat(3);
+        // Convert integer coordinates to float pixel centers
+        let x_f = NativeBackend::u32_to_f32(x) + Batch::<f32>::splat(0.5);
+        let y_f = NativeBackend::u32_to_f32(y) + Batch::<f32>::splat(0.5);
 
-        // Sample the source at 3 adjacent x positions
+        let third = Batch::<f32>::splat(1.0 / 3.0);
+
+        // Sample at subpixel centers: -1/3, 0, +1/3 relative to pixel center
+        // (Corresponds to 1/6, 3/6, 5/6 in [0, 1] space)
+        let r_pos = x_f - third;
+        let g_pos = x_f;
+        let b_pos = x_f + third;
+
         // Source pixels have coverage in alpha channel
-        let r_pixel = self.source.eval(x3, y);
-        let g_pixel = self.source.eval(x3 + 1, y);
-        let b_pixel = self.source.eval(x3 + 2, y);
+        let r_pixel = self.source.eval(r_pos, y_f);
+        let g_pixel = self.source.eval(g_pos, y_f);
+        let b_pixel = self.source.eval(b_pos, y_f);
 
         // Extract alpha (coverage) from each pixel
         let r = <u32 as Pixel>::batch_alpha(r_pixel);
@@ -78,16 +90,16 @@ impl<S: Surface<u32>> Surface<u32> for SubpixelMap<S> {
 
 /// Wraps a glyph mask for subpixel antialiasing.
 ///
-/// This scales the mask 3x horizontally and samples adjacent pixels
-/// as R, G, B channels, producing LCD subpixel rendering.
+/// This evaluates the continuous glyph surface at subpixel offsets (-1/3, 0, +1/3)
+/// and packs the coverage into R, G, B channels.
 ///
 /// # Example
 /// ```ignore
 /// let glyph = font.glyph('A', 16.0).unwrap();
 /// let subpixel_glyph = subpixel(glyph);  // Surface<u32>
 /// ```
-pub fn subpixel<S: Surface<u32>>(source: S) -> SubpixelMap<Scale<S>> {
-    SubpixelMap::new(Scale::new(source, 3.0, 1.0))
+pub fn subpixel<S>(source: S) -> SubpixelMap<S> {
+    SubpixelMap::new(source)
 }
 
 /// Decodes a packed RGBA pixel from sRGB to linear color space.
@@ -197,7 +209,7 @@ fn blend_channel(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -> Batch<u32
 impl<P, M, B> Surface<P> for SubpixelBlend<P, M, B>
 where
     P: Pixel,
-    M: Surface<P>,
+    M: Surface<P>, // This expects u32 coordinates?
     B: Surface<P>,
 {
     #[inline(always)]

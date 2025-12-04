@@ -14,15 +14,30 @@ pub struct Offset<S> {
     pub dy: i32,
 }
 
-impl<T, S> Surface<T> for Offset<S>
+// u32 implementation (Discrete)
+impl<T, S> Surface<T, u32> for Offset<S>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    S: Surface<T>,
+    S: Surface<T, u32>,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
         let ox = Batch::<u32>::splat(self.dx as u32);
         let oy = Batch::<u32>::splat(self.dy as u32);
+        self.source.eval(x + ox, y + oy)
+    }
+}
+
+// f32 implementation (Continuous)
+impl<T, S> Surface<T, f32> for Offset<S>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T, f32>,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<T> {
+        let ox = Batch::<f32>::splat(self.dx as f32);
+        let oy = Batch::<f32>::splat(self.dy as f32);
         self.source.eval(x + ox, y + oy)
     }
 }
@@ -61,10 +76,11 @@ impl<S> Scale<S> {
     }
 }
 
-impl<T, S> Surface<T> for Scale<S>
+// u32 implementation (Discrete)
+impl<T, S> Surface<T, u32> for Scale<S>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    S: Surface<T>,
+    S: Surface<T, u32>,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
@@ -73,6 +89,27 @@ where
         let lx = (x * inv_x) >> 16;
         let ly = (y * inv_y) >> 16;
         self.source.eval(lx, ly)
+    }
+}
+
+// f32 implementation (Continuous)
+impl<T, S> Surface<T, f32> for Scale<S>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T, f32>,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<T> {
+        // Convert fixed-point (16.16) back to float
+        let scale_factor = 1.0 / 65536.0;
+        let inv_x_f = (self.inv_scale_x_fp as f32) * scale_factor;
+        let inv_y_f = (self.inv_scale_y_fp as f32) * scale_factor;
+
+        let inv_x = Batch::<f32>::splat(inv_x_f);
+        let inv_y = Batch::<f32>::splat(inv_y_f);
+
+        // Apply scaling (multiply coordinate by inverse scale)
+        self.source.eval(x * inv_x, y * inv_y)
     }
 }
 
@@ -85,7 +122,7 @@ pub struct Skew<S> {
     pub shear: i32,
 }
 
-impl<S: Surface<u8>> Surface<u8> for Skew<S> {
+impl<S: Surface<u8, u32>> Surface<u8, u32> for Skew<S> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
         let offset = (y * Batch::<u32>::splat(self.shear as u32)) >> 8;
@@ -112,14 +149,15 @@ impl<S, F> Map<S, F> {
     }
 }
 
-impl<T, S, F> Surface<T> for Map<S, F>
+impl<T, S, F, C> Surface<T, C> for Map<S, F>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    S: Surface<T>,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T, C>,
     F: Fn(Batch<T>) -> Batch<T> + Send + Sync,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
         (self.transform)(self.source.eval(x, y))
     }
 }

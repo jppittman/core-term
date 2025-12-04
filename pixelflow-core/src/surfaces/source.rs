@@ -23,13 +23,14 @@ impl<F, T> FnSurface<F, T> {
     }
 }
 
-impl<F, T> Surface<T> for FnSurface<F, T>
+impl<F, T, C> Surface<T, C> for FnSurface<F, T>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    F: Fn(Batch<u32>, Batch<u32>) -> Batch<T> + Send + Sync,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    F: Fn(Batch<C>, Batch<C>) -> Batch<T> + Send + Sync,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
         (self.func)(x, y)
     }
 }
