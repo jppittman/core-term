@@ -1,4 +1,5 @@
-use crate::surfaces::{Max, Mul, Offset, Over, Skew};
+use crate::batch::Batch;
+use crate::surfaces::{Map, Max, Mul, Offset, Over, Skew};
 use crate::traits::Surface;
 use crate::pixel::Pixel;
 use core::fmt::Debug;
@@ -31,6 +32,16 @@ where
         O: Surface<T>,
     {
         Max(self, other)
+    }
+
+    /// Applies a transformation function to surface output.
+    ///
+    /// Use for gamma correction, color adjustments, or any per-pixel transform.
+    fn map<F>(self, transform: F) -> Map<Self, F>
+    where
+        F: Fn(Batch<T>) -> Batch<T> + Send + Sync,
+    {
+        Map::new(self, transform)
     }
 }
 

@@ -92,3 +92,34 @@ impl<S: Surface<u8>> Surface<u8> for Skew<S> {
         self.source.eval(x.saturating_sub(offset), y)
     }
 }
+
+/// Applies a transformation function to surface output.
+///
+/// Use this for gamma correction, color adjustments, or any per-pixel transform.
+#[derive(Copy, Clone)]
+pub struct Map<S, F> {
+    /// The source surface.
+    pub source: S,
+    /// The transformation function.
+    pub transform: F,
+}
+
+impl<S, F> Map<S, F> {
+    /// Creates a new `Map` combinator.
+    #[inline]
+    pub fn new(source: S, transform: F) -> Self {
+        Self { source, transform }
+    }
+}
+
+impl<T, S, F> Surface<T> for Map<S, F>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T>,
+    F: Fn(Batch<T>) -> Batch<T> + Send + Sync,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+        (self.transform)(self.source.eval(x, y))
+    }
+}
