@@ -4,6 +4,7 @@ pub mod display;
 pub mod frame;
 pub mod input;
 pub mod platform;
+pub mod render_pool;
 pub mod traits;
 
 pub use channel::{

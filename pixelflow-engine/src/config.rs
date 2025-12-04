@@ -18,6 +18,9 @@ pub struct PerformanceConfig {
     /// The vsync thread will attempt to present frames at this rate.
     /// Default: 120 FPS (8.33ms per frame) - supports ProMotion displays
     pub target_fps: u32,
+    /// Number of threads for parallel rasterization (default: 4)
+    /// Set to 1 for single-threaded rendering
+    pub render_threads: usize,
 }
 
 impl Default for PerformanceConfig {
@@ -25,7 +28,8 @@ impl Default for PerformanceConfig {
         PerformanceConfig {
             min_draw_latency_ms: Duration::from_millis(2),
             max_draw_latency_ms: Duration::from_millis(33),
-            target_fps: 120,
+            target_fps: 144,
+            render_threads: 2,
         }
     }
 }

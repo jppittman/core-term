@@ -5,11 +5,11 @@ use crate::config::EngineConfig;
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::MouseButton;
+use crate::render_pool::render_parallel;
 use crate::traits::{AppAction, AppState, Application, EngineEvent};
 use anyhow::{Context, Result};
 use log::info;
 use pixelflow_core::Scale;
-use pixelflow_render::rasterizer::render;
 use pixelflow_render::Frame;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -91,10 +91,11 @@ impl EnginePlatform {
         let control_rx = self.control_rx;
         let display_rx = self.display_rx;
         let target_fps = self.config.performance.target_fps;
+        let render_threads = self.config.performance.render_threads;
 
         // Spawn engine thread
         std::thread::spawn(move || {
-            if let Err(e) = engine_loop(app, driver_handle, control_rx, display_rx, target_fps) {
+            if let Err(e) = engine_loop(app, driver_handle, control_rx, display_rx, target_fps, render_threads) {
                 log::error!("Engine loop error: {}", e);
             }
         });
@@ -120,8 +121,9 @@ fn engine_loop<A: Application<PlatformPixel>>(
     control_rx: Receiver<EngineCommand<PlatformPixel>>,
     display_rx: Receiver<EngineCommand<PlatformPixel>>,
     target_fps: u32,
+    render_threads: usize,
 ) -> Result<()> {
-    info!("Engine loop started (pull model, {} FPS)", target_fps);
+    info!("Engine loop started (pull model, {} FPS, {} threads)", target_fps, render_threads);
 
     let frame_duration = Duration::from_secs_f64(1.0 / target_fps as f64);
     // Typed framebuffer - no alignment games, just Vec<PlatformPixel>
@@ -245,9 +247,11 @@ fn engine_loop<A: Application<PlatformPixel>>(
                     .take()
                     .unwrap_or_else(|| Frame::new(physical_width, physical_height));
 
-                // Render directly into the typed frame
+                // Render directly into the typed frame with parallel rasterization
                 let scaled = Scale::uniform(surface, scale_factor);
-                render::<PlatformPixel, _>(&scaled, &mut frame);
+                let width = frame.width as usize;
+                let height = frame.height as usize;
+                render_parallel(&scaled, frame.as_slice_mut(), width, height, render_threads);
 
                 // Send typed frame to driver
                 driver.send(DriverCommand::Present {
