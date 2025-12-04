@@ -48,6 +48,168 @@ type wl_array = wayland_sys::common::wl_array;
 // --- Constants ---
 const WL_SHM_FORMAT_ARGB8888: u32 = 0;
 
+const WL_DISPLAY_GET_REGISTRY: u32 = 1;
+
+const WL_COMPOSITOR_CREATE_SURFACE: u32 = 0;
+
+const WL_SHM_CREATE_POOL: u32 = 0;
+
+const WL_SHM_POOL_CREATE_BUFFER: u32 = 0;
+
+const WL_SURFACE_ATTACH: u32 = 1;
+const WL_SURFACE_DAMAGE: u32 = 2;
+const WL_SURFACE_FRAME: u32 = 3;
+const WL_SURFACE_COMMIT: u32 = 6;
+
+const XDG_WM_BASE_GET_XDG_SURFACE: u32 = 2;
+const XDG_WM_BASE_PONG: u32 = 3;
+
+const XDG_SURFACE_GET_TOPLEVEL: u32 = 1;
+const XDG_SURFACE_ACK_CONFIGURE: u32 = 4;
+
+const XDG_TOPLEVEL_SET_TITLE: u32 = 2;
+const XDG_TOPLEVEL_SET_APP_ID: u32 = 3;
+
+// --- RAII Wrappers ---
+
+struct WlDisplay { ptr: *mut wl_display }
+impl Drop for WlDisplay {
+    fn drop(&mut self) { unsafe { wl_display_disconnect(self.ptr); } }
+}
+impl WlDisplay {
+    fn new(ptr: *mut wl_display) -> Option<Self> {
+        if ptr.is_null() { None } else { Some(Self { ptr }) }
+    }
+    fn get_registry(&self) -> *mut wl_registry {
+         unsafe { wl_proxy_marshal_constructor(self.ptr as *mut wl_proxy, WL_DISPLAY_GET_REGISTRY, &wl_registry_interface) as *mut wl_registry }
+    }
+}
+
+// Generic Proxy Wrapper
+struct SafeProxy<T> { ptr: *mut T }
+impl<T> Drop for SafeProxy<T> {
+    fn drop(&mut self) { unsafe { wl_proxy_destroy(self.ptr as *mut wl_proxy); } }
+}
+impl<T> SafeProxy<T> {
+    fn new(ptr: *mut T) -> Option<Self> {
+        if ptr.is_null() { None } else { Some(Self { ptr }) }
+    }
+}
+
+struct WlCompositor(SafeProxy<wl_compositor>);
+impl WlCompositor {
+    fn new(ptr: *mut wl_compositor) -> Option<Self> { SafeProxy::new(ptr).map(WlCompositor) }
+    fn create_surface(&self) -> Option<WlSurface> {
+        unsafe {
+            let ptr = wl_proxy_marshal_constructor(self.0.ptr as *mut wl_proxy, WL_COMPOSITOR_CREATE_SURFACE, &wl_surface_interface) as *mut wl_surface;
+            WlSurface::new(ptr)
+        }
+    }
+}
+
+struct WlShm(SafeProxy<wl_shm>);
+impl WlShm {
+    fn new(ptr: *mut wl_shm) -> Option<Self> { SafeProxy::new(ptr).map(WlShm) }
+    fn create_pool(&self, fd: RawFd, size: i32) -> Option<WlShmPool> {
+        unsafe {
+            let ptr = wl_proxy_marshal_constructor(self.0.ptr as *mut wl_proxy, WL_SHM_CREATE_POOL, &wl_shm_pool_interface, fd, size) as *mut wl_shm_pool;
+            WlShmPool::new(ptr)
+        }
+    }
+}
+
+struct WlShmPool(SafeProxy<wl_shm_pool>);
+impl WlShmPool {
+    fn new(ptr: *mut wl_shm_pool) -> Option<Self> { SafeProxy::new(ptr).map(WlShmPool) }
+    fn create_buffer(&self, width: i32, height: i32, stride: i32, format: u32) -> Option<WlBuffer> {
+        unsafe {
+            let ptr = wl_proxy_marshal_constructor(self.0.ptr as *mut wl_proxy, WL_SHM_POOL_CREATE_BUFFER, &wl_buffer_interface, 0, width, height, stride, format) as *mut wl_buffer;
+            WlBuffer::new(ptr)
+        }
+    }
+}
+
+struct WlBuffer(SafeProxy<wl_buffer>);
+impl WlBuffer {
+    fn new(ptr: *mut wl_buffer) -> Option<Self> { SafeProxy::new(ptr).map(WlBuffer) }
+}
+
+struct WlSurface(SafeProxy<wl_surface>);
+impl WlSurface {
+    fn new(ptr: *mut wl_surface) -> Option<Self> { SafeProxy::new(ptr).map(WlSurface) }
+    fn attach(&self, buffer: Option<&WlBuffer>, x: i32, y: i32) {
+        unsafe {
+            let buf_ptr = buffer.map(|b| b.0.ptr).unwrap_or(ptr::null_mut());
+            wl_proxy_marshal(self.0.ptr as *mut wl_proxy, WL_SURFACE_ATTACH, buf_ptr, x, y);
+        }
+    }
+    fn damage(&self, x: i32, y: i32, w: i32, h: i32) {
+        unsafe { wl_proxy_marshal(self.0.ptr as *mut wl_proxy, WL_SURFACE_DAMAGE, x, y, w, h); }
+    }
+    fn frame(&self) -> *mut wl_callback {
+        unsafe { wl_proxy_marshal_constructor(self.0.ptr as *mut wl_proxy, WL_SURFACE_FRAME, &wl_callback_interface) as *mut wl_callback }
+    }
+    fn commit(&self) {
+        unsafe { wl_proxy_marshal(self.0.ptr as *mut wl_proxy, WL_SURFACE_COMMIT); }
+    }
+}
+
+struct XdgWmBase(SafeProxy<wl_proxy>);
+impl XdgWmBase {
+    fn new(ptr: *mut wl_proxy) -> Option<Self> { SafeProxy::new(ptr).map(XdgWmBase) }
+    fn get_xdg_surface(&self, surface: &WlSurface) -> Option<XdgSurface> {
+        unsafe {
+            let ptr = wl_proxy_marshal_constructor(self.0.ptr as *mut wl_proxy, XDG_WM_BASE_GET_XDG_SURFACE, &raw const XDG_SURFACE_INTERFACE, surface.0.ptr);
+            XdgSurface::new(ptr)
+        }
+    }
+    #[allow(dead_code)]
+    fn pong(&self, serial: u32) {
+        unsafe { wl_proxy_marshal(self.0.ptr as *mut wl_proxy, XDG_WM_BASE_PONG, serial); }
+    }
+}
+
+struct XdgSurface(SafeProxy<wl_proxy>);
+impl XdgSurface {
+    fn new(ptr: *mut wl_proxy) -> Option<Self> { SafeProxy::new(ptr).map(XdgSurface) }
+    fn get_toplevel(&self) -> Option<XdgToplevel> {
+        unsafe {
+            let ptr = wl_proxy_marshal_constructor(self.0.ptr as *mut wl_proxy, XDG_SURFACE_GET_TOPLEVEL, &raw const XDG_TOPLEVEL_INTERFACE);
+            XdgToplevel::new(ptr)
+        }
+    }
+    #[allow(dead_code)]
+    fn ack_configure(&self, serial: u32) {
+        unsafe { wl_proxy_marshal(self.0.ptr as *mut wl_proxy, XDG_SURFACE_ACK_CONFIGURE, serial); }
+    }
+}
+
+struct XdgToplevel(SafeProxy<wl_proxy>);
+impl XdgToplevel {
+    fn new(ptr: *mut wl_proxy) -> Option<Self> { SafeProxy::new(ptr).map(XdgToplevel) }
+    fn set_title(&self, title: &str) {
+         let c_title = CString::new(title).unwrap_or_default();
+         unsafe { wl_proxy_marshal(self.0.ptr as *mut wl_proxy, XDG_TOPLEVEL_SET_TITLE, c_title.as_ptr()); }
+    }
+    fn set_app_id(&self, app_id: &str) {
+        let c_app_id = CString::new(app_id).unwrap_or_default();
+        unsafe { wl_proxy_marshal(self.0.ptr as *mut wl_proxy, XDG_TOPLEVEL_SET_APP_ID, c_app_id.as_ptr()); }
+    }
+}
+
+struct WlSeat { _proxy: SafeProxy<wl_seat> }
+impl WlSeat {
+    fn new(ptr: *mut wl_seat) -> Option<Self> { SafeProxy::new(ptr).map(|p| WlSeat { _proxy: p }) }
+}
+struct WlPointer { _proxy: SafeProxy<wl_pointer> }
+impl WlPointer {
+    fn new(ptr: *mut wl_pointer) -> Option<Self> { SafeProxy::new(ptr).map(|p| WlPointer { _proxy: p }) }
+}
+struct WlKeyboard { _proxy: SafeProxy<wl_keyboard> }
+impl WlKeyboard {
+    fn new(ptr: *mut wl_keyboard) -> Option<Self> { SafeProxy::new(ptr).map(|p| WlKeyboard { _proxy: p }) }
+}
+
 // --- Externs for core interfaces ---
 extern "C" {
     pub static wl_registry_interface: wl_interface;
@@ -158,29 +320,25 @@ impl DisplayDriver for WaylandDisplayDriver {
         unsafe { init_interfaces(); }
 
         unsafe {
-            let display = wl_display_connect(ptr::null());
-            if display.is_null() {
+            let display_ptr = wl_display_connect(ptr::null());
+            if display_ptr.is_null() {
                 return Err(anyhow!("Failed to connect to Wayland display"));
             }
 
-            let mut state = WaylandState::new(display, run_state.engine_tx.clone())?;
+            let mut state = WaylandState::new(display_ptr, run_state.engine_tx.clone())?;
+            let display = state.display.as_ref().unwrap().ptr;
 
-            // Get registry (opcode 1 on wl_display)
-            let registry = wl_proxy_marshal_constructor(
-                display as *mut wl_proxy,
-                1,
-                &wl_registry_interface
-            );
-
+            let registry = state.display.as_ref().unwrap().get_registry();
             wl_proxy_add_listener(registry, &REGISTRY_LISTENER as *const _ as *mut extern "C" fn(), &mut state as *mut _ as *mut c_void);
 
             // Roundtrip to get globals
             wl_display_roundtrip(display);
+            wl_proxy_destroy(registry as *mut wl_proxy);
 
             // Verify globals
-            if state.compositor.is_null() { return Err(anyhow!("Missing wl_compositor")); }
-            if state.shm.is_null() { return Err(anyhow!("Missing wl_shm")); }
-            if state.wm_base.is_null() { return Err(anyhow!("Missing xdg_wm_base")); }
+            if state.compositor.is_none() { return Err(anyhow!("Missing wl_compositor")); }
+            if state.shm.is_none() { return Err(anyhow!("Missing wl_shm")); }
+            if state.wm_base.is_none() { return Err(anyhow!("Missing xdg_wm_base")); }
 
             info!("Wayland: Event loop starting");
 
@@ -244,7 +402,7 @@ impl DisplayDriver for WaylandDisplayDriver {
             }
 
             info!("Wayland: Shutdown");
-            wl_display_disconnect(display);
+            // Display is disconnected via RAII when state drops
         }
 
         Ok(())
@@ -254,21 +412,19 @@ impl DisplayDriver for WaylandDisplayDriver {
 // --- Wayland State ---
 
 struct WaylandState {
-    #[allow(dead_code)]
-    display: *mut wl_display,
     engine_tx: EngineSender<Bgra>,
     running: bool,
 
     // Globals
-    compositor: *mut wl_compositor,
-    shm: *mut wl_shm,
-    wm_base: *mut wl_proxy, // xdg_wm_base
-    seat: *mut wl_seat,
+    compositor: Option<WlCompositor>,
+    shm: Option<WlShm>,
+    wm_base: Option<XdgWmBase>,
+    seat: Option<WlSeat>,
 
     // Window
-    surface: *mut wl_surface,
-    xdg_surface: *mut wl_proxy,
-    xdg_toplevel: *mut wl_proxy,
+    surface: Option<WlSurface>,
+    xdg_surface: Option<XdgSurface>,
+    xdg_toplevel: Option<XdgToplevel>,
     window_id: WindowId,
     configured: bool,
 
@@ -277,22 +433,25 @@ struct WaylandState {
     height: u32,
 
     // Input
-    pointer: *mut wl_pointer,
-    keyboard: *mut wl_keyboard,
+    pointer: Option<WlPointer>,
+    keyboard: Option<WlKeyboard>,
     xkb_context: xkb::Context,
     xkb_state: Option<xkb::State>,
     modifiers: Modifiers,
 
     // Buffers
     buffers: VecDeque<Slot>,
+
+    // Display (must be dropped last)
+    #[allow(dead_code)]
+    display: Option<WlDisplay>,
 }
 
 struct Slot {
-    buffer: *mut wl_buffer,
+    buffer: Option<WlBuffer>,
     #[allow(dead_code)]
-    pool: *mut wl_shm_pool,
+    pool: Option<WlShmPool>,
     ptr: *mut u8,
-    size: usize,
     width: u32,
     height: u32,
     free: bool,
@@ -301,26 +460,26 @@ struct Slot {
 impl WaylandState {
     fn new(display: *mut wl_display, engine_tx: EngineSender<Bgra>) -> Result<Self> {
         Ok(Self {
-            display,
             engine_tx,
             running: true,
-            compositor: ptr::null_mut(),
-            shm: ptr::null_mut(),
-            wm_base: ptr::null_mut(),
-            seat: ptr::null_mut(),
-            surface: ptr::null_mut(),
-            xdg_surface: ptr::null_mut(),
-            xdg_toplevel: ptr::null_mut(),
+            compositor: None,
+            shm: None,
+            wm_base: None,
+            seat: None,
+            surface: None,
+            xdg_surface: None,
+            xdg_toplevel: None,
             window_id: WindowId(0),
             configured: false,
             width: 800,
             height: 600,
-            pointer: ptr::null_mut(),
-            keyboard: ptr::null_mut(),
+            pointer: None,
+            keyboard: None,
             xkb_context: xkb::Context::new(xkb::CONTEXT_NO_FLAGS),
             xkb_state: None,
             modifiers: Modifiers::empty(),
             buffers: VecDeque::new(),
+            display: WlDisplay::new(display),
         })
     }
 
@@ -336,12 +495,8 @@ impl WaylandState {
                 self.present_frame(frame);
             }
             DriverCommand::SetTitle { title, .. } => {
-                if !self.xdg_toplevel.is_null() {
-                    unsafe {
-                        let c_title = CString::new(title).unwrap_or_default();
-                        // xdg_toplevel.set_title is opcode 2
-                        wl_proxy_marshal(self.xdg_toplevel, 2, c_title.as_ptr());
-                    }
+                if let Some(toplevel) = &self.xdg_toplevel {
+                    toplevel.set_title(&title);
                 }
             }
             DriverCommand::DestroyWindow { .. } => {
@@ -352,59 +507,42 @@ impl WaylandState {
     }
 
     fn create_window(&mut self, id: WindowId, width: u32, height: u32, title: &str) {
-        if !self.surface.is_null() { return; }
-        if self.compositor.is_null() || self.wm_base.is_null() { return; }
+        if self.surface.is_some() { return; }
+        let (Some(compositor), Some(wm_base)) = (&self.compositor, &self.wm_base) else { return; };
+
+        self.window_id = id;
+        self.width = width;
+        self.height = height;
+
+        let Some(surface) = compositor.create_surface() else { return; };
+
+        let Some(xdg_surface) = wm_base.get_xdg_surface(&surface) else { return; };
 
         unsafe {
-            self.window_id = id;
-            self.width = width;
-            self.height = height;
-
-            // wl_compositor.create_surface (opcode 0)
-            let surface = wl_proxy_marshal_constructor(
-                self.compositor as *mut wl_proxy,
-                0,
-                &wl_surface_interface
-            ) as *mut wl_surface;
-            self.surface = surface;
-
-            // xdg_wm_base.get_xdg_surface (opcode 2)
-            let xdg_surface = wl_proxy_marshal_constructor(
-                self.wm_base,
-                2,
-                &xdg_surface_interface,
-                surface
-            );
-            self.xdg_surface = xdg_surface;
-            wl_proxy_add_listener(xdg_surface, &XDG_SURFACE_LISTENER as *const _ as *mut extern "C" fn(), self as *mut _ as *mut c_void);
-
-            // xdg_surface.get_toplevel (opcode 1)
-            let toplevel = wl_proxy_marshal_constructor(
-                xdg_surface,
-                1,
-                &xdg_toplevel_interface
-            );
-            self.xdg_toplevel = toplevel;
-            wl_proxy_add_listener(toplevel, &XDG_TOPLEVEL_LISTENER as *const _ as *mut extern "C" fn(), self as *mut _ as *mut c_void);
-
-            let c_title = CString::new(title).unwrap_or_default();
-            // xdg_toplevel.set_title (opcode 2)
-            wl_proxy_marshal(toplevel, 2, c_title.as_ptr());
-
-            let c_app_id = CString::new("pixelflow").unwrap();
-            // xdg_toplevel.set_app_id (opcode 3)
-            wl_proxy_marshal(toplevel, 3, c_app_id.as_ptr());
-
-            // wl_surface.commit (opcode 6)
-            wl_proxy_marshal(surface as *mut wl_proxy, 6);
+            wl_proxy_add_listener(xdg_surface.0.ptr, &XDG_SURFACE_LISTENER as *const _ as *mut extern "C" fn(), self as *mut _ as *mut c_void);
         }
+
+        let Some(toplevel) = xdg_surface.get_toplevel() else { return; };
+
+        unsafe {
+            wl_proxy_add_listener(toplevel.0.ptr, &XDG_TOPLEVEL_LISTENER as *const _ as *mut extern "C" fn(), self as *mut _ as *mut c_void);
+        }
+
+        toplevel.set_title(title);
+        toplevel.set_app_id("pixelflow");
+
+        surface.commit();
+
+        self.surface = Some(surface);
+        self.xdg_surface = Some(xdg_surface);
+        self.xdg_toplevel = Some(toplevel);
     }
 
     fn present_frame(&mut self, frame: Frame<Bgra>) {
-        if self.surface.is_null() {
-            let _ = self.engine_tx.send(EngineCommand::PresentComplete(frame));
-            return;
-        }
+        if self.surface.is_none() {
+             let _ = self.engine_tx.send(EngineCommand::PresentComplete(frame));
+             return;
+        };
 
         let slot_idx = match self.get_free_slot(frame.width, frame.height) {
             Ok(idx) => idx,
@@ -414,24 +552,17 @@ impl WaylandState {
             }
         };
 
+        let surface = self.surface.as_ref().unwrap();
         let slot = &mut self.buffers[slot_idx];
         let len = (frame.width * frame.height * 4) as usize;
 
         unsafe {
             ptr::copy_nonoverlapping(frame.data.as_ptr() as *const u8, slot.ptr, len);
 
-            // wl_surface.attach (opcode 1)
-            wl_proxy_marshal(self.surface as *mut wl_proxy, 1, slot.buffer, 0, 0);
+            surface.attach(slot.buffer.as_ref(), 0, 0);
+            surface.damage(0, 0, frame.width as i32, frame.height as i32);
 
-            // wl_surface.damage (opcode 2)
-            wl_proxy_marshal(self.surface as *mut wl_proxy, 2, 0, 0, frame.width as i32, frame.height as i32);
-
-            // wl_surface.frame (opcode 3) -> new_id wl_callback
-            let callback = wl_proxy_marshal_constructor(
-                self.surface as *mut wl_proxy,
-                3,
-                &wl_callback_interface
-            ) as *mut wl_callback;
+            let callback = surface.frame();
 
             // Pack frame into callback data to send back on done
             let frame_box = Box::new(FrameContext { tx: self.engine_tx.clone(), frame });
@@ -441,8 +572,7 @@ impl WaylandState {
                 Box::into_raw(frame_box) as *mut c_void
             );
 
-            // wl_surface.commit (opcode 6)
-            wl_proxy_marshal(self.surface as *mut wl_proxy, 6);
+            surface.commit();
 
             slot.free = false;
         }
@@ -463,29 +593,14 @@ impl WaylandState {
         let size = (width * height * 4) as usize;
         let fd = create_memfd(size)?;
 
+        let Some(shm) = &self.shm else { return Err(anyhow!("No shm global")); };
+
+        let Some(pool) = shm.create_pool(fd.as_raw_fd(), size as i32) else { return Err(anyhow!("Failed to create shm pool")); };
+
+        let Some(buffer) = pool.create_buffer(width as i32, height as i32, (width * 4) as i32, WL_SHM_FORMAT_ARGB8888) else { return Err(anyhow!("Failed to create buffer")); };
+
         unsafe {
-            // wl_shm.create_pool (opcode 0)
-            let pool = wl_proxy_marshal_constructor(
-                self.shm as *mut wl_proxy,
-                0,
-                &wl_shm_pool_interface,
-                fd.as_raw_fd(),
-                size as i32
-            ) as *mut wl_shm_pool;
-
-            // wl_shm_pool.create_buffer (opcode 0)
-            let buffer = wl_proxy_marshal_constructor(
-                pool as *mut wl_proxy,
-                0,
-                &wl_buffer_interface,
-                0, // offset
-                width as i32,
-                height as i32,
-                (width * 4) as i32, // stride
-                WL_SHM_FORMAT_ARGB8888
-            ) as *mut wl_buffer;
-
-            wl_proxy_add_listener(buffer as *mut wl_proxy, &BUFFER_LISTENER as *const _ as *mut extern "C" fn(), self as *const _ as *mut c_void);
+            wl_proxy_add_listener(buffer.0.ptr as *mut wl_proxy, &BUFFER_LISTENER as *const _ as *mut extern "C" fn(), self as *const _ as *mut c_void);
 
             let ptr = libc::mmap(
                 ptr::null_mut(),
@@ -501,10 +616,9 @@ impl WaylandState {
             }
 
             Ok(Slot {
-                buffer,
-                pool,
+                buffer: Some(buffer),
+                pool: Some(pool),
                 ptr: ptr as *mut u8,
-                size,
                 width,
                 height,
                 free: true,
@@ -522,39 +636,43 @@ extern "C" fn registry_global(data: *mut c_void, registry: *mut wl_registry, nam
         let interface_str = interface_cstr.to_string_lossy();
 
         if interface_str == "wl_compositor" {
-            state.compositor = wl_proxy_marshal_constructor(
+            let ptr = wl_proxy_marshal_constructor(
                 registry as *mut wl_proxy,
                 0, // bind
                 &wl_compositor_interface,
                 name,
                 1.min(version)
             ) as *mut wl_compositor;
+            state.compositor = WlCompositor::new(ptr);
         } else if interface_str == "wl_shm" {
-            state.shm = wl_proxy_marshal_constructor(
+            let ptr = wl_proxy_marshal_constructor(
                 registry as *mut wl_proxy,
                 0,
                 &wl_shm_interface,
                 name,
                 1.min(version)
             ) as *mut wl_shm;
+            state.shm = WlShm::new(ptr);
         } else if interface_str == "xdg_wm_base" {
-            state.wm_base = wl_proxy_marshal_constructor(
+            let ptr = wl_proxy_marshal_constructor(
                 registry as *mut wl_proxy,
                 0,
-                &xdg_wm_base_interface,
+                &raw const XDG_WM_BASE_INTERFACE,
                 name,
                 1.min(version)
             );
-            wl_proxy_add_listener(state.wm_base, &XDG_WM_BASE_LISTENER as *const _ as *mut extern "C" fn(), state as *mut _ as *mut c_void);
+            wl_proxy_add_listener(ptr, &XDG_WM_BASE_LISTENER as *const _ as *mut extern "C" fn(), state as *mut _ as *mut c_void);
+            state.wm_base = XdgWmBase::new(ptr);
         } else if interface_str == "wl_seat" {
-             state.seat = wl_proxy_marshal_constructor(
+             let ptr = wl_proxy_marshal_constructor(
                 registry as *mut wl_proxy,
                 0,
                 &wl_seat_interface,
                 name,
                 1.min(version)
             ) as *mut wl_seat;
-            wl_proxy_add_listener(state.seat as *mut wl_proxy, &SEAT_LISTENER as *const _ as *mut extern "C" fn(), state as *mut _ as *mut c_void);
+            wl_proxy_add_listener(ptr as *mut wl_proxy, &SEAT_LISTENER as *const _ as *mut extern "C" fn(), state as *mut _ as *mut c_void);
+            state.seat = WlSeat::new(ptr);
         }
     }
 }
@@ -576,8 +694,7 @@ static REGISTRY_LISTENER: wl_registry_listener = wl_registry_listener {
 
 extern "C" fn xdg_wm_base_ping(_data: *mut c_void, wm_base: *mut wl_proxy, serial: u32) {
     unsafe {
-        // pong opcode 3
-        wl_proxy_marshal(wm_base, 3, serial);
+        wl_proxy_marshal(wm_base, XDG_WM_BASE_PONG, serial);
     }
 }
 
@@ -596,8 +713,7 @@ static XDG_WM_BASE_LISTENER: xdg_wm_base_listener = xdg_wm_base_listener {
 extern "C" fn xdg_surface_configure(data: *mut c_void, xdg_surface: *mut wl_proxy, serial: u32) {
     unsafe {
         let state = &mut *(data as *mut WaylandState);
-        // ack_configure opcode 4
-        wl_proxy_marshal(xdg_surface, 4, serial);
+        wl_proxy_marshal(xdg_surface, XDG_SURFACE_ACK_CONFIGURE, serial);
 
         if !state.configured {
             state.configured = true;
@@ -663,9 +779,11 @@ extern "C" fn buffer_release(data: *mut c_void, buffer: *mut wl_buffer) {
     unsafe {
         let state = &mut *(data as *mut WaylandState);
         for slot in &mut state.buffers {
-            if slot.buffer == buffer {
-                slot.free = true;
-                break;
+            if let Some(b) = &slot.buffer {
+                if b.0.ptr == buffer {
+                    slot.free = true;
+                    break;
+                }
             }
         }
     }
@@ -710,18 +828,18 @@ extern "C" fn seat_capabilities(data: *mut c_void, seat: *mut wl_seat, caps: u32
     unsafe {
         let state = &mut *(data as *mut WaylandState);
 
-        if (caps & 1) != 0 && state.pointer.is_null() {
+        if (caps & 1) != 0 && state.pointer.is_none() {
             // pointer
             let pointer = wl_proxy_marshal_constructor(seat as *mut wl_proxy, 0, &wl_pointer_interface) as *mut wl_pointer;
-            state.pointer = pointer;
             wl_proxy_add_listener(pointer as *mut wl_proxy, &POINTER_LISTENER as *const _ as *mut extern "C" fn(), state as *mut _ as *mut c_void);
+            state.pointer = WlPointer::new(pointer);
         }
 
-        if (caps & 2) != 0 && state.keyboard.is_null() {
+        if (caps & 2) != 0 && state.keyboard.is_none() {
             // keyboard
             let keyboard = wl_proxy_marshal_constructor(seat as *mut wl_proxy, 1, &wl_keyboard_interface) as *mut wl_keyboard;
-            state.keyboard = keyboard;
             wl_proxy_add_listener(keyboard as *mut wl_proxy, &KEYBOARD_LISTENER as *const _ as *mut extern "C" fn(), state as *mut _ as *mut c_void);
+            state.keyboard = WlKeyboard::new(keyboard);
         }
     }
 }
@@ -1028,41 +1146,72 @@ static mut XDG_WM_BASE_GET_XDG_SURFACE_TYPES: [*const wl_interface; 2] = [ptr::n
 static mut XDG_SURFACE_GET_TOPLEVEL_TYPES: [*const wl_interface; 1] = [ptr::null()];
 static mut XDG_TOPLEVEL_SET_FULLSCREEN_TYPES: [*const wl_interface; 1] = [ptr::null()];
 
-pub static mut xdg_wm_base_interface: wl_interface = wl_interface {
+pub static mut XDG_WM_BASE_INTERFACE: wl_interface = wl_interface {
     name: XDG_WM_BASE_NAME.as_ptr(),
     version: 1,
     request_count: 4,
-    requests: unsafe { XDG_WM_BASE_REQUESTS.as_ptr() },
+    requests: ptr::addr_of!(XDG_WM_BASE_REQUESTS) as *const _,
     event_count: 1,
-    events: unsafe { XDG_WM_BASE_EVENTS.as_ptr() },
+    events: ptr::addr_of!(XDG_WM_BASE_EVENTS) as *const _,
 };
 
-pub static mut xdg_surface_interface: wl_interface = wl_interface {
+pub static mut XDG_SURFACE_INTERFACE: wl_interface = wl_interface {
     name: XDG_SURFACE_NAME.as_ptr(),
     version: 1,
     request_count: 5,
-    requests: unsafe { XDG_SURFACE_REQUESTS.as_ptr() },
+    requests: ptr::addr_of!(XDG_SURFACE_REQUESTS) as *const _,
     event_count: 1,
-    events: unsafe { XDG_SURFACE_EVENTS.as_ptr() },
+    events: ptr::addr_of!(XDG_SURFACE_EVENTS) as *const _,
 };
 
-pub static mut xdg_toplevel_interface: wl_interface = wl_interface {
+pub static mut XDG_TOPLEVEL_INTERFACE: wl_interface = wl_interface {
     name: XDG_TOPLEVEL_NAME.as_ptr(),
     version: 1,
     request_count: 14,
-    requests: unsafe { XDG_TOPLEVEL_REQUESTS.as_ptr() },
+    requests: ptr::addr_of!(XDG_TOPLEVEL_REQUESTS) as *const _,
     event_count: 2,
-    events: unsafe { XDG_TOPLEVEL_EVENTS.as_ptr() },
+    events: ptr::addr_of!(XDG_TOPLEVEL_EVENTS) as *const _,
 };
 
 unsafe fn init_interfaces() {
-    XDG_WM_BASE_GET_XDG_SURFACE_TYPES[0] = ptr::addr_of!(xdg_surface_interface);
-    XDG_WM_BASE_GET_XDG_SURFACE_TYPES[1] = ptr::addr_of!(wl_surface_interface);
-    XDG_WM_BASE_REQUESTS[2].types = XDG_WM_BASE_GET_XDG_SURFACE_TYPES.as_ptr();
+    XDG_WM_BASE_GET_XDG_SURFACE_TYPES[0] = &raw const XDG_SURFACE_INTERFACE;
+    XDG_WM_BASE_GET_XDG_SURFACE_TYPES[1] = &raw const wl_surface_interface;
+    XDG_WM_BASE_REQUESTS[2].types = ptr::addr_of!(XDG_WM_BASE_GET_XDG_SURFACE_TYPES) as *const _;
 
-    XDG_SURFACE_GET_TOPLEVEL_TYPES[0] = ptr::addr_of!(xdg_toplevel_interface);
-    XDG_SURFACE_REQUESTS[1].types = XDG_SURFACE_GET_TOPLEVEL_TYPES.as_ptr();
+    XDG_SURFACE_GET_TOPLEVEL_TYPES[0] = &raw const XDG_TOPLEVEL_INTERFACE;
+    XDG_SURFACE_REQUESTS[1].types = ptr::addr_of!(XDG_SURFACE_GET_TOPLEVEL_TYPES) as *const _;
 
-    XDG_TOPLEVEL_SET_FULLSCREEN_TYPES[0] = ptr::addr_of!(wl_output_interface);
-    XDG_TOPLEVEL_REQUESTS[11].types = XDG_TOPLEVEL_SET_FULLSCREEN_TYPES.as_ptr();
+    XDG_TOPLEVEL_SET_FULLSCREEN_TYPES[0] = &raw const wl_output_interface;
+    XDG_TOPLEVEL_REQUESTS[11].types = ptr::addr_of!(XDG_TOPLEVEL_SET_FULLSCREEN_TYPES) as *const _;
+}
+
+// --- Helpers ---
+
+fn create_pipe() -> Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0 as c_int; 2];
+    let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    if ret < 0 {
+        return Err(anyhow!("pipe2 failed: {}", std::io::Error::last_os_error()));
+    }
+    unsafe {
+        Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])))
+    }
+}
+
+fn create_memfd(size: usize) -> Result<OwnedFd> {
+    let name = CString::new("pixelflow-shm").unwrap();
+    let fd = unsafe {
+        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC)
+    };
+    if fd < 0 {
+        return Err(anyhow!("memfd_create failed: {}", std::io::Error::last_os_error()));
+    }
+
+    let ret = unsafe { libc::ftruncate(fd, size as i64) };
+    if ret < 0 {
+        unsafe { libc::close(fd); }
+        return Err(anyhow!("ftruncate failed: {}", std::io::Error::last_os_error()));
+    }
+
+    unsafe { Ok(OwnedFd::from_raw_fd(fd)) }
 }
