@@ -34,22 +34,25 @@ where
     }
 }
 
-/// Extensions for 8-bit Masks (Blending).
-pub trait MaskExt: Surface<u8> + Sized {
-    /// Composites a foreground over a background using this surface as a mask (alpha).
-    fn over<P, F, B>(self, fg: F, bg: B) -> Over<P, Self, F, B>
+/// Extensions for pixel Masks (Blending).
+///
+/// Masks are now `Surface<P>` where coverage is in the alpha channel.
+/// This aligns with SIMD batch sizes and eliminates u8/u32 conversions.
+pub trait MaskExt<P: Pixel>: Surface<P> + Sized {
+    /// Composites a foreground over a background using this surface as a mask.
+    ///
+    /// The mask's alpha channel is used as coverage for the blend.
+    fn over<F, B>(self, fg: F, bg: B) -> Over<P, Self, F, B>
     where
-        P: Pixel,
         F: Surface<P>,
         B: Surface<P>,
     {
         Over::new(self, fg, bg)
     }
 
-    /// Multiplies a color surface by this mask.
-    fn mul<P, C>(self, color: C) -> Mul<Self, C>
+    /// Multiplies a color surface by this mask's alpha channel.
+    fn mul<C>(self, color: C) -> Mul<Self, C>
     where
-        P: Pixel + Copy,
         C: Surface<P>,
     {
         Mul { mask: self, color }
@@ -58,4 +61,4 @@ pub trait MaskExt: Surface<u8> + Sized {
 
 // Blanket implementations
 impl<T, S: Surface<T>> SurfaceExt<T> for S where T: Copy + Debug + Default + PartialEq + Send + Sync + 'static {}
-impl<S: Surface<u8>> MaskExt for S {}
+impl<P: Pixel, S: Surface<P>> MaskExt<P> for S {}

@@ -5,7 +5,7 @@
 //! rendering pipeline.
 
 use crate::curves::Segment;
-use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
+use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps};
 use pixelflow_core::batch::{Batch, NativeBackend};
 use pixelflow_core::traits::Surface;
 use std::sync::Arc;
@@ -49,8 +49,8 @@ impl CellGlyph {
     }
 }
 
-impl Surface<u8> for CellGlyph {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+impl Surface<u32> for CellGlyph {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
         eval_curves_cell(
             &self.segments,
             self.bounds,
@@ -67,6 +67,8 @@ impl Surface<u8> for CellGlyph {
 /// Cell coordinate (0, 0) is top-left of the cell.
 /// Curve coordinate y = ascender is the top of the cell.
 /// The baseline is at curve y = 0.
+///
+/// Returns pixels with coverage in alpha channel: R=G=B=255, A=coverage.
 #[allow(clippy::too_many_arguments)]
 pub fn eval_curves_cell(
     curves: &[Segment],
@@ -75,7 +77,7 @@ pub fn eval_curves_cell(
     x: Batch<u32>,
     y: Batch<u32>,
     dilation: Batch<f32>,
-) -> Batch<u8> {
+) -> Batch<u32> {
     let bx = bounds.bearing_x as f32;
     let asc = ascender as f32;
 
@@ -130,17 +132,21 @@ pub fn eval_curves_cell(
     let one_f = Batch::<f32>::splat(1.0);
     let clamped = alpha.max(zero_f).min(one_f);
 
-    // Convert to pixel value (0-255)
+    // Convert to alpha value (0-255)
     let scale = Batch::<f32>::splat(255.0);
-    let pixel_val = clamped * scale;
-    let pixel_u32 = NativeBackend::f32_to_u32(pixel_val);
+    let alpha_val = clamped * scale;
+    let alpha_u32 = NativeBackend::f32_to_u32(alpha_val);
 
-    // Return as Batch<u8>
-    NativeBackend::downcast_u32_to_u8(pixel_u32)
+    // Pack as white pixel with coverage in alpha: R=G=B=255, A=coverage
+    let white_rgb = Batch::<u32>::splat(0x00FFFFFF);
+    let alpha_shifted = alpha_u32 << 24;
+    white_rgb | alpha_shifted
 }
 
 /// A surface that exposes its underlying curves and bounds.
-pub trait CurveSurface: Surface<u8> {
+///
+/// CurveSurface outputs `Surface<u32>` with coverage in the alpha channel.
+pub trait CurveSurface: Surface<u32> {
     /// Returns the list of curve segments (Lines and Quadratics) that define the shape.
     fn curves(&self) -> &[Segment];
     /// Returns the pixel-space bounds of the shape.
@@ -150,8 +156,8 @@ pub trait CurveSurface: Surface<u8> {
 /// A vector-based representation of a single character.
 ///
 /// `Glyph` holds the geometric description of a character (lines and curves).
-/// It implements `Surface<u8>`, meaning it can be evaluated at any (x, y) coordinate
-/// to produce a coverage value (0-255), suitable for use as an alpha mask.
+/// It implements `Surface<u32>`, meaning it can be evaluated at any (x, y) coordinate
+/// to produce a pixel with coverage in the alpha channel (R=G=B=255, A=coverage).
 ///
 /// The evaluation uses an analytic signed distance field (SDF) method, ensuring
 /// crisp edges and anti-aliasing at any resolution.
@@ -193,14 +199,14 @@ impl CurveSurface for Glyph {
 ///
 /// # Returns
 ///
-/// A batch of `u8` values representing pixel coverage (0 = fully outside, 255 = fully inside).
+/// Pixels with coverage in alpha channel (R=G=B=255, A=coverage).
 pub fn eval_curves(
     curves: &[Segment],
     bounds: GlyphBounds,
     x: Batch<u32>,
     y: Batch<u32>,
     dilation: Batch<f32>,
-) -> Batch<u8> {
+) -> Batch<u32> {
     let bx = bounds.bearing_x as f32;
     let by_top = bounds.bearing_y as f32;
 
@@ -238,8 +244,6 @@ pub fn eval_curves(
     let inside = winding.cmp_ne(zero_u);
 
     // signed_dist = inside ? -min_dist : min_dist
-    // (Negative distance is inside in our convention here for calculation,
-    // though typically SDF defines negative as inside. We adjust to alpha below).
     let neg_min_dist = Batch::<f32>::splat(0.0) - min_dist;
     let neg_dist_u32 = NativeBackend::transmute_f32_to_u32(neg_min_dist);
     let min_dist_u32 = NativeBackend::transmute_f32_to_u32(min_dist);
@@ -260,25 +264,27 @@ pub fn eval_curves(
     let one_f = Batch::<f32>::splat(1.0);
     let clamped = alpha.max(zero_f).min(one_f);
 
-    // Convert to pixel value (0-255)
+    // Convert to alpha value (0-255)
     let scale = Batch::<f32>::splat(255.0);
-    let pixel_val = clamped * scale;
-    let pixel_u32 = NativeBackend::f32_to_u32(pixel_val);
+    let alpha_val = clamped * scale;
+    let alpha_u32 = NativeBackend::f32_to_u32(alpha_val);
 
-    // Return as Batch<u8>
-    NativeBackend::downcast_u32_to_u8(pixel_u32)
+    // Pack as white pixel with coverage in alpha: R=G=B=255, A=coverage
+    let white_rgb = Batch::<u32>::splat(0x00FFFFFF);
+    let alpha_shifted = alpha_u32 << 24;
+    white_rgb | alpha_shifted
 }
 
-impl Surface<u8> for Glyph {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+impl Surface<u32> for Glyph {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
         eval_curves(&self.segments, self.bounds, x, y, Batch::<f32>::splat(0.0))
     }
 }
 
 // Implement for &Glyph to allow easy sharing
-impl Surface<u8> for &Glyph {
+impl Surface<u32> for &Glyph {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
         (*self).eval(x, y)
     }
 }
@@ -287,6 +293,7 @@ impl Surface<u8> for &Glyph {
 mod tests {
     use super::*;
     use crate::curves::{Line, Segment};
+    use pixelflow_core::backend::SimdBatch;
 
     /// Creates a 10x10 pixel square glyph from (0,0) to (10,10) in curve space.
     /// The glyph covers pixels 0-9 in both x and y.
@@ -322,7 +329,7 @@ mod tests {
         let x = Batch::<u32>::splat(px);
         let y = Batch::<u32>::splat(py);
         let dilation = Batch::<f32>::splat(0.0);
-        eval_curves(segments, bounds, x, y, dilation).first()
+        (eval_curves(segments, bounds, x, y, dilation).first() >> 24) as u8
     }
 
     #[test]
@@ -499,10 +506,12 @@ mod tests {
         let y = Batch::<u32>::splat(5);
 
         // Edge pixel without dilation - should be ~50%
-        let alpha_normal = eval_curves(&segments, bounds, x, y, Batch::<f32>::splat(0.0)).first();
+        let alpha_normal =
+            (eval_curves(&segments, bounds, x, y, Batch::<f32>::splat(0.0)).first() >> 24) as u8;
 
         // Edge pixel with dilation (bolding) - should be more opaque
-        let alpha_bold = eval_curves(&segments, bounds, x, y, Batch::<f32>::splat(0.3)).first();
+        let alpha_bold =
+            (eval_curves(&segments, bounds, x, y, Batch::<f32>::splat(0.3)).first() >> 24) as u8;
 
         assert!(
             alpha_bold > alpha_normal,
@@ -595,7 +604,7 @@ mod tests {
             for px in 0..bounds.width {
                 let x = Batch::<u32>::splat(px);
                 let y = Batch::<u32>::splat(py);
-                let alpha = glyph.eval(x, y).first();
+                let alpha = (glyph.eval(x, y).first() >> 24) as u8;
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -653,7 +662,7 @@ mod tests {
             for px in 0..bounds.width {
                 let x = Batch::<u32>::splat(px);
                 let y = Batch::<u32>::splat(py);
-                let alpha = glyph.eval(x, y).first();
+                let alpha = (glyph.eval(x, y).first() >> 24) as u8;
                 if alpha > 200 {
                     any_opaque = true;
                 }
@@ -687,7 +696,7 @@ mod tests {
             for px in 0..bounds.width {
                 let x = Batch::<u32>::splat(px);
                 let y = Batch::<u32>::splat(py);
-                let alpha = glyph.eval(x, y).first();
+                let alpha = (glyph.eval(x, y).first() >> 24) as u8;
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -748,7 +757,7 @@ mod tests {
         let left_alpha = {
             let x = Batch::<u32>::splat(0);
             let y = Batch::<u32>::splat(0);
-            glyph.eval(x, y).first()
+            (glyph.eval(x, y).first() >> 24) as u8
         };
         eprintln!("Row 0, col 0 alpha: {}", left_alpha);
         assert!(
@@ -761,7 +770,7 @@ mod tests {
         let center_alpha = {
             let x = Batch::<u32>::splat(bounds.width / 2);
             let y = Batch::<u32>::splat(0);
-            glyph.eval(x, y).first()
+            (glyph.eval(x, y).first() >> 24) as u8
         };
         eprintln!("Row 0, center alpha: {}", center_alpha);
         assert!(
@@ -781,7 +790,7 @@ mod tests {
         let x = Batch::<u32>::splat(px);
         let y = Batch::<u32>::splat(py);
         let dilation = Batch::<f32>::splat(0.0);
-        eval_curves_cell(segments, bounds, ascender, x, y, dilation).first()
+        (eval_curves_cell(segments, bounds, ascender, x, y, dilation).first() >> 24) as u8
     }
 
     #[test]
@@ -862,7 +871,7 @@ mod tests {
         eprintln!("Calculated descender (ascender - cell_h): {}", ascender - cell_h as i32);
 
         let glyph_fn = glyphs(font.clone(), cell_w, cell_h);
-        let baked: Baked<u8> = glyph_fn('g').get().clone();
+        let baked: Baked<u32> = glyph_fn('g').get().clone();
 
         eprintln!("\n'g' rendered in {}x{} cell:", cell_w, cell_h);
         for py in 0..cell_h {
@@ -870,7 +879,7 @@ mod tests {
             for px in 0..cell_w {
                 let x = Batch::<u32>::splat(px);
                 let y = Batch::<u32>::splat(py);
-                let alpha = baked.eval(x, y).first();
+                let alpha = (baked.eval(x, y).first() >> 24) as u8;
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -895,7 +904,7 @@ mod tests {
             for px in 0..cell_w {
                 let x = Batch::<u32>::splat(px);
                 let y = Batch::<u32>::splat(py);
-                let alpha = baked.eval(x, y).first();
+                let alpha = (baked.eval(x, y).first() >> 24) as u8;
                 if alpha > 50 {
                     bottom_coverage += 1;
                 }
@@ -913,7 +922,7 @@ mod tests {
         for px in 0..cell_w {
             let x = Batch::<u32>::splat(px);
             let y = Batch::<u32>::splat(cell_h - 1);
-            let alpha = baked.eval(x, y).first();
+            let alpha = (baked.eval(x, y).first() >> 24) as u8;
             if alpha > 0 {
                 last_row_coverage += 1;
             }

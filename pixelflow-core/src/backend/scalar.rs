@@ -58,6 +58,20 @@ macro_rules! impl_arithmetic_int {
                 ScalarBatch(self.0.wrapping_add(rhs.0))
             }
         }
+        impl Add<$t> for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn add(self, rhs: $t) -> Self {
+                self + Self::splat(rhs)
+            }
+        }
+        impl Mul<$t> for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn mul(self, rhs: $t) -> Self {
+                self * Self::splat(rhs)
+            }
+        }
         impl Sub for ScalarBatch<$t> {
             type Output = Self;
             #[inline(always)]

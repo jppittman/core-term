@@ -243,6 +243,14 @@ impl Add for SimdVec<u32> {
     }
 }
 
+impl Add<u32> for SimdVec<u32> {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: u32) -> Self {
+        self + Self::splat(rhs)
+    }
+}
+
 impl Sub for SimdVec<u32> {
     type Output = Self;
     #[inline(always)]
@@ -270,6 +278,14 @@ impl Mul for SimdVec<u32> {
                 PhantomData,
             )
         }
+    }
+}
+
+impl Mul<u32> for SimdVec<u32> {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: u32) -> Self {
+        self * Self::splat(rhs)
     }
 }
 

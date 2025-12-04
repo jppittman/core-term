@@ -15,8 +15,7 @@ fn main() {
     let indices = Batch::<u32>::load(&indices_arr);
 
     let colors = Batch::<u32>::gather_u8(&palette, indices);
-    let mut result = [0u32; 4];
-    colors.store(&mut result);
+    let result = colors.to_array();
 
     println!("Palette indices: {:?}", indices_arr);
     println!("Gathered colors: {:?}", result);
@@ -34,8 +33,7 @@ fn main() {
     let sample_indices = Batch::<u32>::load(&sample_indices_arr);
 
     let pixels = Batch::<u32>::gather(texture.as_slice(), sample_indices);
-    let mut result = [0u32; 4];
-    pixels.store(&mut result);
+    let result = pixels.to_array();
 
     println!("Texture indices: {:?}", sample_indices_arr);
     println!("Sampled pixels:  {:08X?}", result);
@@ -47,8 +45,7 @@ fn main() {
     let tiled_indices = Batch::<u32>::load(&tiled_indices_arr);
 
     let tiled = Batch::<u32>::gather_u8(&tile, tiled_indices);
-    let mut result = [0u32; 4];
-    tiled.store(&mut result);
+    let result = tiled.to_array();
 
     println!("Tile pattern: {:?}", tile);
     println!("Tiled result: {:02X?}", result);

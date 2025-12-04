@@ -1,7 +1,6 @@
 use crate::curves::{Line, Quadratic, Segment};
 use crate::font::Font;
 use crate::glyph::{eval_curves, CellGlyph, CurveSurface, GlyphBounds};
-use pixelflow_core::backend::SimdBatch;
 use pixelflow_core::batch::Batch;
 use pixelflow_core::surfaces::Baked;
 use pixelflow_core::traits::Surface;
@@ -80,7 +79,9 @@ where
 ///
 /// Glyphs are positioned within the cell using the font's ascender metric,
 /// so that the baseline is correctly placed regardless of glyph shape.
-pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, Baked<u8>> {
+///
+/// Returns `Baked<u32>` where coverage is in the alpha channel (R=G=B=255, A=coverage).
+pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, Baked<u32>> {
     use std::collections::HashMap;
     use std::sync::RwLock;
 
@@ -96,7 +97,7 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
     // Without this, fonts where line_height > units_per_em would be too large.
     let glyph_size = h as f32 * metrics.units_per_em as f32 / line_height;
 
-    let ascii: Vec<Lazy<'a, Baked<u8>>> = (0..128)
+    let ascii: Vec<Lazy<'a, Baked<u32>>> = (0..128)
         .map(|i| {
             let c = i as u8 as char;
             let font = font.clone();
@@ -106,11 +107,12 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                     Baked::new(&cell_glyph, w, h)
                 }
                 None => {
-                    // Fallback for missing glyphs: return empty transparent surface
+                    // Fallback for missing glyphs: return empty transparent pixel
                     struct Empty;
-                    impl Surface<u8> for Empty {
-                        fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u8> {
-                            Batch::<u8>::splat(0)
+                    impl Surface<u32> for Empty {
+                        fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> {
+                            // Fully transparent white pixel
+                            Batch::<u32>::splat(0x00FFFFFF)
                         }
                     }
                     Baked::new(&Empty, w, h)
@@ -119,7 +121,7 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
         })
         .collect();
 
-    let other_cache: Arc<RwLock<HashMap<char, Lazy<'a, Baked<u8>>>>> =
+    let other_cache: Arc<RwLock<HashMap<char, Lazy<'a, Baked<u32>>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     move |c| {
@@ -146,9 +148,9 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                 }
                 None => {
                     struct Empty;
-                    impl Surface<u8> for Empty {
-                        fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u8> {
-                            Batch::<u8>::splat(0)
+                    impl Surface<u32> for Empty {
+                        fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> {
+                            Batch::<u32>::splat(0x00FFFFFF)
                         }
                     }
                     Baked::new(&Empty, w, h)
@@ -183,8 +185,8 @@ impl<S: CurveSurface> CurveSurface for Bold<S> {
     }
 }
 
-impl<S: CurveSurface> Surface<u8> for Bold<S> {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+impl<S: CurveSurface> Surface<u32> for Bold<S> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
         eval_curves(
             self.curves(),
             self.bounds(),
@@ -219,8 +221,8 @@ impl<S: CurveSurface> CurveSurface for Hint<S> {
     }
 }
 
-impl<S: CurveSurface> Surface<u8> for Hint<S> {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+impl<S: CurveSurface> Surface<u32> for Hint<S> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
         self.source.eval(x, y)
     }
 }
@@ -245,8 +247,8 @@ impl<S: CurveSurface> CurveSurface for Slant<S> {
     }
 }
 
-impl<S: CurveSurface> Surface<u8> for Slant<S> {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+impl<S: CurveSurface> Surface<u32> for Slant<S> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
         eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
     }
 }
@@ -307,8 +309,8 @@ impl<S: CurveSurface> CurveSurface for Scale<S> {
     }
 }
 
-impl<S: CurveSurface> Surface<u8> for Scale<S> {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+impl<S: CurveSurface> Surface<u32> for Scale<S> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
         eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
     }
 }
@@ -383,6 +385,12 @@ impl<S: CurveSurface> CurveSurfaceExt for S {}
 mod tests {
     use super::*;
     use crate::glyph::eval_curves_cell;
+    use pixelflow_core::backend::SimdBatch;
+
+    /// Extract alpha (coverage) from a pixel result.
+    fn pixel_alpha(pixel: u32) -> u8 {
+        (pixel >> 24) as u8
+    }
 
     #[test]
     fn debug_letter_f_rendering() {
@@ -423,7 +431,7 @@ mod tests {
             for x in 0..cell_width {
                 let x_batch = Batch::<u32>::splat(x);
                 let y_batch = Batch::<u32>::splat(y);
-                let alpha = cell_glyph.eval(x_batch, y_batch).first();
+                let alpha = pixel_alpha(cell_glyph.eval(x_batch, y_batch).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -647,7 +655,7 @@ mod tests {
             for x in 0..cell_width {
                 let x_batch = Batch::<u32>::splat(x);
                 let y_batch = Batch::<u32>::splat(y);
-                let alpha = cell_glyph.eval(x_batch, y_batch).first();
+                let alpha = pixel_alpha(cell_glyph.eval(x_batch, y_batch).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -665,13 +673,13 @@ mod tests {
         }
 
         // Now bake
-        let baked: Baked<u8> = Baked::new(&cell_glyph, cell_width, cell_height);
+        let baked: Baked<u32> = Baked::new(&cell_glyph, cell_width, cell_height);
 
         eprintln!("\nBaked '.' ({}x{}):", cell_width, cell_height);
         for y in 0..cell_height {
             let mut row = String::new();
             for x in 0..cell_width {
-                let alpha = baked.data()[(y * cell_width + x) as usize];
+                let alpha = pixel_alpha(baked.data()[(y * cell_width + x) as usize]);
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -691,7 +699,7 @@ mod tests {
         // Check top half is transparent
         for y in 0..8u32 {
             for x in 0..cell_width {
-                let alpha = baked.data()[(y * cell_width + x) as usize];
+                let alpha = pixel_alpha(baked.data()[(y * cell_width + x) as usize]);
                 assert_eq!(
                     alpha, 0,
                     "Direct bake: pixel ({}, {}) should be 0, got {}",
@@ -746,7 +754,7 @@ mod tests {
         // Get the baked glyph using the glyphs factory (same as terminal uses)
         let glyph_fn = glyphs(font, cell_width, cell_height);
         let baked_lazy = glyph_fn('.');
-        let baked: &Baked<u8> = baked_lazy.get();
+        let baked: &Baked<u32> = baked_lazy.get();
 
         // Print the baked buffer for debugging
         eprintln!("Baked '.' ({}x{}):", cell_width, cell_height);
@@ -755,7 +763,7 @@ mod tests {
             for x in 0..cell_width {
                 let x_batch = Batch::<u32>::splat(x);
                 let y_batch = Batch::<u32>::splat(y);
-                let alpha = baked.eval(x_batch, y_batch).first();
+                let alpha = pixel_alpha(baked.eval(x_batch, y_batch).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -778,7 +786,7 @@ mod tests {
             for x in 0..cell_width {
                 let x_batch = Batch::<u32>::splat(x);
                 let y_batch = Batch::<u32>::splat(y);
-                let alpha = baked.eval(x_batch, y_batch).first();
+                let alpha = pixel_alpha(baked.eval(x_batch, y_batch).first());
                 assert_eq!(
                     alpha, 0,
                     "Top half pixel ({}, {}) should be transparent, got {}",
@@ -793,7 +801,7 @@ mod tests {
             for x in 0..cell_width {
                 let x_batch = Batch::<u32>::splat(x);
                 let y_batch = Batch::<u32>::splat(y);
-                let alpha = baked.eval(x_batch, y_batch).first();
+                let alpha = pixel_alpha(baked.eval(x_batch, y_batch).first());
                 if alpha > 200 {
                     found_opaque = true;
                     break;
