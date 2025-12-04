@@ -20,7 +20,7 @@ pub mod traits;
 
 // Re-exports
 pub use backend::{FloatBatchOps, SimdBatch};
-pub use batch::{Batch, SHUFFLE_RGBA_BGRA, SimdOps};
+pub use batch::{Batch, BatchOps, SHUFFLE_RGBA_BGRA};
 pub use geometry::{Mat3, Poly, Curve2D, Rect};
 pub use pixel::Pixel;
 pub use platform::{PixelFormat, Platform};

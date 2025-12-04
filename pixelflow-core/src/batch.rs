@@ -19,7 +19,7 @@ pub type Batch<T> = <NativeBackend as Backend>::Batch<T>;
 pub const LANES: usize = NativeBackend::LANES;
 
 // Re-export common traits
-pub use crate::backend::BatchOps as SimdOps;
+pub use crate::backend::BatchOps;
 
 /// Helper to calculate aligned stride.
 pub const fn calculate_aligned_stride(width: usize) -> usize {

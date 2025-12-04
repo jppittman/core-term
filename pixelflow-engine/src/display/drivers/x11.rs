@@ -322,10 +322,6 @@ impl X11State {
                     DriverCommand::CreateWindow { .. } => {
                         // Already created, ignore
                     }
-                    #[allow(deprecated)]
-                    DriverCommand::Configure(_) => {
-                        trace!("X11: Configure command received (ignored)");
-                    }
                     DriverCommand::DestroyWindow { .. } => {
                         info!("X11: DestroyWindow received");
                         return Ok(());

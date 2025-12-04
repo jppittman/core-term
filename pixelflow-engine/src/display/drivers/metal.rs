@@ -315,7 +315,6 @@ fn run_event_loop(
     let mtm = MainThreadMarker::new().context("Must run on main thread")?;
 
     // Wait for CreateWindow command
-    #[allow(deprecated)]
     let win = match cmd_rx.recv()? {
         DriverCommand::CreateWindow {
             id,
@@ -328,15 +327,6 @@ fn run_event_loop(
             height,
             title,
         },
-        DriverCommand::Configure(c) => {
-            // Legacy fallback
-            Window {
-                id: WindowId::PRIMARY,
-                width: (c.initial_cols * c.cell_width_px) as u32,
-                height: (c.initial_rows * c.cell_height_px) as u32,
-                title: "PixelFlow Metal".to_string(),
-            }
-        }
         other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
     };
 
@@ -442,7 +432,6 @@ fn run_event_loop(
         }
 
         // Process commands
-        #[allow(deprecated)]
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 DriverCommand::CreateWindow { .. } => {
@@ -452,9 +441,6 @@ fn run_event_loop(
                     info!("Metal: DestroyWindow {:?}", id);
                     // Close the window (for single-window, this is the main window)
                     state.window.close();
-                }
-                DriverCommand::Configure(_) => {
-                    // Legacy, ignored
                 }
                 DriverCommand::Shutdown => {
                     info!("Metal: Shutdown");

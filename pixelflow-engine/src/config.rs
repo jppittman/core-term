@@ -1,5 +1,3 @@
-#[allow(deprecated)]
-use crate::display::messages::DriverConfig;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -55,25 +53,6 @@ impl Default for WindowConfig {
             cell_height_px: 16,
             initial_x: 100.0,
             initial_y: 100.0,
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl From<EngineConfig> for DriverConfig {
-    fn from(config: EngineConfig) -> Self {
-        DriverConfig {
-            initial_window_x: config.window.initial_x,
-            initial_window_y: config.window.initial_y,
-            initial_cols: config.window.columns as usize,
-            initial_rows: config.window.rows as usize,
-            cell_width_px: config.window.cell_width_px,
-            cell_height_px: config.window.cell_height_px,
-            bytes_per_pixel: 4,
-            bits_per_component: 8,
-            bits_per_pixel: 32,
-            max_draw_latency_seconds: config.performance.max_draw_latency_ms.as_secs_f64(),
-            target_fps: config.performance.target_fps,
         }
     }
 }

@@ -267,11 +267,6 @@ enum ActionResult {
 fn handle_action(action: AppAction, driver: &PlatformDriver) -> Result<ActionResult> {
     match action {
         AppAction::Continue => Ok(ActionResult::Continue),
-        AppAction::Redraw => {
-            // Pull model: engine calls render() at vsync rate, app returns None if nothing to show
-            log::warn!("AppAction::Redraw is deprecated - engine uses pull model");
-            Ok(ActionResult::Continue)
-        }
         AppAction::Quit => Ok(ActionResult::Shutdown),
         AppAction::SetTitle(title) => {
             driver.send(DriverCommand::SetTitle {
