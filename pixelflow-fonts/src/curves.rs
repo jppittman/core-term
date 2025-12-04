@@ -1,6 +1,7 @@
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps};
 use pixelflow_core::batch::{Batch, NativeBackend};
 use pixelflow_core::geometry::Mat3;
+use pixelflow_core::SimdBatch;
 
 pub type Point = [f32; 2];
 

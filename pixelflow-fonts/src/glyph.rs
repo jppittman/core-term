@@ -8,6 +8,7 @@ use crate::curves::Segment;
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps};
 use pixelflow_core::batch::{Batch, NativeBackend};
 use pixelflow_core::traits::Surface;
+use pixelflow_core::SimdBatch;
 use std::sync::Arc;
 
 /// The bounding box of a glyph in pixel coordinates.

@@ -72,7 +72,7 @@ impl TerminalEmulator {
         let (_, current_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
 
         if current_physical_y == screen_ctx.scroll_bot {
-            self.screen.scroll_up_serial(1);
+            self.screen.scroll_up(1, true);
         } else if current_physical_y < screen_ctx.height.saturating_sub(1) {
             self.cursor_controller.move_down(1, &screen_ctx);
         }
