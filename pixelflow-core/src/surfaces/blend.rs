@@ -2,6 +2,7 @@ use crate::backend::{BatchArithmetic, SimdBatch};
 use crate::batch::Batch;
 use crate::traits::Surface;
 use crate::pixel::Pixel;
+use core::fmt::Debug;
 use core::marker::PhantomData;
 
 /// Computes the maximum value of two surfaces.
@@ -11,11 +12,14 @@ pub struct Max<A, B>(pub A, pub B);
 macro_rules! impl_max_surface {
     ($($t:ty),*) => {
         $(
-            impl<A, B> Surface<$t> for Max<A, B>
-            where A: Surface<$t>, B: Surface<$t>
+            impl<A, B, C> Surface<$t, C> for Max<A, B>
+            where
+                A: Surface<$t, C>,
+                B: Surface<$t, C>,
+                C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
             {
                 #[inline(always)]
-                fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<$t> {
+                fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<$t> {
                     let a = self.0.eval(x, y);
                     let b = self.1.eval(x, y);
                     a.max(b)
@@ -59,15 +63,16 @@ pub(crate) fn blend_channel(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -
     ((fg * alpha) + (bg * inv_alpha)) >> 8
 }
 
-impl<P, M, F, Back> Surface<P> for Over<P, M, F, Back>
+impl<P, M, F, Back, C> Surface<P, C> for Over<P, M, F, Back>
 where
     P: Pixel + Copy + PartialEq,
-    M: Surface<P>,
-    F: Surface<P>,
-    Back: Surface<P>,
+    M: Surface<P, C>,
+    F: Surface<P, C>,
+    Back: Surface<P, C>,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<P> {
         // Extract alpha from the mask pixel (coverage in alpha channel)
         let mask_pixel = P::batch_to_u32(self.mask.eval(x, y));
         let alpha = P::batch_alpha(mask_pixel);
@@ -107,14 +112,15 @@ pub struct Mul<M, C> {
     pub color: C,
 }
 
-impl<P, M, C> Surface<P> for Mul<M, C>
+impl<P, M, Col, Coord> Surface<P, Coord> for Mul<M, Col>
 where
     P: Pixel + Copy + PartialEq,
-    M: Surface<P>,
-    C: Surface<P>,
+    M: Surface<P, Coord>,
+    Col: Surface<P, Coord>,
+    Coord: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<Coord>, y: Batch<Coord>) -> Batch<P> {
         // Extract alpha from the mask pixel (coverage in alpha channel)
         let mask_pixel = P::batch_to_u32(self.mask.eval(x, y));
         let alpha = P::batch_alpha(mask_pixel);
