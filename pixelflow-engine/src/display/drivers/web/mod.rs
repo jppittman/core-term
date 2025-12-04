@@ -9,10 +9,12 @@ pub mod ipc;
 
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, RenderSnapshot};
+use crate::display::messages::{DisplayEvent, WindowId};
 use anyhow::{anyhow, Result};
 use ipc::SharedRingBuffer;
 use js_sys::SharedArrayBuffer;
+use pixelflow_render::color::Rgba;
+use pixelflow_render::Frame;
 use std::cell::RefCell;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use wasm_bindgen::{Clamped, JsCast};
@@ -30,8 +32,8 @@ pub fn init_resources(canvas: OffscreenCanvas, sab: SharedArrayBuffer) {
 
 // --- Run State (only original driver has this) ---
 struct RunState {
-    cmd_rx: Receiver<DriverCommand>,
-    engine_tx: EngineSender,
+    cmd_rx: Receiver<DriverCommand<Rgba>>,
+    engine_tx: EngineSender<Rgba>,
 }
 
 // --- Display Driver ---
@@ -40,7 +42,7 @@ struct RunState {
 ///
 /// Clone to get a handle for sending commands. Only the original can run().
 pub struct WebDisplayDriver {
-    cmd_tx: SyncSender<DriverCommand>,
+    cmd_tx: SyncSender<DriverCommand<Rgba>>,
     /// Only present on original, None on clones
     run_state: Option<RunState>,
 }
@@ -55,7 +57,9 @@ impl Clone for WebDisplayDriver {
 }
 
 impl DisplayDriver for WebDisplayDriver {
-    fn new(engine_tx: EngineSender) -> Result<Self> {
+    type Pixel = Rgba;
+
+    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -64,7 +68,7 @@ impl DisplayDriver for WebDisplayDriver {
         })
     }
 
-    fn send(&self, cmd: DriverCommand) -> Result<()> {
+    fn send(&self, cmd: DriverCommand<Rgba>) -> Result<()> {
         self.cmd_tx.send(cmd)?;
         Ok(())
     }
@@ -81,11 +85,19 @@ impl DisplayDriver for WebDisplayDriver {
 
 // --- Event Loop ---
 
-fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) -> Result<()> {
-    // 1. Read Configure command first
-    let config = match cmd_rx.recv()? {
-        DriverCommand::Configure(c) => c,
-        other => return Err(anyhow!("Expected Configure, got {:?}", other)),
+fn run_event_loop(
+    cmd_rx: &Receiver<DriverCommand<Rgba>>,
+    engine_tx: &EngineSender<Rgba>,
+) -> Result<()> {
+    // 1. Read CreateWindow command first
+    let (window_id, width_px, height_px) = match cmd_rx.recv()? {
+        DriverCommand::CreateWindow {
+            id,
+            width,
+            height,
+            ..
+        } => (id, width, height),
+        other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
     };
 
     // Get web resources from thread-local storage
@@ -104,18 +116,16 @@ fn run_event_loop(cmd_rx: &Receiver<DriverCommand>, engine_tx: &EngineSender) ->
 
     let ipc = SharedRingBuffer::new(&sab);
 
-    let width_px = (config.initial_cols * config.cell_width_px) as u32;
-    let height_px = (config.initial_rows * config.cell_height_px) as u32;
-
     // Resize canvas
     canvas.set_width(width_px);
     canvas.set_height(height_px);
 
     // Send initial resize (web scale_factor typically comes from devicePixelRatio)
-    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resize {
+    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+        id: window_id,
         width_px,
         height_px,
-        scale_factor: 1.0, // TODO: use window.devicePixelRatio
+        scale: 1.0, // TODO: use window.devicePixelRatio
     }));
 
     // 2. Create state and run event loop
@@ -141,14 +151,14 @@ struct WebState {
 impl WebState {
     fn event_loop(
         &mut self,
-        cmd_rx: &Receiver<DriverCommand>,
-        engine_tx: &EngineSender,
+        cmd_rx: &Receiver<DriverCommand<Rgba>>,
+        engine_tx: &EngineSender<Rgba>,
     ) -> Result<()> {
         loop {
             // 1. Poll IPC events (from main thread via SharedArrayBuffer)
             match self.ipc.blocking_read_timeout(16) {
                 Ok(Some(evt)) => {
-                    if matches!(evt, DisplayEvent::CloseRequested) {
+                    if matches!(evt, DisplayEvent::CloseRequested { .. }) {
                         return Ok(());
                     }
                     let _ = engine_tx.send(EngineCommand::DisplayEvent(evt));
@@ -165,18 +175,25 @@ impl WebState {
             // 2. Process commands from engine
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
-                    DriverCommand::Configure(_) => {
-                        // Already configured, ignore
+                    DriverCommand::CreateWindow { .. } => {
+                        // Already created, ignore
+                    }
+                    DriverCommand::DestroyWindow { .. } => {
+                        return Ok(());
                     }
                     DriverCommand::Shutdown => {
                         return Ok(());
                     }
-                    DriverCommand::Present(snapshot) => {
-                        if let Ok(snapshot) = self.handle_present(snapshot) {
-                            let _ = engine_tx.send(EngineCommand::PresentComplete(snapshot));
+                    DriverCommand::Present { frame, .. } => {
+                        if let Ok(frame) = self.handle_present(frame) {
+                            let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
                         }
                     }
-                    DriverCommand::SetTitle(_) => {
+                    DriverCommand::SetTitle { .. } => {
+                        // Not supported in worker context
+                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                    }
+                    DriverCommand::SetSize { .. } => {
                         // Not supported in worker context
                         let _ = engine_tx.send(EngineCommand::DriverAck);
                     }
@@ -197,12 +214,12 @@ impl WebState {
         }
     }
 
-    fn handle_present(&mut self, snapshot: RenderSnapshot) -> Result<RenderSnapshot> {
-        let data = snapshot.framebuffer.as_ref();
+    fn handle_present(&mut self, frame: Frame<Rgba>) -> Result<Frame<Rgba>> {
+        let data = frame.as_bytes();
         let image_data = ImageData::new_with_u8_clamped_array_and_sh(
             Clamped(data),
-            snapshot.width_px,
-            snapshot.height_px,
+            frame.width,
+            frame.height,
         )
         .map_err(|e| anyhow!("Failed to create ImageData: {:?}", e))?;
 
@@ -210,6 +227,6 @@ impl WebState {
             .put_image_data(&image_data, 0.0, 0.0)
             .map_err(|e| anyhow!("Failed to put image data: {:?}", e))?;
 
-        Ok(snapshot)
+        Ok(frame)
     }
 }

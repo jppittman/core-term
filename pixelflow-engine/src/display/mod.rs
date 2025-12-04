@@ -9,8 +9,7 @@ pub mod drivers;
 pub mod messages;
 
 pub use driver::DisplayDriver;
-#[allow(deprecated)]
-pub use messages::{DisplayEvent, DriverConfig};
+pub use messages::DisplayEvent;
 
 // Re-export the active display driver for convenience
 #[cfg(use_cocoa_display)]

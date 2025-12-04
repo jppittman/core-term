@@ -118,26 +118,3 @@ pub enum DisplayEvent {
     ClipboardDataRequested,
 }
 
-// ============================================================================
-// Legacy types (deprecated, will be removed)
-// ============================================================================
-
-/// Configuration passed to the driver via Configure command.
-///
-/// **DEPRECATED**: Use `DriverCommand::CreateWindow` instead.
-/// This struct will be removed in a future version.
-#[deprecated(note = "Use DriverCommand::CreateWindow instead")]
-#[derive(Debug, Clone)]
-pub struct DriverConfig {
-    pub initial_window_x: f64,
-    pub initial_window_y: f64,
-    pub initial_cols: usize,
-    pub initial_rows: usize,
-    pub cell_width_px: usize,
-    pub cell_height_px: usize,
-    pub bytes_per_pixel: usize,
-    pub bits_per_component: usize,
-    pub bits_per_pixel: usize,
-    pub max_draw_latency_seconds: f64,
-    pub target_fps: u32,
-}

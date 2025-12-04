@@ -5,8 +5,6 @@
 //! slow lane with backpressure, and control commands to an unbounded fast lane.
 //! Uses a "Doorbell" signal to wake the engine when display events are ready.
 
-#[allow(deprecated)]
-use crate::display::messages::DriverConfig;
 use crate::display::messages::WindowId;
 use crate::display::DisplayEvent;
 use pixelflow_core::Pixel;
@@ -86,15 +84,6 @@ pub enum DriverCommand<P: Pixel> {
     // ========================================================================
     /// Shutdown the driver.
     Shutdown,
-
-    // ========================================================================
-    // Legacy (deprecated)
-    // ========================================================================
-    /// Configure the driver with window settings.
-    /// **DEPRECATED**: Use `CreateWindow` instead.
-    #[deprecated(note = "Use CreateWindow instead")]
-    #[allow(deprecated)]
-    Configure(DriverConfig),
 }
 
 /// Type-safe sender wrapper that routes commands to the appropriate channel.
