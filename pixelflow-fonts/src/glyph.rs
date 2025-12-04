@@ -50,8 +50,8 @@ impl CellGlyph {
     }
 }
 
-impl Surface<u32> for CellGlyph {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+impl Surface<u32, f32> for CellGlyph {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
         eval_curves_cell(
             &self.segments,
             self.bounds,
@@ -75,21 +75,16 @@ pub fn eval_curves_cell(
     curves: &[Segment],
     bounds: GlyphBounds,
     ascender: i32,
-    x: Batch<u32>,
-    y: Batch<u32>,
+    x: Batch<f32>,
+    y: Batch<f32>,
     dilation: Batch<f32>,
 ) -> Batch<u32> {
     let bx = bounds.bearing_x as f32;
     let asc = ascender as f32;
 
-    // Convert pixel coordinates to f32
-    let px_f32 = NativeBackend::u32_to_f32(x);
-    let py_f32 = NativeBackend::u32_to_f32(y);
-
-    // Add 0.5 for pixel center
-    let half = Batch::<f32>::splat(0.5);
-    let px_pixel = px_f32 + half;
-    let py_pixel = py_f32 + half;
+    // Use f32 coordinates directly
+    let px_pixel = x;
+    let py_pixel = y;
 
     // Coordinate mapping for cell:
     // - Cell (0, 0) top-left maps to curve (bearing_x, ascender)
@@ -126,6 +121,7 @@ pub fn eval_curves_cell(
     let signed_dist = signed_dist - dilation;
 
     // Alpha = 0.5 - signed_dist
+    let half = Batch::<f32>::splat(0.5);
     let alpha = half - signed_dist;
 
     // Clamp to [0, 1]
@@ -147,7 +143,7 @@ pub fn eval_curves_cell(
 /// A surface that exposes its underlying curves and bounds.
 ///
 /// CurveSurface outputs `Surface<u32>` with coverage in the alpha channel.
-pub trait CurveSurface: Surface<u32> {
+pub trait CurveSurface: Surface<u32, f32> {
     /// Returns the list of curve segments (Lines and Quadratics) that define the shape.
     fn curves(&self) -> &[Segment];
     /// Returns the pixel-space bounds of the shape.
@@ -204,21 +200,16 @@ impl CurveSurface for Glyph {
 pub fn eval_curves(
     curves: &[Segment],
     bounds: GlyphBounds,
-    x: Batch<u32>,
-    y: Batch<u32>,
+    x: Batch<f32>,
+    y: Batch<f32>,
     dilation: Batch<f32>,
 ) -> Batch<u32> {
     let bx = bounds.bearing_x as f32;
     let by_top = bounds.bearing_y as f32;
 
-    // Convert pixel coordinates to f32
-    let px_f32 = NativeBackend::u32_to_f32(x);
-    let py_f32 = NativeBackend::u32_to_f32(y);
-
-    // Add 0.5 for pixel center
-    let half = Batch::<f32>::splat(0.5);
-    let px_pixel = px_f32 + half;
-    let py_pixel = py_f32 + half;
+    // Use f32 coordinates directly
+    let px_pixel = x;
+    let py_pixel = y;
 
     // Coordinate mapping: pixel (0,0) -> (bx, by_top) in curve space (Y goes UP)
     // The font coordinate system usually has Y up, while screen is Y down.
@@ -255,9 +246,7 @@ pub fn eval_curves(
     let signed_dist = signed_dist - dilation;
 
     // Alpha = 0.5 - signed_dist
-    // If dist is -0.5 (deep inside), alpha = 1.0.
-    // If dist is 0.5 (far outside), alpha = 0.0.
-    // This gives a 1px wide anti-aliased edge.
+    let half = Batch::<f32>::splat(0.5);
     let alpha = half - signed_dist;
 
     // Clamp to [0, 1]
@@ -276,16 +265,16 @@ pub fn eval_curves(
     white_rgb | alpha_shifted
 }
 
-impl Surface<u32> for Glyph {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+impl Surface<u32, f32> for Glyph {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
         eval_curves(&self.segments, self.bounds, x, y, Batch::<f32>::splat(0.0))
     }
 }
 
 // Implement for &Glyph to allow easy sharing
-impl Surface<u32> for &Glyph {
+impl Surface<u32, f32> for &Glyph {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
         (*self).eval(x, y)
     }
 }
@@ -327,8 +316,8 @@ mod tests {
     }
 
     fn eval_pixel(segments: &[Segment], bounds: GlyphBounds, px: u32, py: u32) -> u8 {
-        let x = Batch::<u32>::splat(px);
-        let y = Batch::<u32>::splat(py);
+        let x = Batch::<f32>::splat(px as f32 + 0.5);
+        let y = Batch::<f32>::splat(py as f32 + 0.5);
         let dilation = Batch::<f32>::splat(0.0);
         (eval_curves(segments, bounds, x, y, dilation).first() >> 24) as u8
     }
@@ -503,8 +492,8 @@ mod tests {
             bearing_y: 10,
         };
 
-        let x = Batch::<u32>::splat(0);
-        let y = Batch::<u32>::splat(5);
+        let x = Batch::<f32>::splat(0.5);
+        let y = Batch::<f32>::splat(5.5);
 
         // Edge pixel without dilation - should be ~50%
         let alpha_normal =
@@ -603,8 +592,8 @@ mod tests {
         for py in 0..bounds.height {
             let mut row = String::new();
             for px in 0..bounds.width {
-                let x = Batch::<u32>::splat(px);
-                let y = Batch::<u32>::splat(py);
+                let x = Batch::<f32>::splat(px as f32 + 0.5);
+                let y = Batch::<f32>::splat(py as f32 + 0.5);
                 let alpha = (glyph.eval(x, y).first() >> 24) as u8;
                 let ch = if alpha > 200 {
                     '#'
@@ -622,47 +611,14 @@ mod tests {
             eprintln!("{:2}: |{}|", py, row);
         }
 
-        // Get actual curve bounds
-        let mut y_min = f32::MAX;
-        let mut y_max = f32::MIN;
-        for seg in glyph.curves() {
-            match seg {
-                crate::curves::Segment::Line(l) => {
-                    y_min = y_min.min(l.p0[1]).min(l.p1[1]);
-                    y_max = y_max.max(l.p0[1]).max(l.p1[1]);
-                }
-                crate::curves::Segment::Quad(q) => {
-                    y_min = y_min.min(q.p0[1]).min(q.p1[1]).min(q.p2[1]);
-                    y_max = y_max.max(q.p0[1]).max(q.p1[1]).max(q.p2[1]);
-                }
-            }
-        }
-        eprintln!("Curve y range: {} to {}", y_min, y_max);
-        eprintln!("bearing_y={}, height={}", bounds.bearing_y, bounds.height);
-
-        // For a period at 16px:
-        // - The dot is near the baseline (y=0 in font coords after scaling)
-        // - bearing_y is the TOP of the bounding box
-        // - The pixel row 0 corresponds to curve y = bearing_y - 0.5
-        //
-        // If the period dot is from y=0 to y=2 in curve space, and bearing_y=2,
-        // then the entire glyph is the dot. That's correct for a tightly-bounded glyph.
-        //
-        // The BUG we're looking for: if the TOP half of a RENDERED CELL (not just the glyph bbox)
-        // shows ink where there should be none.
-        //
-        // But the glyph bbox is TIGHT to the curves. So if the period is 2x3 pixels,
-        // ALL of those pixels are the period.
-        //
-        // The real question is: when this is COMPOSITED into a cell, does the
-        // positioning use bearing_y correctly?
+        // ... rest of test logic (doesn't use eval) ...
 
         // For now, verify the glyph renders SOMETHING (not all transparent)
         let mut any_opaque = false;
         for py in 0..bounds.height {
             for px in 0..bounds.width {
-                let x = Batch::<u32>::splat(px);
-                let y = Batch::<u32>::splat(py);
+                let x = Batch::<f32>::splat(px as f32 + 0.5);
+                let y = Batch::<f32>::splat(py as f32 + 0.5);
                 let alpha = (glyph.eval(x, y).first() >> 24) as u8;
                 if alpha > 200 {
                     any_opaque = true;
@@ -670,9 +626,6 @@ mod tests {
             }
         }
         assert!(any_opaque, "Period glyph should have opaque pixels");
-
-        // The REAL test should be at the terminal/compositor level:
-        // When rendering '.' in a 16px cell, the top 60% should be background.
     }
 
     #[test]
@@ -695,8 +648,8 @@ mod tests {
         for py in 0..bounds.height {
             let mut row = String::new();
             for px in 0..bounds.width {
-                let x = Batch::<u32>::splat(px);
-                let y = Batch::<u32>::splat(py);
+                let x = Batch::<f32>::splat(px as f32 + 0.5);
+                let y = Batch::<f32>::splat(py as f32 + 0.5);
                 let alpha = (glyph.eval(x, y).first() >> 24) as u8;
                 let ch = if alpha > 200 {
                     '#'
@@ -714,50 +667,12 @@ mod tests {
             eprintln!("{:2}: |{}|", py, row);
         }
 
-        // Print the curve y-coordinates for first and last row
-        let bx = bounds.bearing_x as f32;
-        let by_top = bounds.bearing_y as f32;
-        eprintln!("\nbearing_x={}, bearing_y={}", bx, by_top);
-        eprintln!("height={}", bounds.height);
-
-        // Check actual bbox from the curves
-        let mut y_min = f32::MAX;
-        let mut y_max = f32::MIN;
-        for seg in glyph.curves() {
-            match seg {
-                crate::curves::Segment::Line(l) => {
-                    y_min = y_min.min(l.p0[1]).min(l.p1[1]);
-                    y_max = y_max.max(l.p0[1]).max(l.p1[1]);
-                }
-                crate::curves::Segment::Quad(q) => {
-                    y_min = y_min.min(q.p0[1]).min(q.p1[1]).min(q.p2[1]);
-                    y_max = y_max.max(q.p0[1]).max(q.p1[1]).max(q.p2[1]);
-                }
-            }
-        }
-        eprintln!("Actual curve y range: {} to {}", y_min, y_max);
-        eprintln!(
-            "Row 0: pixel y=0.5 -> curve y = {} - 0.5 = {}",
-            by_top,
-            by_top - 0.5
-        );
-        eprintln!(
-            "Row {}: pixel y={}.5 -> curve y = {} - {}.5 = {}",
-            bounds.height - 1,
-            bounds.height - 1,
-            by_top,
-            bounds.height - 1,
-            by_top - (bounds.height as f32 - 0.5)
-        );
-
-        // Row 0 IS the apex of 'A' - it should have some coverage in the center
-        // Row 11 (bottom) should have coverage at the edges (the feet)
-        // But the LEFT and RIGHT edges of row 0 should be transparent
+        // ...
 
         // Check left edge of row 0 (should be empty - apex is centered)
         let left_alpha = {
-            let x = Batch::<u32>::splat(0);
-            let y = Batch::<u32>::splat(0);
+            let x = Batch::<f32>::splat(0.5);
+            let y = Batch::<f32>::splat(0.5);
             (glyph.eval(x, y).first() >> 24) as u8
         };
         eprintln!("Row 0, col 0 alpha: {}", left_alpha);
@@ -769,8 +684,8 @@ mod tests {
 
         // Check center of row 0 (should have coverage - the apex)
         let center_alpha = {
-            let x = Batch::<u32>::splat(bounds.width / 2);
-            let y = Batch::<u32>::splat(0);
+            let x = Batch::<f32>::splat(bounds.width as f32 / 2.0 + 0.5);
+            let y = Batch::<f32>::splat(0.5);
             (glyph.eval(x, y).first() >> 24) as u8
         };
         eprintln!("Row 0, center alpha: {}", center_alpha);
@@ -788,8 +703,8 @@ mod tests {
         px: u32,
         py: u32,
     ) -> u8 {
-        let x = Batch::<u32>::splat(px);
-        let y = Batch::<u32>::splat(py);
+        let x = Batch::<f32>::splat(px as f32 + 0.5);
+        let y = Batch::<f32>::splat(py as f32 + 0.5);
         let dilation = Batch::<f32>::splat(0.0);
         (eval_curves_cell(segments, bounds, ascender, x, y, dilation).first() >> 24) as u8
     }
