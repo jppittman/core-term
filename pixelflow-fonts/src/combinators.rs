@@ -87,15 +87,20 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
     // Calculate the ascender position within the cell.
     // The cell height should fit the full line height (ascent - descent),
     // so we scale the ascender proportionally.
+    // Use floor() to give more room to descenders (avoids clipping at bottom).
     let metrics = font.metrics();
     let line_height = metrics.ascent as f32 - metrics.descent as f32; // descent is negative
-    let ascender = (metrics.ascent as f32 * h as f32 / line_height).round() as i32;
+    let ascender = (metrics.ascent as f32 * h as f32 / line_height).floor() as i32;
+
+    // Scale glyph size so that line_height fits exactly in cell_height.
+    // Without this, fonts where line_height > units_per_em would be too large.
+    let glyph_size = h as f32 * metrics.units_per_em as f32 / line_height;
 
     let ascii: Vec<Lazy<'a, Baked<u8>>> = (0..128)
         .map(|i| {
             let c = i as u8 as char;
             let font = font.clone();
-            Lazy::new(move || match font.glyph(c, h as f32) {
+            Lazy::new(move || match font.glyph(c, glyph_size) {
                 Some(g) => {
                     let cell_glyph = CellGlyph::new(g, ascender);
                     Baked::new(&cell_glyph, w, h)
@@ -134,7 +139,7 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
             }
             // Insert
             let font = font.clone();
-            let lazy = Lazy::new(move || match font.glyph(c, h as f32) {
+            let lazy = Lazy::new(move || match font.glyph(c, glyph_size) {
                 Some(g) => {
                     let cell_glyph = CellGlyph::new(g, ascender);
                     Baked::new(&cell_glyph, w, h)

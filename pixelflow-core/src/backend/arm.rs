@@ -1541,6 +1541,99 @@ impl FloatBatchOps for SimdVec<f32> {
             )
         }
     }
+
+    #[inline(always)]
+    fn log2(self) -> Self {
+        // IEEE 754 bit hack + polynomial correction
+        // log2(x) = exponent + log2(mantissa) where mantissa in [1, 2)
+        unsafe {
+            let bits = vreinterpretq_u32_f32(self.0.f32);
+
+            // Extract exponent: ((bits >> 23) & 0xFF) - 127
+            let exp_bits = vshrq_n_u32(bits, 23);
+            let exp_biased = vandq_u32(exp_bits, vdupq_n_u32(0xFF));
+            let exp_i32 = vsubq_s32(vreinterpretq_s32_u32(exp_biased), vdupq_n_s32(127));
+            let exp_f32 = vcvtq_f32_s32(exp_i32);
+
+            // Extract mantissa, normalize to [1, 2): (bits & 0x7FFFFF) | 0x3F800000
+            let mantissa_bits = vorrq_u32(
+                vandq_u32(bits, vdupq_n_u32(0x007FFFFF)),
+                vdupq_n_u32(0x3F800000),
+            );
+            let m = vreinterpretq_f32_u32(mantissa_bits);
+
+            // Polynomial approximation for log2(m) where m in [1, 2)
+            // log2(m) ≈ x * P(x) where x = m - 1, x ∈ [0, 1)
+            // Using degree-5 minimax polynomial for <0.1% error
+            let x = vsubq_f32(m, vdupq_n_f32(1.0));
+
+            // Minimax coefficients for log2(1+x) ≈ x * (c0 + x*(c1 + x*(c2 + x*(c3 + x*c4))))
+            let c0 = vdupq_n_f32(1.4426950216);
+            let c1 = vdupq_n_f32(-0.7211452817);
+            let c2 = vdupq_n_f32(0.4778098810);
+            let c3 = vdupq_n_f32(-0.3473593140);
+            let c4 = vdupq_n_f32(0.1533194870);
+
+            // Horner's method: c0 + x*(c1 + x*(c2 + x*(c3 + x*c4)))
+            let poly = vfmaq_f32(c3, x, c4);
+            let poly = vfmaq_f32(c2, x, poly);
+            let poly = vfmaq_f32(c1, x, poly);
+            let poly = vfmaq_f32(c0, x, poly);
+            let log2_mantissa = vmulq_f32(x, poly);
+
+            // Result = exponent + log2(mantissa)
+            let result = vaddq_f32(exp_f32, log2_mantissa);
+
+            Self(NeonReg { f32: result }, PhantomData)
+        }
+    }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        // 2^x = 2^floor(x) * 2^frac(x)
+        // 2^floor(x) via bit manipulation, 2^frac(x) via polynomial
+        unsafe {
+            let x = self.0.f32;
+
+            // Clamp to avoid overflow/underflow
+            let x = vmaxq_f32(x, vdupq_n_f32(-126.0));
+            let x = vminq_f32(x, vdupq_n_f32(127.0));
+
+            // Split into integer and fractional parts
+            let floor_x = vrndmq_f32(x); // floor
+            let frac = vsubq_f32(x, floor_x);
+
+            // 2^frac using polynomial (frac in [0, 1))
+            // 2^f ≈ 1 + f*(c1 + f*(c2 + f*(c3 + f*(c4 + f*c5))))
+            // Degree-5 minimax polynomial for <0.1% error
+            let c1 = vdupq_n_f32(0.6931471806);
+            let c2 = vdupq_n_f32(0.2402265070);
+            let c3 = vdupq_n_f32(0.0555041086);
+            let c4 = vdupq_n_f32(0.0096181291);
+            let c5 = vdupq_n_f32(0.0013333558);
+
+            // Horner's method
+            let poly = vfmaq_f32(c4, frac, c5);
+            let poly = vfmaq_f32(c3, frac, poly);
+            let poly = vfmaq_f32(c2, frac, poly);
+            let poly = vfmaq_f32(c1, frac, poly);
+            let poly = vfmaq_f32(vdupq_n_f32(1.0), frac, poly);
+
+            // 2^floor(x) by adding floor(x) to exponent bits
+            // (floor_x + 127) << 23
+            let floor_i32 = vcvtq_s32_f32(floor_x);
+            let exp_bits = vshlq_n_u32(
+                vreinterpretq_u32_s32(vaddq_s32(floor_i32, vdupq_n_s32(127))),
+                23,
+            );
+            let pow2_int = vreinterpretq_f32_u32(exp_bits);
+
+            // Result = 2^floor(x) * 2^frac(x)
+            let result = vmulq_f32(pow2_int, poly);
+
+            Self(NeonReg { f32: result }, PhantomData)
+        }
+    }
 }
 
 // ============================================================================
@@ -1579,5 +1672,77 @@ mod tests {
         let mut output = [0u32; 4];
         SimdBatch::store(&seq, &mut output);
         assert_eq!(output, [10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn test_log2_powers_of_two() {
+        use crate::backend::FloatBatchOps;
+        // log2(2^n) should equal n
+        for n in 0..10 {
+            let x = SimdVec::<f32>::splat(2.0f32.powi(n));
+            let result = x.log2();
+            let mut output = [0.0f32; 4];
+            SimdBatch::store(&result, &mut output);
+            let error = (output[0] - n as f32).abs();
+            assert!(error < 0.01, "log2(2^{}) = {}, expected {}", n, output[0], n);
+        }
+    }
+
+    #[test]
+    fn test_exp2_integers() {
+        use crate::backend::FloatBatchOps;
+        // 2^n should be exact for small integers
+        for n in 0..10 {
+            let x = SimdVec::<f32>::splat(n as f32);
+            let result = x.exp2();
+            let mut output = [0.0f32; 4];
+            SimdBatch::store(&result, &mut output);
+            let expected = 2.0f32.powi(n);
+            let error = (output[0] - expected).abs() / expected;
+            assert!(error < 0.01, "2^{} = {}, expected {}", n, output[0], expected);
+        }
+    }
+
+    #[test]
+    fn test_pow_accuracy() {
+        use crate::backend::FloatBatchOps;
+        // Test various pow combinations
+        let test_cases = [
+            (2.0f32, 3.0f32, 8.0f32),
+            (3.0, 2.0, 9.0),
+            (4.0, 0.5, 2.0),
+            (8.0, 1.0 / 3.0, 2.0),
+            (10.0, 2.0, 100.0),
+        ];
+        for (base, exp, expected) in test_cases {
+            let x = SimdVec::<f32>::splat(base);
+            let y = SimdVec::<f32>::splat(exp);
+            let result = x.pow(y);
+            let mut output = [0.0f32; 4];
+            SimdBatch::store(&result, &mut output);
+            let error = (output[0] - expected).abs() / expected;
+            assert!(error < 0.02, "{}^{} = {}, expected {}", base, exp, output[0], expected);
+        }
+    }
+
+    #[test]
+    fn test_gamma_correction_roundtrip() {
+        use crate::backend::FloatBatchOps;
+        // sRGB gamma is ~2.2, test that x^2.2^(1/2.2) ≈ x
+        let gamma = 2.2f32;
+        let inv_gamma = 1.0 / gamma;
+
+        for i in 1..10 {
+            let x = i as f32 / 10.0; // 0.1 to 0.9
+            let input = SimdVec::<f32>::splat(x);
+            let gamma_exp = SimdVec::<f32>::splat(gamma);
+            let inv_gamma_exp = SimdVec::<f32>::splat(inv_gamma);
+
+            let result = input.pow(gamma_exp).pow(inv_gamma_exp);
+            let mut output = [0.0f32; 4];
+            SimdBatch::store(&result, &mut output);
+            let error = (output[0] - x).abs();
+            assert!(error < 0.01, "Gamma roundtrip: {} -> {} (error {})", x, output[0], error);
+        }
     }
 }

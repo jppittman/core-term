@@ -161,13 +161,39 @@ where
     fn cmp_ge(self, other: Self) -> Self;
 }
 
-/// Float-specific batch operations (sqrt, abs, etc.).
+/// Float-specific batch operations (sqrt, abs, transcendentals).
 pub trait FloatBatchOps: BatchArithmetic<f32> {
     /// Square root of each element.
     fn sqrt(self) -> Self;
 
     /// Absolute value of each element.
     fn abs(self) -> Self;
+
+    /// Base-2 logarithm of each element.
+    /// Uses IEEE 754 bit extraction + polynomial correction for accuracy.
+    fn log2(self) -> Self;
+
+    /// Base-2 exponential of each element (2^x).
+    /// Uses range reduction + polynomial approximation.
+    fn exp2(self) -> Self;
+
+    /// Natural logarithm of each element.
+    fn ln(self) -> Self {
+        // ln(x) = log2(x) / log2(e)
+        self.log2() * Self::splat(1.0 / core::f32::consts::LOG2_E)
+    }
+
+    /// Natural exponential of each element (e^x).
+    fn exp(self) -> Self {
+        // e^x = 2^(x * log2(e))
+        (self * Self::splat(core::f32::consts::LOG2_E)).exp2()
+    }
+
+    /// Power function: self^exponent for each element.
+    fn pow(self, exponent: Self) -> Self {
+        // x^y = 2^(y * log2(x))
+        (exponent * self.log2()).exp2()
+    }
 }
 
 pub use BatchArithmetic as BatchOps;

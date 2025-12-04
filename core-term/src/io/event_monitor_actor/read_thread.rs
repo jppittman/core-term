@@ -100,26 +100,32 @@ impl ReadThread {
             // Process PTY read events
             for event in &events_buffer {
                 if event.token == PTY_TOKEN && event.flags.contains(KqueueFlags::EPOLLIN) {
-                    Self::handle_pty_readable(
+                    let should_continue = Self::handle_pty_readable(
                         &mut source,
                         &mut read_buffer,
                         &mut ansi_parser,
                         &pty_cmd_tx,
                         &mut command_buffer,
                     )?;
+                    
+                    if !should_continue {
+                        info!("Read thread: PTY closed, stopping read loop");
+                        return Ok(());
+                    }
                 }
             }
         }
     }
 
     /// Handles PTY readable events.
+    /// Returns Ok(true) to continue, Ok(false) to stop (EOF).
     fn handle_pty_readable<S: EventSource>(
         source: &mut S,
         read_buffer: &mut [u8],
         ansi_parser: &mut AnsiProcessor,
         pty_cmd_tx: &SyncSender<Vec<AnsiCommand>>,
         command_buffer: &mut Vec<AnsiCommand>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         loop {
             // Read from PTY using safe trait method
             let bytes_read = match source.read(read_buffer) {
@@ -139,7 +145,7 @@ impl ReadThread {
             if bytes_read == 0 {
                 // EOF - PTY closed
                 info!("Read thread: PTY returned EOF");
-                return Ok(());
+                return Ok(false);
             }
 
             trace!("Read thread: Read {} bytes from PTY", bytes_read);
@@ -219,7 +225,7 @@ impl ReadThread {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 }
 

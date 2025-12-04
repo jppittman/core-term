@@ -43,7 +43,8 @@ impl EventMonitor {
         Ok(Self { kqueue_fd })
     }
 
-    pub fn add(&self, fd: RawFd, token: u64, flags: KqueueFlags) -> Result<()> {
+    pub fn add<S: std::os::unix::io::AsRawFd>(&self, source: &S, token: u64, flags: KqueueFlags) -> Result<()> {
+        let fd = source.as_raw_fd();
         let mut changes = Vec::new();
 
         // Add read filter if requested
@@ -94,13 +95,14 @@ impl EventMonitor {
         Ok(())
     }
 
-    pub fn modify(&self, fd: RawFd, token: u64, flags: KqueueFlags) -> Result<()> {
+    pub fn modify<S: std::os::unix::io::AsRawFd>(&self, source: &S, token: u64, flags: KqueueFlags) -> Result<()> {
         // For kqueue, modify is essentially delete + add
-        self.delete(fd)?;
-        self.add(fd, token, flags)
+        self.delete(source)?;
+        self.add(source, token, flags)
     }
 
-    pub fn delete(&self, fd: RawFd) -> Result<()> {
+    pub fn delete<S: std::os::unix::io::AsRawFd>(&self, source: &S) -> Result<()> {
+        let fd = source.as_raw_fd();
         let mut changes = Vec::new();
 
         // Delete both read and write filters

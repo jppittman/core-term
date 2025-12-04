@@ -94,7 +94,8 @@ impl EventMonitor {
         Ok(())
     }
 
-    pub fn modify(&self, fd: RawFd, token: u64, flags: EpollFlags) -> Result<()> {
+    pub fn modify<S: std::os::unix::io::AsRawFd>(&self, source: &S, token: u64, flags: EpollFlags) -> Result<()> {
+        let fd = source.as_raw_fd();
         let mut event = new_libc_epoll_event(flags, token);
         if unsafe {
             libc::epoll_ctl(
@@ -119,7 +120,8 @@ impl EventMonitor {
         Ok(())
     }
 
-    pub fn delete(&self, fd: RawFd) -> Result<()> {
+    pub fn delete<S: std::os::unix::io::AsRawFd>(&self, source: &S) -> Result<()> {
+        let fd = source.as_raw_fd();
         let mut event: libc::epoll_event = unsafe { std::mem::zeroed() };
         if unsafe {
             libc::epoll_ctl(

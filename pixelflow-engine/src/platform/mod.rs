@@ -246,7 +246,7 @@ fn engine_loop<A: Application<PlatformPixel>>(
                     .unwrap_or_else(|| Frame::new(physical_width, physical_height));
 
                 // Render directly into the typed frame
-                let scaled = Scale::new(surface, scale_factor);
+                let scaled = Scale::uniform(surface, scale_factor);
                 render::<PlatformPixel, _>(&scaled, &mut frame);
 
                 // Send typed frame to driver
