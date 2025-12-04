@@ -17,10 +17,25 @@ pub mod terminal_app;
 // Use statements for items needed in main.rs
 use crate::config::CONFIG;
 use anyhow::Context;
+use clap::Parser;
 use log::{info, warn};
+
+/// core-term: A modern terminal emulator
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Execute a command instead of launching a shell
+    #[arg(short = 'c', long = "command")]
+    command: Option<String>,
+
+    /// Additional arguments to pass to the command
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
 
 /// Main entry point for the `myterm` application.
 fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
     use std::fs::OpenOptions;
 
     // Start CPU profiler if feature enabled
@@ -51,11 +66,35 @@ fn main() -> anyhow::Result<()> {
         std::env::set_var("TERM", "screen-256color");
     }
 
-    let shell_command = std::env::var("SHELL").unwrap_or_else(|_| {
-        warn!("SHELL environment variable not set, defaulting to /bin/bash");
-        "/bin/bash".to_string()
-    });
-    let shell_args: Vec<String> = Vec::new();
+    // Determine command to execute based on -c flag
+    let (shell_command, shell_args) = if let Some(command) = args.command {
+        // Execute command with -c flag
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+            warn!("SHELL environment variable not set, defaulting to /bin/bash");
+            "/bin/bash".to_string()
+        });
+
+        // Use shell to execute the command string
+        let mut cmd_args = vec!["-c".to_string(), command];
+
+        // If there are additional args, pass them as positional arguments
+        // In shell -c mode, $0 will be "sh", and $1, $2, etc. will be the args
+        if !args.args.is_empty() {
+            cmd_args.push("--".to_string());
+            cmd_args.extend(args.args);
+        }
+
+        info!("Executing command with -c flag: {} {:?}", shell, cmd_args);
+        (shell, cmd_args)
+    } else {
+        // Launch interactive shell
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+            warn!("SHELL environment variable not set, defaulting to /bin/bash");
+            "/bin/bash".to_string()
+        });
+        info!("Launching interactive shell: {}", shell);
+        (shell, Vec::new())
+    };
 
     info!("Shell command: '{}', args: {:?}", shell_command, shell_args);
 

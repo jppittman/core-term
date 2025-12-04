@@ -21,7 +21,7 @@ use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask,
-    NSEventModifierFlags, NSEventType, NSPasteboard, NSWindow, NSWindowStyleMask,
+    NSEventModifierFlags, NSEventType, NSPasteboard, NSScreen, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSDate, NSDefaultRunLoopMode, NSObject, NSPoint, NSRect, NSSize, NSString,
@@ -30,6 +30,7 @@ use pixelflow_render::color::Rgba;
 use pixelflow_render::Frame;
 use std::ffi::CStr;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::{Mutex, OnceLock};
 
 #[link(name = "Metal", kind = "framework")]
 #[link(name = "QuartzCore", kind = "framework")]
@@ -45,6 +46,13 @@ const MTL_RESOURCE_STORAGE_MODE_SHARED: u64 = 0;
 const DEFAULT_WINDOW_X: f64 = 100.0;
 const DEFAULT_WINDOW_Y: f64 = 100.0;
 const EVENT_TIMEOUT_SECONDS: f64 = 1.0;
+
+// Global flag for close requested (set by delegate, read by event loop)
+static CLOSE_REQUESTED: OnceLock<Mutex<bool>> = OnceLock::new();
+
+fn get_close_requested() -> &'static Mutex<bool> {
+    CLOSE_REQUESTED.get_or_init(|| Mutex::new(false))
+}
 
 // --- Window ---
 struct Window {
@@ -306,6 +314,30 @@ impl Drop for MetalState {
     }
 }
 
+// --- VSync Support ---
+
+/// Detect the main display's refresh rate on macOS.
+/// Returns refresh rate in Hz, defaults to 60.0 if detection fails.
+fn detect_display_refresh_rate(mtm: MainThreadMarker) -> f64 {
+    // Get main screen
+    let main_screen = NSScreen::mainScreen(mtm);
+
+    if let Some(screen) = main_screen {
+        // Try to get maximumFramesPerSecond (available on macOS 10.15+)
+        // This handles ProMotion displays (24-120Hz)
+        unsafe {
+            let max_fps: i64 = msg_send![&screen, maximumFramesPerSecond];
+
+            if max_fps > 0 {
+                return max_fps as f64;
+            }
+        }
+    }
+
+    // Fallback to 60Hz
+    60.0
+}
+
 // --- Event Loop ---
 
 fn run_event_loop(
@@ -379,10 +411,20 @@ fn run_event_loop(
         scale: backing_scale,
     }));
 
+    // Create and provide VSync actor to engine
+    let refresh_rate = detect_display_refresh_rate(mtm);
+    let vsync_actor = crate::vsync_actor::VsyncActor::spawn(refresh_rate);
+
+    // Start the actor immediately
+    let _ = vsync_actor.send_command(crate::vsync_actor::VsyncCommand::Start);
+
+    // Send VSync actor to engine via special command
+    let _ = engine_tx.send(EngineCommand::VsyncActorReady(vsync_actor));
+
     // Event loop state
     let mut state = CocoaEventState {
         mtm,
-        window,
+        window: window.clone(),
         view,
         window_id: win.id,
         window_width_pts,
@@ -392,6 +434,16 @@ fn run_event_loop(
 
     // Main loop
     loop {
+        // Check if close was requested via delegate
+        if let Ok(mut flag) = get_close_requested().lock() {
+            if *flag {
+                *flag = false; // Reset flag
+                info!("Metal: Close button clicked");
+                let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::CloseRequested {
+                    id: win.id,
+                }));
+            }
+        }
         // Poll Cocoa events
         unsafe {
             let app = NSApplication::sharedApplication(mtm);
@@ -429,6 +481,11 @@ fn run_event_loop(
                     break;
                 }
             }
+        }
+
+        // Check for window changes (resize, scale)
+        for event in state.check_window_changes() {
+            let _ = engine_tx.send(EngineCommand::DisplayEvent(event));
         }
 
         // Process commands
@@ -502,12 +559,59 @@ struct CocoaEventState {
 }
 
 impl CocoaEventState {
+    /// Check if window size or scale changed, returns events if needed
+    fn check_window_changes(&mut self) -> Vec<DisplayEvent> {
+        let mut events = Vec::new();
+
+        unsafe {
+            // Check backing scale
+            let current_scale: f64 = msg_send![&self.window, backingScaleFactor];
+            if (current_scale - self.backing_scale).abs() > 0.01 {
+                log::info!("Metal: Scale changed from {} to {}", self.backing_scale, current_scale);
+                self.backing_scale = current_scale;
+                events.push(DisplayEvent::ScaleChanged {
+                    id: self.window_id,
+                    scale: current_scale,
+                });
+            }
+
+            // Check window size
+            let frame: NSRect = msg_send![&self.window, frame];
+            let content_rect: NSRect = msg_send![&self.window, contentRectForFrameRect: frame];
+            let width_pts = content_rect.size.width;
+            let height_pts = content_rect.size.height;
+
+            let width_diff = (width_pts - self.window_width_pts).abs();
+            let height_diff = (height_pts - self.window_height_pts).abs();
+
+            log::trace!("Metal: Window size check - current: {}x{}, stored: {}x{}, diff: {}x{}",
+                width_pts, height_pts, self.window_width_pts, self.window_height_pts, width_diff, height_diff);
+
+            if width_diff > 0.1 || height_diff > 0.1 {
+                log::info!("Metal: Resize from {}x{} to {}x{} pts", self.window_width_pts, self.window_height_pts, width_pts, height_pts);
+                self.window_width_pts = width_pts;
+                self.window_height_pts = height_pts;
+
+                let width_px = (width_pts * self.backing_scale) as u32;
+                let height_px = (height_pts * self.backing_scale) as u32;
+
+                events.push(DisplayEvent::Resized {
+                    id: self.window_id,
+                    width_px,
+                    height_px,
+                });
+            }
+        }
+
+        events
+    }
+
     fn convert_event(&self, event: &NSEvent) -> Option<DisplayEvent> {
         let event_type = event.r#type();
         trace!("Metal: event type={:?}", event_type);
         let id = self.window_id;
 
-        match event_type {
+        let result = match event_type {
             NSEventType::KeyDown => {
                 let chars = event.characters();
                 let text = chars.map(|s| s.to_string());
@@ -592,7 +696,19 @@ impl CocoaEventState {
                 })
             }
             _ => None,
+        };
+
+        // Only log unexpected events (not system/internal events)
+        if result.is_none() {
+            // Known system events we don't handle but should pass through:
+            // 8 = FlagsChanged, 9 = AppKitDefined, 13 = Periodic, 14 = CursorUpdate, 34 = SystemDefined
+            let is_system_event = matches!(event_type.0, 8 | 9 | 13 | 14 | 34);
+            if !is_system_event {
+                log::warn!("Metal: Unhandled NSEvent type: {:?}", event_type);
+            }
         }
+
+        result
     }
 
     fn copy_to_clipboard(&self, text: &str) {
@@ -683,11 +799,17 @@ fn register_delegate_class() {
         unsafe extern "C" fn window_should_close(
             _: *mut AnyObject,
             _: Sel,
-            _: *mut NSWindow,
+            _window: *mut NSWindow,
         ) -> Bool {
-            info!("MetalTermWindowDelegate: windowShouldClose");
-            Bool::YES
+            info!("MetalTermWindowDelegate: windowShouldClose - setting flag");
+            // Set the flag for the event loop to pick up
+            if let Ok(mut flag) = get_close_requested().lock() {
+                *flag = true;
+            }
+            // Return NO to prevent immediate closure - let the engine decide
+            Bool::NO
         }
+
         unsafe extern "C" fn window_will_close(_: *mut AnyObject, _: Sel, _: *mut NSObject) {
             info!("MetalTermWindowDelegate: windowWillClose");
         }
