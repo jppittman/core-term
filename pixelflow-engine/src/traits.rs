@@ -44,8 +44,6 @@ pub enum EngineEvent {
 pub enum AppAction {
     /// Do nothing, continue waiting for events.
     Continue,
-    /// State changed, schedule a render for this frame.
-    Redraw,
     /// Update the window title.
     SetTitle(String),
     /// Request a window resize.
