@@ -9,7 +9,7 @@
 //!
 //! - **[`Font`]**: A handle to a parsed font file. Used to retrieve glyph geometry.
 //! - **[`Glyph`]**: A resolution-independent vector representation of a character.
-//!   It implements [`Surface<u8>`](pixelflow_core::pipe::Surface), returning coverage values (alpha).
+//!   It implements [`Surface<u8>`](pixelflow_core::traits::Surface), returning coverage values (alpha).
 //! - **Combinators**: Traits like [`CurveSurfaceExt`] allow transforming glyphs
 //!   (e.g., [`Bold`], [`Slant`]) before rasterization.
 //!

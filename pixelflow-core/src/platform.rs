@@ -1,6 +1,6 @@
 use crate::backend::SimdBatch;
 use crate::batch::{Batch, LANES};
-use crate::pipe::Surface;
+use crate::traits::Surface;
 use alloc::vec;
 use alloc::vec::Vec;
 

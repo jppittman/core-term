@@ -71,7 +71,7 @@ impl<'a> Font<'a> {
     ///
     /// This method extracts the outline of the character, subdivides cubic Bézier curves
     /// into quadratics (since the renderer supports quadratics natively), and returns
-    /// a [`Glyph`] which implements [`Surface<u8>`](pixelflow_core::pipe::Surface).
+    /// a [`Glyph`] which implements [`Surface<u8>`](pixelflow_core::traits::Surface).
     ///
     /// # Arguments
     ///
