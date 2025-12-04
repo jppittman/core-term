@@ -770,4 +770,202 @@ mod tests {
             center_alpha
         );
     }
+
+    fn eval_cell_pixel(
+        segments: &[Segment],
+        bounds: GlyphBounds,
+        ascender: i32,
+        px: u32,
+        py: u32,
+    ) -> u8 {
+        let x = Batch::<u32>::splat(px);
+        let y = Batch::<u32>::splat(py);
+        let dilation = Batch::<f32>::splat(0.0);
+        eval_curves_cell(segments, bounds, ascender, x, y, dilation).first()
+    }
+
+    #[test]
+    fn cell_bottom_pixel_not_clipped() {
+        // Simulate a glyph with a descender that extends to the bottom of a cell.
+        // Cell: 16 pixels tall, ascender at y=12, descender at y=-4
+        // The glyph is a rectangle from y=-4 to y=12 (full height of the cell).
+        let cell_height = 16u32;
+        let ascender = 12i32;
+        let descender = -4i32;
+
+        // Create a vertical bar that spans the full cell height
+        let segments = vec![
+            Segment::Line(Line { p0: [2.0, descender as f32], p1: [8.0, descender as f32] }),
+            Segment::Line(Line { p0: [8.0, descender as f32], p1: [8.0, ascender as f32] }),
+            Segment::Line(Line { p0: [8.0, ascender as f32], p1: [2.0, ascender as f32] }),
+            Segment::Line(Line { p0: [2.0, ascender as f32], p1: [2.0, descender as f32] }),
+        ];
+        let bounds = GlyphBounds {
+            width: 10,
+            height: cell_height,
+            bearing_x: 0,
+            bearing_y: ascender,
+        };
+
+        // The center of the bar should be opaque at every row
+        let center_x = 5u32;
+
+        // Top pixel (row 0) - should be opaque since bar extends to y=12
+        let top_alpha = eval_cell_pixel(&segments, bounds, ascender, center_x, 0);
+        assert!(
+            top_alpha > 200,
+            "Top pixel should be opaque, got {}",
+            top_alpha
+        );
+
+        // Middle pixel - definitely opaque
+        let mid_alpha = eval_cell_pixel(&segments, bounds, ascender, center_x, 8);
+        assert!(
+            mid_alpha > 200,
+            "Middle pixel should be opaque, got {}",
+            mid_alpha
+        );
+
+        // Bottom pixel (row 15) - should be opaque since bar extends to y=-4
+        let bottom_alpha = eval_cell_pixel(&segments, bounds, ascender, center_x, cell_height - 1);
+        assert!(
+            bottom_alpha > 200,
+            "Bottom pixel should be opaque, got {} (this indicates descender clipping)",
+            bottom_alpha
+        );
+    }
+
+    #[test]
+    fn real_font_descender_not_clipped() {
+        // Test that 'g' (which has a descender) renders fully within a cell.
+        use crate::combinators::glyphs;
+        use crate::font::Font;
+        use pixelflow_core::ops::Baked;
+        use pixelflow_core::pipe::Surface;
+
+        let font_bytes = include_bytes!("../assets/NotoSansMono-Regular.ttf");
+        let font = Font::from_bytes(font_bytes).expect("Failed to load font");
+
+        // Print font metrics
+        let metrics = font.metrics();
+        eprintln!("Font metrics: ascent={}, descent={}, line_gap={}, units_per_em={}",
+            metrics.ascent, metrics.descent, metrics.line_gap, metrics.units_per_em);
+
+        let line_height = metrics.ascent as f32 - metrics.descent as f32;
+        eprintln!("Line height (ascent - descent): {}", line_height);
+
+        let cell_w = 10u32;
+        let cell_h = 20u32;
+
+        let ascender = (metrics.ascent as f32 * cell_h as f32 / line_height).round() as i32;
+        eprintln!("Calculated ascender for {}px cell: {}", cell_h, ascender);
+        eprintln!("Calculated descender (ascender - cell_h): {}", ascender - cell_h as i32);
+
+        let glyph_fn = glyphs(font.clone(), cell_w, cell_h);
+        let baked: Baked<u8> = glyph_fn('g').get().clone();
+
+        eprintln!("\n'g' rendered in {}x{} cell:", cell_w, cell_h);
+        for py in 0..cell_h {
+            let mut row = String::new();
+            for px in 0..cell_w {
+                let x = Batch::<u32>::splat(px);
+                let y = Batch::<u32>::splat(py);
+                let alpha = baked.eval(x, y).first();
+                let ch = if alpha > 200 {
+                    '#'
+                } else if alpha > 100 {
+                    '+'
+                } else if alpha > 50 {
+                    '.'
+                } else if alpha > 0 {
+                    ','
+                } else {
+                    ' '
+                };
+                row.push(ch);
+            }
+            eprintln!("{:2}: |{}|", py, row);
+        }
+
+        // The descender of 'g' should have pixels in the bottom portion of the cell.
+        // Check that there's some coverage in the bottom 25% of the cell.
+        let mut bottom_coverage = 0u32;
+        let bottom_start = cell_h * 3 / 4; // Bottom 25%
+        for py in bottom_start..cell_h {
+            for px in 0..cell_w {
+                let x = Batch::<u32>::splat(px);
+                let y = Batch::<u32>::splat(py);
+                let alpha = baked.eval(x, y).first();
+                if alpha > 50 {
+                    bottom_coverage += 1;
+                }
+            }
+        }
+
+        eprintln!("Bottom 25% coverage count: {}", bottom_coverage);
+        assert!(
+            bottom_coverage > 0,
+            "Descender of 'g' should have pixels in bottom 25% of cell"
+        );
+
+        // Also verify the very bottom row has some coverage (if the descender extends there)
+        let mut last_row_coverage = 0u32;
+        for px in 0..cell_w {
+            let x = Batch::<u32>::splat(px);
+            let y = Batch::<u32>::splat(cell_h - 1);
+            let alpha = baked.eval(x, y).first();
+            if alpha > 0 {
+                last_row_coverage += 1;
+            }
+        }
+        eprintln!("Last row coverage count: {}", last_row_coverage);
+    }
+
+    #[test]
+    fn glyph_line_height_fits_cell() {
+        // The glyph's line height (ascent - descent) should fit within the cell.
+        // Glyphs must be scaled by cell_h * units_per_em / line_height, not just cell_h.
+        use crate::font::Font;
+
+        let font_bytes = include_bytes!("../assets/NotoSansMono-Regular.ttf");
+        let font = Font::from_bytes(font_bytes).expect("Failed to load font");
+
+        let metrics = font.metrics();
+        let line_height = (metrics.ascent - metrics.descent) as f32;
+        let units_per_em = metrics.units_per_em as f32;
+
+        eprintln!("line_height={}, units_per_em={}", line_height, units_per_em);
+
+        let cell_h = 20u32;
+
+        // Calculate the correct glyph size (as done in combinators.rs)
+        let glyph_size = cell_h as f32 * units_per_em / line_height;
+        eprintln!("Correct glyph_size for {}px cell: {}", cell_h, glyph_size);
+
+        let glyph = font.glyph('g', glyph_size).expect("No 'g' glyph");
+        let bounds = glyph.bounds();
+
+        eprintln!("'g' bounds at corrected size: {:?}", bounds);
+        eprintln!("bearing_y (top of glyph in curve space): {}", bounds.bearing_y);
+
+        // Calculate where the bottom of the glyph is in curve space
+        let glyph_bottom = bounds.bearing_y as i32 - bounds.height as i32;
+        eprintln!("Glyph bottom in curve space: {}", glyph_bottom);
+
+        // Calculate the cell's sampling range (using floor to match combinators.rs)
+        let ascender = (metrics.ascent as f32 * cell_h as f32 / line_height).floor() as i32;
+        let cell_top_sample = ascender as f32 - 0.5; // pixel 0 center
+        let cell_bottom_sample = ascender as f32 - (cell_h as f32 - 0.5); // pixel (h-1) center
+
+        eprintln!("Cell ascender: {}", ascender);
+        eprintln!("Cell samples from curve y={} to y={}", cell_top_sample, cell_bottom_sample);
+
+        // The glyph bottom should be within the cell's sampling range
+        assert!(
+            glyph_bottom as f32 >= cell_bottom_sample,
+            "Glyph bottom ({}) is below cell sampling range ({}), causing clipping!",
+            glyph_bottom,
+            cell_bottom_sample
+        );
+    }
 }

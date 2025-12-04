@@ -515,6 +515,16 @@ impl FloatBatchOps for ScalarBatch<f32> {
     fn abs(self) -> Self {
         ScalarBatch(libm::fabsf(self.0))
     }
+
+    #[inline(always)]
+    fn log2(self) -> Self {
+        ScalarBatch(libm::log2f(self.0))
+    }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        ScalarBatch(libm::exp2f(self.0))
+    }
 }
 
 #[cfg(test)]
