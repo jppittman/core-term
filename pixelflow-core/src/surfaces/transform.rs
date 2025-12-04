@@ -27,28 +27,37 @@ where
     }
 }
 
-/// Scales the coordinate system by a fixed factor.
+/// Scales the coordinate system by fixed factors.
 #[derive(Copy, Clone)]
 pub struct Scale<S> {
     /// The source surface to scale.
     pub source: S,
-    /// Inverse scale factor in fixed-point format (16.16).
-    pub inv_scale_fp: u32,
+    /// Inverse X scale factor in fixed-point format (16.16).
+    pub inv_scale_x_fp: u32,
+    /// Inverse Y scale factor in fixed-point format (16.16).
+    pub inv_scale_y_fp: u32,
 }
 
 impl<S> Scale<S> {
-    /// Creates a new `Scale` wrapper.
+    /// Creates a new `Scale` wrapper with separate X and Y factors.
     ///
     /// # Arguments
     /// * `source` - The source surface.
-    /// * `scale_factor` - The scaling factor (e.g., 2.0 for 2x zoom).
+    /// * `scale_x` - Horizontal scaling factor (e.g., 3.0 for 3x width).
+    /// * `scale_y` - Vertical scaling factor (e.g., 1.0 for no change).
     #[inline]
-    pub fn new(source: S, scale_factor: f64) -> Self {
-        let inv_scale_fp = ((1.0 / scale_factor) * 65536.0) as u32;
+    pub fn new(source: S, scale_x: f64, scale_y: f64) -> Self {
         Self {
             source,
-            inv_scale_fp,
+            inv_scale_x_fp: ((1.0 / scale_x) * 65536.0) as u32,
+            inv_scale_y_fp: ((1.0 / scale_y) * 65536.0) as u32,
         }
+    }
+
+    /// Creates a new `Scale` wrapper with uniform scaling.
+    #[inline]
+    pub fn uniform(source: S, scale: f64) -> Self {
+        Self::new(source, scale, scale)
     }
 }
 
@@ -59,9 +68,10 @@ where
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
-        let inv = Batch::<u32>::splat(self.inv_scale_fp);
-        let lx = (x * inv) >> 16;
-        let ly = (y * inv) >> 16;
+        let inv_x = Batch::<u32>::splat(self.inv_scale_x_fp);
+        let inv_y = Batch::<u32>::splat(self.inv_scale_y_fp);
+        let lx = (x * inv_x) >> 16;
+        let ly = (y * inv_y) >> 16;
         self.source.eval(lx, ly)
     }
 }

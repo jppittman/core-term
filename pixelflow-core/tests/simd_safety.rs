@@ -8,7 +8,7 @@ use pixelflow_core::backend::{Backend, SimdBatch};
 // We only test the ARM NEON backend here as it's the one suspected of having
 // buffer overrun issues. If x86 AVX512 is added later, it should be tested similarly.
 #[cfg(target_arch = "aarch64")]
-use pixelflow_core::backends::arm::{Neon, SimdVec};
+use pixelflow_core::backend::arm::{Neon, SimdVec};
 
 #[test]
 #[cfg(target_arch = "aarch64")]
