@@ -582,6 +582,29 @@ impl<T: Copy + Debug + Default + PartialEq + Send + Sync + 'static> SimdBatch<T>
             }
         }
     }
+
+    fn extract_lane(&self, lane: usize) -> T {
+        unsafe {
+            if core::mem::size_of::<T>() == 4 {
+                let mut arr = [0u32; 4];
+                vst1q_u32(arr.as_mut_ptr(), self.0.u32);
+                let v = arr[lane];
+                core::mem::transmute_copy(&v)
+            } else if core::mem::size_of::<T>() == 2 {
+                let mut arr = [0u16; 8];
+                vst1q_u16(arr.as_mut_ptr(), self.0.u16);
+                let v = arr[lane];
+                core::mem::transmute_copy(&v)
+            } else if core::mem::size_of::<T>() == 1 {
+                let mut arr = [0u8; 16];
+                vst1q_u8(arr.as_mut_ptr(), self.0.u8);
+                let v = arr[lane];
+                core::mem::transmute_copy(&v)
+            } else {
+                T::default()
+            }
+        }
+    }
 }
 
 impl SimdVec<u16> {

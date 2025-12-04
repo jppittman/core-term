@@ -25,5 +25,5 @@ pub use geometry::{Mat3, Poly, Curve2D, Rect};
 pub use pixel::Pixel;
 pub use platform::{PixelFormat, Platform};
 pub use raster::{Tensor2x2, Tensor2x1, Tensor1x2, Tensor1x1, TensorView, TensorViewMut, execute};
-pub use surfaces::{Baked, FnSurface, Implicit, Map, Offset, Over, SampleAtlas, Scale, Select, Skew};
+pub use surfaces::{Baked, FnSurface, Implicit, Map, Offset, Over, Partition, SampleAtlas, Scale, Select, Skew};
 pub use traits::{Surface, Volume};

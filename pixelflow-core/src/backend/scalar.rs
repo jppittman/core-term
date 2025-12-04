@@ -44,9 +44,16 @@ impl Backend for Scalar {
 }
 
 /// A batch containing a single value.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct ScalarBatch<T>(pub T);
+
+// PartialEq only for types that support it
+impl<T: PartialEq> PartialEq for ScalarBatch<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 // Integer arithmetic uses wrapping to match SIMD semantics
 macro_rules! impl_arithmetic_int {
@@ -268,6 +275,10 @@ impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T>
 
     fn all(&self) -> bool {
         self.0 != T::default()
+    }
+
+    fn extract_lane(&self, _lane: usize) -> T {
+        self.0
     }
 }
 
