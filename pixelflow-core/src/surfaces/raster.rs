@@ -27,7 +27,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::Backend;
+    use crate::backend::{Backend, BatchArithmetic};
 
     struct Circle {
         radius_sq: f32,
