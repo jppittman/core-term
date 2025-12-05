@@ -54,6 +54,22 @@ fn get_close_requested() -> &'static Mutex<bool> {
     CLOSE_REQUESTED.get_or_init(|| Mutex::new(false))
 }
 
+// Global queue for delegate-triggered events (resize, minimize, etc.)
+static DELEGATE_EVENTS: OnceLock<Mutex<Vec<DelegateEvent>>> = OnceLock::new();
+
+fn get_delegate_events() -> &'static Mutex<Vec<DelegateEvent>> {
+    DELEGATE_EVENTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[derive(Debug, Clone)]
+enum DelegateEvent {
+    Resize { width: f64, height: f64 },
+    Minimize,
+    Deminiaturize,
+    EnterFullScreen,
+    ExitFullScreen,
+}
+
 // --- Window ---
 struct Window {
     id: WindowId,
@@ -159,7 +175,8 @@ impl MetalState {
             return Err(anyhow!("Failed to create Metal buffer"));
         }
 
-        let buffer_ptr: *mut u8 = msg_send![buffer, contents];
+        let buffer_ptr: *mut std::ffi::c_void = msg_send![buffer, contents];
+        let buffer_ptr = buffer_ptr as *mut u8;
         info!(
             "Metal: Buffer created {}x{} ({} bytes)",
             width, height, buffer_size
@@ -196,7 +213,8 @@ impl MetalState {
         let _: () = msg_send![self.buffer, release];
 
         self.buffer = buffer;
-        self.buffer_ptr = msg_send![buffer, contents];
+        let buffer_ptr: *mut std::ffi::c_void = msg_send![buffer, contents];
+        self.buffer_ptr = buffer_ptr as *mut u8;
         self.buffer_size = buffer_size;
         self.width = width;
         self.height = height;
@@ -253,7 +271,7 @@ impl MetalState {
 
         unsafe impl objc2::Encode for MTLOrigin {
             const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-                "MTLOrigin",
+                "?",
                 &[
                     objc2::Encoding::ULongLong,
                     objc2::Encoding::ULongLong,
@@ -263,7 +281,7 @@ impl MetalState {
         }
         unsafe impl objc2::Encode for MTLSize {
             const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-                "MTLSize",
+                "?",
                 &[
                     objc2::Encoding::ULongLong,
                     objc2::Encoding::ULongLong,
@@ -273,7 +291,7 @@ impl MetalState {
         }
         unsafe impl objc2::Encode for MTLRegion {
             const ENCODING: objc2::Encoding =
-                objc2::Encoding::Struct("MTLRegion", &[MTLOrigin::ENCODING, MTLSize::ENCODING]);
+                objc2::Encoding::Struct("?", &[MTLOrigin::ENCODING, MTLSize::ENCODING]);
         }
 
         let region = MTLRegion {
@@ -291,7 +309,7 @@ impl MetalState {
             texture,
             replaceRegion: region
             mipmapLevel: 0u64
-            withBytes: self.buffer_ptr
+            withBytes: self.buffer_ptr as *const std::ffi::c_void
             bytesPerRow: bytes_per_row
         ];
 
@@ -444,6 +462,52 @@ fn run_event_loop(
                 }));
             }
         }
+
+        // Process delegate events (resize, minimize, etc.)
+        if let Ok(mut delegate_events) = get_delegate_events().lock() {
+            for event in delegate_events.drain(..) {
+                match event {
+                    DelegateEvent::Resize { width, height } => {
+                        // Update state tracking
+                        let width_diff = (width - state.window_width_pts).abs();
+                        let height_diff = (height - state.window_height_pts).abs();
+
+                        if width_diff > 0.1 || height_diff > 0.1 {
+                            info!("Metal: Delegate resize from {}x{} to {}x{} pts",
+                                state.window_width_pts, state.window_height_pts, width, height);
+                            state.window_width_pts = width;
+                            state.window_height_pts = height;
+
+                            let width_px = (width * state.backing_scale) as u32;
+                            let height_px = (height * state.backing_scale) as u32;
+
+                            let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resized {
+                                id: win.id,
+                                width_px,
+                                height_px,
+                            }));
+                        }
+                    }
+                    DelegateEvent::Minimize => {
+                        info!("Metal: Window minimized");
+                        // Could send a FocusLost event or add new MinimizeEvent
+                    }
+                    DelegateEvent::Deminiaturize => {
+                        info!("Metal: Window restored from minimize");
+                        // Could send a FocusGained event or add new RestoreEvent
+                    }
+                    DelegateEvent::EnterFullScreen => {
+                        info!("Metal: Entered fullscreen");
+                        // Could add FullScreenChanged event
+                    }
+                    DelegateEvent::ExitFullScreen => {
+                        info!("Metal: Exited fullscreen");
+                        // Could add FullScreenChanged event
+                    }
+                }
+            }
+        }
+
         // Poll Cocoa events
         unsafe {
             let app = NSApplication::sharedApplication(mtm);
@@ -468,14 +532,17 @@ fn run_event_loop(
                         break;
                     }
 
+                    // FIX: Always send the event to Cocoa so the Window Server handles
+                    // window chrome (drag, resize, close buttons) and dispatching.
+                    let _: () = msg_send![&app, sendEvent: &*event];
+
+                    // Then inspect it for our engine
                     if let Some(display_event) = state.convert_event(&event) {
                         if matches!(display_event, DisplayEvent::CloseRequested { .. }) {
                             info!("Metal: CloseRequested");
                             return Ok(());
                         }
                         let _ = engine_tx.send(EngineCommand::DisplayEvent(display_event));
-                    } else {
-                        let _: () = msg_send![&app, sendEvent: &*event];
                     }
                 } else {
                     break;
@@ -814,6 +881,50 @@ fn register_delegate_class() {
             info!("MetalTermWindowDelegate: windowWillClose");
         }
 
+        unsafe extern "C" fn window_did_resize(_: *mut AnyObject, _: Sel, notification: *mut NSObject) {
+            info!("MetalTermWindowDelegate: windowDidResize");
+            // Extract window from notification
+            let window: *mut NSWindow = msg_send![notification, object];
+            if !window.is_null() {
+                let frame: NSRect = msg_send![window, frame];
+                let content_rect: NSRect = msg_send![window, contentRectForFrameRect: frame];
+                let width = content_rect.size.width;
+                let height = content_rect.size.height;
+
+                if let Ok(mut events) = get_delegate_events().lock() {
+                    events.push(DelegateEvent::Resize { width, height });
+                }
+            }
+        }
+
+        unsafe extern "C" fn window_did_miniaturize(_: *mut AnyObject, _: Sel, _: *mut NSObject) {
+            info!("MetalTermWindowDelegate: windowDidMiniaturize");
+            if let Ok(mut events) = get_delegate_events().lock() {
+                events.push(DelegateEvent::Minimize);
+            }
+        }
+
+        unsafe extern "C" fn window_did_deminiaturize(_: *mut AnyObject, _: Sel, _: *mut NSObject) {
+            info!("MetalTermWindowDelegate: windowDidDeminiaturize");
+            if let Ok(mut events) = get_delegate_events().lock() {
+                events.push(DelegateEvent::Deminiaturize);
+            }
+        }
+
+        unsafe extern "C" fn window_did_enter_full_screen(_: *mut AnyObject, _: Sel, _: *mut NSObject) {
+            info!("MetalTermWindowDelegate: windowDidEnterFullScreen");
+            if let Ok(mut events) = get_delegate_events().lock() {
+                events.push(DelegateEvent::EnterFullScreen);
+            }
+        }
+
+        unsafe extern "C" fn window_did_exit_full_screen(_: *mut AnyObject, _: Sel, _: *mut NSObject) {
+            info!("MetalTermWindowDelegate: windowDidExitFullScreen");
+            if let Ok(mut events) = get_delegate_events().lock() {
+                events.push(DelegateEvent::ExitFullScreen);
+            }
+        }
+
         unsafe {
             builder.add_method(
                 sel!(windowShouldClose:),
@@ -822,6 +933,26 @@ fn register_delegate_class() {
             builder.add_method(
                 sel!(windowWillClose:),
                 window_will_close as unsafe extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(windowDidResize:),
+                window_did_resize as unsafe extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(windowDidMiniaturize:),
+                window_did_miniaturize as unsafe extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(windowDidDeminiaturize:),
+                window_did_deminiaturize as unsafe extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(windowDidEnterFullScreen:),
+                window_did_enter_full_screen as unsafe extern "C" fn(_, _, _),
+            );
+            builder.add_method(
+                sel!(windowDidExitFullScreen:),
+                window_did_exit_full_screen as unsafe extern "C" fn(_, _, _),
             );
         }
 
