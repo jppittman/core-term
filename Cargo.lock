@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "actor-scheduler"
+version = "0.1.0"
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -378,6 +382,7 @@ dependencies = [
 name = "core-term"
 version = "0.1.0"
 dependencies = [
+ "actor-scheduler",
  "anyhow",
  "bitflags 2.9.1",
  "clap",
@@ -1096,6 +1101,7 @@ dependencies = [
 name = "pixelflow-engine"
 version = "0.1.0"
 dependencies = [
+ "actor-scheduler",
  "anyhow",
  "bincode",
  "bitflags 2.9.1",
@@ -1213,10 +1219,6 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
 ]
-
-[[package]]
-name = "priority-channel"
-version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"

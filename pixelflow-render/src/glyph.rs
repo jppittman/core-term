@@ -56,9 +56,9 @@ impl<S> SubpixelMap<S> {
 }
 
 // Implement for Continuous Source (f32) -> Discrete Output (u32)
-impl<S> Surface<u32, u32> for SubpixelMap<S>
+impl<S> Surface<u32> for SubpixelMap<S>
 where
-    S: Surface<u32, f32>,
+    S: Surface<u32>,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
@@ -70,14 +70,20 @@ where
 
         // Sample at subpixel centers: -1/3, 0, +1/3 relative to pixel center
         // (Corresponds to 1/6, 3/6, 5/6 in [0, 1] space)
-        let r_pos = x_f - third;
-        let g_pos = x_f;
-        let b_pos = x_f + third;
+        let r_pos_f = x_f - third;
+        let g_pos_f = x_f;
+        let b_pos_f = x_f + third;
+
+        // Convert back to u32 coordinates for eval
+        let r_pos = NativeBackend::f32_to_u32(r_pos_f);
+        let g_pos = NativeBackend::f32_to_u32(g_pos_f);
+        let b_pos = NativeBackend::f32_to_u32(b_pos_f);
+        let y_u32 = NativeBackend::f32_to_u32(y_f);
 
         // Source pixels have coverage in alpha channel
-        let r_pixel = self.source.eval(r_pos, y_f);
-        let g_pixel = self.source.eval(g_pos, y_f);
-        let b_pixel = self.source.eval(b_pos, y_f);
+        let r_pixel = self.source.eval(r_pos, y_u32);
+        let g_pixel = self.source.eval(g_pos, y_u32);
+        let b_pixel = self.source.eval(b_pos, y_u32);
 
         // Extract alpha (coverage) from each pixel
         let r = <u32 as Pixel>::batch_alpha(r_pixel);

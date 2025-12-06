@@ -104,14 +104,16 @@ fn main() -> anyhow::Result<()> {
     let term_rows = CONFIG.appearance.rows as usize;
     info!("Terminal dimensions: {}x{} cells", term_cols, term_rows);
 
-    // Create channels for PTY communication
-    // pty_cmd: read thread → app (parsed ANSI commands)
+    // Create channel for PTY writes
     // pty_write: app → write thread (raw bytes to write to PTY)
-    let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
+    // PTY reads now go through priority channel created by spawn_terminal_app
     let (pty_write_tx, pty_write_rx) = std::sync::mpsc::sync_channel(128);
 
-    // Engine Initialization
-    use pixelflow_engine::{EngineConfig, EnginePlatform, WindowConfig};
+    // Create terminal emulator
+    let term_emulator = TerminalEmulator::new(term_cols, term_rows);
+
+    // Engine Initialization with new API
+    use pixelflow_engine::{channel::create_engine_actor, EngineConfig, WindowConfig};
 
     let engine_config = EngineConfig {
         window: WindowConfig {
@@ -126,15 +128,34 @@ fn main() -> anyhow::Result<()> {
         performance: CONFIG.performance.clone(),
     };
 
-    let platform =
-        EnginePlatform::new(engine_config).context("Failed to initialize EnginePlatform")?;
+    info!("Engine config created. Starting main event loop...");
 
-    // Spawn PTY I/O actor
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let _event_monitor_actor = {
+    // Spawn app worker in its own thread, get proxy for engine
+    // Platform-specific pixel format
+    #[cfg(target_os = "macos")]
+    let _app_handle = {
         use crate::io::event_monitor_actor::EventMonitorActor;
         use crate::io::pty::{NixPty, PtyConfig};
+        use crate::terminal_app::spawn_terminal_app;
+        use pixelflow_render::CocoaPixel;
 
+        // Create PTY command channel
+        let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
+
+        // Create engine actor (for app to send responses back)
+        let (engine_handle, _engine_scheduler) = create_engine_actor::<CocoaPixel>(None);
+
+        // Spawn terminal app
+        let (app_handle, _app_thread_handle) = spawn_terminal_app::<CocoaPixel>(
+            term_emulator,
+            pty_write_tx,
+            pty_cmd_rx,
+            crate::config::Config::default(),
+            engine_handle.clone(),
+        )
+        .context("Failed to spawn terminal app")?;
+
+        // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
         let pty_config = PtyConfig {
             command_executable: &shell_command,
@@ -145,50 +166,60 @@ fn main() -> anyhow::Result<()> {
         let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
         info!("Spawned PTY");
 
-        EventMonitorActor::spawn(pty, pty_cmd_tx, pty_write_rx)
-            .context("Failed to spawn EventMonitorActor")?
-    };
-    info!("EventMonitorActor spawned successfully");
+        let _event_monitor_actor = EventMonitorActor::spawn(pty, pty_cmd_tx, pty_write_rx)
+            .context("Failed to spawn EventMonitorActor")?;
+        info!("EventMonitorActor spawned successfully");
 
-    // Create terminal emulator
-    let term_emulator = TerminalEmulator::new(term_cols, term_rows);
+        // Run engine with new API (blocks until quit)
+        pixelflow_engine::run(app_handle, engine_handle, engine_config)
+            .context("Engine run failed")?;
 
-    info!("Platform initialized. Starting main event loop...");
-
-    // Spawn app worker in its own thread, get proxy for engine
-    // Platform-specific pixel format
-    #[cfg(target_os = "macos")]
-    let _worker_handle = {
-        use crate::terminal_app::spawn_terminal_app;
-        use pixelflow_render::CocoaPixel;
-
-        let (proxy, handle) = spawn_terminal_app::<CocoaPixel>(
-            term_emulator,
-            pty_cmd_rx,
-            pty_write_tx,
-            crate::config::Config::default(),
-        )
-        .context("Failed to spawn terminal app worker")?;
-
-        platform.run(proxy).context("Platform event loop failed")?;
-        handle
+        _app_thread_handle
     };
 
     #[cfg(target_os = "linux")]
-    let _worker_handle = {
+    let _app_handle = {
+        use crate::io::event_monitor_actor::EventMonitorActor;
+        use crate::io::pty::{NixPty, PtyConfig};
         use crate::terminal_app::spawn_terminal_app;
         use pixelflow_render::X11Pixel;
 
-        let (proxy, handle) = spawn_terminal_app::<X11Pixel>(
-            term_emulator,
-            pty_cmd_rx,
-            pty_write_tx,
-            crate::config::Config::default(),
-        )
-        .context("Failed to spawn terminal app worker")?;
+        // Create PTY command channel
+        let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
 
-        platform.run(proxy).context("Platform event loop failed")?;
-        handle
+        // Create engine actor (for app to send responses back)
+        let (engine_handle, _engine_scheduler) = create_engine_actor::<X11Pixel>(None);
+
+        // Spawn terminal app
+        let (app_handle, _app_thread_handle) = spawn_terminal_app::<X11Pixel>(
+            term_emulator,
+            pty_write_tx,
+            pty_cmd_rx,
+            crate::config::Config::default(),
+            engine_handle.clone(),
+        )
+        .context("Failed to spawn terminal app")?;
+
+        // Spawn PTY
+        let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
+        let pty_config = PtyConfig {
+            command_executable: &shell_command,
+            args: &shell_args_refs,
+            initial_cols: CONFIG.appearance.columns,
+            initial_rows: CONFIG.appearance.rows,
+        };
+        let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
+        info!("Spawned PTY");
+
+        let _event_monitor_actor = EventMonitorActor::spawn(pty, pty_cmd_tx, pty_write_rx)
+            .context("Failed to spawn EventMonitorActor")?;
+        info!("EventMonitorActor spawned successfully");
+
+        // Run engine with new API (blocks until quit)
+        pixelflow_engine::run(app_handle, engine_handle, engine_config)
+            .context("Engine run failed")?;
+
+        _app_thread_handle
     };
 
     info!("core-term exited successfully.");
