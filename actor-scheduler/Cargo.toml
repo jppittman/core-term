@@ -1,5 +1,5 @@
 [package]
-name = "priority-channel"
+name = "actor-scheduler"
 version = "0.1.0"
 edition = "2024"
 

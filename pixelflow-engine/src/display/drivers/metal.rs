@@ -9,7 +9,7 @@
 //!
 //! No CGImage, no copies, proper vsync.
 
-use crate::channel::{DriverCommand, EngineCommand, EngineSender};
+use crate::channel::{DriverCommand, EngineCommand, EngineControl, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::{KeySymbol, Modifiers};
@@ -309,7 +309,7 @@ impl MetalState {
             texture,
             replaceRegion: region
             mipmapLevel: 0u64
-            withBytes: self.buffer_ptr as *const std::ffi::c_void
+            withBytes: self.buffer_ptr
             bytesPerRow: bytes_per_row
         ];
 
@@ -429,15 +429,9 @@ fn run_event_loop(
         scale: backing_scale,
     }));
 
-    // Create and provide VSync actor to engine
+    // Send refresh rate to engine separately
     let refresh_rate = detect_display_refresh_rate(mtm);
-    let vsync_actor = crate::vsync_actor::VsyncActor::spawn(refresh_rate);
-
-    // Start the actor immediately
-    let _ = vsync_actor.send_command(crate::vsync_actor::VsyncCommand::Start);
-
-    // Send VSync actor to engine via special command
-    let _ = engine_tx.send(EngineCommand::VsyncActorReady(vsync_actor));
+    let _ = engine_tx.send(EngineControl::UpdateRefreshRate(refresh_rate));
 
     // Event loop state
     let mut state = CocoaEventState {

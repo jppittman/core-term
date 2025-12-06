@@ -20,6 +20,9 @@ features = ["serde"]
 [dependencies.pixelflow-core]
 path = "../pixelflow-core"
 
+[dependencies.actor-scheduler]
+path = "../actor-scheduler"
+
 # Display driver dependencies - feature-gated for flexibility
 [dependencies.objc2]
 version = "0.6"

@@ -5,15 +5,14 @@
 //! This module handles all PTY read operations in a dedicated thread,
 //! using kqueue/epoll for efficient event-driven I/O.
 
-use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
-#[cfg(target_os = "linux")]
-use crate::io::event::{EpollFlags as KqueueFlags, EventMonitor};
-#[cfg(target_os = "macos")]
+use crate::io::event_monitor_actor::parser_thread::{NoControl, NoManagement};
 use crate::io::event::{EventMonitor, KqueueFlags};
+#[cfg(target_os = "linux")]
+use crate::io::event::EpollFlags as KqueueFlags;
 use crate::io::traits::EventSource;
 use anyhow::{Context, Result};
 use log::*;
-use std::sync::mpsc::{SyncSender, TrySendError};
+use actor_scheduler::{ActorHandle, Message};
 use std::thread::{self, JoinHandle};
 
 /// Token for identifying PTY events in the EventMonitor.
@@ -28,10 +27,6 @@ const PTY_READ_BUFFER_SIZE_MULTIPLIER: usize = 4;
 /// Total buffer size for PTY reads (16KB).
 const PTY_READ_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE_MULTIPLIER * PTY_BASE_BUFFER_SIZE;
 
-/// Maximum commands per IOEvent to allow rendering to interleave.
-/// Small enough to prevent stalling rendering, large enough to be efficient.
-const MAX_COMMANDS_PER_IOEVENT: usize = 1000;
-
 /// Internal read thread handle.
 pub(super) struct ReadThread {
     thread_handle: Option<JoinHandle<()>>,
@@ -43,15 +38,18 @@ impl ReadThread {
     /// # Arguments
     ///
     /// * `source` - The event source (e.g., PTY) to monitor and read from
-    /// * `pty_cmd_tx` - Channel to send parsed ANSI commands to app
-    pub(super) fn spawn<S>(source: S, pty_cmd_tx: SyncSender<Vec<AnsiCommand>>) -> Result<Self>
+    /// * `parser_tx` - Actor handle to send raw bytes to parser thread
+    pub(super) fn spawn<S>(
+        source: S,
+        parser_tx: ActorHandle<Vec<u8>, NoControl, NoManagement>,
+    ) -> Result<Self>
     where
         S: EventSource + 'static,
     {
         let thread_handle = thread::Builder::new()
             .name("pty-read".to_string())
             .spawn(move || {
-                if let Err(e) = Self::read_loop(source, pty_cmd_tx) {
+                if let Err(e) = Self::read_loop(source, parser_tx) {
                     error!("PTY read thread error: {:#}", e);
                 }
             })
@@ -66,12 +64,15 @@ impl ReadThread {
 
     /// Main read loop.
     ///
-    /// Polls the PTY for read events, reads data, parses ANSI commands,
-    /// and sends them to the app. Engine polls at vsync rate, no doorbell needed.
-    fn read_loop<S: EventSource>(
+    /// Polls the PTY for read events, reads raw bytes, and sends them to parser thread via ActorHandle.
+    /// Focus is on maximizing PTY read bandwidth - no parsing here!
+    fn read_loop<S>(
         mut source: S,
-        pty_cmd_tx: SyncSender<Vec<AnsiCommand>>,
-    ) -> Result<()> {
+        parser_tx: ActorHandle<Vec<u8>, NoControl, NoManagement>,
+    ) -> Result<()>
+    where
+        S: EventSource,
+    {
         let fd = source.as_raw_fd();
         debug!("PTY read thread starting (fd: {})", fd);
 
@@ -84,12 +85,8 @@ impl ReadThread {
 
         debug!("Read thread registered PTY fd {} for EPOLLIN", fd);
 
-        let mut ansi_parser = AnsiProcessor::new();
         let mut events_buffer = Vec::with_capacity(8);
         let mut read_buffer = vec![0u8; PTY_READ_BUFFER_SIZE];
-
-        // Buffer for accumulating commands when channel is full
-        let mut command_buffer: Vec<AnsiCommand> = Vec::new();
 
         loop {
             // Poll for PTY events with a 100ms timeout
@@ -103,11 +100,9 @@ impl ReadThread {
                     let should_continue = Self::handle_pty_readable(
                         &mut source,
                         &mut read_buffer,
-                        &mut ansi_parser,
-                        &pty_cmd_tx,
-                        &mut command_buffer,
+                        &parser_tx,
                     )?;
-                    
+
                     if !should_continue {
                         info!("Read thread: PTY closed, stopping read loop");
                         return Ok(());
@@ -117,15 +112,20 @@ impl ReadThread {
         }
     }
 
-    /// Handles PTY readable events.
+    /// Handles PTY readable events - drains all available bytes and sends to parser via ActorHandle.
     /// Returns Ok(true) to continue, Ok(false) to stop (EOF).
-    fn handle_pty_readable<S: EventSource>(
+    fn handle_pty_readable<S>(
         source: &mut S,
         read_buffer: &mut [u8],
-        ansi_parser: &mut AnsiProcessor,
-        pty_cmd_tx: &SyncSender<Vec<AnsiCommand>>,
-        command_buffer: &mut Vec<AnsiCommand>,
-    ) -> Result<bool> {
+        parser_tx: &ActorHandle<Vec<u8>, NoControl, NoManagement>,
+    ) -> Result<bool>
+    where
+        S: EventSource,
+    {
+        // Accumulate raw bytes - read ALL available data from PTY first
+        let mut total_bytes_read = 0;
+        let mut raw_data_buffer = Vec::new();
+
         loop {
             // Read from PTY using safe trait method
             let bytes_read = match source.read(read_buffer) {
@@ -148,79 +148,19 @@ impl ReadThread {
                 return Ok(false);
             }
 
-            trace!("Read thread: Read {} bytes from PTY", bytes_read);
-
-            // Parse bytes into ANSI commands
-            let mut ansi_commands = ansi_parser.process_bytes(&read_buffer[..bytes_read]);
-
-            if !ansi_commands.is_empty() {
-                debug!("Read thread: Parsed {} ANSI commands", ansi_commands.len());
-
-                // Add new commands to buffer
-                command_buffer.append(&mut ansi_commands);
-
-                // Try to send buffered commands in chunks using try_send
-                while command_buffer.len() >= MAX_COMMANDS_PER_IOEVENT {
-                    // Take a chunk from the buffer
-                    let chunk: Vec<_> = command_buffer.drain(..MAX_COMMANDS_PER_IOEVENT).collect();
-
-                    match pty_cmd_tx.try_send(chunk.clone()) {
-                        Ok(()) => {
-                            trace!("Read thread: Sent {} commands to app", chunk.len());
-                        }
-                        Err(TrySendError::Full(_)) => {
-                            // Channel is full, put chunk back and stop trying
-                            debug!(
-                                "Read thread: Channel full, keeping {} buffered commands",
-                                chunk.len() + command_buffer.len()
-                            );
-                            command_buffer.splice(0..0, chunk);
-                            break;
-                        }
-                        Err(TrySendError::Disconnected(_)) => {
-                            return Err(anyhow::anyhow!("App command channel disconnected"));
-                        }
-                    }
-                }
-
-                // If buffer is too large, force a few blocking sends to drain it
-                if command_buffer.len() > 10000 {
-                    warn!(
-                        "Read thread: Command buffer exceeded 10,000 commands ({}), forcing blocking send",
-                        command_buffer.len()
-                    );
-                    // Send a few chunks with blocking send (not all - app might catch up)
-                    let chunks_to_force = 3; // Send 3 chunks (~3000 commands) to give app a chance
-                    for _ in 0..chunks_to_force {
-                        if command_buffer.is_empty() {
-                            break;
-                        }
-                        let chunk_size = command_buffer.len().min(MAX_COMMANDS_PER_IOEVENT);
-                        let chunk: Vec<_> = command_buffer.drain(..chunk_size).collect();
-                        pty_cmd_tx
-                            .send(chunk)
-                            .context("Failed to send buffered commands")?;
-                    }
-                }
-            }
+            // Append raw bytes to buffer (keep reading - no parsing!)
+            raw_data_buffer.extend_from_slice(&read_buffer[..bytes_read]);
+            total_bytes_read += bytes_read;
         }
 
-        // Try to flush buffer if we have any pending commands
-        if !command_buffer.is_empty() {
-            match pty_cmd_tx.try_send(std::mem::take(command_buffer)) {
-                Ok(()) => {
-                    trace!("Read thread: Flushed command buffer successfully");
-                }
-                Err(TrySendError::Full(commands)) => {
-                    // Put commands back in buffer
-                    *command_buffer = commands;
-                    debug!(
-                        "Read thread: Channel still full, keeping {} commands in buffer",
-                        command_buffer.len()
-                    );
-                }
-                Err(TrySendError::Disconnected(_)) => {
-                    return Err(anyhow::anyhow!("App command channel disconnected"));
+        // Send all accumulated bytes to parser thread via Data lane
+        if total_bytes_read > 0 {
+            trace!("Read thread: Read {} bytes from PTY, sending to parser via Data lane", total_bytes_read);
+
+            match parser_tx.send(Message::Data(raw_data_buffer)) {
+                Ok(()) => {},
+                Err(_) => {
+                    return Err(anyhow::anyhow!("Parser thread disconnected"));
                 }
             }
         }

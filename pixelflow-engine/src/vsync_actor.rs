@@ -4,13 +4,11 @@
 //! It sends periodic vsync signals that the engine uses for frame timing.
 
 use log::info;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use actor_scheduler::{ActorHandle, ActorScheduler, Actor};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Messages TO the VSync actor (commands)
+/// Messages TO the VSync actor (commands) - Control lane
 #[derive(Debug)]
 pub enum VsyncCommand {
     /// Start sending vsync signals
@@ -19,185 +17,200 @@ pub enum VsyncCommand {
     Stop,
     /// Update refresh rate (for VRR displays)
     UpdateRefreshRate(f64),
+    /// Request current FPS stats
+    RequestCurrentFPS,
     /// Shutdown the actor
     Shutdown,
 }
+actor_scheduler::impl_control_message!(VsyncCommand);
 
-/// Messages FROM the VSync actor (signals)
+/// Response from engine after rendering a frame - Data lane
 #[derive(Debug, Clone, Copy)]
-pub struct VsyncSignal {
-    /// When this vsync occurred
-    pub timestamp: Instant,
-    /// When the next frame should be ready
-    pub target_timestamp: Instant,
-    /// Current refresh interval (may vary with VRR)
-    pub refresh_interval: Duration,
+pub struct RenderedResponse {
+    /// Frame number that was rendered
+    pub frame_number: u64,
+    /// When the frame was rendered
+    pub rendered_at: Instant,
+}
+actor_scheduler::impl_data_message!(RenderedResponse);
+
+/// Management messages (placeholder for future use)
+#[derive(Debug)]
+pub enum VsyncManagement {}
+actor_scheduler::impl_management_message!(VsyncManagement);
+
+/// VSync actor - generates periodic vsync timing signals.
+pub struct VsyncActor<P: pixelflow_core::Pixel> {
+    engine_handle: crate::api::private::EngineActorHandle<P>,
+
+    // VSync state
+    refresh_rate: f64,
+    interval: Duration,
+    running: bool,
+    next_vsync: Instant,
+
+    // Token bucket for adaptive frame pacing
+    tokens: u32,
+
+    // FPS tracking
+    frame_count: u64,
+    fps_start: Instant,
+    last_fps: f64,
 }
 
-/// VSync actor handle - used to communicate with the vsync actor thread.
-///
-/// The actor runs in a separate thread and sends periodic timing signals.
-/// Commands can be sent to control the actor (start/stop/update rate).
-pub struct VsyncActor {
-    cmd_tx: Sender<VsyncCommand>,
-    signal_rx: Receiver<VsyncSignal>,
-    shutdown_flag: Arc<AtomicBool>,
-}
+const MAX_TOKENS: u32 = 3;
 
-impl std::fmt::Debug for VsyncActor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VsyncActor")
-            .field("shutdown", &self.shutdown_flag.load(Ordering::Relaxed))
-            .finish()
+impl<P: pixelflow_core::Pixel> VsyncActor<P> {
+    fn new(refresh_rate: f64, engine_handle: crate::api::private::EngineActorHandle<P>) -> Self {
+        let interval = Duration::from_secs_f64(1.0 / refresh_rate);
+
+        info!(
+            "VsyncActor: Started with refresh rate {:.2} Hz ({:.2}ms interval), token bucket max: {}",
+            refresh_rate,
+            interval.as_secs_f64() * 1000.0,
+            MAX_TOKENS
+        );
+
+        Self {
+            engine_handle,
+            refresh_rate,
+            interval,
+            running: false,
+            next_vsync: Instant::now(),
+            tokens: MAX_TOKENS,
+            frame_count: 0,
+            fps_start: Instant::now(),
+            last_fps: 0.0,
+        }
     }
-}
 
-impl VsyncActor {
-    /// Create and spawn a new VSync actor.
+    /// Spawn VSync actor in a new thread.
     ///
-    /// # Arguments
-    /// * `refresh_rate` - Initial display refresh rate in Hz (e.g., 60.0, 120.0)
-    ///
-    /// # Returns
-    /// A handle to communicate with the actor. The actor starts in stopped state.
-    pub fn spawn(refresh_rate: f64) -> Self {
-        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
-        let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let shutdown_clone = shutdown_flag.clone();
+    /// Returns an ActorHandle that can be used to send commands and responses.
+    pub fn spawn(
+        refresh_rate: f64,
+        engine_handle: crate::api::private::EngineActorHandle<P>,
+    ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>
+    where
+        P: 'static,
+    {
+        let (handle, mut scheduler) = actor_scheduler::create_actor::<RenderedResponse, VsyncCommand, VsyncManagement>(
+            1024,  // Data buffer (RenderedResponse)
+            None,  // No wake handler
+        );
 
         thread::Builder::new()
             .name("vsync-actor".to_string())
             .spawn(move || {
-                run_vsync_actor(cmd_rx, signal_tx, shutdown_clone, refresh_rate);
+                let mut actor = VsyncActor::new(refresh_rate, engine_handle);
+                scheduler.run(&mut actor);
             })
             .expect("Failed to spawn vsync actor thread");
 
-        Self {
-            cmd_tx,
-            signal_rx,
-            shutdown_flag,
+        handle
+    }
+
+    fn send_vsync(&mut self) {
+        let now = Instant::now();
+        let timestamp = now;
+        let target_timestamp = now + self.interval;
+
+        use crate::api::private::EngineControl;
+
+        if self.engine_handle
+            .send(EngineControl::VSync {
+                timestamp,
+                target_timestamp,
+                refresh_interval: self.interval,
+            })
+            .is_ok()
+        {
+            // Consume token after successful send
+            self.tokens -= 1;
+            self.frame_count += 1;
+            log::trace!("VsyncActor: VSync sent, token consumed, {} remaining", self.tokens);
+
+            // Calculate next vsync (no cumulative drift)
+            self.next_vsync = timestamp + self.interval;
+        } else {
+            // Engine dropped the receiver
+            info!("VsyncActor: Engine disconnected");
         }
     }
 
-    /// Send a command to the vsync actor.
-    pub fn send_command(&self, cmd: VsyncCommand) -> Result<(), std::sync::mpsc::SendError<VsyncCommand>> {
-        self.cmd_tx.send(cmd)
-    }
-
-    /// Try to receive the next vsync signal (non-blocking).
-    ///
-    /// Returns `Ok(signal)` if a signal is ready, `Err` otherwise.
-    pub fn try_recv_signal(&self) -> Result<VsyncSignal, TryRecvError> {
-        self.signal_rx.try_recv()
-    }
-
-    /// Wait for the next vsync signal (blocking).
-    pub fn recv_signal(&self) -> Result<VsyncSignal, std::sync::mpsc::RecvError> {
-        self.signal_rx.recv()
-    }
-
-    /// Check if there are any pending signals without removing them.
-    pub fn has_pending_signal(&self) -> bool {
-        matches!(self.signal_rx.try_recv(), Ok(_))
-    }
-}
-
-impl Drop for VsyncActor {
-    fn drop(&mut self) {
-        let _ = self.cmd_tx.send(VsyncCommand::Shutdown);
-        self.shutdown_flag.store(true, Ordering::Relaxed);
-    }
-}
-
-/// VSync actor main loop - runs in separate thread.
-fn run_vsync_actor(
-    cmd_rx: Receiver<VsyncCommand>,
-    signal_tx: Sender<VsyncSignal>,
-    shutdown: Arc<AtomicBool>,
-    initial_refresh_rate: f64,
-) {
-    let mut refresh_rate = initial_refresh_rate;
-    let mut interval = Duration::from_secs_f64(1.0 / refresh_rate);
-    let mut running = false;
-    let mut next_vsync = Instant::now();
-
-    info!(
-        "VsyncActor: Started with refresh rate {:.2} Hz ({:.2}ms interval)",
-        refresh_rate,
-        interval.as_secs_f64() * 1000.0
-    );
-
-    loop {
-        if shutdown.load(Ordering::Relaxed) {
-            break;
+    fn update_fps(&mut self) {
+        let elapsed = self.fps_start.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            self.last_fps = self.frame_count as f64 / elapsed.as_secs_f64();
+            info!("VsyncActor: Current FPS: {:.2}", self.last_fps);
+            self.frame_count = 0;
+            self.fps_start = Instant::now();
         }
+    }
+}
 
-        // Process all pending commands
-        loop {
-            match cmd_rx.try_recv() {
-                Ok(VsyncCommand::Start) => {
-                    running = true;
-                    next_vsync = Instant::now() + interval;
-                    info!("VsyncActor: Started");
-                }
-                Ok(VsyncCommand::Stop) => {
-                    running = false;
-                    info!("VsyncActor: Stopped");
-                }
-                Ok(VsyncCommand::UpdateRefreshRate(new_rate)) => {
-                    refresh_rate = new_rate;
-                    interval = Duration::from_secs_f64(1.0 / refresh_rate);
-                    info!(
-                        "VsyncActor: Updated refresh rate to {:.2} Hz ({:.2}ms interval)",
-                        refresh_rate,
-                        interval.as_secs_f64() * 1000.0
-                    );
-                }
-                Ok(VsyncCommand::Shutdown) => {
-                    info!("VsyncActor: Shutting down");
-                    return;
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    info!("VsyncActor: Command channel disconnected");
-                    return;
-                }
+impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor<P> {
+    fn handle_data(&mut self, response: RenderedResponse) {
+        // Received frame rendered feedback - add token
+        if self.tokens < MAX_TOKENS {
+            self.tokens += 1;
+            log::trace!("VsyncActor: Token added (frame {}), now have {} tokens", response.frame_number, self.tokens);
+        }
+    }
+
+    fn handle_control(&mut self, cmd: VsyncCommand) {
+        match cmd {
+            VsyncCommand::Start => {
+                self.running = true;
+                self.next_vsync = Instant::now() + self.interval;
+                info!("VsyncActor: Started");
+            }
+            VsyncCommand::Stop => {
+                self.running = false;
+                info!("VsyncActor: Stopped");
+            }
+            VsyncCommand::UpdateRefreshRate(new_rate) => {
+                self.refresh_rate = new_rate;
+                self.interval = Duration::from_secs_f64(1.0 / self.refresh_rate);
+                info!(
+                    "VsyncActor: Updated refresh rate to {:.2} Hz ({:.2}ms interval)",
+                    self.refresh_rate,
+                    self.interval.as_secs_f64() * 1000.0
+                );
+            }
+            VsyncCommand::RequestCurrentFPS => {
+                info!("VsyncActor: FPS requested - {:.2} fps", self.last_fps);
+                // TODO: Send FPS response back through a response channel
+            }
+            VsyncCommand::Shutdown => {
+                info!("VsyncActor: Shutting down");
+                // Scheduler will exit when all senders are dropped
             }
         }
+    }
 
-        if running {
+    fn park(&mut self) {
+        // VSync timing loop - called after every work cycle
+        if self.running && self.tokens > 0 {
             let now = Instant::now();
 
-            if now >= next_vsync {
-                // Time for vsync - send signal
-                let timestamp = now;
-                let target_timestamp = now + interval;
-
-                if signal_tx
-                    .send(VsyncSignal {
-                        timestamp,
-                        target_timestamp,
-                        refresh_interval: interval,
-                    })
-                    .is_err()
-                {
-                    // Engine dropped the receiver - shutdown
-                    info!("VsyncActor: Signal receiver disconnected, shutting down");
-                    break;
-                }
-
-                // Calculate next vsync (no cumulative drift)
-                next_vsync = timestamp + interval;
+            // If it's time for next vsync, send it
+            if now >= self.next_vsync {
+                self.send_vsync();
+                self.update_fps();
             } else {
-                // Sleep until next vsync
-                thread::sleep(next_vsync - now);
+                // Sleep until next vsync (but not too long to stay responsive)
+                let sleep_time = self.next_vsync.duration_since(now);
+                let sleep_time = sleep_time.min(Duration::from_millis(1)); // Cap at 1ms for responsiveness
+                thread::sleep(sleep_time);
             }
         } else {
-            // Not running, just wait for commands
-            thread::sleep(Duration::from_millis(10));
+            // Not running or no tokens - sleep a bit to avoid busy loop
+            thread::sleep(Duration::from_millis(1));
         }
     }
 
-    info!("VsyncActor: Exited");
+    fn handle_management(&mut self, _msg: VsyncManagement) {
+        // No management messages yet
+    }
 }
