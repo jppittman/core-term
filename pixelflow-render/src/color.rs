@@ -464,6 +464,16 @@ pub type CocoaPixel = Rgba;
 /// Pixel format for Web (ImageData).
 pub type WebPixel = Rgba;
 
+/// Platform-native pixel format (Rgba on macOS/web, Bgra on Linux).
+#[cfg(target_os = "macos")]
+pub type PlatformPixel = CocoaPixel;
+
+#[cfg(target_os = "linux")]
+pub type PlatformPixel = X11Pixel;
+
+#[cfg(target_family = "wasm")]
+pub type PlatformPixel = WebPixel;
+
 // =============================================================================
 // Tests
 // =============================================================================

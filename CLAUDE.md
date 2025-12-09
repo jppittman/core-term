@@ -1,1 +1,12 @@
-- NO TERMINAL SHIT GOES IN PIXELFLOW. PIXEL FLOW IS GOING IN ITS OWN CRATE/REPO. It is general purpose
+- pixelflow-core is an EDSL (isomorphic to the typed lambda calculus) for doing SIMD operations with a current focus on graphics
+- pixelflow-core supports avx512 and neon backends
+- pixelflow-render is a rasterizer/rendering library built on pixelflow-core
+- pixelfow-fonts is a cross platform (lazy) font library build on pixelflow-core and desgined to integrate with pixelflow-render
+- pixelflow-engine is a general purpose cross platform application runtime. It currently supports wayland, x11, and cocoa on linux and macOS. And the web.
+- core-term is a cross platform terminal emulator and the first application built on pixelflow, the engine and the libraries. This dependency goes one way. pixelflow is not a library for building core-term, but core term's needs can be informative about features needed by applications in general that are missing from pixelflow. 
+- pixelflow and core-term lean heavily on an actor model. There is a library/scheduler for the actor model on which they're based -- actor-scheduler. It provides data segregation into control, management, and data.
+- this segration is based on what is typical in networking and the common utility of controlplanes, management planes, and data planes
+---
+- Remember that all code ought to comply with the style guide in docs/STYLE.md
+- Remember that tests should be written following recommendations in docs/STYLE.md
+- All platform specific code ought to be encapsulated (typically in platform or display). Platform specifics ideally reside in pixelflow-engine.

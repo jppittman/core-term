@@ -13,7 +13,7 @@ use pixelflow_core::SimdBatch;
 ///
 /// Generic over pixel type for compile-time format safety.
 /// Use `Frame<Rgba>` for web/standard APIs, `Frame<Bgra>` for X11.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Frame<P: Pixel> {
     /// Pixel data.
     pub data: Box<[P]>,
@@ -46,6 +46,31 @@ impl<P: Pixel> Frame<P> {
             width,
             height,
         }
+    }
+
+    /// Create a frame from raw RGBA bytes (reinterpreted as pixels).
+    ///
+    /// # Panics
+    /// Panics if byte length doesn't match width * height * 4.
+    ///
+    /// # Safety
+    /// Assumes the bytes represent valid RGBA pixels in memory order.
+    pub fn from_bytes(bytes: Vec<u8>, width: u32, height: u32) -> Self
+    where
+        P: Copy,
+    {
+        let expected_len = (width as usize) * (height as usize) * 4;
+        assert_eq!(bytes.len(), expected_len, "Byte length must match width * height * 4");
+
+        // Reinterpret bytes as pixels (u32)
+        let pixels: Vec<P> = unsafe {
+            let ptr = bytes.as_ptr() as *const P;
+            let len = bytes.len() / 4;
+            std::slice::from_raw_parts(ptr, len).to_vec()
+        };
+        std::mem::forget(bytes); // Don't drop the original Vec
+
+        Self::from_data(pixels.into_boxed_slice(), width, height)
     }
 
     /// Convert to a different pixel format.
@@ -110,17 +135,34 @@ impl<P: Pixel> Frame<P> {
 impl<P: Pixel> Surface<P> for Frame<P> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+        use pixelflow_core::backend::BatchArithmetic;
+
         let w_batch = Batch::<u32>::splat(self.width);
         let h_batch = Batch::<u32>::splat(self.height);
 
-        // Wrap coordinates (x % w, y % h)
-        let x_mod = x - (x / w_batch) * w_batch;
-        let y_mod = y - (y / h_batch) * h_batch;
+        // Fast path: check if all coordinates are in bounds
+        // This avoids expensive division for the common case
+        let x_in_bounds = x.cmp_lt(w_batch);
+        let y_in_bounds = y.cmp_lt(h_batch);
+        let all_in_bounds = x_in_bounds.all() && y_in_bounds.all();
+
+        let (x_final, y_final) = if all_in_bounds {
+            // Fast path: no wrapping needed
+            (x, y)
+        } else {
+            // Slow path: wrap coordinates (x % w, y % h)
+            // Division is expensive on ARM NEON (falls back to scalar)
+            let x_mod = x - (x / w_batch) * w_batch;
+            let y_mod = y - (y / h_batch) * h_batch;
+            (x_mod, y_mod)
+        };
 
         // Linear index: y * w + x
-        let idx = y_mod * w_batch + x_mod;
+        let idx = y_final * w_batch + x_final;
 
         // Gather pixels
         P::batch_gather(&self.data, idx)
     }
 }
+
+// Note: Arc<Frame<P>> automatically implements Surface via blanket impl in pixelflow-core

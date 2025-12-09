@@ -1,0 +1,22 @@
+[package]
+name = "image-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "image-viewer"
+path = "src/main.rs"
+
+[dependencies]
+pixelflow-engine = { path = "../../pixelflow-engine" }
+pixelflow-render = { path = "../../pixelflow-render" }
+pixelflow-core = { path = "../../pixelflow-core" }
+actor-scheduler = { path = "../../actor-scheduler" }
+image = "0.25"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4.5", features = ["derive"] }
+tempfile = "3.8"
+
+[build-dependencies]

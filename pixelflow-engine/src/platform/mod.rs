@@ -1,23 +1,26 @@
 pub mod waker;
 
 use crate::api::private::{
-    create_engine_actor, DriverCommand, EngineActorHandle, EngineActorScheduler, EngineControl,
-    EngineData,
+    DriverCommand, EngineControl,
+    EngineData, DisplayEvent, WindowId, DISPLAY_EVENT_BURST_LIMIT, DISPLAY_EVENT_BUFFER_SIZE,
 };
+
+// Re-export for convenience
+pub use crate::api::private::EngineActorHandle;
+use actor_scheduler::{Message, spawn_with_config};
 use crate::api::public::AppManagement;
 use crate::api::public::{
     AppData, Application, EngineEvent, EngineEventControl, EngineEventData, EngineEventManagement,
 };
 use crate::config::EngineConfig;
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::MouseButton;
 use crate::render_pool::render_parallel;
 use anyhow::{Context, Result};
 use log::info;
 use pixelflow_core::Scale;
 use pixelflow_render::Frame;
-use actor_scheduler::{Actor, Message};
+use actor_scheduler::Actor;
 use std::time::Instant;
 
 // Platform-specific driver type alias
@@ -39,54 +42,80 @@ pub type PlatformPixel = <PlatformDriver as DisplayDriver>::Pixel;
 pub struct EnginePlatform {
     driver: PlatformDriver,
     config: EngineConfig,
-    handle: EngineActorHandle<PlatformPixel>,
-    scheduler: EngineActorScheduler<PlatformPixel>,
 }
 
 impl EnginePlatform {
-    pub fn new(
-        app: impl Application + Send + 'static,
-        engine_handle: EngineActorHandle<PlatformPixel>,
-        config: EngineConfig,
-    ) -> Result<Self> {
-        info!("EnginePlatform::new() - Creating ActorScheduler-based platform with app");
+    /// Create a new platform (no spawning).
+    pub fn new(config: EngineConfig) -> Result<Self> {
+        info!("EnginePlatform::new() - Creating platform");
 
-        // Create engine channels with platform-specific wake handler (None for now, macOS later)
-        let (handle, scheduler) = create_engine_actor::<PlatformPixel>(None);
-
-        let driver = PlatformDriver::new(handle.clone())
+        // Create driver WITHOUT handle
+        let driver = PlatformDriver::new()
             .context("Failed to create display driver")?;
-
-        // Spawn engine thread with app
-        let driver_clone = driver.clone();
-        let target_fps = config.performance.target_fps;
-        let render_threads = config.performance.render_threads;
-
-        std::thread::spawn(move || {
-            if let Err(e) = engine_loop(app, engine_handle, driver_clone, scheduler, target_fps, render_threads) {
-                log::error!("Engine loop error: {}", e);
-            }
-        });
 
         Ok(Self {
             driver,
             config,
-            handle,
-            scheduler: create_engine_actor::<PlatformPixel>(None).1, // Dummy, moved to thread
         })
     }
 
+    /// Initialize the platform (spawns engine actor, returns handle).
+    pub fn init(self) -> Result<(Self, EngineActorHandle<PlatformPixel>)> {
+        info!("EnginePlatform::init() - Spawning engine actor");
+
+        let render_threads = self.config.performance.render_threads;
+
+        let handler = EngineHandler {
+            app: None,
+            engine_handle: None,
+            driver: self.driver.clone(),
+            framebuffer: None,
+            physical_width: 0,
+            physical_height: 0,
+            scale_factor: 1.0,
+            vsync_actor: None,
+            render_threads,
+        };
+
+        // Spawn engine actor - returns handle
+        let engine_handle = spawn_with_config(
+            handler,
+            DISPLAY_EVENT_BURST_LIMIT,
+            DISPLAY_EVENT_BUFFER_SIZE,
+            None,  // No wake handler for now
+        );
+
+        // Inject weak handle into engine actor for VSync creation
+        engine_handle.send(actor_scheduler::Message::Control(
+            EngineControl::SetEngineHandle(engine_handle.downgrade())
+        ))?;
+
+        // Inject weak handle into driver
+        self.driver.send(DriverCommand::SetEngineHandle(engine_handle.downgrade()))?;
+
+        Ok((self, engine_handle))
+    }
+
     /// Run the engine (driver loop on main thread).
-    pub fn run(mut self) -> Result<()> {
-        info!("EnginePlatform::run() - Starting driver on main thread");
+    ///
+    /// Takes the application handle and registers it with the engine.
+    pub fn run(
+        self,
+        app_handle: actor_scheduler::ActorHandle<EngineEvent, (), AppManagement>,
+        engine_handle: &EngineActorHandle<PlatformPixel>,
+    ) -> Result<()> {
+        info!("EnginePlatform::run() - Registering app and starting driver");
+
+        // Register app with engine
+        engine_handle.send(actor_scheduler::Message::Control(
+            EngineControl::RegisterApp(app_handle.downgrade())
+        ))?;
 
         // Send CreateWindow command
-        let width = (self.config.window.columns as usize * self.config.window.cell_width_px) as u32;
-        let height = (self.config.window.rows as usize * self.config.window.cell_height_px) as u32;
         self.driver.send(DriverCommand::CreateWindow {
             id: WindowId::PRIMARY,
-            width,
-            height,
+            width: self.config.window.width,
+            height: self.config.window.height,
             title: self.config.window.title.clone(),
         })?;
 
@@ -96,27 +125,27 @@ impl EnginePlatform {
 }
 
 // Engine handler - processes events and coordinates app/driver communication
-struct EngineHandler<A: Application> {
-    app: A,
-    engine_handle: EngineActorHandle<PlatformPixel>,
-    driver: PlatformDriver,
-    framebuffer: Option<Frame<PlatformPixel>>,
+struct EngineHandler<D>
+where
+    D: DisplayDriver,
+{
+    app: Option<actor_scheduler::WeakActorHandle<EngineEvent, (), AppManagement>>,
+    engine_handle: Option<actor_scheduler::WeakActorHandle<EngineData<D::Pixel>, EngineControl<D::Pixel>, AppManagement>>,
+    driver: D,
+    framebuffer: Option<Frame<D::Pixel>>,
     physical_width: u32,
     physical_height: u32,
     scale_factor: f64,
-    vsync_actor: Option<actor_scheduler::ActorHandle<
-        crate::vsync_actor::RenderedResponse,
-        crate::vsync_actor::VsyncCommand,
-        crate::vsync_actor::VsyncManagement,
-    >>,
+    vsync_actor: Option<crate::vsync_actor::VsyncActorHandle>,
     render_threads: usize,
-    frame_count: u64,
 }
 
-impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
-    for EngineHandler<A>
+impl<D> Actor<EngineData<D::Pixel>, EngineControl<D::Pixel>, AppManagement>
+    for EngineHandler<D>
+where
+    D: DisplayDriver,
 {
-    fn handle_data(&mut self, data: EngineData<PlatformPixel>) {
+    fn handle_data(&mut self, data: EngineData<D::Pixel>) {
         match data {
             EngineData::FromDriver(evt) => {
                 // Track physical dimensions and scale factor from window events
@@ -136,84 +165,128 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                         self.scale_factor = *scale;
                         self.framebuffer = None;
                     }
-                    _ => {}
+                    // All other events don't affect physical dimensions
+                    DisplayEvent::WindowDestroyed { .. } => {}
+                    DisplayEvent::CloseRequested { .. } => {}
+                    DisplayEvent::Key { .. } => {}
+                    DisplayEvent::MouseButtonPress { .. } => {}
+                    DisplayEvent::MouseButtonRelease { .. } => {}
+                    DisplayEvent::MouseMove { .. } => {}
+                    DisplayEvent::MouseScroll { .. } => {}
+                    DisplayEvent::FocusGained { .. } => {}
+                    DisplayEvent::FocusLost { .. } => {}
+                    DisplayEvent::PasteData { .. } => {}
+                    DisplayEvent::ClipboardDataRequested => {}
                 }
 
-                // Forward display event to app
+                // Forward display event to app (if registered)
                 if let Some(engine_evt) = map_display_event(&evt, self.scale_factor) {
-                    let _ = self.app.send(engine_evt);
+                    if let Some(app) = &self.app {
+                        let _ = app.send(actor_scheduler::Message::Data(engine_evt));
+                    }
                 }
             }
-            EngineData::FromApp(AppData::RenderSurface(surface)) => {
+            EngineData::FromApp(AppData::RenderSurface { frame_id, surface, app_submit_time }) => {
+                let now = std::time::Instant::now();
+                log::info!("FRAME_TIMING: Frame {} - App->Engine: {:.3}ms",
+                    frame_id,
+                    (now - app_submit_time).as_secs_f64() * 1000.0
+                );
+
                 // App sent a rendered surface - present it
                 let mut frame = self
                     .framebuffer
                     .take()
                     .unwrap_or_else(|| Frame::new(self.physical_width, self.physical_height));
 
+                log::trace!("Engine: Rendering surface {}x{} (physical) with {} threads",
+                    self.physical_width, self.physical_height, self.render_threads);
+
                 // Render with parallel rasterization
+                let execute_start = std::time::Instant::now();
                 let scaled = Scale::uniform(surface, self.scale_factor);
                 let width = frame.width as usize;
                 let height = frame.height as usize;
                 render_parallel(&scaled, frame.as_slice_mut(), width, height, self.render_threads);
+                let execute_end = std::time::Instant::now();
 
+                log::info!("FRAME_TIMING: Frame {} - Execute: {:.3}ms",
+                    frame_id,
+                    (execute_end - execute_start).as_secs_f64() * 1000.0
+                );
+
+                log::trace!("Engine: Sending Present command to driver");
                 // Send frame to driver
                 let _ = self.driver.send(DriverCommand::Present {
                     id: WindowId::PRIMARY,
+                    frame_id,
                     frame,
+                    engine_submit_time: std::time::Instant::now(),
                 });
+            }
+            EngineData::FromVSync(vsync_msg) => {
+                let now = std::time::Instant::now();
+                log::info!("FRAME_TIMING: Frame {} - VSync->Engine: {:.3}ms",
+                    vsync_msg.frame_id,
+                    (now - vsync_msg.timestamp).as_secs_f64() * 1000.0
+                );
 
-                // Send feedback to VSync actor
-                if let Some(ref vsync) = self.vsync_actor {
-                    let _ = vsync.send(crate::vsync_actor::RenderedResponse {
-                        frame_number: self.frame_count,
-                        rendered_at: Instant::now(),
-                    });
+                // Forward VSync as RequestFrame to app (push model)
+                let event = EngineEvent::Data(EngineEventData::RequestFrame {
+                    frame_id: vsync_msg.frame_id,
+                    timestamp: vsync_msg.timestamp,
+                    target_timestamp: vsync_msg.target_timestamp,
+                    refresh_interval: vsync_msg.refresh_interval,
+                });
+                if let Some(app) = &self.app {
+                    if let Err(e) = app.send(actor_scheduler::Message::Data(event)) {
+                        log::error!("Engine: Failed to send RequestFrame to app: {:?}", e);
+                    } else {
+                        log::trace!("Engine: RequestFrame sent to app successfully");
+                    }
                 }
-                self.frame_count += 1;
             }
         }
     }
 
-    fn handle_control(&mut self, ctrl: EngineControl<PlatformPixel>) {
+    fn handle_control(&mut self, ctrl: EngineControl<D::Pixel>) {
         match ctrl {
             EngineControl::PresentComplete(frame) => {
+                // Notify VSync to refill token bucket
+                if let Some(vsync) = &self.vsync_actor {
+                    let _ = vsync.send(crate::vsync_actor::VsyncRequest::RenderedResponse);
+                }
                 // Store frame for reuse
                 self.framebuffer = Some(frame);
             }
-            EngineControl::VSync {
-                timestamp,
-                target_timestamp,
-                refresh_interval,
-            } => {
-                // Forward VSync as RequestFrame to app (push model)
-                let event = EngineEvent::Data(EngineEventData::RequestFrame {
-                    timestamp,
-                    target_timestamp,
-                    refresh_interval,
-                });
-                let _ = self.app.send(event);
-            }
             EngineControl::UpdateRefreshRate(refresh_rate) => {
-                if let Some(ref vsync) = self.vsync_actor {
+                info!("Engine: Refresh rate update to {:.2} Hz", refresh_rate);
+
+                if self.vsync_actor.is_some() {
                     // Update existing VSync actor
-                    info!("Engine: Updating VSync refresh rate to {:.2} Hz", refresh_rate);
-                    let _ = vsync.send(crate::vsync_actor::VsyncCommand::UpdateRefreshRate(refresh_rate));
+                    if let Some(vsync) = &self.vsync_actor {
+                        let _ = vsync.send(crate::vsync_actor::VsyncRequest::UpdateRefreshRate(refresh_rate));
+                    }
                 } else {
-                    // Spawn VSync actor for the first time
-                    info!("Engine: Spawning VSync actor with {:.2} Hz", refresh_rate);
-                    let vsync_actor = crate::vsync_actor::VsyncActor::spawn(
-                        refresh_rate,
-                        self.engine_handle.clone()
-                    );
-                    let _ = vsync_actor.send(crate::vsync_actor::VsyncCommand::Start);
-                    self.vsync_actor = Some(vsync_actor);
+                    // Spawn new VSync actor
+                    if let Some(weak_handle) = &self.engine_handle {
+                        let weak_handle = weak_handle.clone();
+                        let vsync = crate::vsync_actor::spawn_vsync_actor(
+                            move |msg| {
+                                if let Some(handle) = weak_handle.upgrade() {
+                                    handle.send(actor_scheduler::Message::Data(EngineData::FromVSync(msg)))
+                                } else {
+                                    Err(actor_scheduler::SendError)
+                                }
+                            },
+                            refresh_rate,
+                        );
+                        info!("Engine: VSync actor spawned at {:.2} Hz", refresh_rate);
+                        self.vsync_actor = Some(vsync);
+                    } else {
+                        log::error!("Engine: Cannot spawn VSync - engine handle not set");
+                    }
                 }
-            }
-            EngineControl::VsyncActorReady(actor) => {
-                info!("Engine: VSync actor received from platform");
-                let _ = actor.send(crate::vsync_actor::VsyncCommand::Start);
-                self.vsync_actor = Some(actor);
             }
             EngineControl::Quit => {
                 info!("Engine: Quit requested from app");
@@ -221,6 +294,14 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
             }
             EngineControl::DriverAck => {
                 // Ignore driver acks
+            }
+            EngineControl::SetEngineHandle(handle) => {
+                info!("Engine: Engine handle set for VSync creation");
+                self.engine_handle = Some(handle);
+            }
+            EngineControl::RegisterApp(app_handle) => {
+                info!("Engine: Application registered");
+                self.app = Some(app_handle);
             }
         }
     }
@@ -248,36 +329,6 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
         }
     }
 
-    fn park(&mut self) {
-        // Engine has no periodic tasks
-    }
-}
-
-fn engine_loop<A: Application>(
-    app: A,
-    engine_handle: EngineActorHandle<PlatformPixel>,
-    driver: PlatformDriver,
-    mut scheduler: EngineActorScheduler<PlatformPixel>,
-    _target_fps: u32,
-    render_threads: usize,
-) -> Result<()> {
-    info!("Engine loop started (scheduler model, {} threads)", render_threads);
-
-    let mut handler = EngineHandler {
-        app,
-        engine_handle,
-        driver,
-        framebuffer: None,
-        physical_width: 0,
-        physical_height: 0,
-        scale_factor: 1.0,
-        vsync_actor: None,
-        render_threads,
-        frame_count: 0,
-    };
-
-    scheduler.run(&mut handler);
-    Ok(())
 }
 
 /// Convert DisplayEvent to EngineEvent, converting physical to logical pixels.
@@ -399,3 +450,6 @@ fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEven
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

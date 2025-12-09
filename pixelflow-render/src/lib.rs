@@ -42,6 +42,7 @@ pub use color::{
     Color,
     NamedColor,
     Pixel,
+    PlatformPixel,
     Rgba,
     WebPixel,
     X11Pixel,

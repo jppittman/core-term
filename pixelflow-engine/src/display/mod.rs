@@ -6,10 +6,9 @@
 
 pub mod driver;
 pub mod drivers;
-pub mod messages;
 
 pub use driver::DisplayDriver;
-pub use messages::DisplayEvent;
+pub use crate::api::private::DisplayEvent;
 
 // Re-export the active display driver for convenience
 #[cfg(use_cocoa_display)]

@@ -15,11 +15,11 @@
 //! # Example
 //!
 //! ```rust
-//! use priority_channel::{ActorScheduler, Message, SchedulerHandler};
+//! use actor_scheduler::{spawn, Actor, Message};
 //!
 //! struct MyHandler;
 //!
-//! impl SchedulerHandler<String, String, String> for MyHandler {
+//! impl Actor<String, String, String> for MyHandler {
 //!     fn handle_data(&mut self, msg: String) {
 //!         println!("Data: {}", msg);
 //!     }
@@ -31,26 +31,25 @@
 //!     }
 //! }
 //!
-//! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
-//!
-//! // Spawn receiver thread
-//! std::thread::spawn(move || {
-//!     let mut handler = MyHandler;
-//!     rx.run(&mut handler);
-//! });
+//! // Spawn actor in dedicated thread
+//! let handle = spawn(MyHandler);
 //!
 //! // Send messages from any thread
-//! tx.send(Message::Data("low priority data".to_string())).unwrap();
-//! tx.send(Message::Control("high priority control".to_string())).unwrap();
+//! handle.send(Message::Data("low priority data".to_string())).unwrap();
+//! handle.send(Message::Control("high priority control".to_string())).unwrap();
 //! ```
 
 mod error;
 
 pub use error::SendError;
 
+// Re-export derive macro when feature is enabled (currently disabled)
+// #[cfg(feature = "derive")]
+// pub use actor_scheduler_derive::ActorManifest;
+
 use std::sync::{
     mpsc::{self, Receiver, SyncSender, TryRecvError},
-    Arc,
+    Arc, Weak,
 };
 use std::time::{Duration, Instant};
 
@@ -58,7 +57,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message<D, C, M> {
     Data(D),
-    Control(C),  // No wrapper - just C directly
+    Control(C),
     Management(M),
 }
 
@@ -114,32 +113,6 @@ pub trait Actor<D, C, M> {
 
     /// Handle a management message.
     fn handle_management(&mut self, msg: M);
-
-    /// Opportunity to handle tasks not tied to a particular event
-    /// called after every work cycle
-    fn park(&mut self);
-}
-
-/// Legacy alias for backward compatibility
-#[deprecated(since = "0.2.0", note = "Use `Actor` instead")]
-pub use Actor as SchedulerHandler;
-
-/// Create a new actor with the given configuration.
-///
-/// Convenience function for creating an actor scheduler and handle.
-///
-/// # Arguments
-/// * `data_buffer_size` - Size of bounded data buffer
-/// * `wake_handler` - Optional wake handler for platform event loops
-pub fn create_actor<D, C, M>(
-    data_buffer_size: usize,
-    wake_handler: Option<Arc<dyn WakeHandler>>,
-) -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) {
-    ActorScheduler::new_with_wake_handler(
-        1024,  // Default data burst limit
-        data_buffer_size,
-        wake_handler,
-    )
 }
 
 /// Trait for waking a blocked actor scheduler.
@@ -198,11 +171,12 @@ fn backoff_with_jitter(attempt: u32) -> Duration {
 /// A unified sender handle that routes messages to the scheduler with priority lanes.
 pub struct ActorHandle<D, C, M> {
     // Doorbell channel (buffer: 1) - highest priority wake signal
-    tx_doorbell: SyncSender<()>,
+    // Wrapped in Arc to allow Weak references for the "Metronome" pattern
+    tx_doorbell: Arc<SyncSender<()>>,
     // All lanes are bounded for backpressure
-    tx_data: SyncSender<D>,
-    tx_control: SyncSender<C>,  // No wrapper - just C directly
-    tx_mgmt: SyncSender<M>,
+    tx_data: Arc<SyncSender<D>>,
+    tx_control: Arc<SyncSender<C>>,
+    tx_mgmt: Arc<SyncSender<M>>,
     // Optional custom wake handler for platform-specific wake mechanisms
     wake_handler: Option<Arc<dyn WakeHandler>>,
 }
@@ -227,6 +201,85 @@ impl<D, C, M> Clone for ActorHandle<D, C, M> {
             tx_mgmt: self.tx_mgmt.clone(),
             wake_handler: self.wake_handler.clone(),
         }
+    }
+}
+
+impl<D, C, M> ActorHandle<D, C, M> {
+    /// Create a weak reference to this handle.
+    ///
+    /// Weak handles don't prevent the actor from shutting down.
+    /// Call `upgrade()` to convert back to strong reference.
+    ///
+    /// This is critical for avoiding reference cycles. For example:
+    /// - EnginePlatform holds strong ActorHandle → Engine
+    /// - Engine owns Driver (cloned)
+    /// - Driver holds **weak** ActorHandle → Engine (no cycle!)
+    pub fn downgrade(&self) -> WeakActorHandle<D, C, M> {
+        WeakActorHandle {
+            tx_doorbell: Arc::downgrade(&self.tx_doorbell),
+            tx_data: Arc::downgrade(&self.tx_data),
+            tx_control: Arc::downgrade(&self.tx_control),
+            tx_mgmt: Arc::downgrade(&self.tx_mgmt),
+            wake_handler: self.wake_handler.clone(),
+        }
+    }
+}
+
+/// A weak reference to an ActorHandle that doesn't prevent actor shutdown.
+///
+/// Useful for actors that need to send messages but shouldn't keep other actors alive.
+/// Example: VSync timer holds weak ref to engine - when engine shuts down, VSync detects it.
+pub struct WeakActorHandle<D, C, M> {
+    tx_doorbell: Weak<SyncSender<()>>,
+    tx_data: Weak<SyncSender<D>>,
+    tx_control: Weak<SyncSender<C>>,
+    tx_mgmt: Weak<SyncSender<M>>,
+    wake_handler: Option<Arc<dyn WakeHandler>>,
+}
+
+// Manual Clone implementation for WeakActorHandle
+impl<D, C, M> Clone for WeakActorHandle<D, C, M> {
+    fn clone(&self) -> Self {
+        Self {
+            tx_doorbell: self.tx_doorbell.clone(),
+            tx_data: self.tx_data.clone(),
+            tx_control: self.tx_control.clone(),
+            tx_mgmt: self.tx_mgmt.clone(),
+            wake_handler: self.wake_handler.clone(),
+        }
+    }
+}
+
+// Manual Debug implementation for WeakActorHandle
+impl<D, C, M> std::fmt::Debug for WeakActorHandle<D, C, M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WeakActorHandle")
+            .field("has_wake_handler", &self.wake_handler.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<D, C, M> WeakActorHandle<D, C, M> {
+    /// Attempt to upgrade to a strong ActorHandle.
+    ///
+    /// Returns `None` if all strong references have been dropped (actor shut down).
+    pub fn upgrade(&self) -> Option<ActorHandle<D, C, M>> {
+        Some(ActorHandle {
+            tx_doorbell: self.tx_doorbell.upgrade()?,
+            tx_data: self.tx_data.upgrade()?,
+            tx_control: self.tx_control.upgrade()?,
+            tx_mgmt: self.tx_mgmt.upgrade()?,
+            wake_handler: self.wake_handler.clone(),
+        })
+    }
+
+    /// Send a message to the actor (upgrades weak handle first).
+    ///
+    /// Returns an error if the actor has shut down (upgrade fails) or if the send fails.
+    /// This is the recommended way to send from a weak handle - it handles the upgrade/send dance.
+    pub fn send(&self, msg: Message<D, C, M>) -> Result<(), SendError> {
+        let handle = self.upgrade().ok_or(SendError)?;
+        handle.send(msg)
     }
 }
 
@@ -319,101 +372,125 @@ impl<D, C, M> ActorHandle<D, C, M> {
     }
 }
 
+/// Spawn an actor in a dedicated thread with priority message lanes.
+///
+/// This is the recommended way to create actors. The actor is owned by the scheduler,
+/// which runs in a dedicated thread. Messages are processed with three priority levels:
+/// Control (highest) > Management (medium) > Data (lowest, burst-limited).
+///
+/// # Arguments
+/// * `actor` - The actor to spawn (consumed)
+///
+/// # Returns
+/// An `ActorHandle` that can be cloned and used to send messages to the actor.
+///
+/// # Example
+/// ```
+/// use actor_scheduler::{spawn, Actor, Message};
+///
+/// struct MyActor;
+/// impl Actor<String, String, String> for MyActor {
+///     fn handle_data(&mut self, msg: String) { println!("Data: {}", msg); }
+///     fn handle_control(&mut self, msg: String) { println!("Ctrl: {}", msg); }
+///     fn handle_management(&mut self, msg: String) { println!("Mgmt: {}", msg); }
+/// }
+///
+/// let handle = spawn(MyActor);
+/// handle.send(Message::Data("hello".to_string())).unwrap();
+/// ```
+pub fn spawn<A, D, C, M>(actor: A) -> ActorHandle<D, C, M>
+where
+    A: Actor<D, C, M> + Send + 'static,
+    D: Send + 'static,
+    C: Send + 'static,
+    M: Send + 'static,
+{
+    spawn_with_config(actor, 1024, 1024, None)
+}
+
+/// Spawn an actor with custom configuration.
+///
+/// See `spawn()` for details. This variant allows customizing buffer sizes and wake handler.
+///
+/// # Arguments
+/// * `actor` - The actor to spawn (consumed)
+/// * `data_burst_limit` - Maximum data messages per wake cycle (default: 1024)
+/// * `data_buffer_size` - Data channel buffer size (default: 1024)
+/// * `wake_handler` - Optional platform-specific wake handler
+///
+/// # Returns
+/// An `ActorHandle` that can be cloned and used to send messages to the actor.
+pub fn spawn_with_config<A, D, C, M>(
+    actor: A,
+    data_burst_limit: usize,
+    data_buffer_size: usize,
+    wake_handler: Option<Arc<dyn WakeHandler>>,
+) -> ActorHandle<D, C, M>
+where
+    A: Actor<D, C, M> + Send + 'static,
+    D: Send + 'static,
+    C: Send + 'static,
+    M: Send + 'static,
+{
+    use std::thread;
+
+    // A. Create channels
+    let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
+    let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
+    let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+    let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+
+    // B. Create handle (senders wrapped in Arc)
+    let handle = ActorHandle {
+        tx_doorbell: Arc::new(tx_doorbell),
+        tx_data: Arc::new(tx_data),
+        tx_control: Arc::new(tx_control),
+        tx_mgmt: Arc::new(tx_mgmt),
+        wake_handler,
+    };
+
+    // C. Create scheduler (owns actor)
+    let scheduler = ActorScheduler {
+        rx_doorbell,
+        rx_data,
+        rx_control,
+        rx_mgmt,
+        actor,
+        data_burst_limit,
+    };
+
+    // D. Spawn thread
+    thread::spawn(move || {
+        scheduler.run();
+    });
+
+    handle
+}
+
 /// The receiver side that implements the priority scheduling logic.
-pub struct ActorScheduler<D, C, M> {
+///
+/// Owns the actor and processes messages on its behalf.
+pub struct ActorScheduler<D, C, M, A>
+where
+    A: Actor<D, C, M>,
+{
     rx_doorbell: Receiver<()>,  // Highest priority - wake signal
     rx_data: Receiver<D>,
     rx_control: Receiver<C>,    // No wrapper - just C directly
     rx_mgmt: Receiver<M>,
+    actor: A,  // OWNED ACTOR
     data_burst_limit: usize,
 }
 
-impl<D, C, M> ActorScheduler<D, C, M> {
-    /// Create a new scheduler channel with priority lanes.
-    ///
-    /// # Arguments
-    /// * `data_burst_limit` - Maximum data messages to process per wake cycle
-    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold)
-    ///
-    /// # Returns
-    /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
-    pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1); // Buffer size 1
-        let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-
-        let sender = ActorHandle {
-            tx_doorbell,
-            tx_data,
-            tx_control,
-            tx_mgmt,
-            wake_handler: None,
-        };
-
-        let receiver = ActorScheduler {
-            rx_doorbell,
-            rx_data,
-            rx_control,
-            rx_mgmt,
-            data_burst_limit,
-        };
-
-        (sender, receiver)
-    }
-
-    /// Create a new scheduler channel with priority lanes and a custom wake actor.
-    ///
-    /// This variant allows platform-specific wake mechanisms (e.g., NSEvent on macOS)
-    /// to be used in addition to the default control channel wake signal.
-    ///
-    /// # Arguments
-    /// * `data_burst_limit` - Maximum data messages to process per wake cycle
-    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold)
-    /// * `wake_handler` - Optional custom wake handler for platform event loops
-    ///
-    /// # Returns
-    /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
-    pub fn new_with_wake_handler(
-        data_burst_limit: usize,
-        data_buffer_size: usize,
-        wake_handler: Option<Arc<dyn WakeHandler>>,
-    ) -> (ActorHandle<D, C, M>, Self) {
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1); // Buffer size 1
-        let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-
-        let sender = ActorHandle {
-            tx_doorbell,
-            tx_data,
-            tx_control,
-            tx_mgmt,
-            wake_handler,
-        };
-
-        let receiver = ActorScheduler {
-            rx_doorbell,
-            rx_data,
-            rx_control,
-            rx_mgmt,
-            data_burst_limit,
-        };
-
-        (sender, receiver)
-    }
-
+impl<D, C, M, A> ActorScheduler<D, C, M, A>
+where
+    A: Actor<D, C, M>,
+{
     /// The Main Scheduler Loop.
     /// Blocks on the Doorbell channel. Prioritizes Control > Management > Data.
     ///
-    /// # Arguments
-    /// * `actor` - Implementation of `Actor` trait
-    ///
     /// This method runs forever until all senders are dropped.
-    pub fn run<A>(&mut self, actor: &mut A)
-    where
-        A: Actor<D, C, M>,
-    {
+    pub fn run(mut self) {
         loop {
             // 1. Block on Doorbell (Highest Priority)
             match self.rx_doorbell.recv() {
@@ -429,13 +506,13 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
                 // A. Control (Highest Priority - Unlimited Drain)
                 while let Ok(ctrl_msg) = self.rx_control.try_recv() {
-                    actor.handle_control(ctrl_msg);
+                    self.actor.handle_control(ctrl_msg);
                     keep_working = true;
                 }
 
                 // B. Management (Medium Priority - Unlimited Drain)
                 while let Ok(msg) = self.rx_mgmt.try_recv() {
-                    actor.handle_management(msg);
+                    self.actor.handle_management(msg);
                     keep_working = true;
                 }
 
@@ -444,7 +521,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 while data_count < self.data_burst_limit {
                     match self.rx_data.try_recv() {
                         Ok(msg) => {
-                            actor.handle_data(msg);
+                            self.actor.handle_data(msg);
                             data_count += 1;
                         }
                         Err(TryRecvError::Empty) => break,
@@ -456,7 +533,6 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                     keep_working = true;
                 }
             }
-            actor.park()
         }
     }
 }
@@ -472,7 +548,7 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
     }
 
-    impl SchedulerHandler<String, String, String> for TestHandler {
+    impl Actor<String, String, String> for TestHandler {
         fn handle_data(&mut self, msg: String) {
             self.log.lock().unwrap().push(format!("Data: {}", msg));
         }
@@ -486,14 +562,11 @@ mod tests {
 
     #[test]
     fn test_priority_ordering() {
-        let (tx, mut rx) = ActorScheduler::new(2, 10);
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_clone = log.clone();
 
-        let handle = thread::spawn(move || {
-            let mut handler = TestHandler { log: log_clone };
-            rx.run(&mut handler);
-        });
+        let handler = TestHandler { log: log_clone };
+        let tx = spawn_with_config(handler, 2, 10, None);
 
         // Send messages in mixed order
         tx.send(Message::Data("1".to_string())).unwrap();
@@ -506,7 +579,8 @@ mod tests {
 
         // Drop sender to close channels and stop run()
         drop(tx);
-        handle.join().unwrap();
+
+        thread::sleep(Duration::from_millis(50));
 
         let messages = log.lock().unwrap();
         assert!(messages.len() > 0, "Should have processed messages");
@@ -523,14 +597,11 @@ mod tests {
 
     #[test]
     fn test_backpressure() {
-        let (tx, mut rx) = ActorScheduler::new(2, 1); // Buffer size 1, burst limit 2
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_clone = log.clone();
 
-        thread::spawn(move || {
-            let mut handler = TestHandler { log: log_clone };
-            rx.run(&mut handler);
-        });
+        let handler = TestHandler { log: log_clone };
+        let tx = spawn_with_config(handler, 2, 1, None); // Buffer size 1, burst limit 2
 
         let tx_clone = tx.clone();
         let send_thread = thread::spawn(move || {
@@ -551,34 +622,34 @@ mod tests {
     #[test]
     fn test_trait_handler() {
         struct CountingHandler {
-            data_count: usize,
-            ctrl_count: usize,
-            mgmt_count: usize,
+            data_count: Arc<Mutex<usize>>,
+            ctrl_count: Arc<Mutex<usize>>,
+            mgmt_count: Arc<Mutex<usize>>,
         }
 
-        impl SchedulerHandler<i32, String, bool> for CountingHandler {
+        impl Actor<i32, String, bool> for CountingHandler {
             fn handle_data(&mut self, _: i32) {
-                self.data_count += 1;
+                *self.data_count.lock().unwrap() += 1;
             }
             fn handle_control(&mut self, _: String) {
-                self.ctrl_count += 1;
+                *self.ctrl_count.lock().unwrap() += 1;
             }
             fn handle_management(&mut self, _: bool) {
-                self.mgmt_count += 1;
+                *self.mgmt_count.lock().unwrap() += 1;
             }
         }
 
-        let (tx, mut rx) = ActorScheduler::new(10, 100);
+        let data_count = Arc::new(Mutex::new(0));
+        let ctrl_count = Arc::new(Mutex::new(0));
+        let mgmt_count = Arc::new(Mutex::new(0));
 
-        let handle = thread::spawn(move || {
-            let mut handler = CountingHandler {
-                data_count: 0,
-                ctrl_count: 0,
-                mgmt_count: 0,
-            };
-            rx.run(&mut handler);
-            handler
-        });
+        let handler = CountingHandler {
+            data_count: data_count.clone(),
+            ctrl_count: ctrl_count.clone(),
+            mgmt_count: mgmt_count.clone(),
+        };
+
+        let tx = spawn_with_config(handler, 10, 100, None);
 
         tx.send(Message::Data(1)).unwrap();
         tx.send(Message::Data(2)).unwrap();
@@ -588,9 +659,10 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         drop(tx);
 
-        let handler = handle.join().unwrap();
-        assert_eq!(actor.data_count, 2);
-        assert_eq!(actor.ctrl_count, 1);
-        assert_eq!(actor.mgmt_count, 1);
+        thread::sleep(Duration::from_millis(50));
+
+        assert_eq!(*data_count.lock().unwrap(), 2);
+        assert_eq!(*ctrl_count.lock().unwrap(), 1);
+        assert_eq!(*mgmt_count.lock().unwrap(), 1);
     }
 }

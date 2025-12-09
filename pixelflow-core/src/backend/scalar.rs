@@ -282,6 +282,31 @@ impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T>
     }
 }
 
+impl<T: Copy> ScalarBatch<T> {
+    /// Reinterpret the bits of this batch as another type of the same size.
+    /// Preserves the bit pattern, not the numeric value.
+    #[inline(always)]
+    pub fn bitcast<U: Copy>(self) -> ScalarBatch<U> {
+        unsafe { core::mem::transmute_copy(&self) }
+    }
+}
+
+impl ScalarBatch<u32> {
+    /// Convert to f32, preserving the numeric value.
+    #[inline(always)]
+    pub fn to_f32(self) -> ScalarBatch<f32> {
+        ScalarBatch(self.0 as f32)
+    }
+}
+
+impl ScalarBatch<f32> {
+    /// Convert to u32, preserving the numeric value (truncating).
+    #[inline(always)]
+    pub fn to_u32(self) -> ScalarBatch<u32> {
+        ScalarBatch(self.0 as u32)
+    }
+}
+
 impl BatchArithmetic<u32> for ScalarBatch<u32> {
     fn select(self, if_true: Self, if_false: Self) -> Self {
         (if_true & self) | (if_false & !self)

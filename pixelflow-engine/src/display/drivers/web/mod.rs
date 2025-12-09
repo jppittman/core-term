@@ -7,9 +7,8 @@
 
 pub mod ipc;
 
-use crate::channel::{DriverCommand, EngineCommand, EngineSender};
+use crate::api::private::{DriverCommand, EngineActorHandle, DisplayEvent, WindowId, EngineControl};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, WindowId};
 use anyhow::{anyhow, Result};
 use ipc::SharedRingBuffer;
 use js_sys::SharedArrayBuffer;
@@ -33,7 +32,7 @@ pub fn init_resources(canvas: OffscreenCanvas, sab: SharedArrayBuffer) {
 // --- Run State (only original driver has this) ---
 struct RunState {
     cmd_rx: Receiver<DriverCommand<Rgba>>,
-    engine_tx: EngineSender<Rgba>,
+    engine_tx: EngineActorHandle<Rgba>,
 }
 
 // --- Display Driver ---
@@ -59,7 +58,7 @@ impl Clone for WebDisplayDriver {
 impl DisplayDriver for WebDisplayDriver {
     type Pixel = Rgba;
 
-    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self> {
+    fn new(engine_tx: EngineActorHandle<Rgba>) -> Result<Self> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -87,7 +86,7 @@ impl DisplayDriver for WebDisplayDriver {
 
 fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Rgba>>,
-    engine_tx: &EngineSender<Rgba>,
+    engine_tx: &EngineActorHandle<Rgba>,
 ) -> Result<()> {
     // 1. Read CreateWindow command first
     let (window_id, width_px, height_px) = match cmd_rx.recv()? {
@@ -121,12 +120,12 @@ fn run_event_loop(
     canvas.set_height(height_px);
 
     // Send initial resize (web scale_factor typically comes from devicePixelRatio)
-    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+    let _ = engine_tx.send(DisplayEvent::WindowCreated {
         id: window_id,
         width_px,
         height_px,
         scale: 1.0, // TODO: use window.devicePixelRatio
-    }));
+    });
 
     // 2. Create state and run event loop
     let mut state = WebState {
@@ -152,7 +151,7 @@ impl WebState {
     fn event_loop(
         &mut self,
         cmd_rx: &Receiver<DriverCommand<Rgba>>,
-        engine_tx: &EngineSender<Rgba>,
+        engine_tx: &EngineActorHandle<Rgba>,
     ) -> Result<()> {
         loop {
             // 1. Poll IPC events (from main thread via SharedArrayBuffer)
@@ -161,7 +160,7 @@ impl WebState {
                     if matches!(evt, DisplayEvent::CloseRequested { .. }) {
                         return Ok(());
                     }
-                    let _ = engine_tx.send(EngineCommand::DisplayEvent(evt));
+                    let _ = engine_tx.send(evt);
                 }
                 Ok(None) => {
                     // Timeout, no events
@@ -186,28 +185,28 @@ impl WebState {
                     }
                     DriverCommand::Present { frame, .. } => {
                         if let Ok(frame) = self.handle_present(frame) {
-                            let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
+                            let _ = engine_tx.send(EngineControl::PresentComplete(frame));
                         }
                     }
                     DriverCommand::SetTitle { .. } => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _ = engine_tx.send(EngineControl::DriverAck);
                     }
                     DriverCommand::SetSize { .. } => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _ = engine_tx.send(EngineControl::DriverAck);
                     }
                     DriverCommand::CopyToClipboard(_) => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _ = engine_tx.send(EngineControl::DriverAck);
                     }
                     DriverCommand::RequestPaste => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _ = engine_tx.send(EngineControl::DriverAck);
                     }
                     DriverCommand::Bell => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _ = engine_tx.send(EngineControl::DriverAck);
                     }
                 }
             }

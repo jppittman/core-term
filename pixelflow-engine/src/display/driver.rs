@@ -19,7 +19,7 @@
 //! 4. Main thread calls `driver.run()` - blocks until shutdown
 //! 5. Engine spawns on thread, calls `driver.send(Present(...))` etc.
 
-use crate::channel::{DriverCommand, EngineSender};
+use crate::api::private::{DriverCommand, EngineActorHandle};
 use anyhow::Result;
 use pixelflow_core::Pixel;
 
@@ -40,11 +40,12 @@ pub trait DisplayDriver: Clone + Send {
     /// The pixel format required by this display driver.
     type Pixel: Pixel;
 
-    /// Create a new driver with engine channel.
+    /// Create a new driver without engine channel.
     ///
-    /// This only creates channels. Platform resources (window, etc.) are
-    /// created when `run()` reads the Configure command.
-    fn new(engine_tx: EngineSender<Self::Pixel>) -> Result<Self>;
+    /// This only creates channels. The engine handle is injected later via
+    /// SetEngineHandle command to avoid circular references and memory leaks.
+    /// Platform resources (window, etc.) are created when `run()` is called.
+    fn new() -> Result<Self>;
 
     /// Send a command to the driver (non-blocking).
     ///

@@ -2,7 +2,6 @@
 pub mod api;
 
 // Internal modules
-pub mod channel;
 pub mod config;
 pub mod display;
 pub mod frame;
@@ -21,18 +20,19 @@ pub use actor_scheduler as actor;
 
 // Convenience re-exports at crate root (for backward compatibility)
 pub use actor_scheduler::{
-    ActorHandle, ActorScheduler, Message, SchedulerHandler, SendError, WakeHandler,
+    Actor, ActorHandle, ActorScheduler, Message, SendError, WakeHandler,
 };
 
 // Make private API available throughout crate (not exported)
 #[allow(unused_imports)]
 use api::private::*;
 
-// Re-export legacy types for backward compatibility (deprecated)
-pub use channel::{
-    create_engine_channels, DriverCommand, EngineActorHandle, EngineActorScheduler,
-    EngineChannels, EngineControl, AppManagement, EngineSender,
+// Re-export types from api::private for convenience
+pub use api::private::{
+    DriverCommand, EngineActorHandle,
+    EngineControl, EngineData, DISPLAY_EVENT_BURST_LIMIT, DISPLAY_EVENT_BUFFER_SIZE,
 };
+pub use api::public::{AppData, AppManagement};
 pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
 pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
 pub use platform::EnginePlatform;
@@ -72,8 +72,6 @@ pub use platform::PlatformPixel;
 /// Entry point for the Pixelflow Engine.
 ///
 /// This function initializes the platform (windowing, display) and starts the event loop.
-/// It takes an implementation of the `Application` trait, which defines the logic,
-/// and an engine actor handle for the app to send responses back.
 ///
 /// The pixel type is determined by the platform:
 /// - Cocoa (macOS): `Rgba`
@@ -81,14 +79,13 @@ pub use platform::PlatformPixel;
 /// - Web: `Rgba`
 ///
 /// # Arguments
-/// * `app` - The application logic implementing `Application`.
-/// * `engine_handle` - Handle for app to send responses back to engine (renders, actions).
+/// * `app_handle` - Handle to the application actor.
 /// * `config` - Engine configuration.
 pub fn run(
-    app: impl Application + Send + 'static,
-    engine_handle: api::private::EngineActorHandle<PlatformPixel>,
+    app_handle: actor_scheduler::ActorHandle<api::public::EngineEvent, (), api::public::AppManagement>,
     config: EngineConfig,
 ) -> anyhow::Result<()> {
-    let platform = EnginePlatform::new(app, engine_handle, config)?;
-    platform.run()
+    let platform = EnginePlatform::new(config)?;
+    let (platform, engine_handle) = platform.init()?;
+    platform.run(app_handle, &engine_handle)
 }

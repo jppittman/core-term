@@ -1,6 +1,6 @@
 #![cfg(use_cocoa_display)]
 
-//! Metal DisplayDriver implementation using raw FFI.
+//! Metal DisplayDriver implementation with type-safe wrappers.
 //!
 //! Zero-copy pipeline:
 //! 1. CPU renders into MTLBuffer (shared memory)
@@ -9,9 +9,13 @@
 //!
 //! No CGImage, no copies, proper vsync.
 
-use crate::channel::{DriverCommand, EngineCommand, EngineControl, EngineSender};
+use super::wrappers::{
+    MetalBuffer, MetalCommandQueue, MetalDevice, MetalLayer, MTLOrigin, MTLRegion, MTLSize,
+    MTL_PIXEL_FORMAT_BGRA8_UNORM,
+};
+use crate::api::private::{DriverCommand, DisplayEvent, WindowId, EngineControl, EngineData};
+use actor_scheduler::{WeakActorHandle, Message};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::{KeySymbol, Modifiers};
 use crate::platform::waker::{CocoaWaker, EventLoopWaker};
 use anyhow::{anyhow, Context, Result};
@@ -31,17 +35,6 @@ use pixelflow_render::Frame;
 use std::ffi::CStr;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Mutex, OnceLock};
-
-#[link(name = "Metal", kind = "framework")]
-#[link(name = "QuartzCore", kind = "framework")]
-extern "C" {
-    fn MTLCreateSystemDefaultDevice() -> *mut AnyObject;
-}
-
-// Metal pixel format: BGRA8Unorm = 80
-const MTL_PIXEL_FORMAT_BGRA8_UNORM: u64 = 80;
-// MTLResourceStorageModeShared = 0
-const MTL_RESOURCE_STORAGE_MODE_SHARED: u64 = 0;
 
 const DEFAULT_WINDOW_X: f64 = 100.0;
 const DEFAULT_WINDOW_Y: f64 = 100.0;
@@ -81,7 +74,7 @@ struct Window {
 // --- Run State ---
 struct RunState {
     cmd_rx: Receiver<DriverCommand<Rgba>>,
-    engine_tx: EngineSender<Rgba>,
+    engine_tx: Option<WeakActorHandle<EngineData<Rgba>, EngineControl<Rgba>, crate::api::public::AppManagement>>,
 }
 
 // --- Display Driver ---
@@ -89,7 +82,7 @@ struct RunState {
 pub struct MetalDisplayDriver {
     cmd_tx: SyncSender<DriverCommand<Rgba>>,
     waker: CocoaWaker,
-    run_state: Option<RunState>,
+    run_state: std::sync::Arc<std::sync::Mutex<Option<RunState>>>,
 }
 
 impl Clone for MetalDisplayDriver {
@@ -97,7 +90,7 @@ impl Clone for MetalDisplayDriver {
         Self {
             cmd_tx: self.cmd_tx.clone(),
             waker: self.waker.clone(),
-            run_state: None,
+            run_state: self.run_state.clone(),
         }
     }
 }
@@ -105,13 +98,16 @@ impl Clone for MetalDisplayDriver {
 impl DisplayDriver for MetalDisplayDriver {
     type Pixel = Rgba;
 
-    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self> {
+    fn new() -> Result<Self> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
             cmd_tx,
             waker: CocoaWaker::new(),
-            run_state: Some(RunState { cmd_rx, engine_tx }),
+            run_state: std::sync::Arc::new(std::sync::Mutex::new(Some(RunState {
+                cmd_rx,
+                engine_tx: None
+            }))),
         })
     }
 
@@ -122,22 +118,24 @@ impl DisplayDriver for MetalDisplayDriver {
     }
 
     fn run(&self) -> Result<()> {
-        let run_state = self
+        let mut run_state = self
             .run_state
-            .as_ref()
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock run state"))?
+            .take()
             .ok_or_else(|| anyhow!("Only original driver can run"))?;
 
-        run_event_loop(&run_state.cmd_rx, &run_state.engine_tx)
+        run_event_loop(&run_state.cmd_rx, &mut run_state.engine_tx)
     }
 }
 
 // --- Metal State ---
 
 struct MetalState {
-    device: *mut AnyObject,
-    command_queue: *mut AnyObject,
-    layer: *mut AnyObject,
-    buffer: *mut AnyObject,
+    device: MetalDevice,
+    command_queue: MetalCommandQueue,
+    layer: MetalLayer,
+    buffer: MetalBuffer,
     buffer_ptr: *mut u8,
     buffer_size: usize,
     width: usize,
@@ -147,36 +145,27 @@ struct MetalState {
 impl MetalState {
     unsafe fn new(layer: *mut AnyObject, width: usize, height: usize) -> Result<Self> {
         // Create device
-        let device = MTLCreateSystemDefaultDevice();
-        if device.is_null() {
-            return Err(anyhow!("Failed to create Metal device"));
-        }
+        let device = MetalDevice::create_system_default()
+            .ok_or_else(|| anyhow!("Failed to create Metal device"))?;
         info!("Metal: Device created");
 
         // Configure layer
-        let _: () = msg_send![layer, setDevice: device];
-        let _: () = msg_send![layer, setPixelFormat: MTL_PIXEL_FORMAT_BGRA8_UNORM];
-        let _: () = msg_send![layer, setFramebufferOnly: Bool::NO];
+        let layer = MetalLayer::from(layer);
+        layer.set_device(&device);
+        layer.set_pixel_format(MTL_PIXEL_FORMAT_BGRA8_UNORM);
+        layer.set_opaque(false); // Allow transparency
 
         // Create command queue
-        let command_queue: *mut AnyObject = msg_send![device, newCommandQueue];
-        if command_queue.is_null() {
-            return Err(anyhow!("Failed to create command queue"));
-        }
+        let command_queue = device.new_command_queue();
 
         // Create shared buffer
         let buffer_size = width * height * 4;
-        let buffer: *mut AnyObject = msg_send![
-            device,
-            newBufferWithLength: buffer_size as u64
-            options: MTL_RESOURCE_STORAGE_MODE_SHARED
-        ];
-        if buffer.is_null() {
-            return Err(anyhow!("Failed to create Metal buffer"));
-        }
+        let buffer = device
+            .new_buffer_with_length(buffer_size as u64)
+            .ok_or_else(|| anyhow!("Failed to create Metal buffer"))?;
 
-        let buffer_ptr: *mut std::ffi::c_void = msg_send![buffer, contents];
-        let buffer_ptr = buffer_ptr as *mut u8;
+        // Get CPU-accessible pointer to buffer
+        let buffer_ptr = buffer.contents();
         info!(
             "Metal: Buffer created {}x{} ({} bytes)",
             width, height, buffer_size
@@ -200,21 +189,17 @@ impl MetalState {
         }
 
         let buffer_size = width * height * 4;
-        let buffer: *mut AnyObject = msg_send![
-            self.device,
-            newBufferWithLength: buffer_size as u64
-            options: MTL_RESOURCE_STORAGE_MODE_SHARED
-        ];
-        if buffer.is_null() {
-            return Err(anyhow!("Failed to create resized Metal buffer"));
-        }
+        let new_buffer = self
+            .device
+            .new_buffer_with_length(buffer_size as u64)
+            .ok_or_else(|| anyhow!("Failed to create resized Metal buffer"))?;
 
-        // Release old buffer
-        let _: () = msg_send![self.buffer, release];
+        // Release old buffer and replace with new one
+        let old_buffer = std::mem::replace(&mut self.buffer, new_buffer);
+        old_buffer.release();
 
-        self.buffer = buffer;
-        let buffer_ptr: *mut std::ffi::c_void = msg_send![buffer, contents];
-        self.buffer_ptr = buffer_ptr as *mut u8;
+        // Update buffer pointer and dimensions
+        self.buffer_ptr = self.buffer.contents();
         self.buffer_size = buffer_size;
         self.width = width;
         self.height = height;
@@ -236,64 +221,18 @@ impl MetalState {
         let src = frame.as_bytes();
         std::ptr::copy_nonoverlapping(src.as_ptr(), self.buffer_ptr, src.len());
 
-        // Get next drawable
-        let drawable: *mut AnyObject = msg_send![self.layer, nextDrawable];
-        if drawable.is_null() {
-            return Err(anyhow!("Failed to get drawable"));
-        }
+        // Get next drawable from layer
+        let drawable = self
+            .layer
+            .next_drawable()
+            .ok_or_else(|| anyhow!("Failed to get drawable"))?;
 
-        let texture: *mut AnyObject = msg_send![drawable, texture];
+        let texture = drawable.texture();
 
         // Create command buffer
-        let command_buffer: *mut AnyObject = msg_send![self.command_queue, commandBuffer];
+        let command_buffer = self.command_queue.command_buffer();
 
         // Copy from buffer to texture using replaceRegion (CPU -> texture, no encoder needed)
-        #[repr(C)]
-        #[derive(Copy, Clone)]
-        struct MTLOrigin {
-            x: u64,
-            y: u64,
-            z: u64,
-        }
-        #[repr(C)]
-        #[derive(Copy, Clone)]
-        struct MTLSize {
-            width: u64,
-            height: u64,
-            depth: u64,
-        }
-        #[repr(C)]
-        #[derive(Copy, Clone)]
-        struct MTLRegion {
-            origin: MTLOrigin,
-            size: MTLSize,
-        }
-
-        unsafe impl objc2::Encode for MTLOrigin {
-            const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-                "?",
-                &[
-                    objc2::Encoding::ULongLong,
-                    objc2::Encoding::ULongLong,
-                    objc2::Encoding::ULongLong,
-                ],
-            );
-        }
-        unsafe impl objc2::Encode for MTLSize {
-            const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-                "?",
-                &[
-                    objc2::Encoding::ULongLong,
-                    objc2::Encoding::ULongLong,
-                    objc2::Encoding::ULongLong,
-                ],
-            );
-        }
-        unsafe impl objc2::Encode for MTLRegion {
-            const ENCODING: objc2::Encoding =
-                objc2::Encoding::Struct("?", &[MTLOrigin::ENCODING, MTLSize::ENCODING]);
-        }
-
         let region = MTLRegion {
             origin: MTLOrigin { x: 0, y: 0, z: 0 },
             size: MTLSize {
@@ -304,18 +243,11 @@ impl MetalState {
         };
         let bytes_per_row = (self.width * 4) as u64;
 
-        // replaceRegion copies CPU data directly to texture (synchronous)
-        let _: () = msg_send![
-            texture,
-            replaceRegion: region
-            mipmapLevel: 0u64
-            withBytes: self.buffer_ptr
-            bytesPerRow: bytes_per_row
-        ];
+        texture.replace_region(region, 0, self.buffer_ptr, bytes_per_row);
 
         // Present and commit
-        let _: () = msg_send![command_buffer, presentDrawable: drawable];
-        let _: () = msg_send![command_buffer, commit];
+        command_buffer.present_drawable(&drawable);
+        command_buffer.commit();
 
         Ok(())
     }
@@ -324,8 +256,8 @@ impl MetalState {
 impl Drop for MetalState {
     fn drop(&mut self) {
         unsafe {
-            let _: () = msg_send![self.buffer, release];
-            let _: () = msg_send![self.command_queue, release];
+            let _: () = msg_send![self.buffer.as_ptr(), release];
+            let _: () = msg_send![self.command_queue.as_ptr(), release];
             // Device is autoreleased
         }
         info!("MetalState dropped");
@@ -360,24 +292,33 @@ fn detect_display_refresh_rate(mtm: MainThreadMarker) -> f64 {
 
 fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Rgba>>,
-    engine_tx: &EngineSender<Rgba>,
+    engine_tx: &mut Option<WeakActorHandle<EngineData<Rgba>, EngineControl<Rgba>, crate::api::public::AppManagement>>,
 ) -> Result<()> {
     let mtm = MainThreadMarker::new().context("Must run on main thread")?;
 
     // Wait for CreateWindow command
-    let win = match cmd_rx.recv()? {
-        DriverCommand::CreateWindow {
-            id,
-            width,
-            height,
-            title,
-        } => Window {
-            id,
-            width,
-            height,
-            title,
-        },
-        other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
+    // Handle SetEngineHandle if it comes before CreateWindow
+    let win = loop {
+        match cmd_rx.recv()? {
+            DriverCommand::SetEngineHandle(handle) => {
+                info!("Metal: Engine handle injected (before CreateWindow)");
+                *engine_tx = Some(handle);
+            }
+            DriverCommand::CreateWindow {
+                id,
+                width,
+                height,
+                title,
+            } => {
+                break Window {
+                    id,
+                    width,
+                    height,
+                    title,
+                };
+            }
+            other => return Err(anyhow!("Expected CreateWindow or SetEngineHandle, got {:?}", other)),
+        }
     };
 
     info!("Metal: Creating resources for window {:?}", win.id);
@@ -422,22 +363,24 @@ fn run_event_loop(
     }
 
     // Send WindowCreated event
-    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
-        id: win.id,
-        width_px,
-        height_px,
-        scale: backing_scale,
-    }));
+    if let Some(handle) = engine_tx {
+        let _ = handle.send(Message::Data(EngineData::FromDriver(DisplayEvent::WindowCreated {
+            id: win.id,
+            width_px,
+            height_px,
+            scale: backing_scale,
+        })));
 
-    // Send refresh rate to engine separately
-    let refresh_rate = detect_display_refresh_rate(mtm);
-    let _ = engine_tx.send(EngineControl::UpdateRefreshRate(refresh_rate));
+        // Send refresh rate to engine separately
+        let refresh_rate = detect_display_refresh_rate(mtm);
+        let _ = handle.send(Message::Control(EngineControl::UpdateRefreshRate(refresh_rate)));
+    }
 
     // Event loop state
     let mut state = CocoaEventState {
         mtm,
         window: window.clone(),
-        view,
+        _view: view,
         window_id: win.id,
         window_width_pts,
         window_height_pts,
@@ -451,9 +394,11 @@ fn run_event_loop(
             if *flag {
                 *flag = false; // Reset flag
                 info!("Metal: Close button clicked");
-                let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::CloseRequested {
-                    id: win.id,
-                }));
+                if let Some(handle) = engine_tx {
+                    let _ = handle.send(Message::Data(EngineData::FromDriver(DisplayEvent::CloseRequested {
+                        id: win.id,
+                    })));
+                }
             }
         }
 
@@ -475,11 +420,13 @@ fn run_event_loop(
                             let width_px = (width * state.backing_scale) as u32;
                             let height_px = (height * state.backing_scale) as u32;
 
-                            let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resized {
-                                id: win.id,
-                                width_px,
-                                height_px,
-                            }));
+                            if let Some(handle) = engine_tx {
+                                let _ = handle.send(Message::Data(EngineData::FromDriver(DisplayEvent::Resized {
+                                    id: win.id,
+                                    width_px,
+                                    height_px,
+                                })));
+                            }
                         }
                     }
                     DelegateEvent::Minimize => {
@@ -536,7 +483,9 @@ fn run_event_loop(
                             info!("Metal: CloseRequested");
                             return Ok(());
                         }
-                        let _ = engine_tx.send(EngineCommand::DisplayEvent(display_event));
+                        if let Some(handle) = engine_tx {
+                            let _ = handle.send(Message::Data(EngineData::FromDriver(display_event)));
+                        }
                     }
                 } else {
                     break;
@@ -545,13 +494,19 @@ fn run_event_loop(
         }
 
         // Check for window changes (resize, scale)
-        for event in state.check_window_changes() {
-            let _ = engine_tx.send(EngineCommand::DisplayEvent(event));
+        if let Some(handle) = engine_tx {
+            for event in state.check_window_changes() {
+                let _ = handle.send(Message::Data(EngineData::FromDriver(event)));
+            }
         }
 
         // Process commands
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
+                DriverCommand::SetEngineHandle(handle) => {
+                    info!("Metal: Engine handle injected");
+                    *engine_tx = Some(handle);
+                }
                 DriverCommand::CreateWindow { .. } => {
                     // Already handled at startup
                 }
@@ -564,17 +519,35 @@ fn run_event_loop(
                     info!("Metal: Shutdown");
                     return Ok(());
                 }
-                DriverCommand::Present { id: _, frame } => {
+                DriverCommand::Present { id: _, frame_id, frame, engine_submit_time } => {
+                    let now = std::time::Instant::now();
+                    log::info!("FRAME_TIMING: Frame {} - Engine->Metal: {:.3}ms",
+                        frame_id,
+                        (now - engine_submit_time).as_secs_f64() * 1000.0
+                    );
+
+                    let present_start = std::time::Instant::now();
                     if let Err(e) = unsafe { metal.present(&frame) } {
                         log::error!("Metal present error: {}", e);
                     }
+                    let present_end = std::time::Instant::now();
+
+                    log::info!("FRAME_TIMING: Frame {} - Metal present: {:.3}ms",
+                        frame_id,
+                        (present_end - present_start).as_secs_f64() * 1000.0
+                    );
+
                     // Return frame for reuse
-                    let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
+                    if let Some(handle) = engine_tx {
+                        let _ = handle.send(Message::Control(EngineControl::PresentComplete(frame)));
+                    }
                 }
                 DriverCommand::SetTitle { id: _, title } => {
                     let ns_title = NSString::from_str(&title);
                     state.window.setTitle(&ns_title);
-                    let _ = engine_tx.send(EngineCommand::DriverAck);
+                    if let Some(handle) = engine_tx {
+                        let _ = handle.send(Message::Control(EngineControl::DriverAck));
+                    }
                 }
                 DriverCommand::SetSize {
                     id: _,
@@ -583,24 +556,33 @@ fn run_event_loop(
                 } => {
                     let size = NSSize::new(width as f64, height as f64);
                     state.window.setContentSize(size);
-                    let _ = engine_tx.send(EngineCommand::DriverAck);
+                    if let Some(handle) = engine_tx {
+                        let _ = handle.send(Message::Control(EngineControl::DriverAck));
+                    }
                 }
                 DriverCommand::CopyToClipboard(text) => {
                     state.copy_to_clipboard(&text);
-                    let _ = engine_tx.send(EngineCommand::DriverAck);
+                    if let Some(handle) = engine_tx {
+                        let _ = handle.send(Message::Control(EngineControl::DriverAck));
+                    }
                 }
                 DriverCommand::RequestPaste => {
                     if let Some(text) = state.request_paste() {
-                        let _ =
-                            engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::PasteData {
+                        if let Some(handle) = engine_tx {
+                            let _ = handle.send(Message::Data(EngineData::FromDriver(DisplayEvent::PasteData {
                                 text,
-                            }));
+                            })));
+                        }
                     }
-                    let _ = engine_tx.send(EngineCommand::DriverAck);
+                    if let Some(handle) = engine_tx {
+                        let _ = handle.send(Message::Control(EngineControl::DriverAck));
+                    }
                 }
                 DriverCommand::Bell => {
                     state.bell();
-                    let _ = engine_tx.send(EngineCommand::DriverAck);
+                    if let Some(handle) = engine_tx {
+                        let _ = handle.send(Message::Control(EngineControl::DriverAck));
+                    }
                 }
             }
         }
@@ -612,7 +594,7 @@ fn run_event_loop(
 struct CocoaEventState {
     mtm: MainThreadMarker,
     window: Retained<NSWindow>,
-    view: Retained<NSObject>,
+    _view: Retained<NSObject>,
     window_id: WindowId,
     window_width_pts: f64,
     window_height_pts: f64,

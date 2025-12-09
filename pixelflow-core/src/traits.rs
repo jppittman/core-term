@@ -38,7 +38,7 @@ where
     }
 }
 
-// Implement Surface for Box<dyn Surface<T>>
+// Implement Surface for Box<dyn Surface> (trait objects only, to avoid conflicts)
 impl<T, C> Surface<T, C> for Box<dyn Surface<T, C> + Send + Sync>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
@@ -50,11 +50,12 @@ where
     }
 }
 
-// Implement Surface for Arc<dyn Surface<T>>
-impl<T, C> Surface<T, C> for Arc<dyn Surface<T, C> + Send + Sync>
+// Implement Surface for Arc<S> where S: Surface (covers Arc<ConcreteType> and Arc<dyn Surface>)
+impl<T, C, S> Surface<T, C> for Arc<S>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T, C> + ?Sized,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
@@ -63,10 +64,27 @@ where
 }
 
 /// A pure functional volume: `(x, y, z) -> T`.
-pub trait Volume<T>: Send + Sync
+pub trait Volume<T, C = u32>: Send + Sync
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     /// Evaluate the volume at the given coordinates.
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>) -> Batch<T>;
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>) -> Batch<T>;
+
+    /// Create a Volume from a closure (convenience constructor).
+    ///
+    /// # Example
+    /// ```
+    /// use pixelflow_core::traits::Volume;
+    /// use pixelflow_core::batch::Batch;
+    ///
+    /// let vol = Volume::from_fn(|x, y, z| x ^ y ^ z);
+    /// ```
+    fn from_fn<F>(func: F) -> crate::volumes::FnVolume<F, T, C>
+    where
+        F: Fn(Batch<C>, Batch<C>, Batch<C>) -> Batch<T> + Send + Sync,
+    {
+        crate::volumes::FnVolume::new(func)
+    }
 }

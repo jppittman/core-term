@@ -122,8 +122,10 @@ impl<T: Copy> SimdVec<T> {
         unsafe { core::mem::transmute_copy(&self) }
     }
 
+    /// Reinterpret the bits of this batch as another type of the same size.
+    /// Preserves the bit pattern, not the numeric value.
     #[inline(always)]
-    pub fn cast<U: Copy>(self) -> SimdVec<U> {
+    pub fn bitcast<U: Copy>(self) -> SimdVec<U> {
         unsafe { self.transmute() }
     }
 
@@ -180,6 +182,12 @@ impl SimdVec<u32> {
     pub fn from_array(arr: [u32; 4]) -> Self {
         unsafe { core::mem::transmute(arr) }
     }
+
+    /// Convert to f32, preserving the numeric value.
+    #[inline(always)]
+    pub fn to_f32(self) -> SimdVec<f32> {
+        Neon::u32_to_f32(self)
+    }
 }
 
 impl SimdVec<u16> {
@@ -221,6 +229,12 @@ impl SimdVec<f32> {
                 PhantomData,
             )
         }
+    }
+
+    /// Convert to u32, preserving the numeric value (truncating).
+    #[inline(always)]
+    pub fn to_u32(self) -> SimdVec<u32> {
+        Neon::f32_to_u32(self)
     }
 }
 
@@ -1436,6 +1450,19 @@ impl Shr<i32> for SimdVec<f32> {
 }
 
 impl BatchArithmetic<f32> for SimdVec<f32> {
+    /// Selects values based on a mask.
+    ///
+    /// The mask (self) contains comparison results where each lane is either:
+    /// - `0xFFFFFFFF` (all bits set) for true
+    /// - `0x00000000` (all bits clear) for false
+    ///
+    /// These mask bits are stored in the f32 field of the union (reinterpreted from u32),
+    /// allowing type-safe integration with comparison operations.
+    ///
+    /// # Behavior
+    /// For each SIMD lane:
+    /// - If mask bit is 1, select from `if_true`
+    /// - If mask bit is 0, select from `if_false`
     fn select(self, if_true: Self, if_false: Self) -> Self {
         unsafe {
             let mask = vreinterpretq_u32_f32(self.0.f32);
@@ -1488,7 +1515,7 @@ impl BatchArithmetic<f32> for SimdVec<f32> {
             let mask = vceqq_f32(self.0.f32, other.0.f32);
             Self(
                 NeonReg {
-                    f32: vreinterpretq_f32_u32(mask),
+                    u32: mask,  // Store mask in u32 field, not f32!
                 },
                 PhantomData,
             )
@@ -1500,19 +1527,38 @@ impl BatchArithmetic<f32> for SimdVec<f32> {
             let eq = vceqq_f32(self.0.f32, other.0.f32);
             Self(
                 NeonReg {
-                    f32: vreinterpretq_f32_u32(vmvnq_u32(eq)),
+                    u32: vmvnq_u32(eq),  // Store mask in u32 field, not f32!
                 },
                 PhantomData,
             )
         }
     }
 
+    /// Lane-wise less-than comparison.
+    ///
+    /// Returns a mask where each lane contains:
+    /// - `0xFFFFFFFF` (all bits set) if `self[i] < other[i]`
+    /// - `0x00000000` (all bits clear) if `self[i] >= other[i]`
+    ///
+    /// # Implementation Note
+    /// The ARM NEON `vcltq_f32` intrinsic returns a `uint32x4_t` mask. We store this
+    /// mask in the u32 field of our union. When cast to `Batch<f32>`, the entire union
+    /// is transmuted, preserving these mask bits in the f32 representation. This allows
+    /// type-safe chaining of comparisons with select operations.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let a = Batch::<f32>::splat(1.0);
+    /// let b = Batch::<f32>::splat(2.0);
+    /// let mask = a.cmp_lt(b);  // Returns all-ones mask
+    /// let result = mask.select(white, black);  // Selects white
+    /// ```
     fn cmp_lt(self, other: Self) -> Self {
         unsafe {
             let mask = vcltq_f32(self.0.f32, other.0.f32);
             Self(
                 NeonReg {
-                    f32: vreinterpretq_f32_u32(mask),
+                    u32: mask,  // Store mask in u32 field, not f32!
                 },
                 PhantomData,
             )
@@ -1524,7 +1570,7 @@ impl BatchArithmetic<f32> for SimdVec<f32> {
             let mask = vcleq_f32(self.0.f32, other.0.f32);
             Self(
                 NeonReg {
-                    f32: vreinterpretq_f32_u32(mask),
+                    u32: mask,  // Store mask in u32 field, not f32!
                 },
                 PhantomData,
             )
@@ -1536,7 +1582,7 @@ impl BatchArithmetic<f32> for SimdVec<f32> {
             let mask = vcgtq_f32(self.0.f32, other.0.f32);
             Self(
                 NeonReg {
-                    f32: vreinterpretq_f32_u32(mask),
+                    u32: mask,  // Store mask in u32 field, not f32!
                 },
                 PhantomData,
             )
@@ -1548,7 +1594,7 @@ impl BatchArithmetic<f32> for SimdVec<f32> {
             let mask = vcgeq_f32(self.0.f32, other.0.f32);
             Self(
                 NeonReg {
-                    f32: vreinterpretq_f32_u32(mask),
+                    u32: mask,  // Store mask in u32 field, not f32!
                 },
                 PhantomData,
             )
@@ -1783,5 +1829,237 @@ mod tests {
             let error = (output[0] - x).abs();
             assert!(error < 0.01, "Gamma roundtrip: {} -> {} (error {})", x, output[0], error);
         }
+    }
+
+    /// Helper to extract u32 bits from f32 batch (for testing mask values)
+    fn extract_u32_bits(batch: SimdVec<f32>) -> [u32; 4] {
+        unsafe {
+            let mut output = [0u32; 4];
+            // Read the f32 field as u32 to see mask bits
+            vst1q_u32(output.as_mut_ptr(), vreinterpretq_u32_f32(batch.0.f32));
+            output
+        }
+    }
+
+    #[test]
+    fn test_f32_cmp_eq() {
+        use crate::backend::BatchArithmetic;
+
+        // Test equality
+        let a = SimdVec::<f32>::splat(1.0);
+        let b = SimdVec::<f32>::splat(1.0);
+        let result = a.cmp_eq(b);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "1.0 == 1.0 should produce all-ones mask");
+
+        // Test inequality
+        let c = SimdVec::<f32>::splat(1.0);
+        let d = SimdVec::<f32>::splat(2.0);
+        let result = c.cmp_eq(d);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "1.0 == 2.0 should produce all-zeros mask");
+    }
+
+    #[test]
+    fn test_f32_cmp_ne() {
+        use crate::backend::BatchArithmetic;
+
+        // Test inequality
+        let a = SimdVec::<f32>::splat(1.0);
+        let b = SimdVec::<f32>::splat(2.0);
+        let result = a.cmp_ne(b);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "1.0 != 2.0 should produce all-ones mask");
+
+        // Test equality
+        let c = SimdVec::<f32>::splat(1.0);
+        let d = SimdVec::<f32>::splat(1.0);
+        let result = c.cmp_ne(d);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "1.0 != 1.0 should produce all-zeros mask");
+    }
+
+    #[test]
+    fn test_f32_cmp_lt() {
+        use crate::backend::BatchArithmetic;
+
+        // Test less than (true)
+        let a = SimdVec::<f32>::splat(1.0);
+        let b = SimdVec::<f32>::splat(2.0);
+        let result = a.cmp_lt(b);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "1.0 < 2.0 should produce all-ones mask");
+
+        // Test less than (false - equal)
+        let c = SimdVec::<f32>::splat(2.0);
+        let d = SimdVec::<f32>::splat(2.0);
+        let result = c.cmp_lt(d);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "2.0 < 2.0 should produce all-zeros mask");
+
+        // Test less than (false - greater)
+        let e = SimdVec::<f32>::splat(3.0);
+        let f = SimdVec::<f32>::splat(2.0);
+        let result = e.cmp_lt(f);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "3.0 < 2.0 should produce all-zeros mask");
+    }
+
+    #[test]
+    fn test_f32_cmp_le() {
+        use crate::backend::BatchArithmetic;
+
+        // Test less or equal (true - less)
+        let a = SimdVec::<f32>::splat(1.0);
+        let b = SimdVec::<f32>::splat(2.0);
+        let result = a.cmp_le(b);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "1.0 <= 2.0 should produce all-ones mask");
+
+        // Test less or equal (true - equal)
+        let c = SimdVec::<f32>::splat(2.0);
+        let d = SimdVec::<f32>::splat(2.0);
+        let result = c.cmp_le(d);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "2.0 <= 2.0 should produce all-ones mask");
+
+        // Test less or equal (false)
+        let e = SimdVec::<f32>::splat(3.0);
+        let f = SimdVec::<f32>::splat(2.0);
+        let result = e.cmp_le(f);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "3.0 <= 2.0 should produce all-zeros mask");
+    }
+
+    #[test]
+    fn test_f32_cmp_gt() {
+        use crate::backend::BatchArithmetic;
+
+        // Test greater than (true)
+        let a = SimdVec::<f32>::splat(2.0);
+        let b = SimdVec::<f32>::splat(1.0);
+        let result = a.cmp_gt(b);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "2.0 > 1.0 should produce all-ones mask");
+
+        // Test greater than (false - equal)
+        let c = SimdVec::<f32>::splat(2.0);
+        let d = SimdVec::<f32>::splat(2.0);
+        let result = c.cmp_gt(d);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "2.0 > 2.0 should produce all-zeros mask");
+
+        // Test greater than (false - less)
+        let e = SimdVec::<f32>::splat(1.0);
+        let f = SimdVec::<f32>::splat(2.0);
+        let result = e.cmp_gt(f);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "1.0 > 2.0 should produce all-zeros mask");
+    }
+
+    #[test]
+    fn test_f32_cmp_ge() {
+        use crate::backend::BatchArithmetic;
+
+        // Test greater or equal (true - greater)
+        let a = SimdVec::<f32>::splat(2.0);
+        let b = SimdVec::<f32>::splat(1.0);
+        let result = a.cmp_ge(b);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "2.0 >= 1.0 should produce all-ones mask");
+
+        // Test greater or equal (true - equal)
+        let c = SimdVec::<f32>::splat(2.0);
+        let d = SimdVec::<f32>::splat(2.0);
+        let result = c.cmp_ge(d);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "2.0 >= 2.0 should produce all-ones mask");
+
+        // Test greater or equal (false)
+        let e = SimdVec::<f32>::splat(1.0);
+        let f = SimdVec::<f32>::splat(2.0);
+        let result = e.cmp_ge(f);
+        let bits = extract_u32_bits(result);
+        assert_eq!(bits, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "1.0 >= 2.0 should produce all-zeros mask");
+    }
+
+    #[test]
+    fn test_f32_select_with_comparison() {
+        use crate::backend::BatchArithmetic;
+
+        // Test select with true mask
+        let a = SimdVec::<f32>::splat(1.0);
+        let b = SimdVec::<f32>::splat(2.0);
+        let mask = a.cmp_lt(b); // true mask
+        let if_true = SimdVec::<f32>::splat(10.0);
+        let if_false = SimdVec::<f32>::splat(20.0);
+        let result = mask.select(if_true, if_false);
+
+        let mut output = [0.0f32; 4];
+        SimdBatch::store(&result, &mut output);
+        assert_eq!(output, [10.0, 10.0, 10.0, 10.0],
+                   "select with true mask should pick if_true");
+
+        // Test select with false mask
+        let c = SimdVec::<f32>::splat(2.0);
+        let d = SimdVec::<f32>::splat(1.0);
+        let mask = c.cmp_lt(d); // false mask
+        let result = mask.select(if_true, if_false);
+
+        let mut output = [0.0f32; 4];
+        SimdBatch::store(&result, &mut output);
+        assert_eq!(output, [20.0, 20.0, 20.0, 20.0],
+                   "select with false mask should pick if_false");
+    }
+
+    #[test]
+    fn test_f32_comparison_cast_select() {
+        use crate::backend::BatchArithmetic;
+
+        // This tests the actual usage pattern from the raymarching code:
+        // Compare f32 values, cast to u32, then select u32 values
+        let x = SimdVec::<f32>::splat(0.1);
+        let threshold = SimdVec::<f32>::splat(0.2);
+
+        let in_range = x.cmp_lt(threshold);
+
+        // Cast the mask from f32 to u32 for selecting u32 colors
+        let mask_u32 = in_range.cast::<u32>();
+
+        let white = SimdVec::<u32>::splat(0xFFFFFFFF);
+        let black = SimdVec::<u32>::splat(0x00000000);
+        let result = mask_u32.select(white, black);
+
+        let mut output = [0u32; 4];
+        SimdBatch::store(&result, &mut output);
+        assert_eq!(output, [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF],
+                   "0.1 < 0.2 should select white (0xFFFFFFFF)");
+
+        // Test the false case
+        let y = SimdVec::<f32>::splat(0.3);
+        let out_of_range = y.cmp_lt(threshold);
+        let mask_u32 = out_of_range.cast::<u32>();
+        let result = mask_u32.select(white, black);
+
+        let mut output = [0u32; 4];
+        SimdBatch::store(&result, &mut output);
+        assert_eq!(output, [0x00000000, 0x00000000, 0x00000000, 0x00000000],
+                   "0.3 < 0.2 should select black (0x00000000)");
     }
 }

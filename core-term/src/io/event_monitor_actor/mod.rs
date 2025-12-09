@@ -19,7 +19,7 @@ use crate::ansi::AnsiCommand;
 use crate::io::pty::NixPty;
 use anyhow::{Context, Result};
 use log::*;
-use parser_thread::ParserThread;
+// ParserThread no longer needed - using actor_scheduler::spawn() instead
 use read_thread::ReadThread;
 use std::sync::mpsc::{Receiver, SyncSender};
 use write_thread::WriteThread;
@@ -34,8 +34,8 @@ use write_thread::WriteThread;
 /// External callers see a single unified actor.
 pub struct EventMonitorActor {
     read_thread: Option<ReadThread>,
-    parser_thread: Option<ParserThread>,
     write_thread: Option<WriteThread>,
+    // Parser actor is spawned and managed by actor-scheduler, no need to track it
 }
 
 impl EventMonitorActor {
@@ -55,16 +55,13 @@ impl EventMonitorActor {
         cmd_tx: SyncSender<Vec<AnsiCommand>>,
         pty_write_rx: Receiver<Vec<u8>>,
     ) -> Result<Self> {
-        use actor_scheduler::ActorScheduler;
-
-        // Create parser's actor scheduler for raw bytes
-        let (parser_tx, parser_rx) = ActorScheduler::<
-            Vec<u8>,                    // Data: raw bytes
-            parser_thread::NoControl,   // Control: unused
-            parser_thread::NoManagement // Management: unused
-        >::new(
+        // Create parser actor and spawn it using new API
+        let parser_state = parser_thread::ParserState::new(cmd_tx);
+        let parser_tx = actor_scheduler::spawn_with_config(
+            parser_state,
             10,  // burst limit: max 10 byte batches per wake
             64,  // buffer size: 64 byte batches
+            None,
         );
 
         // Clone PTY for the read thread (shared ownership of FD)
@@ -76,10 +73,6 @@ impl EventMonitorActor {
         let read_thread =
             ReadThread::spawn(pty_read, parser_tx).context("Failed to spawn PTY read thread")?;
 
-        // Spawn parser thread: receives raw bytes via ActorScheduler, sends ANSI commands to app
-        let parser_thread = ParserThread::spawn(parser_rx, cmd_tx)
-            .context("Failed to spawn PTY parser thread")?;
-
         // Spawn write thread (owns primary PTY for writes and lifecycle management)
         let write_thread =
             WriteThread::spawn(pty, pty_write_rx).context("Failed to spawn PTY write thread")?;
@@ -88,7 +81,6 @@ impl EventMonitorActor {
 
         Ok(Self {
             read_thread: Some(read_thread),
-            parser_thread: Some(parser_thread),
             write_thread: Some(write_thread),
         })
     }
@@ -103,15 +95,12 @@ impl Drop for EventMonitorActor {
             drop(write_thread);
         }
 
-        // Then drop read thread (will exit when PTY FD is closed, closes raw_bytes_tx)
+        // Then drop read thread (will exit when PTY FD is closed, closes parser_tx handle)
         if let Some(read_thread) = self.read_thread.take() {
             drop(read_thread);
         }
 
-        // Finally drop parser thread (will exit when raw_bytes_rx closes)
-        if let Some(parser_thread) = self.parser_thread.take() {
-            drop(parser_thread);
-        }
+        // Parser actor will exit when all handles are dropped (managed by actor-scheduler)
 
         debug!("EventMonitorActor cleanup complete");
     }

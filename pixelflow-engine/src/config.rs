@@ -29,7 +29,7 @@ impl Default for PerformanceConfig {
             min_draw_latency_ms: Duration::from_millis(2),
             max_draw_latency_ms: Duration::from_millis(33),
             target_fps: 144,
-            render_threads: 2,
+            render_threads: 8,
         }
     }
 }
@@ -39,10 +39,10 @@ impl Default for PerformanceConfig {
 #[serde(default)]
 pub struct WindowConfig {
     pub title: String,
-    pub columns: u16,
-    pub rows: u16,
-    pub cell_width_px: usize,
-    pub cell_height_px: usize,
+    /// Window width in logical pixels
+    pub width: u32,
+    /// Window height in logical pixels
+    pub height: u32,
     pub initial_x: f64,
     pub initial_y: f64,
 }
@@ -51,10 +51,8 @@ impl Default for WindowConfig {
     fn default() -> Self {
         WindowConfig {
             title: "Pixelflow Application".to_string(),
-            columns: 80,
-            rows: 24,
-            cell_width_px: 10,
-            cell_height_px: 16,
+            width: 800,
+            height: 600,
             initial_x: 100.0,
             initial_y: 100.0,
         }

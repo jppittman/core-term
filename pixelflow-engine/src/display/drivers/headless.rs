@@ -5,9 +5,8 @@
 //! Driver struct is just cmd_tx - trivially Clone.
 //! run() reads CreateWindow, runs a simple event loop.
 
-use crate::channel::{DriverCommand, EngineCommand, EngineSender};
+use crate::api::private::{DriverCommand, EngineActorHandle, DisplayEvent, WindowId};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, WindowId};
 use anyhow::{anyhow, Result};
 use log::info;
 use pixelflow_render::color::Rgba;
@@ -17,7 +16,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 // --- Run State (only original driver has this) ---
 struct RunState {
     cmd_rx: Receiver<DriverCommand<Rgba>>,
-    engine_tx: EngineSender<Rgba>,
+    engine_tx: EngineActorHandle<Rgba>,
 }
 
 // --- Display Driver ---
@@ -43,7 +42,7 @@ impl Clone for HeadlessDisplayDriver {
 impl DisplayDriver for HeadlessDisplayDriver {
     type Pixel = Rgba;
 
-    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self> {
+    fn new(engine_tx: EngineActorHandle<Rgba>) -> Result<Self> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -71,7 +70,7 @@ impl DisplayDriver for HeadlessDisplayDriver {
 
 fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Rgba>>,
-    engine_tx: &EngineSender<Rgba>,
+    engine_tx: &EngineActorHandle<Rgba>,
 ) -> Result<()> {
     // 1. Read CreateWindow command first
     let (window_id, width_px, height_px, title) = match cmd_rx.recv()? {
@@ -90,7 +89,7 @@ fn run_event_loop(
     );
 
     // Send WindowCreated event
-    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+    let _ = engine_tx.send((DisplayEvent::WindowCreated {
         id: window_id,
         width_px,
         height_px,
@@ -113,28 +112,28 @@ fn run_event_loop(
             }
             DriverCommand::Present { frame, .. } => {
                 // Just return the framebuffer
-                let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
+                let _ = engine_tx.send(EngineControl::PresentComplete(frame));
             }
             DriverCommand::SetTitle { title, .. } => {
                 info!("Headless: SetTitle '{}'", title);
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _ = engine_tx.send(EngineControl::DriverAck);
             }
             DriverCommand::SetSize { width, height, .. } => {
                 info!("Headless: SetSize {}x{}", width, height);
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _ = engine_tx.send(EngineControl::DriverAck);
             }
             DriverCommand::CopyToClipboard(text) => {
                 info!("Headless: CopyToClipboard '{}'", text);
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _ = engine_tx.send(EngineControl::DriverAck);
             }
             DriverCommand::RequestPaste => {
                 info!("Headless: RequestPaste");
                 // In headless mode, just acknowledge - no actual paste data
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _ = engine_tx.send(EngineControl::DriverAck);
             }
             DriverCommand::Bell => {
                 info!("Headless: Bell");
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _ = engine_tx.send(EngineControl::DriverAck);
             }
         }
     }
