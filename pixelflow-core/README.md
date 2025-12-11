@@ -1,53 +1,57 @@
 # PixelFlow Core
 
-**PixelFlow Core** is a zero-cost, type-driven SIMD abstraction library designed for high-performance pixel operations. It serves as the foundation for the PixelFlow rendering ecosystem, providing efficient primitives for image processing, tensor manipulation, and pipeline composition.
+**PixelFlow Core** is the algebraic heart of the PixelFlow ecosystem. It provides a **Zero-Copy Functional** abstraction for defining continuous fields over coordinate spaces.
 
-## Key Features
+## The Thesis
 
-*   **Type-Driven SIMD**: The `Batch<T>` type automatically selects the optimal SIMD instruction set and lane width based on the data type:
-    *   `Batch<u32>`: 32-bit operations (4 lanes)
-    *   `Batch<u16>`: 16-bit operations (8 lanes)
-    *   `Batch<u8>`: 8-bit operations (16 lanes)
-*   **Zero-Cost Abstractions**: Compiles down to efficient hardware intrinsics (SSE2/NEON) without runtime overhead.
-*   **Tensor Operations**: Provides `TensorView` and `TensorViewMut` for efficient 2D grid access, including optimized strided access and sub-view creation.
-*   **Pipeline DSL**: Includes a Domain-Specific Language (DSL) for composing rendering pipelines with operations like `offset`, `skew`, and `over`.
-*   **`no_std` Compatible**: Designed for embedded and bare-metal environments.
+SIMD is not an optimization. It is the algebraic realization of the Field of Real Numbers. `pixelflow-core` allows you to write equations that compile directly to optimal, lane-agnostic vector assembly.
 
-## Example Usage
+## Core Primitives
 
-The following example demonstrates how `pixelflow-core` uses Rust's type system to select the appropriate SIMD instructions:
+### `Field`
+The computational atom. A `Field` represents a value that exists in parallel across multiple SIMD lanes. It satisfies field axioms and supports standard math operations (`+`, `*`, `sin`, `cos`, etc.).
+*(Note: Currently implemented via `Batch<T>` types).*
+
+### `Surface<T>`
+A function `(x: Field, y: Field) -> T`.
+This is the fundamental 2D primitive. Surfaces are infinite and continuous.
+
+### `Volume<T>` and `Manifold<T>`
+Higher-dimensional generalizations:
+*   `Volume`: `(x, y, z) -> T`
+*   `Manifold`: `(x, y, z, w) -> T`
+
+### Dimensional Collapse
+Higher dimensions automatically satisfy lower-dimensional traits by binding extra coordinates to zero.
+*   `Manifold` implies `Volume` (w=0).
+*   `Volume` implies `Surface` (z=0).
+
+## The Six Eigenshaders
+
+All complex behavior is built from six orthogonal combinators:
+
+1.  **Warp**: `(S, ω) -> S` — Remap coordinates (move/distort space).
+2.  **Grade**: `(S, M, b) -> S` — Linear transform on values (color correction).
+3.  **Lerp**: `(t, a, b) -> S` — Linear interpolation (blending).
+4.  **Select**: `(cond, t, f) -> S` — Discrete choice (masking/clipping).
+5.  **Fix**: `(seed, step) -> V` — Iteration as a dimension (fractals, simulation).
+6.  **Compute**: `Fn(x,y) -> T` — The escape hatch.
+
+## Usage
 
 ```rust
-use pixelflow_core::Batch;
+use pixelflow_core::prelude::*;
 
-fn main() {
-    // 1. 32-bit addition (4 lanes)
-    // Uses paddd (x86) or vaddq_u32 (ARM)
-    let a = Batch::<u32>::splat(100);
-    let b = Batch::<u32>::splat(50);
-    let c = a + b;
+// Define a surface
+let circle = Circle::new(100.0);
 
-    let mut result = [0u32; 4];
-    unsafe { c.store(result.as_mut_ptr()) };
-    println!("Result: {:?}", result); // [150, 150, 150, 150]
+// Warp it (move space, not the object)
+let moved = circle.warp(|x, y| (x - 50.0, y - 50.0));
 
-    // 2. 16-bit multiplication (8 lanes)
-    // Uses pmullw (x86) or vmulq_u16 (ARM)
-    let pixels = Batch::<u32>::new(0x01020304, 0x05060708, 0x090A0B0C, 0x0D0E0F10);
-    let weights = Batch::<u32>::splat(256); // Fixed-point 1.0
-
-    // Cast to u16 to exploit 16-bit SIMD multiply
-    let pixels_16 = pixels.cast::<u16>();
-    let weights_16 = weights.cast::<u16>();
-
-    // The type system ensures the correct SIMD instruction is used
-    let scaled = pixels_16 * weights_16;
-}
+// Evaluate it (get a value at a coordinate)
+let value = moved.eval(Field::splat(10.0), Field::splat(10.0));
 ```
 
-## Architecture
+## Implementation
 
-*   **`batch`**: Core SIMD types (`Batch<T>`) and trait definitions.
-*   **`ops`**: Implementations of fundamental operations (e.g., `Fill`, `Sample`).
-*   **`pipe`**: Traits and structures for building composable rendering pipelines.
-*   **`dsl`**: Helper traits for fluent pipeline construction.
+Under the hood, `pixelflow-core` uses generic `Batch<T>` types to abstract over SIMD widths (Scalar, SSE2, AVX2, AVX-512). The compiler monomorphizes your Surface combinator tree into a single, efficient kernel.
