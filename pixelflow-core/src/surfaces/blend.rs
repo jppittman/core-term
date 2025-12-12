@@ -1,7 +1,7 @@
 use crate::backend::{BatchArithmetic, SimdBatch};
 use crate::batch::Batch;
-use crate::traits::Surface;
 use crate::pixel::Pixel;
+use crate::traits::Surface;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 

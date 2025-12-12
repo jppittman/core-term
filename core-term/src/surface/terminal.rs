@@ -5,10 +5,10 @@
 
 use crate::surface::grid::GridBuffer;
 use core::marker::PhantomData;
+use pixelflow_core::batch::Batch;
 use pixelflow_core::dsl::MaskExt; // for .over()
 use pixelflow_core::surfaces::{Baked, FnSurface, Partition};
 use pixelflow_core::traits::Surface;
-use pixelflow_core::batch::Batch;
 use pixelflow_core::SimdBatch;
 use pixelflow_fonts::{glyphs, Lazy};
 use pixelflow_render::font;
@@ -23,7 +23,10 @@ struct PixelConvert<S, P> {
 
 impl<S, P: Pixel> PixelConvert<S, P> {
     fn new(source: S) -> Self {
-        Self { source, _pixel: PhantomData }
+        Self {
+            source,
+            _pixel: PhantomData,
+        }
     }
 }
 
@@ -65,7 +68,8 @@ impl<P: Pixel + Surface<P> + 'static> TerminalSurface<P> {
         let cols = grid.cols;
 
         // Build flat array of all cells (row-major order)
-        let mut cell_surfaces: Vec<Arc<dyn Surface<u32> + Send + Sync>> = Vec::with_capacity(rows * cols);
+        let mut cell_surfaces: Vec<Arc<dyn Surface<u32> + Send + Sync>> =
+            Vec::with_capacity(rows * cols);
 
         for row in 0..rows {
             for col in 0..cols {
@@ -74,16 +78,17 @@ impl<P: Pixel + Surface<P> + 'static> TerminalSurface<P> {
                 let cy = (row as u32) * cell_height;
 
                 // Glyph Mask (u32 pixels with coverage in alpha channel)
-                let glyph_surface: Arc<dyn Surface<u32> + Send + Sync> = if cell.ch == ' ' || cell.ch == '\0' {
-                    Arc::new(0u32)
-                } else {
-                    let glyph_lazy = (glyph_factory)(cell.ch);
-                    Arc::new(pixelflow_core::surfaces::Offset {
-                        source: glyph_lazy,
-                        dx: -(cx as i32),
-                        dy: -(cy as i32),
-                    })
-                };
+                let glyph_surface: Arc<dyn Surface<u32> + Send + Sync> =
+                    if cell.ch == ' ' || cell.ch == '\0' {
+                        Arc::new(0u32)
+                    } else {
+                        let glyph_lazy = (glyph_factory)(cell.ch);
+                        Arc::new(pixelflow_core::surfaces::Offset {
+                            source: glyph_lazy,
+                            dx: -(cx as i32),
+                            dy: -(cy as i32),
+                        })
+                    };
 
                 // Colors (as u32 packed RGBA)
                 let fg = cell.fg.to_rgba().0;
@@ -157,7 +162,7 @@ impl<P: Pixel + Surface<P> + 'static> TerminalSurface<P> {
         let f = font();
         let glyph_fn = glyphs(f.clone(), cell_width, cell_height);
         let grid = GridBuffer::new(cols, rows);
-        
+
         Self::with_grid(&grid, Arc::new(glyph_fn), cell_width, cell_height)
     }
 }

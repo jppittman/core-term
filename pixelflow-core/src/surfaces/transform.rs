@@ -1,6 +1,7 @@
-use crate::batch::Batch;
-use crate::traits::Surface;
 use crate::backend::{BatchArithmetic, SimdBatch};
+use crate::batch::Batch;
+use crate::batch::NativeBackend;
+use crate::traits::Surface;
 use core::fmt::Debug;
 
 /// Offsets the coordinate system by a fixed amount.
@@ -159,5 +160,27 @@ where
     #[inline(always)]
     fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
         (self.transform)(self.source.eval(x, y))
+    }
+}
+
+/// Adapts a Discrete Surface (u32) to a Continuous Surface (f32).
+///
+/// Coordinates are cast from f32 to u32 (truncation).
+/// This effectively implements nearest-neighbor sampling.
+#[derive(Copy, Clone)]
+pub struct Discrete<S>(pub S);
+
+impl<S, T> Surface<T, f32> for Discrete<S>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T, u32>,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<T> {
+        // Simple cast f32 -> u32
+        use crate::backend::Backend;
+        let ix = NativeBackend::f32_to_u32(x);
+        let iy = NativeBackend::f32_to_u32(y);
+        self.0.eval(ix, iy)
     }
 }

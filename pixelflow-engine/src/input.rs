@@ -114,6 +114,12 @@ impl KeySymbol {
     }
 }
 
+/// Wrapper for KeySymbol to match the expected 'Key' type in events
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct Key {
+    pub symbol: KeySymbol,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,

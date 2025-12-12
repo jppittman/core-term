@@ -6,6 +6,7 @@ use std::io::{Read, Result as IoResult, Write};
 use std::os::unix::io::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 
+use crate::io::traits::EventSource;
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use nix::pty::openpty;
 use nix::sys::signal::{kill, Signal};
@@ -43,9 +44,10 @@ pub trait PtyChannel: Read + Write + AsRawFd + Send + Sync {
 }
 
 /// Implementation of `PtyChannel` using `nix` for POSIX systems.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NixPty {
     master_fd: Arc<OwnedFd>,
+    // child_pid is Option because clones (ReadThread) don't own the child process.
     child_pid: Option<Pid>,
 }
 
@@ -135,12 +137,6 @@ impl NixPty {
                         .context("Child: Failed to dup slave PTY to stderr using libc::dup2"));
                 }
 
-                // After dup2, the original slave_fd (wrapping slave_raw_fd) should be closed,
-                // as 0, 1, and 2 now refer to the same underlying file description.
-                // Letting slave_fd (OwnedFd) go out of scope will achieve this.
-                // No std::mem::forget is needed because openpty() will not return an FD in the 0,1,2 range.
-                // So slave_raw_fd will be a distinct number (e.g. 5), and that FD 5 needs to be closed.
-                // If slave_fd were to be forgotten, FD 5 would leak.
                 drop(slave_fd);
 
                 let command_cst = CString::new(config.command_executable).with_context(|| {
@@ -232,28 +228,20 @@ impl NixPty {
 
 impl Drop for NixPty {
     fn drop(&mut self) {
+        // Only the owner of the child process manages its lifecycle
+        let pid = match self.child_pid {
+            Some(p) => p,
+            None => return,
+        };
+
         let master_raw_fd = self.master_fd.as_raw_fd();
         log::debug!(
             "NixPty drop: Cleaning up PTY master_fd: {} (child_pid: {:?})",
             master_raw_fd,
-            self.child_pid
+            pid
         );
-        // self.master_fd (Arc<OwnedFd>) is dropped automatically.
-        // The underlying FD closes only when strong_count hits 0.
-
-        let pid = match self.child_pid {
-            Some(p) => p,
-            None => {
-                // This is a clone (Read Thread), so we don't manage the child process.
-                return;
-            }
-        };
 
         if pid.as_raw() <= 0 {
-            log::debug!(
-                "NixPty drop: Invalid child PID ({}), skipping child process handling.",
-                pid
-            );
             return;
         }
 
@@ -269,11 +257,6 @@ impl Drop for NixPty {
                         pid,
                         e
                     );
-                } else {
-                    log::debug!(
-                        "NixPty drop: Successfully sent SIGHUP to child process {}.",
-                        pid
-                    );
                 }
             }
             Ok(status) => {
@@ -284,12 +267,10 @@ impl Drop for NixPty {
                 );
             }
             Err(e) => {
-                // nix::Error
                 if matches!(e, nix::Error::ECHILD) || matches!(e, nix::Error::ESRCH) {
                     log::debug!(
-                        "NixPty drop: Child process {} does not exist or is not a child (waitpid error: {}). Already reaped?",
-                        pid,
-                        e
+                        "NixPty drop: Child process {} does not exist or is not a child.",
+                        pid
                     );
                 } else {
                     log::warn!(
@@ -305,35 +286,15 @@ impl Drop for NixPty {
 
 impl Read for NixPty {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        let master_raw_fd = self.master_fd.as_raw_fd();
-        log::trace!("NixPty::read attempting to read from fd {}", master_raw_fd);
         match nix::unistd::read(&self.master_fd, buf) {
-            // Pass &OwnedFd
-            Ok(bytes_read) => {
-                log::trace!(
-                    "NixPty::read successfully read {} bytes from fd {}",
-                    bytes_read,
-                    master_raw_fd
-                );
-                Ok(bytes_read)
-            }
+            Ok(bytes_read) => Ok(bytes_read),
             Err(nix::Error::EIO) => Ok(0),
             Err(nix_err) => {
                 if matches!(nix_err, nix::Error::EAGAIN)
                     || matches!(nix_err, nix::Error::EWOULDBLOCK)
                 {
-                    log::debug!(
-                        "NixPty::read on fd {}: Got {}, mapping to WouldBlock",
-                        master_raw_fd,
-                        nix_err
-                    );
                     Err(IoError::new(IoErrorKind::WouldBlock, nix_err))
                 } else {
-                    log::warn!(
-                        "NixPty::read on fd {}: Got unhandled nix::Error {}, mapping to Other",
-                        master_raw_fd,
-                        nix_err
-                    );
                     Err(IoError::other(nix_err))
                 }
             }
@@ -343,38 +304,14 @@ impl Read for NixPty {
 
 impl Write for NixPty {
     fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
-        let master_raw_fd = self.master_fd.as_raw_fd();
-        log::trace!(
-            "NixPty::write attempting to write {} bytes to fd {}",
-            buf.len(),
-            master_raw_fd
-        );
         match nix::unistd::write(&self.master_fd, buf) {
-            // Pass &OwnedFd
-            Ok(bytes_written) => {
-                log::trace!(
-                    "NixPty::write successfully wrote {} bytes to fd {}",
-                    bytes_written,
-                    master_raw_fd
-                );
-                Ok(bytes_written)
-            }
+            Ok(bytes_written) => Ok(bytes_written),
             Err(nix_err) => {
                 if matches!(nix_err, nix::Error::EAGAIN)
                     || matches!(nix_err, nix::Error::EWOULDBLOCK)
                 {
-                    log::debug!(
-                        "NixPty::write on fd {}: Got {}, mapping to WouldBlock",
-                        master_raw_fd,
-                        nix_err
-                    );
                     Err(IoError::new(IoErrorKind::WouldBlock, nix_err))
                 } else {
-                    log::warn!(
-                        "NixPty::write on fd {}: Got unhandled nix::Error {}, mapping to Other",
-                        master_raw_fd,
-                        nix_err
-                    );
                     Err(IoError::other(nix_err))
                 }
             }
@@ -382,7 +319,6 @@ impl Write for NixPty {
     }
 
     fn flush(&mut self) -> IoResult<()> {
-        log::trace!("NixPty::flush called for fd {}", self.master_fd.as_raw_fd());
         Ok(())
     }
 }
@@ -408,17 +344,8 @@ impl PtyChannel for NixPty {
             kill(pid, Some(Signal::SIGWINCH)).with_context(|| {
                 format!("NixPty: Failed to send SIGWINCH to child process {}", pid)
             })?;
-
-            log::debug!(
-                "NixPty: Resized PTY to {}x{} and sent SIGWINCH to PID {}",
-                cols,
-                rows,
-                pid
-            );
         } else {
-            log::warn!(
-                "NixPty: Resize called on a clone (no PID). PTY size set, but SIGWINCH not sent."
-            );
+            log::warn!("NixPty: Resize called on a clone (no PID). SIGWINCH not sent.");
         }
 
         Ok(())
@@ -428,3 +355,6 @@ impl PtyChannel for NixPty {
         self.child_pid.unwrap_or_else(|| Pid::from_raw(0))
     }
 }
+
+// Blanket impl EventSource covers NixPty because it implements Read + AsRawFd + Send.
+// So no need to implement EventSource manually.

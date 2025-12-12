@@ -5,7 +5,7 @@
 
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
-use crate::display::messages::{DisplayEvent, WindowId};
+use crate::display::messages::{DisplayEvent, ElementState, WindowId};
 use crate::input::{KeySymbol, Modifiers};
 use crate::platform::waker::{EventLoopWaker, X11Waker};
 use anyhow::{anyhow, Result};
@@ -243,6 +243,7 @@ fn run_event_loop(
             width_px: width,
             height_px: height,
             scale: state.scale_factor,
+            refresh_rate: 60.0, // Default assumption, X11 refresh rate is tricky
         }));
 
         state.event_loop(cmd_rx, engine_tx)
@@ -351,6 +352,7 @@ impl X11State {
                     DriverCommand::Bell => {
                         self.handle_bell();
                     }
+                    _ => {}
                 }
             }
 
@@ -435,8 +437,30 @@ impl X11State {
                     Some(DisplayEvent::Key {
                         id,
                         symbol,
+                        state: ElementState::Pressed,
                         modifiers,
                         text,
+                    })
+                }
+                xlib::KeyRelease => {
+                    let key_event = event.key;
+                    let mut keysym = 0;
+                    let mut buffer = [0u8; 32];
+                    xlib::XLookupString(
+                        &key_event as *const _ as *mut _,
+                        buffer.as_mut_ptr() as *mut i8,
+                        buffer.len() as c_int,
+                        &mut keysym,
+                        ptr::null_mut(),
+                    );
+                    let modifiers = self.extract_modifiers(key_event.state);
+                    let symbol = self.xkeysym_to_keysymbol(keysym, "");
+                    Some(DisplayEvent::Key {
+                        id,
+                        symbol,
+                        state: ElementState::Released,
+                        modifiers,
+                        text: None,
                     })
                 }
                 xlib::ConfigureNotify => {
@@ -460,39 +484,39 @@ impl X11State {
                             id,
                             dx: 0.0,
                             dy: 1.0, // Scroll up
-                            x: e.x,
-                            y: e.y,
+                            x: e.x as u32,
+                            y: e.y as u32,
                             modifiers,
                         }),
                         5 => Some(DisplayEvent::MouseScroll {
                             id,
                             dx: 0.0,
                             dy: -1.0, // Scroll down
-                            x: e.x,
-                            y: e.y,
+                            x: e.x as u32,
+                            y: e.y as u32,
                             modifiers,
                         }),
                         6 => Some(DisplayEvent::MouseScroll {
                             id,
                             dx: -1.0, // Scroll left
                             dy: 0.0,
-                            x: e.x,
-                            y: e.y,
+                            x: e.x as u32,
+                            y: e.y as u32,
                             modifiers,
                         }),
                         7 => Some(DisplayEvent::MouseScroll {
                             id,
                             dx: 1.0, // Scroll right
                             dy: 0.0,
-                            x: e.x,
-                            y: e.y,
+                            x: e.x as u32,
+                            y: e.y as u32,
                             modifiers,
                         }),
                         _ => Some(DisplayEvent::MouseButtonPress {
                             id,
                             button: e.button as u8,
-                            x: e.x,
-                            y: e.y,
+                            x: e.x as u32,
+                            y: e.y as u32,
                             modifiers,
                         }),
                     }
@@ -507,8 +531,8 @@ impl X11State {
                     Some(DisplayEvent::MouseButtonRelease {
                         id,
                         button: e.button as u8,
-                        x: e.x,
-                        y: e.y,
+                        x: e.x as u32,
+                        y: e.y as u32,
                         modifiers,
                     })
                 }
@@ -517,8 +541,8 @@ impl X11State {
                     let modifiers = self.extract_modifiers(e.state);
                     Some(DisplayEvent::MouseMove {
                         id,
-                        x: e.x,
-                        y: e.y,
+                        x: e.x as u32,
+                        y: e.y as u32,
                         modifiers,
                     })
                 }

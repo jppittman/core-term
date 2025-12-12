@@ -3,6 +3,7 @@
 // I/O module - handles PTY and event monitoring.
 // Separated from platform module which handles display/windowing.
 
+pub mod event;
 pub mod event_monitor_actor;
 pub mod pty;
 pub mod traits;
@@ -16,14 +17,3 @@ pub mod kqueue;
 
 #[cfg(target_os = "linux")]
 pub mod epoll;
-
-// Platform-agnostic re-exports
-#[cfg(target_os = "macos")]
-pub mod event {
-    pub use super::kqueue::*;
-}
-
-#[cfg(target_os = "linux")]
-pub mod event {
-    pub use super::epoll::*;
-}

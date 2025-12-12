@@ -10,7 +10,8 @@ pub struct Scalar;
 
 impl Backend for Scalar {
     const LANES: usize = 1;
-    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> = ScalarBatch<T>;
+    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> =
+        ScalarBatch<T>;
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: ScalarBatch<u32>) -> ScalarBatch<u8> {
@@ -250,7 +251,9 @@ impl_bitwise_int!(i32);
 impl_arithmetic_float!(f32);
 impl_bitwise_float!(f32, u32);
 
-impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T> for ScalarBatch<T> {
+impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T>
+    for ScalarBatch<T>
+{
     const LANES: usize = 1;
 
     fn splat(val: T) -> Self {
@@ -279,6 +282,13 @@ impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T>
 
     fn extract_lane(&self, _lane: usize) -> T {
         self.0
+    }
+}
+
+impl<T: Copy> ScalarBatch<T> {
+    /// Convert the batch to an array.
+    pub fn to_array(self) -> [T; 1] {
+        [self.0]
     }
 }
 

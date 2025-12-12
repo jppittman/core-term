@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```rust
-//! use priority_channel::{ActorScheduler, Message, SchedulerHandler};
+//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler};
 //!
 //! struct MyHandler;
 //!
@@ -29,6 +29,7 @@
 //!     fn handle_management(&mut self, msg: String) {
 //!         println!("Management: {}", msg);
 //!     }
+//!     fn park(&mut self) {}
 //! }
 //!
 //! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
@@ -49,16 +50,37 @@ mod error;
 pub use error::SendError;
 
 use std::sync::{
-    mpsc::{self, Receiver, SyncSender, TryRecvError},
     Arc,
+    mpsc::{self, Receiver, SyncSender, TryRecvError},
 };
 use std::time::{Duration, Instant};
+
+/// Configuration for priority scheduler.
+#[derive(Debug, Clone, Copy)]
+pub struct PriorityConfig {
+    /// Maximum data messages to process per wake cycle (burst limit)
+    pub burst_limit: usize,
+    /// Size of bounded data buffer (backpressure threshold)
+    pub high_priority_buffer: usize,
+    /// Size of control/management buffers
+    pub control_buffer: usize,
+}
+
+impl Default for PriorityConfig {
+    fn default() -> Self {
+        Self {
+            burst_limit: 1024,
+            high_priority_buffer: 128,
+            control_buffer: 128,
+        }
+    }
+}
 
 /// The types of messages supported by the scheduler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message<D, C, M> {
     Data(D),
-    Control(C),  // No wrapper - just C directly
+    Control(C), // No wrapper - just C directly
     Management(M),
 }
 
@@ -135,11 +157,11 @@ pub fn create_actor<D, C, M>(
     data_buffer_size: usize,
     wake_handler: Option<Arc<dyn WakeHandler>>,
 ) -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) {
-    ActorScheduler::new_with_wake_handler(
-        1024,  // Default data burst limit
-        data_buffer_size,
-        wake_handler,
-    )
+    let config = PriorityConfig {
+        high_priority_buffer: data_buffer_size,
+        ..Default::default()
+    };
+    ActorScheduler::new_with_config(config, wake_handler)
 }
 
 /// Trait for waking a blocked actor scheduler.
@@ -155,9 +177,6 @@ pub trait WakeHandler: Send + Sync {
     /// while the default implementation sends a Wake message through the control channel.
     fn wake(&self);
 }
-
-/// Maximum capacity for Control and Management lanes
-const CONTROL_MGMT_BUFFER_SIZE: usize = 128;
 
 /// Minimum backoff duration when no messages are available
 const MIN_BACKOFF: Duration = Duration::from_micros(10);
@@ -201,7 +220,7 @@ pub struct ActorHandle<D, C, M> {
     tx_doorbell: SyncSender<()>,
     // All lanes are bounded for backpressure
     tx_data: SyncSender<D>,
-    tx_control: SyncSender<C>,  // No wrapper - just C directly
+    tx_control: SyncSender<C>, // No wrapper - just C directly
     tx_mgmt: SyncSender<M>,
     // Optional custom wake handler for platform-specific wake mechanisms
     wake_handler: Option<Arc<dyn WakeHandler>>,
@@ -321,11 +340,11 @@ impl<D, C, M> ActorHandle<D, C, M> {
 
 /// The receiver side that implements the priority scheduling logic.
 pub struct ActorScheduler<D, C, M> {
-    rx_doorbell: Receiver<()>,  // Highest priority - wake signal
+    rx_doorbell: Receiver<()>, // Highest priority - wake signal
     rx_data: Receiver<D>,
-    rx_control: Receiver<C>,    // No wrapper - just C directly
+    rx_control: Receiver<C>, // No wrapper - just C directly
     rx_mgmt: Receiver<M>,
-    data_burst_limit: usize,
+    config: PriorityConfig,
 }
 
 impl<D, C, M> ActorScheduler<D, C, M> {
@@ -338,28 +357,12 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
     pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1); // Buffer size 1
-        let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-
-        let sender = ActorHandle {
-            tx_doorbell,
-            tx_data,
-            tx_control,
-            tx_mgmt,
-            wake_handler: None,
+        let config = PriorityConfig {
+            burst_limit: data_burst_limit,
+            high_priority_buffer: data_buffer_size,
+            ..Default::default()
         };
-
-        let receiver = ActorScheduler {
-            rx_doorbell,
-            rx_data,
-            rx_control,
-            rx_mgmt,
-            data_burst_limit,
-        };
-
-        (sender, receiver)
+        Self::new_with_config(config, None)
     }
 
     /// Create a new scheduler channel with priority lanes and a custom wake actor.
@@ -379,10 +382,23 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
     ) -> (ActorHandle<D, C, M>, Self) {
+        let config = PriorityConfig {
+            burst_limit: data_burst_limit,
+            high_priority_buffer: data_buffer_size,
+            ..Default::default()
+        };
+        Self::new_with_config(config, wake_handler)
+    }
+
+    /// Create new scheduler with detailed config
+    pub fn new_with_config(
+        config: PriorityConfig,
+        wake_handler: Option<Arc<dyn WakeHandler>>,
+    ) -> (ActorHandle<D, C, M>, Self) {
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1); // Buffer size 1
-        let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+        let (tx_data, rx_data) = mpsc::sync_channel(config.high_priority_buffer);
+        let (tx_control, rx_control) = mpsc::sync_channel(config.control_buffer);
+        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(config.control_buffer);
 
         let sender = ActorHandle {
             tx_doorbell,
@@ -397,7 +413,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             rx_data,
             rx_control,
             rx_mgmt,
-            data_burst_limit,
+            config,
         };
 
         (sender, receiver)
@@ -417,7 +433,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         loop {
             // 1. Block on Doorbell (Highest Priority)
             match self.rx_doorbell.recv() {
-                Ok(()) => {},
+                Ok(()) => {}
                 Err(_) => return, // All senders disconnected
             }
 
@@ -441,7 +457,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
                 // C. Data (Low Priority - Burst Limited)
                 let mut data_count = 0;
-                while data_count < self.data_burst_limit {
+                while data_count < self.config.burst_limit {
                     match self.rx_data.try_recv() {
                         Ok(msg) => {
                             actor.handle_data(msg);
@@ -452,7 +468,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                     }
                 }
 
-                if data_count >= self.data_burst_limit {
+                if data_count >= self.config.burst_limit {
                     keep_working = true;
                 }
             }
@@ -482,6 +498,7 @@ mod tests {
         fn handle_management(&mut self, msg: String) {
             self.log.lock().unwrap().push(format!("Mgmt: {}", msg));
         }
+        fn park(&mut self) {}
     }
 
     #[test]
@@ -566,6 +583,7 @@ mod tests {
             fn handle_management(&mut self, _: bool) {
                 self.mgmt_count += 1;
             }
+            fn park(&mut self) {}
         }
 
         let (tx, mut rx) = ActorScheduler::new(10, 100);
@@ -589,8 +607,8 @@ mod tests {
         drop(tx);
 
         let handler = handle.join().unwrap();
-        assert_eq!(actor.data_count, 2);
-        assert_eq!(actor.ctrl_count, 1);
-        assert_eq!(actor.mgmt_count, 1);
+        assert_eq!(handler.data_count, 2);
+        assert_eq!(handler.ctrl_count, 1);
+        assert_eq!(handler.mgmt_count, 1);
     }
 }

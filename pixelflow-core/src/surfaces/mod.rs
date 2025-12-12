@@ -12,4 +12,4 @@ pub use implicit::{CubicImplicit, Implicit, ImplicitEvaluator, QuadraticImplicit
 pub use partition::Partition;
 pub use raster::Rasterize;
 pub use source::{Baked, FnSurface, SampleAtlas};
-pub use transform::{Map, Offset, Scale, Skew};
+pub use transform::{Discrete, Map, Offset, Scale, Skew};

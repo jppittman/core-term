@@ -362,13 +362,8 @@ where
 
 /// Render a horizontal stripe of rows [start_y, end_y)
 #[inline(always)]
-fn render_stripe<P, S>(
-    surface: &S,
-    target: &mut [P],
-    width: usize,
-    start_y: usize,
-    end_y: usize,
-) where
+fn render_stripe<P, S>(surface: &S, target: &mut [P], width: usize, start_y: usize, end_y: usize)
+where
     P: pixel::Pixel,
     S: Surface<P> + ?Sized,
 {

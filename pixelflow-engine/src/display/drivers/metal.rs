@@ -467,19 +467,23 @@ fn run_event_loop(
                         let height_diff = (height - state.window_height_pts).abs();
 
                         if width_diff > 0.1 || height_diff > 0.1 {
-                            info!("Metal: Delegate resize from {}x{} to {}x{} pts",
-                                state.window_width_pts, state.window_height_pts, width, height);
+                            info!(
+                                "Metal: Delegate resize from {}x{} to {}x{} pts",
+                                state.window_width_pts, state.window_height_pts, width, height
+                            );
                             state.window_width_pts = width;
                             state.window_height_pts = height;
 
                             let width_px = (width * state.backing_scale) as u32;
                             let height_px = (height * state.backing_scale) as u32;
 
-                            let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::Resized {
-                                id: win.id,
-                                width_px,
-                                height_px,
-                            }));
+                            let _ = engine_tx.send(EngineCommand::DisplayEvent(
+                                DisplayEvent::Resized {
+                                    id: win.id,
+                                    width_px,
+                                    height_px,
+                                },
+                            ));
                         }
                     }
                     DelegateEvent::Minimize => {
@@ -628,7 +632,11 @@ impl CocoaEventState {
             // Check backing scale
             let current_scale: f64 = msg_send![&self.window, backingScaleFactor];
             if (current_scale - self.backing_scale).abs() > 0.01 {
-                log::info!("Metal: Scale changed from {} to {}", self.backing_scale, current_scale);
+                log::info!(
+                    "Metal: Scale changed from {} to {}",
+                    self.backing_scale,
+                    current_scale
+                );
                 self.backing_scale = current_scale;
                 events.push(DisplayEvent::ScaleChanged {
                     id: self.window_id,
@@ -645,11 +653,24 @@ impl CocoaEventState {
             let width_diff = (width_pts - self.window_width_pts).abs();
             let height_diff = (height_pts - self.window_height_pts).abs();
 
-            log::trace!("Metal: Window size check - current: {}x{}, stored: {}x{}, diff: {}x{}",
-                width_pts, height_pts, self.window_width_pts, self.window_height_pts, width_diff, height_diff);
+            log::trace!(
+                "Metal: Window size check - current: {}x{}, stored: {}x{}, diff: {}x{}",
+                width_pts,
+                height_pts,
+                self.window_width_pts,
+                self.window_height_pts,
+                width_diff,
+                height_diff
+            );
 
             if width_diff > 0.1 || height_diff > 0.1 {
-                log::info!("Metal: Resize from {}x{} to {}x{} pts", self.window_width_pts, self.window_height_pts, width_pts, height_pts);
+                log::info!(
+                    "Metal: Resize from {}x{} to {}x{} pts",
+                    self.window_width_pts,
+                    self.window_height_pts,
+                    width_pts,
+                    height_pts
+                );
                 self.window_width_pts = width_pts;
                 self.window_height_pts = height_pts;
 
@@ -875,7 +896,11 @@ fn register_delegate_class() {
             info!("MetalTermWindowDelegate: windowWillClose");
         }
 
-        unsafe extern "C" fn window_did_resize(_: *mut AnyObject, _: Sel, notification: *mut NSObject) {
+        unsafe extern "C" fn window_did_resize(
+            _: *mut AnyObject,
+            _: Sel,
+            notification: *mut NSObject,
+        ) {
             info!("MetalTermWindowDelegate: windowDidResize");
             // Extract window from notification
             let window: *mut NSWindow = msg_send![notification, object];
@@ -905,14 +930,22 @@ fn register_delegate_class() {
             }
         }
 
-        unsafe extern "C" fn window_did_enter_full_screen(_: *mut AnyObject, _: Sel, _: *mut NSObject) {
+        unsafe extern "C" fn window_did_enter_full_screen(
+            _: *mut AnyObject,
+            _: Sel,
+            _: *mut NSObject,
+        ) {
             info!("MetalTermWindowDelegate: windowDidEnterFullScreen");
             if let Ok(mut events) = get_delegate_events().lock() {
                 events.push(DelegateEvent::EnterFullScreen);
             }
         }
 
-        unsafe extern "C" fn window_did_exit_full_screen(_: *mut AnyObject, _: Sel, _: *mut NSObject) {
+        unsafe extern "C" fn window_did_exit_full_screen(
+            _: *mut AnyObject,
+            _: Sel,
+            _: *mut NSObject,
+        ) {
             info!("MetalTermWindowDelegate: windowDidExitFullScreen");
             if let Ok(mut events) = get_delegate_events().lock() {
                 events.push(DelegateEvent::ExitFullScreen);

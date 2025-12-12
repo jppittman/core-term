@@ -5,14 +5,12 @@
 //! This module handles all PTY read operations in a dedicated thread,
 //! using kqueue/epoll for efficient event-driven I/O.
 
-use crate::io::event_monitor_actor::parser_thread::{NoControl, NoManagement};
 use crate::io::event::{EventMonitor, KqueueFlags};
-#[cfg(target_os = "linux")]
-use crate::io::event::EpollFlags as KqueueFlags;
+use crate::io::event_monitor_actor::parser_thread::{NoControl, NoManagement};
 use crate::io::traits::EventSource;
+use actor_scheduler::{ActorHandle, Message};
 use anyhow::{Context, Result};
 use log::*;
-use actor_scheduler::{ActorHandle, Message};
 use std::thread::{self, JoinHandle};
 
 /// Token for identifying PTY events in the EventMonitor.
@@ -97,11 +95,8 @@ impl ReadThread {
             // Process PTY read events
             for event in &events_buffer {
                 if event.token == PTY_TOKEN && event.flags.contains(KqueueFlags::EPOLLIN) {
-                    let should_continue = Self::handle_pty_readable(
-                        &mut source,
-                        &mut read_buffer,
-                        &parser_tx,
-                    )?;
+                    let should_continue =
+                        Self::handle_pty_readable(&mut source, &mut read_buffer, &parser_tx)?;
 
                     if !should_continue {
                         info!("Read thread: PTY closed, stopping read loop");
@@ -155,10 +150,13 @@ impl ReadThread {
 
         // Send all accumulated bytes to parser thread via Data lane
         if total_bytes_read > 0 {
-            trace!("Read thread: Read {} bytes from PTY, sending to parser via Data lane", total_bytes_read);
+            trace!(
+                "Read thread: Read {} bytes from PTY, sending to parser via Data lane",
+                total_bytes_read
+            );
 
             match parser_tx.send(Message::Data(raw_data_buffer)) {
-                Ok(()) => {},
+                Ok(()) => {}
                 Err(_) => {
                     return Err(anyhow::anyhow!("Parser thread disconnected"));
                 }

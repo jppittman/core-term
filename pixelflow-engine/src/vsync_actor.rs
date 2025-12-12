@@ -3,8 +3,8 @@
 //! The VSync actor runs in its own thread and can be controlled via message passing.
 //! It sends periodic vsync signals that the engine uses for frame timing.
 
+use actor_scheduler::{Actor, ActorHandle, ActorScheduler};
 use log::info;
-use actor_scheduler::{ActorHandle, ActorScheduler, Actor};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -94,10 +94,11 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
     where
         P: 'static,
     {
-        let (handle, mut scheduler) = actor_scheduler::create_actor::<RenderedResponse, VsyncCommand, VsyncManagement>(
-            1024,  // Data buffer (RenderedResponse)
-            None,  // No wake handler
-        );
+        let (handle, mut scheduler) =
+            actor_scheduler::create_actor::<RenderedResponse, VsyncCommand, VsyncManagement>(
+                1024, // Data buffer (RenderedResponse)
+                None, // No wake handler
+            );
 
         thread::Builder::new()
             .name("vsync-actor".to_string())
@@ -117,7 +118,8 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
 
         use crate::api::private::EngineControl;
 
-        if self.engine_handle
+        if self
+            .engine_handle
             .send(EngineControl::VSync {
                 timestamp,
                 target_timestamp,
@@ -128,7 +130,10 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
             // Consume token after successful send
             self.tokens -= 1;
             self.frame_count += 1;
-            log::trace!("VsyncActor: VSync sent, token consumed, {} remaining", self.tokens);
+            log::trace!(
+                "VsyncActor: VSync sent, token consumed, {} remaining",
+                self.tokens
+            );
 
             // Calculate next vsync (no cumulative drift)
             self.next_vsync = timestamp + self.interval;
@@ -149,12 +154,18 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
     }
 }
 
-impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor<P> {
+impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManagement>
+    for VsyncActor<P>
+{
     fn handle_data(&mut self, response: RenderedResponse) {
         // Received frame rendered feedback - add token
         if self.tokens < MAX_TOKENS {
             self.tokens += 1;
-            log::trace!("VsyncActor: Token added (frame {}), now have {} tokens", response.frame_number, self.tokens);
+            log::trace!(
+                "VsyncActor: Token added (frame {}), now have {} tokens",
+                response.frame_number,
+                self.tokens
+            );
         }
     }
 
