@@ -92,10 +92,7 @@ fn run_event_loop(
     // 1. Read CreateWindow command first
     let (window_id, width_px, height_px) = match cmd_rx.recv()? {
         DriverCommand::CreateWindow {
-            id,
-            width,
-            height,
-            ..
+            id, width, height, ..
         } => (id, width, height),
         other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
     };
@@ -216,12 +213,9 @@ impl WebState {
 
     fn handle_present(&mut self, frame: Frame<Rgba>) -> Result<Frame<Rgba>> {
         let data = frame.as_bytes();
-        let image_data = ImageData::new_with_u8_clamped_array_and_sh(
-            Clamped(data),
-            frame.width,
-            frame.height,
-        )
-        .map_err(|e| anyhow!("Failed to create ImageData: {:?}", e))?;
+        let image_data =
+            ImageData::new_with_u8_clamped_array_and_sh(Clamped(data), frame.width, frame.height)
+                .map_err(|e| anyhow!("Failed to create ImageData: {:?}", e))?;
 
         self.context
             .put_image_data(&image_data, 0.0, 0.0)

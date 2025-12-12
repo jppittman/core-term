@@ -43,7 +43,12 @@ impl EventMonitor {
         Ok(Self { kqueue_fd })
     }
 
-    pub fn add<S: std::os::unix::io::AsRawFd>(&self, source: &S, token: u64, flags: KqueueFlags) -> Result<()> {
+    pub fn add<S: std::os::unix::io::AsRawFd>(
+        &self,
+        source: &S,
+        token: u64,
+        flags: KqueueFlags,
+    ) -> Result<()> {
         let fd = source.as_raw_fd();
         let mut changes = Vec::new();
 
@@ -95,7 +100,12 @@ impl EventMonitor {
         Ok(())
     }
 
-    pub fn modify<S: std::os::unix::io::AsRawFd>(&self, source: &S, token: u64, flags: KqueueFlags) -> Result<()> {
+    pub fn modify<S: std::os::unix::io::AsRawFd>(
+        &self,
+        source: &S,
+        token: u64,
+        flags: KqueueFlags,
+    ) -> Result<()> {
         // For kqueue, modify is essentially delete + add
         self.delete(source)?;
         self.add(source, token, flags)

@@ -1,8 +1,8 @@
+use crate::TensorView;
 use crate::backend::{Backend, SimdBatch};
 use crate::batch::{Batch, NativeBackend};
-use crate::traits::Surface;
 use crate::pixel::Pixel;
-use crate::TensorView;
+use crate::traits::Surface;
 use alloc::vec;
 use core::fmt::Debug;
 use core::marker::PhantomData;

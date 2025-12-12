@@ -30,8 +30,8 @@ use api::private::*;
 
 // Re-export legacy types for backward compatibility (deprecated)
 pub use channel::{
-    create_engine_channels, DriverCommand, EngineActorHandle, EngineActorScheduler,
-    EngineChannels, EngineControl, AppManagement, EngineSender,
+    create_engine_channels, AppManagement, DriverCommand, EngineActorHandle, EngineActorScheduler,
+    EngineChannels, EngineControl, EngineSender,
 };
 pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
 pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
@@ -83,12 +83,17 @@ pub use platform::PlatformPixel;
 /// # Arguments
 /// * `app` - The application logic implementing `Application`.
 /// * `engine_handle` - Handle for app to send responses back to engine (renders, actions).
+/// * `engine_scheduler` - Scheduler for the engine actor (created by main).
 /// * `config` - Engine configuration.
-pub fn run(
-    app: impl Application + Send + 'static,
+pub fn run<A>(
+    app: A,
     engine_handle: api::private::EngineActorHandle<PlatformPixel>,
+    engine_scheduler: api::private::EngineActorScheduler<PlatformPixel>,
     config: EngineConfig,
-) -> anyhow::Result<()> {
-    let platform = EnginePlatform::new(app, engine_handle, config)?;
+) -> anyhow::Result<()>
+where
+    A: Application<Pixel = PlatformPixel> + Send + 'static,
+{
+    let platform = EnginePlatform::new(app, engine_handle, engine_scheduler, config)?;
     platform.run()
 }

@@ -21,9 +21,13 @@ pub mod traits;
 // Re-exports
 pub use backend::{FloatBatchOps, SimdBatch};
 pub use batch::{Batch, BatchOps, SHUFFLE_RGBA_BGRA};
-pub use geometry::{Mat3, Poly, Curve2D, Rect};
+pub use geometry::{Curve2D, Mat3, Poly, Rect};
 pub use pixel::Pixel;
 pub use platform::{PixelFormat, Platform};
-pub use raster::{Tensor2x2, Tensor2x1, Tensor1x2, Tensor1x1, TensorView, TensorViewMut, execute, execute_stripe};
-pub use surfaces::{Baked, FnSurface, Implicit, Map, Offset, Over, Partition, SampleAtlas, Scale, Select, Skew};
+pub use raster::{
+    Tensor1x1, Tensor1x2, Tensor2x1, Tensor2x2, TensorView, TensorViewMut, execute, execute_stripe,
+};
+pub use surfaces::{
+    Baked, FnSurface, Implicit, Map, Offset, Over, Partition, SampleAtlas, Scale, Select, Skew,
+};
 pub use traits::{Surface, Volume};

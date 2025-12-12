@@ -1,11 +1,11 @@
 use crate::curves::{Line, Quadratic, Segment};
 use crate::font::Font;
 use crate::glyph::{eval_curves, CellGlyph, CurveSurface, GlyphBounds};
+use core::fmt::Debug;
 use pixelflow_core::batch::Batch;
 use pixelflow_core::surfaces::{Baked, Rasterize};
 use pixelflow_core::traits::Surface;
 use pixelflow_core::SimdBatch;
-use core::fmt::Debug;
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ============================================================================
@@ -318,9 +318,9 @@ impl<S: CurveSurface> CurveSurfaceExt for S {}
 mod tests {
     use super::*;
     use crate::glyph::eval_curves_cell;
+    use pixelflow_core::backend::Backend;
     use pixelflow_core::backend::SimdBatch;
     use pixelflow_core::batch::NativeBackend;
-    use pixelflow_core::backend::Backend;
 
     fn pixel_alpha(pixel: u32) -> u8 {
         (pixel >> 24) as u8
@@ -350,8 +350,10 @@ mod tests {
             let mut row = String::new();
             for x in 0..cell_width {
                 // Update: convert u32 to f32 + 0.5
-                let x_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
-                let y_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
+                let x_f =
+                    NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
+                let y_f =
+                    NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
 
                 let alpha = pixel_alpha(cell_glyph.eval(x_f, y_f).first());
                 let ch = if alpha > 200 {
@@ -433,8 +435,10 @@ mod tests {
             let mut row = String::new();
             for x in 0..cell_width {
                 // Manually bridge u32 -> f32
-                let x_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
-                let y_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
+                let x_f =
+                    NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
+                let y_f =
+                    NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
 
                 let alpha = pixel_alpha(cell_glyph.eval(x_f, y_f).first());
                 let ch = if alpha > 200 {

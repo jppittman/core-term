@@ -7,17 +7,16 @@
 
 // Re-export all types from api::private for backward compatibility
 pub use crate::api::private::{
-    create_engine_actor, DriverCommand, EngineActorHandle,
-    EngineActorScheduler, EngineControl, EngineData, DISPLAY_EVENT_BUFFER_SIZE,
-    DISPLAY_EVENT_BURST_LIMIT,
+    create_engine_actor, DriverCommand, EngineActorHandle, EngineActorScheduler, EngineControl,
+    EngineData, DISPLAY_EVENT_BUFFER_SIZE, DISPLAY_EVENT_BURST_LIMIT,
 };
 
 // Re-export AppManagement from public API
 pub use crate::api::public::AppManagement;
 
 use crate::display::DisplayEvent;
-use pixelflow_core::Pixel;
 use actor_scheduler::WakeHandler;
+use pixelflow_core::Pixel;
 use std::sync::Arc;
 
 // ============================================================================
@@ -55,18 +54,22 @@ pub enum EngineCommand<P: Pixel> {
     /// Display event from driver (converts to Message::Data)
     DisplayEvent(DisplayEvent),
     /// VSync actor ready (converts to Message::Control)
-    VsyncActorReady(actor_scheduler::ActorHandle<
-        crate::vsync_actor::RenderedResponse,
-        crate::vsync_actor::VsyncCommand,
-        crate::vsync_actor::VsyncManagement,
-    >),
+    VsyncActorReady(
+        actor_scheduler::ActorHandle<
+            crate::vsync_actor::RenderedResponse,
+            crate::vsync_actor::VsyncCommand,
+            crate::vsync_actor::VsyncManagement,
+        >,
+    ),
     /// Present complete (converts to Message::Control)
     PresentComplete(pixelflow_render::Frame<P>),
     /// Driver ack (converts to Message::Control)
     DriverAck,
 }
 
-impl<P: Pixel> From<EngineCommand<P>> for actor_scheduler::Message<EngineData<P>, EngineControl<P>, AppManagement> {
+impl<P: Pixel> From<EngineCommand<P>>
+    for actor_scheduler::Message<EngineData<P>, EngineControl<P>, AppManagement>
+{
     fn from(cmd: EngineCommand<P>) -> Self {
         match cmd {
             EngineCommand::DisplayEvent(evt) => evt.into(),

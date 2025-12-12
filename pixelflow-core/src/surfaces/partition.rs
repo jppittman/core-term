@@ -1,7 +1,7 @@
+use crate::backend::SimdBatch;
 use crate::batch::{Batch, LANES};
-use crate::traits::Surface;
 use crate::pixel::Pixel;
-use crate::backend::{SimdBatch};
+use crate::traits::Surface;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Debug;

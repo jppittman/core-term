@@ -9,7 +9,7 @@
 
 pub mod commands;
 mod lexer;
-mod parser;
+pub mod parser;
 
 pub use commands::AnsiCommand;
 use lexer::AnsiLexer;
@@ -51,6 +51,19 @@ impl AnsiProcessor {
             lexer: AnsiLexer::new(),
             parser: ParserImpl::new(),
         }
+    }
+
+    /// Advances the parser with a single byte and returns a command if one is complete.
+    /// Used for byte-by-byte processing in streaming contexts.
+    pub fn advance(&mut self, byte: u8) -> Option<AnsiCommand> {
+        self.lexer.process_byte(byte);
+        // Take tokens immediately
+        let tokens = self.lexer.take_tokens();
+        for token in tokens {
+            self.parser.process_token(token);
+        }
+        // Return first command if any (simplified)
+        self.parser.take_commands().pop()
     }
 }
 

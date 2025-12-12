@@ -133,27 +133,34 @@ fn main() -> anyhow::Result<()> {
     // Spawn app worker in its own thread, get proxy for engine
     // Platform-specific pixel format
     #[cfg(target_os = "macos")]
-    let _app_handle = {
+    let _app_thread_handle = {
         use crate::io::event_monitor_actor::EventMonitorActor;
         use crate::io::pty::{NixPty, PtyConfig};
-        use crate::terminal_app::spawn_terminal_app;
+        use crate::terminal_app::TerminalApp;
+        use actor_scheduler::ActorScheduler;
+        use pixelflow_engine::{EngineEventControl, EngineEventData, EngineEventManagement};
         use pixelflow_render::CocoaPixel;
 
         // Create PTY command channel
         let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
 
-        // Create engine actor (for app to send responses back)
-        let (engine_handle, _engine_scheduler) = create_engine_actor::<CocoaPixel>(None);
+        // Create engine actor components
+        let (engine_handle, engine_scheduler) = create_engine_actor::<CocoaPixel>(None);
 
-        // Spawn terminal app
-        let (app_handle, _app_thread_handle) = spawn_terminal_app::<CocoaPixel>(
+        // Create app scheduler components
+        let (app_handle, mut app_scheduler) =
+            ActorScheduler::<EngineEventData, EngineEventControl, EngineEventManagement>::new(
+                10, 128,
+            );
+
+        // Create terminal app
+        let mut app = TerminalApp::new(
             term_emulator,
             pty_write_tx,
             pty_cmd_rx,
             crate::config::Config::default(),
             engine_handle.clone(),
-        )
-        .context("Failed to spawn terminal app")?;
+        );
 
         // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
@@ -170,35 +177,109 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to spawn EventMonitorActor")?;
         info!("EventMonitorActor spawned successfully");
 
+        // Spawn app thread to run scheduler
+        let app_thread = std::thread::spawn(move || {
+            app_scheduler.run(&mut app);
+        });
+
         // Run engine with new API (blocks until quit)
-        pixelflow_engine::run(app_handle, engine_handle, engine_config)
+        // Pass app handle so engine can communicate with app
+        // Wait, engine needs 'app' struct if it runs it?
+        // pixelflow_engine::run(app_struct, ...)
+        // But app struct is running in app_thread.
+        // This is the confusion.
+        // The user said "each is supposed to run in its own thread".
+        // Engine runs driver loop on main thread.
+        // Engine spawns a thread for engine logic loop.
+        // App runs on its own thread.
+        // Engine logic loop communicates with App.
+        // EnginePlatform needs access to App to dispatch events?
+        // No, EngineActor sends messages to AppActor via handle.
+        // But EnginePlatform struct holds `app`.
+        // If `app` is running on another thread, `EnginePlatform` cannot own it.
+        // `EnginePlatform` should hold `ActorHandle` to app?
+        // `pixelflow_engine::run` takes `impl Application`.
+        // If `Application` is the interface, then `ActorHandle<...>` should implement `Application`?
+        // That seems to be what `E0277` suggested earlier (trait not implemented for handle).
+        // Let's implement `Application` for `ActorHandle`.
+        // If `ActorHandle` implements `Application`, then `run` takes the handle.
+        // And `handle_event` sends a message.
+        // This decouples execution.
+
+        // I will implement `Application` for `ActorHandle` in `terminal_app.rs` or `main.rs` (newtype wrapper).
+        // Wrapper: `TerminalAppHandle`
+
+        struct TerminalAppHandle(
+            actor_scheduler::ActorHandle<
+                EngineEventData,
+                EngineEventControl,
+                EngineEventManagement,
+            >,
+        );
+
+        impl pixelflow_engine::Application for TerminalAppHandle {
+            type Pixel = CocoaPixel;
+            fn handle_event(
+                &mut self,
+                event: pixelflow_engine::EngineEvent,
+                _response_channel: &mut pixelflow_engine::api::private::EngineActorHandle<
+                    Self::Pixel,
+                >,
+            ) {
+                // Map EngineEvent to message components
+                use actor_scheduler::Message;
+                use pixelflow_engine::EngineEvent;
+                match event {
+                    EngineEvent::Data(d) => {
+                        let _ = self.0.send(Message::Data(d));
+                    }
+                    EngineEvent::Control(c) => {
+                        let _ = self.0.send(Message::Control(c));
+                    }
+                    EngineEvent::Management(m) => {
+                        let _ = self.0.send(Message::Management(m));
+                    }
+                }
+            }
+        }
+
+        let app_proxy = TerminalAppHandle(app_handle);
+
+        pixelflow_engine::run(app_proxy, engine_handle, engine_scheduler, engine_config)
             .context("Engine run failed")?;
 
-        _app_thread_handle
+        app_thread
     };
 
     #[cfg(target_os = "linux")]
-    let _app_handle = {
+    let _app_thread_handle = {
         use crate::io::event_monitor_actor::EventMonitorActor;
         use crate::io::pty::{NixPty, PtyConfig};
-        use crate::terminal_app::spawn_terminal_app;
+        use crate::terminal_app::TerminalApp;
+        use actor_scheduler::ActorScheduler;
+        use pixelflow_engine::{EngineEventControl, EngineEventData, EngineEventManagement};
         use pixelflow_render::X11Pixel;
 
         // Create PTY command channel
         let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
 
-        // Create engine actor (for app to send responses back)
-        let (engine_handle, _engine_scheduler) = create_engine_actor::<X11Pixel>(None);
+        // Create engine actor components
+        let (engine_handle, engine_scheduler) = create_engine_actor::<X11Pixel>(None);
 
-        // Spawn terminal app
-        let (app_handle, _app_thread_handle) = spawn_terminal_app::<X11Pixel>(
+        // Create app scheduler components
+        let (app_handle, mut app_scheduler) =
+            ActorScheduler::<EngineEventData, EngineEventControl, EngineEventManagement>::new(
+                10, 128,
+            );
+
+        // Create terminal app
+        let mut app = TerminalApp::new(
             term_emulator,
             pty_write_tx,
             pty_cmd_rx,
             crate::config::Config::default(),
             engine_handle.clone(),
-        )
-        .context("Failed to spawn terminal app")?;
+        );
 
         // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
@@ -215,11 +296,53 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to spawn EventMonitorActor")?;
         info!("EventMonitorActor spawned successfully");
 
+        // Spawn app thread
+        let app_thread = std::thread::spawn(move || {
+            app_scheduler.run(&mut app);
+        });
+
+        // Wrapper for App Handle
+        struct TerminalAppHandle(
+            actor_scheduler::ActorHandle<
+                EngineEventData,
+                EngineEventControl,
+                EngineEventManagement,
+            >,
+        );
+
+        impl pixelflow_engine::Application for TerminalAppHandle {
+            type Pixel = X11Pixel;
+            fn handle_event(
+                &mut self,
+                event: pixelflow_engine::EngineEvent,
+                _response_channel: &mut pixelflow_engine::api::private::EngineActorHandle<
+                    Self::Pixel,
+                >,
+            ) {
+                // Map EngineEvent to message components
+                use actor_scheduler::Message;
+                use pixelflow_engine::EngineEvent;
+                match event {
+                    EngineEvent::Data(d) => {
+                        let _ = self.0.send(Message::Data(d));
+                    }
+                    EngineEvent::Control(c) => {
+                        let _ = self.0.send(Message::Control(c));
+                    }
+                    EngineEvent::Management(m) => {
+                        let _ = self.0.send(Message::Management(m));
+                    }
+                }
+            }
+        }
+
+        let app_proxy = TerminalAppHandle(app_handle);
+
         // Run engine with new API (blocks until quit)
-        pixelflow_engine::run(app_handle, engine_handle, engine_config)
+        pixelflow_engine::run(app_proxy, engine_handle, engine_scheduler, engine_config)
             .context("Engine run failed")?;
 
-        _app_thread_handle
+        app_thread
     };
 
     info!("core-term exited successfully.");
@@ -230,18 +353,16 @@ fn main() -> anyhow::Result<()> {
         let path = "/tmp/core-term-flamegraph.svg";
         info!("Writing flamegraph to {}...", path);
         match profiler_guard.report().build() {
-            Ok(report) => {
-                match std::fs::File::create(path) {
-                    Ok(file) => {
-                        if let Err(e) = report.flamegraph(file) {
-                            warn!("Failed to write flamegraph: {}", e);
-                        } else {
-                            info!("Flamegraph written to {}", path);
-                        }
+            Ok(report) => match std::fs::File::create(path) {
+                Ok(file) => {
+                    if let Err(e) = report.flamegraph(file) {
+                        warn!("Failed to write flamegraph: {}", e);
+                    } else {
+                        info!("Flamegraph written to {}", path);
                     }
-                    Err(e) => warn!("Failed to create {}: {}", path, e),
                 }
-            }
+                Err(e) => warn!("Failed to create {}: {}", path, e),
+            },
             Err(e) => warn!("Failed to build profiler report: {:?}", e),
         }
     }

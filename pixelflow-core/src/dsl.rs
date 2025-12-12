@@ -1,7 +1,7 @@
 use crate::batch::Batch;
+use crate::pixel::Pixel;
 use crate::surfaces::{Map, Max, Mul, Offset, Over, Skew};
 use crate::traits::Surface;
-use crate::pixel::Pixel;
 use core::fmt::Debug;
 
 /// Extensions for any surface (Coordinate transforms).
@@ -71,5 +71,8 @@ pub trait MaskExt<P: Pixel>: Surface<P> + Sized {
 }
 
 // Blanket implementations
-impl<T, S: Surface<T>> SurfaceExt<T> for S where T: Copy + Debug + Default + PartialEq + Send + Sync + 'static {}
+impl<T, S: Surface<T>> SurfaceExt<T> for S where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static
+{
+}
 impl<P: Pixel, S: Surface<P>> MaskExt<P> for S {}

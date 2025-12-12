@@ -1,7 +1,7 @@
 use crate::backend::SimdBatch;
 use crate::batch::Batch;
-use crate::traits::Surface;
 use crate::pixel::Pixel;
+use crate::traits::Surface;
 use core::marker::PhantomData;
 
 #[derive(Copy, Clone)]
@@ -22,10 +22,10 @@ where
     fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
         let m = self.mask.eval(x, y);
         if m.all() {
-            return self.if_true.eval(x, y)
+            return self.if_true.eval(x, y);
         }
         if !m.any() {
-            return self.if_false.eval(x, y)
+            return self.if_false.eval(x, y);
         }
 
         // Use church combinator for lazy evaluation / short-circuiting

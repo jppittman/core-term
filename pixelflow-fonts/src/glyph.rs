@@ -720,10 +720,22 @@ mod tests {
 
         // Create a vertical bar that spans the full cell height
         let segments = vec![
-            Segment::Line(Line { p0: [2.0, descender as f32], p1: [8.0, descender as f32] }),
-            Segment::Line(Line { p0: [8.0, descender as f32], p1: [8.0, ascender as f32] }),
-            Segment::Line(Line { p0: [8.0, ascender as f32], p1: [2.0, ascender as f32] }),
-            Segment::Line(Line { p0: [2.0, ascender as f32], p1: [2.0, descender as f32] }),
+            Segment::Line(Line {
+                p0: [2.0, descender as f32],
+                p1: [8.0, descender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [8.0, descender as f32],
+                p1: [8.0, ascender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [8.0, ascender as f32],
+                p1: [2.0, ascender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [2.0, ascender as f32],
+                p1: [2.0, descender as f32],
+            }),
         ];
         let bounds = GlyphBounds {
             width: 10,
@@ -773,8 +785,10 @@ mod tests {
 
         // Print font metrics
         let metrics = font.metrics();
-        eprintln!("Font metrics: ascent={}, descent={}, line_gap={}, units_per_em={}",
-            metrics.ascent, metrics.descent, metrics.line_gap, metrics.units_per_em);
+        eprintln!(
+            "Font metrics: ascent={}, descent={}, line_gap={}, units_per_em={}",
+            metrics.ascent, metrics.descent, metrics.line_gap, metrics.units_per_em
+        );
 
         let line_height = metrics.ascent as f32 - metrics.descent as f32;
         eprintln!("Line height (ascent - descent): {}", line_height);
@@ -784,7 +798,10 @@ mod tests {
 
         let ascender = (metrics.ascent as f32 * cell_h as f32 / line_height).round() as i32;
         eprintln!("Calculated ascender for {}px cell: {}", cell_h, ascender);
-        eprintln!("Calculated descender (ascender - cell_h): {}", ascender - cell_h as i32);
+        eprintln!(
+            "Calculated descender (ascender - cell_h): {}",
+            ascender - cell_h as i32
+        );
 
         let glyph_fn = glyphs(font.clone(), cell_w, cell_h);
         let baked: Baked<u32> = glyph_fn('g').get().clone();
@@ -871,7 +888,10 @@ mod tests {
         let bounds = glyph.bounds();
 
         eprintln!("'g' bounds at corrected size: {:?}", bounds);
-        eprintln!("bearing_y (top of glyph in curve space): {}", bounds.bearing_y);
+        eprintln!(
+            "bearing_y (top of glyph in curve space): {}",
+            bounds.bearing_y
+        );
 
         // Calculate where the bottom of the glyph is in curve space
         let glyph_bottom = bounds.bearing_y as i32 - bounds.height as i32;
@@ -883,7 +903,10 @@ mod tests {
         let cell_bottom_sample = ascender as f32 - (cell_h as f32 - 0.5); // pixel (h-1) center
 
         eprintln!("Cell ascender: {}", ascender);
-        eprintln!("Cell samples from curve y={} to y={}", cell_top_sample, cell_bottom_sample);
+        eprintln!(
+            "Cell samples from curve y={} to y={}",
+            cell_top_sample, cell_bottom_sample
+        );
 
         // The glyph bottom should be within the cell's sampling range
         assert!(

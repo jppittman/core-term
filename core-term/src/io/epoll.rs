@@ -94,7 +94,12 @@ impl EventMonitor {
         Ok(())
     }
 
-    pub fn modify<S: std::os::unix::io::AsRawFd>(&self, source: &S, token: u64, flags: EpollFlags) -> Result<()> {
+    pub fn modify<S: std::os::unix::io::AsRawFd>(
+        &self,
+        source: &S,
+        token: u64,
+        flags: EpollFlags,
+    ) -> Result<()> {
         let fd = source.as_raw_fd();
         let mut event = new_libc_epoll_event(flags, token);
         if unsafe {
