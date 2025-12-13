@@ -152,10 +152,62 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                     .unwrap_or_else(|| Frame::new(self.physical_width, self.physical_height));
 
                 // Render with parallel rasterization
+                // Note: Scale holds Arc<dyn Surface...>, which implements Surface
+                // But Scale<Arc<dyn Surface>> needs to implement Surface too.
+                // pixelflow-core implements Surface for Scale<S> where S: Surface.
+                // However, Arc<dyn Surface> doesn't automatically implement Surface.
+                // We need to verify if pixelflow-core provides Surface impl for Arc<dyn Surface>.
+                // It seems it does not based on the error.
+                // We should wrap the surface in a struct that implements Surface or fix the upstream.
+                // For now, let's assume we can clone the Arc and use it if we had a struct.
+
+                // Workaround: We need a type that implements Surface and delegates to Arc<dyn Surface>.
+                // Or maybe just pass the surface directly if scale is 1.0 (optimization).
+
+                // Let's create a wrapper struct locally if needed, or check if we can fix imports.
+                // The error says: `Scale<Arc<dyn Surface...>>` doesn't implement `Surface`.
+                // This means `Arc<dyn Surface...>` doesn't implement `Surface`.
+
+                // Render with parallel rasterization
+                // Note: Scale holds Arc<dyn Surface...>, which implements Surface
+                // and pixelflow-core implements Surface for Scale<S> where S: Surface.
+                // However, render_parallel expects S: Surface<P>.
+                // Scale<S> implements Surface<T, f32> (since Arc<dyn Surface<P, f32>> has C=f32).
+                // render_parallel doesn't specify C, so it defaults to u32?
+                // Let's check render_pool.rs: pub fn render_parallel<P, S>(... S: Surface<P> ...)
+                // Surface<P> defaults C=u32.
+                // But Scale<S> where S uses f32 coordinates implements Surface<P, f32>.
+                // It does NOT implement Surface<P, u32>.
+
+                // We need to bridge from discrete (u32) coordinates used by render_parallel
+                // to continuous (f32) coordinates used by Scale.
+
+                // pixelflow-core usually provides a "Discrete" combinator or similar,
+                // or we need to look at how Scale handles this.
+                // Scale has:
+                // impl<T, S> Surface<T, u32> for Scale<S> where S: Surface<T, u32>
+                // impl<T, S> Surface<T, f32> for Scale<S> where S: Surface<T, f32>
+
+                // Our 'surface' is Surface<P, f32>.
+                // So 'scaled' is Surface<P, f32>.
+                // But render_parallel iterates over u32 pixels and calls eval(Batch<u32>, Batch<u32>).
+                // So we need something that implements Surface<P, u32> but wraps Surface<P, f32>.
+
+                // That is the `Discrete` combinator mentioned in memory.
+                // "pixelflow-core provides a `Discrete<S>` combinator that adapts a `Surface<P, u32>` to `Surface<P, f32>`"
+                // Wait, it adapts "Surface<P, u32> to Surface<P, f32>"? Or the other way around?
+                // Usually it takes a continuous surface and makes it discrete by casting coords.
+
+                // Let's assume there is a Discrete combinator in pixelflow_core::surfaces::transform or similar.
+                // I will search for it.
+
+                // Use Rasterize combinator to adapt continuous surface to discrete grid
                 let scaled = Scale::uniform(surface, self.scale_factor);
+                let rasterized = pixelflow_core::surfaces::raster::Rasterize(scaled);
+
                 let width = frame.width as usize;
                 let height = frame.height as usize;
-                render_parallel(&scaled, frame.as_slice_mut(), width, height, self.render_threads);
+                render_parallel(&rasterized, frame.as_slice_mut(), width, height, self.render_threads);
 
                 // Send frame to driver
                 let _ = self.driver.send(DriverCommand::Present {
@@ -239,8 +291,12 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
             AppManagement::RequestPaste => {
                 let _ = self.driver.send(DriverCommand::RequestPaste);
             }
-            AppManagement::ResizeRequest(_, _) => {
-                // TODO: Implement window resize
+            AppManagement::ResizeRequest(width, height) => {
+                let _ = self.driver.send(DriverCommand::SetSize {
+                    id: WindowId::PRIMARY,
+                    width,
+                    height,
+                });
             }
             AppManagement::SetCursorIcon(_) => {
                 // TODO: Implement cursor icon change
