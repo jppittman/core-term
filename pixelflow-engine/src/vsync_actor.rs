@@ -7,6 +7,7 @@ use log::info;
 use actor_scheduler::{ActorHandle, ActorScheduler, Actor};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::sync::mpsc::Sender;
 
 /// Messages TO the VSync actor (commands) - Control lane
 #[derive(Debug)]
@@ -18,7 +19,7 @@ pub enum VsyncCommand {
     /// Update refresh rate (for VRR displays)
     UpdateRefreshRate(f64),
     /// Request current FPS stats
-    RequestCurrentFPS,
+    RequestCurrentFPS(Sender<f64>),
     /// Shutdown the actor
     Shutdown,
 }
@@ -178,9 +179,11 @@ impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManage
                     self.interval.as_secs_f64() * 1000.0
                 );
             }
-            VsyncCommand::RequestCurrentFPS => {
+            VsyncCommand::RequestCurrentFPS(sender) => {
                 info!("VsyncActor: FPS requested - {:.2} fps", self.last_fps);
-                // TODO: Send FPS response back through a response channel
+                if let Err(e) = sender.send(self.last_fps) {
+                    log::warn!("VsyncActor: Failed to send FPS response: {:?}", e);
+                }
             }
             VsyncCommand::Shutdown => {
                 info!("VsyncActor: Shutting down");
