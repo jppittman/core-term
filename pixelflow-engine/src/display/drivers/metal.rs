@@ -20,8 +20,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask,
-    NSEventModifierFlags, NSEventType, NSPasteboard, NSScreen, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSCursor, NSEvent,
+    NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSScreen, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSDate, NSDefaultRunLoopMode, NSObject, NSPoint, NSRect, NSSize, NSString,
@@ -602,6 +603,10 @@ fn run_event_loop(
                     state.bell();
                     let _ = engine_tx.send(EngineCommand::DriverAck);
                 }
+                DriverCommand::SetCursorIcon { icon } => {
+                    state.set_cursor_icon(icon);
+                    let _ = engine_tx.send(EngineCommand::DriverAck);
+                }
             }
         }
     }
@@ -794,6 +799,23 @@ impl CocoaEventState {
         unsafe {
             let app = NSApplication::sharedApplication(self.mtm);
             let _: () = msg_send![&app, beep];
+        }
+    }
+
+    fn set_cursor_icon(&self, icon: crate::api::public::CursorIcon) {
+        unsafe {
+            // Need to reset cursor rects to apply the change immediately if over the window
+            let _: () = msg_send![&self.window, invalidateCursorRectsForView: &*self.view];
+
+            let cursor: *mut AnyObject = match icon {
+                crate::api::public::CursorIcon::Default => msg_send![class!(NSCursor), arrowCursor],
+                crate::api::public::CursorIcon::Pointer => msg_send![class!(NSCursor), pointingHandCursor],
+                crate::api::public::CursorIcon::Text => msg_send![class!(NSCursor), IBeamCursor],
+            };
+
+            if !cursor.is_null() {
+                let _: () = msg_send![cursor, set];
+            }
         }
     }
 }

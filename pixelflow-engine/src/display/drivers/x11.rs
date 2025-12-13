@@ -19,6 +19,11 @@ use std::ptr;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use x11::{keysym, xlib};
 
+// Standard X11 cursor font constants (from X11/cursorfont.h)
+const XC_ARROW: u32 = 2;
+const XC_HAND2: u32 = 60;
+const XC_XTERM: u32 = 152;
+
 // --- Atoms ---
 #[derive(Debug, Clone, Copy)]
 struct SelectionAtoms {
@@ -351,6 +356,9 @@ impl X11State {
                     DriverCommand::Bell => {
                         self.handle_bell();
                     }
+                    DriverCommand::SetCursorIcon { icon } => {
+                        self.handle_set_cursor_icon(icon);
+                    }
                 }
             }
 
@@ -638,6 +646,21 @@ impl X11State {
     fn handle_set_size(&mut self, width: u32, height: u32) {
         unsafe {
             xlib::XResizeWindow(self.display, self.x11_window, width, height);
+            xlib::XFlush(self.display);
+        }
+    }
+
+    fn handle_set_cursor_icon(&mut self, icon: crate::api::public::CursorIcon) {
+        unsafe {
+            let cursor_shape = match icon {
+                crate::api::public::CursorIcon::Default => XC_ARROW,
+                crate::api::public::CursorIcon::Pointer => XC_HAND2,
+                crate::api::public::CursorIcon::Text => XC_XTERM,
+            };
+
+            let cursor = xlib::XCreateFontCursor(self.display, cursor_shape);
+            xlib::XDefineCursor(self.display, self.x11_window, cursor);
+            xlib::XFreeCursor(self.display, cursor);
             xlib::XFlush(self.display);
         }
     }

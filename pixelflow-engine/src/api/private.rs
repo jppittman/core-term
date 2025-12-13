@@ -3,6 +3,7 @@ use pixelflow_core::Pixel;
 use pixelflow_render::Frame;
 use std::sync::Arc;
 
+use crate::api::public::CursorIcon;
 use crate::input::{KeySymbol, Modifiers};
 
 /// Window ID wrapper
@@ -112,6 +113,9 @@ pub enum DriverCommand<P: Pixel> {
     CopyToClipboard(String),
     RequestPaste,
     Bell,
+    SetCursorIcon {
+        icon: CursorIcon,
+    },
 }
 
 // Engine data message (high priority)
