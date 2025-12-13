@@ -398,9 +398,8 @@ impl AnsiCommand {
     /// Parses an escape sequence with an intermediate character.
     pub(crate) fn from_esc_intermediate(intermediate: char, final_char: char) -> Option<Self> {
         if ['(', ')', '*', '+'].contains(&intermediate) {
-            // Validate final_char strictly against ECMA-35 (ISO 2022) standard ranges.
-            // For escape sequences with one intermediate byte, the final byte must be in range 0x30-0x7E.
-            if ('\x30'..='\x7E').contains(&final_char) {
+            // TODO: Validate final_char more strictly if needed (e.g., specific ranges for charsets)
+            if final_char >= '0' && final_char <= '~' {
                 // Common charset designators
                 Some(AnsiCommand::Esc(EscCommand::SelectCharacterSet(
                     intermediate,
