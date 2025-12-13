@@ -209,6 +209,10 @@ impl WebState {
                         // Not supported in worker context
                         let _ = engine_tx.send(EngineCommand::DriverAck);
                     }
+                    DriverCommand::SetCursorIcon { .. } => {
+                        // Not supported in worker context
+                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                    }
                 }
             }
         }
