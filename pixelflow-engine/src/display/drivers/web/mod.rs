@@ -22,12 +22,12 @@ use web_sys::{ImageData, OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
 // Thread-local storage for web resources passed from JS
 thread_local! {
-    static RESOURCES: RefCell<Option<(OffscreenCanvas, SharedArrayBuffer)>> = RefCell::new(None);
+    static RESOURCES: RefCell<Option<(OffscreenCanvas, SharedArrayBuffer, f64)>> = RefCell::new(None);
 }
 
 /// Initialize web resources. Must be called from JS before creating driver.
-pub fn init_resources(canvas: OffscreenCanvas, sab: SharedArrayBuffer) {
-    RESOURCES.with(|r| *r.borrow_mut() = Some((canvas, sab)));
+pub fn init_resources(canvas: OffscreenCanvas, sab: SharedArrayBuffer, scale_factor: f64) {
+    RESOURCES.with(|r| *r.borrow_mut() = Some((canvas, sab, scale_factor)));
 }
 
 // --- Run State (only original driver has this) ---
@@ -101,7 +101,7 @@ fn run_event_loop(
     };
 
     // Get web resources from thread-local storage
-    let (canvas, sab) = RESOURCES.with(|r| {
+    let (canvas, sab, scale_factor) = RESOURCES.with(|r| {
         r.borrow_mut()
             .take()
             .ok_or_else(|| anyhow!("Web resources not initialized. Call init_resources() first."))
@@ -125,7 +125,7 @@ fn run_event_loop(
         id: window_id,
         width_px,
         height_px,
-        scale: 1.0, // TODO: use window.devicePixelRatio
+        scale: scale_factor as f32, // Use provided scale factor
     }));
 
     // 2. Create state and run event loop

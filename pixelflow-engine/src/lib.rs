@@ -43,8 +43,8 @@ use wasm_bindgen::prelude::*;
 // This code is dogshit and should be in the platform itself....
 #[cfg(use_web_display)]
 #[wasm_bindgen]
-pub fn pixelflow_init_worker(canvas: web_sys::OffscreenCanvas, sab: js_sys::SharedArrayBuffer) {
-    crate::display::drivers::web::init_resources(canvas, sab);
+pub fn pixelflow_init_worker(canvas: web_sys::OffscreenCanvas, sab: js_sys::SharedArrayBuffer, scale_factor: f64) {
+    crate::display::drivers::web::init_resources(canvas, sab, scale_factor);
 }
 
 // This code is dogshit and should be in the platform itself....
