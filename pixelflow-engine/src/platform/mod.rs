@@ -298,8 +298,8 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                     height,
                 });
             }
-            AppManagement::SetCursorIcon(_) => {
-                // TODO: Implement cursor icon change
+            AppManagement::SetCursorIcon(icon) => {
+                let _ = self.driver.send(DriverCommand::SetCursorIcon { icon });
             }
         }
     }

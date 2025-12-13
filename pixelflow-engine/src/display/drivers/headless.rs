@@ -136,6 +136,10 @@ fn run_event_loop(
                 info!("Headless: Bell");
                 let _ = engine_tx.send(EngineCommand::DriverAck);
             }
+            DriverCommand::SetCursorIcon { icon } => {
+                info!("Headless: SetCursorIcon {:?}", icon);
+                let _ = engine_tx.send(EngineCommand::DriverAck);
+            }
         }
     }
 }
