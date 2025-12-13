@@ -425,7 +425,8 @@ impl BatchArithmetic<u16> for ScalarBatch<u16> {
         (if_true & self) | (if_false & !self)
     }
     fn gather(base: &[u16], indices: Self) -> Self {
-        ScalarBatch(base[indices.0 as usize])
+        let idx = indices.0 as usize;
+        ScalarBatch(if idx < base.len() { base[idx] } else { 0 })
     }
     fn min(self, other: Self) -> Self {
         ScalarBatch(self.0.min(other.0))
@@ -582,5 +583,30 @@ mod tests {
         let result = ScalarBatch::<u32>::gather_u8(&data, idx);
 
         assert_eq!(result.0, 0, "Out-of-bounds gather_u8 should return 0");
+    }
+
+    #[test]
+    fn gather_u16_out_of_bounds_returns_zero() {
+        // Bug: gather with out-of-bounds indices should return 0, not panic
+        let data = vec![0x1111u16, 0x2222, 0x3333, 0x4444];
+
+        // Index 100 is out of bounds
+        let idx = ScalarBatch::<u16>(100);
+
+        // This is expected to panic or return garbage if not handled
+        let result = ScalarBatch::<u16>::gather(&data, idx);
+
+        assert_eq!(result.0, 0, "Out-of-bounds gather for u16 should return 0");
+    }
+
+    #[test]
+    fn gather_u8_impl_out_of_bounds_returns_zero() {
+         // Testing BatchArithmetic<u8> for ScalarBatch<u8>
+        let data = vec![0xAAu8, 0xBB, 0xCC, 0xDD];
+
+        let idx = ScalarBatch::<u8>(100);
+        let result = ScalarBatch::<u8>::gather(&data, idx);
+
+        assert_eq!(result.0, 0, "Out-of-bounds gather for u8 should return 0");
     }
 }
