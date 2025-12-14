@@ -6,7 +6,7 @@
 
 use crate::color::Pixel;
 use pixelflow_core::batch::Batch;
-use pixelflow_core::traits::Surface;
+use pixelflow_core::traits::Manifold;
 use pixelflow_core::SimdBatch;
 
 /// A framebuffer of pixels in a specific format.
@@ -97,19 +97,19 @@ impl<P: Pixel> Frame<P> {
 }
 
 // =============================================================================
-// Frame as Surface (wrap-around sampling)
+// Frame as Manifold (wrap-around sampling)
 // =============================================================================
 
-/// Frame implements Surface with wrap-around out-of-bounds behavior.
+/// Frame implements Manifold with wrap-around out-of-bounds behavior.
 ///
 /// This enables using a Frame as a compositing source:
 /// ```ignore
 /// let bg = Frame::<Rgba>::load("background.png");
 /// let composed = mask.over::<Rgba>(foreground, &bg);
 /// ```
-impl<P: Pixel> Surface<P> for Frame<P> {
+impl<P: Pixel> Manifold<P> for Frame<P> {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<P> {
         let w_batch = Batch::<u32>::splat(self.width);
         let h_batch = Batch::<u32>::splat(self.height);
 

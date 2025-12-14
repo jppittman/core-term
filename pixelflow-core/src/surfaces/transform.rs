@@ -1,5 +1,5 @@
 use crate::batch::Batch;
-use crate::traits::Surface;
+use crate::traits::Manifold;
 use crate::backend::{BatchArithmetic, SimdBatch};
 use core::fmt::Debug;
 
@@ -15,30 +15,30 @@ pub struct Offset<S> {
 }
 
 // u32 implementation (Discrete)
-impl<T, S> Surface<T, u32> for Offset<S>
+impl<T, S> Manifold<T, u32> for Offset<S>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    S: Surface<T, u32>,
+    S: Manifold<T, u32>,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<T> {
         let ox = Batch::<u32>::splat(self.dx as u32);
         let oy = Batch::<u32>::splat(self.dy as u32);
-        self.source.eval(x + ox, y + oy)
+        self.source.eval(x + ox, y + oy, z, w)
     }
 }
 
 // f32 implementation (Continuous)
-impl<T, S> Surface<T, f32> for Offset<S>
+impl<T, S> Manifold<T, f32> for Offset<S>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    S: Surface<T, f32>,
+    S: Manifold<T, f32>,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<T> {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, z: Batch<f32>, w: Batch<f32>) -> Batch<T> {
         let ox = Batch::<f32>::splat(self.dx as f32);
         let oy = Batch::<f32>::splat(self.dy as f32);
-        self.source.eval(x + ox, y + oy)
+        self.source.eval(x + ox, y + oy, z, w)
     }
 }
 
@@ -77,29 +77,29 @@ impl<S> Scale<S> {
 }
 
 // u32 implementation (Discrete)
-impl<T, S> Surface<T, u32> for Scale<S>
+impl<T, S> Manifold<T, u32> for Scale<S>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    S: Surface<T, u32>,
+    S: Manifold<T, u32>,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<T> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<T> {
         let inv_x = Batch::<u32>::splat(self.inv_scale_x_fp);
         let inv_y = Batch::<u32>::splat(self.inv_scale_y_fp);
         let lx = (x * inv_x) >> 16;
         let ly = (y * inv_y) >> 16;
-        self.source.eval(lx, ly)
+        self.source.eval(lx, ly, z, w)
     }
 }
 
 // f32 implementation (Continuous)
-impl<T, S> Surface<T, f32> for Scale<S>
+impl<T, S> Manifold<T, f32> for Scale<S>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    S: Surface<T, f32>,
+    S: Manifold<T, f32>,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<T> {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, z: Batch<f32>, w: Batch<f32>) -> Batch<T> {
         // Convert fixed-point (16.16) back to float
         let scale_factor = 1.0 / 65536.0;
         let inv_x_f = (self.inv_scale_x_fp as f32) * scale_factor;
@@ -109,7 +109,7 @@ where
         let inv_y = Batch::<f32>::splat(inv_y_f);
 
         // Apply scaling (multiply coordinate by inverse scale)
-        self.source.eval(x * inv_x, y * inv_y)
+        self.source.eval(x * inv_x, y * inv_y, z, w)
     }
 }
 
@@ -122,11 +122,11 @@ pub struct Skew<S> {
     pub shear: i32,
 }
 
-impl<S: Surface<u8, u32>> Surface<u8, u32> for Skew<S> {
+impl<S: Manifold<u8, u32>> Manifold<u8, u32> for Skew<S> {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<u8> {
         let offset = (y * Batch::<u32>::splat(self.shear as u32)) >> 8;
-        self.source.eval(x.saturating_sub(offset), y)
+        self.source.eval(x.saturating_sub(offset), y, z, w)
     }
 }
 
@@ -149,15 +149,15 @@ impl<S, F> Map<S, F> {
     }
 }
 
-impl<T, S, F, C> Surface<T, C> for Map<S, F>
+impl<T, S, F, C> Manifold<T, C> for Map<S, F>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    S: Surface<T, C>,
+    S: Manifold<T, C>,
     F: Fn(Batch<T>) -> Batch<T> + Send + Sync,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
-        (self.transform)(self.source.eval(x, y))
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<T> {
+        (self.transform)(self.source.eval(x, y, z, w))
     }
 }

@@ -1,6 +1,6 @@
 use crate::backend::{BatchArithmetic, SimdBatch};
 use crate::batch::Batch;
-use crate::traits::Surface;
+use crate::traits::Manifold;
 use crate::pixel::Pixel;
 use core::fmt::Debug;
 use core::marker::PhantomData;
@@ -9,19 +9,19 @@ use core::marker::PhantomData;
 #[derive(Copy, Clone)]
 pub struct Max<A, B>(pub A, pub B);
 
-macro_rules! impl_max_surface {
+macro_rules! impl_max_manifold {
     ($($t:ty),*) => {
         $(
-            impl<A, B, C> Surface<$t, C> for Max<A, B>
+            impl<A, B, C> Manifold<$t, C> for Max<A, B>
             where
-                A: Surface<$t, C>,
-                B: Surface<$t, C>,
+                A: Manifold<$t, C>,
+                B: Manifold<$t, C>,
                 C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
             {
                 #[inline(always)]
-                fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<$t> {
-                    let a = self.0.eval(x, y);
-                    let b = self.1.eval(x, y);
+                fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<$t> {
+                    let a = self.0.eval(x, y, z, w);
+                    let b = self.1.eval(x, y, z, w);
                     a.max(b)
                 }
             }
@@ -29,7 +29,7 @@ macro_rules! impl_max_surface {
     }
 }
 
-impl_max_surface!(u32, u8, f32);
+impl_max_manifold!(u32, u8, f32);
 
 /// Composites a foreground surface over a background surface using a mask.
 #[derive(Copy, Clone)]
@@ -63,22 +63,22 @@ pub(crate) fn blend_channel(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -
     ((fg * alpha) + (bg * inv_alpha)) >> 8
 }
 
-impl<P, M, F, Back, C> Surface<P, C> for Over<P, M, F, Back>
+impl<P, M, F, Back, C> Manifold<P, C> for Over<P, M, F, Back>
 where
     P: Pixel + Copy + PartialEq,
-    M: Surface<P, C>,
-    F: Surface<P, C>,
-    Back: Surface<P, C>,
+    M: Manifold<P, C>,
+    F: Manifold<P, C>,
+    Back: Manifold<P, C>,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<P> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
         // Extract alpha from the mask pixel (coverage in alpha channel)
-        let mask_pixel = P::batch_to_u32(self.mask.eval(x, y));
+        let mask_pixel = P::batch_to_u32(self.mask.eval(x, y, z, w));
         let alpha = P::batch_alpha(mask_pixel);
 
-        let fg_batch = self.fg.eval(x, y);
-        let bg_batch = self.bg.eval(x, y);
+        let fg_batch = self.fg.eval(x, y, z, w);
+        let bg_batch = self.bg.eval(x, y, z, w);
 
         let fg = P::batch_to_u32(fg_batch);
         let bg = P::batch_to_u32(bg_batch);
@@ -112,20 +112,20 @@ pub struct Mul<M, C> {
     pub color: C,
 }
 
-impl<P, M, Col, Coord> Surface<P, Coord> for Mul<M, Col>
+impl<P, M, Col, Coord> Manifold<P, Coord> for Mul<M, Col>
 where
     P: Pixel + Copy + PartialEq,
-    M: Surface<P, Coord>,
-    Col: Surface<P, Coord>,
+    M: Manifold<P, Coord>,
+    Col: Manifold<P, Coord>,
     Coord: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<Coord>, y: Batch<Coord>) -> Batch<P> {
+    fn eval(&self, x: Batch<Coord>, y: Batch<Coord>, z: Batch<Coord>, w: Batch<Coord>) -> Batch<P> {
         // Extract alpha from the mask pixel (coverage in alpha channel)
-        let mask_pixel = P::batch_to_u32(self.mask.eval(x, y));
+        let mask_pixel = P::batch_to_u32(self.mask.eval(x, y, z, w));
         let alpha = P::batch_alpha(mask_pixel);
 
-        let color_batch = self.color.eval(x, y);
+        let color_batch = self.color.eval(x, y, z, w);
         let color = P::batch_to_u32(color_batch);
 
         let r = P::batch_red(color);

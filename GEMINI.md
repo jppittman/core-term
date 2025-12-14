@@ -1,60 +1,83 @@
-# CoreTerm (PixelFlow v11.0) Context
+# CoreTerm & PixelFlow: Agent Context
 
-## Project Overview
+**Status**: Active Transition (v11.0 → v1.0)
+**Primary Goal**: Refactor the codebase to align with the **PixelFlow 1.0 North Star** architecture.
 
-**CoreTerm** is a high-performance, correct terminal emulator built on the **PixelFlow v11.0** architecture. It distinguishes itself by using a **Zero-Copy Functional Kernel** for rendering, avoiding GPU dependencies in favor of highly optimized CPU-based SIMD operations (AVX-512).
+---
 
-### Core Architecture
-The project is a synthesis of Functional Programming and Actor Concurrency:
-*   **Rendering (PixelFlow):** The entire screen is defined by a single function `F(u, v) -> Color` (the "Surface"). The engine acts as a compiler, monomorphizing the scene graph into a single executable kernel.
-*   **Concurrency:** A **Three-Thread Actor Model** ensures zero-latency input and clean separation of concerns:
-    1.  **Display Driver (Main Thread):** Handles platform-specific UI events (Cocoa/X11).
-    2.  **Orchestrator (Logic Thread):** Platform-agnostic application logic, state management.
-    3.  **PTY I/O (Background Thread):** Asynchronous pseudo-terminal I/O.
-*   **Memory:** Uses a "Ping-Pong" buffer strategy to recycle memory between the Logic and Render threads, ensuring zero allocation per frame.
+## 1. PixelFlow 1.0: North Star (The Target Architecture)
 
-### Workspace Structure
-The project is a Cargo workspace:
-*   `core-term/`: The main application (Logic/Orchestrator).
-    *   `src/main.rs`: Entry point. Initializes actors and platform.
-    *   `src/config.rs`: Configuration logic (currently defaults-only).
-*   `pixelflow-engine/`: The execution core and runtime environment (Render Loop).
-*   `pixelflow-core/`: Zero-cost SIMD math abstractions and trait definitions.
-*   `pixelflow-render/`: Software rendering primitives (Surfaces).
-*   `pixelflow-fonts/`: Vector font handling (Loop-Blinn).
-*   `xtask/`: Build automation scripts.
+**Crucial**: This is the architectural standard for all new code and refactoring.
 
-## Building and Running
+### The Thesis
+SIMD is not an optimization. It is the algebraic realization of the Field of Real Numbers. PixelFlow 1.0 resolves the false dichotomy between mathematical abstraction and hardware intrinsics.
+**Write equations. Get assembly.**
 
-### Prerequisites
-*   **Rust:** Stable channel.
-*   **Linux Dependencies:** `libx11-dev`, `libxext-dev`, `libxft-dev`, `libfontconfig1-dev`, `libfreetype6-dev`, `libxkbcommon-dev`.
-*   **macOS:** Standard Xcode command line tools.
+### The Inversion (Pull-Based)
+*   **Pull, don't push.** Surfaces are functions `F(x,y) -> T`. Nothing computes until sampled.
+*   **Laziness is the contract.** Masks are just `Surface<bool>`. Bounds are Surfaces.
+*   **No pre-pass.** Optimization happens via composition (e.g., `clip` combinator).
+*   **The Observer is Fixed.** The camera is at `(0,0,0)`. The world warps around it. "It is always now."
 
-### Commands
+### The Algebra
+*   **Field**: The computational atom (SIMD vector, lane-agnostic).
+*   **Surface**: `Fn(x, y) -> T`
+*   **Volume**: `Fn(x, y, z) -> T`
+*   **Manifold**: `Fn(x, y, z, w) -> T`
+*   **Dimensional Collapse**: `Manifold` implies `Volume` (w=0). `Volume` implies `Surface` (z=0).
 
-| Action | Command | Notes |
+### The Six Eigenshaders
+All shaders are compositions of these six primitives:
+1.  **Warp**: `(S, ω) → S` (Coordinate remapping)
+2.  **Grade**: `(S, M, b) → S` (Linear transform of values)
+3.  **Lerp**: `(t, a, b) → S` (Interpolation)
+4.  **Select**: `(cond, t, f) → S` (Branchless conditional, used for clipping)
+5.  **Fix**: `(seed, step) → V` (Iteration as a dimension)
+6.  **Compute**: `Fn(x,y) → T` (Escape hatch)
+
+---
+
+## 2. Current Project State (v11.0)
+
+The codebase is currently in **v11.0**, which uses a slightly different terminology (Monolith, Ping-Pong buffers). We are migrating to v1.0.
+
+### Directory Structure & Migration Map
+
+| Current Crate | Purpose (v11.0) | Target State (v1.0) |
 | :--- | :--- | :--- |
-| **Build** | `cargo build --release` | Release mode is strongly recommended for SIMD performance. |
-| **Run** | `cargo run --release` | Runs the raw binary. |
-| **Bundle & Run (macOS)** | `cargo xtask bundle-run` | Builds, creates `CoreTerm.app`, and launches it. |
-| **Test** | `cargo test` | Runs standard unit tests. |
+| `core-term/` | Main Application (Orchestrator) | **Application**. Depends on `pixelflow-engine`. |
+| `pixelflow-core/` | Math & Traits | **Core**. Pure algebra. Needs heavy refactoring to implement Eigenshaders. |
+| `pixelflow-render/` | Software Rendering Primitives | **Merge into `pixelflow-graphics`**. |
+| `pixelflow-fonts/` | Font handling | **Merge into `pixelflow-graphics`**. |
+| `pixelflow-engine/` | Execution Runtime | **Engine**. Scene graph, input, loop. |
+| `actor-scheduler/` | Actor Runtime | Keep/Integrate into Engine. |
+| `xtask/` | Build scripts | Keep. |
 
-**Note:** When running via `xtask bundle-run` on macOS, logs are redirected to `/tmp/core-term.log`.
+### Key Files
+*   `core-term/src/main.rs`: Entry point.
+*   `pixelflow-core/src/lib.rs`: The heart of the math library.
+*   `GEMINI.md`: This file.
+*   `docs/NORTH_STAR.md`: (Note: May contain v11.0 info, trust this file's "North Star" section over it).
 
-## Development Conventions
+---
 
-*   **Documentation:**
-    *   **Reference:** Use `docs/STYLE.md` for coding standards.
-    *   **Outdated:** Ignore `docs/NORTH_STAR.md`. It contains obsolete architectural details.
-    *   **Sources:** Trust the `README.md` files in sub-crates (`pixelflow-core`, etc.) and this document.
-*   **Performance:**
-    *   The Render Thread (`pixelflow-engine`) must **never** allocate memory during the frame loop.
-    *   The `sample` function in `pixelflow-core` surfaces must be `#[inline(always)]`.
-*   **Code Style:** Standard Rust formatting (`cargo fmt`). Public items require documentation (`///`).
-*   **Platform Handling:** Platform-specific code (Cocoa/X11) belongs in the Display Driver actor; logic belongs in the Orchestrator.
+## 3. Operational Guide
 
-## Configuration
-Configuration is currently defined in `core-term/src/config.rs` with a `Lazy` static `CONFIG`.
-*   File loading is a placeholder (defaults are hardcoded).
-*   Keybindings, appearance, and behavior are all struct-defined.
+### Build & Run
+*   **Build Release**: `cargo build --release` (Critical for SIMD performance)
+*   **Run**: `cargo run --release`
+*   **Bundle (macOS)**: `cargo xtask bundle-run` (Builds `.app` and launches)
+*   **Test**: `cargo test`
+
+### Dependencies (Linux)
+`libx11-dev`, `libxext-dev`, `libxft-dev`, `libfontconfig1-dev`, `libfreetype6-dev`, `libxkbcommon-dev`.
+
+---
+
+## 4. Development Conventions
+
+*   **Architecture First**: When modifying `pixelflow-core`, always verify alignment with the "Six Eigenshaders" model.
+*   **No Allocation**: The render loop (`pixelflow-engine`) must **never** allocate.
+*   **Documentation**: Public items require doc comments.
+*   **Tests**: Add unit tests for new algebra primitives.
+*   **Refactoring**: Do not be afraid to delete v11.0 concepts (e.g., "Rasterizer" traits) if they conflict with the v1.0 "Surface" model.

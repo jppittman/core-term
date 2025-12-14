@@ -1,6 +1,6 @@
 use crate::batch::Batch;
 use crate::geometry::affine::Mat3;
-use crate::traits::Surface;
+use crate::traits::Manifold;
 
 /// Trait for defining the implicit equation of a curve.
 pub trait ImplicitEvaluator {
@@ -16,8 +16,8 @@ pub struct Implicit<C> {
     pub projection: Mat3,
 }
 
-impl<C: ImplicitEvaluator + Send + Sync + 'static> Surface<f32> for Implicit<C> {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<f32> {
+impl<C: ImplicitEvaluator + Send + Sync + 'static> Manifold<f32> for Implicit<C> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<f32> {
         // Warp: screen → (u, v)
         let (u, v) = self.projection.transform(x, y);
         // Evaluate implicit equation

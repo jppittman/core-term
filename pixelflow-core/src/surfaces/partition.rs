@@ -1,5 +1,5 @@
 use crate::batch::{Batch, LANES};
-use crate::traits::Surface;
+use crate::traits::Manifold;
 use crate::pixel::Pixel;
 use crate::backend::{SimdBatch};
 use alloc::sync::Arc;
@@ -18,25 +18,25 @@ pub struct Partition<I, P, C = u32> {
     /// Indexer surface that returns indices for each pixel
     pub indexer: I,
     /// Table of surfaces indexed by the indexer
-    pub surfaces: Vec<Arc<dyn Surface<P, C>>>,
+    pub surfaces: Vec<Arc<dyn Manifold<P, C>>>,
 }
 
 impl<I, P, C> Partition<I, P, C> {
     /// Creates a new Partition combinator.
-    pub fn new(indexer: I, surfaces: Vec<Arc<dyn Surface<P, C>>>) -> Self {
+    pub fn new(indexer: I, surfaces: Vec<Arc<dyn Manifold<P, C>>>) -> Self {
         Self { indexer, surfaces }
     }
 }
 
-impl<I, P, C> Surface<P, C> for Partition<I, P, C>
+impl<I, P, C> Manifold<P, C> for Partition<I, P, C>
 where
-    I: Surface<u32, C>,
+    I: Manifold<u32, C>,
     P: Pixel,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<P> {
-        let indices: Batch<u32> = self.indexer.eval(x, y);
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
+        let indices: Batch<u32> = self.indexer.eval(x, y, z, w);
 
         // Extract indices for each lane
         let idx0 = indices.extract_lane(0) as usize;
@@ -49,7 +49,7 @@ where
 
         if all_same && idx0 < self.surfaces.len() {
             // All lanes use the same surface - evaluate once
-            return self.surfaces[idx0].eval(x, y);
+            return self.surfaces[idx0].eval(x, y, z, w);
         }
 
         // Mixed case - evaluate each lane through its surface
@@ -60,7 +60,9 @@ where
             if idx < self.surfaces.len() {
                 let xi = Batch::<C>::splat(x.extract_lane(i));
                 let yi = Batch::<C>::splat(y.extract_lane(i));
-                let pixel_batch = self.surfaces[idx].eval(xi, yi);
+                let zi = Batch::<C>::splat(z.extract_lane(i));
+                let wi = Batch::<C>::splat(w.extract_lane(i));
+                let pixel_batch = self.surfaces[idx].eval(xi, yi, zi, wi);
                 result_array[i] = pixel_batch.first();
             }
             // else: out of bounds, use default value (already set)
