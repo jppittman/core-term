@@ -1,26 +1,26 @@
 # PixelFlow 1.0: North Star
 
-**Status**: Draft v6
+**Status**: Draft v6  
 **Audience**: Contributors, future-self, LLM agents
 
------
+---
 
 ## Table of Contents
 
 1. [The Thesis](#the-thesis) — SIMD as algebra
-1. [The Inversion](#the-inversion) — Pull-based, laziness as contract
-1. [The Problem](#the-problem) — What we’re solving
-1. [The Algebra](#the-algebra) — Field, Surface, Volume, Manifold, dimensional collapse
-1. [The Fixed Observer](#the-fixed-observer) — Warp the world, not the camera; it is always now
-1. [The Six Eigenshaders](#the-six-eigenshaders) — Warp, Grade, Lerp, Select, Fix, Compute
-1. [Optimization is Composition](#optimization-is-composition) — Bounds are masks, clip is Select
-1. [Type-Level Compilation](#type-level-compilation) — Types are shader programs
-1. [Crate Architecture](#crate-architecture) — Core, Graphics, Engine
-1. [What PixelFlow Is Not](#what-pixelflow-is-not) — Non-goals
-1. [Performance Targets](#performance-targets) — The terminal benchmark
-1. [Summary](#summary)
+2. [The Inversion](#the-inversion) — Pull-based, laziness as contract
+3. [The Problem](#the-problem) — What we're solving
+4. [The Algebra](#the-algebra) — Field, Surface, Volume, Manifold, dimensional collapse
+5. [The Fixed Observer](#the-fixed-observer) — Warp the world, not the camera; it is always now
+6. [The Six Eigenshaders](#the-six-eigenshaders) — Warp, Grade, Lerp, Select, Fix, Compute
+7. [Optimization is Composition](#optimization-is-composition) — Bounds are masks, clip is Select
+8. [Type-Level Compilation](#type-level-compilation) — Types are shader programs
+9. [Crate Architecture](#crate-architecture) — Core, Graphics, Engine
+10. [What PixelFlow Is Not](#what-pixelflow-is-not) — Non-goals
+11. [Performance Targets](#performance-targets) — The terminal benchmark
+12. [Summary](#summary)
 
------
+---
 
 ## The Thesis
 
@@ -30,28 +30,27 @@ PixelFlow 1.0 resolves the false dichotomy between mathematical abstraction (slo
 
 **Write equations. Get assembly.**
 
------
+---
 
 ## The Inversion
 
 PixelFlow is **pull-based**. This is the root assumption from which everything else grows.
 
-Every Surface is a function waiting to be queried. Nothing computes until coordinates arrive. There are no push pipelines, no invalidation signals, no identity-keyed caches. You do not “render” a Surface; you *sample* it.
+Every Surface is a function waiting to be queried. Nothing computes until coordinates arrive. There are no push pipelines, no invalidation signals, no identity-keyed caches. You do not "render" a Surface; you *sample* it.
 
 **Laziness is not an optimization—it is the semantic contract.**
 
-This inverts the gravity of traditional graphics. Most systems push pixels forward through a DAG: “here’s geometry, transform it, rasterize it, composite it, write it.” PixelFlow pulls values backward from the leaves: “I need the color at (x, y); what Surfaces must I query to get it?”
+This inverts the gravity of traditional graphics. Most systems push pixels forward through a DAG: "here's geometry, transform it, rasterize it, composite it, write it." PixelFlow pulls values backward from the leaves: "I need the color at (x, y); what Surfaces must I query to get it?"
 
 ### Consequences
 
-**Masks are just Surfaces.** No special primitives, no metadata channels. A mask is `Surface<bool>` or `Surface<Field>`. Infinite, composable, referentially transparent. Bounds are not structs—they’re Surfaces that happen to be cheap.
+**Masks are just Surfaces.** No special primitives, no metadata channels. A mask is `Surface<bool>` or `Surface<Field>`. Infinite, composable, referentially transparent. Bounds are not structs—they're Surfaces that happen to be cheap.
 
-**There is no pre-pass.** No tile culling phase, no spatial index, no “gather bounds then cull” step. Optimization happens inside `eval`, via composition. The loop is dumb; the Surface is smart.
+**There is no pre-pass.** No tile culling phase, no spatial index, no "gather bounds then cull" step. Optimization happens inside `eval`, via composition. The loop is dumb; the Surface is smart.
 
-**Baking is memoization, not mutation.** A baked Surface is backed by a buffer, but it’s still a Surface—infinite domain, deterministic eval. The buffer is constructed (eagerly or lazily), then the Surface reads from it. Construction is when mutation happens; eval is pure.
+**Baking is memoization, not mutation.** A baked Surface is backed by a buffer, but it's still a Surface—infinite domain, deterministic eval. The buffer is constructed (eagerly or lazily), then the Surface reads from it. Construction is when mutation happens; eval is pure.
 
 Baking serves two purposes:
-
 - *Collapse type depth*: prevent the compiler from exploding on deeply nested combinator trees
 - *Materialize output*: the final rasterization writes to the framebuffer via an eager bake
 
@@ -63,21 +62,21 @@ Both produce a Surface. After baking, you have a function that happens to sample
 
 **Transparency is absolute.** The moment a combinator exposes stateful behavior, referential transparency fractures and the algebra collapses. State exists only in baked buffers, only as an implementation detail, never observable through the Surface interface.
 
------
+---
 
 ## The Problem
 
 Graphics programming forces developers to manage three concerns simultaneously:
 
 1. **Topology**: Is this a 2D surface or 3D volume? Can I pass one where the other is expected?
-1. **Vectorization**: How wide is a SIMD lane? How do I batch coordinates? What about the remainder?
-1. **Materialization**: When do lazy descriptions become actual pixels? Who owns the buffer?
+2. **Vectorization**: How wide is a SIMD lane? How do I batch coordinates? What about the remainder?
+3. **Materialization**: When do lazy descriptions become actual pixels? Who owns the buffer?
 
-Existing solutions leak hardware topology into user code. Developers think in “lanes,” “masks,” and “batches” rather than mathematical functions. Dimension mismatches cause type errors or silent bugs. The abstraction gap between `f(x,y) = ...` and `_mm256_fmadd_ps` is vast.
+Existing solutions leak hardware topology into user code. Developers think in "lanes," "masks," and "batches" rather than mathematical functions. Dimension mismatches cause type errors or silent bugs. The abstraction gap between `f(x,y) = ...` and `_mm256_fmadd_ps` is vast.
 
 PixelFlow closes this gap.
 
------
+---
 
 ## The Algebra
 
@@ -98,7 +97,7 @@ fn twist(x: Field, y: Field, z: Field) -> (Field, Field, Field) {
 
 Under the hood, `Field` wraps a SIMD vector. The width—8 lanes (AVX2), 16 lanes (AVX-512), 4 lanes (NEON)—is invisible. Scalars promote implicitly; `z * 0.1` broadcasts `0.1` across all lanes without user intervention.
 
-**Why “Field” and not “Real”?** The abstraction is algebraic, not numeric. A `Field` could carry complex components, dual numbers for automatic differentiation, or interval arithmetic for verified computation. We’re not the cops.
+**Why "Field" and not "Real"?** The abstraction is algebraic, not numeric. A `Field` could carry complex components, dual numbers for automatic differentiation, or interval arithmetic for verified computation. We're not the cops.
 
 ### Surfaces and Volumes
 
@@ -158,9 +157,9 @@ impl<T, V: Volume<T>> Manifold<T> for Extrude<V> {
 }
 ```
 
-This asymmetry is the “recursive topology”: R⁴ → R³ → R² → R¹, each dimension implicitly satisfying the contracts below it. Scalars are 0-dimensional Surfaces (ignore all coordinates, return constant). **All constants are Manifolds.**
+This asymmetry is the "recursive topology": R⁴ → R³ → R² → R¹, each dimension implicitly satisfying the contracts below it. Scalars are 0-dimensional Surfaces (ignore all coordinates, return constant). **All constants are Manifolds.**
 
------
+---
 
 ## The Fixed Observer
 
@@ -168,15 +167,15 @@ Traditional graphics transforms geometry to align with a moving camera. PixelFlo
 
 **The Observer is the origin. The Observer does not move. It is always now.**
 
-This isn’t a technical trick—it’s modeling how you actually experience reality. You’ve never been anywhere else. You’ve never experienced another moment. “There” and “then” are stories you tell from here, now. The world comes to you; you don’t go to it.
+This isn't a technical trick—it's modeling how you actually experience reality. You've never been anywhere else. You've never experienced another moment. "There" and "then" are stories you tell from here, now. The world comes to you; you don't go to it.
 
 PixelFlow takes this seriously:
 
 - Surfaces are evaluated at `(x, y)` — here
 - Volumes are evaluated at `(x, y, z)` — here, at this depth
 - Manifolds are evaluated at `(x, y, z, w)` — here, at this depth, now
-- “Camera movement” is the world rearranging itself around you
-- “Time passing” is the timeline sliding through the present
+- "Camera movement" is the world rearranging itself around you
+- "Time passing" is the timeline sliding through the present
 
 ```rust
 // To view a volume at z = k:
@@ -188,9 +187,9 @@ let at_time_t = manifold.warp(|x, y, z, w| (x, y, z, w - t));
 // It is always now. The past moves to meet the present.
 ```
 
-The dimensional collapse binds higher dimensions to zero: Volume→Surface binds z=0, Manifold→Volume binds w=0. This isn’t arbitrary—**zero is where you are, in every dimension**. Here. Now. Always.
+The dimensional collapse binds higher dimensions to zero: Volume→Surface binds z=0, Manifold→Volume binds w=0. This isn't arbitrary—**zero is where you are, in every dimension**. Here. Now. Always.
 
-To animate, you don’t “play” a Manifold. The Manifold already contains all of time—past, present, future coexist. You continuously warp it so that “now” aligns with your clock:
+To animate, you don't "play" a Manifold. The Manifold already contains all of time—past, present, future coexist. You continuously warp it so that "now" aligns with your clock:
 
 ```rust
 fn render_frame(manifold: impl Manifold<Color>, clock: f32) {
@@ -199,30 +198,30 @@ fn render_frame(manifold: impl Manifold<Color>, clock: f32) {
 }
 ```
 
-The Manifold doesn’t change. It *is*. You just keep asking “what’s here, now?” as the world flows through you.
+The Manifold doesn't change. It *is*. You just keep asking "what's here, now?" as the world flows through you.
 
 This simplifies composition. Everything shares the same coordinate system—yours. No matrix stack, no coordinate confusion, no frame counters. Just: here, now, what do you see?
 
------
+---
 
 ## The Six Eigenshaders
 
 Any shader is expressible as composition of six orthogonal primitives:
 
-|Combinator |Signature         |Purpose                                   |
-|-----------|------------------|------------------------------------------|
-|**Warp**   |`(S, ω) → S`      |Remap coordinates before sampling         |
-|**Grade**  |`(S, M, b) → S`   |Linear transform on values (matrix + bias)|
-|**Lerp**   |`(t, a, b) → S`   |Continuous interpolation: `a + t*(b-a)`   |
-|**Select** |`(cond, t, f) → S`|Branchless conditional (discrete)         |
-|**Fix**    |`(seed, step) → V`|Iteration as a dimension (see below)      |
-|**Compute**|`Fn(x,y) → T`     |Escape hatch (any closure is a Surface)   |
+| Combinator | Signature | Purpose |
+|------------|-----------|---------|
+| **Warp** | `(S, ω) → S` | Remap coordinates before sampling |
+| **Grade** | `(S, M, b) → S` | Linear transform on values (matrix + bias) |
+| **Lerp** | `(t, a, b) → S` | Continuous interpolation: `a + t*(b-a)` |
+| **Select** | `(cond, t, f) → S` | Branchless conditional (discrete) |
+| **Fix** | `(seed, step) → V` | Iteration as a dimension (see below) |
+| **Compute** | `Fn(x,y) → T` | Escape hatch (any closure is a Surface) |
 
 Warp, Grade, Lerp, Select, Compute work in any dimension. Fix is special: it *constructs* a Volume.
 
 ### Fix: Iteration is a Dimension
 
-Iteration count isn’t a loop—it’s a coordinate. Fix constructs a Volume where z is the iteration axis:
+Iteration count isn't a loop—it's a coordinate. Fix constructs a Volume where z is the iteration axis:
 
 ```rust
 let mandelbrot = Fix::new(
@@ -238,7 +237,6 @@ let mandelbrot = Fix::new(
 ```
 
 This unifies:
-
 - **Mandelbrot/Julia**: iteration depth (z)
 - **Raymarching**: step count along ray (z)
 - **Simulation**: time axis (w) — each w-slice is a frame
@@ -274,9 +272,9 @@ let soft = t.lerp(outside, inside);
 
 ### What about Over?
 
-Porter-Duff compositing (`Over`) lives in **pixelflow-graphics**, not core. It’s Lerp plus color semantics: premultiplied alpha, channel clamping, quantization to u8. Core stays pure Field algebra.
+Porter-Duff compositing (`Over`) lives in **pixelflow-graphics**, not core. It's Lerp plus color semantics: premultiplied alpha, channel clamping, quantization to u8. Core stays pure Field algebra.
 
------
+---
 
 ## Optimization is Composition
 
@@ -286,13 +284,13 @@ The runtime is blind. It iterates pixels. It calls `eval`. Optimization happens 
 
 ### Bounds Are Masks
 
-There is no `AABB` struct used for culling. “Bounds” are Surfaces—specifically, Masks—that are:
+There is no `AABB` struct used for culling. "Bounds" are Surfaces—specifically, Masks—that are:
 
 - **Cheap**: arithmetic only, no heavy trig or texture lookups
 - **Conservative**: strictly contain the interesting region
 - **Evaluated first**: placed at the root of the composition
 
-A Mask is `Surface<bool>` (or `Surface<Field>` returning 0.0/1.0). Primitives like `Rect` and `Circle` *are* Masks. They don’t have bounds; they *are* bounds.
+A Mask is `Surface<bool>` (or `Surface<Field>` returning 0.0/1.0). Primitives like `Rect` and `Circle` *are* Masks. They don't have bounds; they *are* bounds.
 
 ### The Clip Combinator
 
@@ -313,7 +311,7 @@ impl<T, S: Surface<T>> SurfaceExt<T> for S {
 let optimized = perlin_noise.clip(Rect::new(0, 0, 100, 100));
 ```
 
-`clip` is just `Select` with `Empty` as the false branch. There’s no special optimization machinery—composition *is* the optimization.
+`clip` is just `Select` with `Empty` as the false branch. There's no special optimization machinery—composition *is* the optimization.
 
 ### Select: The Hardware Truth
 
@@ -328,17 +326,17 @@ where
 {
     fn eval(&self, x: Field, y: Field) -> V {
         let mask = self.condition.eval(x, y);
-
+        
         // All lanes false → skip true branch entirely
-        if mask.none() {
-            return self.if_false.eval(x, y);
+        if mask.none() { 
+            return self.if_false.eval(x, y); 
         }
-
+        
         // All lanes true → skip false branch entirely
-        if mask.all() {
-            return self.if_true.eval(x, y);
+        if mask.all() { 
+            return self.if_true.eval(x, y); 
         }
-
+        
         // Straddle: some lanes true, some false
         // Must evaluate both and blend
         blend(
@@ -354,7 +352,7 @@ The `none()` and `all()` checks are single instructions on SIMD hardware. This i
 
 ### Implicit vs Explicit Bounds
 
-**Primitives are self-bounding.** `Circle::eval` naturally returns 0.0 outside the radius. There’s nothing to clip; the math *is* the bound.
+**Primitives are self-bounding.** `Circle::eval` naturally returns 0.0 outside the radius. There's nothing to clip; the math *is* the bound.
 
 **Complex surfaces need explicit clipping.** Perlin noise, Voronoi, fractals—these are infinite. The user imposes bounds via composition:
 
@@ -382,9 +380,9 @@ for y in 0..height {
 }
 ```
 
-All intelligence—culling, early-exit, blending—lives in the Surface’s `eval`. The loop just asks questions; the Surface decides how hard to work.
+All intelligence—culling, early-exit, blending—lives in the Surface's `eval`. The loop just asks questions; the Surface decides how hard to work.
 
------
+---
 
 ## Type-Level Compilation
 
@@ -393,7 +391,7 @@ The combinator types form a compile-time shader graph:
 ```rust
 let scene = circle
     .extrude()           // Surface → Volume
-    .warp(twist)         // Volume → Volume
+    .warp(twist)         // Volume → Volume  
     .grade(sepia)        // Volume → Volume
     .lerp(fg, bg);       // Volume → Volume (blend by coverage)
 
@@ -405,7 +403,7 @@ Rust monomorphizes this into a single fused kernel. LLVM sees through `#[inline(
 
 **The type is the shader program. The struct fields are the uniforms.**
 
------
+---
 
 ## Crate Architecture
 
@@ -428,43 +426,43 @@ pixelflow-engine      The engine. Scene graph, physics, animation,
 
 **Graphics** handles the transition from algebra to pixels: color spaces, Porter-Duff compositing (`Over`), font loading, glyph rasterization, framebuffer management, platform display. This is where `materialize()` lives.
 
-**Engine** is the engine. It coordinates scene composition, animation, physics, input handling, and the render loop. It’s where applications live.
+**Engine** is the engine. It coordinates scene composition, animation, physics, input handling, and the render loop. It's where applications live.
 
------
+---
 
 ## What PixelFlow Is Not
 
 - **Not a rasterization pipeline.** No triangles, no vertices, no index buffers. Geometry is implicit in the coordinate functions.
-- **Not a GPU abstraction.** This is CPU SIMD. GPU backends are possible future work, but the algebra doesn’t require them.
+- **Not a GPU abstraction.** This is CPU SIMD. GPU backends are possible future work, but the algebra doesn't require them.
 - **Not a text layout engine.** Fonts produce Surfaces. Shaping, bidirectional text (Arabic/Hebrew reordering), and line breaking are out of scope—use a layout library, feed us glyphs.
 
------
+---
 
 ## Performance Targets
 
 Measured on the terminal emulator (1920×1080, 155 FPS sustained):
 
-|Metric        |Target |Achieved|
-|--------------|-------|--------|
-|Per-pixel time|< 10ns |~5ns    |
-|Frame time    |< 8ms  |~6.5ms  |
-|Memory (idle) |< 100MB|~70MB   |
+| Metric | Target | Achieved |
+|--------|--------|----------|
+| Per-pixel time | < 10ns | ~5ns |
+| Frame time | < 8ms | ~6.5ms |
+| Memory (idle) | < 100MB | ~70MB |
 
 The terminal is the validation workload. If PixelFlow can render a 1080p terminal at 155 FPS with font rendering, cursor blinking, selection highlighting, and scrollback—purely on CPU—the abstraction is not just elegant but *fast enough*.
 
------
+---
 
 ## Summary
 
 1. **Pull-based**: nothing computes until coordinates arrive; laziness is the contract
-1. **Field** is the SIMD-width-agnostic computational atom
-1. **Manifold ⊂ Volume ⊂ Surface** via blanket impl (dimensional collapse)
-1. **Extrude** is invariant promotion; **Fix** is iterative promotion
-1. **The Observer is fixed; it is always now**; movement is domain warping
-1. **Six eigenshaders**: Warp, Grade, Lerp, Select, Fix, Compute
-1. **Bounds are Masks**; optimization is composition via Select
-1. **Baking is memoization**: buffers are Surfaces that read from memory
-1. **Types compile to fused kernels**; no runtime dispatch
-1. **Core is pure algebra**; Graphics adds colors; Engine runs the show
+2. **Field** is the SIMD-width-agnostic computational atom
+3. **Manifold ⊂ Volume ⊂ Surface** via blanket impl (dimensional collapse)
+4. **Extrude** is invariant promotion; **Fix** is iterative promotion
+5. **The Observer is fixed; it is always now**; movement is domain warping
+6. **Six eigenshaders**: Warp, Grade, Lerp, Select, Fix, Compute
+7. **Bounds are Masks**; optimization is composition via Select
+8. **Baking is memoization**: buffers are Surfaces that read from memory
+9. **Types compile to fused kernels**; no runtime dispatch
+10. **Core is pure algebra**; Graphics adds colors; Engine runs the show
 
 **All scalars are Manifolds. All geometry is function. Iteration is a dimension. Time is a dimension. It is always now. Eval is the only verb.**

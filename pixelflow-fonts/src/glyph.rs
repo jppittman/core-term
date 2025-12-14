@@ -1,13 +1,13 @@
 //! Glyph surface representation.
 //!
-//! This module defines the [`Glyph`] struct, which implements the [`Surface`](pixelflow_core::traits::Surface)
+//! This module defines the [`Glyph`] struct, which implements the [`Manifold`](pixelflow_core::traits::Manifold)
 //! trait. This allows glyphs to be directly evaluated (rasterized) into buffers using `pixelflow-core`'s
 //! rendering pipeline.
 
 use crate::curves::Segment;
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps};
 use pixelflow_core::batch::{Batch, NativeBackend};
-use pixelflow_core::traits::Surface;
+use pixelflow_core::traits::Manifold;
 use pixelflow_core::SimdBatch;
 use std::sync::Arc;
 
@@ -50,8 +50,8 @@ impl CellGlyph {
     }
 }
 
-impl Surface<u32, f32> for CellGlyph {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
+impl Manifold<u32, f32> for CellGlyph {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
         eval_curves_cell(
             &self.segments,
             self.bounds,
@@ -142,8 +142,8 @@ pub fn eval_curves_cell(
 
 /// A surface that exposes its underlying curves and bounds.
 ///
-/// CurveSurface outputs `Surface<u32>` with coverage in the alpha channel.
-pub trait CurveSurface: Surface<u32, f32> {
+/// CurveSurface outputs `Manifold<u32>` with coverage in the alpha channel.
+pub trait CurveSurface: Manifold<u32, f32> {
     /// Returns the list of curve segments (Lines and Quadratics) that define the shape.
     fn curves(&self) -> &[Segment];
     /// Returns the pixel-space bounds of the shape.
@@ -153,7 +153,7 @@ pub trait CurveSurface: Surface<u32, f32> {
 /// A vector-based representation of a single character.
 ///
 /// `Glyph` holds the geometric description of a character (lines and curves).
-/// It implements `Surface<u32>`, meaning it can be evaluated at any (x, y) coordinate
+/// It implements `Manifold<u32>`, meaning it can be evaluated at any (x, y) coordinate
 /// to produce a pixel with coverage in the alpha channel (R=G=B=255, A=coverage).
 ///
 /// The evaluation uses an analytic signed distance field (SDF) method, ensuring
@@ -265,17 +265,17 @@ pub fn eval_curves(
     white_rgb | alpha_shifted
 }
 
-impl Surface<u32, f32> for Glyph {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
+impl Manifold<u32, f32> for Glyph {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
         eval_curves(&self.segments, self.bounds, x, y, Batch::<f32>::splat(0.0))
     }
 }
 
 // Implement for &Glyph to allow easy sharing
-impl Surface<u32, f32> for &Glyph {
+impl Manifold<u32, f32> for &Glyph {
     #[inline(always)]
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
-        (*self).eval(x, y)
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, z: Batch<f32>, w: Batch<f32>) -> Batch<u32> {
+        (*self).eval(x, y, z, w)
     }
 }
 

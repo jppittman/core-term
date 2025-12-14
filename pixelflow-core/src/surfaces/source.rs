@@ -1,6 +1,6 @@
 use crate::backend::{Backend, SimdBatch};
 use crate::batch::{Batch, NativeBackend};
-use crate::traits::Surface;
+use crate::traits::Manifold;
 use crate::pixel::Pixel;
 use crate::TensorView;
 use alloc::vec;
@@ -23,15 +23,15 @@ impl<F, T> FnSurface<F, T> {
     }
 }
 
-impl<F, T, C> Surface<T, C> for FnSurface<F, T>
+impl<F, T, C> Manifold<T, C> for FnSurface<F, T>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    F: Fn(Batch<C>, Batch<C>) -> Batch<T> + Send + Sync,
+    F: Fn(Batch<C>, Batch<C>, Batch<C>, Batch<C>) -> Batch<T> + Send + Sync,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
-        (self.func)(x, y)
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<T> {
+        (self.func)(x, y, z, w)
     }
 }
 
@@ -45,9 +45,9 @@ pub struct SampleAtlas<'a> {
     pub step_y_fp: u32,
 }
 
-impl<'a> Surface<u8> for SampleAtlas<'a> {
+impl<'a> Manifold<u8> for SampleAtlas<'a> {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u8> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<u8> {
         let u = x * Batch::<u32>::splat(self.step_x_fp);
         let v = y * Batch::<u32>::splat(self.step_y_fp);
         unsafe {
@@ -67,8 +67,10 @@ pub struct Baked<P: Pixel> {
 
 impl<P: Pixel> Baked<P> {
     /// Creates a new `Baked` surface by rasterizing the source.
-    pub fn new<S: Surface<P>>(source: &S, width: u32, height: u32) -> Self {
+    /// Note: source must be a Manifold (or Surface via blanket).
+    pub fn new<S: Manifold<P>>(source: &S, width: u32, height: u32) -> Self {
         let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
+        // Execute expects a Surface, which S implements via blanket impl
         crate::execute(source, &mut data, width as usize, height as usize);
         Self {
             data: alloc::sync::Arc::from(data),
@@ -99,9 +101,9 @@ impl<P: Pixel> Baked<P> {
     }
 }
 
-impl<P: Pixel> Surface<P> for Baked<P> {
+impl<P: Pixel> Manifold<P> for Baked<P> {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<P> {
         let w = self.width;
         let h = self.height;
 
@@ -117,9 +119,9 @@ impl<P: Pixel> Surface<P> for Baked<P> {
     }
 }
 
-impl<P: Pixel> Surface<P> for &Baked<P> {
+impl<P: Pixel> Manifold<P> for &Baked<P> {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
-        (*self).eval(x, y)
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<P> {
+        (*self).eval(x, y, z, w)
     }
 }

@@ -3,7 +3,7 @@ use crate::font::Font;
 use crate::glyph::{eval_curves, CellGlyph, CurveSurface, GlyphBounds};
 use pixelflow_core::batch::Batch;
 use pixelflow_core::surfaces::{Baked, Rasterize};
-use pixelflow_core::traits::Surface;
+use pixelflow_core::traits::Manifold;
 use pixelflow_core::SimdBatch;
 use core::fmt::Debug;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -45,15 +45,15 @@ impl<'a, S> Lazy<'a, S> {
     }
 }
 
-impl<'a, S, P, C> Surface<P, C> for Lazy<'a, S>
+impl<'a, S, P, C> Manifold<P, C> for Lazy<'a, S>
 where
-    S: Surface<P, C>,
+    S: Manifold<P, C>,
     P: pixelflow_core::Pixel,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<P> {
-        self.get().eval(x, y)
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
+        self.get().eval(x, y, z, w)
     }
 }
 
@@ -82,8 +82,8 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                 }
                 None => {
                     struct Empty;
-                    impl Surface<u32> for Empty {
-                        fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> {
+                    impl Manifold<u32> for Empty {
+                        fn eval(&self, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> {
                             Batch::<u32>::splat(0x00FFFFFF)
                         }
                     }
@@ -118,8 +118,8 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                 }
                 None => {
                     struct Empty;
-                    impl Surface<u32> for Empty {
-                        fn eval(&self, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> {
+                    impl Manifold<u32> for Empty {
+                        fn eval(&self, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> {
                             Batch::<u32>::splat(0x00FFFFFF)
                         }
                     }
@@ -150,8 +150,8 @@ impl<S: CurveSurface> CurveSurface for Bold<S> {
     }
 }
 
-impl<S: CurveSurface> Surface<u32, f32> for Bold<S> {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
+impl<S: CurveSurface> Manifold<u32, f32> for Bold<S> {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
         eval_curves(
             self.curves(),
             self.bounds(),
@@ -181,9 +181,9 @@ impl<S: CurveSurface> CurveSurface for Hint<S> {
     }
 }
 
-impl<S: CurveSurface> Surface<u32, f32> for Hint<S> {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
-        self.source.eval(x, y)
+impl<S: CurveSurface> Manifold<u32, f32> for Hint<S> {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, z: Batch<f32>, w: Batch<f32>) -> Batch<u32> {
+        self.source.eval(x, y, z, w)
     }
 }
 
@@ -202,8 +202,8 @@ impl<S: CurveSurface> CurveSurface for Slant<S> {
     }
 }
 
-impl<S: CurveSurface> Surface<u32, f32> for Slant<S> {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
+impl<S: CurveSurface> Manifold<u32, f32> for Slant<S> {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
         eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
     }
 }
@@ -260,8 +260,8 @@ impl<S: CurveSurface> CurveSurface for Scale<S> {
     }
 }
 
-impl<S: CurveSurface> Surface<u32, f32> for Scale<S> {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>) -> Batch<u32> {
+impl<S: CurveSurface> Manifold<u32, f32> for Scale<S> {
+    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
         eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
     }
 }
@@ -321,6 +321,7 @@ mod tests {
     use pixelflow_core::backend::SimdBatch;
     use pixelflow_core::batch::NativeBackend;
     use pixelflow_core::backend::Backend;
+    use pixelflow_core::traits::Surface; // Needed for eval_one
 
     fn pixel_alpha(pixel: u32) -> u8 {
         (pixel >> 24) as u8
@@ -352,8 +353,10 @@ mod tests {
                 // Update: convert u32 to f32 + 0.5
                 let x_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
                 let y_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
+                let z_f = Batch::<f32>::splat(0.0);
+                let w_f = Batch::<f32>::splat(0.0);
 
-                let alpha = pixel_alpha(cell_glyph.eval(x_f, y_f).first());
+                let alpha = pixel_alpha(cell_glyph.eval(x_f, y_f, z_f, w_f).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -390,6 +393,8 @@ mod tests {
         // Update to use f32
         let x = Batch::<f32>::splat(0.5); // x=0 -> 0.5
         let y = Batch::<f32>::splat(0.5); // y=0 -> 0.5
+        let z = Batch::<f32>::splat(0.0);
+        let w = Batch::<f32>::splat(0.0);
 
         let alpha = eval_curves_cell(
             glyph.curves(),
@@ -402,12 +407,12 @@ mod tests {
         eprintln!("Alpha at (0, 0) via eval_curves_cell: {}", alpha.first());
 
         let cell_glyph = CellGlyph::new(glyph.clone(), ascender);
-        let alpha2 = cell_glyph.eval(x, y).first();
+        let alpha2 = cell_glyph.eval(x, y, z, w).first();
         eprintln!("Alpha at (0, 0) via CellGlyph.eval: {}", alpha2);
 
         // (2, 0) -> 2.5, 0.5
         let x2 = Batch::<f32>::splat(2.5);
-        let alpha3 = cell_glyph.eval(x2, y).first();
+        let alpha3 = cell_glyph.eval(x2, y, z, w).first();
         eprintln!("Alpha at (2, 0) via CellGlyph.eval: {}", alpha3);
     }
 
@@ -435,8 +440,10 @@ mod tests {
                 // Manually bridge u32 -> f32
                 let x_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
                 let y_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
+                let z_f = Batch::<f32>::splat(0.0);
+                let w_f = Batch::<f32>::splat(0.0);
 
-                let alpha = pixel_alpha(cell_glyph.eval(x_f, y_f).first());
+                let alpha = pixel_alpha(cell_glyph.eval(x_f, y_f, z_f, w_f).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -509,7 +516,8 @@ mod tests {
             for x in 0..cell_width {
                 let x_batch = Batch::<u32>::splat(x);
                 let y_batch = Batch::<u32>::splat(y);
-                let alpha = pixel_alpha(baked.eval(x_batch, y_batch).first());
+                // Use Surface::eval to support baked's blanket impl
+                let alpha = pixel_alpha(Surface::eval(baked, x_batch, y_batch).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -531,7 +539,7 @@ mod tests {
             for x in 0..cell_width {
                 let x_batch = Batch::<u32>::splat(x);
                 let y_batch = Batch::<u32>::splat(y);
-                let alpha = pixel_alpha(baked.eval(x_batch, y_batch).first());
+                let alpha = pixel_alpha(Surface::eval(baked, x_batch, y_batch).first());
                 assert_eq!(
                     alpha, 0,
                     "Top half pixel ({}, {}) should be transparent, got {}",
@@ -545,7 +553,7 @@ mod tests {
             for x in 0..cell_width {
                 let x_batch = Batch::<u32>::splat(x);
                 let y_batch = Batch::<u32>::splat(y);
-                let alpha = pixel_alpha(baked.eval(x_batch, y_batch).first());
+                let alpha = pixel_alpha(Surface::eval(baked, x_batch, y_batch).first());
                 if alpha > 200 {
                     found_opaque = true;
                     break;

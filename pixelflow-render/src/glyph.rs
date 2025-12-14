@@ -8,7 +8,7 @@
 
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
 use pixelflow_core::batch::{Batch, NativeBackend};
-use pixelflow_core::traits::Surface;
+use pixelflow_core::traits::Manifold;
 use pixelflow_core::pixel::Pixel;
 use pixelflow_fonts::Font;
 use std::sync::OnceLock;
@@ -56,12 +56,12 @@ impl<S> SubpixelMap<S> {
 }
 
 // Implement for Continuous Source (f32) -> Discrete Output (u32)
-impl<S> Surface<u32> for SubpixelMap<S>
+impl<S> Manifold<u32> for SubpixelMap<S>
 where
-    S: Surface<u32>,
+    S: Manifold<u32>,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<u32> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<u32> {
         // Convert integer coordinates to float pixel centers
         let x_f = NativeBackend::u32_to_f32(x) + Batch::<f32>::splat(0.5);
         let y_f = NativeBackend::u32_to_f32(y) + Batch::<f32>::splat(0.5);
@@ -81,9 +81,9 @@ where
         let y_u32 = NativeBackend::f32_to_u32(y_f);
 
         // Source pixels have coverage in alpha channel
-        let r_pixel = self.source.eval(r_pos, y_u32);
-        let g_pixel = self.source.eval(g_pos, y_u32);
-        let b_pixel = self.source.eval(b_pos, y_u32);
+        let r_pixel = self.source.eval(r_pos, y_u32, z, w);
+        let g_pixel = self.source.eval(g_pos, y_u32, z, w);
+        let b_pixel = self.source.eval(b_pos, y_u32, z, w);
 
         // Extract alpha (coverage) from each pixel
         let r = <u32 as Pixel>::batch_alpha(r_pixel);
@@ -178,7 +178,7 @@ pub fn gamma_encode(pixel: Batch<u32>) -> Batch<u32> {
 
 /// Blends foreground with background using per-channel (subpixel) alpha values.
 ///
-/// The mask is a `Surface<P>` at 3x horizontal resolution. The alpha channel
+/// The mask is a `Manifold<P>` at 3x horizontal resolution. The alpha channel
 /// of each mask pixel provides the coverage value. This combinator samples
 /// three adjacent mask pixels and uses their alphas for R, G, B blending.
 ///
@@ -212,20 +212,20 @@ fn blend_channel(fg: Batch<u32>, bg: Batch<u32>, alpha: Batch<u32>) -> Batch<u32
     ((fg * alpha) + (bg * inv_alpha)) >> 8
 }
 
-impl<P, M, B> Surface<P> for SubpixelBlend<P, M, B>
+impl<P, M, B> Manifold<P> for SubpixelBlend<P, M, B>
 where
     P: Pixel,
-    M: Surface<P>, // This expects u32 coordinates?
-    B: Surface<P>,
+    M: Manifold<P>, // This expects u32 coordinates?
+    B: Manifold<P>,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<P> {
         let x3 = x * 3;
 
         // Sample mask at 3 subpixel positions, extract alpha channel
-        let alpha_r = P::batch_alpha(P::batch_to_u32(self.mask.eval(x3, y)));
-        let alpha_g = P::batch_alpha(P::batch_to_u32(self.mask.eval(x3 + 1, y)));
-        let alpha_b = P::batch_alpha(P::batch_to_u32(self.mask.eval(x3 + 2, y)));
+        let alpha_r = P::batch_alpha(P::batch_to_u32(self.mask.eval(x3, y, z, w)));
+        let alpha_g = P::batch_alpha(P::batch_to_u32(self.mask.eval(x3 + 1, y, z, w)));
+        let alpha_b = P::batch_alpha(P::batch_to_u32(self.mask.eval(x3 + 2, y, z, w)));
 
         // Extract foreground channels
         let fg_packed = P::batch_to_u32(Batch::<P>::splat(self.fg));
@@ -235,7 +235,7 @@ where
         let fg_a = P::batch_alpha(fg_packed);
 
         // Sample and extract background channels
-        let bg_packed = P::batch_to_u32(self.bg.eval(x, y));
+        let bg_packed = P::batch_to_u32(self.bg.eval(x, y, z, w));
         let bg_r = P::batch_red(bg_packed);
         let bg_g = P::batch_green(bg_packed);
         let bg_b = P::batch_blue(bg_packed);

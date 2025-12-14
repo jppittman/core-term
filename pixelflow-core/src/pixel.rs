@@ -3,7 +3,7 @@
 
 use crate::backend::{Backend, BatchArithmetic, SimdBatch};
 use crate::batch::{Batch, NativeBackend};
-use crate::traits::Surface;
+use crate::traits::Manifold;
 use core::fmt::Debug;
 
 /// Trait for pixel types that can be used in surfaces and frames.
@@ -47,10 +47,13 @@ pub trait Pixel: Copy + Default + Debug + PartialEq + 'static + Send + Sync {
     fn batch_store(batch: Batch<Self>, slice: &mut [Self]);
 }
 
-// Implement Surface for any Pixel type (Constant Surface)
-impl<P: Pixel> Surface<P> for P {
+// All constants are Manifolds (Manifold -> Volume -> Surface)
+impl<P: Pixel, C> Manifold<P, C> for P
+where
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
     #[inline(always)]
-    fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<P> {
+    fn eval(&self, _x: Batch<C>, _y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<P> {
         Batch::<P>::splat(*self)
     }
 }

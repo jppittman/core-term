@@ -38,35 +38,106 @@ where
     }
 }
 
-// Implement Surface for Box<dyn Surface<T>>
-impl<T, C> Surface<T, C> for Box<dyn Surface<T, C> + Send + Sync>
-where
-    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-{
-    #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
-        (**self).eval(x, y)
-    }
-}
-
-// Implement Surface for Arc<dyn Surface<T>>
-impl<T, C> Surface<T, C> for Arc<dyn Surface<T, C> + Send + Sync>
-where
-    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-{
-    #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
-        (**self).eval(x, y)
-    }
-}
-
 /// A pure functional volume: `(x, y, z) -> T`.
-pub trait Volume<T>: Send + Sync
+pub trait Volume<T, C = u32>: Send + Sync
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     /// Evaluate the volume at the given coordinates.
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>) -> Batch<T>;
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>) -> Batch<T>;
+}
+
+/// A pure functional manifold: `(x, y, z, w) -> T`.
+pub trait Manifold<T, C = u32>: Send + Sync
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    /// Evaluate the manifold at the given coordinates.
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<T>;
+}
+
+// ============================================================================
+// Trait Object Adapters (Dyn Manifold)
+// ============================================================================
+
+// Forward Box<dyn Manifold>
+impl<T, C> Manifold<T, C> for Box<dyn Manifold<T, C> + Send + Sync>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<T> {
+        (**self).eval(x, y, z, w)
+    }
+}
+
+// Forward Arc<dyn Manifold>
+impl<T, C> Manifold<T, C> for Arc<dyn Manifold<T, C> + Send + Sync>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<T> {
+        (**self).eval(x, y, z, w)
+    }
+}
+
+// Extrude Box<dyn Surface> (Implicitly Manifold)
+impl<T, C> Manifold<T, C> for Box<dyn Surface<T, C> + Send + Sync>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<C>, y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<T> {
+        (**self).eval(x, y)
+    }
+}
+
+// Extrude Arc<dyn Surface> (Implicitly Manifold)
+impl<T, C> Manifold<T, C> for Arc<dyn Surface<T, C> + Send + Sync>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<C>, y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<T> {
+        (**self).eval(x, y)
+    }
+}
+
+// ============================================================================
+// Dimensional Collapse (Blanket Impls)
+// ============================================================================
+
+// Manifold -> Volume (w = 0)
+impl<T, C, M> Volume<T, C> for M
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    M: Manifold<T, C>,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>) -> Batch<T> {
+        let w = Batch::<C>::splat(C::default());
+        self.eval(x, y, z, w)
+    }
+}
+
+// Volume -> Surface (z = 0)
+impl<T, C, V> Surface<T, C> for V
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    V: Volume<T, C>,
+{
+    #[inline(always)]
+    fn eval(&self, x: Batch<C>, y: Batch<C>) -> Batch<T> {
+        let z = Batch::<C>::splat(C::default());
+        self.eval(x, y, z)
+    }
 }
