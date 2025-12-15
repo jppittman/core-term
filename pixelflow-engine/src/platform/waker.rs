@@ -131,11 +131,11 @@ mod x11_waker {
 
 #[cfg(use_cocoa_display)]
 mod cocoa_waker {
+    // Note: We use fully qualified paths to avoid import cycle or ambiguity
+    use super::super::macos::cocoa::{self, NSApplication};
+    use super::super::macos::sys::{self, Id, BOOL, NO};
     use super::*;
-    use objc2::ffi::NSUInteger;
-    use objc2::runtime::{AnyObject, Bool};
-    use objc2::{class, msg_send};
-    use objc2_foundation::NSPoint;
+    use std::ptr;
 
     /// macOS implementation of EventLoopWaker using NSEvent posting.
     ///
@@ -143,6 +143,12 @@ mod cocoa_waker {
     /// event queue, which wakes the runloop from [NSApp nextEventMatchingMask...].
     #[derive(Clone)]
     pub struct CocoaWaker;
+
+    impl actor_scheduler::WakeHandler for CocoaWaker {
+        fn wake(&self) {
+            let _ = <Self as EventLoopWaker>::wake(self);
+        }
+    }
 
     impl CocoaWaker {
         pub fn new() -> Self {
@@ -152,35 +158,45 @@ mod cocoa_waker {
 
     impl EventLoopWaker for CocoaWaker {
         fn wake(&self) -> Result<()> {
-            // This method is called from background threads (Orchestrator, PTY).
-            // We use unsafe raw objc calls to post an event to the main thread's runloop.
             unsafe {
-                let app_class = class!(NSApplication);
-                let app: *mut AnyObject = msg_send![app_class, sharedApplication];
+                let app = NSApplication::shared();
 
-                let ns_event_class = class!(NSEvent);
-                // NSEventTypeApplicationDefined = 15
-                let event_type: NSUInteger = 15;
+                let event_cls = sys::class(b"NSEvent\0");
+                let sel_other = sys::sel(b"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:\0");
 
-                // Create a lightweight dummy event
-                // Note: allocated raw pointer, autoreleased by factory method
-                // context: nil (pass null object pointer, not void pointer)
-                let nil_context: *mut AnyObject = std::ptr::null_mut();
-                let event: *mut AnyObject = msg_send![
-                    ns_event_class,
-                    otherEventWithType: event_type,
-                    location: NSPoint::new(0.0, 0.0),
-                    modifierFlags: 0 as NSUInteger,
-                    timestamp: 0.0,
-                    windowNumber: 0 as NSUInteger,
-                    context: nil_context,
-                    subtype: 0 as i16,
-                    data1: 0 as isize,
-                    data2: 0 as isize
-                ];
+                // Signature: (Class, SEL, NSUInteger, NSPoint, NSUInteger, double, NSInteger, id, short, long, long) -> id
+                let sig: unsafe extern "C" fn(
+                    Id,
+                    sys::Sel,
+                    u64,
+                    cocoa::NSPoint,
+                    u64,
+                    f64,
+                    i64,
+                    Id,
+                    i16,
+                    i64,
+                    i64,
+                ) -> Id = std::mem::transmute(sys::objc_msgSend as *const std::ffi::c_void);
 
-                // Post to front of queue (atStart: YES) for immediate processing
-                let _: () = msg_send![app, postEvent: event, atStart: Bool::YES];
+                let event = sig(
+                    event_cls,
+                    sel_other,
+                    sys::NS_APP_DEFINED,
+                    cocoa::NSPoint::new(0.0, 0.0),
+                    0,
+                    0.0,
+                    0,
+                    ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                );
+
+                if !event.is_null() {
+                    let sel_post = sys::sel(b"postEvent:atStart:\0");
+                    sys::send_2::<(), Id, BOOL>(app.0, sel_post, event, NO);
+                }
             }
             Ok(())
         }

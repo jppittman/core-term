@@ -1,0 +1,1014 @@
+warning: unused import: `core::fmt::Debug`
+ --> pixelflow-core/src/raster.rs:5:5
+  |
+5 | use core::fmt::Debug;
+  |     ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated type alias `surfaces::FnSurface`: Use Compute instead
+  --> pixelflow-core/src/lib.rs:29:21
+   |
+29 |     Baked, Compute, FnSurface, Grade, Implicit, Lerp, Map, Offset, Over, Partition, SampleAtlas,
+   |                     ^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: unused import: `crate::Surface`
+ --> pixelflow-core/src/surfaces/warp.rs:1:5
+  |
+1 | use crate::Surface;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/geometry/affine.rs:1:31
+  |
+1 | use crate::backend::{Backend, SimdBatch};
+  |                               ^^^^^^^^^
+
+warning: unused import: `crate::backend::SimdBatch`
+ --> pixelflow-core/src/geometry/poly.rs:1:5
+  |
+1 | use crate::backend::SimdBatch;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/geometry/primitive.rs:1:48
+  |
+1 | use crate::backend::{Backend, BatchArithmetic, SimdBatch};
+  |                                                ^^^^^^^^^
+
+warning: unused import: `crate::Surface`
+ --> pixelflow-core/src/surfaces/grade.rs:1:5
+  |
+1 | use crate::Surface;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/surfaces/transform.rs:3:39
+  |
+3 | use crate::backend::{BatchArithmetic, SimdBatch};
+  |                                       ^^^^^^^^^
+
+warning: unused import: `crate::Surface`
+ --> pixelflow-core/src/surfaces/lerp.rs:1:5
+  |
+1 | use crate::Surface;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/surfaces/source.rs:2:31
+  |
+2 | use crate::backend::{Backend, SimdBatch};
+  |                               ^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/surfaces/blend.rs:1:39
+  |
+1 | use crate::backend::{BatchArithmetic, SimdBatch};
+  |                                       ^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/surfaces/raster.rs:1:31
+  |
+1 | use crate::backend::{Backend, SimdBatch};
+  |                               ^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:13:1
+   |
+13 | pub mod dsl;
+   | ^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> pixelflow-core/src/lib.rs:7:9
+   |
+ 7 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:14:1
+   |
+14 | pub mod geometry;
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:16:1
+   |
+16 | pub mod platform;
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:17:1
+   |
+17 | pub mod raster;
+   | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:18:1
+   |
+18 | pub mod surfaces;
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:19:1
+   |
+19 | pub mod traits;
+   | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:91:5
+   |
+91 |     pub u32: uint32x4_t,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:92:5
+   |
+92 |     pub u16: uint16x8_t,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:93:5
+   |
+93 |     pub u8: uint8x16_t,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:94:5
+   |
+94 |     pub f32: float32x4_t,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:95:5
+   |
+95 |     pub i32: int32x4_t,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> pixelflow-core/src/backend/arm.rs:121:5
+    |
+121 |     pub unsafe fn transmute<U: Copy>(self) -> SimdVec<U> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> pixelflow-core/src/backend/arm.rs:126:5
+    |
+126 |     pub fn cast<U: Copy>(self) -> SimdVec<U> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> pixelflow-core/src/backend/arm.rs:131:5
+    |
+131 |     pub unsafe fn store(self, ptr: *mut T) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:150:5
+    |
+150 |     pub fn splat(val: u32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:162:5
+    |
+162 |     pub fn new(v0: u32, v1: u32, v2: u32, v3: u32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> pixelflow-core/src/backend/arm.rs:175:5
+    |
+175 |     pub fn to_array(self) -> [u32; 4] {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:180:5
+    |
+180 |     pub fn from_array(arr: [u32; 4]) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:187:5
+    |
+187 |     pub fn splat(val: u16) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:201:5
+    |
+201 |     pub fn splat(val: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:215:5
+    |
+215 |     pub fn splat(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/geometry/mod.rs:1:1
+  |
+1 | pub mod affine;
+  | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/geometry/mod.rs:2:1
+  |
+2 | pub mod poly;
+  | ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/geometry/mod.rs:3:1
+  |
+3 | pub mod primitive;
+  | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> pixelflow-core/src/geometry/primitive.rs:8:5
+  |
+8 |     pub x: i32,
+  |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> pixelflow-core/src/geometry/primitive.rs:9:5
+  |
+9 |     pub y: i32,
+  |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/geometry/primitive.rs:10:5
+   |
+10 |     pub w: u32,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/geometry/primitive.rs:11:5
+   |
+11 |     pub h: u32,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> pixelflow-core/src/geometry/primitive.rs:15:5
+   |
+15 |     pub fn new(x: i32, y: i32, w: u32, h: u32) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:1:1
+  |
+1 | pub mod blend;
+  | ^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:2:1
+  |
+2 | pub mod control;
+  | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:3:1
+  |
+3 | pub mod grade;
+  | ^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:4:1
+  |
+4 | pub mod implicit;
+  | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:5:1
+  |
+5 | pub mod lerp;
+  | ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:6:1
+  |
+6 | pub mod partition;
+  | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:7:1
+  |
+7 | pub mod raster;
+  | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:8:1
+  |
+8 | pub mod source;
+  | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:9:1
+  |
+9 | pub mod transform;
+  | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/surfaces/mod.rs:10:1
+   |
+10 | pub mod warp;
+   | ^^^^^^^^^^^^
+
+warning: missing documentation for a type alias
+  --> pixelflow-core/src/surfaces/mod.rs:22:1
+   |
+22 | pub type FnSurface<F, T> = Compute<F, T>;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+ --> pixelflow-core/src/surfaces/control.rs:8:1
+  |
+8 | pub struct Select<M, T, F> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> pixelflow-core/src/surfaces/control.rs:9:5
+  |
+9 |     pub mask: M,
+  |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/surfaces/control.rs:10:5
+   |
+10 |     pub if_true: T,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/surfaces/control.rs:11:5
+   |
+11 |     pub if_false: F,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> pixelflow-core/src/surfaces/control.rs:40:1
+   |
+40 | pub struct Fix<P, F> {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> pixelflow-core/src/surfaces/control.rs:46:5
+   |
+46 |     pub fn new(func: F) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/surfaces/source.rs:16:5
+   |
+16 |     pub func: F,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/surfaces/source.rs:17:5
+   |
+17 |     pub _marker: PhantomData<T>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> pixelflow-core/src/surfaces/source.rs:21:5
+   |
+21 |     pub fn new(func: F) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a type alias
+  --> pixelflow-core/src/surfaces/source.rs:41:1
+   |
+41 | pub type FnSurface<F, T> = Compute<F, T>;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> pixelflow-core/src/surfaces/source.rs:44:1
+   |
+44 | pub struct SampleAtlas<'a> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib) generated 63 warnings (run `cargo fix --lib -p pixelflow-core` to apply 1 suggestion)
+warning: unused import: `pixelflow_core::SimdBatch`
+ --> pixelflow-fonts/src/combinators.rs:7:5
+  |
+7 | use pixelflow_core::SimdBatch;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `pixelflow_core::SimdBatch`
+  --> pixelflow-fonts/src/glyph.rs:11:5
+   |
+11 | use pixelflow_core::SimdBatch;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `pixelflow_core::SimdBatch`
+ --> pixelflow-fonts/src/curves.rs:4:5
+  |
+4 | use pixelflow_core::SimdBatch;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `pixelflow-fonts` (lib) generated 3 warnings
+warning: unused import: `pixelflow_core::SimdBatch`
+  --> pixelflow-render/src/frame.rs:10:5
+   |
+10 | use pixelflow_core::SimdBatch;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pixelflow-render` (lib) generated 1 warning
+    Checking pixelflow-engine v0.1.0 (/Users/jppittman/Documents/Projects/core-term/pixelflow-engine)
+error[E0432]: unresolved import `crate::platform::macos::objc`
+   --> pixelflow-engine/src/platform/waker.rs:135:33
+    |
+135 | ...cos::objc::{
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0432]: unresolved import `crate::display::traits::Clipboard`
+ --> pixelflow-engine/src/platform/macos/application.rs:1:43
+  |
+1 | ...n, Clipboard, Eve...
+  |       ^^^^^^^^^ no `Clipboard` in `display::traits`
+
+error[E0432]: unresolved import `serde`
+ --> pixelflow-engine/src/config.rs:1:5
+  |
+1 | use serde::{Deserial...
+  |     ^^^^^ use of unresolved module or unlinked crate `serde`
+  |
+  = help: if you wanted to use a crate named `serde`, use `cargo add serde` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `serde`
+ --> pixelflow-engine/src/input.rs:2:5
+  |
+2 | use serde::{Deserial...
+  |     ^^^^^ use of unresolved module or unlinked crate `serde`
+  |
+  = help: if you wanted to use a crate named `serde`, use `cargo add serde` to add it to your `Cargo.toml`
+
+error: cannot find attribute `serde` in this scope
+ --> pixelflow-engine/src/config.rs:5:3
+  |
+5 | #[serde(default)]
+  |   ^^^^^
+
+error: cannot find attribute `serde` in this scope
+  --> pixelflow-engine/src/config.rs:13:3
+   |
+13 | #[serde(default)]
+   |   ^^^^^
+
+error: cannot find attribute `serde` in this scope
+  --> pixelflow-engine/src/config.rs:39:3
+   |
+39 | #[serde(default)]
+   |   ^^^^^
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:165:48
+    |
+165 | ...cos::objc::id =...
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:166:45
+    |
+166 | ...cos::objc::objc...
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:186:45
+    |
+186 | ...cos::objc::id,
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:191:48
+    |
+191 | ...cos::objc::id =...
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:192:45
+    |
+192 | ...cos::objc::objc...
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:213:45
+    |
+213 | ...cos::objc::id,
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:215:45
+    |
+215 | ...cos::objc::id,
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:218:45
+    |
+218 | ...cos::objc::objc...
+    |         ^^^^ could not find `objc` in `macos`
+
+error[E0433]: failed to resolve: could not find `NSPasteboard` in `cocoa`
+   --> pixelflow-engine/src/platform/macos/application.rs:157:25
+    |
+157 | ...a::NSPasteboard::g...
+    |       ^^^^^^^^^^^^ could not find `NSPasteboard` in `cocoa`
+
+error[E0407]: method `set_size` is not a member of trait `Window`
+   --> pixelflow-engine/src/platform/macos/window.rs:102:5
+    |
+102 | /     fn set_size(...
+103 | |         // TODO:...
+104 | |     }
+    | |_____^ not a member of trait `Window`
+
+error[E0407]: method `size` is not a member of trait `Window`
+   --> pixelflow-engine/src/platform/macos/window.rs:106:5
+    |
+106 | /     fn size(&sel...
+107 | |         // TODO:...
+108 | |         (800, 600)
+109 | |     }
+    | |_____^ not a member of trait `Window`
+
+error[E0407]: method `set_cursor_icon` is not a member of trait `Window`
+   --> pixelflow-engine/src/platform/macos/window.rs:111:5
+    |
+111 |       fn set_cursor_icon(&m...
+    |       ^  --------------- help: there is an associated function with a similar name: `set_cursor`
+    |  _____|
+    | |
+112 | |         // TODO: NSCursor...
+113 | |     }
+    | |_____^ not a member of trait `Window`
+
+error[E0407]: method `present` is not a member of trait `Window`
+   --> pixelflow-engine/src/platform/macos/window.rs:133:5
+    |
+133 | /     fn present(&...
+...   |
+152 | |     }
+    | |_____^ not a member of trait `Window`
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:162:45
+    |
+162 | ...cos::objc::Class,
+    |         ^^^^ could not find `objc` in `macos`
+    |
+help: consider importing this module
+    |
+134 +     use std::os::darwin::objc;
+    |
+help: if you import `objc`, refer to it directly
+    |
+162 -                     crate::platform::macos::objc::Class,
+162 +                     objc::Class,
+    |
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:163:45
+    |
+163 | ...cos::objc::SEL,
+    |         ^^^^ could not find `objc` in `macos`
+    |
+help: consider importing this module
+    |
+134 +     use std::os::darwin::objc;
+    |
+help: if you import `objc`, refer to it directly
+    |
+163 -                     crate::platform::macos::objc::SEL,
+163 +                     objc::SEL,
+    |
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:179:45
+    |
+179 | ...cos::objc::Class,
+    |         ^^^^ could not find `objc` in `macos`
+    |
+help: consider importing this module
+    |
+134 +     use std::os::darwin::objc;
+    |
+help: if you import `objc`, refer to it directly
+    |
+179 -                     crate::platform::macos::objc::Class,
+179 +                     objc::Class,
+    |
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:180:45
+    |
+180 | ...cos::objc::SEL,
+    |         ^^^^ could not find `objc` in `macos`
+    |
+help: consider importing this module
+    |
+134 +     use std::os::darwin::objc;
+    |
+help: if you import `objc`, refer to it directly
+    |
+180 -                     crate::platform::macos::objc::SEL,
+180 +                     objc::SEL,
+    |
+
+error[E0433]: failed to resolve: could not find `objc` in `macos`
+   --> pixelflow-engine/src/platform/waker.rs:214:45
+    |
+214 | ...cos::objc::SEL,
+    |         ^^^^ could not find `objc` in `macos`
+    |
+help: consider importing this module
+    |
+134 +     use std::os::darwin::objc;
+    |
+help: if you import `objc`, refer to it directly
+    |
+214 -                     crate::platform::macos::objc::SEL,
+214 +                     objc::SEL,
+    |
+
+error[E0603]: function `make_nsstring` is private
+  --> pixelflow-engine/src/platform/macos/application.rs:70:48
+   |
+70 | ...a::make_nsstring("k...
+   |       ^^^^^^^^^^^^^ private function
+   |
+note: the function `make_nsstring` is defined here
+  --> pixelflow-engine/src/platform/macos/cocoa.rs:16:1
+   |
+16 | fn make_nsstring(s: &str) -> Id {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `pixelflow_render::Frame`
+ --> pixelflow-engine/src/api/public.rs:2:5
+  |
+2 | use pixelflow_render::Frame;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `pixelflow_render::Frame`
+ --> pixelflow-engine/src/display/traits.rs:5:5
+  |
+5 | use pixelflow_render::Frame;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Duration`
+ --> pixelflow-engine/src/display/traits.rs:6:5
+  |
+6 | use std::time::Duration;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::platform::macos::window::MacWindow`
+ --> pixelflow-engine/src/display/drivers/metal.rs:8:5
+  |
+8 | use crate::platform::macos::window::MacWindow;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `NSEvent`
+ --> pixelflow-engine/src/platform/macos/application.rs:2:70
+  |
+2 | ...ion, NSEvent};
+  |         ^^^^^^^
+
+warning: unused import: `self`
+ --> pixelflow-engine/src/platform/macos/events.rs:7:37
+  |
+7 | ...coa::{self, event...
+  |          ^^^^
+
+warning: unused import: `self`
+ --> pixelflow-engine/src/platform/macos/window.rs:3:37
+  |
+3 | ...coa::{self, NSPoi...
+  |          ^^^^
+
+warning: unused import: `NO`
+ --> pixelflow-engine/src/platform/macos/window.rs:4:51
+  |
+4 | ... BOOL, NO, YES};
+  |           ^^
+
+warning: unused import: `Message`
+  --> pixelflow-engine/src/platform/mod.rs:19:30
+   |
+19 | ...or, Message};
+   |        ^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> pixelflow-engine/src/render_pool.rs:5:5
+  |
+5 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `ActorScheduler`
+ --> pixelflow-engine/src/vsync_actor.rs:7:36
+  |
+7 | ...e, ActorScheduler, A...
+  |       ^^^^^^^^^^^^^^
+
+warning: use of deprecated trait `raw_window_handle::HasRawDisplayHandle`: Use `HasDisplayHandle` instead
+ --> pixelflow-engine/src/platform/macos/window.rs:7:46
+  |
+7 | ...e, HasRawDisplayHandle, H...
+  |       ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated trait `raw_window_handle::HasRawWindowHandle`: Use `HasWindowHandle` instead
+ --> pixelflow-engine/src/platform/macos/window.rs:7:67
+  |
+7 | ...e, HasRawWindowHandle,
+  |       ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated trait `raw_window_handle::HasRawWindowHandle`: Use `HasWindowHandle` instead
+  --> pixelflow-engine/src/platform/macos/window.rs:82:13
+   |
+82 | ...pl HasRawWindowHandle fo...
+   |       ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated trait `raw_window_handle::HasRawDisplayHandle`: Use `HasDisplayHandle` instead
+  --> pixelflow-engine/src/platform/macos/window.rs:91:13
+   |
+91 | ...pl HasRawDisplayHandle fo...
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error[E0053]: method `raw_window_handle` has an incompatible type for trait
+  --> pixelflow-engine/src/platform/macos/window.rs:83:36
+   |
+83 | ...-> RawWindowHandle {
+   |       ^^^^^^^^^^^^^^^ expected `Result<RawWindowHandle, HandleError>`, found `RawWindowHandle`
+   |
+   = note: expected signature `fn(&MacWindow) -> std::result::Result<RawWindowHandle, HandleError>`
+              found signature `fn(&MacWindow) -> RawWindowHandle`
+help: change the output type to match the trait
+   |
+83 -     fn raw_window_handle(&self) -> RawWindowHandle {
+83 +     fn raw_window_handle(&self) -> std::result::Result<RawWindowHandle, HandleError> {
+   |
+
+error[E0053]: method `raw_display_handle` has an incompatible type for trait
+  --> pixelflow-engine/src/platform/macos/window.rs:92:37
+   |
+92 | ...-> RawDisplayHandle {
+   |       ^^^^^^^^^^^^^^^^ expected `Result<RawDisplayHandle, HandleError>`, found `RawDisplayHandle`
+   |
+   = note: expected signature `fn(&MacWindow) -> std::result::Result<RawDisplayHandle, HandleError>`
+              found signature `fn(&MacWindow) -> RawDisplayHandle`
+help: change the output type to match the trait
+   |
+92 -     fn raw_display_handle(&self) -> RawDisplayHandle {
+92 +     fn raw_display_handle(&self) -> std::result::Result<RawDisplayHandle, HandleError> {
+   |
+
+error[E0053]: method `request_redraw` has an incompatible type for trait
+   --> pixelflow-engine/src/platform/macos/window.rs:126:23
+    |
+126 | ...aw(&self) {
+    |       ^^^^^ types differ in mutability
+    |
+note: type in trait
+   --> pixelflow-engine/src/display/traits.rs:22:23
+    |
+ 22 | ...aw(&mut self);
+    |       ^^^^^^^^^
+    = note: expected signature `fn(&mut MacWindow)`
+               found signature `fn(&MacWindow)`
+help: change the self-receiver type to match the trait
+    |
+126 |     fn request_redraw(&mut self) {
+    |                        +++
+
+error[E0046]: not all trait items implemented, missing: `set_cursor`
+  --> pixelflow-engine/src/platform/macos/window.rs:97:1
+   |
+97 | impl Window for MacWindow {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ missing `set_cursor` in implementation
+   |
+  ::: pixelflow-engine/src/display/traits.rs:20:5
+   |
+20 |     fn...CursorIcon);
+   |     --...------------ `set_cursor` from trait
+
+error[E0283]: type annotations needed
+   --> pixelflow-engine/src/display/generic.rs:111:40
+    |
+111 | ...tx.send(event.into());
+    |       ^^^^ ------------ type must be known at this point
+    |       |
+    |       cannot infer type of the type parameter `T` declared on the method `send`
+    |
+    = note: cannot satisfy `_: Into<...>`
+note: required by a bound in `ActorHandle::<D, C, M>::send`
+   --> /Users/jppittman/Documents/Projects/core-term/actor-scheduler/src/lib.rs:276:20
+    |
+276 | ...T: Into<Message<D, C, M>>>(&...
+    |       ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ActorHandle::<D, C, M>::send`
+    = note: the full name for the type has been written to '/Users/jppittman/Documents/Projects/core-term/target/debug/deps/pixelflow_engine-c3012cbb722f50d0.long-type-126837401806206885.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+help: consider specifying the generic argument
+    |
+111 |                 let _ = self.engine_tx.send::<T>(event.into());
+    |                                            +++++
+help: consider removing this method call, as the receiver has type `DisplayEvent` and `DisplayEvent: Into<Message<EngineData<<A as display::traits::Application>::Pixel>, EngineControl<<A as display::traits::Application>::Pixel>, AppManagement>>` trivially holds
+    |
+111 -                 let _ = self.engine_tx.send(event.into());
+111 +                 let _ = self.engine_tx.send(event);
+    |
+
+error[E0277]: the trait bound `Message<..., ..., ...>: From<...>` is not satisfied
+   --> pixelflow-engine/src/display/generic.rs:185:19
+    |
+185 | ...  .send(crate::c...event));
+    |       ---- ^^^^^^^^...^^^^^^ unsatisfied trait bound
+    |       |
+    |       required by a bound introduced by this call
+    |
+    = help: the trait `From<EngineData<_>>` is not implemented for `Message<..., ..., ...>`
+    = help: the following other types implement trait `From<T>`:
+              `Message<..., ..., ...>` implements `From<VsyncManagement>`
+              `Message<..., ..., ...>` implements `From<VsyncCommand>`
+              `Message<..., ..., ...>` implements `From<DisplayEvent>`
+              `Message<..., ..., ...>` implements `From<EngineCommand<...>>`
+              `Message<..., ..., ...>` implements `From<EngineControl<...>>`
+              `Message<..., ..., ...>` implements `From<RenderedResponse>`
+    = note: required for `EngineData<_>` to implement `Into<Message<..., ..., ...>>`
+note: required by a bound in `ActorHandle::<D, C, M>::send`
+   --> /Users/jppittman/Documents/Projects/core-term/actor-scheduler/src/lib.rs:276:20
+    |
+276 | ...T: Into<Message<D, C, M>>>(&...
+    |       ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ActorHandle::<D, C, M>::send`
+    = note: the full name for the type has been written to '/Users/jppittman/Documents/Projects/core-term/target/debug/deps/pixelflow_engine-c3012cbb722f50d0.long-type-14292937959703277864.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0283]: type annotations needed
+   --> pixelflow-engine/src/display/generic.rs:224:48
+    |
+224 |                           let _ = self.engine_tx.send(
+    |                                                  ^^^^ cannot infer type of the type parameter `T` declared on the method `send`
+225 | /                             DisplayEvent::WindowCreated {
+226 | |                                 id,
+227 | |                                 width_px: width,
+228 | |                                 height_px: height,
+...   |
+231 | |                             .into(),
+    | |___________________________________- type must be known at this point
+    |
+    = note: cannot satisfy `_: Into<...>`
+note: required by a bound in `ActorHandle::<D, C, M>::send`
+   --> /Users/jppittman/Documents/Projects/core-term/actor-scheduler/src/lib.rs:276:20
+    |
+276 | ...T: Into<Message<D, C, M>>>(&...
+    |       ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ActorHandle::<D, C, M>::send`
+    = note: the full name for the type has been written to '/Users/jppittman/Documents/Projects/core-term/target/debug/deps/pixelflow_engine-c3012cbb722f50d0.long-type-13842090620431908707.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+help: consider specifying the generic argument
+    |
+224 |                         let _ = self.engine_tx.send::<T>(
+    |                                                    +++++
+help: consider removing this method call, as the receiver has type `DisplayEvent` and `DisplayEvent: Into<Message<EngineData<<A as display::traits::Application>::Pixel>, EngineControl<<A as display::traits::Application>::Pixel>, AppManagement>>` trivially holds
+    |
+230 -                             }
+231 -                             .into(),
+230 +                             },
+    |
+
+error[E0308]: mismatched types
+  --> pixelflow-engine/src/platform/macos/application.rs:56:62
+   |
+56 | ... = crate::platform::macos::sys::class("NSDate");
+   |       ---------------------------------- ^^^^^^^^ expected `&[u8]`, found `&str`
+   |       |
+   |       arguments to this function are incorrect
+   |
+   = note: expected reference `&[u8]`
+              found reference `&'static str`
+note: function defined here
+  --> pixelflow-engine/src/platform/macos/sys.rs:36:15
+   |
+36 | ...fn class(name: &[u8]) -...
+   |       ^^^^^ -----------
+help: consider adding a leading `b`
+   |
+56 |                 let cls = crate::platform::macos::sys::class(b"NSDate");
+   |                                                              +
+
+error[E0308]: mismatched types
+  --> pixelflow-engine/src/platform/macos/application.rs:59:54
+   |
+59 | ...   crate::platform::macos::sys::sel("distantPast"),
+   |       -------------------------------- ^^^^^^^^^^^^^ expected `&[u8]`, found `&str`
+   |       |
+   |       arguments to this function are incorrect
+   |
+   = note: expected reference `&[u8]`
+              found reference `&'static str`
+note: function defined here
+  --> pixelflow-engine/src/platform/macos/sys.rs:43:15
+   |
+43 | ...fn sel(name: &[u8]) -...
+   |       ^^^ -----------
+help: consider adding a leading `b`
+   |
+59 |                     crate::platform::macos::sys::sel(b"distantPast"),
+   |                                                      +
+
+error[E0308]: mismatched types
+  --> pixelflow-engine/src/platform/macos/application.rs:64:58
+   |
+64 | ... = crate::platform::macos::sys::sel("kCFRunLoopDefaultMode"); ...
+   |       -------------------------------- ^^^^^^^^^^^^^^^^^^^^^^^ expected `&[u8]`, found `&str`
+   |       |
+   |       arguments to this function are incorrect
+   |
+   = note: expected reference `&[u8]`
+              found reference `&'static str`
+note: function defined here
+  --> pixelflow-engine/src/platform/macos/sys.rs:43:15
+   |
+43 | ...fn sel(name: &[u8]) -...
+   |       ^^^ -----------
+help: consider adding a leading `b`
+   |
+64 |                 let s = crate::platform::macos::sys::sel(b"kCFRunLoopDefaultMode"); // Actually string constant?
+   |                                                          +
+
+error[E0599]: no function or associated item named `empty` found for struct `AppKitWindowHandle` in the current scope
+   --> pixelflow-engine/src/platform/macos/window.rs:84:46
+    |
+ 84 | ...e::empty();
+    |       ^^^^^ function or associated item not found in `AppKitWindowHandle`
+    |
+note: if you're trying to build a new `AppKitWindowHandle`, consider using `AppKitWindowHandle::new` which returns `AppKitWindowHandle`
+   --> /Users/jppittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/raw-window-handle-0.6.2/src/appkit.rs:108:5
+    |
+108 |     p...oid>) -> Self {
+    |     ^...^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `empty` found for struct `AppKitDisplayHandle` in the current scope
+  --> pixelflow-engine/src/platform/macos/window.rs:93:55
+   |
+93 | ...dle::empty())
+   |         ^^^^^ function or associated item not found in `AppKitDisplayHandle`
+   |
+note: if you're trying to build a new `AppKitDisplayHandle`, consider using `AppKitDisplayHandle::new` which returns `AppKitDisplayHandle`
+  --> /Users/jppittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/raw-window-handle-0.6.2/src/appkit.rs:21:5
+   |
+21 |     pub fn new() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+  --> pixelflow-engine/src/display/generic.rs:94:13
+   |
+94 | ...et mut app = A::...
+   |       ----^^^
+   |       |
+   |       help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `id`
+   --> pixelflow-engine/src/platform/macos/application.rs:173:9
+    |
+173 |         id: crate:...
+    |         ^^ help: if this is intentional, prefix it with an underscore: `_id`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `width`
+   --> pixelflow-engine/src/platform/macos/window.rs:102:28
+    |
+102 | ...f, width: u32, ...
+    |       ^^^^^ help: if this is intentional, prefix it with an underscore: `_width`
+
+warning: unused variable: `height`
+   --> pixelflow-engine/src/platform/macos/window.rs:102:40
+    |
+102 | ...2, height: u32) {
+    |       ^^^^^^ help: if this is intentional, prefix it with an underscore: `_height`
+
+warning: unused variable: `icon`
+   --> pixelflow-engine/src/platform/macos/window.rs:111:35
+    |
+111 | ...elf, icon: crat...
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_icon`
+
+warning: variable does not need to be mutable
+  --> pixelflow-engine/src/platform/mod.rs:90:16
+   |
+90 | ...un(mut self) -> ...
+   |       ----^^^^
+   |       |
+   |       help: remove this `mut`
+
+Some errors have detailed explanations: E0046, E0053, E0277, E0283, E0308, E0407, E0432, E0433, E0599...
+For more information about an error, try `rustc --explain E0046`.
+warning: `pixelflow-engine` (lib) generated 21 warnings
+error: could not compile `pixelflow-engine` (lib) due to 38 previous errors; 21 warnings emitted

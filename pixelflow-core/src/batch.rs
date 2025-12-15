@@ -1,6 +1,7 @@
 //! SIMD batch types and backend selection.
 
-use crate::backend::Backend;
+use crate::backend::{Backend, SimdBatch};
+use core::fmt::Debug;
 
 // Select NativeBackend based on architecture
 #[cfg(target_arch = "x86_64")]

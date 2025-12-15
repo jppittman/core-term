@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```rust
-//! use priority_channel::{ActorScheduler, Message, SchedulerHandler};
+//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler};
 //!
 //! struct MyHandler;
 //!
@@ -49,8 +49,8 @@ mod error;
 pub use error::SendError;
 
 use std::sync::{
-    mpsc::{self, Receiver, SyncSender, TryRecvError},
     Arc,
+    mpsc::{self, Receiver, SyncSender, TryRecvError},
 };
 use std::time::{Duration, Instant};
 
@@ -58,7 +58,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message<D, C, M> {
     Data(D),
-    Control(C),  // No wrapper - just C directly
+    Control(C), // No wrapper - just C directly
     Management(M),
 }
 
@@ -98,6 +98,13 @@ macro_rules! impl_management_message {
     };
 }
 
+/// Hint tells the OS loop how aggressive it should be
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkHint {
+    Wait, // Queues empty. Sleep until OS event or Wake signal. (0% CPU)
+    Poll, // Queues busy. Process pending OS events and return immediately.
+}
+
 /// The Actor trait - implement this to define your actor's behavior.
 ///
 /// Actors process messages from three priority lanes:
@@ -115,9 +122,9 @@ pub trait Actor<D, C, M> {
     /// Handle a management message.
     fn handle_management(&mut self, msg: M);
 
-    /// Opportunity to handle tasks not tied to a particular event
-    /// called after every work cycle
-    fn park(&mut self);
+    /// The "Hook" where the Actor creates the bridge to the OS
+    /// Called when the scheduler has drained available messages (or hit burst limits).
+    fn park(&mut self, hint: ParkHint);
 }
 
 /// Legacy alias for backward compatibility
@@ -136,7 +143,7 @@ pub fn create_actor<D, C, M>(
     wake_handler: Option<Arc<dyn WakeHandler>>,
 ) -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) {
     ActorScheduler::new_with_wake_handler(
-        1024,  // Default data burst limit
+        1024, // Default data burst limit
         data_buffer_size,
         wake_handler,
     )
@@ -201,7 +208,7 @@ pub struct ActorHandle<D, C, M> {
     tx_doorbell: SyncSender<()>,
     // All lanes are bounded for backpressure
     tx_data: SyncSender<D>,
-    tx_control: SyncSender<C>,  // No wrapper - just C directly
+    tx_control: SyncSender<C>, // No wrapper - just C directly
     tx_mgmt: SyncSender<M>,
     // Optional custom wake handler for platform-specific wake mechanisms
     wake_handler: Option<Arc<dyn WakeHandler>>,
@@ -321,9 +328,9 @@ impl<D, C, M> ActorHandle<D, C, M> {
 
 /// The receiver side that implements the priority scheduling logic.
 pub struct ActorScheduler<D, C, M> {
-    rx_doorbell: Receiver<()>,  // Highest priority - wake signal
+    rx_doorbell: Receiver<()>, // Highest priority - wake signal
     rx_data: Receiver<D>,
-    rx_control: Receiver<C>,    // No wrapper - just C directly
+    rx_control: Receiver<C>, // No wrapper - just C directly
     rx_mgmt: Receiver<M>,
     data_burst_limit: usize,
 }
@@ -417,7 +424,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         loop {
             // 1. Block on Doorbell (Highest Priority)
             match self.rx_doorbell.recv() {
-                Ok(()) => {},
+                Ok(()) => {}
                 Err(_) => return, // All senders disconnected
             }
 
@@ -456,7 +463,60 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                     keep_working = true;
                 }
             }
-            actor.park()
+
+            // Determine Hint
+            // If we hit burst limit or have data pending (implied by loop exit condition logic that might be complex,
+            // but here we just exited the loop), we might need to poll?
+            // Actually, `keep_working` logic in the `while` loop above is a bit simplified.
+            // If we exited the inner `while keep_working`, it means queues are empty
+            // OR we yielded voluntarily?
+            // Reviewing the inner loop:
+            // It loops while `keep_working` is true.
+            // `keep_working` is set true if we processed Control or Mgmt.
+            // For Data, if we hit burst limit, we set `keep_working = true`.
+            // So if `keep_working` was true, we loop again.
+            // Thus, when we exit the `while keep_working` loop, it means:
+            // 1. Control queue empty.
+            // 2. Mgmt queue empty.
+            // 3. Data queue empty OR data processed < burst limit.
+
+            // So effectively, we are "done" with immediate work.
+            // Therefore, we should probably WAIT.
+
+            // However, the `DriverActor` spec says:
+            // "If we hit burst limit or have data pending, use Poll."
+            // But here, `ActorScheduler::run` logic *already drains* until empty or burst limit *within* the loop?
+            // Wait, my strict reading of the previous `run` implementation:
+            // It loops `while keep_working`.
+            // If data limit is hit, `keep_working=true`.
+            // So it would loop again immediately! It wouldn't call `park`?
+
+            // Actually, the previous implementation had `actor.park()` *outside* the `while keep_working` loop?
+            // Yes.
+            // So `park` is only called when we are fully drained (or at least satisfied).
+            // So `ParkHint::Wait` seems appropriate.
+
+            // BUT, if we want to allow the "OS Loop" to run, we might want to park *more often*?
+            // The user spec for `DriverActor` says:
+            // "1. Drain Scheduler ... 2. Determine Hint ... 3. Enter OS Loop".
+            // It seems `DriverActor.run()` *is* the loop, and it calls `platform.park()`.
+
+            // Wait, `ActorScheduler::run` takes ownership of the loop!
+            // The provided `DriverActor` spec shows:
+            // `pub fn run(&mut self) { loop { ... scheduler drain ... platform.park(hint) } }`
+            // This suggests `DriverActor` does NOT use `ActorScheduler::run`. It implements its own loop using `scheduler`.
+
+            // Ah! `ActorScheduler` *struct* has the receivers.
+            // `ActorScheduler::run` is a convenience helper method in `lib.rs`.
+            // The user's `DriverActor` spec re-implements the drain logic manually (implied by "We implement the drain loop manually here").
+
+            // So updating `ActorScheduler::run` in `lib.rs` is good for *other* consumers (like tests),
+            // but `DriverActor` might implement its own.
+            // Still, I should update `ActorScheduler::run` to match the trait signature.
+
+            // In the default `run` implementation, since we drain everything we can,
+            // we probably want `ParkHint::Wait` because we have nothing left to do.
+            actor.park(ParkHint::Wait);
         }
     }
 }
@@ -481,6 +541,10 @@ mod tests {
         }
         fn handle_management(&mut self, msg: String) {
             self.log.lock().unwrap().push(format!("Mgmt: {}", msg));
+        }
+
+        fn park(&mut self, _hint: ParkHint) {
+            // No-op for test
         }
     }
 
@@ -566,6 +630,7 @@ mod tests {
             fn handle_management(&mut self, _: bool) {
                 self.mgmt_count += 1;
             }
+            fn park(&mut self, _hint: ParkHint) {}
         }
 
         let (tx, mut rx) = ActorScheduler::new(10, 100);
@@ -588,7 +653,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         drop(tx);
 
-        let handler = handle.join().unwrap();
+        let actor = handle.join().unwrap();
         assert_eq!(actor.data_count, 2);
         assert_eq!(actor.ctrl_count, 1);
         assert_eq!(actor.mgmt_count, 1);

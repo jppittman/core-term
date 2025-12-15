@@ -113,4 +113,6 @@ pub enum EmulatorAction {
     /// Request to resize the PTY to match the terminal dimensions.
     /// This is sent when ANSI sequences request a terminal resize.
     ResizePty { cols: u16, rows: u16 },
+    /// Request the application to quit.
+    Quit,
 }

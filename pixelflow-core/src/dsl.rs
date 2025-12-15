@@ -1,7 +1,7 @@
 use crate::batch::Batch;
+use crate::pixel::Pixel;
 use crate::surfaces::{Map, Max, Mul, Offset, Over, Skew};
 use crate::traits::Surface;
-use crate::pixel::Pixel;
 use core::fmt::Debug;
 
 /// Extensions for any surface (Coordinate transforms).
@@ -25,6 +25,57 @@ where
             shear,
         }
     }
+
+    /// Warps the coordinate space of the surface.
+    ///
+    /// This is the `Warp` eigenshader.
+    fn warp<F, C>(self, mapping: F) -> crate::surfaces::Warp<Self, F, C>
+    where
+        F: Fn(Batch<C>, Batch<C>, Batch<C>, Batch<C>) -> (Batch<C>, Batch<C>, Batch<C>, Batch<C>)
+            + Send
+            + Sync,
+        C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    {
+        crate::surfaces::Warp::new(self, mapping)
+    }
+
+    /// Applies a linear transform to the values of the surface.
+    ///
+    /// This is the `Grade` eigenshader: `val * slope + bias`.
+    fn grade<M, B>(self, slope: M, bias: B) -> crate::surfaces::Grade<Self, M, B> {
+        crate::surfaces::Grade::new(self, slope, bias)
+    }
+
+    /// Linearly interpolates to another surface.
+    ///
+    /// This is the `Lerp` eigenshader: `self + t * (other - self)`.
+    /// Note: `self` is the 'start' (a), `other` is the 'end' (b).
+    fn lerp<Param, Other>(
+        self,
+        t: Param,
+        other: Other,
+    ) -> crate::surfaces::Lerp<Param, Self, Other> {
+        crate::surfaces::Lerp::new(t, self, other)
+    }
+
+    /// Clips the surface using a mask.
+    ///
+    /// This is a convenience for `Select` where the false branch is an empty/zero surface.
+    /// For T=P (Pixel), "empty" usually means transparent black.
+    ///
+    /// Note: This implementation currently uses `Select` but requires the false branch
+    /// to be provided or inferred. Since we don't have a generic "Empty" surface yet,
+    /// we'll leave this as a TODO or implement a simple version if possible.
+    ///
+    /// Actually, let's implement `clip` to take a default value or "zero".
+    /// Or better, define `clip` on `SurfaceExt` to just wrap in `Select` with a default.
+    /// But generic T doesn't imply `Pixel`.
+    /// So for now, let's omit `clip` here or make it require `Default`.
+
+    /*
+    fn clip<M>(self, mask: M) -> crate::surfaces::Select<M, Self, Empty<T>> ...
+    We don't have Empty<T> yet.
+    */
 
     /// Computes the maximum of this surface and another.
     fn max<O>(self, other: O) -> Max<Self, O>
@@ -71,5 +122,8 @@ pub trait MaskExt<P: Pixel>: Surface<P> + Sized {
 }
 
 // Blanket implementations
-impl<T, S: Surface<T>> SurfaceExt<T> for S where T: Copy + Debug + Default + PartialEq + Send + Sync + 'static {}
+impl<T, S: Surface<T>> SurfaceExt<T> for S where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static
+{
+}
 impl<P: Pixel, S: Surface<P>> MaskExt<P> for S {}

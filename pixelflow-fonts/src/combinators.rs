@@ -1,11 +1,11 @@
 use crate::curves::{Line, Quadratic, Segment};
 use crate::font::Font;
 use crate::glyph::{eval_curves, CellGlyph, CurveSurface, GlyphBounds};
+use core::fmt::Debug;
 use pixelflow_core::batch::Batch;
 use pixelflow_core::surfaces::{Baked, Rasterize};
 use pixelflow_core::traits::Manifold;
 use pixelflow_core::SimdBatch;
-use core::fmt::Debug;
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ============================================================================
@@ -83,7 +83,13 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                 None => {
                     struct Empty;
                     impl Manifold<u32> for Empty {
-                        fn eval(&self, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> {
+                        fn eval(
+                            &self,
+                            _: Batch<u32>,
+                            _: Batch<u32>,
+                            _: Batch<u32>,
+                            _: Batch<u32>,
+                        ) -> Batch<u32> {
                             Batch::<u32>::splat(0x00FFFFFF)
                         }
                     }
@@ -119,7 +125,13 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                 None => {
                     struct Empty;
                     impl Manifold<u32> for Empty {
-                        fn eval(&self, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>, _: Batch<u32>) -> Batch<u32> {
+                        fn eval(
+                            &self,
+                            _: Batch<u32>,
+                            _: Batch<u32>,
+                            _: Batch<u32>,
+                            _: Batch<u32>,
+                        ) -> Batch<u32> {
                             Batch::<u32>::splat(0x00FFFFFF)
                         }
                     }
@@ -318,9 +330,9 @@ impl<S: CurveSurface> CurveSurfaceExt for S {}
 mod tests {
     use super::*;
     use crate::glyph::eval_curves_cell;
+    use pixelflow_core::backend::Backend;
     use pixelflow_core::backend::SimdBatch;
     use pixelflow_core::batch::NativeBackend;
-    use pixelflow_core::backend::Backend;
     use pixelflow_core::traits::Surface; // Needed for eval_one
 
     fn pixel_alpha(pixel: u32) -> u8 {
@@ -351,12 +363,14 @@ mod tests {
             let mut row = String::new();
             for x in 0..cell_width {
                 // Update: convert u32 to f32 + 0.5
-                let x_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
-                let y_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
+                let x_f =
+                    NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
+                let y_f =
+                    NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
                 let z_f = Batch::<f32>::splat(0.0);
                 let w_f = Batch::<f32>::splat(0.0);
 
-                let alpha = pixel_alpha(cell_glyph.eval(x_f, y_f, z_f, w_f).first());
+                let alpha = pixel_alpha(Surface::eval(&cell_glyph, x_f, y_f).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -407,12 +421,12 @@ mod tests {
         eprintln!("Alpha at (0, 0) via eval_curves_cell: {}", alpha.first());
 
         let cell_glyph = CellGlyph::new(glyph.clone(), ascender);
-        let alpha2 = cell_glyph.eval(x, y, z, w).first();
+        let alpha2 = Surface::eval(&cell_glyph, x, y).first();
         eprintln!("Alpha at (0, 0) via CellGlyph.eval: {}", alpha2);
 
         // (2, 0) -> 2.5, 0.5
         let x2 = Batch::<f32>::splat(2.5);
-        let alpha3 = cell_glyph.eval(x2, y, z, w).first();
+        let alpha3 = Surface::eval(&cell_glyph, x2, y).first();
         eprintln!("Alpha at (2, 0) via CellGlyph.eval: {}", alpha3);
     }
 
@@ -438,12 +452,14 @@ mod tests {
             let mut row = String::new();
             for x in 0..cell_width {
                 // Manually bridge u32 -> f32
-                let x_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
-                let y_f = NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
+                let x_f =
+                    NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
+                let y_f =
+                    NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
                 let z_f = Batch::<f32>::splat(0.0);
                 let w_f = Batch::<f32>::splat(0.0);
 
-                let alpha = pixel_alpha(cell_glyph.eval(x_f, y_f, z_f, w_f).first());
+                let alpha = pixel_alpha(Surface::eval(&cell_glyph, x_f, y_f).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
