@@ -14,75 +14,7 @@ impl WindowId {
     pub const PRIMARY: Self = Self(0);
 }
 
-/// Events from the Display Driver.
-#[derive(Debug, Clone)]
-pub enum DisplayEvent {
-    WindowCreated {
-        id: WindowId,
-        width_px: u32,
-        height_px: u32,
-        scale: f64,
-    },
-    Resized {
-        id: WindowId,
-        width_px: u32,
-        height_px: u32,
-    },
-    WindowDestroyed {
-        id: WindowId,
-    },
-    CloseRequested {
-        id: WindowId,
-    },
-    ScaleChanged {
-        id: WindowId,
-        scale: f64,
-    },
-    Key {
-        id: WindowId,
-        symbol: KeySymbol,
-        modifiers: Modifiers,
-        text: Option<String>,
-    },
-    MouseButtonPress {
-        id: WindowId,
-        button: u8,
-        x: i32,
-        y: i32,
-        modifiers: Modifiers,
-    },
-    MouseButtonRelease {
-        id: WindowId,
-        button: u8,
-        x: i32,
-        y: i32,
-        modifiers: Modifiers,
-    },
-    MouseMove {
-        id: WindowId,
-        x: i32,
-        y: i32,
-        modifiers: Modifiers,
-    },
-    MouseScroll {
-        id: WindowId,
-        dx: f32,
-        dy: f32,
-        x: i32,
-        y: i32,
-        modifiers: Modifiers,
-    },
-    FocusGained {
-        id: WindowId,
-    },
-    FocusLost {
-        id: WindowId,
-    },
-    PasteData {
-        text: String,
-    },
-    ClipboardDataRequested,
-}
+use crate::display::messages::DisplayEvent;
 
 /// Commands sent to the Display Driver.
 #[derive(Debug)]
@@ -125,7 +57,15 @@ pub enum EngineData<P: Pixel> {
     FromApp(crate::api::public::AppData<P>),
 }
 
-impl<P: Pixel> From<DisplayEvent> for actor_scheduler::Message<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement> {
+impl<P: Pixel> From<crate::api::public::AppData<P>> for EngineData<P> {
+    fn from(data: crate::api::public::AppData<P>) -> Self {
+        EngineData::FromApp(data)
+    }
+}
+
+impl<P: Pixel> From<DisplayEvent>
+    for actor_scheduler::Message<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>
+{
     fn from(evt: DisplayEvent) -> Self {
         actor_scheduler::Message::Data(EngineData::FromDriver(evt))
     }
@@ -141,16 +81,20 @@ pub enum EngineControl<P: Pixel> {
         refresh_interval: std::time::Duration,
     },
     UpdateRefreshRate(f64),
-    VsyncActorReady(actor_scheduler::ActorHandle<
-        crate::vsync_actor::RenderedResponse,
-        crate::vsync_actor::VsyncCommand,
-        crate::vsync_actor::VsyncManagement,
-    >),
+    VsyncActorReady(
+        actor_scheduler::ActorHandle<
+            crate::vsync_actor::RenderedResponse,
+            crate::vsync_actor::VsyncCommand,
+            crate::vsync_actor::VsyncManagement,
+        >,
+    ),
     Quit,
     DriverAck,
 }
 
-impl<P: Pixel> From<EngineControl<P>> for actor_scheduler::Message<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement> {
+impl<P: Pixel> From<EngineControl<P>>
+    for actor_scheduler::Message<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>
+{
     fn from(ctrl: EngineControl<P>) -> Self {
         actor_scheduler::Message::Control(ctrl)
     }
@@ -164,8 +108,10 @@ impl<P: Pixel> From<EngineControl<P>> for actor_scheduler::Message<EngineData<P>
 pub const DISPLAY_EVENT_BUFFER_SIZE: usize = 256;
 pub const DISPLAY_EVENT_BURST_LIMIT: usize = 32;
 
-pub type EngineActorHandle<P> = ActorHandle<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>;
-pub type EngineActorScheduler<P> = ActorScheduler<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>;
+pub type EngineActorHandle<P> =
+    ActorHandle<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>;
+pub type EngineActorScheduler<P> =
+    ActorScheduler<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>;
 
 pub fn create_engine_actor<P: Pixel>(
     wake_handler: Option<Arc<dyn actor_scheduler::WakeHandler>>,
@@ -174,8 +120,5 @@ pub fn create_engine_actor<P: Pixel>(
     // We should probably remove it from the signature in a future refactor,
     // but for now we keep it for backward compatibility and ignore it.
     let _ = wake_handler;
-    actor_scheduler::ActorScheduler::new(
-        DISPLAY_EVENT_BUFFER_SIZE,
-        DISPLAY_EVENT_BURST_LIMIT,
-    )
+    actor_scheduler::ActorScheduler::new(DISPLAY_EVENT_BUFFER_SIZE, DISPLAY_EVENT_BURST_LIMIT)
 }

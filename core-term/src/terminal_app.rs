@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::keys;
 use crate::surface::{GridBuffer, TerminalSurface};
 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput, TerminalEmulator, UserInputAction};
+use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
 use core::marker::PhantomData;
 use pixelflow_core::surfaces::Baked;
 use pixelflow_core::traits::Surface;
@@ -20,8 +21,7 @@ use pixelflow_engine::{
 use pixelflow_fonts::{glyphs, Lazy};
 use pixelflow_render::font;
 use pixelflow_render::Pixel;
-use actor_scheduler::{Actor, ActorScheduler, Message};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
 
 /// Glyph factory type - closure that returns lazily-baked glyphs.
@@ -83,13 +83,19 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
                 }
             }
             EmulatorAction::SetTitle(title) => {
-                let _ = self.engine_tx.send(Message::Management(AppManagement::SetTitle(title)));
+                let _ = self
+                    .engine_tx
+                    .send(Message::Management(AppManagement::SetTitle(title)));
             }
             EmulatorAction::CopyToClipboard(text) => {
-                let _ = self.engine_tx.send(Message::Management(AppManagement::CopyToClipboard(text)));
+                let _ = self
+                    .engine_tx
+                    .send(Message::Management(AppManagement::CopyToClipboard(text)));
             }
             EmulatorAction::RequestClipboardContent => {
-                let _ = self.engine_tx.send(Message::Management(AppManagement::RequestPaste));
+                let _ = self
+                    .engine_tx
+                    .send(Message::Management(AppManagement::RequestPaste));
             }
             EmulatorAction::ResizePty { cols, rows } => {
                 log::info!("TerminalApp: PTY resize request {}x{}", cols, rows);
@@ -99,6 +105,11 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
             }
             EmulatorAction::RequestRedraw => {}
             EmulatorAction::SetCursorVisibility(_) => {}
+            EmulatorAction::Quit => {
+                let _ = self
+                    .engine_tx
+                    .send(Message::Management(AppManagement::Quit));
+            }
         }
     }
 
@@ -129,8 +140,12 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
         );
 
         // Send to engine
-        let surface: Box<dyn Surface<P> + Send + Sync> = Box::new(terminal);
-        let _ = self.engine_tx.send(Message::Data(AppData::RenderSurface(surface).into()));
+        // TerminalSurface implements Manifold<P, u32>, which blanket implements Surface<P, u32>
+        // We cast to Arc<dyn Surface...> for AppData
+        let surface: Arc<dyn Surface<P, u32> + Send + Sync> = Arc::new(terminal);
+        let _ = self
+            .engine_tx
+            .send(Message::Data(AppData::RenderSurfaceU32(surface).into()));
     }
 
     /// Process any pending PTY commands (non-blocking).
@@ -207,7 +222,9 @@ impl<P: Pixel + Surface<P>> Actor<EngineEventData, EngineEventControl, EngineEve
                     x_px: x as u16,
                     y_px: y as u16,
                 })),
-                MouseButton::Middle => Some(EmulatorInput::User(UserInputAction::RequestPrimaryPaste)),
+                MouseButton::Middle => {
+                    Some(EmulatorInput::User(UserInputAction::RequestPrimaryPaste))
+                }
                 _ => None,
             },
             EngineEventManagement::MouseRelease { button, .. } => {
@@ -227,13 +244,14 @@ impl<P: Pixel + Surface<P>> Actor<EngineEventData, EngineEventControl, EngineEve
                 log::trace!("MouseScroll at ({}, {}) delta ({}, {})", x, y, dx, dy);
                 None
             }
-            EngineEventManagement::FocusGained => Some(EmulatorInput::User(UserInputAction::FocusGained)),
-            EngineEventManagement::FocusLost => Some(EmulatorInput::User(UserInputAction::FocusLost)),
-            EngineEventManagement::Paste(text) => Some(EmulatorInput::User(UserInputAction::PasteText(text))),
-            EngineEventManagement::Wake => {
-                // Process any pending PTY output on wake
-                self.process_pty_commands();
-                None
+            EngineEventManagement::FocusGained => {
+                Some(EmulatorInput::User(UserInputAction::FocusGained))
+            }
+            EngineEventManagement::FocusLost => {
+                Some(EmulatorInput::User(UserInputAction::FocusLost))
+            }
+            EngineEventManagement::Paste(text) => {
+                Some(EmulatorInput::User(UserInputAction::PasteText(text)))
             }
         };
 
@@ -247,7 +265,7 @@ impl<P: Pixel + Surface<P>> Actor<EngineEventData, EngineEventControl, EngineEve
         self.process_pty_commands();
     }
 
-    fn park(&mut self) {
+    fn park(&mut self, _hint: ParkHint) {
         // Terminal app has no periodic tasks
     }
 }
@@ -269,14 +287,11 @@ pub fn spawn_terminal_app<P: Pixel + Surface<P> + 'static>(
     std::thread::JoinHandle<()>,
 )> {
     // Create app actor channels
-    let (app_tx, mut app_rx) = ActorScheduler::<
-        EngineEventData,
-        EngineEventControl,
-        EngineEventManagement,
-    >::new(
-        10,  // data_burst_limit: max 10 RequestFrame events per wake
-        128, // data_buffer_size: event buffer
-    );
+    let (app_tx, mut app_rx) =
+        ActorScheduler::<EngineEventData, EngineEventControl, EngineEventManagement>::new(
+            10,  // data_burst_limit: max 10 RequestFrame events per wake
+            128, // data_buffer_size: event buffer
+        );
 
     // Create app
     let mut app = TerminalApp::new(emulator, pty_tx, pty_rx, config, engine_tx);

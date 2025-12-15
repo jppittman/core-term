@@ -143,7 +143,7 @@ fn main() -> anyhow::Result<()> {
         let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
 
         // Create engine actor (for app to send responses back)
-        let (engine_handle, _engine_scheduler) = create_engine_actor::<CocoaPixel>(None);
+        let (engine_handle, engine_scheduler) = create_engine_actor::<CocoaPixel>(None);
 
         // Spawn terminal app
         let (app_handle, _app_thread_handle) = spawn_terminal_app::<CocoaPixel>(
@@ -171,7 +171,7 @@ fn main() -> anyhow::Result<()> {
         info!("EventMonitorActor spawned successfully");
 
         // Run engine with new API (blocks until quit)
-        pixelflow_engine::run(app_handle, engine_handle, engine_config)
+        pixelflow_engine::run(app_handle, engine_handle, engine_scheduler, engine_config)
             .context("Engine run failed")?;
 
         _app_thread_handle
@@ -188,7 +188,7 @@ fn main() -> anyhow::Result<()> {
         let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
 
         // Create engine actor (for app to send responses back)
-        let (engine_handle, _engine_scheduler) = create_engine_actor::<X11Pixel>(None);
+        let (engine_handle, engine_scheduler) = create_engine_actor::<X11Pixel>(None);
 
         // Spawn terminal app
         let (app_handle, _app_thread_handle) = spawn_terminal_app::<X11Pixel>(
@@ -216,7 +216,7 @@ fn main() -> anyhow::Result<()> {
         info!("EventMonitorActor spawned successfully");
 
         // Run engine with new API (blocks until quit)
-        pixelflow_engine::run(app_handle, engine_handle, engine_config)
+        pixelflow_engine::run(app_handle, engine_handle, engine_scheduler, engine_config)
             .context("Engine run failed")?;
 
         _app_thread_handle
@@ -230,18 +230,16 @@ fn main() -> anyhow::Result<()> {
         let path = "/tmp/core-term-flamegraph.svg";
         info!("Writing flamegraph to {}...", path);
         match profiler_guard.report().build() {
-            Ok(report) => {
-                match std::fs::File::create(path) {
-                    Ok(file) => {
-                        if let Err(e) = report.flamegraph(file) {
-                            warn!("Failed to write flamegraph: {}", e);
-                        } else {
-                            info!("Flamegraph written to {}", path);
-                        }
+            Ok(report) => match std::fs::File::create(path) {
+                Ok(file) => {
+                    if let Err(e) = report.flamegraph(file) {
+                        warn!("Failed to write flamegraph: {}", e);
+                    } else {
+                        info!("Flamegraph written to {}", path);
                     }
-                    Err(e) => warn!("Failed to create {}: {}", path, e),
                 }
-            }
+                Err(e) => warn!("Failed to create {}: {}", path, e),
+            },
             Err(e) => warn!("Failed to build profiler report: {:?}", e),
         }
     }

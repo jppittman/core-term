@@ -1,20 +1,23 @@
+use crate::TensorView;
 use crate::backend::{Backend, SimdBatch};
 use crate::batch::{Batch, NativeBackend};
-use crate::traits::Manifold;
 use crate::pixel::Pixel;
-use crate::TensorView;
+use crate::traits::Manifold;
 use alloc::vec;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
-/// Samples from an atlas texture using bilinear interpolation.
+/// A surface defined by a closure.
+///
+/// This is one of the Six Eigenshaders: `Compute`.
+/// It serves as an escape hatch for arbitrary logic.
 #[derive(Copy, Clone)]
-pub struct FnSurface<F, T> {
+pub struct Compute<F, T> {
     pub func: F,
     pub _marker: PhantomData<T>,
 }
 
-impl<F, T> FnSurface<F, T> {
+impl<F, T> Compute<F, T> {
     pub fn new(func: F) -> Self {
         Self {
             func,
@@ -23,7 +26,7 @@ impl<F, T> FnSurface<F, T> {
     }
 }
 
-impl<F, T, C> Manifold<T, C> for FnSurface<F, T>
+impl<F, T, C> Manifold<T, C> for Compute<F, T>
 where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
@@ -34,6 +37,8 @@ where
         (self.func)(x, y, z, w)
     }
 }
+
+pub type FnSurface<F, T> = Compute<F, T>;
 
 #[derive(Copy, Clone)]
 pub struct SampleAtlas<'a> {

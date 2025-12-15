@@ -20,9 +20,7 @@ pub use api::public::*;
 pub use actor_scheduler as actor;
 
 // Convenience re-exports at crate root (for backward compatibility)
-pub use actor_scheduler::{
-    ActorHandle, ActorScheduler, Message, SchedulerHandler, SendError, WakeHandler,
-};
+pub use actor_scheduler::{Actor, ActorHandle, ActorScheduler, Message, SendError, WakeHandler};
 
 // Make private API available throughout crate (not exported)
 #[allow(unused_imports)]
@@ -30,8 +28,8 @@ use api::private::*;
 
 // Re-export legacy types for backward compatibility (deprecated)
 pub use channel::{
-    create_engine_channels, DriverCommand, EngineActorHandle, EngineActorScheduler,
-    EngineChannels, EngineControl, AppManagement, EngineSender,
+    create_engine_channels, AppManagement, DriverCommand, EngineActorHandle, EngineActorScheduler,
+    EngineChannels, EngineControl, EngineSender,
 };
 pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
 pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
@@ -43,7 +41,11 @@ use wasm_bindgen::prelude::*;
 // This code is dogshit and should be in the platform itself....
 #[cfg(use_web_display)]
 #[wasm_bindgen]
-pub fn pixelflow_init_worker(canvas: web_sys::OffscreenCanvas, sab: js_sys::SharedArrayBuffer, scale_factor: f64) {
+pub fn pixelflow_init_worker(
+    canvas: web_sys::OffscreenCanvas,
+    sab: js_sys::SharedArrayBuffer,
+    scale_factor: f64,
+) {
     crate::display::drivers::web::init_resources(canvas, sab, scale_factor);
 }
 
@@ -87,8 +89,9 @@ pub use platform::PlatformPixel;
 pub fn run(
     app: impl Application + Send + 'static,
     engine_handle: api::private::EngineActorHandle<PlatformPixel>,
+    scheduler: api::private::EngineActorScheduler<PlatformPixel>,
     config: EngineConfig,
 ) -> anyhow::Result<()> {
-    let platform = EnginePlatform::new(app, engine_handle, config)?;
+    let platform = EnginePlatform::new(app, engine_handle, scheduler, config)?;
     platform.run()
 }

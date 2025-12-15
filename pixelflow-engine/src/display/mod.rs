@@ -4,16 +4,21 @@
 //! - DisplayDriver: Platform-specific driver (Cocoa, X11, etc.)
 //! - Messages: Display events and render snapshots
 
+// pub mod generic;
+pub mod platform;
+pub mod traits; // Add this
+
 pub mod driver;
 pub mod drivers;
 pub mod messages;
 
-pub use driver::DisplayDriver;
+pub use driver::DriverActor; // Changed from DisplayDriver
 pub use messages::DisplayEvent;
+pub use platform::Platform;
 
 // Re-export the active display driver for convenience
-#[cfg(use_cocoa_display)]
-pub use drivers::MetalDisplayDriver;
+// #[cfg(use_cocoa_display)]
+// pub use drivers::MetalDisplayDriver;
 
 #[cfg(use_x11_display)]
 pub use drivers::X11DisplayDriver;

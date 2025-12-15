@@ -594,7 +594,7 @@ mod tests {
             for px in 0..bounds.width {
                 let x = Batch::<f32>::splat(px as f32 + 0.5);
                 let y = Batch::<f32>::splat(py as f32 + 0.5);
-                let alpha = (glyph.eval(x, y).first() >> 24) as u8;
+                let alpha = (Surface::eval(&glyph, x, y).first() >> 24) as u8;
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -619,7 +619,7 @@ mod tests {
             for px in 0..bounds.width {
                 let x = Batch::<f32>::splat(px as f32 + 0.5);
                 let y = Batch::<f32>::splat(py as f32 + 0.5);
-                let alpha = (glyph.eval(x, y).first() >> 24) as u8;
+                let alpha = (Surface::eval(&glyph, x, y).first() >> 24) as u8;
                 if alpha > 200 {
                     any_opaque = true;
                 }
@@ -650,7 +650,7 @@ mod tests {
             for px in 0..bounds.width {
                 let x = Batch::<f32>::splat(px as f32 + 0.5);
                 let y = Batch::<f32>::splat(py as f32 + 0.5);
-                let alpha = (glyph.eval(x, y).first() >> 24) as u8;
+                let alpha = (Surface::eval(&glyph, x, y).first() >> 24) as u8;
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -673,7 +673,7 @@ mod tests {
         let left_alpha = {
             let x = Batch::<f32>::splat(0.5);
             let y = Batch::<f32>::splat(0.5);
-            (glyph.eval(x, y).first() >> 24) as u8
+            (Surface::eval(&glyph, x, y).first() >> 24) as u8
         };
         eprintln!("Row 0, col 0 alpha: {}", left_alpha);
         assert!(
@@ -686,7 +686,7 @@ mod tests {
         let center_alpha = {
             let x = Batch::<f32>::splat(bounds.width as f32 / 2.0 + 0.5);
             let y = Batch::<f32>::splat(0.5);
-            (glyph.eval(x, y).first() >> 24) as u8
+            (Surface::eval(&glyph, x, y).first() >> 24) as u8
         };
         eprintln!("Row 0, center alpha: {}", center_alpha);
         assert!(
@@ -720,10 +720,22 @@ mod tests {
 
         // Create a vertical bar that spans the full cell height
         let segments = vec![
-            Segment::Line(Line { p0: [2.0, descender as f32], p1: [8.0, descender as f32] }),
-            Segment::Line(Line { p0: [8.0, descender as f32], p1: [8.0, ascender as f32] }),
-            Segment::Line(Line { p0: [8.0, ascender as f32], p1: [2.0, ascender as f32] }),
-            Segment::Line(Line { p0: [2.0, ascender as f32], p1: [2.0, descender as f32] }),
+            Segment::Line(Line {
+                p0: [2.0, descender as f32],
+                p1: [8.0, descender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [8.0, descender as f32],
+                p1: [8.0, ascender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [8.0, ascender as f32],
+                p1: [2.0, ascender as f32],
+            }),
+            Segment::Line(Line {
+                p0: [2.0, ascender as f32],
+                p1: [2.0, descender as f32],
+            }),
         ];
         let bounds = GlyphBounds {
             width: 10,
@@ -773,8 +785,10 @@ mod tests {
 
         // Print font metrics
         let metrics = font.metrics();
-        eprintln!("Font metrics: ascent={}, descent={}, line_gap={}, units_per_em={}",
-            metrics.ascent, metrics.descent, metrics.line_gap, metrics.units_per_em);
+        eprintln!(
+            "Font metrics: ascent={}, descent={}, line_gap={}, units_per_em={}",
+            metrics.ascent, metrics.descent, metrics.line_gap, metrics.units_per_em
+        );
 
         let line_height = metrics.ascent as f32 - metrics.descent as f32;
         eprintln!("Line height (ascent - descent): {}", line_height);
@@ -784,7 +798,10 @@ mod tests {
 
         let ascender = (metrics.ascent as f32 * cell_h as f32 / line_height).round() as i32;
         eprintln!("Calculated ascender for {}px cell: {}", cell_h, ascender);
-        eprintln!("Calculated descender (ascender - cell_h): {}", ascender - cell_h as i32);
+        eprintln!(
+            "Calculated descender (ascender - cell_h): {}",
+            ascender - cell_h as i32
+        );
 
         let glyph_fn = glyphs(font.clone(), cell_w, cell_h);
         let baked: Baked<u32> = glyph_fn('g').get().clone();
@@ -795,7 +812,7 @@ mod tests {
             for px in 0..cell_w {
                 let x = Batch::<u32>::splat(px);
                 let y = Batch::<u32>::splat(py);
-                let alpha = (baked.eval(x, y).first() >> 24) as u8;
+                let alpha = (Surface::eval(&baked, x, y).first() >> 24) as u8;
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -820,7 +837,7 @@ mod tests {
             for px in 0..cell_w {
                 let x = Batch::<u32>::splat(px);
                 let y = Batch::<u32>::splat(py);
-                let alpha = (baked.eval(x, y).first() >> 24) as u8;
+                let alpha = (Surface::eval(&baked, x, y).first() >> 24) as u8;
                 if alpha > 50 {
                     bottom_coverage += 1;
                 }
@@ -838,7 +855,7 @@ mod tests {
         for px in 0..cell_w {
             let x = Batch::<u32>::splat(px);
             let y = Batch::<u32>::splat(cell_h - 1);
-            let alpha = (baked.eval(x, y).first() >> 24) as u8;
+            let alpha = (Surface::eval(&baked, x, y).first() >> 24) as u8;
             if alpha > 0 {
                 last_row_coverage += 1;
             }
@@ -871,7 +888,10 @@ mod tests {
         let bounds = glyph.bounds();
 
         eprintln!("'g' bounds at corrected size: {:?}", bounds);
-        eprintln!("bearing_y (top of glyph in curve space): {}", bounds.bearing_y);
+        eprintln!(
+            "bearing_y (top of glyph in curve space): {}",
+            bounds.bearing_y
+        );
 
         // Calculate where the bottom of the glyph is in curve space
         let glyph_bottom = bounds.bearing_y as i32 - bounds.height as i32;
@@ -883,7 +903,10 @@ mod tests {
         let cell_bottom_sample = ascender as f32 - (cell_h as f32 - 0.5); // pixel (h-1) center
 
         eprintln!("Cell ascender: {}", ascender);
-        eprintln!("Cell samples from curve y={} to y={}", cell_top_sample, cell_bottom_sample);
+        eprintln!(
+            "Cell samples from curve y={} to y={}",
+            cell_top_sample, cell_bottom_sample
+        );
 
         // The glyph bottom should be within the cell's sampling range
         assert!(

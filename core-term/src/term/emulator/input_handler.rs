@@ -84,6 +84,9 @@ pub(super) fn process_user_input_action(
                 return Some(EmulatorAction::RequestRedraw);
             }
         }
+        UserInputAction::RequestQuit => {
+            return Some(EmulatorAction::Quit);
+        }
         // Add catch-all for other UserInputAction variants to satisfy exhaustiveness
         _ => {
             log::debug!(
