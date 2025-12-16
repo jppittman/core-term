@@ -190,8 +190,7 @@ impl<P: Pixel + Surface<P>> Actor<EngineEventData, EngineEventControl, EngineEve
             }
             EngineEventControl::CloseRequested => {
                 log::info!("TerminalApp: Close requested");
-                // TODO: How to quit with new API?
-                None
+                Some(EmulatorInput::User(UserInputAction::RequestQuit))
             }
         };
 
