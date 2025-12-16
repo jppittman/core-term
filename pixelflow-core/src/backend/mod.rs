@@ -124,12 +124,37 @@ where
     /// Note: `self` acts as the mask.
     fn select(self, if_true: Self, if_false: Self) -> Self;
 
-    /// Gather values from a slice using indices in this batch.
-    fn gather(base: &[T], indices: Self) -> Self;
+    /// Gather values from a slice using a batch of generic indices.
+    ///
+    /// This method allows generic gathering using `Self` as indices only if `T` can be an index.
+    /// However, usually indices are `u32`.
+    /// To support generic gathering (e.g. gathering `f32` using `u32` indices),
+    /// we introduce a generic index parameter `I`.
+    /// But traits with generic methods aren't object safe (though this trait is not used as dyn).
+    ///
+    /// For Simd abstraction, we usually have `Batch<T>` methods.
+    /// Ideally: `fn gather<I>(base: &[T], indices: I) -> Self where I: SimdBatch<u32>`.
+    /// But defining `I` is hard without circular deps or leaking Backend.
+    ///
+    /// Solution: We change `gather` to take `impl SimdBatch<u32>`.
+    /// But `SimdBatch` is generic.
+    /// `indices` should be `NativeBackend::Batch<u32>`.
+    /// But we don't have access to `NativeBackend` here (trait def).
+    ///
+    /// Workaround: We define `gather` to take a specific associated type or just generic `I`.
+    /// Or we keep it simple: `gather` takes `indices: Self` (broken for f32) or we define `gather_from_offsets`.
+    ///
+    /// Let's change it to generic `I`.
+    fn gather<I>(base: &[T], indices: I) -> Self
+    where
+        I: SimdBatch<u32>;
 
     /// Gather u8 values from a slice using indices in this batch.
     /// This is used when T is u32 but we want to gather bytes (e.g. from an atlas).
-    fn gather_u8(_base: &[u8], _indices: Self) -> Self {
+    fn gather_u8<I>(_base: &[u8], _indices: I) -> Self
+    where
+        I: SimdBatch<u32>
+    {
         unimplemented!("gather_u8 not implemented for this type")
     }
 

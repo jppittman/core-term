@@ -5,6 +5,7 @@ use pixelflow_core::backend::Backend;
 use pixelflow_core::batch::NativeBackend;
 use pixelflow_core::dsl::SurfaceExt;
 use pixelflow_core::surfaces::Compute;
+use pixelflow_core::SimdBatch;
 use std::fmt::Debug;
 
 #[derive(Clone, Copy)]

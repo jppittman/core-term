@@ -1,7 +1,6 @@
 use crate::TensorView;
-use crate::backend::{Backend, SimdBatch};
+use crate::backend::{Backend, SimdBatch, BatchArithmetic};
 use crate::batch::{Batch, NativeBackend};
-use crate::pixel::Pixel;
 use crate::traits::Manifold;
 use alloc::vec;
 use core::fmt::Debug;
@@ -64,18 +63,19 @@ impl<'a> Manifold<u8> for SampleAtlas<'a> {
 
 /// A surface that is pre-rendered (baked) into a buffer.
 #[derive(Clone)]
-pub struct Baked<P: Pixel> {
-    data: alloc::sync::Arc<[P]>,
+pub struct Baked<T> {
+    data: alloc::sync::Arc<[T]>,
     width: u32,
     height: u32,
 }
 
-impl<P: Pixel> Baked<P> {
+impl<T> Baked<T>
+where
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+{
     /// Creates a new `Baked` surface by rasterizing the source.
-    /// Note: source must be a Manifold (or Surface via blanket).
-    pub fn new<S: Manifold<P>>(source: &S, width: u32, height: u32) -> Self {
-        let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
-        // Execute expects a Surface, which S implements via blanket impl
+    pub fn new<S: Manifold<T>>(source: &S, width: u32, height: u32) -> Self {
+        let mut data = vec![T::default(); (width as usize) * (height as usize)].into_boxed_slice();
         crate::execute(source, &mut data, width as usize, height as usize);
         Self {
             data: alloc::sync::Arc::from(data),
@@ -96,37 +96,53 @@ impl<P: Pixel> Baked<P> {
     }
     /// Returns the raw pixel data.
     #[inline]
-    pub fn data(&self) -> &[P] {
+    pub fn data(&self) -> &[T] {
         &self.data
     }
     /// Returns a mutable reference to the raw pixel data.
     #[inline]
-    pub fn data_mut(&mut self) -> &mut [P] {
+    pub fn data_mut(&mut self) -> &mut [T] {
         alloc::sync::Arc::get_mut(&mut self.data).unwrap()
     }
 }
 
-impl<P: Pixel> Manifold<P> for Baked<P> {
+// Specialization for u32 (RGBA)
+impl Manifold<u32> for Baked<u32> {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<u32> {
         let w = self.width;
         let h = self.height;
 
         let w_batch = Batch::<u32>::splat(w);
         let h_batch = Batch::<u32>::splat(h);
 
-        let x_mod = x - (x / w_batch) * w_batch;
-        let y_mod = y - (y / h_batch) * h_batch;
+        let x_mod = x % w_batch;
+        let y_mod = y % h_batch;
 
         let idx = (y_mod * w_batch) + x_mod;
-
-        P::batch_gather(&self.data, idx)
+        Batch::<u32>::gather(&self.data, idx)
     }
 }
 
-impl<P: Pixel> Manifold<P> for &Baked<P> {
+// Specialization for f32 (Depth/Field) - Stub implementation returning 0
+impl Manifold<f32> for Baked<f32> {
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<P> {
+    fn eval(&self, _x: Batch<u32>, _y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<f32> {
+        Batch::<f32>::splat(0.0)
+    }
+}
+
+// Forward ref implementation only for specialized types
+impl Manifold<u32> for &Baked<u32> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<u32> {
+        (*self).eval(x, y, z, w)
+    }
+}
+
+impl Manifold<f32> for &Baked<f32> {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<f32> {
         (*self).eval(x, y, z, w)
     }
 }

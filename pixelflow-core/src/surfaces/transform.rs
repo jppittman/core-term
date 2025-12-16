@@ -22,8 +22,8 @@ where
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<T> {
-        let ox = Batch::<u32>::splat(self.dx as u32);
-        let oy = Batch::<u32>::splat(self.dy as u32);
+        let ox = self.dx as u32;
+        let oy = self.dy as u32;
         self.source.eval(x + ox, y + oy, z, w)
     }
 }
@@ -36,8 +36,8 @@ where
 {
     #[inline(always)]
     fn eval(&self, x: Batch<f32>, y: Batch<f32>, z: Batch<f32>, w: Batch<f32>) -> Batch<T> {
-        let ox = Batch::<f32>::splat(self.dx as f32);
-        let oy = Batch::<f32>::splat(self.dy as f32);
+        let ox = self.dx as f32;
+        let oy = self.dy as f32;
         self.source.eval(x + ox, y + oy, z, w)
     }
 }
@@ -84,8 +84,8 @@ where
 {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<T> {
-        let inv_x = Batch::<u32>::splat(self.inv_scale_x_fp);
-        let inv_y = Batch::<u32>::splat(self.inv_scale_y_fp);
+        let inv_x = self.inv_scale_x_fp;
+        let inv_y = self.inv_scale_y_fp;
         let lx = (x * inv_x) >> 16;
         let ly = (y * inv_y) >> 16;
         self.source.eval(lx, ly, z, w)
@@ -105,11 +105,8 @@ where
         let inv_x_f = (self.inv_scale_x_fp as f32) * scale_factor;
         let inv_y_f = (self.inv_scale_y_fp as f32) * scale_factor;
 
-        let inv_x = Batch::<f32>::splat(inv_x_f);
-        let inv_y = Batch::<f32>::splat(inv_y_f);
-
         // Apply scaling (multiply coordinate by inverse scale)
-        self.source.eval(x * inv_x, y * inv_y, z, w)
+        self.source.eval(x * inv_x_f, y * inv_y_f, z, w)
     }
 }
 
@@ -125,7 +122,7 @@ pub struct Skew<S> {
 impl<S: Manifold<u8, u32>> Manifold<u8, u32> for Skew<S> {
     #[inline(always)]
     fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<u8> {
-        let offset = (y * Batch::<u32>::splat(self.shear as u32)) >> 8;
+        let offset = (y * (self.shear as u32)) >> 8;
         self.source.eval(x.saturating_sub(offset), y, z, w)
     }
 }

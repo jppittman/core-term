@@ -12,7 +12,6 @@ pub mod backend;
 pub mod batch;
 pub mod dsl;
 pub mod geometry;
-pub mod pixel;
 pub mod platform;
 pub mod raster;
 pub mod surfaces;
@@ -22,11 +21,10 @@ pub mod traits;
 pub use backend::{FloatBatchOps, SimdBatch};
 pub use batch::{Batch, BatchOps, SHUFFLE_RGBA_BGRA};
 pub use geometry::{Curve2D, Mat3, Poly, Rect};
-pub use pixel::Pixel;
 pub use platform::{PixelFormat, Platform};
 pub use raster::{TensorView, TensorViewMut, execute, execute_stripe};
 pub use surfaces::{
-    Baked, Compute, FnSurface, Grade, Implicit, Lerp, Map, Offset, Over, Partition, SampleAtlas,
+    Baked, Compute, FnSurface, Grade, Implicit, Lerp, Map, Offset, Partition, SampleAtlas,
     Scale, Select, Skew, Warp,
 };
 pub use traits::{Manifold, Surface, Volume};

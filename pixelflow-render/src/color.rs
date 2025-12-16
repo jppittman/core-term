@@ -28,12 +28,57 @@
 use bitflags::bitflags;
 use pixelflow_core::backend::{BatchArithmetic, SimdBatch};
 use pixelflow_core::batch::Batch;
+use core::fmt::Debug;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-// Re-export the Pixel trait from pixelflow-core
-pub use pixelflow_core::Pixel;
+// =============================================================================
+// Pixel Trait
+// =============================================================================
+
+/// Trait for pixel types that can be used in surfaces and frames.
+///
+/// This used to live in `pixelflow-core` but is now part of the graphics layer.
+pub trait Pixel: Copy + Default + Debug + PartialEq + 'static + Send + Sync {
+    /// Create from raw u32 value.
+    fn from_u32(v: u32) -> Self;
+
+    /// Convert to raw u32 value.
+    fn to_u32(self) -> u32;
+
+    /// Convert a batch of pixels to a batch of u32 (packed representation).
+    fn batch_to_u32(batch: Batch<Self>) -> Batch<u32>;
+
+    /// Convert a batch of u32 (packed representation) to a batch of pixels.
+    fn batch_from_u32(batch: Batch<u32>) -> Batch<Self>;
+
+    /// Gather pixels from a slice using indices.
+    fn batch_gather(slice: &[Self], indices: Batch<u32>) -> Batch<Self>;
+
+    /// Extract red channel from a batch of pixels.
+    fn batch_red(batch: Batch<u32>) -> Batch<u32>;
+
+    /// Extract green channel from a batch of pixels.
+    fn batch_green(batch: Batch<u32>) -> Batch<u32>;
+
+    /// Extract blue channel from a batch of pixels.
+    fn batch_blue(batch: Batch<u32>) -> Batch<u32>;
+
+    /// Extract alpha channel from a batch of pixels.
+    fn batch_alpha(batch: Batch<u32>) -> Batch<u32>;
+
+    /// Reconstruct a batch of pixels from individual channel batches.
+    fn batch_from_channels(
+        r: Batch<u32>,
+        g: Batch<u32>,
+        b: Batch<u32>,
+        a: Batch<u32>,
+    ) -> Batch<u32>;
+
+    /// Store a batch of pixels into a slice.
+    fn batch_store(batch: Batch<Self>, slice: &mut [Self]);
+}
 
 // =============================================================================
 // Semantic Color Types
@@ -342,17 +387,17 @@ impl Pixel for Rgba {
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {
-        batch & Batch::<u32>::splat(0xFF)
+        batch & 0xFF
     }
 
     #[inline(always)]
     fn batch_green(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 8) & Batch::<u32>::splat(0xFF)
+        (batch >> 8) & 0xFF
     }
 
     #[inline(always)]
     fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 16) & Batch::<u32>::splat(0xFF)
+        (batch >> 16) & 0xFF
     }
 
     #[inline(always)]
@@ -411,17 +456,17 @@ impl Pixel for Bgra {
 
     #[inline(always)]
     fn batch_red(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 16) & Batch::<u32>::splat(0xFF)
+        (batch >> 16) & 0xFF
     }
 
     #[inline(always)]
     fn batch_green(batch: Batch<u32>) -> Batch<u32> {
-        (batch >> 8) & Batch::<u32>::splat(0xFF)
+        (batch >> 8) & 0xFF
     }
 
     #[inline(always)]
     fn batch_blue(batch: Batch<u32>) -> Batch<u32> {
-        batch & Batch::<u32>::splat(0xFF)
+        batch & 0xFF
     }
 
     #[inline(always)]
@@ -447,9 +492,6 @@ impl Pixel for Bgra {
         SimdBatch::store(&u32_batch, u32_slice);
     }
 }
-
-// Note: Surface<Rgba> for Rgba and Surface<Bgra> for Bgra are provided by
-// the blanket impl `Surface<P> for P where P: Pixel` in pixelflow-core/src/pixel.rs
 
 // =============================================================================
 // Platform-specific type aliases
@@ -516,8 +558,6 @@ mod tests {
         let converted = Rgba::from(Bgra::from(original));
         assert_eq!(original, converted);
     }
-
-    // Note: Batch tests removed - they need to be rewritten for new Backend-generic API
 
     #[test]
     fn test_color_to_rgba() {

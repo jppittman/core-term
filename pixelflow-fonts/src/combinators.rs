@@ -45,14 +45,14 @@ impl<'a, S> Lazy<'a, S> {
     }
 }
 
-impl<'a, S, P, C> Manifold<P, C> for Lazy<'a, S>
+impl<'a, S, T, C> Manifold<T, C> for Lazy<'a, S>
 where
-    S: Manifold<P, C>,
-    P: pixelflow_core::Pixel,
+    S: Manifold<T, C>,
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<T> {
         self.get().eval(x, y, z, w)
     }
 }

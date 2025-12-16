@@ -1,6 +1,5 @@
 use crate::batch::{Batch, LANES};
 use crate::traits::Manifold;
-use crate::pixel::Pixel;
 use crate::backend::{SimdBatch};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -14,28 +13,28 @@ use core::fmt::Debug;
 /// Implements coherence optimization: if all lanes have the same index,
 /// evaluate once instead of scalar evaluations.
 #[derive(Clone)]
-pub struct Partition<I, P, C = u32> {
+pub struct Partition<I, T, C = u32> {
     /// Indexer surface that returns indices for each pixel
     pub indexer: I,
     /// Table of surfaces indexed by the indexer
-    pub surfaces: Vec<Arc<dyn Manifold<P, C>>>,
+    pub surfaces: Vec<Arc<dyn Manifold<T, C>>>,
 }
 
-impl<I, P, C> Partition<I, P, C> {
+impl<I, T, C> Partition<I, T, C> {
     /// Creates a new Partition combinator.
-    pub fn new(indexer: I, surfaces: Vec<Arc<dyn Manifold<P, C>>>) -> Self {
+    pub fn new(indexer: I, surfaces: Vec<Arc<dyn Manifold<T, C>>>) -> Self {
         Self { indexer, surfaces }
     }
 }
 
-impl<I, P, C> Manifold<P, C> for Partition<I, P, C>
+impl<I, T, C> Manifold<T, C> for Partition<I, T, C>
 where
     I: Manifold<u32, C>,
-    P: Pixel,
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<T> {
         let indices: Batch<u32> = self.indexer.eval(x, y, z, w);
 
         // Extract indices for each lane
@@ -53,7 +52,7 @@ where
         }
 
         // Mixed case - evaluate each lane through its surface
-        let mut result_array = [P::default(); LANES];
+        let mut result_array = [T::default(); LANES];
 
         for i in 0..LANES {
             let idx = indices.extract_lane(i) as usize;
@@ -68,6 +67,6 @@ where
             // else: out of bounds, use default value (already set)
         }
 
-        Batch::<P>::load(&result_array)
+        Batch::<T>::load(&result_array)
     }
 }

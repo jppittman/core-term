@@ -1,6 +1,5 @@
 use crate::batch::Batch;
-use crate::pixel::Pixel;
-use crate::surfaces::{Map, Max, Mul, Offset, Over, Skew};
+use crate::surfaces::{Map, Max, Mul, Offset, Select, Skew};
 use crate::traits::Surface;
 use core::fmt::Debug;
 
@@ -60,22 +59,20 @@ where
 
     /// Clips the surface using a mask.
     ///
-    /// This is a convenience for `Select` where the false branch is an empty/zero surface.
-    /// For T=P (Pixel), "empty" usually means transparent black.
+    /// Returns `self` where `mask` is true, and `Default::default()` (Zero) where `mask` is false.
     ///
-    /// Note: This implementation currently uses `Select` but requires the false branch
-    /// to be provided or inferred. Since we don't have a generic "Empty" surface yet,
-    /// we'll leave this as a TODO or implement a simple version if possible.
-    ///
-    /// Actually, let's implement `clip` to take a default value or "zero".
-    /// Or better, define `clip` on `SurfaceExt` to just wrap in `Select` with a default.
-    /// But generic T doesn't imply `Pixel`.
-    /// So for now, let's omit `clip` here or make it require `Default`.
-
-    /*
-    fn clip<M>(self, mask: M) -> crate::surfaces::Select<M, Self, Empty<T>> ...
-    We don't have Empty<T> yet.
-    */
+    /// This relies on `Select`.
+    fn clip<M>(self, mask: M) -> Select<M, Self, T>
+    where
+        M: Surface<bool>, // Mask must be boolean
+    {
+        // We use T's default value (impl Surface for T) as the "Empty" surface
+        Select {
+            mask,
+            if_true: self,
+            if_false: T::default(),
+        }
+    }
 
     /// Computes the maximum of this surface and another.
     fn max<O>(self, other: O) -> Max<Self, O>
@@ -83,6 +80,14 @@ where
         O: Surface<T>,
     {
         Max(self, other)
+    }
+
+    /// Multiplies this surface by another (lane-wise).
+    fn mul<O>(self, other: O) -> Mul<Self, O>
+    where
+        O: Surface<T>,
+    {
+        Mul { a: self, b: other }
     }
 
     /// Applies a transformation function to surface output.
@@ -96,34 +101,8 @@ where
     }
 }
 
-/// Extensions for pixel Masks (Blending).
-///
-/// Masks are now `Surface<P>` where coverage is in the alpha channel.
-/// This aligns with SIMD batch sizes and eliminates u8/u32 conversions.
-pub trait MaskExt<P: Pixel>: Surface<P> + Sized {
-    /// Composites a foreground over a background using this surface as a mask.
-    ///
-    /// The mask's alpha channel is used as coverage for the blend.
-    fn over<F, B>(self, fg: F, bg: B) -> Over<P, Self, F, B>
-    where
-        F: Surface<P>,
-        B: Surface<P>,
-    {
-        Over::new(self, fg, bg)
-    }
-
-    /// Multiplies a color surface by this mask's alpha channel.
-    fn mul<C>(self, color: C) -> Mul<Self, C>
-    where
-        C: Surface<P>,
-    {
-        Mul { mask: self, color }
-    }
-}
-
 // Blanket implementations
 impl<T, S: Surface<T>> SurfaceExt<T> for S where
     T: Copy + Debug + Default + PartialEq + Send + Sync + 'static
 {
 }
-impl<P: Pixel, S: Surface<P>> MaskExt<P> for S {}

@@ -1,6 +1,7 @@
 //! Scalar backend implementation (LANES=1).
 
 use crate::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
+use crate::traits::BatchSelect;
 use core::fmt::Debug;
 use core::ops::*;
 
@@ -48,10 +49,30 @@ impl Backend for Scalar {
 #[repr(transparent)]
 pub struct ScalarBatch<T>(pub T);
 
+impl<T> ScalarBatch<T> {
+    /// Converts the batch to a fixed-size array.
+    #[inline(always)]
+    pub fn to_array(self) -> [T; 1] {
+        [self.0]
+    }
+}
+
 // PartialEq only for types that support it
 impl<T: PartialEq> PartialEq for ScalarBatch<T> {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
+    }
+}
+
+// Implement BatchSelect for ScalarBatch<bool> selecting ANY T
+impl<T> BatchSelect<ScalarBatch<T>> for ScalarBatch<bool> {
+    #[inline(always)]
+    fn select(self, t: ScalarBatch<T>, f: ScalarBatch<T>) -> ScalarBatch<T> {
+        if self.0 {
+            t
+        } else {
+            f
+        }
     }
 }
 
@@ -63,20 +84,6 @@ macro_rules! impl_arithmetic_int {
             #[inline(always)]
             fn add(self, rhs: Self) -> Self {
                 ScalarBatch(self.0.wrapping_add(rhs.0))
-            }
-        }
-        impl Add<$t> for ScalarBatch<$t> {
-            type Output = Self;
-            #[inline(always)]
-            fn add(self, rhs: $t) -> Self {
-                self + Self::splat(rhs)
-            }
-        }
-        impl Mul<$t> for ScalarBatch<$t> {
-            type Output = Self;
-            #[inline(always)]
-            fn mul(self, rhs: $t) -> Self {
-                self * Self::splat(rhs)
             }
         }
         impl Sub for ScalarBatch<$t> {
@@ -98,6 +105,13 @@ macro_rules! impl_arithmetic_int {
             #[inline(always)]
             fn div(self, rhs: Self) -> Self {
                 ScalarBatch(self.0.wrapping_div(rhs.0))
+            }
+        }
+        impl Rem for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn rem(self, rhs: Self) -> Self {
+                ScalarBatch(self.0.wrapping_rem(rhs.0))
             }
         }
     };
@@ -132,6 +146,13 @@ macro_rules! impl_arithmetic_float {
             #[inline(always)]
             fn div(self, rhs: Self) -> Self {
                 ScalarBatch(self.0 / rhs.0)
+            }
+        }
+        impl Rem for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn rem(self, rhs: Self) -> Self {
+                ScalarBatch(self.0 % rhs.0)
             }
         }
     };
@@ -246,9 +267,14 @@ impl_arithmetic_int!(u32);
 impl_bitwise_int!(u32);
 impl_arithmetic_int!(i32);
 impl_bitwise_int!(i32);
+impl_arithmetic_int!(i8);
+impl_bitwise_int!(i8);
+impl_arithmetic_int!(i16);
+impl_bitwise_int!(i16);
 
 impl_arithmetic_float!(f32);
 impl_bitwise_float!(f32, u32);
+impl_arithmetic_float!(f64);
 
 impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T> for ScalarBatch<T> {
     const LANES: usize = 1;
@@ -286,12 +312,12 @@ impl BatchArithmetic<u32> for ScalarBatch<u32> {
     fn select(self, if_true: Self, if_false: Self) -> Self {
         (if_true & self) | (if_false & !self)
     }
-    fn gather(base: &[u32], indices: Self) -> Self {
-        let idx = indices.0 as usize;
+    fn gather<I: SimdBatch<u32>>(base: &[u32], indices: I) -> Self {
+        let idx = indices.extract_lane(0) as usize;
         ScalarBatch(if idx < base.len() { base[idx] } else { 0 })
     }
-    fn gather_u8(base: &[u8], indices: Self) -> Self {
-        let idx = indices.0 as usize;
+    fn gather_u8<I: SimdBatch<u32>>(base: &[u8], indices: I) -> Self {
+        let idx = indices.extract_lane(0) as usize;
         ScalarBatch(if idx < base.len() {
             base[idx] as u32
         } else {
@@ -359,8 +385,8 @@ impl BatchArithmetic<u8> for ScalarBatch<u8> {
     fn select(self, if_true: Self, if_false: Self) -> Self {
         (if_true & self) | (if_false & !self)
     }
-    fn gather(base: &[u8], indices: Self) -> Self {
-        let idx = indices.0 as usize;
+    fn gather<I: SimdBatch<u32>>(base: &[u8], indices: I) -> Self {
+        let idx = indices.extract_lane(0) as usize;
         ScalarBatch(if idx < base.len() { base[idx] } else { 0 })
     }
     fn min(self, other: Self) -> Self {
@@ -424,8 +450,9 @@ impl BatchArithmetic<u16> for ScalarBatch<u16> {
     fn select(self, if_true: Self, if_false: Self) -> Self {
         (if_true & self) | (if_false & !self)
     }
-    fn gather(base: &[u16], indices: Self) -> Self {
-        ScalarBatch(base[indices.0 as usize])
+    fn gather<I: SimdBatch<u32>>(base: &[u16], indices: I) -> Self {
+        let idx = indices.extract_lane(0) as usize;
+        ScalarBatch(if idx < base.len() { base[idx] } else { 0 })
     }
     fn min(self, other: Self) -> Self {
         ScalarBatch(self.0.min(other.0))
@@ -488,8 +515,11 @@ impl BatchArithmetic<f32> for ScalarBatch<f32> {
     fn select(self, if_true: Self, if_false: Self) -> Self {
         (if_true & self) | (if_false & !self)
     }
-    fn gather(_base: &[f32], _indices: Self) -> Self {
-        unimplemented!("Cannot gather float indices")
+    fn gather<I: SimdBatch<u32>>(_base: &[f32], _indices: I) -> Self {
+        // Scalar fallback supports this but we return 0 for now as previously unimplemented
+        // Actually, we can implement it for Scalar
+        let idx = _indices.extract_lane(0) as usize;
+        ScalarBatch(if idx < _base.len() { _base[idx] } else { 0.0 })
     }
     fn min(self, other: Self) -> Self {
         ScalarBatch(self.0.min(other.0))

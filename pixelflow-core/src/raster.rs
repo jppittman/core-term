@@ -1,6 +1,5 @@
 use crate::backend::{Backend, BatchArithmetic, SimdBatch};
 use crate::batch::{Batch, LANES};
-use crate::pixel;
 use crate::traits::Surface;
 use core::fmt::Debug;
 use core::ops::{BitAnd, BitOr, Not, Shl, Shr};
@@ -204,10 +203,10 @@ pub struct TensorViewMut<'a, T> {
 ///
 /// This function iterates over the target buffer, evaluating the surface
 /// for each pixel using SIMD batches where possible.
-pub fn execute<P, S>(surface: &S, target: &mut [P], width: usize, height: usize)
+pub fn execute<T, S>(surface: &S, target: &mut [T], width: usize, height: usize)
 where
-    P: pixel::Pixel,
-    S: Surface<P> + ?Sized,
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T> + ?Sized,
 {
     // Early return for zero-size targets to avoid UB with from_raw_parts_mut
     if width == 0 || height == 0 {
@@ -219,15 +218,15 @@ where
 
 /// Render a horizontal stripe of rows [start_y, end_y)
 #[inline(always)]
-fn render_stripe<P, S>(
+fn render_stripe<T, S>(
     surface: &S,
-    target: &mut [P],
+    target: &mut [T],
     width: usize,
     start_y: usize,
     end_y: usize,
 ) where
-    P: pixel::Pixel,
-    S: Surface<P> + ?Sized,
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T> + ?Sized,
 {
     for (row_idx, y) in (start_y..end_y).enumerate() {
         let row_start = row_idx * width;
@@ -238,7 +237,13 @@ fn render_stripe<P, S>(
         while x + LANES <= width {
             let x_batch = Batch::<u32>::sequential_from(x as u32);
             let result = surface.eval(x_batch, y_batch);
-            P::batch_store(result, &mut target[row_start + x..row_start + x + LANES]);
+
+            // Store result. Note: generic Batch<T> doesn't expose inherent `store` cleanly
+            // without SimdBatch trait bound on Batch<T>, but we know Batch<T> is SimdBatch<T>
+            // due to backend definition.
+            // Using SimdBatch::store trait method.
+            SimdBatch::store(&result, &mut target[row_start + x..row_start + x + LANES]);
+
             x += LANES;
         }
 
@@ -255,15 +260,15 @@ fn render_stripe<P, S>(
 /// This is exposed for parallel rendering: external code can partition
 /// the framebuffer into stripes and call this function from multiple threads,
 /// as long as the stripes don't overlap.
-pub fn execute_stripe<P, S>(
+pub fn execute_stripe<T, S>(
     surface: &S,
-    target: &mut [P],
+    target: &mut [T],
     width: usize,
     start_y: usize,
     end_y: usize,
 ) where
-    P: pixel::Pixel,
-    S: Surface<P> + ?Sized,
+    T: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    S: Surface<T> + ?Sized,
 {
     render_stripe(surface, target, width, start_y, end_y);
 }

@@ -58,6 +58,37 @@ where
     fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<T>;
 }
 
+/// Trait for selecting between two values based on a boolean batch mask.
+///
+/// This abstracts `select` logic for arbitrary value types using a mask
+/// that comes from `Batch<bool>`.
+pub trait BatchSelect<T>: Sized {
+    /// Selects values from `t` where `self` is true, and `f` where `self` is false.
+    fn select(self, t: T, f: T) -> T;
+}
+
+// ============================================================================
+// Scalars as Manifolds
+// ============================================================================
+
+macro_rules! impl_scalar_manifold {
+    ($($t:ty),*) => {
+        $(
+            impl<C> Manifold<$t, C> for $t
+            where
+                C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+            {
+                #[inline(always)]
+                fn eval(&self, _x: Batch<C>, _y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<$t> {
+                    Batch::<$t>::splat(*self)
+                }
+            }
+        )*
+    }
+}
+
+impl_scalar_manifold!(u8, i8, u16, i16, u32, i32, f32, f64, bool);
+
 // ============================================================================
 // Trait Object Adapters (Dyn Manifold)
 // ============================================================================
