@@ -234,9 +234,7 @@ impl Screen {
 
         if start_clamped < end_clamped {
             let row = Arc::make_mut(row_arc);
-            for cell in row[start_clamped..end_clamped].iter_mut() {
-                *cell = fill_glyph;
-            }
+            row[start_clamped..end_clamped].fill(fill_glyph);
         }
         self.mark_line_dirty(y);
     }
@@ -502,9 +500,8 @@ impl Screen {
             // Check if the row y exists in the old grid
             if let Some(old_row_content) = self.grid.get(y) {
                 let mut new_row = vec![fill_glyph; nw];
-                for x in 0..std_min(old_row_content.len(), nw) {
-                    new_row[x] = old_row_content[x];
-                }
+                let copy_len = std_min(old_row_content.len(), nw);
+                new_row[..copy_len].copy_from_slice(&old_row_content[..copy_len]);
                 // new_primary_grid[y] is guaranteed to exist due to initialization size
                 *row_slot = Arc::new(new_row);
             }
@@ -522,9 +519,8 @@ impl Screen {
         {
             if let Some(old_row_content) = self.alt_grid.get(y) {
                 let mut new_row = vec![fill_glyph; nw];
-                for x in 0..std_min(old_row_content.len(), nw) {
-                    new_row[x] = old_row_content[x];
-                }
+                let copy_len = std_min(old_row_content.len(), nw);
+                new_row[..copy_len].copy_from_slice(&old_row_content[..copy_len]);
                 *row_slot = Arc::new(new_row);
             }
         }

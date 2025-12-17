@@ -9,6 +9,7 @@ use pixelflow_core::dsl::MaskExt; // for .over()
 use pixelflow_core::surfaces::{Baked, FnSurface, Partition};
 use pixelflow_core::traits::Manifold;
 use pixelflow_core::batch::Batch;
+use pixelflow_core::backend::SimdBatch;
 use pixelflow_fonts::{glyphs, Lazy};
 use pixelflow_render::font;
 use pixelflow_render::Pixel;
