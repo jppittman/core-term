@@ -65,7 +65,13 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
 }
 
 /// Basic operations supported by any SIMD batch (storage/movement).
-pub trait SimdBatch<T: Copy + Debug + Default + PartialEq + Send + Sync + 'static>: Copy + Clone + Debug + Default + Send + Sync {
+///
+/// This trait is `pub(crate)` to enforce the North Star architecture:
+/// external code should not directly manipulate batches via `splat`, `load`, etc.
+/// Instead, use surfaces like `Constant<T>` for solid values.
+pub(crate) trait SimdBatch<T: Copy + Debug + Default + PartialEq + Send + Sync + 'static>:
+    Copy + Clone + Debug + Default + Send + Sync
+{
     /// Number of lanes in this batch.
     const LANES: usize;
 
@@ -201,8 +207,8 @@ pub trait FloatBatchOps: BatchArithmetic<f32> {
 
 pub use BatchArithmetic as BatchOps;
 
-#[cfg(target_arch = "x86_64")]
-pub mod x86;
-pub mod scalar;
 #[cfg(target_arch = "aarch64")]
 pub mod arm;
+pub mod scalar;
+#[cfg(target_arch = "x86_64")]
+pub mod x86;
