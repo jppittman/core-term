@@ -1,4 +1,4 @@
-use crate::backend::{Backend, BatchArithmetic, SimdBatch};
+use crate::backend::{Backend, BatchArithmetic};
 use crate::batch::{Batch, NativeBackend};
 use crate::traits::Surface;
 

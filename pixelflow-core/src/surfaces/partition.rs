@@ -1,7 +1,6 @@
+use crate::backend::SimdBatch;
 use crate::batch::{Batch, LANES};
 use crate::traits::Manifold;
-use crate::pixel::Pixel;
-use crate::backend::{SimdBatch};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Debug;
@@ -31,8 +30,9 @@ impl<I, P, C> Partition<I, P, C> {
 impl<I, P, C> Manifold<P, C> for Partition<I, P, C>
 where
     I: Manifold<u32, C>,
-    P: Pixel,
+    P: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    Batch<P>: SimdBatch<P>,
 {
     #[inline(always)]
     fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {

@@ -1,7 +1,7 @@
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use crate::display::ops::PlatformOps;
 use actor_scheduler::{Actor, ParkHint};
-use pixelflow_core::Pixel;
+use pixelflow_graphics::Pixel;
 
 /// The Platform Trait.
 /// Implementers must be an Actor that handles display messages.

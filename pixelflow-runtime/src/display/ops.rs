@@ -1,6 +1,6 @@
 use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use actor_scheduler::ParkHint;
-use pixelflow_core::Pixel;
+use pixelflow_graphics::Pixel;
 
 /// Backend-specific operations for the display platform.
 pub trait PlatformOps: Send + 'static {

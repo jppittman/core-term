@@ -1,9 +1,6 @@
-use crate::TensorView;
-use crate::backend::{Backend, SimdBatch};
-use crate::batch::{Batch, NativeBackend};
-use crate::pixel::Pixel;
+use crate::batch::Batch;
+use crate::bitwise::Bitwise;
 use crate::traits::Manifold;
-use alloc::vec;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
@@ -38,47 +35,30 @@ where
     }
 }
 
-pub type FnSurface<F, T> = Compute<F, T>;
+/// Type alias for `Compute` - deprecated.
+///
+/// This type alias exists for backward compatibility. New code should use `Compute` directly.
+#[deprecated(since = "0.1.0", note = "Use Compute instead")]
+pub type FnSurface<T, F> = Compute<F, T>;
 
-#[derive(Copy, Clone)]
-pub struct SampleAtlas<'a> {
-    /// The source texture atlas.
-    pub atlas: TensorView<'a, u8>,
-    /// The horizontal step size in fixed-point format (16.16).
-    pub step_x_fp: u32,
-    /// The vertical step size in fixed-point format (16.16).
-    pub step_y_fp: u32,
-}
-
-impl<'a> Manifold<u8> for SampleAtlas<'a> {
-    #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<u8> {
-        let u = x * Batch::<u32>::splat(self.step_x_fp);
-        let v = y * Batch::<u32>::splat(self.step_y_fp);
-        unsafe {
-            let res = self.atlas.sample_4bit_bilinear::<NativeBackend>(u, v);
-            NativeBackend::downcast_u32_to_u8(res)
-        }
-    }
-}
-
-/// A surface that is pre-rendered (baked) into a buffer.
+/// A surface that is backed by a buffer of data.
+///
+/// This is typically used for textures or cached surfaces.
 #[derive(Clone)]
-pub struct Baked<P: Pixel> {
-    data: alloc::sync::Arc<[P]>,
+pub struct Baked<T: Bitwise> {
+    data: alloc::sync::Arc<[T]>,
     width: u32,
     height: u32,
 }
 
-impl<P: Pixel> Baked<P> {
-    /// Creates a new `Baked` surface by rasterizing the source.
-    /// Note: source must be a Manifold (or Surface via blanket).
-    pub fn new<S: Manifold<P>>(source: &S, width: u32, height: u32) -> Self {
-        let mut data = vec![P::default(); (width as usize) * (height as usize)].into_boxed_slice();
-        // Execute expects a Surface, which S implements via blanket impl
-        crate::execute(source, &mut data, width as usize, height as usize);
+impl<T: Bitwise> Baked<T>
+where
+    T: Copy + Default + Debug + PartialEq + Send + Sync + 'static,
+{
+    /// Creates a new `Baked` surface from an existing buffer of data.
+    pub fn from_data(data: alloc::sync::Arc<[T]>, width: u32, height: u32) -> Self {
         Self {
-            data: alloc::sync::Arc::from(data),
+            data,
             width,
             height,
         }
@@ -96,19 +76,25 @@ impl<P: Pixel> Baked<P> {
     }
     /// Returns the raw pixel data.
     #[inline]
-    pub fn data(&self) -> &[P] {
+    pub fn data(&self) -> &[T] {
         &self.data
     }
     /// Returns a mutable reference to the raw pixel data.
+    ///
+    /// # Panics
+    /// Panics if there is more than one reference to the internal data.
     #[inline]
-    pub fn data_mut(&mut self) -> &mut [P] {
+    pub fn data_mut(&mut self) -> &mut [T] {
         alloc::sync::Arc::get_mut(&mut self.data).unwrap()
     }
 }
 
-impl<P: Pixel> Manifold<P> for Baked<P> {
+impl<T: Bitwise> Manifold<T> for Baked<T>
+where
+    T: Copy + Default + Debug + PartialEq + Send + Sync + 'static,
+{
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<T> {
         let w = self.width;
         let h = self.height;
 
@@ -120,13 +106,17 @@ impl<P: Pixel> Manifold<P> for Baked<P> {
 
         let idx = (y_mod * w_batch) + x_mod;
 
-        P::batch_gather(&self.data, idx)
+        // Use generic gather from Bitwise
+        T::batch_gather(&self.data, idx)
     }
 }
 
-impl<P: Pixel> Manifold<P> for &Baked<P> {
+impl<T: Bitwise> Manifold<T> for &Baked<T>
+where
+    T: Copy + Default + Debug + PartialEq + Send + Sync + 'static,
+{
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<P> {
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<T> {
         (*self).eval(x, y, z, w)
     }
 }

@@ -10,7 +10,8 @@ pub struct Scalar;
 
 impl Backend for Scalar {
     const LANES: usize = 1;
-    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> = ScalarBatch<T>;
+    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> =
+        ScalarBatch<T>;
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: ScalarBatch<u32>) -> ScalarBatch<u8> {
@@ -113,11 +114,25 @@ macro_rules! impl_arithmetic_float {
                 ScalarBatch(self.0 + rhs.0)
             }
         }
+        impl Add<$t> for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn add(self, rhs: $t) -> Self {
+                ScalarBatch(self.0 + rhs)
+            }
+        }
         impl Sub for ScalarBatch<$t> {
             type Output = Self;
             #[inline(always)]
             fn sub(self, rhs: Self) -> Self {
                 ScalarBatch(self.0 - rhs.0)
+            }
+        }
+        impl Sub<$t> for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn sub(self, rhs: $t) -> Self {
+                ScalarBatch(self.0 - rhs)
             }
         }
         impl Mul for ScalarBatch<$t> {
@@ -127,11 +142,25 @@ macro_rules! impl_arithmetic_float {
                 ScalarBatch(self.0 * rhs.0)
             }
         }
+        impl Mul<$t> for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn mul(self, rhs: $t) -> Self {
+                ScalarBatch(self.0 * rhs)
+            }
+        }
         impl Div for ScalarBatch<$t> {
             type Output = Self;
             #[inline(always)]
             fn div(self, rhs: Self) -> Self {
                 ScalarBatch(self.0 / rhs.0)
+            }
+        }
+        impl Div<$t> for ScalarBatch<$t> {
+            type Output = Self;
+            #[inline(always)]
+            fn div(self, rhs: $t) -> Self {
+                ScalarBatch(self.0 / rhs)
             }
         }
     };
@@ -250,7 +279,9 @@ impl_bitwise_int!(i32);
 impl_arithmetic_float!(f32);
 impl_bitwise_float!(f32, u32);
 
-impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T> for ScalarBatch<T> {
+impl<T: Copy + Send + Sync + Debug + Default + PartialEq + 'static> SimdBatch<T>
+    for ScalarBatch<T>
+{
     const LANES: usize = 1;
 
     fn splat(val: T) -> Self {

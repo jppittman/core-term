@@ -6,12 +6,22 @@ mod tests {
     // A dummy Pixel implementation for testing
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct TestPixel;
-    impl pixelflow_core::Pixel for TestPixel {
-        fn red(&self) -> u8 { 0 }
-        fn green(&self) -> u8 { 0 }
-        fn blue(&self) -> u8 { 0 }
-        fn alpha(&self) -> u8 { 0 }
-        fn from_rgba(_r: u8, _g: u8, _b: u8, _a: u8) -> Self { TestPixel }
+    impl pixelflow_graphics::Pixel for TestPixel {
+        fn red(&self) -> u8 {
+            0
+        }
+        fn green(&self) -> u8 {
+            0
+        }
+        fn blue(&self) -> u8 {
+            0
+        }
+        fn alpha(&self) -> u8 {
+            0
+        }
+        fn from_rgba(_r: u8, _g: u8, _b: u8, _a: u8) -> Self {
+            TestPixel
+        }
     }
 
     // We can't easily instantiate VsyncActor because EngineActorHandle is private.

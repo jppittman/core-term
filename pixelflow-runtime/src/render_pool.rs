@@ -2,39 +2,51 @@
 
 use pixelflow_core::traits::Surface;
 use pixelflow_graphics::render::Pixel;
+use pixelflow_graphics::{execute, execute_stripe, Stripe, TensorShape};
 // use std::sync::Arc;
 
-/// Render with parallel rasterization using the specified number of threads.
-/// Falls back to single-threaded if num_threads <= 1.
+/// Parallel rendering options.
+#[derive(Copy, Clone, Debug)]
+pub struct RenderOptions {
+    /// Number of threads to use for rasterization.
+    pub num_threads: usize,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self { num_threads: 1 }
+    }
+}
+
+/// Render with parallel rasterization.
 pub fn render_parallel<P, S>(
     surface: &S,
     buffer: &mut [P],
-    width: usize,
-    height: usize,
-    num_threads: usize,
+    shape: TensorShape,
+    options: RenderOptions,
 ) where
     P: Pixel + Send,
     S: Surface<P> + Sync,
 {
-    if num_threads <= 1 {
-        pixelflow_core::execute(surface, buffer, width, height);
+    if options.num_threads <= 1 {
+        execute(surface, buffer, shape);
         return;
     }
 
     // Partitioning
-    let rows_per_thread = height / num_threads;
-    let remainder = height % num_threads;
+    let rows_per_thread = shape.height / options.num_threads;
+    let remainder = shape.height % options.num_threads;
 
     // Split buffer into disjoint slices - Rust can verify safety!
-    let mut buffer_chunks = Vec::with_capacity(num_threads);
+    let mut buffer_chunks = Vec::with_capacity(options.num_threads);
     let mut remaining = buffer;
     let mut start_y = 0;
 
-    for i in 0..num_threads {
+    for i in 0..options.num_threads {
         let extra = if i < remainder { 1 } else { 0 };
         let rows = rows_per_thread + extra;
         let end_y = start_y + rows;
-        let stripe_len = rows * width;
+        let stripe_len = rows * shape.width;
 
         let (chunk, rest) = remaining.split_at_mut(stripe_len);
         buffer_chunks.push((chunk, start_y, end_y));
@@ -46,7 +58,7 @@ pub fn render_parallel<P, S>(
     std::thread::scope(|s| {
         for (chunk, start_y, end_y) in buffer_chunks {
             s.spawn(move || {
-                pixelflow_core::execute_stripe(surface, chunk, width, start_y, end_y);
+                execute_stripe(surface, chunk, shape.width, Stripe { start_y, end_y });
             });
         }
     });

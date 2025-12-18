@@ -59,7 +59,7 @@ enum ClockCommand {
 }
 
 /// VSync actor - generates periodic vsync timing signals.
-pub struct VsyncActor<P: pixelflow_core::Pixel> {
+pub struct VsyncActor<P: pixelflow_graphics::Pixel> {
     engine_handle: crate::api::private::EngineActorHandle<P>,
 
     // VSync state
@@ -82,7 +82,7 @@ pub struct VsyncActor<P: pixelflow_core::Pixel> {
 
 const MAX_TOKENS: u32 = 3;
 
-impl<P: pixelflow_core::Pixel> VsyncActor<P> {
+impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
     fn new(
         refresh_rate: f64,
         engine_handle: crate::api::private::EngineActorHandle<P>,
@@ -222,7 +222,7 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
     }
 }
 
-impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManagement>
+impl<P: pixelflow_graphics::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManagement>
     for VsyncActor<P>
 {
     fn handle_data(&mut self, response: RenderedResponse) {

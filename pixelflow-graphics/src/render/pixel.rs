@@ -1,9 +1,12 @@
-// pixelflow-core/src/pixel.rs
+// pixelflow-graphics/src/render/pixel.rs
 //! Pixel format trait for generic color operations.
 
-use crate::backend::{Backend, BatchArithmetic, SimdBatch};
-use crate::batch::{Batch, NativeBackend};
-use crate::traits::Manifold;
+use pixelflow_core::backend::{Backend, BatchArithmetic, SimdBatch};
+use pixelflow_core::batch::{Batch, NativeBackend};
+// Manifold removed (circular dependency? No, core doesn't depend on graphics)
+// But Pixel impls Manifold? NO. Because generic Manifold<T> handles it?
+// Or we explicitly impl Manifold<Rgba> for Rgba in graphics.
+// So Pixel trait itself does NOT need Manifold bound or impl.
 use core::fmt::Debug;
 
 /// Trait for pixel types that can be used in surfaces and frames.
@@ -45,17 +48,6 @@ pub trait Pixel: Copy + Default + Debug + PartialEq + 'static + Send + Sync {
 
     /// Store a batch of pixels into a slice.
     fn batch_store(batch: Batch<Self>, slice: &mut [Self]);
-}
-
-// All constants are Manifolds (Manifold -> Volume -> Surface)
-impl<P: Pixel, C> Manifold<P, C> for P
-where
-    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-{
-    #[inline(always)]
-    fn eval(&self, _x: Batch<C>, _y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<P> {
-        Batch::<P>::splat(*self)
-    }
 }
 
 impl Pixel for u8 {

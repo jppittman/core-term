@@ -63,13 +63,13 @@ pub enum EngineEventData {
 }
 
 /// Commands sent from the Application to the Engine.
-pub enum AppData<P: pixelflow_core::Pixel> {
+pub enum AppData<P: pixelflow_graphics::Pixel> {
     RenderSurface(std::sync::Arc<dyn pixelflow_core::Surface<P, f32> + Send + Sync>),
     RenderSurfaceU32(std::sync::Arc<dyn pixelflow_core::Surface<P, u32> + Send + Sync>),
     Skipped,
 }
 
-impl<P: pixelflow_core::Pixel> std::fmt::Debug for AppData<P> {
+impl<P: pixelflow_graphics::Pixel> std::fmt::Debug for AppData<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RenderSurface(_) => f.debug_tuple("RenderSurface").finish(),

@@ -1,6 +1,6 @@
 //! SIMD batch types and backend selection.
 
-use crate::backend::{Backend, SimdBatch};
+use crate::backend::{Backend, BatchArithmetic};
 use core::fmt::Debug;
 
 // Select NativeBackend based on architecture
@@ -15,6 +15,9 @@ pub use crate::backend::scalar::Scalar as NativeBackend;
 
 /// The platform-native SIMD batch type.
 pub type Batch<T> = <NativeBackend as Backend>::Batch<T>;
+
+/// The computational atom (SIMD vector of f32).
+pub type Field = Batch<f32>;
 
 /// Number of lanes in the native batch.
 pub const LANES: usize = NativeBackend::LANES;
