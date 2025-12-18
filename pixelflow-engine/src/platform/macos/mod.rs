@@ -6,4 +6,4 @@ pub mod platform;
 pub mod sys;
 pub mod window;
 
-pub use platform::MetalPlatform;
+pub use platform::MetalOps;

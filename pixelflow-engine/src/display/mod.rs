@@ -5,8 +5,8 @@
 //! - Messages: Display events and render snapshots
 
 // pub mod generic;
+pub mod ops;
 pub mod platform;
-pub mod traits; // Add this
 
 pub mod driver;
 pub mod drivers;

@@ -1,6 +1,6 @@
 use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use super::platform::Platform;
-use actor_scheduler::{ActorScheduler, ParkHint};
+use actor_scheduler::ActorScheduler;
 use anyhow::Result;
 
 /// The Generic Driver Actor.

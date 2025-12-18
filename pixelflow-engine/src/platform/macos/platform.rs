@@ -1,35 +1,53 @@
 use crate::api::private::{EngineActorHandle, EngineData, WindowId};
 use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt};
-use crate::display::platform::Platform;
-use crate::input::KeySymbol;
-use crate::platform::macos::cocoa::{self, event_type, NSApplication};
+use crate::display::ops::PlatformOps;
+use crate::platform::macos::cocoa::{self, event_type, NSApplication, NSPasteboard};
 use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
-use actor_scheduler::{Actor, Message, ParkHint};
+use crate::platform::PlatformPixel;
+use actor_scheduler::{Message, ParkHint};
 use anyhow::Result;
-use pixelflow_render::color::Rgba;
+
 use std::collections::HashMap;
+
+const NS_APPLICATION_ACTIVATION_POLICY_REGULAR: isize = 0;
 
 /// The macOS Platform Actor.
 /// Manages NSApplication, NSWindows, and Event Loop.
-pub struct MetalPlatform {
+pub struct MetalOps {
     app: NSApplication,
     windows: HashMap<WindowId, MacWindow>,
     // Mapping from NSWindow pointer to WindowId for event routing
     // Note: NSWindow is a wrapper around Id, so we cast Id to usize or wrap generic
     window_map: HashMap<usize, WindowId>,
-    event_tx: EngineActorHandle<Rgba>,
+    // Handle to send events back to the engine
+    event_tx: EngineActorHandle<PlatformPixel>,
 }
 
-unsafe impl Send for MetalPlatform {}
+unsafe impl Send for MetalOps {}
 
-impl MetalPlatform {
-    pub fn new(event_tx: EngineActorHandle<Rgba>) -> Result<Self> {
-        let app = NSApplication::shared();
-        app.set_activation_policy(0); // Regular app
-        app.finish_launching();
-        app.activate_ignoring_other_apps(true);
+impl MetalOps {
+    pub fn new(event_tx: EngineActorHandle<PlatformPixel>) -> Result<Self> {
+        // Initialize Cocoa Application
+        let app = unsafe {
+            // Pool:
+            let cls_pool = sys::class(b"NSAutoreleasePool\0");
+            let _pool: sys::Id = sys::send(
+                sys::send(cls_pool, sys::sel(b"alloc\0")),
+                sys::sel(b"init\0"),
+            );
+
+            let app = NSApplication::shared();
+
+            // Use wrapper methods
+            app.set_activation_policy(NS_APPLICATION_ACTIVATION_POLICY_REGULAR);
+
+            app.finish_launching();
+            app.activate_ignoring_other_apps(true);
+
+            app
+        };
 
         Ok(Self {
             app,
@@ -40,14 +58,13 @@ impl MetalPlatform {
     }
 }
 
-impl Platform for MetalPlatform {
-    type Pixel = Rgba;
-}
+impl PlatformOps for MetalOps {
+    type Pixel = PlatformPixel;
 
-impl Actor<DisplayData<Rgba>, DisplayControl, DisplayMgmt> for MetalPlatform {
-    fn handle_data(&mut self, msg: DisplayData<Rgba>) {
+    fn handle_data(&mut self, msg: DisplayData<Self::Pixel>) {
         match msg {
             DisplayData::Present { id, frame } => {
+                log::trace!("MetalOps: Presenting frame for window {:?}", id);
                 if let Some(win) = self.windows.get_mut(&id) {
                     win.present(frame);
                 }
@@ -86,34 +103,19 @@ impl Actor<DisplayData<Rgba>, DisplayControl, DisplayMgmt> for MetalPlatform {
                 // NSBeep()
             }
             DisplayControl::Copy { text } => {
-                let pb = cocoa::NSPasteboard::general();
+                let pb = NSPasteboard::general();
                 pb.clear_contents();
                 pb.set_string(&text);
             }
             DisplayControl::RequestPaste => {
-                // Logic to get pasteboard string and send back event?
-                // But we are the platform, to whom do we send?
-                // The Actor trait doesn't have a "Sender" back to Engine.
-                // The DriverActor has the scheduler.
-                // Does Platform have a reference to EngineSender?
-                // Ah, Platform trait usually doesn't enforce it, but we might need it.
-                // Wait, we generate DisplayEvents. Where do they go?
-                // `Actor::park` returns events? No.
-                // The `DriverActor` holds the scheduler.
-                // The `DriverActor` used to have `cmd_tx`... no.
-
-                // `DriverActor` needs to forward events from `Platform` to `Engine`.
-                // `MetalPlatform` needs `EngineSender`.
-                // We should add `event_tx: Sender<DisplayEvent>` to MetalPlatform.
-                // But `Platform` trait doesn't mandate `new`. `DriverActor` accepts `P: Platform`.
-                // So `MetalPlatform::new(event_tx)` is how we construct it.
+                // Implementation pending
             }
             DisplayControl::Shutdown => {
                 unsafe {
                     // [NSApp terminate:nil]
-                    let app = NSApplication::shared();
+                    // Wrapper doesn't have terminate yet, stick to sys::send
                     sys::send_1::<(), sys::Id>(
-                        app.0,
+                        self.app.0,
                         sys::sel(b"terminate:\0"),
                         std::ptr::null_mut(),
                     );
@@ -128,8 +130,22 @@ impl Actor<DisplayData<Rgba>, DisplayControl, DisplayMgmt> for MetalPlatform {
                 match MacWindow::new(settings) {
                     Ok(win) => {
                         let ptr = win.window.0;
+                        let width = win.current_width;
+                        let height = win.current_height;
+                        let scale = win.scale_factor();
+
                         self.windows.insert(id, win);
                         self.window_map.insert(ptr as usize, id);
+
+                        // Emit WindowCreated event so Engine knows initial size
+                        let _ = self.event_tx.send(Message::Data(EngineData::FromDriver(
+                            DisplayEvent::WindowCreated {
+                                id,
+                                width_px: width,
+                                height_px: height,
+                                scale,
+                            },
+                        )));
                     }
                     Err(e) => {
                         // Log error?
@@ -158,7 +174,7 @@ impl Actor<DisplayData<Rgba>, DisplayControl, DisplayMgmt> for MetalPlatform {
                     sys::send(cls, sys::sel(b"distantFuture\0"))
                 }
                 ParkHint::Poll => {
-                    // Distant Past
+                    // Distant Past (return immediately)
                     let cls = sys::class(b"NSDate\0");
                     sys::send(cls, sys::sel(b"distantPast\0"))
                 }
@@ -179,11 +195,15 @@ impl Actor<DisplayData<Rgba>, DisplayControl, DisplayMgmt> for MetalPlatform {
                 }
             }
 
-            let event = self.app.next_event(u64::MAX, until_date, mode, true);
+            // Use wrapper for next_event
+            let event = self.app.next_event(
+                u64::MAX,
+                until_date,
+                mode,
+                true, // dequeue
+            );
 
-            // Release mode string if make_nsstring implies ownership or autorelease?
-            // make_nsstring uses alloc/init so it returns +1 retained object.
-            // We should release it.
+            // Release mode string
             sys::send::<()>(mode, sys::sel(b"release\0"));
 
             if !event.is_null() {
@@ -192,18 +212,14 @@ impl Actor<DisplayData<Rgba>, DisplayControl, DisplayMgmt> for MetalPlatform {
                     event_type::APP_KIT_DEFINED
                     | event_type::SYSTEM_DEFINED
                     | event_type::APPLICATION_DEFINED => {
-                        // Internal or WakeUp
+                        log::trace!("MetalOps: Received Internal/WakeUp event");
                     }
                     _ => {
-                        // Map to DisplayEvent
-                        // We need key symbol, etc.
-                        // And we need to route to window ID.
                         let ns_win = event.window();
                         if !ns_win.0.is_null() {
                             if let Some(wid) = self.window_map.get(&(ns_win.0 as usize)) {
                                 // We have the window ID.
                                 // Get window height from self.windows if needed for coordinate flip.
-                                // But map_event needs window_height.
                                 let height = if let Some(w) = self.windows.get(wid) {
                                     w.size().1 as f64
                                 } else {

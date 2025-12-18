@@ -2,8 +2,14 @@
 //!
 //! The VSync actor runs in its own thread and can be controlled via message passing.
 //! It sends periodic vsync signals that the engine uses for frame timing.
+//!
+//! # clock thread
+//! To avoid scheduling starvation, the VSync timing is driven by a dedicated
+//! clock thread that sends explicit `Tick` messages to the actor. This ensures
+//! the actor wakes up reliably regardless of other system load, without relying
+//! on blocking `park` calls that could stall the actor scheduler.
 
-use actor_scheduler::{Actor, ActorHandle, ActorScheduler};
+use actor_scheduler::{Actor, ActorHandle};
 use log::info;
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -35,10 +41,22 @@ pub struct RenderedResponse {
 }
 actor_scheduler::impl_data_message!(RenderedResponse);
 
-/// Management messages (placeholder for future use)
+/// Management messages
 #[derive(Debug)]
-pub enum VsyncManagement {}
+pub enum VsyncManagement {
+    /// Internal clock tick - wakes the actor to check vsync timing
+    Tick,
+}
 actor_scheduler::impl_management_message!(VsyncManagement);
+
+/// Internal commands sent to the clock thread
+#[derive(Debug)]
+enum ClockCommand {
+    /// Update the tick interval
+    SetInterval(Duration),
+    /// Stop the clock thread
+    Stop,
+}
 
 /// VSync actor - generates periodic vsync timing signals.
 pub struct VsyncActor<P: pixelflow_core::Pixel> {
@@ -57,12 +75,19 @@ pub struct VsyncActor<P: pixelflow_core::Pixel> {
     frame_count: u64,
     fps_start: Instant,
     last_fps: f64,
+
+    // Control for the clock thread
+    clock_control: Option<Sender<ClockCommand>>,
 }
 
 const MAX_TOKENS: u32 = 3;
 
 impl<P: pixelflow_core::Pixel> VsyncActor<P> {
-    fn new(refresh_rate: f64, engine_handle: crate::api::private::EngineActorHandle<P>) -> Self {
+    fn new(
+        refresh_rate: f64,
+        engine_handle: crate::api::private::EngineActorHandle<P>,
+        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+    ) -> Self {
         let interval = Duration::from_secs_f64(1.0 / refresh_rate);
 
         info!(
@@ -71,6 +96,31 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
             interval.as_secs_f64() * 1000.0,
             MAX_TOKENS
         );
+
+        // Spawn the clock thread
+        let (clock_tx, clock_rx) = std::sync::mpsc::channel();
+        let clock_handle = self_handle.clone();
+
+        thread::Builder::new()
+            .name("vsync-clock".to_string())
+            .spawn(move || {
+                let mut current_interval = interval;
+                loop {
+                    match clock_rx.recv_timeout(current_interval) {
+                        Ok(ClockCommand::Stop) => break,
+                        Ok(ClockCommand::SetInterval(d)) => current_interval = d,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // Time to tick
+                            if clock_handle.send(VsyncManagement::Tick).is_err() {
+                                // Actor is gone
+                                break;
+                            }
+                        }
+                        Err(_) => break, // Channel disconnected
+                    }
+                }
+            })
+            .expect("Failed to spawn vsync clock thread");
 
         Self {
             engine_handle,
@@ -82,6 +132,7 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
             frame_count: 0,
             fps_start: Instant::now(),
             last_fps: 0.0,
+            clock_control: Some(clock_tx),
         }
     }
 
@@ -101,10 +152,13 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
                 None, // No wake handler
             );
 
+        // We need to pass the handle to new(), so we clone it
+        let actor_handle = handle.clone();
+
         thread::Builder::new()
             .name("vsync-actor".to_string())
             .spawn(move || {
-                let mut actor = VsyncActor::new(refresh_rate, engine_handle);
+                let mut actor = VsyncActor::new(refresh_rate, engine_handle, actor_handle);
                 scheduler.run(&mut actor);
             })
             .expect("Failed to spawn vsync actor thread");
@@ -153,6 +207,19 @@ impl<P: pixelflow_core::Pixel> VsyncActor<P> {
             self.fps_start = Instant::now();
         }
     }
+
+    fn handle_tick(&mut self) {
+        if self.running && self.tokens > 0 {
+            let now = Instant::now();
+
+            // If it's time for next vsync (or close enough/past due), send it
+            // With clock thread, we are roughly at the right time.
+            if now >= self.next_vsync {
+                self.send_vsync();
+                self.update_fps();
+            }
+        }
+    }
 }
 
 impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManagement>
@@ -174,7 +241,7 @@ impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManage
         match cmd {
             VsyncCommand::Start => {
                 self.running = true;
-                self.next_vsync = Instant::now() + self.interval;
+                self.next_vsync = Instant::now(); // Reset timing
                 info!("VsyncActor: Started");
             }
             VsyncCommand::Stop => {
@@ -189,6 +256,11 @@ impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManage
                     self.refresh_rate,
                     self.interval.as_secs_f64() * 1000.0
                 );
+
+                // Update clock thread
+                if let Some(ref tx) = self.clock_control {
+                    let _ = tx.send(ClockCommand::SetInterval(self.interval));
+                }
             }
             VsyncCommand::RequestCurrentFPS(sender) => {
                 info!("VsyncActor: FPS requested - {:.2} fps", self.last_fps);
@@ -198,33 +270,24 @@ impl<P: pixelflow_core::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManage
             }
             VsyncCommand::Shutdown => {
                 info!("VsyncActor: Shutting down");
+                if let Some(ref tx) = self.clock_control {
+                    let _ = tx.send(ClockCommand::Stop);
+                }
                 // Scheduler will exit when all senders are dropped
+                // We should probably drop our own handles if we held any that loop back?
+                // But we don't hold loopback handles in struct, only for clock thread.
             }
+        }
+    }
+
+    fn handle_management(&mut self, msg: VsyncManagement) {
+        match msg {
+            VsyncManagement::Tick => self.handle_tick(),
         }
     }
 
     fn park(&mut self, _hint: actor_scheduler::ParkHint) {
-        // VSync timing loop - called after every work cycle
-        if self.running && self.tokens > 0 {
-            let now = Instant::now();
-
-            // If it's time for next vsync, send it
-            if now >= self.next_vsync {
-                self.send_vsync();
-                self.update_fps();
-            } else {
-                // Sleep until next vsync (but not too long to stay responsive)
-                let sleep_time = self.next_vsync.duration_since(now);
-                let sleep_time = sleep_time.min(Duration::from_millis(1)); // Cap at 1ms for responsiveness
-                thread::sleep(sleep_time);
-            }
-        } else {
-            // Not running or no tokens - sleep a bit to avoid busy loop
-            thread::sleep(Duration::from_millis(1));
-        }
-    }
-
-    fn handle_management(&mut self, _msg: VsyncManagement) {
-        // No management messages yet
+        // No-op. We are driven by the clock thread messages.
+        // The scheduler will block on the mailbox (doorbell) automatically.
     }
 }

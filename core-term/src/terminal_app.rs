@@ -122,6 +122,9 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
 
         // Check if any lines are dirty
         if !snapshot.lines.iter().any(|line| line.is_dirty) {
+            // Signal skipped frame to Engine to keep VSync loop alive
+            log::trace!("TerminalApp: No dirty lines, skipping frame");
+            let _ = self.engine_tx.send(Message::Data(AppData::Skipped.into()));
             return;
         }
 
@@ -143,6 +146,10 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
         // TerminalSurface implements Manifold<P, u32>, which blanket implements Surface<P, u32>
         // We cast to Arc<dyn Surface...> for AppData
         let surface: Arc<dyn Surface<P, u32> + Send + Sync> = Arc::new(terminal);
+
+        // Log frame generation (throttle if needed)
+        log::trace!("TerminalApp: Sending frame");
+
         let _ = self
             .engine_tx
             .send(Message::Data(AppData::RenderSurfaceU32(surface).into()));
@@ -167,6 +174,7 @@ impl<P: Pixel + Surface<P>> Actor<EngineEventData, EngineEventControl, EngineEve
     fn handle_data(&mut self, data: EngineEventData) {
         match data {
             EngineEventData::RequestFrame { .. } => {
+                log::trace!("TerminalApp: Received RequestFrame");
                 // Process any pending PTY output first
                 self.process_pty_commands();
                 // Render and send frame
