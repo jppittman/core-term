@@ -1,7 +1,7 @@
 //! Parallel rasterization with thread spawning.
 
 use pixelflow_core::traits::Surface;
-use pixelflow_render::Pixel;
+use pixelflow_graphics::render::Pixel;
 // use std::sync::Arc;
 
 /// Render with parallel rasterization using the specified number of threads.

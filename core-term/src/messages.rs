@@ -1,6 +1,6 @@
 //! Message types for App thread <-> Engine proxy communication.
 
-use pixelflow_engine::EngineEvent;
+use pixelflow_runtime::EngineEvent;
 
 /// Messages sent from proxy (engine thread) to worker (app thread).
 #[derive(Debug)]

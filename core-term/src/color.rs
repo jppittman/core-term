@@ -6,4 +6,4 @@
 //! as it's part of the renderer's semantic API.
 
 // Re-export color types from pixelflow-render
-pub use pixelflow_render::{Color, NamedColor};
+pub use pixelflow_graphics::render::{Color, NamedColor};

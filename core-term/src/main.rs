@@ -113,7 +113,8 @@ fn main() -> anyhow::Result<()> {
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
 
     // Engine Initialization with new API
-    use pixelflow_engine::{channel::create_engine_actor, EngineConfig, WindowConfig};
+    use pixelflow_runtime::api::private::create_engine_actor;
+    use pixelflow_runtime::{EngineConfig, WindowConfig};
 
     let engine_config = EngineConfig {
         window: WindowConfig {
@@ -137,7 +138,7 @@ fn main() -> anyhow::Result<()> {
         use crate::io::event_monitor_actor::EventMonitorActor;
         use crate::io::pty::{NixPty, PtyConfig};
         use crate::terminal_app::spawn_terminal_app;
-        use pixelflow_render::CocoaPixel;
+        use pixelflow_graphics::render::CocoaPixel;
 
         // Create PTY command channel
         let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
@@ -171,7 +172,7 @@ fn main() -> anyhow::Result<()> {
         info!("EventMonitorActor spawned successfully");
 
         // Run engine with new API (blocks until quit)
-        pixelflow_engine::run(app_handle, engine_handle, engine_scheduler, engine_config)
+        pixelflow_runtime::run(app_handle, engine_handle, engine_scheduler, engine_config)
             .context("Engine run failed")?;
 
         _app_thread_handle
@@ -182,7 +183,7 @@ fn main() -> anyhow::Result<()> {
         use crate::io::event_monitor_actor::EventMonitorActor;
         use crate::io::pty::{NixPty, PtyConfig};
         use crate::terminal_app::spawn_terminal_app;
-        use pixelflow_render::X11Pixel;
+        use pixelflow_graphics::render::X11Pixel;
 
         // Create PTY command channel
         let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
@@ -216,7 +217,7 @@ fn main() -> anyhow::Result<()> {
         info!("EventMonitorActor spawned successfully");
 
         // Run engine with new API (blocks until quit)
-        pixelflow_engine::run(app_handle, engine_handle, engine_scheduler, engine_config)
+        pixelflow_runtime::run(app_handle, engine_handle, engine_scheduler, engine_config)
             .context("Engine run failed")?;
 
         _app_thread_handle

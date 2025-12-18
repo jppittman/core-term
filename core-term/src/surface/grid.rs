@@ -9,7 +9,7 @@
 use crate::color::Color;
 use crate::glyph::{ContentCell, Glyph};
 use crate::term::snapshot::TerminalSnapshot;
-use pixelflow_render::NamedColor;
+use pixelflow_graphics::render::NamedColor;
 
 /// A single cell in the grid.
 #[derive(Debug, Clone, Copy)]

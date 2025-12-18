@@ -301,9 +301,8 @@ dependencies = [
  "nix 0.30.1",
  "once_cell",
  "pixelflow-core",
- "pixelflow-engine",
- "pixelflow-fonts",
- "pixelflow-render",
+ "pixelflow-graphics",
+ "pixelflow-runtime",
  "pkg-config",
  "pprof",
  "rexpect",
@@ -800,7 +799,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "pixelflow-engine"
+name = "pixelflow-graphics"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitflags 2.9.1",
+ "log",
+ "pixelflow-core",
+ "serde",
+ "thiserror 1.0.69",
+ "ttf-parser",
+]
+
+[[package]]
+name = "pixelflow-runtime"
 version = "0.1.0"
 dependencies = [
  "actor-scheduler",
@@ -811,7 +823,7 @@ dependencies = [
  "log",
  "once_cell",
  "pixelflow-core",
- "pixelflow-render",
+ "pixelflow-graphics",
  "pkg-config",
  "serde",
  "serde-wasm-bindgen",
@@ -819,27 +831,6 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "x11",
-]
-
-[[package]]
-name = "pixelflow-fonts"
-version = "0.1.0"
-dependencies = [
- "pixelflow-core",
- "thiserror 1.0.69",
- "ttf-parser",
-]
-
-[[package]]
-name = "pixelflow-render"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bitflags 2.9.1",
- "log",
- "pixelflow-core",
- "pixelflow-fonts",
- "serde",
 ]
 
 [[package]]

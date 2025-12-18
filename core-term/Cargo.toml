@@ -20,29 +20,26 @@ pprof = { version = "0.14", features = ["flamegraph", "criterion"], optional = t
 [dependencies.pixelflow-core]
 path = "../pixelflow-core"
 
-[dependencies.pixelflow-render]
-path = "../pixelflow-render"
+[dependencies.pixelflow-graphics]
+path = "../pixelflow-graphics"
 features = ["serde"]
-
-[dependencies.pixelflow-fonts]
-path = "../pixelflow-fonts"
 
 [dependencies.actor-scheduler]
 path = "../actor-scheduler"
 
 # Platform-specific display driver selection
-[target.'cfg(target_os = "macos")'.dependencies.pixelflow-engine]
-path = "../pixelflow-engine"
+[target.'cfg(target_os = "macos")'.dependencies.pixelflow-runtime]
+path = "../pixelflow-runtime"
 default-features = false
 features = ["display_cocoa"]
 
-[target.'cfg(target_os = "linux")'.dependencies.pixelflow-engine]
-path = "../pixelflow-engine"
+[target.'cfg(target_os = "linux")'.dependencies.pixelflow-runtime]
+path = "../pixelflow-runtime"
 default-features = false
 features = ["display_x11"]
 
-[target.'cfg(target_os = "windows")'.dependencies.pixelflow-engine]
-path = "../pixelflow-engine"
+[target.'cfg(target_os = "windows")'.dependencies.pixelflow-runtime]
+path = "../pixelflow-runtime"
 default-features = false
 # TODO: Add display_win32 when implemented
 
@@ -55,8 +52,8 @@ rexpect = "0.6.1"
 
 [features]
 # Manual override features (optional - platform auto-detects)
-display_cocoa = ["pixelflow-engine/display_cocoa"]
-display_x11 = ["pixelflow-engine/display_x11"]
-display_headless = ["pixelflow-engine/display_headless"]
+display_cocoa = ["pixelflow-runtime/display_cocoa"]
+display_x11 = ["pixelflow-runtime/display_x11"]
+display_headless = ["pixelflow-runtime/display_headless"]
 default = []
 profiling = ["pprof"]

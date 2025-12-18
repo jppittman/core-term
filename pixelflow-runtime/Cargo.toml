@@ -1,5 +1,5 @@
 [package]
-name = "pixelflow-engine"
+name = "pixelflow-runtime"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,7 +15,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 # Workspace dependencies
 pixelflow-core = { path = "../pixelflow-core" }
-pixelflow-render = { path = "../pixelflow-render" }
+pixelflow-graphics = { path = "../pixelflow-graphics", features = ["serde"] }
 
 [dependencies.actor-scheduler]
 path = "../actor-scheduler"
