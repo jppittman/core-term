@@ -342,6 +342,29 @@ fn test_pty_spawn_invalid_command() {
                 }
                 read_attempts += 1;
 
+                // Check child status
+                match nix::sys::wait::waitpid(
+                    pty.child_pid(),
+                    Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+                ) {
+                    Ok(nix::sys::wait::WaitStatus::StillAlive) => {
+                        log::trace!(
+                            "test_pty_spawn_invalid_command: Child {} still alive.",
+                            pty.child_pid()
+                        );
+                    }
+                    Ok(status) => {
+                        log::info!(
+                            "test_pty_spawn_invalid_command: Child {} exited with status: {:?}",
+                            pty.child_pid(),
+                            status
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("test_pty_spawn_invalid_command: waitpid error: {}", e);
+                    }
+                }
+
                 match pty.read(&mut read_buffer) {
                     Ok(0) => {
                         log::info!(

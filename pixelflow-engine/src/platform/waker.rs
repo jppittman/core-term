@@ -159,6 +159,7 @@ mod cocoa_waker {
     impl EventLoopWaker for CocoaWaker {
         fn wake(&self) -> Result<()> {
             unsafe {
+                log::trace!("CocoaWaker: Waking up NSApp");
                 let app = NSApplication::shared();
 
                 let event_cls = sys::class(b"NSEvent\0");

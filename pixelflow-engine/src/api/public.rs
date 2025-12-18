@@ -1,5 +1,5 @@
 use crate::input::{KeySymbol, Modifiers, MouseButton};
-use pixelflow_render::Frame;
+// use pixelflow_render::Frame;
 
 /// Events sent from the Engine to the Application.
 #[derive(Debug, Clone)]
@@ -66,6 +66,7 @@ pub enum EngineEventData {
 pub enum AppData<P: pixelflow_core::Pixel> {
     RenderSurface(std::sync::Arc<dyn pixelflow_core::Surface<P, f32> + Send + Sync>),
     RenderSurfaceU32(std::sync::Arc<dyn pixelflow_core::Surface<P, u32> + Send + Sync>),
+    Skipped,
 }
 
 impl<P: pixelflow_core::Pixel> std::fmt::Debug for AppData<P> {
@@ -73,6 +74,7 @@ impl<P: pixelflow_core::Pixel> std::fmt::Debug for AppData<P> {
         match self {
             Self::RenderSurface(_) => f.debug_tuple("RenderSurface").finish(),
             Self::RenderSurfaceU32(_) => f.debug_tuple("RenderSurfaceU32").finish(),
+            Self::Skipped => f.debug_tuple("Skipped").finish(),
         }
     }
 }

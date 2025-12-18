@@ -1,10 +1,8 @@
 use crate::api::public::WindowDescriptor;
-use crate::display::traits::Window;
-use crate::platform::macos::cocoa::{self, NSPoint, NSRect, NSSize, NSView, NSWindow};
-use crate::platform::macos::sys::{self, Id, BOOL, NO, YES};
+use crate::platform::macos::cocoa::{NSPoint, NSRect, NSSize, NSView, NSWindow};
+use crate::platform::macos::sys::{self, Id, BOOL, YES};
 use anyhow::Result;
 use std::ffi::c_void;
-use std::ptr::NonNull;
 
 pub struct MacWindow {
     pub(crate) window: NSWindow,
@@ -49,8 +47,8 @@ impl MacWindow {
             }
             sys::send_1::<(), Id>(layer, sys::sel(b"setDevice:\0"), device);
 
-            // [layer setPixelFormat: 80 (BGRA8Unorm)]
-            sys::send_1::<(), u64>(layer, sys::sel(b"setPixelFormat:\0"), 80);
+            // [layer setPixelFormat: 70 (RGBA8Unorm)]
+            sys::send_1::<(), u64>(layer, sys::sel(b"setPixelFormat:\0"), 70);
 
             // [layer setFramebufferOnly: YES] - optimization
             sys::send_1::<(), BOOL>(layer, sys::sel(b"setFramebufferOnly:\0"), YES);
@@ -98,8 +96,14 @@ impl MacWindow {
     }
 
     pub fn size(&self) -> (u32, u32) {
-        // TODO: Implement frame on NSWindow wrapper
-        (800, 600)
+        (self.current_width, self.current_height)
+    }
+
+    pub fn scale_factor(&self) -> f64 {
+        unsafe {
+            let scale: f64 = sys::send(self.window.0, sys::sel(b"backingScaleFactor\0"));
+            scale
+        }
     }
 
     pub fn set_cursor(&mut self, _icon: crate::api::public::CursorIcon) {

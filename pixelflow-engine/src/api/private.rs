@@ -4,7 +4,7 @@ use pixelflow_render::Frame;
 use std::sync::Arc;
 
 use crate::api::public::CursorIcon;
-use crate::input::{KeySymbol, Modifiers};
+// use crate::input::MouseButton;
 
 /// Window ID wrapper
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

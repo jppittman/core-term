@@ -3,34 +3,48 @@ pub mod waker;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
-use crate::api::private::{
-    create_engine_actor, DriverCommand, EngineActorHandle, EngineActorScheduler, EngineControl,
-    EngineData,
-};
+use crate::api::private::{EngineActorHandle, EngineActorScheduler, EngineControl, EngineData};
+
+use crate::api::private::WindowId;
 use crate::api::public::AppManagement;
 use crate::api::public::{
     AppData, Application, EngineEvent, EngineEventControl, EngineEventData, EngineEventManagement,
 };
 use crate::config::EngineConfig;
-// use crate::display::driver::DisplayDriver; // Gone
-use crate::api::private::WindowId;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt};
-use crate::display::DriverActor;
 use crate::input::MouseButton;
 use crate::render_pool::render_parallel;
-use actor_scheduler::{Actor, ActorHandle, ActorScheduler, Message};
+use actor_scheduler::{Actor, Message};
+use std::time::Instant;
+// Re-export common traits
+
+// #[cfg(target_os = "macos")]
+// mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
+
+// Re-export specific backend types just in case
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::*;
+
+use crate::display::driver::DriverActor;
 use anyhow::{Context, Result};
 use log::info;
 use pixelflow_core::Scale;
 use pixelflow_render::Frame;
-use std::time::Instant;
+// use std::time::Instant; // Removed as per instruction
 
 // Platform Logic
+use crate::display::platform::PlatformActor;
 #[cfg(target_os = "macos")]
-use macos::MetalPlatform as ActivePlatform;
+// use macos::MetalOps; // Already exported via macos::* if pub
+#[cfg(target_os = "macos")]
+pub type ActivePlatform = PlatformActor<MetalOps>;
 
 // Type Aliases
-pub type PlatformPixel = <ActivePlatform as crate::display::Platform>::Pixel;
+pub type PlatformPixel = pixelflow_render::Rgba;
 pub type PlatformDriver = DriverActor<ActivePlatform>;
 
 pub struct EnginePlatform {
@@ -38,6 +52,7 @@ pub struct EnginePlatform {
     driver_handle:
         actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
     config: EngineConfig,
+    #[allow(dead_code)]
     handle: EngineActorHandle<PlatformPixel>,
 }
 
@@ -50,10 +65,13 @@ impl EnginePlatform {
     ) -> Result<Self> {
         info!("EnginePlatform::new() - Creating ActorScheduler-based platform with app");
 
-        // 1. Create Platform (Metal)
+        // 1. Create Platform Ops (Metal)
         // We pass engine_handle so platform can send events back
-        let platform =
-            ActivePlatform::new(engine_handle.clone()).context("Failed to create platform")?;
+        // Initialize MetalOps directly
+        let ops = MetalOps::new(engine_handle.clone()).context("Failed to create platform ops")?;
+
+        // Wrap in PlatformActor
+        let platform = PlatformActor::new(ops);
 
         // 2. Create Scheduler for the Driver
 
@@ -206,6 +224,7 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                 }
             }
             EngineData::FromApp(AppData::RenderSurface(surface)) => {
+                log::trace!("Engine: Received RenderSurface (continuous)");
                 // App sent a rendered surface (continuous) - present it
                 let mut frame = self
                     .framebuffer
@@ -242,6 +261,7 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                 self.frame_count += 1;
             }
             EngineData::FromApp(AppData::RenderSurfaceU32(surface)) => {
+                log::trace!("Engine: Received RenderSurfaceU32 (discrete)");
                 // App sent a rendered surface (discrete) - present it
                 let mut frame = self
                     .framebuffer
@@ -253,7 +273,6 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
 
                 let width = frame.width as usize;
                 let height = frame.height as usize;
-                // Render directly, no rasterization needed for u32 surface
                 render_parallel(
                     &scaled,
                     frame.as_slice_mut(),
@@ -277,6 +296,16 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                 }
                 self.frame_count += 1;
             }
+            EngineData::FromApp(AppData::Skipped) => {
+                log::trace!("Engine: Received Skipped frame");
+                // App skipped frame, but we still need to return token to VSync
+                if let Some(ref vsync) = self.vsync_actor {
+                    let _ = vsync.send(crate::vsync_actor::RenderedResponse {
+                        frame_number: self.frame_count,
+                        rendered_at: Instant::now(),
+                    });
+                }
+            }
         }
     }
 
@@ -291,6 +320,7 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                 target_timestamp,
                 refresh_interval,
             } => {
+                log::trace!("Engine: Received VSync, forwarding to App");
                 // Forward VSync as RequestFrame to app (push model)
                 let event = EngineEvent::Data(EngineEventData::RequestFrame {
                     timestamp,
@@ -385,7 +415,7 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
     }
 
     fn park(&mut self, _hint: actor_scheduler::ParkHint) {
-        // Engine has no periodic tasks
+        // Engine loop doesn't have periodic tasks, it reacts to messages
     }
 }
 
@@ -398,13 +428,18 @@ fn engine_loop<A: Application>(
         DisplayMgmt,
     >,
     mut scheduler: EngineActorScheduler<PlatformPixel>,
-    _target_fps: u32,
+    target_fps: u32,
     render_threads: usize,
 ) -> Result<()> {
     info!(
-        "Engine loop started (scheduler model, {} threads)",
-        render_threads
+        "Engine loop started (scheduler model, {} threads, target FPS: {})",
+        render_threads, target_fps
     );
+
+    // Spawn VSync actor immediately to start the render loop
+    let vsync_actor =
+        crate::vsync_actor::VsyncActor::spawn(target_fps as f64, engine_handle.clone());
+    let _ = vsync_actor.send(crate::vsync_actor::VsyncCommand::Start);
 
     let mut handler = EngineHandler {
         app,
@@ -414,7 +449,7 @@ fn engine_loop<A: Application>(
         physical_width: 0,
         physical_height: 0,
         scale_factor: 1.0,
-        vsync_actor: None,
+        vsync_actor: Some(vsync_actor),
         render_threads,
         frame_count: 0,
     };
@@ -439,6 +474,13 @@ fn map_display_event(evt: &DisplayEvent, scale_factor: f64) -> Option<EngineEven
             // Convert physical pixels to logical pixels
             let logical_w = (*width_px as f64 / scale_factor) as u32;
             let logical_h = (*height_px as f64 / scale_factor) as u32;
+            log::info!(
+                "Engine: Mapping display resize {}x{} -> {}x{}",
+                width_px,
+                height_px,
+                logical_w,
+                logical_h
+            );
             Some(EngineEvent::Control(EngineEventControl::Resize(
                 logical_w, logical_h,
             )))

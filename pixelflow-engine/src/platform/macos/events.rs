@@ -5,7 +5,7 @@
 use crate::api::private::WindowId;
 use crate::display::messages::DisplayEvent;
 use crate::input::{KeySymbol, Modifiers};
-use crate::platform::macos::cocoa::{self, event_type, NSEvent};
+use crate::platform::macos::cocoa::{event_type, NSEvent};
 
 /// Maps an `NSEvent` to a `DisplayEvent`, if applicable.
 /// `window_height` is needed to flip Y coordinates (macOS origin is bottom-left).

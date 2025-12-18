@@ -200,6 +200,19 @@ pub struct TensorViewMut<'a, T> {
     pub stride: usize,
 }
 
+impl<'a, T> TensorViewMut<'a, T> {
+    /// Creates a new `TensorViewMut`.
+    #[inline(always)]
+    pub fn new(data: &'a mut [T], width: usize, height: usize, stride: usize) -> Self {
+        Self {
+            data,
+            width,
+            height,
+            stride,
+        }
+    }
+}
+
 /// Rasterizes a surface into a target buffer.
 ///
 /// This function iterates over the target buffer, evaluating the surface
@@ -219,13 +232,8 @@ where
 
 /// Render a horizontal stripe of rows [start_y, end_y)
 #[inline(always)]
-fn render_stripe<P, S>(
-    surface: &S,
-    target: &mut [P],
-    width: usize,
-    start_y: usize,
-    end_y: usize,
-) where
+fn render_stripe<P, S>(surface: &S, target: &mut [P], width: usize, start_y: usize, end_y: usize)
+where
     P: pixel::Pixel,
     S: Surface<P> + ?Sized,
 {

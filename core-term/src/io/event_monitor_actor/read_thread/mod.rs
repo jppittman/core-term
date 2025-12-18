@@ -1,7 +1,7 @@
 // src/io/event_monitor_actor/read_thread/mod.rs
 
-use crate::io::pty::NixPty;
 use crate::io::event_monitor_actor::parser_thread::{NoControl, NoManagement};
+use crate::io::pty::NixPty;
 use actor_scheduler::{ActorHandle, Message};
 use log::*;
 use std::io::Read;
@@ -26,11 +26,54 @@ impl ReadThread {
             .name("pty-reader".to_string())
             .spawn(move || {
                 debug!("Read thread started");
+                eprintln!("DEBUG: Read thread started!");
                 let mut buf = [0u8; 4096];
 
+                // Create EventMonitor
+                let monitor = match crate::io::event::EventMonitor::new() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!("Failed to create EventMonitor for PTY read thread: {}", e);
+                        return;
+                    }
+                };
+
+                // Register PTY FD
+                #[cfg(target_os = "macos")]
+                {
+                    use crate::io::event::KqueueFlags;
+                    if let Err(e) = monitor.add(&pty, 0, KqueueFlags::EPOLLIN) {
+                        error!("Failed to register PTY fd with kqueue: {}", e);
+                        return;
+                    }
+                }
+
+                #[cfg(target_os = "linux")]
+                {
+                    use crate::io::event::EpollFlags;
+                    if let Err(e) = monitor.add(&pty, 0, EpollFlags::EPOLLIN) {
+                        error!("Failed to register PTY fd with epoll: {}", e);
+                        return;
+                    }
+                }
+
+                #[cfg(target_os = "macos")]
+                let mut events = Vec::<crate::io::event::KqueueEvent>::with_capacity(16);
+                #[cfg(target_os = "linux")]
+                let mut events = Vec::<crate::io::event::EpollEvent>::with_capacity(16);
+
                 loop {
-                    // Blocking read on PTY (or use epoll/kqueue for better efficiency)
-                    // For now, simple blocking read is fine as this is a dedicated thread.
+                    // Wait for events (infinite timeout)
+                    if let Err(e) = monitor.events(&mut events, -1) {
+                        error!("EventMonitor polling error: {}", e);
+                        break;
+                    }
+
+                    // If we woke up, try to read
+                    // We don't strictly need to check which event it was because we only registered one.
+                    // But we should loop through events if we had multiple sources.
+
+                    // Check if PTY is readable
                     match pty.read(&mut buf) {
                         Ok(0) => {
                             info!("PTY returned EOF");
@@ -43,6 +86,10 @@ impl ReadThread {
                                 warn!("Failed to send bytes to parser (channel closed): {}", e);
                                 break;
                             }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // Spurious wakeup, just continue
+                            continue;
                         }
                         Err(e) => {
                             error!("PTY read error: {}", e);
