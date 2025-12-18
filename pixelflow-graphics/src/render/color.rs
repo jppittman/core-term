@@ -386,7 +386,11 @@ where
 {
     #[inline(always)]
     fn eval(&self, _: Batch<C>, _: Batch<C>, _: Batch<C>, _: Batch<C>) -> Batch<Rgba> {
-        Batch::<Rgba>::splat(*self)
+        // Convert to u32, splat, then transmute to Batch<Rgba>
+        use pixelflow_core::backend::SimdBatch;
+        let color_u32 = self.to_u32();
+        let batch_u32 = Batch::<u32>::splat(color_u32);
+        unsafe { core::mem::transmute(batch_u32) }
     }
 }
 
@@ -465,7 +469,11 @@ where
 {
     #[inline(always)]
     fn eval(&self, _: Batch<C>, _: Batch<C>, _: Batch<C>, _: Batch<C>) -> Batch<Bgra> {
-        Batch::<Bgra>::splat(*self)
+        // Convert to u32, splat, then transmute to Batch<Bgra>
+        use pixelflow_core::backend::SimdBatch;
+        let color_u32 = self.to_u32();
+        let batch_u32 = Batch::<u32>::splat(color_u32);
+        unsafe { core::mem::transmute(batch_u32) }
     }
 }
 

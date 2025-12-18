@@ -23,7 +23,7 @@ pub mod surfaces;
 pub mod traits;
 
 // Re-exports
-pub use backend::{FloatBatchOps, SimdBatch};
+pub use backend::FloatBatchOps;
 pub use batch::{Batch, BatchOps, SHUFFLE_RGBA_BGRA};
 pub use bitwise::Bitwise;
 pub use geometry::{Curve2D, Mat3, Poly, Rect};
