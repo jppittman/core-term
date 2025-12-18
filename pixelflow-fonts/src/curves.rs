@@ -9,6 +9,17 @@ pub type Point = [f32; 2];
 pub struct Line {
     pub p0: Point,
     pub p1: Point,
+    pub y_range: [f32; 2],
+}
+
+impl Line {
+    pub fn new(p0: Point, p1: Point) -> Self {
+        Self {
+            p0,
+            p1,
+            y_range: [p0[1].min(p1[1]), p0[1].max(p1[1])],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -18,6 +29,7 @@ pub struct Quadratic {
     pub p2: Point,
     // Precomputed projection matrix for Loop-Blinn
     pub projection: Mat3,
+    pub y_range: [f32; 2],
 }
 
 impl Quadratic {
@@ -25,12 +37,17 @@ impl Quadratic {
         // Compute projection matrix mapping (x, y) -> (u, v)
         // such that p0 -> (0,0), p1 -> (0.5, 0), p2 -> (1,1)
         let projection = Mat3::from_affine_points(p0, p1, p2)?;
+        let y_range = [
+            p0[1].min(p1[1]).min(p2[1]),
+            p0[1].max(p1[1]).max(p2[1]),
+        ];
 
         Some(Self {
             p0,
             p1,
             p2,
             projection,
+            y_range,
         })
     }
 }
@@ -42,6 +59,14 @@ pub enum Segment {
 }
 
 impl Segment {
+    #[inline(always)]
+    pub fn y_range(&self) -> [f32; 2] {
+        match self {
+            Segment::Line(l) => l.y_range,
+            Segment::Quad(q) => q.y_range,
+        }
+    }
+
     /// Scalar winding number contribution of a ray cast from (x, y) to (+inf, y).
     #[inline]
     pub fn winding(&self, x: f32, y: f32) -> i32 {
@@ -404,22 +429,10 @@ mod tests {
     /// A CCW unit square from (0,0) to (1,1).
     fn ccw_unit_square() -> [Segment; 4] {
         [
-            Segment::Line(Line {
-                p0: [0.0, 0.0],
-                p1: [1.0, 0.0],
-            }), // bottom
-            Segment::Line(Line {
-                p0: [1.0, 0.0],
-                p1: [1.0, 1.0],
-            }), // right
-            Segment::Line(Line {
-                p0: [1.0, 1.0],
-                p1: [0.0, 1.0],
-            }), // top
-            Segment::Line(Line {
-                p0: [0.0, 1.0],
-                p1: [0.0, 0.0],
-            }), // left
+            Segment::Line(Line::new([0.0, 0.0], [1.0, 0.0])), // bottom
+            Segment::Line(Line::new([1.0, 0.0], [1.0, 1.0])), // right
+            Segment::Line(Line::new([1.0, 1.0], [0.0, 1.0])), // top
+            Segment::Line(Line::new([0.0, 1.0], [0.0, 0.0])), // left
         ]
     }
 
@@ -487,10 +500,7 @@ mod tests {
 
     #[test]
     fn returns_zero_winding_for_horizontal_line() {
-        let horiz = Segment::Line(Line {
-            p0: [0.0, 5.0],
-            p1: [10.0, 5.0],
-        });
+        let horiz = Segment::Line(Line::new([0.0, 5.0], [10.0, 5.0]));
         let w = horiz.winding(5.0, 5.0);
         assert_eq!(w, 0, "Horizontal line should never contribute winding");
     }
@@ -522,10 +532,7 @@ mod tests {
 
     #[test]
     fn handles_horizontal_line_in_batch_without_nan() {
-        let horiz = Segment::Line(Line {
-            p0: [0.0, 5.0],
-            p1: [10.0, 5.0],
-        });
+        let horiz = Segment::Line(Line::new([0.0, 5.0], [10.0, 5.0]));
         let x = Batch::<f32>::splat(5.0);
         let y = Batch::<f32>::splat(5.0);
         let w = horiz.winding_batch(x, y);
@@ -543,10 +550,7 @@ mod tests {
 
     #[test]
     fn returns_positive_distance_on_positive_side_of_line() {
-        let line = Segment::Line(Line {
-            p0: [0.0, 0.0],
-            p1: [10.0, 0.0],
-        });
+        let line = Segment::Line(Line::new([0.0, 0.0], [10.0, 0.0]));
         let d = line.min_distance(5.0, 1.0);
         assert!(
             d > 0.0,
@@ -557,10 +561,7 @@ mod tests {
 
     #[test]
     fn returns_negative_distance_on_negative_side_of_line() {
-        let line = Segment::Line(Line {
-            p0: [0.0, 0.0],
-            p1: [10.0, 0.0],
-        });
+        let line = Segment::Line(Line::new([0.0, 0.0], [10.0, 0.0]));
         let d = line.min_distance(5.0, -1.0);
         assert!(
             d < 0.0,
@@ -571,10 +572,7 @@ mod tests {
 
     #[test]
     fn returns_large_distance_for_degenerate_line() {
-        let degen = Segment::Line(Line {
-            p0: [5.0, 5.0],
-            p1: [5.0, 5.0],
-        });
+        let degen = Segment::Line(Line::new([5.0, 5.0], [5.0, 5.0]));
         let d = degen.min_distance(0.0, 0.0);
         assert!(
             d > 100.0,
@@ -586,10 +584,7 @@ mod tests {
     #[test]
     fn matches_scalar_distance_for_lines() {
         // Line from (0,0) to (10,5)
-        let line = Segment::Line(Line {
-            p0: [0.0, 0.0],
-            p1: [10.0, 5.0],
-        });
+        let line = Segment::Line(Line::new([0.0, 0.0], [10.0, 5.0]));
 
         // Only test points that project onto the segment (t in [0, 1])
         // For this line: direction is (10, 5), length^2 = 125
@@ -622,10 +617,7 @@ mod tests {
 
     #[test]
     fn handles_horizontal_line_distance_without_nan() {
-        let horiz = Segment::Line(Line {
-            p0: [0.0, 5.0],
-            p1: [10.0, 5.0],
-        });
+        let horiz = Segment::Line(Line::new([0.0, 5.0], [10.0, 5.0]));
         let x = Batch::<f32>::splat(5.0);
         let y = Batch::<f32>::splat(6.0);
         let d = horiz.min_distance_batch(x, y).first();

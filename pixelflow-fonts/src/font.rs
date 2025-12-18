@@ -195,7 +195,7 @@ impl GlyphBuilder {
         const MIN_LEN_SQ: f32 = 0.25; // 0.5 px
 
         if depth > 8 || d03 < MIN_LEN_SQ {
-            self.segments.push(Segment::Line(Line { p0, p1: p3 }));
+            self.segments.push(Segment::Line(Line::new(p0, p3)));
             return;
         }
 
@@ -219,10 +219,7 @@ impl OutlineBuilder for GlyphBuilder {
 
     fn line_to(&mut self, x: f32, y: f32) {
         let p1 = [x * self.scale, y * self.scale];
-        self.segments.push(Segment::Line(Line {
-            p0: self.current,
-            p1,
-        }));
+        self.segments.push(Segment::Line(Line::new(self.current, p1)));
         self.current = p1;
     }
 
@@ -233,10 +230,7 @@ impl OutlineBuilder for GlyphBuilder {
         if let Some(q) = Quadratic::try_new(self.current, p1, p2) {
             self.segments.push(Segment::Quad(q));
         } else {
-            self.segments.push(Segment::Line(Line {
-                p0: self.current,
-                p1: p2,
-            }));
+            self.segments.push(Segment::Line(Line::new(self.current, p2)));
         }
         self.current = p2;
     }
@@ -254,10 +248,7 @@ impl OutlineBuilder for GlyphBuilder {
         if (self.current[0] - self.start[0]).abs() > 1e-4
             || (self.current[1] - self.start[1]).abs() > 1e-4
         {
-            self.segments.push(Segment::Line(Line {
-                p0: self.current,
-                p1: self.start,
-            }));
+            self.segments.push(Segment::Line(Line::new(self.current, self.start)));
             self.current = self.start;
         }
     }

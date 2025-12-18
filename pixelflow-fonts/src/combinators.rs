@@ -226,10 +226,10 @@ impl<S: CurveSurface> Slant<S> {
             .curves()
             .iter()
             .map(|seg| match seg {
-                Segment::Line(l) => Segment::Line(Line {
-                    p0: [l.p0[0] + l.p0[1] * factor, l.p0[1]],
-                    p1: [l.p1[0] + l.p1[1] * factor, l.p1[1]],
-                }),
+                Segment::Line(l) => Segment::Line(Line::new(
+                    [l.p0[0] + l.p0[1] * factor, l.p0[1]],
+                    [l.p1[0] + l.p1[1] * factor, l.p1[1]],
+                )),
                 Segment::Quad(q) => {
                     let p0 = [q.p0[0] + q.p0[1] * factor, q.p0[1]];
                     let p1 = [q.p1[0] + q.p1[1] * factor, q.p1[1]];
@@ -237,7 +237,7 @@ impl<S: CurveSurface> Slant<S> {
                     if let Some(new_q) = Quadratic::try_new(p0, p1, p2) {
                         Segment::Quad(new_q)
                     } else {
-                        Segment::Line(Line { p0, p1: p2 })
+                        Segment::Line(Line::new(p0, p2))
                     }
                 }
             })
@@ -284,10 +284,10 @@ impl<S: CurveSurface> Scale<S> {
             .curves()
             .iter()
             .map(|seg| match seg {
-                Segment::Line(l) => Segment::Line(Line {
-                    p0: [l.p0[0] * factor, l.p0[1] * factor],
-                    p1: [l.p1[0] * factor, l.p1[1] * factor],
-                }),
+                Segment::Line(l) => Segment::Line(Line::new(
+                    [l.p0[0] * factor, l.p0[1] * factor],
+                    [l.p1[0] * factor, l.p1[1] * factor],
+                )),
                 Segment::Quad(q) => {
                     let p0 = [q.p0[0] * factor, q.p0[1] * factor];
                     let p1 = [q.p1[0] * factor, q.p1[1] * factor];
@@ -295,7 +295,7 @@ impl<S: CurveSurface> Scale<S> {
                     if let Some(new_q) = Quadratic::try_new(p0, p1, p2) {
                         Segment::Quad(new_q)
                     } else {
-                        Segment::Line(Line { p0, p1: p2 })
+                        Segment::Line(Line::new(p0, p2))
                     }
                 }
             })

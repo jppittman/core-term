@@ -100,7 +100,20 @@ pub fn eval_curves_cell(
     let mut min_dist = Batch::<f32>::splat(1000.0f32);
 
     // Evaluate all curve segments
+    let padding = Batch::<f32>::splat(1.0) + dilation.abs();
     for segment in curves {
+        let y_range = segment.y_range();
+        let min_y = Batch::<f32>::splat(y_range[0]) - padding;
+        let max_y = Batch::<f32>::splat(y_range[1]) + padding;
+
+        // Bounding box check in Y: if cy is outside [min_y, max_y],
+        // then the pixel is far from the segment and no winding ray intersection.
+        let too_low = cy.cmp_lt(min_y);
+        let too_high = cy.cmp_gt(max_y);
+        if too_low.all() || too_high.all() {
+            continue;
+        }
+
         winding = winding + segment.winding_batch(cx, cy);
         let d = segment.min_distance_batch(cx, cy);
         min_dist = min_dist.abs().min(d.abs());
@@ -289,22 +302,10 @@ mod tests {
     /// The glyph covers pixels 0-9 in both x and y.
     fn square_glyph() -> (Vec<Segment>, GlyphBounds) {
         let segments = vec![
-            Segment::Line(Line {
-                p0: [0.0, 0.0],
-                p1: [10.0, 0.0],
-            }), // bottom
-            Segment::Line(Line {
-                p0: [10.0, 0.0],
-                p1: [10.0, 10.0],
-            }), // right
-            Segment::Line(Line {
-                p0: [10.0, 10.0],
-                p1: [0.0, 10.0],
-            }), // top
-            Segment::Line(Line {
-                p0: [0.0, 10.0],
-                p1: [0.0, 0.0],
-            }), // left
+            Segment::Line(Line::new([0.0, 0.0], [10.0, 0.0])), // bottom
+            Segment::Line(Line::new([10.0, 0.0], [10.0, 10.0])), // right
+            Segment::Line(Line::new([10.0, 10.0], [0.0, 10.0])), // top
+            Segment::Line(Line::new([0.0, 10.0], [0.0, 0.0])), // left
         ];
         let bounds = GlyphBounds {
             width: 10,
@@ -371,22 +372,10 @@ mod tests {
         // Square from (0.5, 0.5) to (9.5, 9.5) in curve space.
         // Pixel 0's center is at (0.5, ...) which is ON the left edge.
         let segments = vec![
-            Segment::Line(Line {
-                p0: [0.5, 0.5],
-                p1: [9.5, 0.5],
-            }),
-            Segment::Line(Line {
-                p0: [9.5, 0.5],
-                p1: [9.5, 9.5],
-            }),
-            Segment::Line(Line {
-                p0: [9.5, 9.5],
-                p1: [0.5, 9.5],
-            }),
-            Segment::Line(Line {
-                p0: [0.5, 9.5],
-                p1: [0.5, 0.5],
-            }),
+            Segment::Line(Line::new([0.5, 0.5], [9.5, 0.5])),
+            Segment::Line(Line::new([9.5, 0.5], [9.5, 9.5])),
+            Segment::Line(Line::new([9.5, 9.5], [0.5, 9.5])),
+            Segment::Line(Line::new([0.5, 9.5], [0.5, 0.5])),
         ];
         let bounds = GlyphBounds {
             width: 10,
@@ -410,22 +399,10 @@ mod tests {
     fn handles_bearing_offset_correctly() {
         // Square from (5, 5) to (15, 15) in curve space
         let segments = vec![
-            Segment::Line(Line {
-                p0: [5.0, 5.0],
-                p1: [15.0, 5.0],
-            }),
-            Segment::Line(Line {
-                p0: [15.0, 5.0],
-                p1: [15.0, 15.0],
-            }),
-            Segment::Line(Line {
-                p0: [15.0, 15.0],
-                p1: [5.0, 15.0],
-            }),
-            Segment::Line(Line {
-                p0: [5.0, 15.0],
-                p1: [5.0, 5.0],
-            }),
+            Segment::Line(Line::new([5.0, 5.0], [15.0, 5.0])),
+            Segment::Line(Line::new([15.0, 5.0], [15.0, 15.0])),
+            Segment::Line(Line::new([15.0, 15.0], [5.0, 15.0])),
+            Segment::Line(Line::new([5.0, 15.0], [5.0, 5.0])),
         ];
         let bounds = GlyphBounds {
             width: 10,
@@ -468,22 +445,10 @@ mod tests {
     fn dilation_increases_coverage() {
         // Square where edge passes through pixel center
         let segments = vec![
-            Segment::Line(Line {
-                p0: [0.5, 0.5],
-                p1: [9.5, 0.5],
-            }),
-            Segment::Line(Line {
-                p0: [9.5, 0.5],
-                p1: [9.5, 9.5],
-            }),
-            Segment::Line(Line {
-                p0: [9.5, 9.5],
-                p1: [0.5, 9.5],
-            }),
-            Segment::Line(Line {
-                p0: [0.5, 9.5],
-                p1: [0.5, 0.5],
-            }),
+            Segment::Line(Line::new([0.5, 0.5], [9.5, 0.5])),
+            Segment::Line(Line::new([9.5, 0.5], [9.5, 9.5])),
+            Segment::Line(Line::new([9.5, 9.5], [0.5, 9.5])),
+            Segment::Line(Line::new([0.5, 9.5], [0.5, 0.5])),
         ];
         let bounds = GlyphBounds {
             width: 10,
@@ -526,22 +491,10 @@ mod tests {
         // Pixel row 15 -> curve y = 20 - 15.5 = 4.5 (inside the dot)
 
         let segments = vec![
-            Segment::Line(Line {
-                p0: [2.0, 2.0],
-                p1: [8.0, 2.0],
-            }),
-            Segment::Line(Line {
-                p0: [8.0, 2.0],
-                p1: [8.0, 8.0],
-            }),
-            Segment::Line(Line {
-                p0: [8.0, 8.0],
-                p1: [2.0, 8.0],
-            }),
-            Segment::Line(Line {
-                p0: [2.0, 8.0],
-                p1: [2.0, 2.0],
-            }),
+            Segment::Line(Line::new([2.0, 2.0], [8.0, 2.0])),
+            Segment::Line(Line::new([8.0, 2.0], [8.0, 8.0])),
+            Segment::Line(Line::new([8.0, 8.0], [2.0, 8.0])),
+            Segment::Line(Line::new([2.0, 8.0], [2.0, 2.0])),
         ];
         let bounds = GlyphBounds {
             width: 10,
@@ -720,22 +673,10 @@ mod tests {
 
         // Create a vertical bar that spans the full cell height
         let segments = vec![
-            Segment::Line(Line {
-                p0: [2.0, descender as f32],
-                p1: [8.0, descender as f32],
-            }),
-            Segment::Line(Line {
-                p0: [8.0, descender as f32],
-                p1: [8.0, ascender as f32],
-            }),
-            Segment::Line(Line {
-                p0: [8.0, ascender as f32],
-                p1: [2.0, ascender as f32],
-            }),
-            Segment::Line(Line {
-                p0: [2.0, ascender as f32],
-                p1: [2.0, descender as f32],
-            }),
+            Segment::Line(Line::new([2.0, descender as f32], [8.0, descender as f32])),
+            Segment::Line(Line::new([8.0, descender as f32], [8.0, ascender as f32])),
+            Segment::Line(Line::new([8.0, ascender as f32], [2.0, ascender as f32])),
+            Segment::Line(Line::new([2.0, ascender as f32], [2.0, descender as f32])),
         ];
         let bounds = GlyphBounds {
             width: 10,
