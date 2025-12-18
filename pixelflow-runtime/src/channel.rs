@@ -16,7 +16,7 @@ pub use crate::api::public::AppManagement;
 
 use crate::display::messages::DisplayEvent;
 use actor_scheduler::WakeHandler;
-use pixelflow_core::Pixel;
+use pixelflow_graphics::Pixel;
 use std::sync::Arc;
 
 // ============================================================================

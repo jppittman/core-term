@@ -28,12 +28,13 @@
 use bitflags::bitflags;
 use pixelflow_core::backend::{BatchArithmetic, SimdBatch};
 use pixelflow_core::batch::Batch;
+use pixelflow_core::traits::Manifold;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-// Re-export the Pixel trait from pixelflow-core
-pub use pixelflow_core::Pixel;
+// Re-export the Pixel trait from the local pixel module
+pub use super::pixel::Pixel;
 
 // =============================================================================
 // Semantic Color Types
@@ -379,6 +380,16 @@ impl Pixel for Rgba {
     }
 }
 
+impl<C> Manifold<Rgba, C> for Rgba
+where
+    C: Copy + core::fmt::Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    #[inline(always)]
+    fn eval(&self, _: Batch<C>, _: Batch<C>, _: Batch<C>, _: Batch<C>) -> Batch<Rgba> {
+        Batch::<Rgba>::splat(*self)
+    }
+}
+
 impl Pixel for Bgra {
     #[inline]
     fn from_u32(v: u32) -> Self {
@@ -445,6 +456,16 @@ impl Pixel for Bgra {
         let u32_slice: &mut [u32] = unsafe { core::mem::transmute(slice) };
         let u32_batch: Batch<u32> = unsafe { core::mem::transmute_copy(&batch) };
         SimdBatch::store(&u32_batch, u32_slice);
+    }
+}
+
+impl<C> Manifold<Bgra, C> for Bgra
+where
+    C: Copy + core::fmt::Debug + Default + PartialEq + Send + Sync + 'static,
+{
+    #[inline(always)]
+    fn eval(&self, _: Batch<C>, _: Batch<C>, _: Batch<C>, _: Batch<C>) -> Batch<Bgra> {
+        Batch::<Bgra>::splat(*self)
     }
 }
 

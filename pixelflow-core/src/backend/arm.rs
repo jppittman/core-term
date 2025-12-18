@@ -13,7 +13,8 @@ pub struct Neon;
 
 impl Backend for Neon {
     const LANES: usize = 4;
-    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> = SimdVec<T>;
+    type Batch<T: Copy + Debug + Default + Send + Sync + 'static + core::cmp::PartialEq> =
+        SimdVec<T>;
 
     #[inline(always)]
     fn downcast_u32_to_u8(b: SimdVec<u32>) -> SimdVec<u8> {
@@ -1309,6 +1310,14 @@ impl Add for SimdVec<f32> {
     }
 }
 
+impl Add<f32> for SimdVec<f32> {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: f32) -> Self {
+        self + Self::splat(rhs)
+    }
+}
+
 impl Sub for SimdVec<f32> {
     type Output = Self;
     #[inline(always)]
@@ -1321,6 +1330,14 @@ impl Sub for SimdVec<f32> {
                 PhantomData,
             )
         }
+    }
+}
+
+impl Sub<f32> for SimdVec<f32> {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: f32) -> Self {
+        self - Self::splat(rhs)
     }
 }
 
@@ -1339,6 +1356,14 @@ impl Mul for SimdVec<f32> {
     }
 }
 
+impl Mul<f32> for SimdVec<f32> {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: f32) -> Self {
+        self * Self::splat(rhs)
+    }
+}
+
 impl Div for SimdVec<f32> {
     type Output = Self;
     #[inline(always)]
@@ -1351,6 +1376,14 @@ impl Div for SimdVec<f32> {
                 PhantomData,
             )
         }
+    }
+}
+
+impl Div<f32> for SimdVec<f32> {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: f32) -> Self {
+        self / Self::splat(rhs)
     }
 }
 
@@ -1723,7 +1756,13 @@ mod tests {
             let mut output = [0.0f32; 4];
             SimdBatch::store(&result, &mut output);
             let error = (output[0] - n as f32).abs();
-            assert!(error < 0.01, "log2(2^{}) = {}, expected {}", n, output[0], n);
+            assert!(
+                error < 0.01,
+                "log2(2^{}) = {}, expected {}",
+                n,
+                output[0],
+                n
+            );
         }
     }
 
@@ -1738,7 +1777,13 @@ mod tests {
             SimdBatch::store(&result, &mut output);
             let expected = 2.0f32.powi(n);
             let error = (output[0] - expected).abs() / expected;
-            assert!(error < 0.01, "2^{} = {}, expected {}", n, output[0], expected);
+            assert!(
+                error < 0.01,
+                "2^{} = {}, expected {}",
+                n,
+                output[0],
+                expected
+            );
         }
     }
 
@@ -1760,7 +1805,14 @@ mod tests {
             let mut output = [0.0f32; 4];
             SimdBatch::store(&result, &mut output);
             let error = (output[0] - expected).abs() / expected;
-            assert!(error < 0.02, "{}^{} = {}, expected {}", base, exp, output[0], expected);
+            assert!(
+                error < 0.02,
+                "{}^{} = {}, expected {}",
+                base,
+                exp,
+                output[0],
+                expected
+            );
         }
     }
 
@@ -1781,7 +1833,13 @@ mod tests {
             let mut output = [0.0f32; 4];
             SimdBatch::store(&result, &mut output);
             let error = (output[0] - x).abs();
-            assert!(error < 0.01, "Gamma roundtrip: {} -> {} (error {})", x, output[0], error);
+            assert!(
+                error < 0.01,
+                "Gamma roundtrip: {} -> {} (error {})",
+                x,
+                output[0],
+                error
+            );
         }
     }
 }

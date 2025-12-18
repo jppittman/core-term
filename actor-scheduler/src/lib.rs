@@ -182,12 +182,17 @@ const MAX_BACKOFF: Duration = Duration::from_millis(1);
 ///
 /// # Returns
 /// A duration to sleep, with exponential growth and random jitter
+/// Fibonacci hash constant for jitter calculation.
+const JITTER_HASH_CONSTANT: u64 = 0x9e3779b97f4a7c15;
+/// Minimum jitter percentage (50%).
+const JITTER_MIN_PCT: u64 = 50;
+/// Jitter range (50-99%).
+const JITTER_RANGE: u64 = 50;
+
 fn backoff_with_jitter(attempt: u32) -> Duration {
-    // Exponential backoff: min(MIN * 2^attempt, MAX)
     let base_micros = MIN_BACKOFF.as_micros() as u64;
     let max_micros = MAX_BACKOFF.as_micros() as u64;
 
-    // Calculate 2^attempt with saturation
     let multiplier = 2u64.saturating_pow(attempt);
     let backoff_micros = base_micros.saturating_mul(multiplier);
     let capped_micros = backoff_micros.min(max_micros);
@@ -195,8 +200,8 @@ fn backoff_with_jitter(attempt: u32) -> Duration {
     // Add jitter: random value between [0.5 * backoff, 1.0 * backoff]
     // Using Instant hash for "randomness" (good enough for backoff jitter)
     let now = Instant::now();
-    let hash = (now.elapsed().as_nanos() as u64).wrapping_mul(0x9e3779b97f4a7c15); // fibonacci hash
-    let jitter_pct = 50 + (hash % 50); // 50-99%
+    let hash = (now.elapsed().as_nanos() as u64).wrapping_mul(JITTER_HASH_CONSTANT);
+    let jitter_pct = JITTER_MIN_PCT + (hash % JITTER_RANGE);
     let jittered_micros = (capped_micros * jitter_pct) / 100;
 
     Duration::from_micros(jittered_micros)
@@ -314,14 +319,10 @@ impl<D, C, M> ActorHandle<D, C, M> {
     ///
     /// Doorbell uses try_send (drops if full) - safe because one pending wake is sufficient.
     fn wake(&self) {
-        // First: wake platform event loop if custom waker present
-        // This ensures the receiver can start draining channels immediately
         if let Some(waker) = &self.wake_handler {
             waker.wake();
         }
 
-        // Then: try to send doorbell (drop if full - that's fine)
-        // Only need one pending wake signal to process all messages
         let _ = self.tx_doorbell.try_send(());
     }
 }
@@ -422,31 +423,26 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         A: Actor<D, C, M>,
     {
         loop {
-            // 1. Block on Doorbell (Highest Priority)
             match self.rx_doorbell.recv() {
                 Ok(()) => {}
-                Err(_) => return, // All senders disconnected
+                Err(_) => return,
             }
 
-            // 2. Priority Processing Loop
             let mut keep_working = true;
 
             while keep_working {
                 keep_working = false;
 
-                // A. Control (Highest Priority - Unlimited Drain)
                 while let Ok(ctrl_msg) = self.rx_control.try_recv() {
                     actor.handle_control(ctrl_msg);
                     keep_working = true;
                 }
 
-                // B. Management (Medium Priority - Unlimited Drain)
                 while let Ok(msg) = self.rx_mgmt.try_recv() {
                     actor.handle_management(msg);
                     keep_working = true;
                 }
 
-                // C. Data (Low Priority - Burst Limited)
                 let mut data_count = 0;
                 while data_count < self.data_burst_limit {
                     match self.rx_data.try_recv() {
@@ -549,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn test_priority_ordering() {
+    fn verify_priority_ordering_contract() {
         let (tx, mut rx) = ActorScheduler::new(2, 10);
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_clone = log.clone();
@@ -586,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn test_backpressure() {
+    fn verify_data_lane_backpressure_contract() {
         let (tx, mut rx) = ActorScheduler::new(2, 1); // Buffer size 1, burst limit 2
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_clone = log.clone();
@@ -613,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trait_handler() {
+    fn verify_actor_trait_contract() {
         struct CountingHandler {
             data_count: usize,
             ctrl_count: usize,

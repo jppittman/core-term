@@ -141,3 +141,21 @@ where
         self.eval(x, y, z)
     }
 }
+
+// Constant/Scalar -> Manifold (Specific types to avoid overlap)
+macro_rules! impl_scalar_manifold {
+    ($($t:ty),*) => {
+        $(
+            impl<C> Manifold<$t, C> for $t
+            where C: Copy + Debug + Default + PartialEq + Send + Sync + 'static
+            {
+                #[inline(always)]
+                fn eval(&self, _x: Batch<C>, _y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<$t> {
+                    Batch::<$t>::splat(*self)
+                }
+            }
+        )*
+    };
+}
+
+impl_scalar_manifold!(f32, i32, u32, u8, bool);

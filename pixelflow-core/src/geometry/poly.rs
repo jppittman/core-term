@@ -1,4 +1,3 @@
-use crate::backend::SimdBatch;
 use crate::batch::Batch;
 
 /// A polynomial curve. Degree is coefficients.len() - 1

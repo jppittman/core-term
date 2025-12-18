@@ -5,6 +5,7 @@
 //! rendering pipeline.
 
 use super::curves::Segment;
+use crate::render::Pixel;
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps};
 use pixelflow_core::batch::{Batch, NativeBackend};
 use pixelflow_core::traits::Manifold;
@@ -59,6 +60,22 @@ impl Manifold<u32, f32> for CellGlyph {
             y,
             Batch::<f32>::splat(0.0),
         )
+    }
+}
+
+impl<P: Pixel> Manifold<P, u32> for CellGlyph {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<P> {
+        let x_f = NativeBackend::u32_to_f32(x) + Batch::<f32>::splat(0.5);
+        let y_f = NativeBackend::u32_to_f32(y) + Batch::<f32>::splat(0.5);
+        let res = <Self as Manifold<u32, f32>>::eval(
+            self,
+            x_f,
+            y_f,
+            Batch::<f32>::splat(0.0),
+            Batch::<f32>::splat(0.0),
+        );
+        P::batch_from_u32(res)
     }
 }
 
@@ -266,7 +283,23 @@ pub fn eval_curves(
 
 impl Manifold<u32, f32> for Glyph {
     fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
-        eval_curves(&self.segments, self.bounds, x, y, Batch::<f32>::splat(0.0))
+        eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
+    }
+}
+
+impl<P: Pixel> Manifold<P, u32> for Glyph {
+    #[inline(always)]
+    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<P> {
+        let x_f = NativeBackend::u32_to_f32(x) + Batch::<f32>::splat(0.5);
+        let y_f = NativeBackend::u32_to_f32(y) + Batch::<f32>::splat(0.5);
+        let res = <Self as Manifold<u32, f32>>::eval(
+            self,
+            x_f,
+            y_f,
+            Batch::<f32>::splat(0.0),
+            Batch::<f32>::splat(0.0),
+        );
+        P::batch_from_u32(res)
     }
 }
 
@@ -575,7 +608,6 @@ mod tests {
         // The period glyph is a small dot near the baseline.
         // The top half of the glyph bounds should be completely transparent.
         use crate::fonts::font::Font;
-        use crate::fonts::glyph::CurveSurface;
         use pixelflow_core::traits::Surface;
 
         let font_bytes = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
@@ -631,7 +663,6 @@ mod tests {
     fn real_font_letter_a_top_is_transparent() {
         // Use 'A' - the top of the letter should be transparent (above the apex)
         use crate::fonts::font::Font;
-        use crate::fonts::glyph::CurveSurface;
         use pixelflow_core::traits::Surface;
 
         let font_bytes = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
@@ -776,6 +807,7 @@ mod tests {
         // Test that 'g' (which has a descender) renders fully within a cell.
         use crate::fonts::combinators::glyphs;
         use crate::fonts::font::Font;
+        use crate::render::Pixel;
         use pixelflow_core::surfaces::Baked;
         use pixelflow_core::traits::Surface;
 
@@ -854,8 +886,8 @@ mod tests {
         for px in 0..cell_w {
             let x = Batch::<u32>::splat(px);
             let y = Batch::<u32>::splat(cell_h - 1);
-            let alpha = (Surface::eval(&baked, x, y).first() >> 24) as u8;
-            if alpha > 0 {
+            let winding = Surface::eval(&baked, x, y).first();
+            if winding > 0 {
                 last_row_coverage += 1;
             }
         }

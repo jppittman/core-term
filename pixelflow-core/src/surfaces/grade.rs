@@ -1,4 +1,3 @@
-use crate::Surface;
 use crate::{Batch, Manifold};
 use core::fmt::Debug;
 use core::ops::{Add, Mul};

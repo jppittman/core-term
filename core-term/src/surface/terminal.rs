@@ -152,7 +152,7 @@ impl<P: Pixel> TerminalSurface<P> {
 }
 
 // Forward Manifold impl to the pipeline
-impl<P: Pixel + Manifold<P>> Manifold<P> for TerminalSurface<P> {
+impl<P: Pixel + Manifold<P, u32>> Manifold<P> for TerminalSurface<P> {
     fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<P> {
         Manifold::eval(&self.pipeline, x, y, z, w)
     }

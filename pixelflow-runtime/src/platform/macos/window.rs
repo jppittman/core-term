@@ -203,3 +203,121 @@ impl MacWindow {
         None
     }
 }
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+mod tests {
+    use super::*;
+    use crate::platform::macos::sys::{self, Id};
+
+    #[test]
+    fn test_window_creation() {
+        let desc = WindowDescriptor {
+            width: 800,
+            height: 600,
+            title: "Test Window".to_string(),
+            ..Default::default()
+        };
+
+        let window = MacWindow::new(desc).expect("Failed to create window");
+
+        // Verify window is not null
+        assert!(!window.window.0.is_null());
+
+        // Verify view is not null
+        assert!(!window.view.0.is_null());
+
+        // Verify initial size
+        assert_eq!(window.current_width, 800);
+        assert_eq!(window.current_height, 600);
+    }
+
+    #[test]
+    fn test_metal_layer_config() {
+        let desc = WindowDescriptor {
+            width: 100,
+            height: 100,
+            title: "Layer Test".to_string(),
+            ..Default::default()
+        };
+        let window = MacWindow::new(desc).expect("Failed to create window");
+
+        unsafe {
+            let layer = window.layer;
+            assert!(!layer.is_null());
+
+            // Check pixel format (70 = BGRA8Unorm or 80 = RGBA8Unorm?)
+            // The code sets 70.
+            let format: u64 = sys::send(layer, sys::sel(b"pixelFormat\0"));
+            assert_eq!(
+                format, 70,
+                "Pixel format should be 70 (BGRA8Unorm_sRGB or similar)"
+            );
+
+            // Check device is attached
+            let device: Id = sys::send(layer, sys::sel(b"device\0"));
+            assert!(!device.is_null(), "Metal layer must have a device attached");
+
+            // Check framebufferOnly is YES
+            let fb_only: sys::BOOL = sys::send(layer, sys::sel(b"framebufferOnly\0"));
+            assert_eq!(
+                fb_only,
+                sys::YES,
+                "framebufferOnly should be YES for performance"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resize_state() {
+        let desc = WindowDescriptor {
+            width: 200,
+            height: 200,
+            title: "Resize Test".to_string(),
+            ..Default::default()
+        };
+        let mut window = MacWindow::new(desc).expect("Failed to create window");
+
+        // Simulate resize by calling set_size (which calls setContentSize:)
+        window.set_size(400, 300);
+
+        // Check internal state
+        // Note: poll_resize relies on the actual window reporting a new size.
+        // In a headless CI environment without a real window server, this might not reflect immediately
+        // or might need a runloop spin.
+        // However, we can check if our wrapper updated its tracker if we trust set_size to do so,
+        // OR we trust poll_resize to return Some if the OS updated it.
+        // Let's rely on poll_resize returning the new size if the OS processed the setContentSize.
+
+        // spin runloop briefly? (Not easily possible without NSRunLoop access)
+        // Instead, valid that we can set it.
+
+        // We'll trust checking the window's content view frame directly via sys
+        unsafe {
+            let view: Id = sys::send(window.window.0, sys::sel(b"contentView\0"));
+            let bounds: sys::CGRect = sys::send(view, sys::sel(b"bounds\0"));
+            assert_eq!(bounds.size.width as u32, 400);
+            assert_eq!(bounds.size.height as u32, 300);
+        }
+    }
+
+    #[test]
+    fn test_abi_alignment() {
+        // Verify our assumption about ABI alignment for MTLSize vs CGSize
+        // This is a static check of our struct definitions vs likely platform values
+        use std::mem;
+
+        // These sizes must match what the platform expects.
+        // On 64-bit macOS:
+        // CGFloat is double (8 bytes)
+        assert_eq!(mem::size_of::<sys::CGSize>(), 16);
+        assert_eq!(mem::align_of::<sys::CGSize>(), 8);
+
+        // NSUInteger is u64 (8 bytes)
+        // MTLSize is 3x NSUInteger
+        assert_eq!(mem::size_of::<sys::MTLSize>(), 24);
+        assert_eq!(mem::align_of::<sys::MTLSize>(), 8);
+
+        // Ensure we are using the right types in window.rs
+    }
+}

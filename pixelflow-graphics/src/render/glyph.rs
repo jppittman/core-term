@@ -6,10 +6,10 @@
 //!
 //! For subpixel antialiasing, use [`subpixel`] to wrap a glyph mask.
 
+use super::pixel::Pixel;
 use crate::fonts::Font;
 use pixelflow_core::backend::{Backend, BatchArithmetic, FloatBatchOps, SimdBatch};
 use pixelflow_core::batch::{Batch, NativeBackend};
-use pixelflow_core::pixel::Pixel;
 use pixelflow_core::traits::Manifold;
 use std::sync::OnceLock;
 

@@ -1,0 +1,460 @@
+warning: unused import: `core::fmt::Debug`
+ --> pixelflow-core/src/batch.rs:4:5
+  |
+4 | use core::fmt::Debug;
+  |     ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `core::fmt::Debug`
+ --> pixelflow-core/src/raster.rs:5:5
+  |
+5 | use core::fmt::Debug;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `surfaces::FnSurface`: Use Compute instead
+  --> pixelflow-core/src/lib.rs:29:21
+   |
+29 | ...e, FnSurface, Gr...
+   |       ^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: unused import: `crate::Surface`
+ --> pixelflow-core/src/surfaces/warp.rs:1:5
+  |
+1 | use crate::Surface;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/batch.rs:3:31
+  |
+3 | ...nd, SimdBatch};
+  |        ^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/geometry/affine.rs:1:31
+  |
+1 | ...nd, SimdBatch};
+  |        ^^^^^^^^^
+
+warning: unused import: `crate::backend::SimdBatch`
+ --> pixelflow-core/src/geometry/poly.rs:1:5
+  |
+1 | use crate::backend::SimdBatch;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/geometry/primitive.rs:1:48
+  |
+1 | ...ic, SimdBatch};
+  |        ^^^^^^^^^
+
+warning: unused import: `crate::Surface`
+ --> pixelflow-core/src/surfaces/grade.rs:1:5
+  |
+1 | use crate::Surface;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/surfaces/transform.rs:3:39
+  |
+3 | ...ic, SimdBatch};
+  |        ^^^^^^^^^
+
+warning: unused import: `crate::Surface`
+ --> pixelflow-core/src/surfaces/lerp.rs:1:5
+  |
+1 | use crate::Surface;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/surfaces/source.rs:2:31
+  |
+2 | ...nd, SimdBatch};
+  |        ^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/surfaces/blend.rs:1:39
+  |
+1 | ...ic, SimdBatch};
+  |        ^^^^^^^^^
+
+warning: unused import: `SimdBatch`
+ --> pixelflow-core/src/surfaces/raster.rs:1:31
+  |
+1 | ...nd, SimdBatch};
+  |        ^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:13:1
+   |
+13 | pub mod dsl;
+   | ^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> pixelflow-core/src/lib.rs:7:9
+   |
+ 7 | #![warn(missing_docs)]
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:14:1
+   |
+14 | pub mod geometry;
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:16:1
+   |
+16 | pub mod platform;
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:17:1
+   |
+17 | pub mod raster;
+   | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:18:1
+   |
+18 | pub mod surfaces;
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/lib.rs:19:1
+   |
+19 | pub mod traits;
+   | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:91:5
+   |
+91 |     pub u32: uint32x4_t,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:92:5
+   |
+92 |     pub u16: uint16x8_t,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:93:5
+   |
+93 |     pub u8: uint8x16_t,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:94:5
+   |
+94 |     pub f32: float32x4_t,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/backend/arm.rs:95:5
+   |
+95 |     pub i32: int32x4_t,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> pixelflow-core/src/backend/arm.rs:121:5
+    |
+121 |     p...-> SimdVec<U> {
+    |     ^...^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> pixelflow-core/src/backend/arm.rs:126:5
+    |
+126 |     pub fn cast<U: Copy>(self) -> SimdVec<U> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> pixelflow-core/src/backend/arm.rs:131:5
+    |
+131 |     pub unsafe fn store(self, ptr: *mut T) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:150:5
+    |
+150 |     pub fn splat(val: u32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:162:5
+    |
+162 |     p... u32) -> Self {
+    |     ^...^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> pixelflow-core/src/backend/arm.rs:175:5
+    |
+175 |     pub fn to_array(self) -> [u32; 4] {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:180:5
+    |
+180 |     pub fn from_array(arr: [u32; 4]) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:187:5
+    |
+187 |     pub fn splat(val: u16) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:201:5
+    |
+201 |     pub fn splat(val: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> pixelflow-core/src/backend/arm.rs:215:5
+    |
+215 |     pub fn splat(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/geometry/mod.rs:1:1
+  |
+1 | pub mod affine;
+  | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/geometry/mod.rs:2:1
+  |
+2 | pub mod poly;
+  | ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/geometry/mod.rs:3:1
+  |
+3 | pub mod primitive;
+  | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> pixelflow-core/src/geometry/primitive.rs:8:5
+  |
+8 |     pub x: i32,
+  |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> pixelflow-core/src/geometry/primitive.rs:9:5
+  |
+9 |     pub y: i32,
+  |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/geometry/primitive.rs:10:5
+   |
+10 |     pub w: u32,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/geometry/primitive.rs:11:5
+   |
+11 |     pub h: u32,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> pixelflow-core/src/geometry/primitive.rs:15:5
+   |
+15 |     pu...u32) -> Self {
+   |     ^^...^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:1:1
+  |
+1 | pub mod blend;
+  | ^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:2:1
+  |
+2 | pub mod control;
+  | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:3:1
+  |
+3 | pub mod grade;
+  | ^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:4:1
+  |
+4 | pub mod implicit;
+  | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:5:1
+  |
+5 | pub mod lerp;
+  | ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:6:1
+  |
+6 | pub mod partition;
+  | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:7:1
+  |
+7 | pub mod raster;
+  | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:8:1
+  |
+8 | pub mod source;
+  | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/surfaces/mod.rs:9:1
+  |
+9 | pub mod transform;
+  | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> pixelflow-core/src/surfaces/mod.rs:10:1
+   |
+10 | pub mod warp;
+   | ^^^^^^^^^^^^
+
+warning: missing documentation for a type alias
+  --> pixelflow-core/src/surfaces/mod.rs:22:1
+   |
+22 | pub type FnSurface<F, T> = ...
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+ --> pixelflow-core/src/surfaces/control.rs:8:1
+  |
+8 | pub struct Select<M, T, F> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+ --> pixelflow-core/src/surfaces/control.rs:9:5
+  |
+9 |     pub mask: M,
+  |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/surfaces/control.rs:10:5
+   |
+10 |     pub if_true: T,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/surfaces/control.rs:11:5
+   |
+11 |     pub if_false: F,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> pixelflow-core/src/surfaces/control.rs:40:1
+   |
+40 | pub struct Fix<P, F> {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> pixelflow-core/src/surfaces/control.rs:46:5
+   |
+46 |     pub fn new(func: F) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/surfaces/source.rs:16:5
+   |
+16 |     pub func: F,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/surfaces/source.rs:17:5
+   |
+17 |     pub _marker: PhantomData<T>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> pixelflow-core/src/surfaces/source.rs:21:5
+   |
+21 |     pub fn new(func: F) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a type alias
+  --> pixelflow-core/src/surfaces/source.rs:41:1
+   |
+41 | pub type FnSurface<F, T> = ...
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> pixelflow-core/src/surfaces/source.rs:44:1
+   |
+44 | pub struct SampleAtlas<'a> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib) generated 65 warnings (run `cargo fix --lib -p pixelflow-core` to apply 2 suggestions)
+   Compiling pixelflow-graphics v0.1.0 (/Users/jppittman/Documents/Projects/core-term/pixelflow-graphics)
+error[E0432]: unresolved import `crate::glyph`
+   --> pixelflow-graphics/src/fonts/combinators.rs:331:16
+    |
+331 |     use crate::glyph::eval_curves_cell;
+    |                ^^^^^
+    |                |
+    |                unresolved import
+    |                help: a similar path exists: `fonts::glyph`
+
+warning: unused import: `crate::fonts::glyph::CurveSurface`
+   --> pixelflow-graphics/src/fonts/glyph.rs:578:13
+    |
+578 |         use crate::fonts::glyph::CurveSurface;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::fonts::glyph::CurveSurface`
+   --> pixelflow-graphics/src/fonts/glyph.rs:634:13
+    |
+634 |         use crate::fonts::glyph::CurveSurface;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `z_f`
+   --> pixelflow-graphics/src/fonts/combinators.rs:369:21
+    |
+369 |                 let z_f = Batch::<f32>::splat(0.0);
+    |                     ^^^ help: if this is intentional, prefix it with an underscore: `_z_f`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `w_f`
+   --> pixelflow-graphics/src/fonts/combinators.rs:370:21
+    |
+370 |                 let w_f = Batch::<f32>::splat(0.0);
+    |                     ^^^ help: if this is intentional, prefix it with an underscore: `_w_f`
+
+warning: unused variable: `z_f`
+   --> pixelflow-graphics/src/fonts/combinators.rs:458:21
+    |
+458 |                 let z_f = Batch::<f32>::splat(0.0);
+    |                     ^^^ help: if this is intentional, prefix it with an underscore: `_z_f`
+
+warning: unused variable: `w_f`
+   --> pixelflow-graphics/src/fonts/combinators.rs:459:21
+    |
+459 |                 let w_f = Batch::<f32>::splat(0.0);
+    |                     ^^^ help: if this is intentional, prefix it with an underscore: `_w_f`
+
+warning: unused variable: `bounds`
+   --> pixelflow-graphics/src/fonts/glyph.rs:347:24
+    |
+347 |         let (segments, bounds) = square_glyph();
+    |                        ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bounds`
+
+For more information about this error, try `rustc --explain E0432`.
+warning: `pixelflow-graphics` (lib test) generated 7 warnings
+error: could not compile `pixelflow-graphics` (lib test) due to 1 previous error; 7 warnings emitted

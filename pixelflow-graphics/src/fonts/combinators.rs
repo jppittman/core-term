@@ -1,9 +1,10 @@
 use super::curves::{Line, Quadratic, Segment};
 use super::font::Font;
 use super::glyph::{eval_curves, CellGlyph, CurveSurface, GlyphBounds};
+use crate::render::{Pixel, Rasterize};
 use core::fmt::Debug;
 use pixelflow_core::batch::Batch;
-use pixelflow_core::surfaces::{Baked, Rasterize};
+use pixelflow_core::surfaces::Baked;
 use pixelflow_core::traits::Manifold;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -47,7 +48,7 @@ impl<'a, S> Lazy<'a, S> {
 impl<'a, S, P, C> Manifold<P, C> for Lazy<'a, S>
 where
     S: Manifold<P, C>,
-    P: pixelflow_core::Pixel,
+    P: Pixel,
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
@@ -76,8 +77,7 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
             Lazy::new(move || match font.glyph(c, glyph_size) {
                 Some(g) => {
                     let cell_glyph = CellGlyph::new(g, ascender);
-                    let rasterized = Rasterize(cell_glyph);
-                    Baked::new(&rasterized, w, h)
+                    crate::render::bake(&Rasterize(cell_glyph), w, h)
                 }
                 None => {
                     struct Empty;
@@ -92,7 +92,7 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                             Batch::<u32>::splat(0x00FFFFFF)
                         }
                     }
-                    Baked::new(&Empty, w, h)
+                    crate::render::bake(&Empty, w, h)
                 }
             })
         })
@@ -118,8 +118,7 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
             let lazy = Lazy::new(move || match font.glyph(c, glyph_size) {
                 Some(g) => {
                     let cell_glyph = CellGlyph::new(g, ascender);
-                    let rasterized = Rasterize(cell_glyph);
-                    Baked::new(&rasterized, w, h)
+                    crate::render::bake(&Rasterize(cell_glyph), w, h)
                 }
                 None => {
                     struct Empty;
@@ -134,7 +133,7 @@ pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, B
                             Batch::<u32>::splat(0x00FFFFFF)
                         }
                     }
-                    Baked::new(&Empty, w, h)
+                    crate::render::bake(&Empty, w, h)
                 }
             });
             write.insert(c, lazy.clone());
@@ -250,13 +249,13 @@ impl<S: CurveSurface> Slant<S> {
     }
 }
 
-pub struct Scale<S> {
+pub struct CurveScale<S> {
     source: S,
     factor: f32,
     curves: Arc<[Segment]>,
 }
 
-impl<S: CurveSurface> CurveSurface for Scale<S> {
+impl<S: CurveSurface> CurveSurface for CurveScale<S> {
     fn curves(&self) -> &[Segment] {
         &self.curves
     }
@@ -271,13 +270,17 @@ impl<S: CurveSurface> CurveSurface for Scale<S> {
     }
 }
 
-impl<S: CurveSurface> Manifold<u32, f32> for Scale<S> {
+impl<S: CurveSurface> Manifold<u32, f32> for CurveScale<S> {
     fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
         eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
     }
 }
 
-impl<S: CurveSurface> Scale<S> {
+impl<S: CurveSurface> CurveScale<S> {
+    pub fn uniform(source: S, factor: f64) -> Self {
+        Self::new(source, factor as f32)
+    }
+
     pub fn new(source: S, factor: f32) -> Self {
         let curves = source
             .curves()
@@ -318,8 +321,8 @@ pub trait CurveSurfaceExt: CurveSurface + Sized {
     fn slant(self, factor: f32) -> Slant<Self> {
         Slant::new(self, factor)
     }
-    fn scale_curve(self, factor: f32) -> Scale<Self> {
-        Scale::new(self, factor)
+    fn scale_curve(self, factor: f32) -> CurveScale<Self> {
+        CurveScale::new(self, factor)
     }
 }
 
@@ -328,7 +331,7 @@ impl<S: CurveSurface> CurveSurfaceExt for S {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::glyph::eval_curves_cell;
+    use crate::fonts::glyph::eval_curves_cell;
     use pixelflow_core::backend::Backend;
     use pixelflow_core::backend::SimdBatch;
     use pixelflow_core::batch::NativeBackend;
@@ -366,10 +369,8 @@ mod tests {
                     NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
                 let y_f =
                     NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
-                let z_f = Batch::<f32>::splat(0.0);
-                let w_f = Batch::<f32>::splat(0.0);
 
-                let alpha = pixel_alpha(Surface::eval(&cell_glyph, x_f, y_f).first());
+                let _alpha = pixel_alpha(Surface::eval(&cell_glyph, x_f, y_f).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -406,9 +407,6 @@ mod tests {
         // Update to use f32
         let x = Batch::<f32>::splat(0.5); // x=0 -> 0.5
         let y = Batch::<f32>::splat(0.5); // y=0 -> 0.5
-        let z = Batch::<f32>::splat(0.0);
-        let w = Batch::<f32>::splat(0.0);
-
         let alpha = eval_curves_cell(
             glyph.curves(),
             bounds,
@@ -455,10 +453,8 @@ mod tests {
                     NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
                 let y_f =
                     NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
-                let z_f = Batch::<f32>::splat(0.0);
-                let w_f = Batch::<f32>::splat(0.0);
 
-                let alpha = pixel_alpha(Surface::eval(&cell_glyph, x_f, y_f).first());
+                let _alpha = pixel_alpha(Surface::eval(&cell_glyph, x_f, y_f).first());
                 let ch = if alpha > 200 {
                     '#'
                 } else if alpha > 100 {
@@ -476,8 +472,8 @@ mod tests {
         }
 
         // Must use Rasterize
-        let rasterized = Rasterize(cell_glyph);
-        let baked: Baked<u32> = Baked::new(&rasterized, cell_width, cell_height);
+        let baked: Baked<u32> =
+            crate::render::bake(&Rasterize(cell_glyph), cell_width, cell_height);
 
         eprintln!("\nBaked '.' ({}x{}):", cell_width, cell_height);
         for y in 0..cell_height {

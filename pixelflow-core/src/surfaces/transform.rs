@@ -1,6 +1,6 @@
+use crate::backend::BatchArithmetic;
 use crate::batch::Batch;
 use crate::traits::Manifold;
-use crate::backend::{BatchArithmetic, SimdBatch};
 use core::fmt::Debug;
 
 /// Offsets the coordinate system by a fixed amount.

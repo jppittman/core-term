@@ -32,8 +32,8 @@ pub use linux::*;
 use crate::display::driver::DriverActor;
 use anyhow::{Context, Result};
 use log::info;
-use pixelflow_core::Scale;
 use pixelflow_graphics::render::Frame;
+use pixelflow_graphics::Scale;
 // use std::time::Instant; // Removed as per instruction
 
 // Platform Logic
@@ -113,13 +113,16 @@ impl EnginePlatform {
         let engine_handle_clone = engine_handle.clone();
 
         std::thread::spawn(move || {
+            let loop_options = crate::render_pool::RenderOptions {
+                num_threads: render_threads,
+            };
             if let Err(e) = engine_loop(
                 app,
                 engine_handle_clone,
                 driver_handle_clone,
                 scheduler,
                 target_fps,
-                render_threads,
+                loop_options,
             ) {
                 log::error!("Engine loop error: {}", e);
             }
@@ -233,17 +236,15 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
 
                 // Use Rasterize combinator to adapt continuous surface to discrete grid
                 let scaled = Scale::uniform(surface, self.scale_factor);
-                let rasterized = pixelflow_core::surfaces::raster::Rasterize(scaled);
+                let rasterized = pixelflow_graphics::render::rasterizer::Rasterize(scaled);
 
                 let width = frame.width as usize;
                 let height = frame.height as usize;
-                render_parallel(
-                    &rasterized,
-                    frame.as_slice_mut(),
-                    width,
-                    height,
-                    self.render_threads,
-                );
+                let shape = pixelflow_graphics::TensorShape::new(width, height, width);
+                let options = crate::render_pool::RenderOptions {
+                    num_threads: self.render_threads,
+                };
+                render_parallel(&rasterized, frame.as_slice_mut(), shape, options);
 
                 // Send frame to driver
                 let _ = self.driver_handle.send(Message::Data(DisplayData::Present {
@@ -273,13 +274,11 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
 
                 let width = frame.width as usize;
                 let height = frame.height as usize;
-                render_parallel(
-                    &scaled,
-                    frame.as_slice_mut(),
-                    width,
-                    height,
-                    self.render_threads,
-                );
+                let shape = pixelflow_graphics::TensorShape::new(width, height, width);
+                let options = crate::render_pool::RenderOptions {
+                    num_threads: self.render_threads,
+                };
+                render_parallel(&scaled, frame.as_slice_mut(), shape, options);
 
                 // Send frame to driver
                 let _ = self.driver_handle.send(Message::Data(DisplayData::Present {
@@ -429,11 +428,11 @@ fn engine_loop<A: Application>(
     >,
     mut scheduler: EngineActorScheduler<PlatformPixel>,
     target_fps: u32,
-    render_threads: usize,
+    render_options: crate::render_pool::RenderOptions,
 ) -> Result<()> {
     info!(
         "Engine loop started (scheduler model, {} threads, target FPS: {})",
-        render_threads, target_fps
+        render_options.num_threads, target_fps
     );
 
     // Spawn VSync actor immediately to start the render loop
@@ -450,7 +449,7 @@ fn engine_loop<A: Application>(
         physical_height: 0,
         scale_factor: 1.0,
         vsync_actor: Some(vsync_actor),
-        render_threads,
+        render_threads: render_options.num_threads,
         frame_count: 0,
     };
 

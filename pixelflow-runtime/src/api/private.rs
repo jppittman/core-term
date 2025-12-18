@@ -1,6 +1,6 @@
 use actor_scheduler::{ActorHandle, ActorScheduler};
-use pixelflow_core::Pixel;
 use pixelflow_graphics::render::Frame;
+use pixelflow_graphics::Pixel;
 use std::sync::Arc;
 
 use crate::api::public::CursorIcon;

@@ -28,14 +28,11 @@ pub fn ref_unpack_4bit(packed: &[u8], width: usize, height: usize) -> Vec<u8> {
 }
 
 /// Gather a single pixel from 4-bit packed data (scalar reference).
-pub fn ref_gather_4bit_single(
-    packed: &[u8],
-    x: usize,
-    y: usize,
-    width: usize,
-    stride: usize,
-) -> u8 {
-    let pixel_idx = y * width + x;
+fn read_4bpp_pixel(packed: &[u8], x: usize, y: usize, stride: usize) -> u8 {
+    ref_gather_4bit_single(packed, x, y, stride)
+}
+
+pub fn ref_gather_4bit_single(packed: &[u8], x: usize, y: usize, stride: usize) -> u8 {
     let byte_idx = y * stride + (x / 2);
     let is_odd = x % 2 == 1;
 
@@ -146,10 +143,11 @@ mod tests {
     fn test_ref_gather_4bit_single() {
         // [0x12, 0x34] represents [1*17, 2*17, 3*17, 4*17]
         let packed = [0x12u8, 0x34];
-        assert_eq!(ref_gather_4bit_single(&packed, 0, 0, 4, 2), 17);
-        assert_eq!(ref_gather_4bit_single(&packed, 1, 0, 4, 2), 34);
-        assert_eq!(ref_gather_4bit_single(&packed, 2, 0, 4, 2), 51);
-        assert_eq!(ref_gather_4bit_single(&packed, 3, 0, 4, 2), 68);
+        let stride = 2; // 2 bytes per row, so 4 pixels per row
+        assert_eq!(ref_gather_4bit_single(&packed, 0, 0, stride), 17);
+        assert_eq!(ref_gather_4bit_single(&packed, 1, 0, stride), 34);
+        assert_eq!(ref_gather_4bit_single(&packed, 2, 0, stride), 51);
+        assert_eq!(ref_gather_4bit_single(&packed, 3, 0, stride), 68);
     }
 
     #[test]

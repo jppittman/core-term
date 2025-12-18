@@ -31,7 +31,7 @@ type GlyphFactory = Arc<dyn Fn(char) -> Lazy<'static, Baked<u32>> + Send + Sync>
 ///
 /// Receives engine events via Actor lanes and sends responses back to the engine.
 /// Also processes PTY output from a background thread.
-pub struct TerminalApp<P: Pixel + Surface<P>> {
+pub struct TerminalApp<P: Pixel + Surface<P, u32>> {
     /// The terminal emulator - owns all terminal state
     emulator: TerminalEmulator,
     /// Channel to send data to the PTY write thread
@@ -48,7 +48,7 @@ pub struct TerminalApp<P: Pixel + Surface<P>> {
     _pixel: PhantomData<P>,
 }
 
-impl<P: Pixel + Surface<P>> TerminalApp<P> {
+impl<P: Pixel + Surface<P, u32>> TerminalApp<P> {
     /// Creates a new terminal app.
     pub fn new(
         emulator: TerminalEmulator,
@@ -168,7 +168,7 @@ impl<P: Pixel + Surface<P>> TerminalApp<P> {
 }
 
 /// Implement Actor trait - automatically gets Application trait via blanket impl.
-impl<P: Pixel + Surface<P>> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
+impl<P: Pixel + Surface<P, u32>> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
     for TerminalApp<P>
 {
     fn handle_data(&mut self, data: EngineEventData) {
@@ -284,7 +284,7 @@ impl<P: Pixel + Surface<P>> Actor<EngineEventData, EngineEventControl, EngineEve
 /// - App handle (implements Application trait via blanket impl)
 /// - PTY command sender (for PTY read thread)
 /// - Thread join handle
-pub fn spawn_terminal_app<P: Pixel + Surface<P> + 'static>(
+pub fn spawn_terminal_app<P: Pixel + Surface<P, u32> + 'static>(
     emulator: TerminalEmulator,
     pty_tx: SyncSender<Vec<u8>>,
     pty_rx: Receiver<Vec<AnsiCommand>>,

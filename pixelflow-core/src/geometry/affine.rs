@@ -1,4 +1,4 @@
-use crate::backend::{Backend, SimdBatch};
+use crate::backend::Backend;
 use crate::batch::{Batch, NativeBackend};
 
 /// A 3x3 matrix for 2D affine transformations.

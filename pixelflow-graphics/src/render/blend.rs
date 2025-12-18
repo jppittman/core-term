@@ -1,9 +1,10 @@
-use crate::backend::{BatchArithmetic, SimdBatch};
-use crate::batch::Batch;
-use crate::traits::Manifold;
-use crate::pixel::Pixel;
+// pixelflow-graphics/src/render/blend.rs
+
+use crate::render::pixel::Pixel; // Local usage in graphics
 use core::fmt::Debug;
 use core::marker::PhantomData;
+use pixelflow_core::batch::Batch;
+use pixelflow_core::traits::Manifold;
 
 /// Computes the maximum value of two surfaces.
 #[derive(Copy, Clone)]

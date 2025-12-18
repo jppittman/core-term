@@ -1,8 +1,8 @@
 use crate::api::private::WindowId;
 use crate::api::public::{CursorIcon, WindowDescriptor};
 use crate::input::{KeySymbol, Modifiers};
-use pixelflow_core::Pixel;
 use pixelflow_graphics::render::Frame;
+use pixelflow_graphics::Pixel;
 
 /// Data messages for the display driver (high priority)
 #[derive(Debug)]
