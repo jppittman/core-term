@@ -5,15 +5,15 @@
 
 use crate::surface::grid::GridBuffer;
 use core::marker::PhantomData;
-use pixelflow_core::dsl::MaskExt; // for .over()
-use pixelflow_core::surfaces::{Baked, FnSurface, Partition};
-use pixelflow_core::traits::Manifold;
 use pixelflow_core::batch::Batch;
-use pixelflow_fonts::{glyphs, Lazy};
-use pixelflow_render::font;
-use pixelflow_render::Pixel;
-use std::sync::Arc;
+use pixelflow_core::dsl::MaskExt; // for .over()
+use pixelflow_core::surfaces::{Baked, Compute, Partition};
+use pixelflow_core::traits::Manifold;
+use pixelflow_graphics::fonts::{glyphs, Lazy};
+use pixelflow_graphics::render::{font, Pixel};
+
 use core::fmt::Debug;
+use std::sync::Arc;
 
 /// Converts a Manifold<u32, C> to Manifold<P, C> by applying P::batch_from_u32.
 struct PixelConvert<S, P> {
@@ -23,7 +23,10 @@ struct PixelConvert<S, P> {
 
 impl<S, P: Pixel> PixelConvert<S, P> {
     fn new(source: S) -> Self {
-        Self { source, _pixel: PhantomData }
+        Self {
+            source,
+            _pixel: PhantomData,
+        }
     }
 }
 
@@ -66,7 +69,8 @@ impl<P: Pixel> TerminalSurface<P> {
         let cols = grid.cols;
 
         // Build flat array of all cells (row-major order)
-        let mut cell_surfaces: Vec<Arc<dyn Manifold<u32, u32> + Send + Sync>> = Vec::with_capacity(rows * cols);
+        let mut cell_surfaces: Vec<Arc<dyn Manifold<u32, u32> + Send + Sync>> =
+            Vec::with_capacity(rows * cols);
 
         for row in 0..rows {
             for col in 0..cols {
@@ -76,16 +80,17 @@ impl<P: Pixel> TerminalSurface<P> {
 
                 // Glyph Mask (u32 pixels with coverage in alpha channel)
                 // Use a constant Manifold for empty cells
-                let glyph_surface: Arc<dyn Manifold<u32, u32> + Send + Sync> = if cell.ch == ' ' || cell.ch == '\0' {
-                    Arc::new(0u32)
-                } else {
-                    let glyph_lazy = (glyph_factory)(cell.ch);
-                    Arc::new(pixelflow_core::surfaces::Offset {
-                        source: glyph_lazy,
-                        dx: -(cx as i32),
-                        dy: -(cy as i32),
-                    })
-                };
+                let glyph_surface: Arc<dyn Manifold<u32, u32> + Send + Sync> =
+                    if cell.ch == ' ' || cell.ch == '\0' {
+                        Arc::new(0u32)
+                    } else {
+                        let glyph_lazy = (glyph_factory)(cell.ch);
+                        Arc::new(pixelflow_core::surfaces::Offset {
+                            source: glyph_lazy,
+                            dx: -(cx as i32),
+                            dy: -(cy as i32),
+                        })
+                    };
 
                 // Colors (as u32 packed RGBA)
                 let fg = cell.fg.to_rgba().0;
@@ -99,11 +104,13 @@ impl<P: Pixel> TerminalSurface<P> {
 
         // Compositional indexer: (x, y) -> cell_index
         // cell_index = (y / cell_h) * cols + (x / cell_w)
-        let indexer = FnSurface::new(move |x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>| -> Batch<u32> {
-            let col_idx = x / Batch::<u32>::splat(cell_width);
-            let row_idx = y / Batch::<u32>::splat(cell_height);
-            row_idx * Batch::<u32>::splat(cols as u32) + col_idx
-        });
+        let indexer = Compute::new(
+            move |x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>| -> Batch<u32> {
+                let col_idx = x / Batch::<u32>::splat(cell_width);
+                let row_idx = y / Batch::<u32>::splat(cell_height);
+                row_idx * Batch::<u32>::splat(cols as u32) + col_idx
+            },
+        );
 
         // Build Partition combinator
         // Type erase to remove Send + Sync bounds
@@ -128,11 +135,13 @@ impl<P: Pixel> TerminalSurface<P> {
         cell_height: u32,
     ) -> Self {
         // Compositional indexer: (x, y) -> cell_index
-        let indexer = FnSurface::new(move |x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>| -> Batch<u32> {
-            let col_idx = x / Batch::<u32>::splat(cell_width);
-            let row_idx = y / Batch::<u32>::splat(cell_height);
-            row_idx * Batch::<u32>::splat(cols as u32) + col_idx
-        });
+        let indexer = Compute::new(
+            move |x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>| -> Batch<u32> {
+                let col_idx = x / Batch::<u32>::splat(cell_width);
+                let row_idx = y / Batch::<u32>::splat(cell_height);
+                row_idx * Batch::<u32>::splat(cols as u32) + col_idx
+            },
+        );
 
         let u32_root = Partition::new(indexer, cells);
 
@@ -157,7 +166,7 @@ impl<P: Pixel + 'static> TerminalSurface<P> {
         let f = font();
         let glyph_fn = glyphs(f.clone(), cell_width, cell_height);
         let grid = GridBuffer::new(cols, rows);
-        
+
         Self::with_grid(&grid, Arc::new(glyph_fn), cell_width, cell_height)
     }
 }

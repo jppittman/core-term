@@ -10,7 +10,7 @@
 use crate::color::Color;
 
 // Re-export AttrFlags from pixelflow-render
-pub use pixelflow_render::AttrFlags;
+pub use pixelflow_graphics::render::AttrFlags;
 
 /// Represents a glyph in a terminal grid cell.
 ///

@@ -33,7 +33,7 @@ use crate::display::driver::DriverActor;
 use anyhow::{Context, Result};
 use log::info;
 use pixelflow_core::Scale;
-use pixelflow_render::Frame;
+use pixelflow_graphics::render::Frame;
 // use std::time::Instant; // Removed as per instruction
 
 // Platform Logic
@@ -44,7 +44,7 @@ use crate::display::platform::PlatformActor;
 pub type ActivePlatform = PlatformActor<MetalOps>;
 
 // Type Aliases
-pub type PlatformPixel = pixelflow_render::Rgba;
+pub type PlatformPixel = pixelflow_graphics::render::Rgba;
 pub type PlatformDriver = DriverActor<ActivePlatform>;
 
 pub struct EnginePlatform {

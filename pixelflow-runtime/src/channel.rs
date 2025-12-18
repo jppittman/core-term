@@ -62,7 +62,7 @@ pub enum EngineCommand<P: Pixel> {
         >,
     ),
     /// Present complete (converts to Message::Control)
-    PresentComplete(pixelflow_render::Frame<P>),
+    PresentComplete(pixelflow_graphics::render::Frame<P>),
     /// Driver ack (converts to Message::Control)
     DriverAck,
 }

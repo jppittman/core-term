@@ -24,7 +24,7 @@ use crate::term::{
     TerminalSnapshot,
     UserInputAction,
 };
-use pixelflow_engine::input::MouseButton; // For mouse input
+use pixelflow_runtime::input::MouseButton; // For mouse input
 
 // Default scrollback for tests, can be adjusted.
 // const TEST_SCROLLBACK_LIMIT: usize = 100;

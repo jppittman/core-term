@@ -126,7 +126,10 @@ impl MacWindow {
         }
     }
 
-    pub fn present(&mut self, frame: pixelflow_render::Frame<pixelflow_render::color::Rgba>) {
+    pub fn present(
+        &mut self,
+        frame: pixelflow_graphics::render::Frame<pixelflow_graphics::render::color::Rgba>,
+    ) {
         // Metal presentation logic.
         unsafe {
             // Ensure drawable size matches frame

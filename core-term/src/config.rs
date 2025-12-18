@@ -14,7 +14,7 @@ use crate::{
 };
 use log::{error, info}; // Added warn, info
 use once_cell::sync::Lazy;
-use pixelflow_engine::config::PerformanceConfig;
+use pixelflow_runtime::config::PerformanceConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
