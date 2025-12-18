@@ -2,6 +2,8 @@
 pub mod arithmetic;
 /// Comparison surfaces (Lt, Gt, Eq, etc).
 pub mod comparison;
+/// Constant surfaces (solid colors, fixed values).
+pub mod constant;
 /// Control flow surfaces (Select, Partition).
 pub mod control;
 /// Coordinate projection surfaces (X, Y, Z, W).
@@ -27,6 +29,7 @@ pub mod warp;
 
 pub use arithmetic::{Add, Div, Mul, Sub};
 pub use comparison::{Eq, Ge, Gt, Le, Lt, Ne};
+pub use constant::Constant;
 pub use control::{Fix, Select};
 pub use coords::{W, X, Y, Z};
 pub use grade::Grade;
