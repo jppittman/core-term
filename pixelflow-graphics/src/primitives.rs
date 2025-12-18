@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+use pixelflow_core::backend::FloatBatchOps;
 use pixelflow_core::batch::Batch;
 use pixelflow_core::dsl::SurfaceExt;
 use pixelflow_core::traits::Manifold;
@@ -16,10 +18,14 @@ impl Circle {
     }
 }
 
-/// Signed Distance Field (SDF) implementation using pure composition.
-impl Manifold<Batch<f32>, f32> for Circle {
+/// Signed Distance Field (SDF) implementation - generic over coordinate type.
+impl<C> Manifold<C, f32> for Circle
+where
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    Batch<C>: FloatBatchOps,
+{
     #[inline(always)]
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<f32> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<f32> {
         // Translate to origin
         let dx = x - self.cx;
         let dy = y - self.cy;
@@ -30,10 +36,14 @@ impl Manifold<Batch<f32>, f32> for Circle {
     }
 }
 
-/// Mask implementation using composition with bounding box optimization.
-impl Manifold<Batch<u32>, u32> for Circle {
+/// Mask implementation - generic over coordinate type with bounding box optimization.
+impl<C> Manifold<C, u32> for Circle
+where
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    Batch<C>: FloatBatchOps,
+{
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<u32> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<u32> {
         // Bounding box check: |x - cx| < r && |y - cy| < r
         let dx = x - self.cx;
         let dy = y - self.cy;
@@ -65,10 +75,14 @@ impl Rect {
     }
 }
 
-/// SDF implementation for Rect using composition.
-impl Manifold<Batch<f32>, f32> for Rect {
+/// SDF implementation for Rect - generic over coordinate type.
+impl<C> Manifold<C, f32> for Rect
+where
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    Batch<C>: FloatBatchOps,
+{
     #[inline(always)]
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<f32> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<f32> {
         let half_w = self.w * 0.5;
         let half_h = self.h * 0.5;
         let cx = self.x + half_w;
@@ -85,7 +99,7 @@ impl Manifold<Batch<f32>, f32> for Rect {
         let qx_max_0 = qx.max(0.0);
         let qy_max_0 = qy.max(0.0);
 
-        // Euclidean distance from corner
+        // Euclidean distance from corner (no clones needed - Batch is Copy!)
         let len_max_d = (qx_max_0 * qx_max_0 + qy_max_0 * qy_max_0).sqrt();
 
         // Interior distance
@@ -96,10 +110,14 @@ impl Manifold<Batch<f32>, f32> for Rect {
     }
 }
 
-/// Mask implementation for Rect using composition.
-impl Manifold<Batch<u32>, u32> for Rect {
+/// Mask implementation for Rect - generic over coordinate type.
+impl<C> Manifold<C, u32> for Rect
+where
+    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
+    Batch<C>: FloatBatchOps,
+{
     #[inline(always)]
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, _z: Batch<u32>, _w: Batch<u32>) -> Batch<u32> {
+    fn eval(&self, x: Batch<C>, y: Batch<C>, _z: Batch<C>, _w: Batch<C>) -> Batch<u32> {
         let left = self.x;
         let right = self.x + self.w;
         let top = self.y;
