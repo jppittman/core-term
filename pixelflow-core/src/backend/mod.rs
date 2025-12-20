@@ -68,8 +68,8 @@ pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
 ///
 /// This trait is `pub(crate)` to enforce the North Star architecture:
 /// external code should not directly manipulate batches via `splat`, `load`, etc.
-/// Instead, use surfaces like `Constant<T>` for solid values.
-pub(crate) trait SimdBatch<T: Copy + Debug + Default + PartialEq + Send + Sync + 'static>:
+/// Instead, use surfaces like scalar values (e.g., `1.0f32`) for solid values (via trait promotion).
+pub trait SimdBatch<T: Copy + Debug + Default + PartialEq + Send + Sync + 'static>:
     Copy + Clone + Debug + Default + Send + Sync
 {
     /// Number of lanes in this batch.
@@ -101,22 +101,6 @@ pub(crate) trait SimdBatch<T: Copy + Debug + Default + PartialEq + Send + Sync +
 
     /// Extract a single lane by index (0 to LANES-1).
     fn extract_lane(&self, lane: usize) -> T;
-
-    /// Church boolean / conditional execution optimization.
-    fn church<F1, F2>(self, t: F1, f: F2) -> Self
-    where
-        Self: BatchArithmetic<T>,
-        F1: FnOnce() -> Self,
-        F2: FnOnce() -> Self,
-    {
-        if self.all() {
-            t()
-        } else if !self.any() {
-            f()
-        } else {
-            self.select(t(), f())
-        }
-    }
 }
 
 /// Arithmetic operations for batches.

@@ -77,10 +77,10 @@ pub fn ref_sample_4bit_bilinear(
     let dx = u - x0 as f32;
     let dy = v - y0 as f32;
 
-    let p00 = ref_gather_4bit_single(packed, x0, y0, width, stride);
-    let p10 = ref_gather_4bit_single(packed, x1, y0, width, stride);
-    let p01 = ref_gather_4bit_single(packed, x0, y1, width, stride);
-    let p11 = ref_gather_4bit_single(packed, x1, y1, width, stride);
+    let p00 = ref_gather_4bit_single(packed, x0, y0, stride);
+    let p10 = ref_gather_4bit_single(packed, x1, y0, stride);
+    let p01 = ref_gather_4bit_single(packed, x0, y1, stride);
+    let p11 = ref_gather_4bit_single(packed, x1, y1, stride);
 
     ref_bilinear_interpolate(p00, p10, p01, p11, dx, dy)
 }
