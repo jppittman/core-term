@@ -350,6 +350,28 @@ impl<T: Manifold> Manifold for Abs<T> {
     }
 }
 
+/// Maximum of two values.
+#[derive(Clone, Copy, Debug)]
+pub struct Max<L, R>(pub L, pub R);
+
+/// Minimum of two values.
+#[derive(Clone, Copy, Debug)]
+pub struct Min<L, R>(pub L, pub R);
+
+impl<L: Manifold, R: Manifold> Manifold for Max<L, R> {
+    #[inline(always)]
+    fn eval(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        self.0.eval(x, y, z, w).max(self.1.eval(x, y, z, w))
+    }
+}
+
+impl<L: Manifold, R: Manifold> Manifold for Min<L, R> {
+    #[inline(always)]
+    fn eval(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        self.0.eval(x, y, z, w).min(self.1.eval(x, y, z, w))
+    }
+}
+
 // ============================================================================
 // Comparison Operations (produce masks)
 // ============================================================================
@@ -557,9 +579,42 @@ pub trait ManifoldExt: Manifold + Sized {
             if_false,
         }
     }
+
+    /// Maximum of two manifolds.
+    fn max<R: Manifold>(self, rhs: R) -> Max<Self, R> {
+        Max(self, rhs)
+    }
+
+    /// Minimum of two manifolds.
+    fn min<R: Manifold>(self, rhs: R) -> Min<Self, R> {
+        Min(self, rhs)
+    }
+
+    /// Type-erase this manifold into a boxed trait object.
+    ///
+    /// This stops the nested type madness and produces a storable,
+    /// passable value with a simple type.
+    fn boxed(self) -> BoxedManifold
+    where
+        Self: 'static,
+    {
+        alloc::boxed::Box::new(self)
+    }
 }
 
 impl<T: Manifold + Sized> ManifoldExt for T {}
+
+/// A type-erased manifold.
+///
+/// Use `manifold.boxed()` to create one.
+pub type BoxedManifold = alloc::boxed::Box<dyn Manifold>;
+
+impl Manifold for BoxedManifold {
+    #[inline(always)]
+    fn eval(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        (**self).eval(x, y, z, w)
+    }
+}
 
 // ============================================================================
 // Materialize: The Observation Boundary
