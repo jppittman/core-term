@@ -38,7 +38,28 @@ use backend::scalar::Scalar as NativeBackend;
 ///
 /// A `Field` represents a value—or many values computed in parallel.
 /// Users treat it as a mathematical object; the SIMD nature is hidden.
+///
+/// # Creating Fields
+/// Use `From`/`Into` for ergonomic construction:
+/// ```ignore
+/// let f: Field = 1.0.into();
+/// let f = Field::from(42);
+/// ```
 pub type Field = <NativeBackend as Backend>::Batch<f32>;
+
+impl From<f32> for Field {
+    #[inline(always)]
+    fn from(val: f32) -> Self {
+        backend::SimdBatch::splat(val)
+    }
+}
+
+impl From<i32> for Field {
+    #[inline(always)]
+    fn from(val: i32) -> Self {
+        backend::SimdBatch::splat(val as f32)
+    }
+}
 
 /// Number of values computed in parallel (implementation detail).
 pub const PARALLELISM: usize = NativeBackend::LANES;
