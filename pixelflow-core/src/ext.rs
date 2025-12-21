@@ -6,10 +6,11 @@ use crate::Manifold;
 use crate::combinators::Select;
 use crate::ops::{Abs, Add, Div, Ge, Gt, Le, Lt, Max, Min, Mul, Sqrt, Sub};
 
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 
-/// Type-erased manifold (returning a Field).
-pub type BoxedManifold = Box<dyn Manifold<Output = crate::Field>>;
+/// Type-erased manifold (returning a Field), wrapped in a struct to allow trait implementations.
+#[derive(Clone)]
+pub struct BoxedManifold(pub Arc<dyn Manifold<Output = crate::Field>>);
 
 impl Manifold for BoxedManifold {
     type Output = crate::Field;
@@ -21,16 +22,44 @@ impl Manifold for BoxedManifold {
         z: crate::Field,
         w: crate::Field,
     ) -> crate::Field {
-        (**self).eval_raw(x, y, z, w)
+        self.0.eval_raw(x, y, z, w)
+    }
+}
+
+// Operator Implementations for BoxedManifold
+// This allows writing `a + b` where a or b are BoxedManifolds.
+
+impl<R: Manifold> core::ops::Add<R> for BoxedManifold {
+    type Output = Add<Self, R>;
+    fn add(self, rhs: R) -> Self::Output {
+        Add(self, rhs)
+    }
+}
+
+impl<R: Manifold> core::ops::Sub<R> for BoxedManifold {
+    type Output = Sub<Self, R>;
+    fn sub(self, rhs: R) -> Self::Output {
+        Sub(self, rhs)
+    }
+}
+
+impl<R: Manifold> core::ops::Mul<R> for BoxedManifold {
+    type Output = Mul<Self, R>;
+    fn mul(self, rhs: R) -> Self::Output {
+        Mul(self, rhs)
+    }
+}
+
+impl<R: Manifold> core::ops::Div<R> for BoxedManifold {
+    type Output = Div<Self, R>;
+    fn div(self, rhs: R) -> Self::Output {
+        Div(self, rhs)
     }
 }
 
 /// Extension methods for composing manifolds.
 pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     /// Evaluate the manifold at the given coordinates.
-    ///
-    /// This is a convenience wrapper around `eval_raw` that accepts any type
-    /// that can be converted into `Field` (e.g. `f32`, `i32`, `Field`).
     #[inline(always)]
     fn eval<
         A: Into<crate::Field>,
@@ -47,58 +76,44 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         self.eval_raw(x.into(), y.into(), z.into(), w.into())
     }
 
-    /// Add two manifolds.
     fn add<R: Manifold>(self, rhs: R) -> Add<Self, R> {
         Add(self, rhs)
     }
-    /// Subtract two manifolds.
     fn sub<R: Manifold>(self, rhs: R) -> Sub<Self, R> {
         Sub(self, rhs)
     }
-    /// Multiply two manifolds.
     fn mul<R: Manifold>(self, rhs: R) -> Mul<Self, R> {
         Mul(self, rhs)
     }
-    /// Divide two manifolds.
     fn div<R: Manifold>(self, rhs: R) -> Div<Self, R> {
         Div(self, rhs)
     }
-    /// Square root.
     fn sqrt(self) -> Sqrt<Self> {
         Sqrt(self)
     }
-    /// Absolute value.
     fn abs(self) -> Abs<Self> {
         Abs(self)
     }
-    /// Maximum of two manifolds.
     fn max<R: Manifold>(self, rhs: R) -> Max<Self, R> {
         Max(self, rhs)
     }
-    /// Minimum of two manifolds.
     fn min<R: Manifold>(self, rhs: R) -> Min<Self, R> {
         Min(self, rhs)
     }
 
-    // Comparisons
-    /// Less than.
     fn lt<R: Manifold>(self, rhs: R) -> Lt<Self, R> {
         Lt(self, rhs)
     }
-    /// Greater than.
     fn gt<R: Manifold>(self, rhs: R) -> Gt<Self, R> {
         Gt(self, rhs)
     }
-    /// Less than or equal.
     fn le<R: Manifold>(self, rhs: R) -> Le<Self, R> {
         Le(self, rhs)
     }
-    /// Greater than or equal.
     fn ge<R: Manifold>(self, rhs: R) -> Ge<Self, R> {
         Ge(self, rhs)
     }
 
-    /// Conditional select. If self (as mask), use if_true; else if_false.
     fn select<T: Manifold, F: Manifold>(self, if_true: T, if_false: F) -> Select<Self, T, F> {
         Select {
             cond: self,
@@ -112,9 +127,8 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     where
         Self: 'static,
     {
-        Box::new(self)
+        BoxedManifold(Arc::new(self))
     }
 }
 
-/// Blanket implementation: every scalar Manifold gets ManifoldExt.
 impl<T: Manifold<Output = crate::Field> + Sized> ManifoldExt for T {}

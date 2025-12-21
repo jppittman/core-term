@@ -99,7 +99,7 @@ impl<'a> Font<'a> {
 
         // Compute offset to normalize glyph to (0,0) based on bounding box
         let offset_x = -bbox.x_min as f32 * scale;
-        let offset_y = -bbox.y_min as f32 * scale;
+        let offset_y = bbox.y_max as f32 * scale;
 
         let mut builder = GlyphBuilder::new(scale, [offset_x, offset_y]);
 
@@ -219,7 +219,7 @@ impl GlyphBuilder {
     fn transform(&self, x: f32, y: f32) -> Point {
         [
             x * self.scale + self.offset[0],
-            y * self.scale + self.offset[1],
+            y * -self.scale + self.offset[1],
         ]
     }
 }
