@@ -1,80 +1,50 @@
 //! # Chained Operator Overloads
 //!
-//! This module provides operator overloads for composite AST types,
-//! enabling expressions like `(X + Y) * Z` to work.
-//!
-//! ## What It Does
-//!
-//! After evaluating `X + Y`, you get an `Add<X, Y>` type.
-//! To multiply that result by `Z`, we need `Add<X, Y>` to implement `Mul<Z>`.
-//! This module provides those implementations for all composite types.
-//!
-//! ## Generated Code Example
-//!
-//! For `Add<L, R>`, the macro generates:
-//! ```rust,ignore
-//! impl<L: Manifold, R: Manifold, Rhs: Manifold> core::ops::Add<Rhs> for Add<L, R> {
-//!     type Output = Add<Add<L, R>, Rhs>;
-//!     fn add(self, rhs: Rhs) -> Self::Output { Add(self, rhs) }
-//! }
-//! // ... and Sub, Mul, Div similarly
-//! ```
+//! Enables arithmetic chaining without boxing, e.g., `(X + Y) * Z`.
 
+use super::{Abs, Add, Div, Max, Min, Mul, Sqrt, Sub};
 use crate::Manifold;
 use crate::combinators::Select;
-use crate::ops::{Abs, Add, Div, Ge, Gt, Le, Lt, Max, Min, Mul, Sqrt, Sub};
 
-// ============================================================================
-// The Macro
-// ============================================================================
-
-/// Implements chained binary operators for a composite AST type.
-macro_rules! impl_chained_ops_for {
-    ($name:ident < $($gen:ident),* >) => {
-        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Add<Rhs> for $name<$($gen),*> {
+macro_rules! impl_chained_ops {
+    ($ty:ident <$($gen:ident),*>) => {
+        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Add<Rhs> for $ty<$($gen),*> {
             type Output = Add<Self, Rhs>;
-            fn add(self, rhs: Rhs) -> Self::Output {
-                Add(self, rhs)
-            }
+            #[inline(always)]
+            fn add(self, rhs: Rhs) -> Self::Output { Add(self, rhs) }
         }
 
-        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Sub<Rhs> for $name<$($gen),*> {
+        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Sub<Rhs> for $ty<$($gen),*> {
             type Output = Sub<Self, Rhs>;
-            fn sub(self, rhs: Rhs) -> Self::Output {
-                Sub(self, rhs)
-            }
+            #[inline(always)]
+            fn sub(self, rhs: Rhs) -> Self::Output { Sub(self, rhs) }
         }
 
-        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Mul<Rhs> for $name<$($gen),*> {
+        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Mul<Rhs> for $ty<$($gen),*> {
             type Output = Mul<Self, Rhs>;
-            fn mul(self, rhs: Rhs) -> Self::Output {
-                Mul(self, rhs)
-            }
+            #[inline(always)]
+            fn mul(self, rhs: Rhs) -> Self::Output { Mul(self, rhs) }
         }
 
-        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Div<Rhs> for $name<$($gen),*> {
+        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Div<Rhs> for $ty<$($gen),*> {
             type Output = Div<Self, Rhs>;
-            fn div(self, rhs: Rhs) -> Self::Output {
-                Div(self, rhs)
-            }
+            #[inline(always)]
+            fn div(self, rhs: Rhs) -> Self::Output { Div(self, rhs) }
         }
     };
 }
 
-// ============================================================================
-// Apply to All Composite Types
-// ============================================================================
+// Binary nodes
+impl_chained_ops!(Add<L, R>);
+impl_chained_ops!(Sub<L, R>);
+impl_chained_ops!(Mul<L, R>);
+impl_chained_ops!(Div<L, R>);
+impl_chained_ops!(Max<L, R>);
+impl_chained_ops!(Min<L, R>);
 
-impl_chained_ops_for!(Add<L, R>);
-impl_chained_ops_for!(Sub<L, R>);
-impl_chained_ops_for!(Mul<L, R>);
-impl_chained_ops_for!(Div<L, R>);
-impl_chained_ops_for!(Sqrt<T>);
-impl_chained_ops_for!(Abs<T>);
-impl_chained_ops_for!(Max<L, R>);
-impl_chained_ops_for!(Min<L, R>);
-impl_chained_ops_for!(Lt<L, R>);
-impl_chained_ops_for!(Gt<L, R>);
-impl_chained_ops_for!(Le<L, R>);
-impl_chained_ops_for!(Ge<L, R>);
-impl_chained_ops_for!(Select<C, T, F>);
+// Unary nodes
+impl_chained_ops!(Sqrt<M>);
+impl_chained_ops!(Abs<M>);
+
+// Combinators
+impl_chained_ops!(Select<C, T, F>);
