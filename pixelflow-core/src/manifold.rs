@@ -14,5 +14,31 @@ pub trait Manifold: Send + Sync {
     type Output;
 
     /// Evaluate at the given coordinates.
-    fn eval(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output;
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output;
+}
+
+// Scalar constants are manifolds
+impl Manifold for f32 {
+    type Output = Field;
+    #[inline(always)]
+    fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Field {
+        Field::from(*self)
+    }
+}
+
+impl Manifold for i32 {
+    type Output = Field;
+    #[inline(always)]
+    fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Field {
+        Field::from(*self)
+    }
+}
+
+// Field itself is a manifold (identity)
+impl Manifold for Field {
+    type Output = Field;
+    #[inline(always)]
+    fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Field {
+        *self
+    }
 }

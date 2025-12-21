@@ -8,7 +8,7 @@
 //!
 //! Note: Requires core to support operator overloading for manifolds.
 
-use pixelflow_core::{Manifold, ManifoldExt, X, Y};
+use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
 
 // ============================================================================
 // Constants
@@ -28,14 +28,20 @@ pub const SOLID: f32 = 1.0;
 /// Bounding box: [-1, -1] to [1, 1]
 ///
 /// Returns fg where x² + y² < 1, bg elsewhere.
-pub fn circle<F: Manifold, B: Manifold>(fg: F, bg: B) -> impl Manifold {
+pub fn circle<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
+    fg: F,
+    bg: B,
+) -> impl Manifold<Output = Field> {
     (X * X + Y * Y).lt(1.0f32).select(fg, bg)
 }
 
 /// Unit square from [0,0] to [1,1].
 ///
 /// Returns fg where 0 ≤ x ≤ 1 and 0 ≤ y ≤ 1, bg elsewhere.
-pub fn square<F: Manifold, B: Manifold + Clone>(fg: F, bg: B) -> impl Manifold {
+pub fn square<F: Manifold<Output = Field>, B: Manifold<Output = Field> + Clone>(
+    fg: F,
+    bg: B,
+) -> impl Manifold<Output = Field> {
     // Use bitwise AND to combine conditions
     let mask = X.ge(0.0f32) & X.le(1.0f32) & Y.ge(0.0f32) & Y.le(1.0f32);
     mask.select(fg, bg)
@@ -44,14 +50,20 @@ pub fn square<F: Manifold, B: Manifold + Clone>(fg: F, bg: B) -> impl Manifold {
 /// Half-plane: x ≥ 0
 ///
 /// Returns fg where x ≥ 0, bg elsewhere.
-pub fn half_plane_x<F: Manifold, B: Manifold>(fg: F, bg: B) -> impl Manifold {
+pub fn half_plane_x<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
+    fg: F,
+    bg: B,
+) -> impl Manifold<Output = Field> {
     X.ge(0.0f32).select(fg, bg)
 }
 
 /// Half-plane: y ≥ 0
 ///
 /// Returns fg where y ≥ 0, bg elsewhere.
-pub fn half_plane_y<F: Manifold, B: Manifold>(fg: F, bg: B) -> impl Manifold {
+pub fn half_plane_y<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
+    fg: F,
+    bg: B,
+) -> impl Manifold<Output = Field> {
     Y.ge(0.0f32).select(fg, bg)
 }
 

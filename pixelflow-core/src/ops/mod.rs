@@ -1,16 +1,15 @@
-//! # Operations Module
-//!
-//! All manifold operations: arithmetic, comparisons, min/max, and operator overloads.
+pub mod base;
+pub mod binary;
+pub mod chained;
+pub mod compare;
+pub mod logic;
+pub mod unary;
+pub mod vector;
 
-mod base;
-mod binary;
-mod chained;
-mod compare;
-mod unary;
-
-pub use binary::{Add, Div, Mul, Sub};
-pub use compare::{Ge, Gt, Le, Lt};
-pub use unary::{Abs, Max, Min, Sqrt};
-
-// base and chained are purely side-effect modules (they define impls)
-// No re-exports needed from them.
+pub use base::*;
+pub use binary::*;
+pub use chained::*;
+pub use compare::*;
+pub use logic::*;
+pub use unary::*;
+pub use vector::*;

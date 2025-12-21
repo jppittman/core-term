@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # PixelFlow Core
 
 **Pure Algebra for SIMD Graphics**

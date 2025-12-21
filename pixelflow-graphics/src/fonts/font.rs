@@ -8,8 +8,7 @@ use thiserror::Error;
 pub use ttf_parser::GlyphId;
 use ttf_parser::{Face, FaceParsingError, OutlineBuilder};
 
-use super::curves::{Line, Point, Quadratic, Segment};
-use super::glyph::{Glyph, GlyphBounds};
+use super::loopblinn::{Glyph, GlyphBounds, LineSegment, LoopBlinnQuad, Point, Segment};
 
 /// Errors that can occur when parsing a font.
 #[derive(Error, Debug)]
@@ -84,12 +83,10 @@ impl<'a> Font<'a> {
     /// * `None` if the character is not found.
     pub fn glyph(&self, ch: char, size: f32) -> Option<Glyph> {
         let glyph_id = self.face.glyph_index(ch)?;
-
         let scale = size / self.face.units_per_em() as f32;
-        let mut builder = GlyphBuilder::new(scale);
 
-        let _ = self.face.outline_glyph(glyph_id, &mut builder);
-
+        // Get metrics
+        let advance = self.face.glyph_hor_advance(glyph_id).unwrap_or(0) as f32 * scale;
         let bbox = self
             .face
             .glyph_bounding_box(glyph_id)
@@ -99,6 +96,14 @@ impl<'a> Font<'a> {
                 x_max: 0,
                 y_max: 0,
             });
+
+        // Compute offset to normalize glyph to (0,0) based on bounding box
+        let offset_x = -bbox.x_min as f32 * scale;
+        let offset_y = -bbox.y_min as f32 * scale;
+
+        let mut builder = GlyphBuilder::new(scale, [offset_x, offset_y]);
+
+        let _ = self.face.outline_glyph(glyph_id, &mut builder);
 
         // Compute integer bounds for the glyph surface
         let bounds = GlyphBounds {
@@ -111,6 +116,7 @@ impl<'a> Font<'a> {
         Some(Glyph {
             segments: Arc::from(builder.segments),
             bounds,
+            advance,
         })
     }
 
@@ -171,31 +177,31 @@ impl<'a> Font<'a> {
 struct GlyphBuilder {
     segments: Vec<Segment>,
     scale: f32,
+    offset: Point,
     current: Point,
     start: Point,
 }
 
 impl GlyphBuilder {
-    fn new(scale: f32) -> Self {
+    fn new(scale: f32, offset: Point) -> Self {
         Self {
             segments: Vec::with_capacity(32),
             scale,
+            offset,
             current: [0.0, 0.0],
             start: [0.0, 0.0],
         }
     }
 
     // Recursively subdivide cubic curves into line segments if they are small enough,
-    // or eventually approximate with quadratics (though here it seems to just degenerate to lines).
-    // Note: The comment in original code mentioned approximation, but the implementation
-    // subdivides until flat enough for lines.
+    // or eventually approximate with quadratics.
     #[allow(clippy::too_many_arguments)]
     fn subdivide_cubic(&mut self, p0: Point, p1: Point, p2: Point, p3: Point, depth: u32) {
         let d03 = dist_sq(p0, p3);
         const MIN_LEN_SQ: f32 = 0.25; // 0.5 px
 
         if depth > 8 || d03 < MIN_LEN_SQ {
-            self.segments.push(Segment::Line(Line { p0, p1: p3 }));
+            self.segments.push(Segment::Line(LineSegment::new(p0, p3)));
             return;
         }
 
@@ -209,42 +215,45 @@ impl GlyphBuilder {
         self.subdivide_cubic(p0, p01, p012, p0123, depth + 1);
         self.subdivide_cubic(p0123, p123, p23, p3, depth + 1);
     }
+
+    fn transform(&self, x: f32, y: f32) -> Point {
+        [
+            x * self.scale + self.offset[0],
+            y * self.scale + self.offset[1],
+        ]
+    }
 }
 
 impl OutlineBuilder for GlyphBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
-        self.current = [x * self.scale, y * self.scale];
+        self.current = self.transform(x, y);
         self.start = self.current;
     }
 
     fn line_to(&mut self, x: f32, y: f32) {
-        let p1 = [x * self.scale, y * self.scale];
-        self.segments.push(Segment::Line(Line {
-            p0: self.current,
-            p1,
-        }));
+        let p1 = self.transform(x, y);
+        self.segments
+            .push(Segment::Line(LineSegment::new(self.current, p1)));
         self.current = p1;
     }
 
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        let p1 = [x1 * self.scale, y1 * self.scale];
-        let p2 = [x * self.scale, y * self.scale];
+        let p1 = self.transform(x1, y1);
+        let p2 = self.transform(x, y);
 
-        if let Some(q) = Quadratic::try_new(self.current, p1, p2) {
+        if let Some(q) = LoopBlinnQuad::new(self.current, p1, p2) {
             self.segments.push(Segment::Quad(q));
         } else {
-            self.segments.push(Segment::Line(Line {
-                p0: self.current,
-                p1: p2,
-            }));
+            self.segments
+                .push(Segment::Line(LineSegment::new(self.current, p2)));
         }
         self.current = p2;
     }
 
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        let p1 = [x1 * self.scale, y1 * self.scale];
-        let p2 = [x2 * self.scale, y2 * self.scale];
-        let p3 = [x * self.scale, y * self.scale];
+        let p1 = self.transform(x1, y1);
+        let p2 = self.transform(x2, y2);
+        let p3 = self.transform(x, y);
 
         self.subdivide_cubic(self.current, p1, p2, p3, 0);
         self.current = p3;
@@ -254,10 +263,8 @@ impl OutlineBuilder for GlyphBuilder {
         if (self.current[0] - self.start[0]).abs() > 1e-4
             || (self.current[1] - self.start[1]).abs() > 1e-4
         {
-            self.segments.push(Segment::Line(Line {
-                p0: self.current,
-                p1: self.start,
-            }));
+            self.segments
+                .push(Segment::Line(LineSegment::new(self.current, self.start)));
             self.current = self.start;
         }
     }
