@@ -3,24 +3,25 @@
 //! Consolidated graphics crate merging rendering and font logic.
 
 pub mod fonts;
-pub mod primitives;
+pub mod image;
 pub mod render;
+pub mod shapes;
 
 // Re-export fonts
-pub use fonts::combinators::{glyphs, Bold, CurveScale, CurveSurfaceExt, Hint, Lazy, Slant};
+// TODO: These need to be fixed once combinators.rs is updated
+// pub use fonts::combinators::{glyphs, Bold, CurveScale, CurveSurfaceExt, Hint, Lazy, Slant};
 pub use fonts::font::{Font, FontError, FontMetrics};
-pub use fonts::glyph::{CurveSurface, Glyph, GlyphBounds};
+// TODO: Update glyph exports once glyph.rs is fixed
+// pub use fonts::glyph::{CurveSurface, Glyph, GlyphBounds};
 
 // Re-export render
 pub use render::color::{
-    AttrFlags, Bgra, CocoaPixel, Color, NamedColor, Pixel, Rgba, WebPixel, X11Pixel,
+    AttrFlags, Bgra8, CocoaPixel, Color, ColorVector, NamedColor, Pixel, Rgba, Rgba8, WebPixel,
+    X11Pixel,
 };
 pub use render::frame::Frame;
-pub use render::glyph::{font, gamma_decode, gamma_encode, subpixel, SubpixelBlend, SubpixelMap};
-pub use render::rasterizer::{
-    bake, execute, execute_stripe, render, render_pixel, render_to_buffer, render_u32, Rasterize,
-    Stripe, TensorShape,
-};
+// TODO: Update glyph exports once render/glyph.rs is fixed
+// pub use render::glyph::{font, gamma_decode, gamma_encode, subpixel, SubpixelBlend, SubpixelMap};
 
 // Re-export core types for convenience
-pub use pixelflow_core::{traits::Surface, Scale};
+pub use pixelflow_core::{Field, Manifold, ManifoldExt, W, X, Y, Z};

@@ -1,9 +1,11 @@
 //! # Combinators Module
 //!
-//! Higher-level constructs: Select (conditionals) and Fix (iteration).
+//! Control flow and structural combinators.
 
-mod fix;
-mod select;
+pub mod fix;
+pub mod project;
+pub mod select;
 
 pub use fix::Fix;
+pub use project::Project;
 pub use select::Select;

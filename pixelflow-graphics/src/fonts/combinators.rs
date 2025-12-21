@@ -1,146 +1,11 @@
 use super::curves::{Line, Quadratic, Segment};
-use super::font::Font;
-use super::glyph::{eval_curves, CellGlyph, CurveSurface, GlyphBounds};
-use crate::render::{Pixel, Rasterize};
+use super::glyph::{eval_curves, CurveSurface, GlyphBounds};
 use core::fmt::Debug;
-use pixelflow_core::batch::Batch;
-use pixelflow_core::surfaces::Baked;
-use pixelflow_core::traits::Manifold;
-use std::sync::{Arc, Mutex, OnceLock};
+use pixelflow_core::{Field, Manifold};
+use std::sync::Arc;
 
-// ============================================================================
-// Lazy
-// ============================================================================
-
-/// A surface wrapper that lazily evaluates and caches its result on the first use.
-#[derive(Clone)]
-pub struct Lazy<'a, S> {
-    inner: Arc<LazyInner<'a, S>>,
-}
-
-struct LazyInner<'a, S> {
-    cache: OnceLock<S>,
-    factory: Mutex<Option<Box<dyn FnOnce() -> S + Send + Sync + 'a>>>,
-}
-
-impl<'a, S> Lazy<'a, S> {
-    pub fn new<F>(f: F) -> Self
-    where
-        F: FnOnce() -> S + Send + Sync + 'a,
-    {
-        Self {
-            inner: Arc::new(LazyInner {
-                cache: OnceLock::new(),
-                factory: Mutex::new(Some(Box::new(f))),
-            }),
-        }
-    }
-
-    pub fn get(&self) -> &S {
-        self.inner.cache.get_or_init(|| {
-            let mut lock = self.inner.factory.lock().expect("Lazy mutex poisoned");
-            let f = lock.take().expect("Lazy factory already consumed");
-            f()
-        })
-    }
-}
-
-impl<'a, S, P, C> Manifold<P, C> for Lazy<'a, S>
-where
-    S: Manifold<P, C>,
-    P: Pixel,
-    C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
-{
-    #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
-        self.get().eval(x, y, z, w)
-    }
-}
-
-// ============================================================================
-// Glyphs Factory
-// ============================================================================
-
-pub fn glyphs<'a>(font: Font<'a>, w: u32, h: u32) -> impl Fn(char) -> Lazy<'a, Baked<u32>> {
-    use std::collections::HashMap;
-    use std::sync::RwLock;
-
-    let metrics = font.metrics();
-    let line_height = metrics.ascent as f32 - metrics.descent as f32;
-    let ascender = (metrics.ascent as f32 * h as f32 / line_height).floor() as i32;
-    let glyph_size = h as f32 * metrics.units_per_em as f32 / line_height;
-
-    let ascii: Vec<Lazy<'a, Baked<u32>>> = (0..128)
-        .map(|i| {
-            let c = i as u8 as char;
-            let font = font.clone();
-            Lazy::new(move || match font.glyph(c, glyph_size) {
-                Some(g) => {
-                    let cell_glyph = CellGlyph::new(g, ascender);
-                    crate::render::bake(&Rasterize(cell_glyph), w, h)
-                }
-                None => {
-                    struct Empty;
-                    impl Manifold<u32> for Empty {
-                        fn eval(
-                            &self,
-                            _: Batch<u32>,
-                            _: Batch<u32>,
-                            _: Batch<u32>,
-                            _: Batch<u32>,
-                        ) -> Batch<u32> {
-                            Batch::<u32>::splat(0x00FFFFFF)
-                        }
-                    }
-                    crate::render::bake(&Empty, w, h)
-                }
-            })
-        })
-        .collect();
-
-    let other_cache: Arc<RwLock<HashMap<char, Lazy<'a, Baked<u32>>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-
-    move |c| {
-        if (c as u32) < 128 {
-            ascii[c as usize].clone()
-        } else {
-            if let Ok(read) = other_cache.read() {
-                if let Some(lazy) = read.get(&c) {
-                    return lazy.clone();
-                }
-            }
-            let mut write = other_cache.write().unwrap();
-            if let Some(lazy) = write.get(&c) {
-                return lazy.clone();
-            }
-            let font = font.clone();
-            let lazy = Lazy::new(move || match font.glyph(c, glyph_size) {
-                Some(g) => {
-                    let cell_glyph = CellGlyph::new(g, ascender);
-                    crate::render::bake(&Rasterize(cell_glyph), w, h)
-                }
-                None => {
-                    struct Empty;
-                    impl Manifold<u32> for Empty {
-                        fn eval(
-                            &self,
-                            _: Batch<u32>,
-                            _: Batch<u32>,
-                            _: Batch<u32>,
-                            _: Batch<u32>,
-                        ) -> Batch<u32> {
-                            Batch::<u32>::splat(0x00FFFFFF)
-                        }
-                    }
-                    crate::render::bake(&Empty, w, h)
-                }
-            });
-            write.insert(c, lazy.clone());
-            lazy
-        }
-    }
-}
+// Lazy and glyphs factory removed as they relied on legacy Rasterize/Baked infrastructure.
+// TODO: Re-implement caching mechanism using new Materialize pipeline if needed.
 
 // ============================================================================
 // Combinators
@@ -160,14 +25,14 @@ impl<S: CurveSurface> CurveSurface for Bold<S> {
     }
 }
 
-impl<S: CurveSurface> Manifold<u32, f32> for Bold<S> {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
+impl<S: CurveSurface> Manifold for Bold<S> {
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
         eval_curves(
             self.curves(),
             self.bounds(),
             x,
             y,
-            Batch::<f32>::splat(self.amount),
+            Field::splat(self.amount),
         )
     }
 }
@@ -191,9 +56,9 @@ impl<S: CurveSurface> CurveSurface for Hint<S> {
     }
 }
 
-impl<S: CurveSurface> Manifold<u32, f32> for Hint<S> {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>, z: Batch<f32>, w: Batch<f32>) -> Batch<u32> {
-        self.source.eval(x, y, z, w)
+impl<S: CurveSurface + Manifold> Manifold for Hint<S> {
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        self.source.eval_raw(x, y, z, w)
     }
 }
 
@@ -212,9 +77,9 @@ impl<S: CurveSurface> CurveSurface for Slant<S> {
     }
 }
 
-impl<S: CurveSurface> Manifold<u32, f32> for Slant<S> {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
-        eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
+impl<S: CurveSurface> Manifold for Slant<S> {
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+        eval_curves(self.curves(), self.bounds(), x, y, Field::splat(0.0))
     }
 }
 
@@ -270,9 +135,9 @@ impl<S: CurveSurface> CurveSurface for CurveScale<S> {
     }
 }
 
-impl<S: CurveSurface> Manifold<u32, f32> for CurveScale<S> {
-    fn eval(&self, x: Batch<f32>, y: Batch<f32>, _z: Batch<f32>, _w: Batch<f32>) -> Batch<u32> {
-        eval_curves(self.curves(), self.bounds(), x, y, Batch::<f32>::splat(0.0))
+impl<S: CurveSurface> Manifold for CurveScale<S> {
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+        eval_curves(self.curves(), self.bounds(), x, y, Field::splat(0.0))
     }
 }
 

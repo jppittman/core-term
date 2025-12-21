@@ -126,13 +126,13 @@ These are the spatial primitives. Curves are 1D slices of Surfaces. Higher dimen
 ```rust
 impl<T, M: Manifold<T>> Volume<T> for M {
     fn eval(&self, x: Field, y: Field, z: Field) -> T {
-        self.eval(x, y, z, Field::ZERO)  // bind w = 0
+        self.eval_raw(x, y, z, Field::ZERO)  // bind w = 0
     }
 }
 
 impl<T, V: Volume<T>> Surface<T> for V {
     fn eval(&self, x: Field, y: Field) -> T {
-        self.eval(x, y, Field::ZERO)  // bind z = 0
+        self.eval_raw(x, y, Field::ZERO)  // bind z = 0
     }
 }
 ```
@@ -146,13 +146,13 @@ pub struct Extrude<S>(pub S);
 
 impl<T, S: Surface<T>> Volume<T> for Extrude<S> {
     fn eval(&self, x: Field, y: Field, _z: Field) -> T {
-        self.0.eval(x, y)  // z-invariant: infinite prism
+        self.0.eval_raw(x, y)  // z-invariant: infinite prism
     }
 }
 
 impl<T, V: Volume<T>> Manifold<T> for Extrude<V> {
     fn eval(&self, x: Field, y: Field, z: Field, _w: Field) -> T {
-        self.0.eval(x, y, z)  // w-invariant: infinite hyperprism
+        self.0.eval_raw(x, y, z)  // w-invariant: infinite hyperprism
     }
 }
 ```
@@ -232,8 +232,8 @@ let mandelbrot = Fix::new(
     }
 );
 
-// mandelbrot.eval(x, y, z=64) → 64 iterations from seed
-// mandelbrot.eval(x, y, z=0)  → seed (via dimensional collapse)
+// mandelbrot.eval_raw(x, y, z=64) → 64 iterations from seed
+// mandelbrot.eval_raw(x, y, z=0)  → seed (via dimensional collapse)
 ```
 
 This unifies:
@@ -252,7 +252,7 @@ let physics_sim = Fix::new(
     |state, x, y, z| step(state),     // w → w+1 transition
 );
 
-// physics_sim.eval(x, y, z, w=60) → state after 60 frames
+// physics_sim.eval_raw(x, y, z, w=60) → state after 60 frames
 ```
 
 **Completeness**: Compute remains the escape hatch for truly opaque computations. But now iteration is structural—analyzable, serializable, differentiable.
@@ -325,24 +325,24 @@ where
     F: Surface<V>,
 {
     fn eval(&self, x: Field, y: Field) -> V {
-        let mask = self.condition.eval(x, y);
+        let mask = self.condition.eval_raw(x, y);
         
         // All lanes false → skip true branch entirely
         if mask.none() { 
-            return self.if_false.eval(x, y); 
+            return self.if_false.eval_raw(x, y); 
         }
         
         // All lanes true → skip false branch entirely
         if mask.all() { 
-            return self.if_true.eval(x, y); 
+            return self.if_true.eval_raw(x, y); 
         }
         
         // Straddle: some lanes true, some false
         // Must evaluate both and blend
         blend(
             mask,
-            self.if_true.eval(x, y),
-            self.if_false.eval(x, y)
+            self.if_true.eval_raw(x, y),
+            self.if_false.eval_raw(x, y)
         )
     }
 }
@@ -374,7 +374,7 @@ The bake/materialize loop knows nothing:
 for y in 0..height {
     for x in (0..width).step_by(LANES) {
         let coords = (Field::sequential_from(x), Field::splat(y));
-        let value = surface.eval(coords.0, coords.1);
+        let value = surface.eval_raw(coords.0, coords.1);
         value.store(&mut buffer[y * width + x..]);
     }
 }

@@ -37,8 +37,8 @@ where
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
-        P::batch_from_u32(self.source.eval(x, y, z, w))
+    fn eval_raw(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
+        P::batch_from_u32(self.source.eval_raw(x, y, z, w))
     }
 }
 
@@ -153,7 +153,7 @@ impl<P: Pixel> TerminalSurface<P> {
 
 // Forward Manifold impl to the pipeline
 impl<P: Pixel + Manifold<P, u32>> Manifold<P> for TerminalSurface<P> {
-    fn eval(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<P> {
+    fn eval_raw(&self, x: Batch<u32>, y: Batch<u32>, z: Batch<u32>, w: Batch<u32>) -> Batch<P> {
         Manifold::eval(&self.pipeline, x, y, z, w)
     }
 }

@@ -8,24 +8,45 @@ use crate::ops::{Abs, Add, Div, Ge, Gt, Le, Lt, Max, Min, Mul, Sqrt, Sub};
 
 use alloc::boxed::Box;
 
-/// Type-erased manifold.
-pub type BoxedManifold = Box<dyn Manifold>;
+/// Type-erased manifold (returning a Field).
+pub type BoxedManifold = Box<dyn Manifold<Output = crate::Field>>;
 
 impl Manifold for BoxedManifold {
+    type Output = crate::Field;
     #[inline(always)]
-    fn eval(
+    fn eval_raw(
         &self,
         x: crate::Field,
         y: crate::Field,
         z: crate::Field,
         w: crate::Field,
     ) -> crate::Field {
-        (**self).eval(x, y, z, w)
+        (**self).eval_raw(x, y, z, w)
     }
 }
 
 /// Extension methods for composing manifolds.
-pub trait ManifoldExt: Manifold + Sized {
+pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
+    /// Evaluate the manifold at the given coordinates.
+    ///
+    /// This is a convenience wrapper around `eval_raw` that accepts any type
+    /// that can be converted into `Field` (e.g. `f32`, `i32`, `Field`).
+    #[inline(always)]
+    fn eval<
+        A: Into<crate::Field>,
+        B: Into<crate::Field>,
+        C: Into<crate::Field>,
+        D: Into<crate::Field>,
+    >(
+        &self,
+        x: A,
+        y: B,
+        z: C,
+        w: D,
+    ) -> crate::Field {
+        self.eval_raw(x.into(), y.into(), z.into(), w.into())
+    }
+
     /// Add two manifolds.
     fn add<R: Manifold>(self, rhs: R) -> Add<Self, R> {
         Add(self, rhs)
@@ -95,5 +116,5 @@ pub trait ManifoldExt: Manifold + Sized {
     }
 }
 
-/// Blanket implementation: every Manifold gets ManifoldExt.
-impl<T: Manifold + Sized> ManifoldExt for T {}
+/// Blanket implementation: every scalar Manifold gets ManifoldExt.
+impl<T: Manifold<Output = crate::Field> + Sized> ManifoldExt for T {}

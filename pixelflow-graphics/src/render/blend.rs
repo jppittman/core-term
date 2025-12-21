@@ -20,9 +20,9 @@ macro_rules! impl_max_manifold {
                 C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
             {
                 #[inline(always)]
-                fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<$t> {
-                    let a = self.0.eval(x, y, z, w);
-                    let b = self.1.eval(x, y, z, w);
+                fn eval_raw(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<$t> {
+                    let a = self.0.eval_raw(x, y, z, w);
+                    let b = self.1.eval_raw(x, y, z, w);
                     a.max(b)
                 }
             }
@@ -73,13 +73,13 @@ where
     C: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
+    fn eval_raw(&self, x: Batch<C>, y: Batch<C>, z: Batch<C>, w: Batch<C>) -> Batch<P> {
         // Extract alpha from the mask pixel (coverage in alpha channel)
-        let mask_pixel = P::batch_to_u32(self.mask.eval(x, y, z, w));
+        let mask_pixel = P::batch_to_u32(self.mask.eval_raw(x, y, z, w));
         let alpha = P::batch_alpha(mask_pixel);
 
-        let fg_batch = self.fg.eval(x, y, z, w);
-        let bg_batch = self.bg.eval(x, y, z, w);
+        let fg_batch = self.fg.eval_raw(x, y, z, w);
+        let bg_batch = self.bg.eval_raw(x, y, z, w);
 
         let fg = P::batch_to_u32(fg_batch);
         let bg = P::batch_to_u32(bg_batch);
@@ -121,12 +121,12 @@ where
     Coord: Copy + Debug + Default + PartialEq + Send + Sync + 'static,
 {
     #[inline(always)]
-    fn eval(&self, x: Batch<Coord>, y: Batch<Coord>, z: Batch<Coord>, w: Batch<Coord>) -> Batch<P> {
+    fn eval_raw(&self, x: Batch<Coord>, y: Batch<Coord>, z: Batch<Coord>, w: Batch<Coord>) -> Batch<P> {
         // Extract alpha from the mask pixel (coverage in alpha channel)
-        let mask_pixel = P::batch_to_u32(self.mask.eval(x, y, z, w));
+        let mask_pixel = P::batch_to_u32(self.mask.eval_raw(x, y, z, w));
         let alpha = P::batch_alpha(mask_pixel);
 
-        let color_batch = self.color.eval(x, y, z, w);
+        let color_batch = self.color.eval_raw(x, y, z, w);
         let color = P::batch_to_u32(color_batch);
 
         let r = P::batch_red(color);

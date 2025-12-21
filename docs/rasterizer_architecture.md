@@ -23,7 +23,7 @@ for y in 0..height {
         let v = Field::splat(y);
 
         // 2. Sample the Surface
-        let color_batch = surface.eval(u, v);
+        let color_batch = surface.eval_raw(u, v);
 
         // 3. Write to Buffer
         color_batch.store(&mut buffer[index..]);

@@ -151,7 +151,7 @@ mod tests {
     }
 
     impl Surface<u32> for TestSurface {
-        fn eval(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<u32> {
+        fn eval_raw(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<u32> {
             Batch::<u32>::splat(self.color)
         }
     }
