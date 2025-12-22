@@ -18,6 +18,9 @@ extern crate alloc;
 /// SIMD backend abstractions (completely private).
 mod backend;
 
+/// Numeric trait for computational substrate (private).
+mod numeric;
+
 /// The core Manifold trait.
 pub mod manifold;
 
@@ -146,6 +149,67 @@ impl Field {
     #[inline(always)]
     pub(crate) fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
         Self(NativeSimd::select(mask.0, if_true.0, if_false.0))
+    }
+}
+
+// ============================================================================
+// Numeric Implementation for Field
+// ============================================================================
+
+impl numeric::Numeric for Field {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        Self::sqrt(self)
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        Self::abs(self)
+    }
+
+    #[inline(always)]
+    fn min(self, rhs: Self) -> Self {
+        Self::min(self, rhs)
+    }
+
+    #[inline(always)]
+    fn max(self, rhs: Self) -> Self {
+        Self::max(self, rhs)
+    }
+
+    #[inline(always)]
+    fn lt(self, rhs: Self) -> Self {
+        Self::lt(self, rhs)
+    }
+
+    #[inline(always)]
+    fn le(self, rhs: Self) -> Self {
+        Self::le(self, rhs)
+    }
+
+    #[inline(always)]
+    fn gt(self, rhs: Self) -> Self {
+        Self::gt(self, rhs)
+    }
+
+    #[inline(always)]
+    fn ge(self, rhs: Self) -> Self {
+        Self::ge(self, rhs)
+    }
+
+    #[inline(always)]
+    fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
+        Self::select(mask, if_true, if_false)
+    }
+
+    #[inline(always)]
+    fn from_f32(val: f32) -> Self {
+        Self::from(val)
+    }
+
+    #[inline(always)]
+    fn from_i32(val: i32) -> Self {
+        Self::from(val)
     }
 }
 
