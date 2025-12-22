@@ -2,7 +2,8 @@
 //!
 //! Branchless conditional with short-circuit evaluation.
 
-use crate::{Field, Manifold};
+use crate::Manifold;
+use crate::numeric::Numeric;
 
 /// Branchless conditional with short-circuit.
 ///
@@ -18,27 +19,21 @@ pub struct Select<C, T, F> {
     pub if_false: F,
 }
 
-impl<C: Manifold<Output = Field>, T: Manifold<Output = Field>, F: Manifold<Output = Field>> Manifold
-    for Select<C, T, F>
+impl<C, T, F, I, O> Manifold<I> for Select<C, T, F>
+where
+    I: Numeric,
+    O: Numeric,
+    C: Manifold<I, Output = O>,
+    T: Manifold<I, Output = O>,
+    F: Manifold<I, Output = O>,
 {
-    type Output = Field;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> O {
         let mask = self.cond.eval_raw(x, y, z, w);
+        let true_val = self.if_true.eval_raw(x, y, z, w);
+        let false_val = self.if_false.eval_raw(x, y, z, w);
 
-        // Short-circuit: skip evaluation if all lanes agree
-        if mask.all() {
-            return self.if_true.eval_raw(x, y, z, w);
-        }
-        if !mask.any() {
-            return self.if_false.eval_raw(x, y, z, w);
-        }
-
-        // Mixed: evaluate both and blend
-        Field::select(
-            mask,
-            self.if_true.eval_raw(x, y, z, w),
-            self.if_false.eval_raw(x, y, z, w),
-        )
+        O::select(mask, true_val, false_val)
     }
 }
