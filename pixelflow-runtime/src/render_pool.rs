@@ -1,9 +1,8 @@
 //! Parallel rasterization with thread spawning.
 
-use pixelflow_core::traits::Surface;
-use pixelflow_graphics::render::Pixel;
-use pixelflow_graphics::{execute, execute_stripe, Stripe, TensorShape};
-// use std::sync::Arc;
+use pixelflow_core::Manifold;
+use pixelflow_graphics::render::color::{ColorVector, Pixel};
+use pixelflow_graphics::render::rasterizer::{execute, execute_stripe, Stripe, TensorShape};
 
 /// Parallel rendering options.
 #[derive(Copy, Clone, Debug)]
@@ -19,17 +18,17 @@ impl Default for RenderOptions {
 }
 
 /// Render with parallel rasterization.
-pub fn render_parallel<P, S>(
-    surface: &S,
+pub fn render_parallel<P, M>(
+    manifold: &M,
     buffer: &mut [P],
     shape: TensorShape,
     options: RenderOptions,
 ) where
     P: Pixel + Send,
-    S: Surface<P> + Sync,
+    M: Manifold<Output = ColorVector> + Sync,
 {
     if options.num_threads <= 1 {
-        execute(surface, buffer, shape);
+        execute(manifold, buffer, shape);
         return;
     }
 
@@ -58,7 +57,7 @@ pub fn render_parallel<P, S>(
     std::thread::scope(|s| {
         for (chunk, start_y, end_y) in buffer_chunks {
             s.spawn(move || {
-                execute_stripe(surface, chunk, shape.width, Stripe { start_y, end_y });
+                execute_stripe(manifold, chunk, shape.width, Stripe { start_y, end_y });
             });
         }
     });

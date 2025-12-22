@@ -1,6 +1,6 @@
 use crate::input::{CursorIcon, KeySymbol, Modifiers, MouseButton};
-use pixelflow_core::traits::Surface;
-use pixelflow_graphics::Pixel;
+use pixelflow_core::Manifold;
+use pixelflow_graphics::render::color::{ColorVector, Pixel};
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -71,14 +71,15 @@ pub struct AppState {
 /// Generic over pixel format `P` for platform-specific rendering:
 /// - `Rgba` for Cocoa (macOS), Web
 /// - `Bgra` for X11 (Linux)
-///
-/// The `P: Surface<P>` bound ensures colors can be used as constant surfaces.
-pub trait Application<P: Pixel + Surface<P>> {
+pub trait Application<P: Pixel> {
     /// THE DATA PLANE
     /// The Hot Path: Produce a frame based on current state.
-    /// Returns a composed surface that will be materialized into the framebuffer.
-    /// One vtable call per surface, then pure SIMD execution.
-    fn render(&mut self, state: &AppState) -> Option<Box<dyn Surface<P> + Send + Sync>>;
+    /// Returns a composed manifold that will be materialized into the framebuffer.
+    /// One vtable call per manifold, then pure SIMD execution.
+    fn render(
+        &mut self,
+        state: &AppState,
+    ) -> Option<Box<dyn Manifold<Output = ColorVector> + Send + Sync>>;
 
     /// THE CONTROL PLANE
     /// The Control Path: Process input or wake signals.

@@ -1,37 +1,45 @@
 //! # Project Combinator
 //!
-//! Extracts a component from a Vector Manifold.
-//! Effectively `Dot(M, BasisSet[D])`.
+//! Extracts a component from a projectable type.
 
-use crate::{Field, Manifold, ops::Vector, variables::Dimension};
+use crate::{Field, Manifold, variables::Dimension};
 use core::marker::PhantomData;
 
-/// Project a Vector Manifold onto a Dimension basis.
+/// A trait for types that can be projected onto a dimension to yield a component manifold.
 ///
-/// If `M` produces a Vector (like `ColorVector`), `Project<M, X>` extracts the
-/// first component (Red).
+/// Instead of evaluating to a Vector and then extracting, implementors provide
+/// direct access to their component manifolds.
+pub trait Projectable<D: Dimension>: Sized {
+    /// The manifold type for this dimension's component.
+    type Component: Manifold<Output = Field>;
+
+    /// Get the component manifold for this dimension.
+    fn project(&self) -> Self::Component;
+}
+
+/// Project a composite type onto a Dimension to get a scalar manifold.
+///
+/// If `M` is `Projectable<D>`, `Project<M, D>` evaluates the component for dimension D.
 #[derive(Clone, Copy, Debug)]
 pub struct Project<M, D>(pub M, pub PhantomData<D>);
 
 impl<M, D> Project<M, D> {
     /// Create a new projection.
     #[inline(always)]
-    pub fn new(manifold: M) -> Self {
-        Self(manifold, PhantomData)
+    pub fn new(source: M) -> Self {
+        Self(source, PhantomData)
     }
 }
 
 impl<M, D> Manifold for Project<M, D>
 where
-    M: Manifold,
-    M::Output: Vector,
+    M: Projectable<D>,
     D: Dimension + Send + Sync + 'static,
 {
-    // The output type is the Component type of the Vector (usually Field)
-    type Output = <M::Output as Vector>::Component;
+    type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).get(D::AXIS)
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        self.0.project().eval_raw(x, y, z, w)
     }
 }

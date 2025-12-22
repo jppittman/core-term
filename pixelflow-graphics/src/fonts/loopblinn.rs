@@ -254,16 +254,20 @@ impl Manifold for Glyph {
     type Output = Field;
 
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        // Build the winding sum manifold
         let mut sum_manifold: Option<BoxedManifold> = None;
         for segment in self.segments.iter() {
-            let w = segment.winding();
+            let winding = segment.winding();
             sum_manifold = match sum_manifold {
-                Some(acc) => Some((acc + w).boxed()),
-                None => Some(w),
+                Some(acc) => Some((acc + winding).boxed()),
+                None => Some(winding),
             };
         }
         let winding = sum_manifold.unwrap_or_else(|| 0.0.boxed());
         let coverage = winding.abs().gt(0.5).select(1.0, 0.0);
+
+        // TODO: Add AABB clipping once glyphs are in unit space
+        // For now, segments are pre-scaled to pixel space, so AABB doesn't work
         coverage.eval_raw(x, y, z, w)
     }
 }
