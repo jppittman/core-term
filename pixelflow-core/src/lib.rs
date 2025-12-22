@@ -203,6 +203,16 @@ impl numeric::Numeric for Field {
     }
 
     #[inline(always)]
+    fn any(&self) -> bool {
+        Self::any(self)
+    }
+
+    #[inline(always)]
+    fn all(&self) -> bool {
+        Self::all(self)
+    }
+
+    #[inline(always)]
     fn from_f32(val: f32) -> Self {
         Self::from(val)
     }

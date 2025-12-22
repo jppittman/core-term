@@ -48,6 +48,16 @@ pub(crate) trait Numeric:
     /// Conditional select.
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
 
+    /// Check if any lane/component is non-zero.
+    /// For SIMD types, checks if any lane is true.
+    /// For scalar/jet types, can return false to disable short-circuit optimization.
+    fn any(&self) -> bool;
+
+    /// Check if all lanes/components are non-zero.
+    /// For SIMD types, checks if all lanes are true.
+    /// For scalar/jet types, can return false to disable short-circuit optimization.
+    fn all(&self) -> bool;
+
     /// Create from f32 scalar.
     fn from_f32(val: f32) -> Self;
 
