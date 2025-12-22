@@ -105,27 +105,26 @@ impl<R, G, B, A> Rgba<R, G, B, A> {
     }
 }
 
-// DIAGNOSTIC: Commented out to investigate trait conflict
 // The core implementation: Color is a Manifold of Manifolds.
-// impl<R, G, B, A> Manifold for Rgba<R, G, B, A>
-// where
-//     R: Manifold<Output = Field>,
-//     G: Manifold<Output = Field>,
-//     B: Manifold<Output = Field>,
-//     A: Manifold<Output = Field>,
-// {
-//     type Output = ColorVector;
-//
-//     #[inline(always)]
-//     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
-//         ColorVector {
-//             r: self.r.eval_raw(x, y, z, w),
-//             g: self.g.eval_raw(x, y, z, w),
-//             b: self.b.eval_raw(x, y, z, w),
-//             a: self.a.eval_raw(x, y, z, w),
-//         }
-//     }
-// }
+impl<R, G, B, A> Manifold for Rgba<R, G, B, A>
+where
+    R: Manifold<Output = Field>,
+    G: Manifold<Output = Field>,
+    B: Manifold<Output = Field>,
+    A: Manifold<Output = Field>,
+{
+    type Output = ColorVector;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
+        ColorVector {
+            r: self.r.eval_raw(x, y, z, w),
+            g: self.g.eval_raw(x, y, z, w),
+            b: self.b.eval_raw(x, y, z, w),
+            a: self.a.eval_raw(x, y, z, w),
+        }
+    }
+}
 
 // =============================================================================
 // Semantic Color Types (The "User Input" tier)
@@ -398,6 +397,14 @@ impl Pixel for Rgba8 {
     fn to_u32(self) -> u32 {
         self.0
     }
+    #[inline]
+    fn from_rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
+        let r = (r * 255.0).clamp(0.0, 255.0) as u8;
+        let g = (g * 255.0).clamp(0.0, 255.0) as u8;
+        let b = (b * 255.0).clamp(0.0, 255.0) as u8;
+        let a = (a * 255.0).clamp(0.0, 255.0) as u8;
+        Self::new(r, g, b, a)
+    }
 }
 
 impl Pixel for Bgra8 {
@@ -408,6 +415,14 @@ impl Pixel for Bgra8 {
     #[inline]
     fn to_u32(self) -> u32 {
         self.0
+    }
+    #[inline]
+    fn from_rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
+        let r = (r * 255.0).clamp(0.0, 255.0) as u8;
+        let g = (g * 255.0).clamp(0.0, 255.0) as u8;
+        let b = (b * 255.0).clamp(0.0, 255.0) as u8;
+        let a = (a * 255.0).clamp(0.0, 255.0) as u8;
+        Self::new(b, g, r, a)
     }
 }
 

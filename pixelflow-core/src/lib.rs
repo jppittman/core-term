@@ -231,7 +231,7 @@ impl core::ops::Not for Field {
 // Public API
 // ============================================================================
 
-/// Materialize a manifold into a buffer.
+/// Materialize a scalar manifold into a buffer.
 ///
 /// Evaluates at sequential x coordinates starting from (x, y).
 #[inline(always)]
@@ -240,8 +240,46 @@ where
     M: Manifold<Output = Field>,
 {
     let xs = Field::sequential(x);
-    let val = m.eval(xs, y, 0, 0);
+    let val = m.eval(xs, Field::from(y), Field::from(0.0), Field::from(0.0));
     val.store(out);
+}
+
+/// Materialize a vector manifold into interleaved output.
+///
+/// Evaluates at sequential x coordinates starting from (x, y), then transposes
+/// from SoA (structure of arrays) to AoS (array of structures) for storage.
+///
+/// Output is interleaved: [x0,y0,z0,w0, x1,y1,z1,w1, ...]
+#[inline(always)]
+pub fn materialize_vector<M, V>(m: &M, x: f32, y: f32, out: &mut [f32])
+where
+    M: Manifold<Output = V>,
+    V: ops::Vector<Component = Field>,
+{
+    let xs = Field::sequential(x);
+    let val = m.eval_raw(xs, Field::from(y), Field::from(0.0), Field::from(0.0));
+
+    // Store each component to temporary buffers
+    let mut buf_x = [0.0f32; PARALLELISM];
+    let mut buf_y = [0.0f32; PARALLELISM];
+    let mut buf_z = [0.0f32; PARALLELISM];
+    let mut buf_w = [0.0f32; PARALLELISM];
+
+    val.get(variables::Axis::X).store(&mut buf_x);
+    val.get(variables::Axis::Y).store(&mut buf_y);
+    val.get(variables::Axis::Z).store(&mut buf_z);
+    val.get(variables::Axis::W).store(&mut buf_w);
+
+    // Transpose: SoA → AoS (interleaved)
+    for i in 0..PARALLELISM {
+        let base = i * 4;
+        if base + 3 < out.len() {
+            out[base] = buf_x[i];
+            out[base + 1] = buf_y[i];
+            out[base + 2] = buf_z[i];
+            out[base + 3] = buf_w[i];
+        }
+    }
 }
 
 /// Parallelism width (number of lanes).

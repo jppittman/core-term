@@ -3,7 +3,8 @@
 //! This module provides the `FramePacket<T>` type for transferring surfaces
 //! between the logic thread and render thread without copying pixel data.
 
-use pixelflow_core::traits::Surface;
+use pixelflow_core::Manifold;
+use pixelflow_graphics::render::color::ColorVector;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 
@@ -142,17 +143,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_core::Batch;
+    use pixelflow_core::Field;
 
     // A minimal test surface
     #[derive(Clone, Copy)]
     struct TestSurface {
-        color: u32,
+        color: f32,
     }
 
-    impl Surface<u32> for TestSurface {
-        fn eval_raw(&self, _x: Batch<u32>, _y: Batch<u32>) -> Batch<u32> {
-            Batch::<u32>::splat(self.color)
+    impl Manifold for TestSurface {
+        type Output = ColorVector;
+        fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> ColorVector {
+            ColorVector::splat(self.color, self.color, self.color, 1.0)
         }
     }
 
@@ -167,13 +169,13 @@ mod tests {
         let (handle, rx) = create_frame_channel::<TestSurface>();
         let (recycle_tx, _recycle_rx) = create_recycle_channel::<TestSurface>();
 
-        let surface = TestSurface { color: 0xFF00FF00 };
+        let surface = TestSurface { color: 1.0 };
         let packet = FramePacket::new(surface, recycle_tx);
 
         handle.submit_frame(packet).unwrap();
 
         let received = rx.recv().unwrap();
-        assert_eq!(received.surface.color, 0xFF00FF00);
+        assert_eq!(received.surface.color, 1.0);
     }
 
     #[test]
@@ -182,19 +184,19 @@ mod tests {
         let (recycle_tx, recycle_rx) = create_recycle_channel::<TestSurface>();
 
         // Create and submit a packet
-        let surface = TestSurface { color: 0xFFFF0000 };
+        let surface = TestSurface { color: 1.0 };
         let packet = FramePacket::new(surface, Arc::clone(&recycle_tx));
         handle.submit_frame(packet).unwrap();
 
         // Receive and "render" it
         let received = rx.recv().unwrap();
-        assert_eq!(received.surface.color, 0xFFFF0000);
+        assert_eq!(received.surface.color, 1.0);
 
         // Recycle using the method (clean API)
         received.recycle();
 
         // Logic thread receives the recycled packet
         let recycled = recycle_rx.recv().unwrap();
-        assert_eq!(recycled.surface.color, 0xFFFF0000);
+        assert_eq!(recycled.surface.color, 1.0);
     }
 }
