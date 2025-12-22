@@ -21,6 +21,9 @@ mod backend;
 /// Numeric trait for computational substrate (private).
 mod numeric;
 
+/// Jet types for automatic differentiation.
+pub mod jet;
+
 /// The core Manifold trait.
 pub mod manifold;
 
@@ -42,6 +45,7 @@ pub mod ext;
 
 pub use combinators::*;
 pub use ext::*;
+pub use jet::Jet2;
 pub use manifold::*;
 pub use ops::*;
 pub use variables::*;
