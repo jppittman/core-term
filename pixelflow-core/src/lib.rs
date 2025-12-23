@@ -109,8 +109,11 @@ impl Field {
     }
 
     /// Store values to a slice.
+    ///
+    /// Extracts all SIMD lanes into a f32 slice. The slice must have
+    /// at least `PARALLELISM` elements.
     #[inline(always)]
-    pub(crate) fn store(&self, out: &mut [f32]) {
+    pub fn store(&self, out: &mut [f32]) {
         self.0.store(out)
     }
 
