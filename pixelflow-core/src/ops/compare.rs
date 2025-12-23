@@ -3,7 +3,7 @@
 //! AST nodes for comparisons: Lt, Gt, Le, Ge (hard thresholds)
 //! and SoftLt, SoftGt, SoftSelect (sigmoid-smooth for Jet2 gradients).
 
-use crate::{Field, Jet2, Manifold};
+use crate::{Jet2, Manifold};
 
 // ============================================================================
 // Hard Comparisons (generic over Numeric)
@@ -29,8 +29,11 @@ pub struct Ge<L, R>(pub L, pub R);
 /// Always returns Field (for final pixel evaluation)
 #[derive(Clone, Copy, Debug)]
 pub struct Select<Mask, IfTrue, IfFalse> {
+    /// The condition mask (boolean-like value).
     pub mask: Mask,
+    /// Value returned when mask is true.
     pub if_true: IfTrue,
+    /// Value returned when mask is false.
     pub if_false: IfFalse,
 }
 
@@ -155,8 +158,11 @@ impl_logic_ops!(Or);
 /// For Field evaluation, use hard Gt.
 #[derive(Clone, Copy, Debug)]
 pub struct SoftGt<L, R> {
+    /// Left operand.
     pub left: L,
+    /// Right operand.
     pub right: R,
+    /// Sharpness of the transition (k). Smaller = sharper.
     pub sharpness: f32,
 }
 
@@ -164,8 +170,11 @@ pub struct SoftGt<L, R> {
 /// **Jet2-specific** for smooth derivatives.
 #[derive(Clone, Copy, Debug)]
 pub struct SoftLt<L, R> {
+    /// Left operand.
     pub left: L,
+    /// Right operand.
     pub right: R,
+    /// Sharpness of the transition (k). Smaller = sharper.
     pub sharpness: f32,
 }
 
@@ -176,8 +185,11 @@ pub struct SoftLt<L, R> {
 /// For Field select, use hard Select.
 #[derive(Clone, Copy, Debug)]
 pub struct SoftSelect<Mask, IfTrue, IfFalse> {
+    /// The smooth condition mask (0.0 to 1.0).
     pub mask: Mask,
+    /// Value when mask is 1.0.
     pub if_true: IfTrue,
+    /// Value when mask is 0.0.
     pub if_false: IfFalse,
 }
 

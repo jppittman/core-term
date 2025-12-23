@@ -6,9 +6,7 @@ pub mod logic;
 pub mod unary;
 pub mod vector;
 
-pub use base::*;
 pub use binary::*;
-pub use chained::*;
 pub use compare::*;
 pub use logic::*;
 pub use unary::*;

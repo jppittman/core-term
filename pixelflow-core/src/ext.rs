@@ -3,7 +3,7 @@
 //! Provides fluent method-chaining API for manifolds.
 
 use crate::Manifold;
-use crate::combinators::Select;
+use crate::combinators::select::Select;
 use crate::ops::{Abs, Add, Div, Ge, Gt, Le, Lt, Max, Min, Mul, Sqrt, Sub};
 
 use alloc::sync::Arc;
@@ -76,44 +76,67 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         self.eval_raw(x.into(), y.into(), z.into(), w.into())
     }
 
+    /// Add this manifold to another.
     fn add<R: Manifold>(self, rhs: R) -> Add<Self, R> {
         Add(self, rhs)
     }
+
+    /// Subtract another manifold from this one.
     fn sub<R: Manifold>(self, rhs: R) -> Sub<Self, R> {
         Sub(self, rhs)
     }
+
+    /// Multiply this manifold by another.
     fn mul<R: Manifold>(self, rhs: R) -> Mul<Self, R> {
         Mul(self, rhs)
     }
+
+    /// Divide this manifold by another.
     fn div<R: Manifold>(self, rhs: R) -> Div<Self, R> {
         Div(self, rhs)
     }
+
+    /// Take the square root of this manifold.
     fn sqrt(self) -> Sqrt<Self> {
         Sqrt(self)
     }
+
+    /// Take the absolute value of this manifold.
     fn abs(self) -> Abs<Self> {
         Abs(self)
     }
+
+    /// Take the element-wise maximum of two manifolds.
     fn max<R: Manifold>(self, rhs: R) -> Max<Self, R> {
         Max(self, rhs)
     }
+
+    /// Take the element-wise minimum of two manifolds.
     fn min<R: Manifold>(self, rhs: R) -> Min<Self, R> {
         Min(self, rhs)
     }
 
+    /// Less than comparison (returns 0 or -1 mask).
     fn lt<R: Manifold>(self, rhs: R) -> Lt<Self, R> {
         Lt(self, rhs)
     }
+
+    /// Greater than comparison (returns 0 or -1 mask).
     fn gt<R: Manifold>(self, rhs: R) -> Gt<Self, R> {
         Gt(self, rhs)
     }
+
+    /// Less than or equal comparison (returns 0 or -1 mask).
     fn le<R: Manifold>(self, rhs: R) -> Le<Self, R> {
         Le(self, rhs)
     }
+
+    /// Greater than or equal comparison (returns 0 or -1 mask).
     fn ge<R: Manifold>(self, rhs: R) -> Ge<Self, R> {
         Ge(self, rhs)
     }
 
+    /// Select between two manifolds based on this manifold (as a condition mask).
     fn select<T: Manifold, F: Manifold>(self, if_true: T, if_false: F) -> Select<Self, T, F> {
         Select {
             cond: self,

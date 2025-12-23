@@ -54,6 +54,9 @@ pub use ops::logic::*;
 pub use ops::unary::*;
 pub use variables::*;
 
+// Explicitly re-export Select from combinators as CombinatorSelect
+pub use combinators::select::Select as CombinatorSelect;
+
 // ============================================================================
 // Field: The ONLY User-Facing SIMD Type
 // ============================================================================

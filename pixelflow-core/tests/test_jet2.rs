@@ -1,5 +1,11 @@
 use pixelflow_core::{Jet2, Manifold, ManifoldExt, X, Y};
 
+fn extract_scalar(f: pixelflow_core::Field) -> f32 {
+    let mut buf = [0.0f32; pixelflow_core::PARALLELISM];
+    pixelflow_core::materialize(&f, 0.0, 0.0, &mut buf);
+    buf[0]
+}
+
 #[test]
 fn test_jet2_automatic_gradient() {
     // Expression: x² + y
@@ -11,7 +17,9 @@ fn test_jet2_automatic_gradient() {
     let zero = Jet2::constant(0.0.into());
 
     let result = expr.eval_raw(x_jet, y_jet, zero, zero);
-    let (val, dx, dy) = result.extract_scalar();
+    let val = extract_scalar(result.val);
+    let dx = extract_scalar(result.dx);
+    let dy = extract_scalar(result.dy);
 
     // Value: 5² + 3 = 28
     assert!(
@@ -37,7 +45,9 @@ fn test_jet2_product_rule() {
     let zero = Jet2::constant(0.0.into());
 
     let result = expr.eval_raw(x_jet, y_jet, zero, zero);
-    let (val, dx, dy) = result.extract_scalar();
+    let val = extract_scalar(result.val);
+    let dx = extract_scalar(result.dx);
+    let dy = extract_scalar(result.dy);
 
     // Value: 3 * 4 = 12
     assert!((val - 12.0).abs() < 0.001);
@@ -58,7 +68,8 @@ fn test_jet2_chain_rule_sqrt() {
     let zero = Jet2::constant(0.0.into());
 
     let result = expr.eval_raw(x_jet, zero, zero, zero);
-    let (val, dx, _dy) = result.extract_scalar();
+    let val = extract_scalar(result.val);
+    let dx = extract_scalar(result.dx);
 
     // Value: sqrt(16) = 4
     assert!((val - 4.0).abs() < 0.001);
@@ -78,7 +89,9 @@ fn test_jet2_circle_normal() {
     let zero = Jet2::constant(0.0.into());
 
     let result = circle.eval_raw(x_jet, y_jet, zero, zero);
-    let (val, dx, dy) = result.extract_scalar();
+    let val = extract_scalar(result.val);
+    let dx = extract_scalar(result.dx);
+    let dy = extract_scalar(result.dy);
 
     // At (50, 50): distance = sqrt(5000) - 100 ≈ 70.71 - 100 = -29.29 (inside)
     let expected_dist = (5000.0f32).sqrt() - 100.0;

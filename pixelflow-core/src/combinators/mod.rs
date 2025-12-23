@@ -10,4 +10,4 @@ pub mod select;
 pub use fix::Fix;
 pub use pack::Pack;
 pub use project::Project;
-pub use select::Select;
+// pub use select::Select; // Conflicts with ops::compare::Select

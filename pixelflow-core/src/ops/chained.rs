@@ -4,7 +4,7 @@
 
 use super::{Abs, Add, Div, Max, Min, Mul, Sqrt, Sub};
 use crate::Manifold;
-use crate::combinators::Select;
+use crate::combinators::select::Select;
 
 macro_rules! impl_chained_ops {
     ($ty:ident <$($gen:ident),*>) => {

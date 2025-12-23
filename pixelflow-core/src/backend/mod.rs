@@ -9,6 +9,7 @@ use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Sub};
 /// A backend provides the SIMD implementation for a specific platform.
 pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
     /// Number of lanes in the SIMD vector.
+    #[allow(dead_code)]
     const LANES: usize;
 
     /// The SIMD vector type for f32.
