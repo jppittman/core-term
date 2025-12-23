@@ -34,7 +34,10 @@ pub use channel::{
     EngineChannels, EngineControl, EngineSender,
 };
 pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
-pub use engine_troupe::EngineTroupe;
+pub use display::messages::{DisplayControl, DisplayMgmt};
+
+// Export Troupe as EngineTroupe for backward compat
+pub use engine_troupe::Troupe as EngineTroupe;
 pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
 pub use platform::EnginePlatform;
 
