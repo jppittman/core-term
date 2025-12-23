@@ -1,7 +1,7 @@
 use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use super::platform::Platform;
 use crate::channel::{DriverCommand, EngineSender};
-use actor_scheduler::ActorScheduler;
+use actor_scheduler::{Actor, ParkHint};
 use anyhow::Result;
 use pixelflow_graphics::Pixel;
 
@@ -22,46 +22,36 @@ pub trait DisplayDriver: Clone + Send {
     fn run(&self) -> Result<()>;
 }
 
-/// The Generic Driver Actor.
-/// It drives the `Platform` using the `ActorScheduler`.
+/// The Driver Actor - wraps a Platform implementation as an Actor.
+///
+/// The troupe! macro owns the scheduler. This actor just delegates to the Platform.
+/// Marked [main] in the troupe - runs on the calling thread (GUI/main thread).
 pub struct DriverActor<P: Platform> {
-    scheduler: ActorScheduler<DisplayData<P::Pixel>, DisplayControl, DisplayMgmt>,
     platform: P,
 }
 
 impl<P: Platform> DriverActor<P> {
-    /// Create a new DriverActor.
-    pub fn new(
-        scheduler: ActorScheduler<DisplayData<P::Pixel>, DisplayControl, DisplayMgmt>,
-        platform: P,
-    ) -> Self {
-        Self {
-            scheduler,
-            platform,
-        }
+    /// Create a new DriverActor wrapping the given platform.
+    pub fn new(platform: P) -> Self {
+        Self { platform }
+    }
+}
+
+impl<P: Platform> Actor<DisplayData<P::Pixel>, DisplayControl, DisplayMgmt> for DriverActor<P> {
+    fn handle_data(&mut self, data: DisplayData<P::Pixel>) {
+        self.platform.handle_data(data);
     }
 
-    /// Run the driver loop.
-    pub fn run(&mut self) -> Result<()> {
-        loop {
-            // 1. Drain Scheduler (Priority Logic)
-            // We implement the drain loop manually here to support the ParkHint
-            // and because we want to drive the platform's `park` method.
+    fn handle_control(&mut self, ctrl: DisplayControl) {
+        self.platform.handle_control(ctrl);
+    }
 
-            // This is effectively `ActorScheduler::run` but unrolled to allow `park` with specific hint.
-            // Actually, we can use `scheduler.run(&mut self.platform)` IF `ActorScheduler` supported `ParkHint`.
-            // Which I updated it to do!
+    fn handle_management(&mut self, mgmt: DisplayMgmt) {
+        self.platform.handle_management(mgmt);
+    }
 
-            // So I can just delegate to scheduler.run?
-            // `scheduler.run` loops forever.
-            // But `Platform::park` needs to be called.
-            // Yes, `scheduler.run` calls `actor.park(hint)`.
-            // So this `run` method is just a wrapper.
-
-            self.scheduler.run(&mut self.platform);
-
-            // If run returns, it means we are shutting down (channels closed).
-            return Ok(());
-        }
+    fn park(&mut self, hint: ParkHint) -> ParkHint {
+        // Delegate to platform's park - this is where OS event loop integration happens
+        self.platform.park(hint)
     }
 }

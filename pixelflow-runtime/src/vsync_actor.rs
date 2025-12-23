@@ -103,6 +103,22 @@ pub struct VsyncActor {
 const MAX_TOKENS: u32 = 3;
 
 impl VsyncActor {
+    /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.
+    pub fn new_empty() -> Self {
+        Self {
+            engine_handle: None,
+            refresh_rate: 60.0,
+            interval: Duration::from_secs_f64(1.0 / 60.0),
+            running: false,
+            next_vsync: Instant::now(),
+            tokens: MAX_TOKENS,
+            frame_count: 0,
+            fps_start: Instant::now(),
+            last_fps: 0.0,
+            clock_control: None,
+        }
+    }
+
     /// Create a new VsyncActor. Takes the handle to itself (for the clock thread).
     pub fn new(
         refresh_rate: f64,
@@ -350,5 +366,16 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
         // No-op. We are driven by the clock thread messages.
         // The scheduler will block on the mailbox (doorbell) automatically.
         actor_scheduler::ParkHint::Wait
+    }
+}
+
+// TroupeActor impl for VsyncActor
+impl<'a, Dir: 'a> actor_scheduler::TroupeActor<'a, Dir> for VsyncActor {
+    type Data = RenderedResponse;
+    type Control = VsyncCommand;
+    type Management = VsyncManagement;
+    
+    fn new(_dir: &Dir) -> Self {
+        Self::new_empty()
     }
 }
