@@ -9,7 +9,6 @@ use crate::display::ops::PlatformOps;
 use actor_scheduler::ParkHint;
 use anyhow::Result;
 use pixelflow_graphics::render::color::Bgra8;
-use pixelflow_graphics::Pixel;
 
 /// Linux platform pixel type (BGRA for X11).
 pub type LinuxPixel = Bgra8;

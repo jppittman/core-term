@@ -49,7 +49,7 @@ pub use jet::Jet2;
 pub use manifold::*;
 pub use numeric::Numeric;
 pub use ops::binary::*;
-pub use ops::compare::*;
+pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
 pub use ops::unary::*;
 pub use variables::*;
@@ -201,35 +201,39 @@ impl Discrete {
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
-        // Scalar fallback
-        let mut r_buf = [0.0f32; PARALLELISM];
-        let mut g_buf = [0.0f32; PARALLELISM];
-        let mut b_buf = [0.0f32; PARALLELISM];
-        let mut a_buf = [0.0f32; PARALLELISM];
+        Self(backend::x86::U32x4::pack_rgba(
+            // SAFETY: F32x4 and Field have the same repr(transparent) layout
+            unsafe { core::mem::transmute(r.0) },
+            unsafe { core::mem::transmute(g.0) },
+            unsafe { core::mem::transmute(b.0) },
+            unsafe { core::mem::transmute(a.0) },
+        ))
+    }
+
+    /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[inline(always)]
+    pub fn pack(r: Field, g: Field, b: Field, _a: Field) -> Self {
+        // Scalar fallback - only packs first element
+        let mut r_buf = [0.0f32; 1];
+        let mut g_buf = [0.0f32; 1];
+        let mut b_buf = [0.0f32; 1];
+        let mut a_buf = [0.0f32; 1];
         r.store(&mut r_buf);
         g.store(&mut g_buf);
         b.store(&mut b_buf);
-        a.store(&mut a_buf);
+        _a.store(&mut a_buf);
 
-        let mut out = [0u32; PARALLELISM];
-        for i in 0..PARALLELISM {
-            let r_u8 = (r_buf[i].clamp(0.0, 1.0) * 255.0) as u32;
-            let g_u8 = (g_buf[i].clamp(0.0, 1.0) * 255.0) as u32;
-            let b_u8 = (b_buf[i].clamp(0.0, 1.0) * 255.0) as u32;
-            let a_u8 = (a_buf[i].clamp(0.0, 1.0) * 255.0) as u32;
-            out[i] = r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24);
-        }
+        let r_u8 = (r_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
+        let g_u8 = (g_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
+        let b_u8 = (b_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
+        let a_u8 = (a_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
+        let packed = r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24);
 
-        let mut result = Self::default();
-        // For scalar backend, just store first element
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        {
-            result.0 = backend::scalar::ScalarU32::splat(out[0]);
-        }
-        result
+        Self(backend::scalar::ScalarU32::splat(packed))
     }
 }
 

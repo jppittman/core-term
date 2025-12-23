@@ -5,8 +5,9 @@
 use super::font::Font;
 use super::loopblinn::Glyph;
 
-/// A manifold representing a line of text.
+/// A manifold representing a line of text (WIP).
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct Text {
     glyphs: Vec<(Glyph, f32)>, // Glyph and its X position
     pub width: f32,

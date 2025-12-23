@@ -8,7 +8,9 @@ const MIN_TRIANGLE_AREA: f32 = 1e-6;
 // Loop-Blinn Quadratic Curve
 // ============================================================================
 
+/// Loop-Blinn quadratic curve parameters (WIP - fields used in future curve impl).
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct LoopBlinnQuad {
     u_a: f32,
     u_b: f32,
