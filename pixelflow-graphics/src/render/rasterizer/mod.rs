@@ -6,6 +6,23 @@
 use crate::render::color::{ColorVector, Pixel};
 use pixelflow_core::{materialize_vector, Field, Manifold, PARALLELISM};
 
+/// A wrapper that adapts a continuous manifold for rasterization.
+///
+/// This is a marker type that makes the intent clear when rendering.
+/// The underlying manifold produces ColorVector values which are
+/// converted to discrete pixels during rasterization.
+#[derive(Clone, Copy, Debug)]
+pub struct Rasterize<M>(pub M);
+
+impl<M: Manifold> Manifold for Rasterize<M> {
+    type Output = M::Output;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
+        self.0.eval_raw(x, y, z, w)
+    }
+}
+
 /// Dimensions and memory layout of a 2D tensor.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TensorShape {

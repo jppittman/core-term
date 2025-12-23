@@ -1,7 +1,26 @@
 use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use super::platform::Platform;
+use crate::channel::{DriverCommand, EngineSender};
 use actor_scheduler::ActorScheduler;
 use anyhow::Result;
+use pixelflow_graphics::Pixel;
+
+/// Legacy DisplayDriver trait for backward compatibility with old X11 driver code.
+///
+/// DEPRECATED: New drivers should implement PlatformOps instead.
+pub trait DisplayDriver: Clone + Send {
+    /// The pixel type for this driver.
+    type Pixel: Pixel;
+
+    /// Create a new driver with the given engine sender.
+    fn new(engine_tx: EngineSender<Self::Pixel>) -> Result<Self>;
+
+    /// Send a command to the driver.
+    fn send(&self, cmd: DriverCommand<Self::Pixel>) -> Result<()>;
+
+    /// Run the driver event loop (blocking).
+    fn run(&self) -> Result<()>;
+}
 
 /// The Generic Driver Actor.
 /// It drives the `Platform` using the `ActorScheduler`.

@@ -335,7 +335,7 @@ where
 #[inline(always)]
 pub fn materialize_vector<M, V>(m: &M, x: f32, y: f32, out: &mut [f32])
 where
-    M: Manifold<Output = V>,
+    M: Manifold<Output = V> + ?Sized,
     V: ops::Vector<Component = Field>,
 {
     let xs = Field::sequential(x);
