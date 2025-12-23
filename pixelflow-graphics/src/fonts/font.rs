@@ -110,7 +110,6 @@ impl<'a> Font<'a> {
         let _ = self.face.outline_glyph(glyph_id, &mut builder);
 
         use super::loopblinn::AlgebraicGlyph;
-        use crate::render::aa::AACoverage;
         use crate::shapes::Square;
         use crate::transform::{Scale, Translate};
 
@@ -163,10 +162,8 @@ impl<'a> Font<'a> {
         };
 
         // Step 5: Translate BACK to original EM position (scaled by size)
-        // bbox.x_min * (size / max_dim).
-        let ratio = size / max_dim;
-        let back_x = 0.0; // bbox.x_min as f32 * ratio;
-        let back_y = 0.0; // bbox.y_min as f32 * ratio;
+        let back_x = 0.0;
+        let back_y = 0.0;
 
         let restored = Translate {
             manifold: sized,

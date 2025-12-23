@@ -3,7 +3,7 @@
 //! AST nodes for comparisons: Lt, Gt, Le, Ge (hard thresholds)
 //! and SoftLt, SoftGt, SoftSelect (sigmoid-smooth for Jet2 gradients).
 
-use crate::{Field, Jet2, Manifold};
+use crate::{Jet2, Manifold};
 
 // ============================================================================
 // Hard Comparisons (generic over Numeric)
@@ -25,12 +25,15 @@ pub struct Le<L, R>(pub L, pub R);
 #[derive(Clone, Copy, Debug)]
 pub struct Ge<L, R>(pub L, pub R);
 
-/// Hard select: returns if_true where mask != 0, else if_false
-/// Always returns Field (for final pixel evaluation)
+/// Hard select: returns if_true where mask != 0, else if_false.
+/// Always returns Field (for final pixel evaluation).
 #[derive(Clone, Copy, Debug)]
 pub struct Select<Mask, IfTrue, IfFalse> {
+    /// The condition mask.
     pub mask: Mask,
+    /// Value when condition is true.
     pub if_true: IfTrue,
+    /// Value when condition is false.
     pub if_false: IfFalse,
 }
 
@@ -147,7 +150,7 @@ impl_logic_ops!(Or);
 // Smooth/Sigmoid Comparisons (Jet2-specific for gradients)
 // ============================================================================
 
-/// Smooth greater-than using sigmoid: sigmoid((L - R) / k)
+/// Smooth greater-than using sigmoid: sigmoid((L - R) / k).
 /// Returns ~0 when L << R, ~1 when L >> R, smooth transition in between.
 /// Smaller k = sharper transition.
 ///
@@ -155,17 +158,23 @@ impl_logic_ops!(Or);
 /// For Field evaluation, use hard Gt.
 #[derive(Clone, Copy, Debug)]
 pub struct SoftGt<L, R> {
+    /// Left operand.
     pub left: L,
+    /// Right operand.
     pub right: R,
+    /// Transition sharpness (smaller = sharper).
     pub sharpness: f32,
 }
 
-/// Smooth less-than: sigmoid((R - L) / k)
+/// Smooth less-than: sigmoid((R - L) / k).
 /// **Jet2-specific** for smooth derivatives.
 #[derive(Clone, Copy, Debug)]
 pub struct SoftLt<L, R> {
+    /// Left operand.
     pub left: L,
+    /// Right operand.
     pub right: R,
+    /// Transition sharpness (smaller = sharper).
     pub sharpness: f32,
 }
 
@@ -176,8 +185,11 @@ pub struct SoftLt<L, R> {
 /// For Field select, use hard Select.
 #[derive(Clone, Copy, Debug)]
 pub struct SoftSelect<Mask, IfTrue, IfFalse> {
+    /// The smooth mask (0.0 to 1.0).
     pub mask: Mask,
+    /// Value when mask is 1.0.
     pub if_true: IfTrue,
+    /// Value when mask is 0.0.
     pub if_false: IfFalse,
 }
 

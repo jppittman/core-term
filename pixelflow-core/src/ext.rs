@@ -84,44 +84,57 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         Map::new(self, func)
     }
 
+    /// Add two manifolds.
     fn add<R: Manifold>(self, rhs: R) -> Add<Self, R> {
         Add(self, rhs)
     }
+    /// Subtract two manifolds.
     fn sub<R: Manifold>(self, rhs: R) -> Sub<Self, R> {
         Sub(self, rhs)
     }
+    /// Multiply two manifolds.
     fn mul<R: Manifold>(self, rhs: R) -> Mul<Self, R> {
         Mul(self, rhs)
     }
+    /// Divide two manifolds.
     fn div<R: Manifold>(self, rhs: R) -> Div<Self, R> {
         Div(self, rhs)
     }
+    /// Square root.
     fn sqrt(self) -> Sqrt<Self> {
         Sqrt(self)
     }
+    /// Absolute value.
     fn abs(self) -> Abs<Self> {
         Abs(self)
     }
+    /// Element-wise maximum.
     fn max<R: Manifold>(self, rhs: R) -> Max<Self, R> {
         Max(self, rhs)
     }
+    /// Element-wise minimum.
     fn min<R: Manifold>(self, rhs: R) -> Min<Self, R> {
         Min(self, rhs)
     }
 
+    /// Less than comparison.
     fn lt<R: Manifold>(self, rhs: R) -> Lt<Self, R> {
         Lt(self, rhs)
     }
+    /// Greater than comparison.
     fn gt<R: Manifold>(self, rhs: R) -> Gt<Self, R> {
         Gt(self, rhs)
     }
+    /// Less than or equal comparison.
     fn le<R: Manifold>(self, rhs: R) -> Le<Self, R> {
         Le(self, rhs)
     }
+    /// Greater than or equal comparison.
     fn ge<R: Manifold>(self, rhs: R) -> Ge<Self, R> {
         Ge(self, rhs)
     }
 
+    /// Conditional select: if self is non-zero, return if_true, else if_false.
     fn select<T: Manifold, F: Manifold>(self, if_true: T, if_false: F) -> Select<Self, T, F> {
         Select {
             cond: self,
