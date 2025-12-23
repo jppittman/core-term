@@ -83,7 +83,8 @@ pub struct VsyncActor<P: pixelflow_graphics::Pixel> {
 const MAX_TOKENS: u32 = 3;
 
 impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
-    fn new(
+    /// Create a new VsyncActor. Takes the handle to itself (for the clock thread).
+    pub fn new(
         refresh_rate: f64,
         engine_handle: crate::api::private::EngineActorHandle<P>,
         self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
