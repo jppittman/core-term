@@ -1,4 +1,3 @@
-use crate::render::color::Rgba;
 use pixelflow_core::Manifold;
 
 /// A simple 2D image buffer.

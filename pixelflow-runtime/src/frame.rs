@@ -109,7 +109,8 @@ pub fn create_frame_channel<T: Send>() -> (EngineHandle<T>, Receiver<FramePacket
 /// Returns (sender, receiver) where:
 /// - `sender` is Arc-wrapped and cloned into each FramePacket
 /// - `receiver` is held by the logic thread to get packets back
-pub fn create_recycle_channel<T: Send>() -> (Arc<SyncSender<FramePacket<T>>>, Receiver<FramePacket<T>>) {
+pub fn create_recycle_channel<T: Send>(
+) -> (Arc<SyncSender<FramePacket<T>>>, Receiver<FramePacket<T>>) {
     let (tx, rx) = sync_channel(2); // 2 slots for double-buffering
     (Arc::new(tx), rx)
 }
@@ -119,7 +120,7 @@ mod tests {
     use super::*;
     use pixelflow_core::Field;
     use pixelflow_core::Manifold;
-    use pixelflow_graphics::render::color::ColorVector;
+    use pixelflow_graphics::Discrete;
 
     // A minimal test surface
     #[derive(Clone, Copy)]
@@ -128,9 +129,14 @@ mod tests {
     }
 
     impl Manifold for TestSurface {
-        type Output = ColorVector;
-        fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> ColorVector {
-            ColorVector::splat(self.color, self.color, self.color, 1.0)
+        type Output = Discrete;
+        fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
+            Discrete::new(
+                Field::from(self.color),
+                Field::from(self.color),
+                Field::from(self.color),
+                Field::from(1.0),
+            )
         }
     }
 

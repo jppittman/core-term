@@ -1,16 +1,12 @@
 //! # Software Rasterizer
 //!
 //! Bridges Manifolds (continuous) to Framebuffers (discrete).
-//! Uses `pixelflow_core::materialize_vector` for the SoA → AoS transpose.
+//! Color manifolds output `Discrete` (packed u32 pixels) directly.
 
-use crate::render::color::{ColorVector, Pixel};
-use pixelflow_core::{materialize_vector, Field, Manifold, PARALLELISM};
+use crate::render::color::Pixel;
+use pixelflow_core::{Discrete, Field, Manifold, PARALLELISM};
 
 /// A wrapper that adapts a continuous manifold for rasterization.
-///
-/// This is a marker type that makes the intent clear when rendering.
-/// The underlying manifold produces ColorVector values which are
-/// converted to discrete pixels during rasterization.
 #[derive(Clone, Copy, Debug)]
 pub struct Rasterize<M>(pub M);
 
@@ -49,10 +45,13 @@ pub struct Stripe {
 }
 
 /// Software rasterizer entry point.
+///
+/// Takes a color manifold that outputs Discrete (packed u32 pixels)
+/// and writes them to the target buffer.
 pub fn execute<P, M>(manifold: &M, target: &mut [P], shape: TensorShape)
 where
     P: Pixel,
-    M: Manifold<Output = ColorVector> + ?Sized,
+    M: Manifold<Output = Discrete> + ?Sized,
 {
     if shape.width == 0 || shape.height == 0 {
         return;
@@ -72,10 +71,9 @@ where
 pub fn execute_stripe<P, M>(manifold: &M, target: &mut [P], width: usize, stripe: Stripe)
 where
     P: Pixel,
-    M: Manifold<Output = ColorVector> + ?Sized,
+    M: Manifold<Output = Discrete> + ?Sized,
 {
-    // Buffer for interleaved f32 RGBA values from materialize_vector
-    let mut interleaved = [0.0f32; PARALLELISM * 4];
+    let mut packed = [0u32; PARALLELISM];
 
     for (row_idx, y) in (stripe.start_y..stripe.end_y).enumerate() {
         let row_offset = row_idx * width;
@@ -86,18 +84,17 @@ where
             let fx = x as f32 + 0.5;
             let fy = y as f32 + 0.5;
 
-            // Use core's materialize_vector which does SoA → AoS transpose
-            materialize_vector(manifold, fx, fy, &mut interleaved);
+            // Evaluate color manifold - returns Discrete (packed u32 pixels)
+            let xs = Field::from(fx) + Field::from(0.0); // TODO: sequential
+            let discrete =
+                manifold.eval_raw(xs, Field::from(fy), Field::from(0.0), Field::from(0.0));
 
-            // Convert interleaved f32 RGBA to pixel format
+            // Store packed pixels
+            discrete.store(&mut packed);
+
+            // Copy to target
             for i in 0..PARALLELISM {
-                let base = i * 4;
-                target[row_offset + x + i] = P::from_rgba(
-                    interleaved[base],
-                    interleaved[base + 1],
-                    interleaved[base + 2],
-                    interleaved[base + 3],
-                );
+                target[row_offset + x + i] = P::from_u32(packed[i]);
             }
 
             x += PARALLELISM;
@@ -108,22 +105,15 @@ where
             let fx = x as f32 + 0.5;
             let fy = y as f32 + 0.5;
 
-            // Evaluate single pixel
-            let color = manifold.eval_raw(
+            let discrete = manifold.eval_raw(
                 Field::from(fx),
                 Field::from(fy),
                 Field::from(0.0),
                 Field::from(0.0),
             );
 
-            // For a single pixel, just read first lane (all lanes have same value)
-            materialize_vector(manifold, fx, fy, &mut interleaved);
-            target[row_offset + x] = P::from_rgba(
-                interleaved[0],
-                interleaved[1],
-                interleaved[2],
-                interleaved[3],
-            );
+            discrete.store(&mut packed);
+            target[row_offset + x] = P::from_u32(packed[0]);
 
             x += 1;
         }

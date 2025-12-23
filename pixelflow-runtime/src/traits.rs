@@ -1,6 +1,7 @@
 use crate::input::{CursorIcon, KeySymbol, Modifiers, MouseButton};
 use pixelflow_core::Manifold;
-use pixelflow_graphics::render::color::{ColorVector, Pixel};
+use pixelflow_graphics::render::color::Pixel;
+use pixelflow_graphics::Discrete;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -79,7 +80,7 @@ pub trait Application<P: Pixel> {
     fn render(
         &mut self,
         state: &AppState,
-    ) -> Option<Box<dyn Manifold<Output = ColorVector> + Send + Sync>>;
+    ) -> Option<Box<dyn Manifold<Output = Discrete> + Send + Sync>>;
 
     /// THE CONTROL PLANE
     /// The Control Path: Process input or wake signals.

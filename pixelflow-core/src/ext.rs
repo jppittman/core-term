@@ -3,7 +3,7 @@
 //! Provides fluent method-chaining API for manifolds.
 
 use crate::Manifold;
-use crate::combinators::Select;
+use crate::combinators::{Map, Select};
 use crate::ops::{Abs, Add, Div, Ge, Gt, Le, Lt, Max, Min, Mul, Sqrt, Sub};
 
 use alloc::sync::Arc;
@@ -74,6 +74,14 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         w: D,
     ) -> crate::Field {
         self.eval_raw(x.into(), y.into(), z.into(), w.into())
+    }
+
+    /// Map a function over this manifold's output (functor fmap).
+    fn map<F>(self, func: F) -> Map<Self, F>
+    where
+        F: Fn(crate::Field) -> crate::Field + Send + Sync,
+    {
+        Map::new(self, func)
     }
 
     fn add<R: Manifold>(self, rhs: R) -> Add<Self, R> {
