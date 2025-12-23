@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
-use super::curves::{Line, Quadratic, Segment};
-use super::glyph::GlyphBounds;
+use super::curves::{Curve, Segment};
+use super::glyph::{Glyph, GlyphBounds};
 
 // ============================================================================
 // PUBLIC API
@@ -18,15 +18,15 @@ use super::glyph::GlyphBounds;
 pub struct TtfFont<'a> {
     data: &'a [u8],
     tables: HashMap<Tag, Range<usize>>,
-    cache: RwLock<HashMap<(u16, u32), Arc<CompiledGlyph>>>, // (glyph_id, size_bits)
+    cache: RwLock<HashMap<(u16, u32), Arc<CachedGlyph>>>,
 }
 
-/// A glyph ready for rendering.
+/// Cached glyph data.
 #[derive(Clone)]
-pub struct CompiledGlyph {
-    pub segments: Arc<[Segment]>,
-    pub bounds: GlyphBounds,
-    pub advance: f32,
+struct CachedGlyph {
+    segments: Arc<[Segment]>,
+    bounds: GlyphBounds,
+    advance: f32,
 }
 
 /// Font-wide metrics.
@@ -41,19 +41,40 @@ pub struct FontMetrics {
 impl<'a> TtfFont<'a> {
     /// Parse a TTF from bytes.
     pub fn parse(data: &'a [u8]) -> Option<Self> {
+        if data.len() < 12 {
+            return None;
+        }
         let n = u16::from_be_bytes([data[4], data[5]]) as usize;
         let mut tables = HashMap::new();
 
         for i in 0..n {
             let off = 12 + i * 16;
+            if off + 16 > data.len() {
+                return None;
+            }
             let tag = Tag([data[off], data[off + 1], data[off + 2], data[off + 3]]);
-            let offset = u32::from_be_bytes([data[off + 8], data[off + 9], data[off + 10], data[off + 11]]) as usize;
-            let length = u32::from_be_bytes([data[off + 12], data[off + 13], data[off + 14], data[off + 15]]) as usize;
+            let offset =
+                u32::from_be_bytes([data[off + 8], data[off + 9], data[off + 10], data[off + 11]])
+                    as usize;
+            let length = u32::from_be_bytes([
+                data[off + 12],
+                data[off + 13],
+                data[off + 14],
+                data[off + 15],
+            ]) as usize;
             tables.insert(tag, offset..offset + length);
         }
 
         // Validate required tables
-        for tag in [Tag::HEAD, Tag::MAXP, Tag::CMAP, Tag::LOCA, Tag::GLYF, Tag::HHEA, Tag::HMTX] {
+        for tag in [
+            Tag::HEAD,
+            Tag::MAXP,
+            Tag::CMAP,
+            Tag::LOCA,
+            Tag::GLYF,
+            Tag::HHEA,
+            Tag::HMTX,
+        ] {
             if !tables.contains_key(&tag) {
                 return None;
             }
@@ -79,6 +100,33 @@ impl<'a> TtfFont<'a> {
         }
     }
 
+    /// Get a glyph at a specific pixel size.
+    pub fn glyph(&self, ch: char, size: f32) -> Option<Glyph> {
+        let glyph_id = self.cmap_lookup(ch)?;
+        let size_bits = size.to_bits();
+        let key = (glyph_id, size_bits);
+
+        // Check cache
+        if let Some(cached) = self.cache.read().unwrap().get(&key) {
+            return Some(Glyph {
+                segments: cached.segments.clone(),
+                bounds: cached.bounds,
+                advance: cached.advance,
+            });
+        }
+
+        // Compile
+        let cached = self.compile_glyph(glyph_id, size)?;
+        let cached = Arc::new(cached);
+        self.cache.write().unwrap().insert(key, cached.clone());
+
+        Some(Glyph {
+            segments: cached.segments.clone(),
+            bounds: cached.bounds,
+            advance: cached.advance,
+        })
+    }
+
     /// Horizontal advance for a character at given size.
     pub fn advance(&self, ch: char, size: f32) -> f32 {
         let glyph_id = match self.cmap_lookup(ch) {
@@ -87,14 +135,7 @@ impl<'a> TtfFont<'a> {
         };
 
         let scale = size / self.metrics().units_per_em as f32;
-        let hmtx = self.table(Tag::HMTX);
-        let hhea = self.table(Tag::HHEA);
-        let num_h_metrics = u16::from_be_bytes([hhea[34], hhea[35]]) as usize;
-
-        let idx = (glyph_id as usize).min(num_h_metrics.saturating_sub(1));
-        let advance = u16::from_be_bytes([hmtx[idx * 4], hmtx[idx * 4 + 1]]);
-
-        advance as f32 * scale
+        self.advance_raw(glyph_id) as f32 * scale
     }
 
     /// Kerning between two characters.
@@ -128,7 +169,6 @@ impl<'a> TtfFont<'a> {
     }
 
     fn loca_format(&self) -> bool {
-        // true = long (4 bytes), false = short (2 bytes)
         let head = self.table(Tag::HEAD);
         i16::from_be_bytes([head[50], head[51]]) != 0
     }
@@ -147,8 +187,18 @@ impl<'a> TtfFont<'a> {
         let id = glyph_id as usize;
 
         let (start, end) = if self.loca_format() {
-            let s = u32::from_be_bytes([loca[id * 4], loca[id * 4 + 1], loca[id * 4 + 2], loca[id * 4 + 3]]) as usize;
-            let e = u32::from_be_bytes([loca[id * 4 + 4], loca[id * 4 + 5], loca[id * 4 + 6], loca[id * 4 + 7]]) as usize;
+            let s = u32::from_be_bytes([
+                loca[id * 4],
+                loca[id * 4 + 1],
+                loca[id * 4 + 2],
+                loca[id * 4 + 3],
+            ]) as usize;
+            let e = u32::from_be_bytes([
+                loca[id * 4 + 4],
+                loca[id * 4 + 5],
+                loca[id * 4 + 6],
+                loca[id * 4 + 7],
+            ]) as usize;
             (s, e)
         } else {
             let s = u16::from_be_bytes([loca[id * 2], loca[id * 2 + 1]]) as usize * 2;
@@ -167,6 +217,14 @@ impl<'a> TtfFont<'a> {
         let glyf = self.table(Tag::GLYF);
         Some(&glyf[range])
     }
+
+    fn advance_raw(&self, glyph_id: u16) -> u16 {
+        let hmtx = self.table(Tag::HMTX);
+        let hhea = self.table(Tag::HHEA);
+        let num_h_metrics = u16::from_be_bytes([hhea[34], hhea[35]]) as usize;
+        let idx = (glyph_id as usize).min(num_h_metrics.saturating_sub(1));
+        u16::from_be_bytes([hmtx[idx * 4], hmtx[idx * 4 + 1]])
+    }
 }
 
 // ============================================================================
@@ -183,7 +241,6 @@ impl<'a> TtfFont<'a> {
         }
         let c = codepoint as u16;
 
-        // Find format 4 subtable
         let num_tables = u16::from_be_bytes([cmap[2], cmap[3]]) as usize;
         let mut subtable_offset = None;
 
@@ -191,7 +248,12 @@ impl<'a> TtfFont<'a> {
             let off = 4 + i * 8;
             let platform = u16::from_be_bytes([cmap[off], cmap[off + 1]]);
             let encoding = u16::from_be_bytes([cmap[off + 2], cmap[off + 3]]);
-            let offset = u32::from_be_bytes([cmap[off + 4], cmap[off + 5], cmap[off + 6], cmap[off + 7]]) as usize;
+            let offset = u32::from_be_bytes([
+                cmap[off + 4],
+                cmap[off + 5],
+                cmap[off + 6],
+                cmap[off + 7],
+            ]) as usize;
 
             if (platform == 3 && encoding == 1) || (platform == 0 && encoding == 3) {
                 subtable_offset = Some(offset);
@@ -220,7 +282,8 @@ impl<'a> TtfFont<'a> {
                 continue;
             }
 
-            let start_code = u16::from_be_bytes([cmap[start_off + i * 2], cmap[start_off + i * 2 + 1]]);
+            let start_code =
+                u16::from_be_bytes([cmap[start_off + i * 2], cmap[start_off + i * 2 + 1]]);
             if c < start_code {
                 return Some(0);
             }
@@ -268,16 +331,14 @@ struct BBox {
 }
 
 impl<'a> TtfFont<'a> {
-    fn compile_glyph(&self, glyph_id: u16, size: f32) -> Option<CompiledGlyph> {
+    fn compile_glyph(&self, glyph_id: u16, size: f32) -> Option<CachedGlyph> {
         let metrics = self.metrics();
         let scale = size / metrics.units_per_em as f32;
 
-        // Get raw contours (recursive for compound glyphs)
         let (contours, bbox) = self.parse_glyph(glyph_id)?;
 
         if contours.is_empty() {
-            // Space or empty glyph
-            return Some(CompiledGlyph {
+            return Some(CachedGlyph {
                 segments: Arc::from([]),
                 bounds: GlyphBounds::default(),
                 advance: self.advance_raw(glyph_id) as f32 * scale,
@@ -286,18 +347,13 @@ impl<'a> TtfFont<'a> {
 
         // Transform: origin at (x_min, y_max), Y-flip, scale to pixels
         let ox = bbox.x_min as f32;
-        let oy = bbox.y_max as f32; // Y-flip: y_max becomes 0
+        let oy = bbox.y_max as f32;
 
         let transform = |x: i16, y: i16| -> [f32; 2] {
-            [
-                (x as f32 - ox) * scale,
-                (oy - y as f32) * scale, // Y-flip
-            ]
+            [(x as f32 - ox) * scale, (oy - y as f32) * scale]
         };
 
-        // Convert contours to segments
         let mut segments = Vec::new();
-
         for contour in &contours {
             let expanded = expand_contour(&contour.points);
             segments.extend(contour_to_segments(&expanded, &transform));
@@ -306,7 +362,7 @@ impl<'a> TtfFont<'a> {
         let width = ((bbox.x_max - bbox.x_min) as f32 * scale).ceil() as u32;
         let height = ((bbox.y_max - bbox.y_min) as f32 * scale).ceil() as u32;
 
-        Some(CompiledGlyph {
+        Some(CachedGlyph {
             segments: Arc::from(segments),
             bounds: GlyphBounds {
                 width,
@@ -316,14 +372,6 @@ impl<'a> TtfFont<'a> {
             },
             advance: self.advance_raw(glyph_id) as f32 * scale,
         })
-    }
-
-    fn advance_raw(&self, glyph_id: u16) -> u16 {
-        let hmtx = self.table(Tag::HMTX);
-        let hhea = self.table(Tag::HHEA);
-        let num_h_metrics = u16::from_be_bytes([hhea[34], hhea[35]]) as usize;
-        let idx = (glyph_id as usize).min(num_h_metrics.saturating_sub(1));
-        u16::from_be_bytes([hmtx[idx * 4], hmtx[idx * 4 + 1]])
     }
 
     fn parse_glyph(&self, glyph_id: u16) -> Option<(Vec<RawContour>, BBox)> {
@@ -341,11 +389,9 @@ impl<'a> TtfFont<'a> {
         };
 
         if num_contours >= 0 {
-            // Simple glyph
             let contours = self.parse_simple_glyph(&data[10..], num_contours as usize);
             Some((contours, bbox))
         } else {
-            // Compound glyph
             self.parse_compound_glyph(&data[10..], bbox)
         }
     }
@@ -356,8 +402,6 @@ impl<'a> TtfFont<'a> {
         }
 
         let mut cursor = 0;
-
-        // End points
         let mut end_points = Vec::with_capacity(num_contours);
         for _ in 0..num_contours {
             end_points.push(u16::from_be_bytes([data[cursor], data[cursor + 1]]) as usize);
@@ -369,19 +413,15 @@ impl<'a> TtfFont<'a> {
             return vec![];
         }
 
-        // Skip instructions
         let instr_len = u16::from_be_bytes([data[cursor], data[cursor + 1]]) as usize;
         cursor += 2 + instr_len;
 
-        // Decode flags
         let (flags, flags_consumed) = decode_flags(&data[cursor..], num_points);
         cursor += flags_consumed;
 
-        // Decode coordinates
         let (xs, rest) = decode_coords(&flags, &data[cursor..], 0x02, 0x10);
         let (ys, _) = decode_coords(&flags, rest, 0x04, 0x20);
 
-        // Build contours
         let mut contours = Vec::with_capacity(num_contours);
         let mut start = 0;
 
@@ -437,7 +477,6 @@ impl<'a> TtfFont<'a> {
                 (0, 0)
             };
 
-            // Skip scale/matrix (simplified: we only support translation)
             if flags & WE_HAVE_A_SCALE != 0 {
                 cursor += 2;
             } else if flags & WE_HAVE_AN_X_AND_Y_SCALE != 0 {
@@ -446,9 +485,7 @@ impl<'a> TtfFont<'a> {
                 cursor += 8;
             }
 
-            // Recursively get component contours
             if let Some((mut contours, _)) = self.parse_glyph(component_id) {
-                // Apply translation
                 for contour in &mut contours {
                     for pt in &mut contour.points {
                         pt.x += dx;
@@ -481,7 +518,6 @@ fn decode_flags(data: &[u8], num_points: usize) -> (Vec<u8>, usize) {
         flags.push(flag);
 
         if flag & 0x08 != 0 {
-            // REPEAT flag
             let repeat = (data[i] as usize).min(num_points - flags.len());
             i += 1;
             for _ in 0..repeat {
@@ -493,7 +529,12 @@ fn decode_flags(data: &[u8], num_points: usize) -> (Vec<u8>, usize) {
     (flags, i)
 }
 
-fn decode_coords<'a>(flags: &[u8], data: &'a [u8], short_bit: u8, same_bit: u8) -> (Vec<i16>, &'a [u8]) {
+fn decode_coords<'a>(
+    flags: &[u8],
+    data: &'a [u8],
+    short_bit: u8,
+    same_bit: u8,
+) -> (Vec<i16>, &'a [u8]) {
     let mut coords = Vec::with_capacity(flags.len());
     let mut cursor = 0;
     let mut prev = 0i16;
@@ -532,7 +573,6 @@ fn decode_coords<'a>(flags: &[u8], data: &'a [u8], short_bit: u8, same_bit: u8) 
 // INTERNAL: Contour → Segments
 // ============================================================================
 
-/// Insert implicit on-curve midpoints between consecutive off-curve points.
 fn expand_contour(points: &[RawPoint]) -> Vec<RawPoint> {
     if points.is_empty() {
         return vec![];
@@ -546,7 +586,6 @@ fn expand_contour(points: &[RawPoint]) -> Vec<RawPoint> {
 
         result.push(curr);
 
-        // Two consecutive off-curve points → insert midpoint
         if !curr.on_curve && !next.on_curve {
             result.push(RawPoint {
                 x: (curr.x + next.x) / 2,
@@ -559,7 +598,6 @@ fn expand_contour(points: &[RawPoint]) -> Vec<RawPoint> {
     result
 }
 
-/// Convert expanded contour to Line/Quadratic segments.
 fn contour_to_segments<F>(points: &[RawPoint], transform: &F) -> Vec<Segment>
 where
     F: Fn(i16, i16) -> [f32; 2],
@@ -568,10 +606,8 @@ where
         return vec![];
     }
 
-    // Find first on-curve point
     let start = points.iter().position(|p| p.on_curve).unwrap_or(0);
     let n = points.len();
-
     let mut segments = Vec::new();
     let mut i = 0;
 
@@ -584,13 +620,12 @@ where
 
         if p1.on_curve {
             // Line: on → on
-            segments.push(Segment::Line(Line {
-                p0: transform(p0.x, p0.y),
-                p1: transform(p1.x, p1.y),
-            }));
+            let t0 = transform(p0.x, p0.y);
+            let t1 = transform(p1.x, p1.y);
+            segments.push(Segment::Line(Curve([t0, t1])));
             i += 1;
         } else {
-            // Quadratic: on → off → on
+            // Quad: on → off → on
             let idx2 = (start + i + 2) % n;
             let p2 = &points[idx2];
 
@@ -598,10 +633,7 @@ where
             let t1 = transform(p1.x, p1.y);
             let t2 = transform(p2.x, p2.y);
 
-            match Quadratic::try_new(t0, t1, t2) {
-                Some(q) => segments.push(Segment::Quad(q)),
-                None => segments.push(Segment::Line(Line { p0: t0, p1: t2 })),
-            }
+            segments.push(Segment::Quad(Curve([t0, t1, t2])));
             i += 2;
         }
     }
@@ -610,7 +642,7 @@ where
 }
 
 // ============================================================================
-// COMPAT: Re-export for drop-in replacement
+// COMPAT: Re-exports
 // ============================================================================
 
 pub use TtfFont as Font;
@@ -629,89 +661,7 @@ impl std::fmt::Display for FontError {
 impl std::error::Error for FontError {}
 
 impl<'a> TtfFont<'a> {
-    /// Drop-in replacement for ttf-parser Font::from_bytes
     pub fn from_bytes(data: &'a [u8]) -> Result<Self, FontError> {
         Self::parse(data).ok_or(FontError::ParseError)
-    }
-}
-
-/// Glyph with pre-computed segments in pixel coordinates.
-#[derive(Clone, Debug)]
-pub struct Glyph {
-    segments: Arc<[Segment]>,
-    bounds: GlyphBounds,
-    pub advance: f32,
-}
-
-impl Glyph {
-    pub fn curves(&self) -> &[Segment] {
-        &self.segments
-    }
-
-    pub fn bounds(&self) -> GlyphBounds {
-        self.bounds
-    }
-}
-
-impl super::glyph::CurveSurface for Glyph {
-    fn curves(&self) -> &[Segment] {
-        &self.segments
-    }
-
-    fn bounds(&self) -> GlyphBounds {
-        self.bounds
-    }
-}
-
-impl pixelflow_core::Manifold for Glyph {
-    type Output = pixelflow_core::Field;
-
-    fn eval_raw(
-        &self,
-        x: pixelflow_core::Field,
-        y: pixelflow_core::Field,
-        _z: pixelflow_core::Field,
-        _w: pixelflow_core::Field,
-    ) -> pixelflow_core::Field {
-        super::glyph::eval_curves(
-            self.curves(),
-            self.bounds(),
-            x,
-            y,
-            pixelflow_core::Field::from(0.0),
-        )
-    }
-}
-
-impl<'a> TtfFont<'a> {
-    /// Get a glyph (CurveSurface) at a specific pixel size.
-    pub fn glyph(&self, ch: char, size: f32) -> Option<Glyph> {
-        let compiled = self.compile_glyph_for_char(ch, size)?;
-        Some(Glyph {
-            segments: compiled.segments,
-            bounds: compiled.bounds,
-            advance: compiled.advance,
-        })
-    }
-
-    fn compile_glyph_for_char(&self, ch: char, size: f32) -> Option<CompiledGlyph> {
-        let glyph_id = self.cmap_lookup(ch)?;
-
-        // Cache key includes size (as bits to avoid float hashing)
-        let size_bits = size.to_bits();
-        let key = (glyph_id, size_bits);
-
-        // Check cache
-        if let Some(cached) = self.cache.read().unwrap().get(&key) {
-            return Some((**cached).clone());
-        }
-
-        // Compile
-        let compiled = self.compile_glyph(glyph_id, size)?;
-        let compiled = Arc::new(compiled);
-
-        // Cache and return
-        self.cache.write().unwrap().insert(key, compiled.clone());
-        Some((*compiled).clone())
     }
 }

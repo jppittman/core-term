@@ -1,7 +1,7 @@
 //! Tests for the TTF parser and glyph rendering.
 
 use pixelflow_core::{Field, Manifold};
-use pixelflow_graphics::fonts::Font;
+use pixelflow_graphics::fonts::{CurveSurface, Font};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 

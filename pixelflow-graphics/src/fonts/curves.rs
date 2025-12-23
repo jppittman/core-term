@@ -1,98 +1,101 @@
 //! Curve primitives for glyph rendering.
 //!
-//! This module defines the fundamental curve types used for representing
-//! glyph outlines: lines and quadratic Bézier curves.
+//! `Curve<N>` is the atomic building block - N control points defining
+//! a Bezier curve of degree N-1.
 
-/// A line segment from p0 to p1.
+use pixelflow_core::{Field, Manifold, Numeric};
+
+/// N control points. The atom.
 #[derive(Clone, Copy, Debug)]
-pub struct Line {
-    pub p0: [f32; 2],
-    pub p1: [f32; 2],
-}
+pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
 
-impl Line {
-    /// Create a new line segment.
-    pub fn new(p0: [f32; 2], p1: [f32; 2]) -> Self {
-        Self { p0, p1 }
-    }
-}
+pub type Line = Curve<2>;
+pub type Quad = Curve<3>;
+pub type Cubic = Curve<4>;
 
-/// Minimum triangle area for valid quadratic curves.
-const MIN_TRIANGLE_AREA: f32 = 1e-6;
-
-/// A quadratic Bézier curve with pre-computed barycentric coefficients.
-///
-/// The curve is defined by three control points: p0 (start), p1 (control), p2 (end).
-/// The barycentric coefficients are pre-computed for efficient inside/outside testing.
-#[derive(Clone, Copy, Debug)]
-pub struct Quadratic {
-    pub p0: [f32; 2],
-    pub p1: [f32; 2],
-    pub p2: [f32; 2],
-    // Loop-Blinn style UV coefficients for curve evaluation
-    pub u_a: f32,
-    pub u_b: f32,
-    pub u_c: f32,
-    pub v_d: f32,
-    pub v_e: f32,
-    pub v_f: f32,
-}
-
-impl Quadratic {
-    /// Try to create a quadratic curve from three points.
-    ///
-    /// Returns `None` if the points are collinear (degenerate curve).
-    pub fn try_new(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> Option<Self> {
-        let (x0, y0) = (p0[0], p0[1]);
-        let (x1, y1) = (p1[0], p1[1]);
-        let (x2, y2) = (p2[0], p2[1]);
-
-        // Signed area of triangle p0-p1-p2
-        let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-        if area.abs() < MIN_TRIANGLE_AREA {
-            return None;
-        }
-        let inv_area = 1.0 / area;
-
-        // Barycentric coordinate coefficients
-        let alpha_x = (y1 - y2) * inv_area;
-        let alpha_y = (x2 - x1) * inv_area;
-        let alpha_c = (x1 * y2 - x2 * y1) * inv_area;
-
-        let beta_x = (y2 - y0) * inv_area;
-        let beta_y = (x0 - x2) * inv_area;
-        let beta_c = (x2 * y0 - x0 * y2) * inv_area;
-
-        let gamma_x = -alpha_x - beta_x;
-        let gamma_y = -alpha_y - beta_y;
-        let gamma_c = 1.0 - alpha_c - beta_c;
-
-        // Loop-Blinn UV mapping
-        let u_a = 0.5 * beta_x + gamma_x;
-        let u_b = 0.5 * beta_y + gamma_y;
-        let u_c = 0.5 * beta_c + gamma_c;
-
-        let v_d = gamma_x;
-        let v_e = gamma_y;
-        let v_f = gamma_c;
-
-        Some(Self {
-            p0,
-            p1,
-            p2,
-            u_a,
-            u_b,
-            u_c,
-            v_d,
-            v_e,
-            v_f,
-        })
-    }
-}
-
-/// A curve segment, either a line or a quadratic Bézier.
+/// Mixed-degree sum.
 #[derive(Clone, Copy, Debug)]
 pub enum Segment {
     Line(Line),
-    Quad(Quadratic),
+    Quad(Quad),
+    Cubic(Cubic),
+}
+
+// ============================================================================
+// Manifold Implementations
+// ============================================================================
+
+impl Manifold for Line {
+    type Output = Field;
+
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+        let [[x0, y0], [x1, y1]] = self.0;
+
+        let p0_y = Field::from(y0);
+        let p1_y = Field::from(y1);
+        let dy = p1_y - p0_y;
+
+        // Skip near-horizontal lines
+        let dy_abs = Numeric::abs(dy);
+        let valid = Numeric::gt(dy_abs, Field::from(1e-6));
+
+        let p0_x = Field::from(x0);
+        let p1_x = Field::from(x1);
+        let dx = p1_x - p0_x;
+
+        // Y-range check
+        let y_min = Numeric::min(p0_y, p1_y);
+        let y_max = Numeric::max(p0_y, p1_y);
+        let geq_min = Numeric::ge(y, y_min);
+        let leq_max = Numeric::le(y, y_max);
+        let in_y = geq_min * leq_max;
+
+        // X-intersection
+        let x_int = p0_x + (y - p0_y) * (dx / dy);
+        let is_left = Numeric::lt(x, x_int);
+
+        // Direction: +1 up, -1 down
+        let going_up = Numeric::gt(dy, Field::from(0.0));
+        let dir = Numeric::select(going_up, Field::from(1.0), Field::from(-1.0));
+
+        // Combine
+        let contrib = Numeric::select(is_left, dir, Field::from(0.0));
+        let result = Numeric::select(in_y, contrib, Field::from(0.0));
+        Numeric::select(valid, result, Field::from(0.0))
+    }
+}
+
+impl Manifold for Quad {
+    type Output = Field;
+
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+        // For winding number, we only care about the endpoints
+        // The control point affects shape but not winding contribution
+        let [p0, _p1, p2] = self.0;
+        let line: Line = Curve([p0, p2]);
+        line.eval_raw(x, y, _z, _w)
+    }
+}
+
+impl Manifold for Cubic {
+    type Output = Field;
+
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+        // Same as quad - winding only cares about endpoints
+        let [p0, _p1, _p2, p3] = self.0;
+        let line: Line = Curve([p0, p3]);
+        line.eval_raw(x, y, _z, _w)
+    }
+}
+
+impl Manifold for Segment {
+    type Output = Field;
+
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        match self {
+            Self::Line(c) => c.eval_raw(x, y, z, w),
+            Self::Quad(c) => c.eval_raw(x, y, z, w),
+            Self::Cubic(c) => c.eval_raw(x, y, z, w),
+        }
+    }
 }
