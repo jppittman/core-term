@@ -960,7 +960,6 @@ impl Screen {
                     } // Should not happen with valid points
 
                     let current_row_glyphs = &grid_to_use[y_abs];
-                    let mut current_line_text = String::new();
 
                     // Determine the start and end columns for text extraction on the current line.
                     let line_col_start = if y_abs == norm_start_point.y {
@@ -989,12 +988,15 @@ impl Screen {
                         continue;
                     }
 
+                    // Record start index of the current line in the buffer
+                    let line_start_len = selected_text_buffer.len();
+
                     for x_abs in line_col_start..=effective_line_col_end {
                         if x_abs < current_row_glyphs.len() {
-                            current_line_text.push(current_row_glyphs[x_abs].display_char());
+                            selected_text_buffer.push(current_row_glyphs[x_abs].display_char());
                         } else {
                             // If selection extends beyond available glyphs on the line, append space.
-                            current_line_text.push(' ');
+                            selected_text_buffer.push(' ');
                         }
                     }
 
@@ -1007,14 +1009,31 @@ impl Screen {
                         && line_col_end >= self.width.saturating_sub(1)
                     {
                         // Check if selection extended to line end
-                        if let Some(last_char_idx) = current_line_text.rfind(|c: char| c != ' ') {
-                            current_line_text.truncate(last_char_idx + 1);
-                        } else {
-                            current_line_text.clear(); // Line was all spaces
+                        // Search backwards in the newly added segment of selected_text_buffer
+                        let current_line_len = selected_text_buffer.len() - line_start_len;
+                        if current_line_len > 0 {
+                            let mut last_non_space_relative_idx = None;
+                            // Scan backwards through the bytes we just added
+                            // Since we pushed chars, we can iterate chars, but we need byte indices.
+                            // Easier: slice the new part and search.
+                            let new_part = &selected_text_buffer[line_start_len..];
+                            if let Some(idx) = new_part.rfind(|c: char| c != ' ') {
+                                last_non_space_relative_idx = Some(idx);
+                            }
+
+                            if let Some(rel_idx) = last_non_space_relative_idx {
+                                // Find the byte index of the character *after* the last non-space char
+                                // new_part[rel_idx] is the start of the char.
+                                // We need to include this char.
+                                let char_len = new_part[rel_idx..].chars().next().map_or(1, |c| c.len_utf8());
+                                selected_text_buffer.truncate(line_start_len + rel_idx + char_len);
+                            } else {
+                                // Line was all spaces
+                                selected_text_buffer.truncate(line_start_len);
+                            }
                         }
                     }
 
-                    selected_text_buffer.push_str(&current_line_text);
                     if y_abs < norm_end_point.y {
                         selected_text_buffer.push('\n');
                     }
