@@ -133,24 +133,7 @@ impl MacWindow {
         // Metal presentation logic.
         unsafe {
             // Ensure drawable size matches frame
-            sys::send_1::<(), sys::MTLSize>(
-                self.layer,
-                sys::sel(b"setDrawableSize:\0"),
-                sys::MTLSize {
-                    width: frame.width as usize,
-                    height: frame.height as usize,
-                    depth: 0, // Unused for CGSize/NSSize equivalent mapping
-                },
-            );
-            // Note: setDrawableSize takes CGSize. MTLSize has 3 fields.
-            // CGSize is {width, height}. MTLSize is {width, height, depth}.
-            // DIRECTLY sending MTLSize might be wrong if ABI expects CGSize.
-            // On ARM64:
-            // CGSize (2x f64) = 16 bytes.
-            // MTLSize (3x usize) = 24 bytes.
-            // WE MUST DEFINE NSSize/CGSize for this call!
-
-            // Ensure drawable size matches frame (using CGSize)
+            // setDrawableSize: takes CGSize (2x f64 = 16 bytes), not MTLSize (3x usize = 24 bytes)
             let size = sys::CGSize {
                 width: frame.width as f64,
                 height: frame.height as f64,
@@ -211,6 +194,7 @@ mod tests {
     use crate::platform::macos::sys::{self, Id};
 
     #[test]
+    #[ignore = "Requires macOS window server and Metal device"]
     fn test_window_creation() {
         let desc = WindowDescriptor {
             width: 800,
@@ -233,6 +217,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Requires macOS window server and Metal device"]
     fn test_metal_layer_config() {
         let desc = WindowDescriptor {
             width: 100,
@@ -269,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Requires macOS window server and Metal device"]
     fn test_resize_state() {
         let desc = WindowDescriptor {
             width: 200,
