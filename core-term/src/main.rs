@@ -17,25 +17,50 @@ pub mod terminal_app;
 // Use statements for items needed in main.rs
 use crate::config::CONFIG;
 use anyhow::Context;
-use clap::Parser;
 use log::{info, warn};
 
-/// core-term: A modern terminal emulator
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
 struct Args {
-    /// Execute a command instead of launching a shell
-    #[arg(short = 'c', long = "command")]
     command: Option<String>,
-
-    /// Additional arguments to pass to the command
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
+}
+
+fn parse_args() -> Args {
+    let mut args_iter = std::env::args().skip(1);
+    let mut command = None;
+    let mut trailing_args = Vec::new();
+
+    while let Some(arg) = args_iter.next() {
+        match arg.as_str() {
+            "-c" | "--command" => {
+                command = args_iter.next();
+            }
+            "-h" | "--help" => {
+                eprintln!("core-term: A modern terminal emulator\n");
+                eprintln!("Usage: core-term [OPTIONS]\n");
+                eprintln!("Options:");
+                eprintln!("  -c, --command <CMD>  Execute a command instead of launching a shell");
+                eprintln!("  -h, --help           Print help");
+                eprintln!("  -V, --version        Print version");
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                eprintln!("core-term {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            _ => {
+                trailing_args.push(arg);
+                trailing_args.extend(args_iter);
+                break;
+            }
+        }
+    }
+
+    Args { command, args: trailing_args }
 }
 
 /// Main entry point for the `myterm` application.
 fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let args = parse_args();
     use std::fs::OpenOptions;
 
     // Start CPU profiler if feature enabled
