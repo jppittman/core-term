@@ -323,6 +323,11 @@ impl numeric::Numeric for Field {
     fn from_i32(val: i32) -> Self {
         Self::from(val)
     }
+
+    #[inline(always)]
+    fn from_field(field: Field) -> Self {
+        field
+    }
 }
 
 // ============================================================================

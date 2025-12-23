@@ -42,12 +42,8 @@ impl<I: crate::numeric::Numeric> Manifold<I> for Field {
     type Output = I;
     #[inline(always)]
     fn eval_raw(&self, _x: I, _y: I, _z: I, _w: I) -> I {
-        // Convert Field to f32, then promote to I
-        // For Field inputs this is identity via from_f32(self as f32) == self
-        // For Jet2 inputs this creates a constant jet
-        let mut temp = [0.0f32];
-        self.store(&mut temp);
-        I::from_f32(temp[0])
+        // Zero-cost conversion: identity for Field, constant jet for Jet2
+        I::from_field(*self)
     }
 }
 

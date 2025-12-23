@@ -215,4 +215,9 @@ impl Numeric for Jet2 {
     fn from_i32(val: i32) -> Self {
         Self::constant(Field::from(val))
     }
+
+    #[inline(always)]
+    fn from_field(field: Field) -> Self {
+        Self::constant(field)
+    }
 }
