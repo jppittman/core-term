@@ -97,6 +97,9 @@ impl GridBuffer {
     ///
     /// This is the bridge between the terminal emulator's state and the
     /// Surface-based rendering pipeline.
+    ///
+    /// Note: For incremental updates, use `update_from_snapshot` instead
+    /// to only process dirty lines.
     pub fn from_snapshot(
         snapshot: &TerminalSnapshot,
         default_fg: Color,
@@ -106,19 +109,71 @@ impl GridBuffer {
         let mut grid = Self::new(cols, rows);
 
         for (row_idx, line) in snapshot.lines.iter().enumerate() {
-            // Process ALL lines - Surface model evaluates entire screen each frame
-            for (col_idx, glyph) in line.cells.iter().enumerate() {
-                if col_idx < cols && row_idx < rows {
-                    grid.set(
-                        col_idx,
-                        row_idx,
-                        Cell::from_glyph(glyph, default_fg, default_bg),
-                    );
-                }
+            if row_idx >= rows {
+                break;
             }
+            Self::copy_line_to_grid(&mut grid.cells, cols, row_idx, line, default_fg, default_bg);
         }
 
         grid
+    }
+
+    /// Updates an existing grid buffer from a terminal snapshot.
+    ///
+    /// Only processes lines marked as dirty, skipping unchanged lines entirely.
+    /// Returns the number of dirty lines that were updated.
+    ///
+    /// If dimensions changed, falls back to full reconstruction.
+    pub fn update_from_snapshot(
+        &mut self,
+        snapshot: &TerminalSnapshot,
+        default_fg: Color,
+        default_bg: Color,
+    ) -> usize {
+        let (cols, rows) = snapshot.dimensions;
+
+        // If dimensions changed, resize and do full update
+        if cols != self.cols || rows != self.rows {
+            *self = Self::from_snapshot(snapshot, default_fg, default_bg);
+            return rows; // All lines updated
+        }
+
+        let mut dirty_count = 0;
+
+        for (row_idx, line) in snapshot.lines.iter().enumerate() {
+            if row_idx >= rows {
+                break;
+            }
+
+            // Skip clean lines - this is the optimization!
+            if !line.is_dirty {
+                continue;
+            }
+
+            Self::copy_line_to_grid(&mut self.cells, cols, row_idx, line, default_fg, default_bg);
+            dirty_count += 1;
+        }
+
+        dirty_count
+    }
+
+    /// Internal helper to copy a single line into the grid buffer.
+    #[inline]
+    fn copy_line_to_grid(
+        cells: &mut [Cell],
+        cols: usize,
+        row_idx: usize,
+        line: &crate::term::snapshot::SnapshotLine,
+        default_fg: Color,
+        default_bg: Color,
+    ) {
+        let row_start = row_idx * cols;
+        for (col_idx, glyph) in line.cells.iter().enumerate() {
+            if col_idx >= cols {
+                break;
+            }
+            cells[row_start + col_idx] = Cell::from_glyph(glyph, default_fg, default_bg);
+        }
     }
 
     /// Gets the cell at (col, row).
@@ -209,5 +264,85 @@ mod tests {
         let cell = Cell::default();
         assert_eq!(cell.fg, Color::Named(NamedColor::White));
         assert_eq!(cell.bg, Color::Named(NamedColor::Black));
+    }
+
+    #[test]
+    fn test_update_from_snapshot_skips_clean_lines() {
+        use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
+        use crate::term::snapshot::{SnapshotLine, TerminalSnapshot};
+        use std::sync::Arc;
+
+        let default_fg = Color::Named(NamedColor::White);
+        let default_bg = Color::Named(NamedColor::Black);
+
+        // Create a simple 3x2 grid
+        let make_glyph = |c: char| {
+            Glyph::Single(ContentCell {
+                c,
+                attr: Attributes {
+                    fg: default_fg,
+                    bg: default_bg,
+                    flags: AttrFlags::empty(),
+                },
+            })
+        };
+
+        // Initial snapshot - all lines dirty
+        let initial_snapshot = TerminalSnapshot {
+            dimensions: (3, 2),
+            lines: vec![
+                SnapshotLine {
+                    is_dirty: true,
+                    cells: Arc::new(vec![make_glyph('A'), make_glyph('B'), make_glyph('C')]),
+                },
+                SnapshotLine {
+                    is_dirty: true,
+                    cells: Arc::new(vec![make_glyph('D'), make_glyph('E'), make_glyph('F')]),
+                },
+            ],
+            cursor_state: None,
+            selection: Default::default(),
+            cell_width_px: 8,
+            cell_height_px: 16,
+        };
+
+        let mut grid = GridBuffer::from_snapshot(&initial_snapshot, default_fg, default_bg);
+        assert_eq!(grid.get(0, 0).ch, 'A');
+        assert_eq!(grid.get(0, 1).ch, 'D');
+
+        // Second snapshot - only row 0 is dirty (changed to X, Y, Z)
+        let update_snapshot = TerminalSnapshot {
+            dimensions: (3, 2),
+            lines: vec![
+                SnapshotLine {
+                    is_dirty: true, // This line changed
+                    cells: Arc::new(vec![make_glyph('X'), make_glyph('Y'), make_glyph('Z')]),
+                },
+                SnapshotLine {
+                    is_dirty: false, // This line is clean - should be skipped!
+                    cells: Arc::new(vec![make_glyph('?'), make_glyph('?'), make_glyph('?')]),
+                },
+            ],
+            cursor_state: None,
+            selection: Default::default(),
+            cell_width_px: 8,
+            cell_height_px: 16,
+        };
+
+        let dirty_count = grid.update_from_snapshot(&update_snapshot, default_fg, default_bg);
+
+        // Should have only updated 1 line
+        assert_eq!(dirty_count, 1);
+
+        // Row 0 should be updated
+        assert_eq!(grid.get(0, 0).ch, 'X');
+        assert_eq!(grid.get(1, 0).ch, 'Y');
+        assert_eq!(grid.get(2, 0).ch, 'Z');
+
+        // Row 1 should still have the OLD values (D, E, F), not the new ones (?, ?, ?)
+        // because is_dirty was false
+        assert_eq!(grid.get(0, 1).ch, 'D');
+        assert_eq!(grid.get(1, 1).ch, 'E');
+        assert_eq!(grid.get(2, 1).ch, 'F');
     }
 }

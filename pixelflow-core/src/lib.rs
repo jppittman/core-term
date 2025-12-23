@@ -103,8 +103,14 @@ pub struct Discrete(NativeU32Simd);
 
 impl Field {
     /// Create sequential values [start, start+1, start+2, ...].
+    ///
+    /// Creates a SIMD vector with lane values:
+    /// `[start, start+1, start+2, ..., start+(PARALLELISM-1)]`
+    ///
+    /// This is the efficient way to create sequential x-coordinates
+    /// for rasterization loops.
     #[inline(always)]
-    pub(crate) fn sequential(start: f32) -> Self {
+    pub fn sequential(start: f32) -> Self {
         Self(NativeSimd::sequential(start))
     }
 
