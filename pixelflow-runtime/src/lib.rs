@@ -5,6 +5,7 @@ pub mod api;
 pub mod channel;
 pub mod config;
 pub mod display;
+pub mod engine_troupe;
 pub mod frame;
 pub mod input;
 pub mod platform;
@@ -33,6 +34,7 @@ pub use channel::{
     EngineChannels, EngineControl, EngineSender,
 };
 pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
+pub use engine_troupe::EngineTroupe;
 pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
 pub use platform::EnginePlatform;
 
