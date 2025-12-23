@@ -27,21 +27,24 @@ This is the correct COW behavior - you only pay for divergence when you actually
 
 ### 2. Full Grid Traversal Every Frame
 
-**Status:** ✅ **FIXED**
+**Status:** ✅ **FIXED** (architectural cleanup)
 
-**Location:** `core-term/src/surface/grid.rs`
+**Location:** `core-term/src/surface/terminal.rs`
 
-**Solution:** Added `GridBuffer::update_from_snapshot()` that skips clean lines:
+**Solution:** Deleted `GridBuffer` entirely - it was an unnecessary intermediate copy.
+The snapshot already has `Arc<Vec<Glyph>>` per line. The dirty-line optimization
+belongs at manifold graph construction time in `TerminalSurface::from_snapshot()`:
+
 ```rust
-// Only process dirty lines
-if !line.is_dirty {
-    continue;
+// When building the manifold graph, skip clean lines:
+for line in snapshot.lines.iter() {
+    if !line.is_dirty { continue; }
+    // ... build glyph manifolds for this row
 }
 ```
 
-**Impact:** For 80×24 terminal with 1 dirty line:
-- Before: 1,920 cell conversions per frame
-- After: 80 cell conversions (24x reduction)
+The rasterizer stays general-purpose - it just evaluates whatever manifold it's given.
+The smarts are in what you *don't* put in the graph.
 
 ---
 
@@ -216,7 +219,7 @@ pub fn get(&self, col: usize, row: usize) -> &Cell {
 
 ## Recommended Priority Order
 
-1. **Use dirty flags in GridBuffer::from_snapshot()** - Quick win, significant impact
+1. **Skip clean lines in TerminalSurface graph construction** - Done (GridBuffer deleted)
 2. **Batch Arc mutations for terminal writes** - Medium effort, high impact for I/O-heavy workloads
 3. **Thread pool for render_pool** - Medium effort, consistent frame times
 4. **Optimize UTF-8 decoder** - Low effort, matters for high-throughput scenarios
@@ -236,7 +239,7 @@ RUSTFLAGS="-C debuginfo=2" cargo build --release
 cargo flamegraph --bin core-term -- [your test case]
 
 # Key metrics to measure:
-# - Time in GridBuffer::from_snapshot()
+# - Time in TerminalSurface::from_snapshot()
 # - Count of Arc::make_mut() clones
 # - render_pool thread spawn overhead
 # - Per-frame latency distribution
