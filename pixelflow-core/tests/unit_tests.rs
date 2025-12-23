@@ -189,9 +189,17 @@ mod manifold_tests {
         let _ = result;
     }
 
-    // Note: Field as a manifold has a pre-existing issue where the internal
-    // store() requires LANES elements but the manifold impl uses a 1-element buffer.
-    // This functionality would need a library fix before being tested.
+    #[test]
+    fn test_field_as_constant_manifold() {
+        let constant = Field::from(42.0);
+        let x = Field::from(1.0);
+        let y = Field::from(2.0);
+        let z = Field::from(3.0);
+        let w = Field::from(4.0);
+
+        let result = constant.eval_raw(x, y, z, w);
+        let _ = result;
+    }
 
     #[test]
     fn test_scale_combinator() {
