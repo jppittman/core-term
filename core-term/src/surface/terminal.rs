@@ -8,8 +8,9 @@
 //! - Field instead of Batch<C>
 //! - Manifold<I> with Output associated type instead of Manifold<P, C>
 //! - New combinator patterns
+//! - Skip graph construction for clean lines (is_dirty == false)
 
-use crate::surface::grid::GridBuffer;
+use crate::term::snapshot::TerminalSnapshot;
 use std::sync::Arc;
 
 /// A terminal rendered as a functional surface.
@@ -20,13 +21,21 @@ pub struct TerminalSurface {
 }
 
 impl TerminalSurface {
-    /// Creates a new terminal surface from a grid.
-    pub fn with_grid(
-        _grid: &GridBuffer,
+    /// Creates a new terminal surface from a snapshot.
+    ///
+    /// When building the manifold graph, lines where `is_dirty == false`
+    /// should be skipped - their pixels haven't changed since last frame.
+    pub fn from_snapshot(
+        _snapshot: &TerminalSnapshot,
         _glyph_factory: Arc<dyn Fn(char) + Send + Sync>,
         _cell_width: u32,
         _cell_height: u32,
     ) -> Self {
+        // TODO: Build manifold graph here, skipping clean lines:
+        // for line in snapshot.lines.iter() {
+        //     if !line.is_dirty { continue; }
+        //     // ... build glyph manifolds for this row
+        // }
         Self { _placeholder: () }
     }
 
