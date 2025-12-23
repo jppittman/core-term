@@ -9,11 +9,11 @@
 //! The terminal grid is built as a binary search tree of Select combinators:
 //!
 //! ```text
-//! PackRGBA {
-//!   r: Select(x < mid, left_r, right_r),
-//!   g: Select(x < mid, left_g, right_g),
+//! ColorManifold::new(
+//!   Select { cond: Lt(X, mid), if_true: left_r, if_false: right_r },
+//!   Select { cond: Lt(X, mid), if_true: left_g, if_false: right_g },
 //!   ...
-//! }
+//! )
 //! ```
 //!
 //! Each color channel is a separate Select tree, enabling use of the
@@ -27,7 +27,7 @@ pub mod terminal;
 
 pub use grid::GridBuffer;
 pub use manifold::{
-    build_grid, Cell, CellA, CellB, CellChannel, CellFactory, CellG, CellR, ConstCoverage,
-    LocalCoords, SolidColor,
+    build_grid, Cell, CellA, CellB, CellChannel, CellFactory, CellG, CellR, Color, ConstCoverage,
+    LocalCoords,
 };
 pub use terminal::TerminalSurface;
