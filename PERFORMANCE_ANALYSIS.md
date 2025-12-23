@@ -12,69 +12,53 @@ The codebase is generally well-designed with deliberate performance consideratio
 
 ### 1. Arc Copy-on-Write Overhead Per Character Write
 
+**Status:** ✅ **NOT AN ISSUE** - Arc::make_mut is optimal
+
 **Location:** `core-term/src/term/screen.rs:236, 396, 437, 644`
 
-**Problem:** Every glyph modification triggers `Arc::make_mut()`, which clones the entire row if the Arc is shared (refcount > 1).
+**Analysis:** `Arc::make_mut()` only clones if `refcount > 1`. In practice:
+- If renderer has released the snapshot: refcount = 1, **no clone**
+- If renderer holds snapshot: clones **once per row**, not per character
+- Subsequent writes to same row are free until next snapshot
 
-```rust
-// screen.rs:644 - set_glyph()
-let row = Arc::make_mut(&mut grid_to_use[y]);
-row[x] = glyph;
-```
-
-**Impact:** During rapid terminal output (e.g., `cat large_file.txt`), each character write may cause a full row clone if a snapshot is held. With 80-column rows, this is O(80) allocations per character in the worst case.
-
-**Pattern:** This is effectively an **N+1-like problem** - writing N characters causes N row clones instead of 1 batch operation.
-
-**Recommendation:**
-- Consider batching mutations: collect writes within a single "frame" and apply them together
-- Use dirty tracking at character level to defer `make_mut` until render time
-- Alternative: switch to `Rc<RefCell<Vec<Glyph>>>` for single-threaded mutation with explicit snapshot copies
+This is the correct COW behavior - you only pay for divergence when you actually need it.
 
 ---
 
 ### 2. Full Grid Traversal Every Frame
 
-**Location:** `core-term/src/surface/grid.rs:100-121`
+**Status:** ✅ **FIXED**
 
-**Problem:** `GridBuffer::from_snapshot()` iterates ALL cells every frame, regardless of what changed:
+**Location:** `core-term/src/surface/grid.rs`
 
+**Solution:** Added `GridBuffer::update_from_snapshot()` that skips clean lines:
 ```rust
-// grid.rs:108-119
-for (row_idx, line) in snapshot.lines.iter().enumerate() {
-    for (col_idx, glyph) in line.cells.iter().enumerate() {
-        if col_idx < cols && row_idx < rows {
-            grid.set(col_idx, row_idx, Cell::from_glyph(glyph, default_fg, default_bg));
-        }
-    }
+// Only process dirty lines
+if !line.is_dirty {
+    continue;
 }
 ```
 
-**Impact:** For an 80×24 terminal, this is **1,920 cell conversions per frame** even if only 1 character changed. At 60 FPS, that's 115,200 cell conversions/second unnecessarily.
-
-**Pattern:** This is a classic **unnecessary re-render anti-pattern**.
-
-**Recommendation:**
-- The `SnapshotLine` already has `is_dirty: bool` - use it!
-- Only process lines where `is_dirty == true`
-- Consider incremental GridBuffer updates rather than full reconstruction
+**Impact:** For 80×24 terminal with 1 dirty line:
+- Before: 1,920 cell conversions per frame
+- After: 80 cell conversions (24x reduction)
 
 ---
 
 ### 3. SIMD Sequential Field Creation Suboptimal
 
-**Location:** `pixelflow-graphics/src/render/rasterizer/mod.rs:88`
+**Status:** ✅ **FIXED**
 
-**Problem:** The rasterizer creates sequential SIMD coordinates inefficiently:
+**Location:** `pixelflow-graphics/src/render/rasterizer/mod.rs:89`
 
+**Solution:** Use `Field::sequential(fx)` directly:
 ```rust
-// rasterizer/mod.rs:88 - marked with TODO: sequential
-let xs = Field::from(fx) + Field::from(0.0);
+// Before: Field::from(fx) + Field::from(0.0)
+// After:
+let xs = Field::sequential(fx);
 ```
 
-**Impact:** Extra SIMD addition operation per pixel batch (PARALLELISM pixels). While minor per-operation, this is in the hottest loop of the renderer.
-
-**Recommendation:** Use `Field::sequential(x)` directly if available, or construct the SIMD vector in one operation.
+Made `Field::sequential` public in pixelflow-core for this use case.
 
 ---
 
