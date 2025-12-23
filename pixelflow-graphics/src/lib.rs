@@ -11,11 +11,7 @@ pub mod transform;
 pub use transform::Scale;
 
 // Re-export fonts
-// TODO: These need to be fixed once combinators.rs is updated
-// pub use fonts::combinators::{glyphs, Bold, CurveScale, CurveSurfaceExt, Hint, Lazy, Slant};
-pub use fonts::font::{Font, FontError, FontMetrics};
-// TODO: Update glyph exports once glyph.rs is fixed
-// pub use fonts::glyph::{CurveSurface, Glyph, GlyphBounds};
+pub use fonts::{CurveSurface, Font, FontError, FontMetrics, Glyph, GlyphBounds};
 
 // Re-export render
 pub use render::color::{

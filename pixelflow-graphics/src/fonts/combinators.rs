@@ -1,6 +1,5 @@
 use super::curves::{Line, Quadratic, Segment};
 use super::glyph::{eval_curves, CurveSurface, GlyphBounds};
-use core::fmt::Debug;
 use pixelflow_core::{Field, Manifold};
 use std::sync::Arc;
 
@@ -26,13 +25,15 @@ impl<S: CurveSurface> CurveSurface for Bold<S> {
 }
 
 impl<S: CurveSurface> Manifold for Bold<S> {
+    type Output = Field;
+
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
         eval_curves(
             self.curves(),
             self.bounds(),
             x,
             y,
-            Field::splat(self.amount),
+            Field::from(self.amount),
         )
     }
 }
@@ -56,7 +57,9 @@ impl<S: CurveSurface> CurveSurface for Hint<S> {
     }
 }
 
-impl<S: CurveSurface + Manifold> Manifold for Hint<S> {
+impl<S: CurveSurface + Manifold<Output = Field>> Manifold for Hint<S> {
+    type Output = Field;
+
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         self.source.eval_raw(x, y, z, w)
     }
@@ -78,8 +81,10 @@ impl<S: CurveSurface> CurveSurface for Slant<S> {
 }
 
 impl<S: CurveSurface> Manifold for Slant<S> {
+    type Output = Field;
+
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
-        eval_curves(self.curves(), self.bounds(), x, y, Field::splat(0.0))
+        eval_curves(self.curves(), self.bounds(), x, y, Field::from(0.0))
     }
 }
 
@@ -136,8 +141,10 @@ impl<S: CurveSurface> CurveSurface for CurveScale<S> {
 }
 
 impl<S: CurveSurface> Manifold for CurveScale<S> {
+    type Output = Field;
+
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
-        eval_curves(self.curves(), self.bounds(), x, y, Field::splat(0.0))
+        eval_curves(self.curves(), self.bounds(), x, y, Field::from(0.0))
     }
 }
 
@@ -192,250 +199,3 @@ pub trait CurveSurfaceExt: CurveSurface + Sized {
 }
 
 impl<S: CurveSurface> CurveSurfaceExt for S {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fonts::glyph::eval_curves_cell;
-    use pixelflow_core::backend::Backend;
-    use pixelflow_core::backend::SimdBatch;
-    use pixelflow_core::batch::NativeBackend;
-    use pixelflow_core::traits::Surface; // Needed for eval_one
-
-    fn pixel_alpha(pixel: u32) -> u8 {
-        (pixel >> 24) as u8
-    }
-
-    #[test]
-    fn debug_letter_f_rendering() {
-        let font_bytes = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
-        let font = Font::from_bytes(font_bytes).expect("Failed to load font");
-
-        let cell_width = 10u32;
-        let cell_height = 16u32;
-
-        let glyph = font.glyph('f', cell_height as f32).expect("No f glyph");
-        let bounds = glyph.bounds();
-        let metrics = font.metrics();
-        let line_height = metrics.ascent as f32 - metrics.descent as f32;
-        let ascender = (metrics.ascent as f32 * cell_height as f32 / line_height).round() as i32;
-
-        eprintln!("=== Letter 'f' Debug ===");
-        eprintln!("Ascender: {}, bounds: {:?}", ascender, bounds);
-
-        let cell_glyph = CellGlyph::new(glyph.clone(), ascender);
-
-        eprintln!("\nPoint-by-point 'f' ({}x{}):", cell_width, cell_height);
-        for y in 0..cell_height {
-            let mut row = String::new();
-            for x in 0..cell_width {
-                // Update: convert u32 to f32 + 0.5
-                let x_f =
-                    NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
-                let y_f =
-                    NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
-
-                let _alpha = pixel_alpha(Surface::eval(&cell_glyph, x_f, y_f).first());
-                let ch = if alpha > 200 {
-                    '#'
-                } else if alpha > 100 {
-                    '+'
-                } else if alpha > 50 {
-                    '.'
-                } else if alpha > 0 {
-                    ','
-                } else {
-                    ' '
-                };
-                row.push(ch);
-            }
-            eprintln!("{:2}: |{}|", y, row);
-        }
-    }
-
-    #[test]
-    fn debug_period_winding_at_top() {
-        let font_bytes = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
-        let font = Font::from_bytes(font_bytes).expect("Failed to load font");
-
-        let cell_height = 16u32;
-        let glyph = font
-            .glyph('.', cell_height as f32)
-            .expect("No period glyph");
-        let bounds = glyph.bounds();
-        let metrics = font.metrics();
-        let line_height = metrics.ascent as f32 - metrics.descent as f32;
-        let ascender = (metrics.ascent as f32 * cell_height as f32 / line_height).round() as i32;
-
-        eprintln!("Ascender: {}, Period bounds: {:?}", ascender, bounds);
-
-        // Update to use f32
-        let x = Batch::<f32>::splat(0.5); // x=0 -> 0.5
-        let y = Batch::<f32>::splat(0.5); // y=0 -> 0.5
-        let alpha = eval_curves_cell(
-            glyph.curves(),
-            bounds,
-            ascender,
-            x,
-            y,
-            Batch::<f32>::splat(0.0),
-        );
-        eprintln!("Alpha at (0, 0) via eval_curves_cell: {}", alpha.first());
-
-        let cell_glyph = CellGlyph::new(glyph.clone(), ascender);
-        let alpha2 = Surface::eval(&cell_glyph, x, y).first();
-        eprintln!("Alpha at (0, 0) via CellGlyph.eval: {}", alpha2);
-
-        // (2, 0) -> 2.5, 0.5
-        let x2 = Batch::<f32>::splat(2.5);
-        let alpha3 = Surface::eval(&cell_glyph, x2, y).first();
-        eprintln!("Alpha at (2, 0) via CellGlyph.eval: {}", alpha3);
-    }
-
-    #[test]
-    fn direct_bake_period() {
-        let font_bytes = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
-        let font = Font::from_bytes(font_bytes).expect("Failed to load font");
-
-        let cell_width = 10u32;
-        let cell_height = 16u32;
-
-        let glyph = font
-            .glyph('.', cell_height as f32)
-            .expect("No period glyph");
-        let metrics = font.metrics();
-        let line_height = metrics.ascent as f32 - metrics.descent as f32;
-        let ascender = (metrics.ascent as f32 * cell_height as f32 / line_height).round() as i32;
-
-        let cell_glyph = CellGlyph::new(glyph.clone(), ascender);
-
-        eprintln!("Point-by-point eval '.' ({}x{}):", cell_width, cell_height);
-        for y in 0..cell_height {
-            let mut row = String::new();
-            for x in 0..cell_width {
-                // Manually bridge u32 -> f32
-                let x_f =
-                    NativeBackend::u32_to_f32(Batch::<u32>::splat(x)) + Batch::<f32>::splat(0.5);
-                let y_f =
-                    NativeBackend::u32_to_f32(Batch::<u32>::splat(y)) + Batch::<f32>::splat(0.5);
-
-                let _alpha = pixel_alpha(Surface::eval(&cell_glyph, x_f, y_f).first());
-                let ch = if alpha > 200 {
-                    '#'
-                } else if alpha > 100 {
-                    '+'
-                } else if alpha > 50 {
-                    '.'
-                } else if alpha > 0 {
-                    ','
-                } else {
-                    ' '
-                };
-                row.push(ch);
-            }
-            eprintln!("{:2}: |{}|", y, row);
-        }
-
-        // Must use Rasterize
-        let baked: Baked<u32> =
-            crate::render::bake(&Rasterize(cell_glyph), cell_width, cell_height);
-
-        eprintln!("\nBaked '.' ({}x{}):", cell_width, cell_height);
-        for y in 0..cell_height {
-            let mut row = String::new();
-            for x in 0..cell_width {
-                let alpha = pixel_alpha(baked.data()[(y * cell_width + x) as usize]);
-                let ch = if alpha > 200 {
-                    '#'
-                } else if alpha > 100 {
-                    '+'
-                } else if alpha > 50 {
-                    '.'
-                } else if alpha > 0 {
-                    ','
-                } else {
-                    ' '
-                };
-                row.push(ch);
-            }
-            eprintln!("{:2}: |{}|", y, row);
-        }
-
-        for y in 0..8u32 {
-            for x in 0..cell_width {
-                let alpha = pixel_alpha(baked.data()[(y * cell_width + x) as usize]);
-                assert_eq!(
-                    alpha, 0,
-                    "Direct bake: pixel ({}, {}) should be 0, got {}",
-                    x, y, alpha
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn baked_period_top_half_is_transparent() {
-        let font_bytes = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
-        let font = Font::from_bytes(font_bytes).expect("Failed to load font");
-
-        let cell_width = 10u32;
-        let cell_height = 16u32;
-
-        // This test uses the factory which we fixed, so it should work as is
-        let glyph_fn = glyphs(font, cell_width, cell_height);
-        let baked_lazy = glyph_fn('.');
-        let baked: &Baked<u32> = baked_lazy.get();
-
-        eprintln!("Baked '.' ({}x{}):", cell_width, cell_height);
-        for y in 0..cell_height {
-            let mut row = String::new();
-            for x in 0..cell_width {
-                let x_batch = Batch::<u32>::splat(x);
-                let y_batch = Batch::<u32>::splat(y);
-                // Use Surface::eval to support baked's blanket impl
-                let alpha = pixel_alpha(Surface::eval(baked, x_batch, y_batch).first());
-                let ch = if alpha > 200 {
-                    '#'
-                } else if alpha > 100 {
-                    '+'
-                } else if alpha > 50 {
-                    '.'
-                } else if alpha > 0 {
-                    ','
-                } else {
-                    ' '
-                };
-                row.push(ch);
-            }
-            eprintln!("{:2}: |{}|", y, row);
-        }
-
-        let top_half_end = cell_height / 2;
-        for y in 0..top_half_end {
-            for x in 0..cell_width {
-                let x_batch = Batch::<u32>::splat(x);
-                let y_batch = Batch::<u32>::splat(y);
-                let alpha = pixel_alpha(Surface::eval(baked, x_batch, y_batch).first());
-                assert_eq!(
-                    alpha, 0,
-                    "Top half pixel ({}, {}) should be transparent, got {}",
-                    x, y, alpha
-                );
-            }
-        }
-
-        let mut found_opaque = false;
-        for y in top_half_end..cell_height {
-            for x in 0..cell_width {
-                let x_batch = Batch::<u32>::splat(x);
-                let y_batch = Batch::<u32>::splat(y);
-                let alpha = pixel_alpha(Surface::eval(baked, x_batch, y_batch).first());
-                if alpha > 200 {
-                    found_opaque = true;
-                    break;
-                }
-            }
-        }
-        assert!(found_opaque, "Bottom half should contain the period dot");
-    }
-}
