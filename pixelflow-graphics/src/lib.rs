@@ -19,13 +19,11 @@ pub use fonts::font::{Font, FontError, FontMetrics};
 
 // Re-export render
 pub use render::color::{
-    AttrFlags, Bgra8, CocoaPixel, Color, NamedColor, Pixel, Rgba8, WebPixel, X11Pixel,
+    AttrFlags, Bgra8, CocoaPixel, Color, ColorManifold, ColorMap, Lift, NamedColor, Pixel, Rgba8,
+    WebPixel, X11Pixel,
 };
 pub use render::frame::Frame;
 pub use render::rasterizer::TensorShape;
-
-// Re-export color manifolds
-pub use render::rgba::{Color as ColorManifold, ColorMap, Lift};
 
 // Re-export core types for convenience
 pub use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, Map, W, X, Y, Z};
