@@ -3,6 +3,9 @@ pub mod waker;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 use crate::api::private::{EngineActorHandle, EngineActorScheduler, EngineControl, EngineData};
 
 use crate::api::private::WindowId;
@@ -16,35 +19,39 @@ use crate::input::MouseButton;
 use crate::render_pool::render_parallel;
 use actor_scheduler::{Actor, Message};
 use std::time::Instant;
-// Re-export common traits
 
-// #[cfg(target_os = "macos")]
-// mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
 
-// Re-export specific backend types just in case
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::*;
 
 use crate::display::driver::DriverActor;
 use anyhow::{Context, Result};
 use log::info;
+use pixelflow_core::Scale;
+use pixelflow_graphics::render::rasterizer::{Rasterize, TensorShape};
 use pixelflow_graphics::render::Frame;
-use pixelflow_graphics::Scale;
-// use std::time::Instant; // Removed as per instruction
 
 // Platform Logic
 use crate::display::platform::PlatformActor;
-#[cfg(target_os = "macos")]
-// use macos::MetalOps; // Already exported via macos::* if pub
+
 #[cfg(target_os = "macos")]
 pub type ActivePlatform = PlatformActor<MetalOps>;
 
-// Type Aliases
-pub type PlatformPixel = pixelflow_graphics::render::Rgba;
+#[cfg(target_os = "linux")]
+pub type ActivePlatform = PlatformActor<linux::LinuxOps>;
+
+// Type Aliases - use platform-appropriate pixel format
+#[cfg(target_os = "macos")]
+pub type PlatformPixel = pixelflow_graphics::render::color::Rgba8;
+
+#[cfg(target_os = "linux")]
+pub type PlatformPixel = pixelflow_graphics::render::color::Bgra8;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub type PlatformPixel = pixelflow_graphics::render::color::Rgba8;
+
 pub type PlatformDriver = DriverActor<ActivePlatform>;
 
 pub struct EnginePlatform {
@@ -57,6 +64,7 @@ pub struct EnginePlatform {
 }
 
 impl EnginePlatform {
+    #[cfg(target_os = "macos")]
     pub fn new(
         app: impl Application + Send + 'static,
         engine_handle: EngineActorHandle<PlatformPixel>,
@@ -66,30 +74,52 @@ impl EnginePlatform {
         info!("EnginePlatform::new() - Creating ActorScheduler-based platform with app");
 
         // 1. Create Platform Ops (Metal)
-        // We pass engine_handle so platform can send events back
-        // Initialize MetalOps directly
         let ops = MetalOps::new(engine_handle.clone()).context("Failed to create platform ops")?;
-
-        // Wrap in PlatformActor
         let platform = PlatformActor::new(ops);
 
-        // 2. Create Scheduler for the Driver
-
-        // Actually, `driver_scheduler` runs on main thread inside `DriverActor::run`.
-        // We need a Waker if other threads push to it and it sleeps.
-        // `MetalPlatform` uses `sys` blocking calls, so `ParkHint` handles sleep.
-        // But if we push to channel, we need to wake it up from `nextEventMatchingMask`.
-        // So we NEED `CocoaWaker`.
-
+        // 2. Create Scheduler for the Driver with CocoaWaker
         let waker = std::sync::Arc::new(waker::CocoaWaker::new());
-        // We can't set waker easily on created scheduler?
-        // `create_actor_scheduler` takes `Option<Arc<dyn Waker>>`.
-        // So:
         let (driver_handle, driver_scheduler) = actor_scheduler::create_actor::<
             DisplayData<PlatformPixel>,
             DisplayControl,
             DisplayMgmt,
         >(1024, Some(waker));
+
+        Self::new_with_platform(app, engine_handle, scheduler, config, platform, driver_handle, driver_scheduler)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn new(
+        app: impl Application + Send + 'static,
+        engine_handle: EngineActorHandle<PlatformPixel>,
+        scheduler: EngineActorScheduler<PlatformPixel>,
+        config: EngineConfig,
+    ) -> Result<Self> {
+        info!("EnginePlatform::new() - Creating ActorScheduler-based platform with app (Linux)");
+
+        // 1. Create Platform Ops (Linux/X11)
+        let ops = linux::LinuxOps::new(engine_handle.clone()).context("Failed to create platform ops")?;
+        let platform = PlatformActor::new(ops);
+
+        // 2. Create Scheduler for the Driver (no special waker needed for Linux yet)
+        let (driver_handle, driver_scheduler) = actor_scheduler::create_actor::<
+            DisplayData<PlatformPixel>,
+            DisplayControl,
+            DisplayMgmt,
+        >(1024, None);
+
+        Self::new_with_platform(app, engine_handle, scheduler, config, platform, driver_handle, driver_scheduler)
+    }
+
+    fn new_with_platform(
+        app: impl Application + Send + 'static,
+        engine_handle: EngineActorHandle<PlatformPixel>,
+        scheduler: EngineActorScheduler<PlatformPixel>,
+        config: EngineConfig,
+        platform: ActivePlatform,
+        driver_handle: actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
+        driver_scheduler: actor_scheduler::ActorScheduler<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
+    ) -> Result<Self> {
 
         // 3. Create DriverActor
         let driver = DriverActor::new(driver_scheduler, platform);
@@ -236,11 +266,11 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
 
                 // Use Rasterize combinator to adapt continuous surface to discrete grid
                 let scaled = Scale::uniform(surface, self.scale_factor);
-                let rasterized = pixelflow_graphics::render::rasterizer::Rasterize(scaled);
+                let rasterized = Rasterize(scaled);
 
                 let width = frame.width as usize;
                 let height = frame.height as usize;
-                let shape = pixelflow_graphics::TensorShape::new(width, height, width);
+                let shape = TensorShape::new(width, height);
                 let options = crate::render_pool::RenderOptions {
                     num_threads: self.render_threads,
                 };
@@ -269,12 +299,12 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                     .take()
                     .unwrap_or_else(|| Frame::new(self.physical_width, self.physical_height));
 
-                // Scale discrete surface using nearest neighbor (Scale<u32> does this)
+                // Scale discrete surface using nearest neighbor
                 let scaled = Scale::uniform(surface, self.scale_factor);
 
                 let width = frame.width as usize;
                 let height = frame.height as usize;
-                let shape = pixelflow_graphics::TensorShape::new(width, height, width);
+                let shape = TensorShape::new(width, height);
                 let options = crate::render_pool::RenderOptions {
                     num_threads: self.render_threads,
                 };
@@ -304,6 +334,9 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                         rendered_at: Instant::now(),
                     });
                 }
+            }
+            EngineData::FromApp(AppData::_Phantom(_)) => {
+                unreachable!("_Phantom variant should never be constructed")
             }
         }
     }

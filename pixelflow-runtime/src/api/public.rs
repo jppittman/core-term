@@ -63,10 +63,28 @@ pub enum EngineEventData {
 }
 
 /// Commands sent from the Application to the Engine.
+///
+/// Note: The pixel type `P` is kept for compatibility but the actual rendering
+/// is done using Manifolds that produce ColorVector values.
 pub enum AppData<P: pixelflow_graphics::Pixel> {
-    RenderSurface(std::sync::Arc<dyn pixelflow_core::Surface<P, f32> + Send + Sync>),
-    RenderSurfaceU32(std::sync::Arc<dyn pixelflow_core::Surface<P, u32> + Send + Sync>),
+    /// A continuous surface (manifold) for rendering.
+    /// The manifold should produce ColorVector values.
+    RenderSurface(
+        std::sync::Arc<
+            dyn pixelflow_core::Manifold<Output = pixelflow_graphics::ColorVector> + Send + Sync,
+        >,
+    ),
+    /// A discrete surface rendered at u32 coordinates.
+    /// Uses the same manifold interface but intended for pixel-aligned rendering.
+    RenderSurfaceU32(
+        std::sync::Arc<
+            dyn pixelflow_core::Manifold<Output = pixelflow_graphics::ColorVector> + Send + Sync,
+        >,
+    ),
+    /// Frame was skipped (no rendering needed).
     Skipped,
+    #[doc(hidden)]
+    _Phantom(std::marker::PhantomData<P>),
 }
 
 impl<P: pixelflow_graphics::Pixel> std::fmt::Debug for AppData<P> {
@@ -75,6 +93,7 @@ impl<P: pixelflow_graphics::Pixel> std::fmt::Debug for AppData<P> {
             Self::RenderSurface(_) => f.debug_tuple("RenderSurface").finish(),
             Self::RenderSurfaceU32(_) => f.debug_tuple("RenderSurfaceU32").finish(),
             Self::Skipped => f.debug_tuple("Skipped").finish(),
+            Self::_Phantom(_) => f.debug_tuple("_Phantom").finish(),
         }
     }
 }
