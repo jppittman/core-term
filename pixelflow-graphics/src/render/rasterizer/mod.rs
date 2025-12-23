@@ -4,7 +4,7 @@
 //! Color manifolds output `Discrete` (packed u32 pixels) directly.
 
 use crate::render::color::Pixel;
-use pixelflow_core::{Discrete, Field, Manifold, PARALLELISM};
+use pixelflow_core::{materialize_discrete, Discrete, Field, Manifold, PARALLELISM};
 
 /// A wrapper that adapts a continuous manifold for rasterization.
 #[derive(Clone, Copy, Debug)]
@@ -84,14 +84,8 @@ where
             let fx = x as f32 + 0.5;
             let fy = y as f32 + 0.5;
 
-            // Evaluate color manifold - returns Discrete (packed u32 pixels)
-            // sequential creates [fx, fx+1, fx+2, ...] in one instruction
-            let xs = Field::sequential(fx);
-            let discrete =
-                manifold.eval_raw(xs, Field::from(fy), Field::from(0.0), Field::from(0.0));
-
-            // Store packed pixels
-            discrete.store(&mut packed);
+            // Use materialize_discrete to evaluate and store
+            materialize_discrete(manifold, fx, fy, &mut packed);
 
             // Copy to target
             for i in 0..PARALLELISM {
@@ -106,14 +100,8 @@ where
             let fx = x as f32 + 0.5;
             let fy = y as f32 + 0.5;
 
-            let discrete = manifold.eval_raw(
-                Field::from(fx),
-                Field::from(fy),
-                Field::from(0.0),
-                Field::from(0.0),
-            );
-
-            discrete.store(&mut packed);
+            // For single pixels, use materialize_discrete with a 1-element buffer
+            materialize_discrete(manifold, fx, fy, &mut packed);
             target[row_offset + x] = P::from_u32(packed[0]);
 
             x += 1;
