@@ -269,10 +269,9 @@ impl Field {
 impl Discrete {
     /// Store packed pixels to a slice.
     ///
-    /// Stores the packed RGBA u32 pixel values to the output buffer.
-    /// This is the final output stage for color manifolds after packing.
+    /// Internal use only. Use `materialize_discrete` for public API.
     #[inline(always)]
-    pub fn store(&self, out: &mut [u32]) {
+    pub(crate) fn store(&self, out: &mut [u32]) {
         self.0.store(out)
     }
 
@@ -508,7 +507,30 @@ impl core::ops::Not for Field {
 // Public API
 // ============================================================================
 
-/// Materialize a color manifold into an interleaved buffer.
+/// Materialize a discrete color manifold into packed u32 pixels.
+///
+/// Evaluates a color manifold at sequential x coordinates starting from (x, y)
+/// and stores the packed RGBA u32 pixels directly to the output buffer.
+///
+/// This is the primary way to extract pixel data from a `Manifold<Output = Discrete>`.
+///
+/// # Example
+/// ```ignore
+/// let color = Color::Named(NamedColor::Red);
+/// let mut pixels = [0u32; PARALLELISM];
+/// materialize_discrete(&color, 0.0, 0.0, &mut pixels);
+/// ```
+#[inline(always)]
+pub fn materialize_discrete<M>(m: &M, x: f32, y: f32, out: &mut [u32])
+where
+    M: Manifold<Output = Discrete> + ?Sized,
+{
+    let xs = Field::sequential(x);
+    let discrete = m.eval_raw(xs, Field::from(y), Field::from(0.0), Field::from(0.0));
+    discrete.store(out);
+}
+
+/// Materialize a vector manifold into an interleaved f32 buffer.
 ///
 /// Evaluates at sequential x coordinates starting from (x, y), then transposes
 /// from SoA (structure of arrays) to AoS (array of structures) for storage.
