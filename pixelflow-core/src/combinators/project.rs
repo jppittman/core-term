@@ -33,7 +33,7 @@ impl<M, D> Project<M, D> {
 
 impl<M, D> Manifold for Project<M, D>
 where
-    M: Projectable<D>,
+    M: Projectable<D> + Send + Sync,
     D: Dimension + Send + Sync + 'static,
 {
     type Output = Field;
