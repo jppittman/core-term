@@ -85,7 +85,8 @@ where
             let fy = y as f32 + 0.5;
 
             // Evaluate color manifold - returns Discrete (packed u32 pixels)
-            let xs = Field::from(fx) + Field::from(0.0); // TODO: sequential
+            // sequential creates [fx, fx+1, fx+2, ...] in one instruction
+            let xs = Field::sequential(fx);
             let discrete =
                 manifold.eval_raw(xs, Field::from(fy), Field::from(0.0), Field::from(0.0));
 
