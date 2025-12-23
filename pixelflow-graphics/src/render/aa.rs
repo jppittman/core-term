@@ -15,15 +15,15 @@ const MIN_GRADIENT: f32 = 0.001;
 /// **No magic numbers** - the derivative determines the exact AA width.
 pub fn aa_coverage<M>(manifold: M) -> BoxedManifold
 where
-    M: Manifold<Jet2, Output = Jet2> + Manifold<Field, Output = Field> + Copy + 'static,
+    M: Manifold<Jet2, Output = Jet2> + Manifold<Field, Output = Field> + Clone + 'static,
 {
     AACoverage { manifold }.boxed()
 }
 
 /// Antialiased coverage manifold using automatic gradients.
-#[derive(Copy, Clone)]
-struct AACoverage<M> {
-    manifold: M,
+#[derive(Clone, Debug)]
+pub struct AACoverage<M> {
+    pub manifold: M,
 }
 
 impl<M> Manifold for AACoverage<M>

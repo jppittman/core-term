@@ -50,21 +50,6 @@ impl Jet2 {
             dy: Field::from(0.0),
         }
     }
-
-    /// Extract scalar values for testing (value, dx, dy).
-    ///
-    /// **Warning**: This method is only intended for tests. Production code
-    /// should use `materialize` to respect the deferred compute graph philosophy.
-    #[doc(hidden)]
-    pub fn extract_scalar(&self) -> (f32, f32, f32) {
-        let mut val_buf = [0.0f32];
-        let mut dx_buf = [0.0f32];
-        let mut dy_buf = [0.0f32];
-        self.val.store(&mut val_buf);
-        self.dx.store(&mut dx_buf);
-        self.dy.store(&mut dy_buf);
-        (val_buf[0], dx_buf[0], dy_buf[0])
-    }
 }
 
 // ============================================================================
@@ -143,14 +128,13 @@ impl Numeric for Jet2 {
 
     #[inline(always)]
     fn abs(self) -> Self {
-        // |f|' = f' if f >= 0, -f' if f < 0
-        // Using select avoids NaN from sign = f / |f| at zero
-        let mask = self.val.ge(Field::from(0.0));
-        let zero = Field::from(0.0);
+        // |f|' = f' * sign(f)
+        // Note: derivative undefined at f=0, we use sign
+        let sign = self.val / self.val.abs(); // NaN at zero, but close enough
         Self {
             val: self.val.abs(),
-            dx: Field::select(mask, self.dx, zero - self.dx),
-            dy: Field::select(mask, self.dy, zero - self.dy),
+            dx: self.dx * sign,
+            dy: self.dy * sign,
         }
     }
 

@@ -47,7 +47,11 @@ pub use combinators::*;
 pub use ext::*;
 pub use jet::Jet2;
 pub use manifold::*;
-pub use ops::*;
+pub use numeric::Numeric;
+pub use ops::binary::*;
+pub use ops::compare::*;
+pub use ops::logic::*;
+pub use ops::unary::*;
 pub use variables::*;
 
 // ============================================================================

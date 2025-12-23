@@ -8,7 +8,7 @@ use thiserror::Error;
 pub use ttf_parser::GlyphId;
 use ttf_parser::{Face, FaceParsingError, OutlineBuilder};
 
-use super::loopblinn::{Glyph, GlyphBounds, LineSegment, LoopBlinnQuad, Point, Segment};
+use super::loopblinn::{Glyph, LineSegment, LoopBlinnQuad, Point};
 
 /// Errors that can occur when parsing a font.
 #[derive(Error, Debug)]
@@ -83,10 +83,11 @@ impl<'a> Font<'a> {
     /// * `None` if the character is not found.
     pub fn glyph(&self, ch: char, size: f32) -> Option<Glyph> {
         let glyph_id = self.face.glyph_index(ch)?;
-        let scale = size / self.face.units_per_em() as f32;
 
-        // Get metrics
-        let advance = self.face.glyph_hor_advance(glyph_id).unwrap_or(0) as f32 * scale;
+        let units_per_em = self.face.units_per_em() as f32;
+        let scale = size / units_per_em;
+
+        let pixel_advance = self.face.glyph_hor_advance(glyph_id).unwrap_or(0) as f32 * scale;
         let bbox = self
             .face
             .glyph_bounding_box(glyph_id)
@@ -97,26 +98,84 @@ impl<'a> Font<'a> {
                 y_max: 0,
             });
 
-        // Compute offset to normalize glyph to (0,0) based on bounding box
-        let offset_x = -bbox.x_min as f32 * scale;
-        let offset_y = bbox.y_max as f32 * scale;
-
-        let mut builder = GlyphBuilder::new(scale, [offset_x, offset_y]);
-
+        // Step 1: Translate bbox to origin (in Builder, to get [0, W] x [0, H])
+        // Note: transform is y * -scale + offset.
+        // We want y_raw range [y_min, y_max] to map to [0, H].
+        // y_max -> 0. y_min -> H.
+        // We want (x_min, y_min) to map to (0,0) in the "raw" manifold.
+        // So we translate by (-x_min, -y_min).
+        let offset_x = -bbox.x_min as f32;
+        let offset_y = bbox.y_max as f32; // Invert logic: map y_max to 0
+        let mut builder = GlyphBuilder::new(1.0, [offset_x, offset_y]);
         let _ = self.face.outline_glyph(glyph_id, &mut builder);
 
-        // Compute integer bounds for the glyph surface
-        let bounds = GlyphBounds {
-            width: ((bbox.x_max - bbox.x_min) as f32 * scale).ceil() as u32,
-            height: ((bbox.y_max - bbox.y_min) as f32 * scale).ceil() as u32,
-            bearing_x: (bbox.x_min as f32 * scale).round() as i32,
-            bearing_y: (bbox.y_max as f32 * scale).round() as i32,
+        use super::loopblinn::AlgebraicGlyph;
+        use crate::render::aa::AACoverage;
+        use crate::shapes::Square;
+        use crate::transform::{Scale, Translate};
+
+        let raw = AlgebraicGlyph {
+            line_segments: Arc::from(builder.line_segments),
+            quad_segments: Arc::from(builder.quad_segments),
+        };
+        // DEBUG: Check if we have segments
+        // println!("Glyph Segments: Lines={}, Quads={}", raw.line_segments.len(), raw.quad_segments.len());
+        // Force unbuffer stdout to ensure we see it
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        println!(
+            "Glyph Segments: Lines={}, Quads={}",
+            raw.line_segments.len(),
+            raw.quad_segments.len()
+        );
+
+        // Step 2: Normalize to [0,1] box.
+        // We use max_dim to maintain aspect ratio.
+        let width = (bbox.x_max - bbox.x_min) as f32;
+        let height = (bbox.y_max - bbox.y_min) as f32;
+        let max_dim = width.max(height);
+
+        // DEBUG: Print metrics
+        println!(
+            "Glyph BBox: {:?}, Width: {}, Height: {}, MaxDim: {}",
+            bbox, width, height, max_dim
+        );
+        println!("Offsets: x={}, y={}", offset_x, offset_y);
+
+        // Input x is [0, W]. x / max_dim is [0, W/max_dim] <= 1.0. Correct.
+        let normalized = Scale {
+            manifold: raw,
+            factor: 1.0 / max_dim,
+        };
+
+        // Step 3: AABB clip (Unit Square)
+        let boxed = Square {
+            fg: normalized,
+            bg: 0.0,
+        };
+
+        // Step 4: Scale to pixel size
+        // Maps 1.0 (normalized) to `size`.
+        // Effective scale: size / max_dim.
+        let sized = Scale {
+            manifold: boxed,
+            factor: size,
+        };
+
+        // Step 5: Translate BACK to original EM position (scaled by size)
+        // bbox.x_min * (size / max_dim).
+        let ratio = size / max_dim;
+        let back_x = 0.0; // bbox.x_min as f32 * ratio;
+        let back_y = 0.0; // bbox.y_min as f32 * ratio;
+
+        let restored = Translate {
+            manifold: sized,
+            offset: [back_x, back_y],
         };
 
         Some(Glyph {
-            segments: Arc::from(builder.segments),
-            bounds,
-            advance,
+            advance: pixel_advance,
+            manifold: restored,
         })
     }
 
@@ -175,7 +234,8 @@ impl<'a> Font<'a> {
 // ============================================================================
 
 struct GlyphBuilder {
-    segments: Vec<Segment>,
+    line_segments: Vec<LineSegment>,
+    quad_segments: Vec<LoopBlinnQuad>,
     scale: f32,
     offset: Point,
     current: Point,
@@ -185,7 +245,8 @@ struct GlyphBuilder {
 impl GlyphBuilder {
     fn new(scale: f32, offset: Point) -> Self {
         Self {
-            segments: Vec::with_capacity(32),
+            line_segments: Vec::with_capacity(32),
+            quad_segments: Vec::with_capacity(32),
             scale,
             offset,
             current: [0.0, 0.0],
@@ -201,7 +262,7 @@ impl GlyphBuilder {
         const MIN_LEN_SQ: f32 = 0.25; // 0.5 px
 
         if depth > 8 || d03 < MIN_LEN_SQ {
-            self.segments.push(Segment::Line(LineSegment::new(p0, p3)));
+            self.line_segments.push(LineSegment::new(p0, p3));
             return;
         }
 
@@ -232,8 +293,7 @@ impl OutlineBuilder for GlyphBuilder {
 
     fn line_to(&mut self, x: f32, y: f32) {
         let p1 = self.transform(x, y);
-        self.segments
-            .push(Segment::Line(LineSegment::new(self.current, p1)));
+        self.line_segments.push(LineSegment::new(self.current, p1));
         self.current = p1;
     }
 
@@ -242,10 +302,9 @@ impl OutlineBuilder for GlyphBuilder {
         let p2 = self.transform(x, y);
 
         if let Some(q) = LoopBlinnQuad::new(self.current, p1, p2) {
-            self.segments.push(Segment::Quad(q));
+            self.quad_segments.push(q);
         } else {
-            self.segments
-                .push(Segment::Line(LineSegment::new(self.current, p2)));
+            self.line_segments.push(LineSegment::new(self.current, p2));
         }
         self.current = p2;
     }
@@ -263,8 +322,8 @@ impl OutlineBuilder for GlyphBuilder {
         if (self.current[0] - self.start[0]).abs() > 1e-4
             || (self.current[1] - self.start[1]).abs() > 1e-4
         {
-            self.segments
-                .push(Segment::Line(LineSegment::new(self.current, self.start)));
+            self.line_segments
+                .push(LineSegment::new(self.current, self.start));
             self.current = self.start;
         }
     }

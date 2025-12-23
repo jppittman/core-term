@@ -4,7 +4,6 @@
 
 use super::font::Font;
 use super::loopblinn::Glyph;
-use pixelflow_core::{Field, Manifold};
 
 /// A manifold representing a line of text.
 #[derive(Clone, Debug)]
