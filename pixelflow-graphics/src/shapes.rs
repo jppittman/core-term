@@ -38,13 +38,37 @@ pub fn circle<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
 /// Unit square from [0,0] to [1,1].
 ///
 /// Returns fg where 0 ≤ x ≤ 1 and 0 ≤ y ≤ 1, bg elsewhere.
-pub fn square<F: Manifold<Output = Field>, B: Manifold<Output = Field> + Clone>(
-    fg: F,
-    bg: B,
-) -> impl Manifold<Output = Field> {
-    // Use bitwise AND to combine conditions
-    let mask = X.ge(0.0f32) & X.le(1.0f32) & Y.ge(0.0f32) & Y.le(1.0f32);
-    mask.select(fg, bg)
+#[derive(Clone, Debug)]
+pub struct Square<F, B> {
+    pub fg: F,
+    pub bg: B,
+}
+
+impl<F, B> Manifold for Square<F, B>
+where
+    F: Manifold<Output = Field> + Clone,
+    B: Manifold<Output = Field> + Clone,
+{
+    type Output = Field;
+
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        // DEBUG: Check coordinates
+        // use std::io::Write;
+        // let _ = std::io::stdout().flush();
+        // println!("Square check");
+        let mask = X.ge(0.0) & X.le(1.0) & Y.ge(0.0) & Y.le(1.0);
+        mask.select(self.fg.clone(), self.bg.clone())
+            .eval_raw(x, y, z, w)
+    }
+}
+
+/// Helper to create a Square manifold.
+pub fn square<F, B>(fg: F, bg: B) -> Square<F, B>
+where
+    F: Manifold<Output = Field>,
+    B: Manifold<Output = Field>,
+{
+    Square { fg, bg }
 }
 
 /// Half-plane: x ≥ 0

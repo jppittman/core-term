@@ -48,10 +48,10 @@ fn render_manifold<M: Manifold<Output = Field>>(
 #[test]
 fn render_letter_a() {
     let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
+    // Glyph is now inherently antialiased and normalized.
     let glyph = font.glyph('A', 64.0).expect("Glyph 'A' not found");
 
-    println!("Glyph bounds: {:?}", glyph.bounds);
-    println!("Glyph segments: {}", glyph.segments.len());
+    println!("Glyph advance: {}", glyph.advance);
 
     let width = 64;
     let height = 64;
@@ -62,4 +62,15 @@ fn render_letter_a() {
 
     let non_zero = buffer.iter().filter(|&&v| v > 0).count();
     assert!(non_zero > 0, "Glyph should have some coverage");
+
+    println!("\nGlyph 'A':");
+    let density = " .:-=+*#%@";
+    for y in 0..height {
+        for x in 0..width {
+            let val = buffer[y * width + x];
+            let idx = (val as usize * (density.len() - 1)) / 255;
+            print!("{}", density.chars().nth(idx).unwrap());
+        }
+        println!();
+    }
 }

@@ -6,6 +6,9 @@ pub mod fonts;
 pub mod image;
 pub mod render;
 pub mod shapes;
+pub mod transform;
+
+pub use transform::Scale;
 
 // Re-export fonts
 // TODO: These need to be fixed once combinators.rs is updated

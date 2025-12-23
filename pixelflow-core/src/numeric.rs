@@ -11,7 +11,7 @@
 /// - `Jet2`: AD-enhanced values tracking derivatives
 ///
 /// This trait is intentionally private to maintain API flexibility.
-pub(crate) trait Numeric:
+pub trait Numeric:
     Copy
     + Send
     + Sync
