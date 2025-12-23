@@ -131,7 +131,7 @@ mod tests {
     impl Manifold for TestSurface {
         type Output = Discrete;
         fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
-            Discrete::new(
+            Discrete::pack(
                 Field::from(self.color),
                 Field::from(self.color),
                 Field::from(self.color),

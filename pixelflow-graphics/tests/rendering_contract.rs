@@ -2,7 +2,6 @@
 //!
 //! TODO: These tests need updating for the new Color manifold system.
 
-use pixelflow_core::Manifold;
 use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
 

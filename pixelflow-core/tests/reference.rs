@@ -28,6 +28,7 @@ pub fn ref_unpack_4bit(packed: &[u8], width: usize, height: usize) -> Vec<u8> {
 }
 
 /// Gather a single pixel from 4-bit packed data (scalar reference).
+#[allow(dead_code)]
 fn read_4bpp_pixel(packed: &[u8], x: usize, y: usize, stride: usize) -> u8 {
     ref_gather_4bit_single(packed, x, y, stride)
 }
