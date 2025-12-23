@@ -4,7 +4,7 @@ pub mod waker;
 pub mod macos;
 
 #[cfg(target_os = "linux")]
-mod linux;
+pub mod linux;
 
 use crate::api::private::{EngineActorHandle, EngineActorScheduler, EngineControl, EngineData};
 
@@ -195,7 +195,7 @@ impl EnginePlatform {
 }
 
 // Engine handler - processes events and coordinates app/driver communication
-struct EngineHandler<A: Application> {
+pub struct EngineHandler<A: Application> {
     app: A,
     engine_handle: EngineActorHandle<PlatformPixel>,
     // driver: PlatformDriver, // EngineHandler does not need the DriverActor, only the handle
@@ -214,6 +214,34 @@ struct EngineHandler<A: Application> {
     >,
     render_threads: usize,
     frame_count: u64,
+}
+
+impl<A: Application> EngineHandler<A> {
+    /// Create a new EngineHandler with the given handles and configuration.
+    pub fn new(
+        app: A,
+        engine_handle: EngineActorHandle<PlatformPixel>,
+        driver_handle: actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
+        vsync_handle: Option<actor_scheduler::ActorHandle<
+            crate::vsync_actor::RenderedResponse,
+            crate::vsync_actor::VsyncCommand,
+            crate::vsync_actor::VsyncManagement,
+        >>,
+        render_threads: usize,
+    ) -> Self {
+        Self {
+            app,
+            engine_handle,
+            driver_handle,
+            framebuffer: None,
+            physical_width: 0,
+            physical_height: 0,
+            scale_factor: 1.0,
+            vsync_actor: vsync_handle,
+            render_threads,
+            frame_count: 0,
+        }
+    }
 }
 
 impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
