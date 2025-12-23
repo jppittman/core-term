@@ -3,8 +3,6 @@
 //! This module provides the `FramePacket<T>` type for transferring surfaces
 //! between the logic thread and render thread without copying pixel data.
 
-use pixelflow_core::Manifold;
-use pixelflow_graphics::render::color::ColorVector;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 
@@ -19,10 +17,7 @@ use std::sync::Arc;
 ///
 /// # Type Parameters
 /// * `T` - The surface type (e.g., `TerminalSurface`)
-pub struct FramePacket<T>
-where
-    T: Surface<u32> + Send,
-{
+pub struct FramePacket<T: Send> {
     /// The composed surface to render.
     pub surface: T,
 
@@ -30,10 +25,7 @@ where
     pub recycle_tx: Arc<SyncSender<FramePacket<T>>>,
 }
 
-impl<T> std::fmt::Debug for FramePacket<T>
-where
-    T: Surface<u32> + Send,
-{
+impl<T: Send> std::fmt::Debug for FramePacket<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FramePacket")
             .field("surface", &"<surface>")
@@ -42,10 +34,7 @@ where
     }
 }
 
-impl<T> FramePacket<T>
-where
-    T: Surface<u32> + Send,
-{
+impl<T: Send> FramePacket<T> {
     /// Creates a new frame packet with the given surface and recycle channel.
     pub fn new(surface: T, recycle_tx: Arc<SyncSender<FramePacket<T>>>) -> Self {
         Self {
@@ -67,17 +56,11 @@ where
 /// Handle for submitting frames to the engine from the logic thread.
 ///
 /// This is the "producer" side of the channel.
-pub struct EngineHandle<T>
-where
-    T: Surface<u32> + Send,
-{
+pub struct EngineHandle<T: Send> {
     submit_tx: SyncSender<FramePacket<T>>,
 }
 
-impl<T> EngineHandle<T>
-where
-    T: Surface<u32> + Send,
-{
+impl<T: Send> EngineHandle<T> {
     /// Creates a new engine handle with the given submit channel.
     pub fn new(submit_tx: SyncSender<FramePacket<T>>) -> Self {
         Self { submit_tx }
@@ -101,10 +84,7 @@ where
     }
 }
 
-impl<T> Clone for EngineHandle<T>
-where
-    T: Surface<u32> + Send,
-{
+impl<T: Send> Clone for EngineHandle<T> {
     fn clone(&self) -> Self {
         Self {
             submit_tx: self.submit_tx.clone(),
@@ -119,10 +99,7 @@ where
 /// - `receiver` is used by the engine to receive frames
 ///
 /// The channel has a buffer of 1 slot for ping-pong operation.
-pub fn create_frame_channel<T>() -> (EngineHandle<T>, Receiver<FramePacket<T>>)
-where
-    T: Surface<u32> + Send,
-{
+pub fn create_frame_channel<T: Send>() -> (EngineHandle<T>, Receiver<FramePacket<T>>) {
     let (tx, rx) = sync_channel(1);
     (EngineHandle::new(tx), rx)
 }
@@ -132,10 +109,7 @@ where
 /// Returns (sender, receiver) where:
 /// - `sender` is Arc-wrapped and cloned into each FramePacket
 /// - `receiver` is held by the logic thread to get packets back
-pub fn create_recycle_channel<T>() -> (Arc<SyncSender<FramePacket<T>>>, Receiver<FramePacket<T>>)
-where
-    T: Surface<u32> + Send,
-{
+pub fn create_recycle_channel<T: Send>() -> (Arc<SyncSender<FramePacket<T>>>, Receiver<FramePacket<T>>) {
     let (tx, rx) = sync_channel(2); // 2 slots for double-buffering
     (Arc::new(tx), rx)
 }
@@ -144,6 +118,8 @@ where
 mod tests {
     use super::*;
     use pixelflow_core::Field;
+    use pixelflow_core::Manifold;
+    use pixelflow_graphics::render::color::ColorVector;
 
     // A minimal test surface
     #[derive(Clone, Copy)]

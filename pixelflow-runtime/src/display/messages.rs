@@ -1,4 +1,4 @@
-use crate::api::private::WindowId;
+pub use crate::api::private::WindowId;
 use crate::api::public::{CursorIcon, WindowDescriptor};
 use crate::input::{KeySymbol, Modifiers};
 use pixelflow_graphics::render::Frame;

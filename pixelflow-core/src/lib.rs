@@ -18,6 +18,12 @@ extern crate alloc;
 /// SIMD backend abstractions.
 pub mod backend;
 
+/// Numeric trait for computational substrate (private).
+mod numeric;
+
+/// Jet types for automatic differentiation.
+pub mod jet;
+
 /// The core Manifold trait.
 pub mod manifold;
 
@@ -39,8 +45,13 @@ pub mod ext;
 
 pub use combinators::*;
 pub use ext::*;
+pub use jet::Jet2;
 pub use manifold::*;
-pub use ops::*;
+pub use numeric::Numeric;
+pub use ops::binary::*;
+pub use ops::compare::*;
+pub use ops::logic::*;
+pub use ops::unary::*;
 pub use variables::*;
 
 // ============================================================================
@@ -153,6 +164,77 @@ impl Field {
 }
 
 // ============================================================================
+// Numeric Implementation for Field
+// ============================================================================
+
+impl numeric::Numeric for Field {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        Self::sqrt(self)
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        Self::abs(self)
+    }
+
+    #[inline(always)]
+    fn min(self, rhs: Self) -> Self {
+        Self::min(self, rhs)
+    }
+
+    #[inline(always)]
+    fn max(self, rhs: Self) -> Self {
+        Self::max(self, rhs)
+    }
+
+    #[inline(always)]
+    fn lt(self, rhs: Self) -> Self {
+        Self::lt(self, rhs)
+    }
+
+    #[inline(always)]
+    fn le(self, rhs: Self) -> Self {
+        Self::le(self, rhs)
+    }
+
+    #[inline(always)]
+    fn gt(self, rhs: Self) -> Self {
+        Self::gt(self, rhs)
+    }
+
+    #[inline(always)]
+    fn ge(self, rhs: Self) -> Self {
+        Self::ge(self, rhs)
+    }
+
+    #[inline(always)]
+    fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
+        Self::select(mask, if_true, if_false)
+    }
+
+    #[inline(always)]
+    fn any(&self) -> bool {
+        Self::any(self)
+    }
+
+    #[inline(always)]
+    fn all(&self) -> bool {
+        Self::all(self)
+    }
+
+    #[inline(always)]
+    fn from_f32(val: f32) -> Self {
+        Self::from(val)
+    }
+
+    #[inline(always)]
+    fn from_i32(val: i32) -> Self {
+        Self::from(val)
+    }
+}
+
+// ============================================================================
 // From Implementations (the ONLY way to create Field from scalars)
 // ============================================================================
 
@@ -256,7 +338,7 @@ where
 #[inline(always)]
 pub fn materialize_vector<M, V>(m: &M, x: f32, y: f32, out: &mut [f32])
 where
-    M: Manifold<Output = V>,
+    M: Manifold<Output = V> + ?Sized,
     V: ops::Vector<Component = Field>,
 {
     let xs = Field::sequential(x);

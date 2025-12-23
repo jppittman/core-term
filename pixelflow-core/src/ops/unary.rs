@@ -2,7 +2,8 @@
 //!
 //! AST nodes for unary ops: Sqrt, Abs, Min, Max.
 
-use crate::{Field, Manifold};
+use crate::Manifold;
+use crate::numeric::Numeric;
 
 /// Square root.
 #[derive(Clone, Copy, Debug)]
@@ -20,34 +21,56 @@ pub struct Max<L, R>(pub L, pub R);
 #[derive(Clone, Copy, Debug)]
 pub struct Min<L, R>(pub L, pub R);
 
-impl<M: Manifold<Output = Field>> Manifold for Sqrt<M> {
-    type Output = Field;
+impl<M, I> Manifold<I> for Sqrt<M>
+where
+    I: crate::numeric::Numeric,
+    M: Manifold<I>,
+    M::Output: crate::numeric::Numeric,
+{
+    type Output = M::Output;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w).sqrt()
     }
 }
 
-impl<M: Manifold<Output = Field>> Manifold for Abs<M> {
-    type Output = Field;
+impl<M, I> Manifold<I> for Abs<M>
+where
+    I: crate::numeric::Numeric,
+    M: Manifold<I>,
+    M::Output: crate::numeric::Numeric,
+{
+    type Output = M::Output;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w).abs()
     }
 }
 
-impl<L: Manifold<Output = Field>, R: Manifold<Output = Field>> Manifold for Max<L, R> {
-    type Output = Field;
+impl<L, R, I, O> Manifold<I> for Max<L, R>
+where
+    I: crate::numeric::Numeric,
+    O: crate::numeric::Numeric,
+    L: Manifold<I, Output = O>,
+    R: Manifold<I, Output = O>,
+{
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w).max(self.1.eval_raw(x, y, z, w))
     }
 }
 
-impl<L: Manifold<Output = Field>, R: Manifold<Output = Field>> Manifold for Min<L, R> {
-    type Output = Field;
+impl<L, R, I, O> Manifold<I> for Min<L, R>
+where
+    I: crate::numeric::Numeric,
+    O: crate::numeric::Numeric,
+    L: Manifold<I, Output = O>,
+    R: Manifold<I, Output = O>,
+{
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w).min(self.1.eval_raw(x, y, z, w))
     }
 }

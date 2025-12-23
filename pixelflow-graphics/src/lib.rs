@@ -6,6 +6,9 @@ pub mod fonts;
 pub mod image;
 pub mod render;
 pub mod shapes;
+pub mod transform;
+
+pub use transform::Scale;
 
 // Re-export fonts
 // TODO: These need to be fixed once combinators.rs is updated
@@ -20,6 +23,7 @@ pub use render::color::{
     X11Pixel,
 };
 pub use render::frame::Frame;
+pub use render::rasterizer::TensorShape;
 // TODO: Update glyph exports once render/glyph.rs is fixed
 // pub use render::glyph::{font, gamma_decode, gamma_encode, subpixel, SubpixelBlend, SubpixelMap};
 

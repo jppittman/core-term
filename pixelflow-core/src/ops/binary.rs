@@ -2,7 +2,7 @@
 //!
 //! AST nodes for arithmetic: Add, Sub, Mul, Div.
 
-use crate::{Field, Manifold};
+use crate::Manifold;
 
 /// Addition: L + R
 #[derive(Clone, Copy, Debug)]
@@ -20,34 +20,58 @@ pub struct Mul<L, R>(pub L, pub R);
 #[derive(Clone, Copy, Debug)]
 pub struct Div<L, R>(pub L, pub R);
 
-impl<L: Manifold<Output = Field>, R: Manifold<Output = Field>> Manifold for Add<L, R> {
-    type Output = Field;
+impl<L, R, I> Manifold<I> for Add<L, R>
+where
+    I: crate::numeric::Numeric,
+    L: Manifold<I>,
+    R: Manifold<I>,
+    L::Output: core::ops::Add<R::Output>,
+{
+    type Output = <L::Output as core::ops::Add<R::Output>>::Output;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w) + self.1.eval_raw(x, y, z, w)
     }
 }
 
-impl<L: Manifold<Output = Field>, R: Manifold<Output = Field>> Manifold for Sub<L, R> {
-    type Output = Field;
+impl<L, R, I> Manifold<I> for Sub<L, R>
+where
+    I: crate::numeric::Numeric,
+    L: Manifold<I>,
+    R: Manifold<I>,
+    L::Output: core::ops::Sub<R::Output>,
+{
+    type Output = <L::Output as core::ops::Sub<R::Output>>::Output;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w) - self.1.eval_raw(x, y, z, w)
     }
 }
 
-impl<L: Manifold<Output = Field>, R: Manifold<Output = Field>> Manifold for Mul<L, R> {
-    type Output = Field;
+impl<L, R, I> Manifold<I> for Mul<L, R>
+where
+    I: crate::numeric::Numeric,
+    L: Manifold<I>,
+    R: Manifold<I>,
+    L::Output: core::ops::Mul<R::Output>,
+{
+    type Output = <L::Output as core::ops::Mul<R::Output>>::Output;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w) * self.1.eval_raw(x, y, z, w)
     }
 }
 
-impl<L: Manifold<Output = Field>, R: Manifold<Output = Field>> Manifold for Div<L, R> {
-    type Output = Field;
+impl<L, R, I> Manifold<I> for Div<L, R>
+where
+    I: crate::numeric::Numeric,
+    L: Manifold<I>,
+    R: Manifold<I>,
+    L::Output: core::ops::Div<R::Output>,
+{
+    type Output = <L::Output as core::ops::Div<R::Output>>::Output;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w) / self.1.eval_raw(x, y, z, w)
     }
 }

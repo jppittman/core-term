@@ -1,42 +1,8 @@
-//! Loop-Blinn curve rendering using pure Manifold algebra.
-//!
-//! The key insight: barycentric coordinates are LINEAR in (X, Y),
-//! so the entire Loop-Blinn implicit u² - v is just polynomial composition.
-//! No per-lane extraction needed—it's manifolds all the way down.
+//! Loop-Blinn curve rendering with smooth winding for Jet2.
 
-use pixelflow_core::{BoxedManifold, Field, Manifold, ManifoldExt, X, Y};
+use pixelflow_core::{Field, Jet2, Manifold, Numeric};
 
-// ============================================================================
-// Smooth Step (AA helper) - Pure Manifold Version
-// ============================================================================
-
-pub fn smooth_step<E0, E1, M>(edge0: E0, edge1: E1, value: M) -> BoxedManifold
-where
-    E0: Manifold<Output = Field> + Copy + 'static,
-    E1: Manifold<Output = Field> + Copy + 'static,
-    M: Manifold<Output = Field> + Copy + 'static,
-{
-    let range = edge1.sub(edge0);
-    let t_unclamped = value.sub(edge0).div(range);
-    let t_clamped = t_unclamped.max(0.0f32).min(1.0f32);
-
-    let t2 = t_clamped.mul(t_clamped);
-    let term = t_clamped.mul(-2.0).add(3.0);
-    t2.mul(term).boxed()
-}
-
-pub trait SmoothStepExt: Manifold + Sized + Copy {
-    fn smooth_step<E0, E1>(self, edge0: E0, edge1: E1) -> BoxedManifold
-    where
-        E0: Manifold<Output = Field> + Copy + 'static,
-        E1: Manifold<Output = Field> + Copy + 'static,
-        Self: Manifold<Output = Field> + 'static,
-    {
-        smooth_step(edge0, edge1, self)
-    }
-}
-
-impl<M: Manifold<Output = Field> + Sized + Copy> SmoothStepExt for M {}
+const MIN_TRIANGLE_AREA: f32 = 1e-6;
 
 // ============================================================================
 // Loop-Blinn Quadratic Curve
@@ -50,14 +16,6 @@ pub struct LoopBlinnQuad {
     v_d: f32,
     v_e: f32,
     v_f: f32,
-    alpha_x: f32,
-    alpha_y: f32,
-    alpha_c: f32,
-    beta_x: f32,
-    beta_y: f32,
-    beta_c: f32,
-    ay: f32,
-    by: f32,
 }
 
 impl LoopBlinnQuad {
@@ -67,7 +25,7 @@ impl LoopBlinnQuad {
         let (x2, y2) = (p2[0], p2[1]);
 
         let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-        if area.abs() < 1e-6 {
+        if area.abs() < MIN_TRIANGLE_AREA {
             return None;
         }
         let inv_area = 1.0 / area;
@@ -92,9 +50,6 @@ impl LoopBlinnQuad {
         let v_e = gamma_y;
         let v_f = gamma_c;
 
-        let ay = y0 - 2.0 * y1 + y2;
-        let by = 2.0 * (y1 - y0);
-
         Some(Self {
             u_a,
             u_b,
@@ -102,67 +57,7 @@ impl LoopBlinnQuad {
             v_d,
             v_e,
             v_f,
-            alpha_x,
-            alpha_y,
-            alpha_c,
-            beta_x,
-            beta_y,
-            beta_c,
-            ay,
-            by,
         })
-    }
-
-    pub fn implicit(&self) -> BoxedManifold {
-        let u = X * self.u_a + Y * self.u_b + self.u_c;
-        let v = X * self.v_d + Y * self.v_e + self.v_f;
-        (u * u - v).boxed()
-    }
-
-    pub fn winding(&self) -> BoxedManifold {
-        let u_k = Y * self.u_b + self.u_c;
-        let v_k = Y * self.v_e + self.v_f;
-
-        let a_coeff = self.u_a * self.u_a;
-        let b_coeff = u_k * (2.0 * self.u_a) - self.v_d;
-        let c_coeff = u_k * u_k - v_k;
-
-        let disc = b_coeff.clone() * b_coeff.clone() - c_coeff.clone() * (4.0 * a_coeff);
-        let valid_disc = disc.clone().ge(0.0);
-        let sqrt_disc = disc.abs().sqrt();
-
-        let sign_b = b_coeff.clone().ge(0.0).select(1.0, -1.0);
-        let q = (b_coeff + sign_b * sqrt_disc) * -0.5;
-
-        let x1 = (q.clone() / a_coeff).boxed();
-        let x2 = (c_coeff / q).boxed();
-
-        let check_root = move |x_root: BoxedManifold| -> BoxedManifold {
-            let is_left = X.lt(x_root.clone());
-            let alpha = x_root.clone() * self.alpha_x + Y * self.alpha_y + self.alpha_c;
-            let beta = x_root.clone() * self.beta_x + Y * self.beta_y + self.beta_c;
-
-            let v_at_root = x_root * self.v_d + Y * self.v_e + self.v_f;
-            let in_triangle = alpha.clone().ge(0.0).select(
-                beta.clone().ge(0.0).select(
-                    (alpha + beta)
-                        .le(1.0)
-                        .select(v_at_root.clone().lt(1.0), 0.0),
-                    0.0,
-                ),
-                0.0,
-            );
-
-            let t = v_at_root.abs().sqrt();
-            let y_prime = t * (2.0 * self.ay) + self.by;
-            let dir = y_prime.ge(0.0).select(1.0, -1.0);
-
-            in_triangle.select(is_left.select(dir, 0.0), 0.0).boxed()
-        };
-
-        valid_disc
-            .select(check_root(x1) + check_root(x2), 0.0)
-            .boxed()
     }
 }
 
@@ -172,50 +67,203 @@ impl LoopBlinnQuad {
 
 #[derive(Clone, Copy, Debug)]
 pub struct LineSegment {
-    p0: [f32; 2],
-    p1: [f32; 2],
+    pub p0: [f32; 2],
+    pub p1: [f32; 2],
 }
 
 impl LineSegment {
     pub fn new(p0: [f32; 2], p1: [f32; 2]) -> Self {
         Self { p0, p1 }
     }
+}
 
-    pub fn winding(&self) -> BoxedManifold {
-        let (x0, y0) = (self.p0[0], self.p0[1]);
-        let (x1, y1) = (self.p1[0], self.p1[1]);
+// Field implementation: hard step comparisons
+impl Manifold<Field> for LineSegment {
+    type Output = Field;
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+        let p0_y = Field::from_f32(self.p0[1]);
+        let p1_y = Field::from_f32(self.p1[1]);
+        let dy = p1_y - p0_y;
 
-        let dy = y1 - y0;
-        let in_y = if dy >= 0.0 {
-            Y.ge(y0).select(Y.lt(y1), 0.0)
-        } else {
-            Y.ge(y1).select(Y.lt(y0), 0.0)
-        };
+        // Skip near-horizontal
+        let dy_abs = dy.abs();
+        let valid = dy_abs.gt(Field::from_f32(1e-6));
 
-        let dx_dy = (x1 - x0) / (if dy.abs() < 1e-6 { 1.0 } else { dy });
-        let x_int = (Y - y0) * dx_dy + x0;
-        let is_left = X.lt(x_int);
-        let dir = if dy >= 0.0 { 1.0 } else { -1.0 };
+        let p0_x = Field::from_f32(self.p0[0]);
+        let p1_x = Field::from_f32(self.p1[0]);
+        let dx = p1_x - p0_x;
 
-        in_y.select(is_left.select(dir, 0.0), 0.0).boxed()
+        // Y-range check: y >= y_min AND y <= y_max
+        let y_min = p0_y.min(p1_y);
+        let y_max = p0_y.max(p1_y);
+
+        let geq_min = y.ge(y_min);
+        let leq_max = y.le(y_max);
+        // Both must be true: use select(cond1, cond2, 0) to AND them
+        let in_y = Field::select(geq_min, leq_max, Field::from_f32(0.0));
+
+        // X-intersection
+        let x_int = p0_x + (y - p0_y) * (dx / dy);
+        let is_left = x.lt(x_int);
+
+        // Direction
+        let going_up = dy.gt(Field::from_f32(0.0));
+        let dir = Field::select(going_up, Field::from_f32(1.0), Field::from_f32(-1.0));
+
+        // Combine: valid * in_y * is_left * dir
+        let contrib = Field::select(is_left, dir, Field::from_f32(0.0));
+        let result = Field::select(in_y, contrib, Field::from_f32(0.0));
+        Field::select(valid, result, Field::from_f32(0.0))
     }
+}
 
-    pub fn signed_distance(&self) -> BoxedManifold {
-        let dx = self.p1[0] - self.p0[0];
-        let dy = self.p1[1] - self.p0[1];
-        let len = (dx * dx + dy * dy).sqrt();
-        let (a, b) = if len > 1e-6 {
-            (-dy / len, dx / len)
-        } else {
-            (0.0, 1.0)
-        };
-        let c = -(a * self.p0[0] + b * self.p0[1]);
-        (X * a + Y * b + c).boxed()
+// Jet2 implementation: soft differentiable comparisons
+impl Manifold<Jet2> for LineSegment {
+    type Output = Jet2;
+    fn eval_raw(&self, x: Jet2, y: Jet2, _z: Jet2, _w: Jet2) -> Jet2 {
+        let p0_y = Jet2::from_f32(self.p0[1]);
+        let p1_y = Jet2::from_f32(self.p1[1]);
+        let dy = p1_y - p0_y;
+
+        // Hard validity check (doesn't need to be smooth)
+        let dy_abs = dy.abs();
+        let valid = dy_abs.gt(Jet2::from_f32(1e-6));
+
+        let p0_x = Jet2::from_f32(self.p0[0]);
+        let p1_x = Jet2::from_f32(self.p1[0]);
+        let dx = p1_x - p0_x;
+
+        // Soft y-range check using inline hermite smooth_step
+        let y_min = p0_y.min(p1_y);
+        let y_max = p0_y.max(p1_y);
+
+        let k = Jet2::from_f32(2.0); // Sharpness
+
+        // y >= y_min: soft_gt(y, y_min)
+        let diff_min = (y - y_min) / k;
+        let t_min = ((diff_min) + Jet2::from_f32(1.0)) / Jet2::from_f32(2.0);
+        let t_min = t_min.max(Jet2::from_f32(0.0)).min(Jet2::from_f32(1.0));
+        let t2_min = t_min * t_min;
+        let t3_min = t2_min * t_min;
+        let geq_min = t3_min * Jet2::from_f32(-2.0) + t2_min * Jet2::from_f32(3.0);
+
+        // y <= y_max: soft_lt(y, y_max)
+        let diff_max = (y_max - y) / k;
+        let t_max = ((diff_max) + Jet2::from_f32(1.0)) / Jet2::from_f32(2.0);
+        let t_max = t_max.max(Jet2::from_f32(0.0)).min(Jet2::from_f32(1.0));
+        let t2_max = t_max * t_max;
+        let t3_max = t2_max * t_max;
+        let leq_max = t3_max * Jet2::from_f32(-2.0) + t2_max * Jet2::from_f32(3.0);
+
+        let in_y = geq_min * leq_max;
+
+        // X-intersection
+        let x_int = p0_x + (y - p0_y) * (dx / dy);
+
+        // x < x_int: soft_lt(x, x_int)
+        let diff_x = (x_int - x) / k;
+        let t_x = ((diff_x) + Jet2::from_f32(1.0)) / Jet2::from_f32(2.0);
+        let t_x = t_x.max(Jet2::from_f32(0.0)).min(Jet2::from_f32(1.0));
+        let t2_x = t_x * t_x;
+        let t3_x = t2_x * t_x;
+        let is_left = t3_x * Jet2::from_f32(-2.0) + t2_x * Jet2::from_f32(3.0);
+
+        // Direction (hard is ok)
+        let going_up = dy.gt(Jet2::from_f32(0.0));
+        let dir = Jet2::select(going_up, Jet2::from_f32(1.0), Jet2::from_f32(-1.0));
+
+        // Combine
+        let result = in_y * is_left * dir;
+        Jet2::select(valid, result, Jet2::from_f32(0.0))
+    }
+}
+
+// Quads: stub for now
+impl<I: Numeric> Manifold<I> for LoopBlinnQuad {
+    type Output = I;
+    fn eval_raw(&self, _x: I, _y: I, _z: I, _w: I) -> I {
+        I::from_f32(0.0)
     }
 }
 
 // ============================================================================
-// Shared Types
+// AlgebraicGlyph
+// ============================================================================
+
+#[derive(Clone, Debug)]
+pub struct AlgebraicGlyph {
+    pub line_segments: std::sync::Arc<[LineSegment]>,
+    pub quad_segments: std::sync::Arc<[LoopBlinnQuad]>,
+}
+
+impl AlgebraicGlyph {
+    pub fn new(
+        line_segments: std::sync::Arc<[LineSegment]>,
+        quad_segments: std::sync::Arc<[LoopBlinnQuad]>,
+    ) -> Self {
+        Self {
+            line_segments,
+            quad_segments,
+        }
+    }
+}
+
+// Field winding sum with Jet2-based gradient AA
+impl Manifold<Field> for AlgebraicGlyph {
+    type Output = Field;
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        // Construct Jet2 to get gradients
+        let x_jet = Jet2::x(x);
+        let y_jet = Jet2::y(y);
+        let z_jet = Jet2 {
+            val: z,
+            dx: Field::from_f32(0.0),
+            dy: Field::from_f32(0.0),
+        };
+        let w_jet = Jet2 {
+            val: w,
+            dx: Field::from_f32(0.0),
+            dy: Field::from_f32(0.0),
+        };
+
+        // Get winding + gradients from Jet2 impl
+        let winding_jet = Manifold::<Jet2>::eval_raw(self, x_jet, y_jet, z_jet, w_jet);
+
+        // Approximate signed distance using gradients
+        let grad_sq = winding_jet.dx * winding_jet.dx + winding_jet.dy * winding_jet.dy;
+        let grad_mag = (grad_sq + Field::from_f32(1e-8)).sqrt();
+
+        // Normalize: (winding - threshold) / |grad|
+        // Threshold at 0.5 for non-zero winding rule
+        let dist = (winding_jet.val - Field::from_f32(0.5)) / grad_mag;
+
+        // Hard threshold on distance (dist > 0 means inside)
+        // For soft AA, could use smooth_step on dist, but hard is fine with gradient normalization
+        let inside = dist.gt(Field::from_f32(0.0));
+        Field::select(inside, Field::from_f32(1.0), Field::from_f32(0.0))
+    }
+}
+
+// Jet2 winding sum
+impl Manifold<Jet2> for AlgebraicGlyph {
+    type Output = Jet2;
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        let mut winding = Jet2::from_f32(0.0);
+
+        for seg in self.line_segments.iter() {
+            winding = winding + Manifold::<Jet2>::eval_raw(seg, x, y, z, w);
+        }
+
+        for seg in self.quad_segments.iter() {
+            winding = winding + Manifold::<Jet2>::eval_raw(seg, x, y, z, w);
+        }
+
+        winding.abs()
+    }
+}
+
+// ============================================================================
+// Support Types
 // ============================================================================
 
 pub type Point = [f32; 2];
@@ -226,15 +274,6 @@ pub enum Segment {
     Quad(LoopBlinnQuad),
 }
 
-impl Segment {
-    pub fn winding(&self) -> BoxedManifold {
-        match self {
-            Segment::Line(l) => l.winding(),
-            Segment::Quad(q) => q.winding(),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GlyphBounds {
     pub width: u32,
@@ -243,31 +282,36 @@ pub struct GlyphBounds {
     pub bearing_y: i32,
 }
 
+use crate::shapes::Square;
+use crate::transform::{Scale, Translate};
+
+pub type UnitGlyph = Square<Scale<AlgebraicGlyph>, f32>;
+
 #[derive(Clone, Debug)]
 pub struct Glyph {
-    pub segments: std::sync::Arc<[Segment]>,
-    pub bounds: GlyphBounds,
     pub advance: f32,
+    pub manifold: Translate<Scale<UnitGlyph>>,
+}
+
+impl Glyph {
+    pub fn translate(&mut self, delta: [f32; 2]) {
+        self.manifold.offset[0] += delta[0];
+        self.manifold.offset[1] += delta[1];
+    }
+
+    pub fn set_position(&mut self, pos: [f32; 2]) {
+        self.manifold.offset = pos;
+    }
+
+    pub fn set_size(&mut self, size: f32) {
+        self.manifold.manifold.factor = size;
+    }
 }
 
 impl Manifold for Glyph {
     type Output = Field;
 
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        // Build the winding sum manifold
-        let mut sum_manifold: Option<BoxedManifold> = None;
-        for segment in self.segments.iter() {
-            let winding = segment.winding();
-            sum_manifold = match sum_manifold {
-                Some(acc) => Some((acc + winding).boxed()),
-                None => Some(winding),
-            };
-        }
-        let winding = sum_manifold.unwrap_or_else(|| 0.0.boxed());
-        let coverage = winding.abs().gt(0.5).select(1.0, 0.0);
-
-        // TODO: Add AABB clipping once glyphs are in unit space
-        // For now, segments are pre-scaled to pixel space, so AABB doesn't work
-        coverage.eval_raw(x, y, z, w)
+        self.manifold.eval_raw(x, y, z, w)
     }
 }
