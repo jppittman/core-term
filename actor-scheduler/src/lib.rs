@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```rust
-//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler};
+//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ParkHint};
 //!
 //! struct MyHandler;
 //!
@@ -29,6 +29,7 @@
 //!     fn handle_management(&mut self, msg: String) {
 //!         println!("Management: {}", msg);
 //!     }
+//!     fn park(&mut self, _hint: ParkHint) {}
 //! }
 //!
 //! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
