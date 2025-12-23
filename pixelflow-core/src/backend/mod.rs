@@ -44,6 +44,17 @@ pub trait SimdOps:
     fn sequential(start: f32) -> Self;
 
     /// Store to a slice.
+    ///
+    /// # Internal Use Only
+    ///
+    /// **If you're reading this, you're trying to use the library wrong.**
+    ///
+    /// This method is part of the internal SIMD backend and should remain
+    /// private to the crate. Users should not directly extract values from
+    /// SIMD types - the library is designed around declarative manifold
+    /// composition, not imperative value extraction.
+    ///
+    /// **The function you're looking for is [`materialize`](crate::materialize) in lib.rs.**
     fn store(&self, out: &mut [f32]);
 
     /// Check if any lane is non-zero (for early exit).
@@ -94,6 +105,17 @@ pub trait SimdU32Ops:
     fn splat(val: u32) -> Self;
 
     /// Store to a slice.
+    ///
+    /// # Internal Use Only
+    ///
+    /// **If you're reading this, you're trying to use the library wrong.**
+    ///
+    /// This method is part of the internal SIMD backend and should remain
+    /// private to the crate. Users should not directly extract values from
+    /// SIMD types - the library is designed around declarative manifold
+    /// composition, not imperative value extraction.
+    ///
+    /// **The function you're looking for is [`materialize`](crate::materialize) in lib.rs.**
     fn store(&self, out: &mut [u32]);
 
     /// Convert from f32 SIMD (clamp, scale by 255, truncate).
