@@ -2,7 +2,7 @@
 //!
 //! This crate provides two macros:
 //! - `#[actor_impl]` - Transforms an impl block into an Actor trait impl
-//! - `troupe!` - Generates a Directory struct and run function for actor groups
+//! - `troupe!` - Generates a Troupe struct with Directory, ExposedHandles, and lifecycle methods
 
 use proc_macro::{Delimiter, TokenStream, TokenTree};
 
@@ -101,14 +101,37 @@ pub fn actor_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     .expect("failed to parse generated impl")
 }
 
-/// Generates a Directory struct and run function for an actor group.
+/// Actor attributes parsed from bracket syntax
+#[derive(Default)]
+struct ActorAttrs {
+    is_main: bool,
+    is_exposed: bool,
+}
+
+/// Parse attributes from a bracket group like [main], [expose], [main, expose]
+fn parse_attrs(group_str: &str) -> ActorAttrs {
+    let mut attrs = ActorAttrs::default();
+    for part in group_str.split(',') {
+        match part.trim() {
+            "main" => attrs.is_main = true,
+            "expose" => attrs.is_exposed = true,
+            "" => {}
+            other => panic!("unknown attribute: {}", other),
+        }
+    }
+    attrs
+}
+
+/// Generates a Troupe struct with Directory, ExposedHandles, and lifecycle methods.
 ///
 /// # Syntax
 ///
 /// ```ignore
 /// troupe! {
 ///     actor_name: ActorType,
-///     actor_name: ActorType [main],  // exactly one must be marked [main]
+///     actor_name: ActorType [main],      // runs on calling thread
+///     actor_name: ActorType [expose],    // handle exposed to parent
+///     actor_name: ActorType [main, expose], // both
 /// }
 /// ```
 ///
@@ -116,19 +139,26 @@ pub fn actor_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// troupe! {
-///     engine: EngineActor,
+///     engine: EngineActor [expose],
 ///     vsync: VsyncActor,
 ///     display: DisplayActor [main],
 /// }
 /// ```
 ///
 /// This generates:
-/// - `pub struct Directory { ... }` with typed handle fields
-/// - `pub fn run() -> Result<(), Box<dyn Error>>` using scoped threads
+/// - `pub struct Directory { ... }` - all actor handles
+/// - `pub struct ExposedHandles { ... }` - only [expose] handles
+/// - `pub struct Troupe { ... }` - owns schedulers
+/// - `impl Troupe`:
+///   - `pub fn new() -> Self` - creates channels, builds directory
+///   - `pub fn exposed(&self) -> ExposedHandles` - clones exposed handles
+///   - `pub fn play(self) -> Result<()>` - runs scoped threads
+/// - `pub fn run() -> Result<()>` - convenience function (new + play)
 #[proc_macro]
 pub fn troupe(input: TokenStream) -> TokenStream {
-    // Parse: name: Type, name: Type [main], ...
-    let mut actors: Vec<(String, String, bool)> = Vec::new(); // (name, type, is_main)
+    // Parse: name: Type [attrs], ...
+    // (name, type, is_main, is_exposed)
+    let mut actors: Vec<(String, String, bool, bool)> = Vec::new();
     let mut tokens = input.into_iter().peekable();
 
     while let Some(tok) = tokens.next() {
@@ -151,19 +181,17 @@ pub fn troupe(input: TokenStream) -> TokenStream {
             _ => panic!("expected type after `:`"),
         };
 
-        // Check for [main]
-        let mut is_main = false;
+        // Check for [attrs]
+        let mut attrs = ActorAttrs::default();
         if let Some(TokenTree::Group(g)) = tokens.peek() {
             if g.delimiter() == Delimiter::Bracket {
                 let inner = g.stream().to_string();
-                if inner.trim() == "main" {
-                    is_main = true;
-                    tokens.next(); // consume the [main]
-                }
+                attrs = parse_attrs(&inner);
+                tokens.next(); // consume the bracket group
             }
         }
 
-        actors.push((name, type_name, is_main));
+        actors.push((name, type_name, attrs.is_main, attrs.is_exposed));
 
         // Skip comma if present
         if let Some(TokenTree::Punct(p)) = tokens.peek() {
@@ -174,7 +202,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     }
 
     // Validate exactly one main
-    let main_count = actors.iter().filter(|(_, _, m)| *m).count();
+    let main_count = actors.iter().filter(|(_, _, m, _)| *m).count();
     if main_count != 1 {
         panic!(
             "exactly one actor must be marked [main], found {}",
@@ -182,10 +210,10 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         );
     }
 
-    // Generate Directory fields
+    // Generate Directory fields (all actors)
     let dir_fields: String = actors
         .iter()
-        .map(|(name, ty, _)| {
+        .map(|(name, ty, _, _)| {
             format!(
                 "pub {name}: ::actor_scheduler::ActorHandle<
                     <{ty} as ::actor_scheduler::TroupeActor<'_, Self>>::Data,
@@ -197,12 +225,50 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Generate handle/scheduler creation
+    // Generate ExposedHandles fields (only exposed actors)
+    let exposed_actors: Vec<_> = actors.iter().filter(|(_, _, _, e)| *e).collect();
+    let exposed_fields: String = exposed_actors
+        .iter()
+        .map(|(name, ty, _, _)| {
+            format!(
+                "pub {name}: ::actor_scheduler::ActorHandle<
+                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Data,
+                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control,
+                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Management,
+                >,"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Generate exposed() impl - clones exposed handles from directory
+    let exposed_clone: String = exposed_actors
+        .iter()
+        .map(|(name, _, _, _)| format!("{name}: self.directory.{name}.clone(),"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Generate scheduler fields for Troupe struct
+    let scheduler_fields: String = actors
+        .iter()
+        .map(|(name, ty, _, _)| {
+            format!(
+                "{name}_scheduler: ::actor_scheduler::ActorScheduler<
+                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Data,
+                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control,
+                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Management,
+                >,"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Generate handle/scheduler creation in new()
     let create_actors: String = actors
         .iter()
-        .map(|(name, ty, _)| {
+        .map(|(name, ty, _, _)| {
             format!(
-                "let ({name}_h, mut {name}_s) = ::actor_scheduler::create_actor::<
+                "let ({name}_h, {name}_s) = ::actor_scheduler::create_actor::<
                     <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Data,
                     <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control,
                     <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Management,
@@ -215,18 +281,26 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Generate directory construction
     let dir_init: String = actors
         .iter()
-        .map(|(name, _, _)| format!("{name}: {name}_h,"))
+        .map(|(name, _, _, _)| format!("{name}: {name}_h,"))
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Generate spawns for non-main actors
+    // Generate scheduler init for Troupe struct
+    let scheduler_init: String = actors
+        .iter()
+        .map(|(name, _, _, _)| format!("{name}_scheduler: {name}_s,"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Generate spawns for non-main actors in play()
     let spawns: String = actors
         .iter()
-        .filter(|(_, _, is_main)| !is_main)
-        .map(|(name, ty, _)| {
+        .filter(|(_, _, is_main, _)| !is_main)
+        .map(|(name, ty, _, _)| {
             format!(
                 r#"
-                s.spawn(|| {{
+                let mut {name}_s = self.{name}_scheduler;
+                s.spawn(move || {{
                     let mut actor = <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::new(dir);
                     {name}_s.run(&mut actor);
                 }});
@@ -237,9 +311,10 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .join("\n");
 
     // Generate main actor run
-    let (main_name, main_ty, _) = actors.iter().find(|(_, _, m)| *m).unwrap();
+    let (main_name, main_ty, _, _) = actors.iter().find(|(_, _, m, _)| *m).unwrap();
     let main_run = format!(
         r#"
+        let mut {main_name}_s = self.{main_name}_scheduler;
         let mut actor = <{main_ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::new(dir);
         {main_name}_s.run(&mut actor);
         "#
@@ -248,14 +323,23 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Generate shutdown_all method
     let shutdown_impl = actors
         .iter()
-        .map(|(name, _, _)| {
+        .map(|(name, _, _, _)| {
             format!("let _ = self.{name}.send(::actor_scheduler::Message::Control(Default::default()));")
         })
         .collect::<Vec<_>>()
         .join("\n");
 
+    let shutdown_bounds = actors
+        .iter()
+        .map(|(_, ty, _, _)| {
+            format!("<{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control: Default")
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+
     format!(
         r#"
+        /// Directory containing handles to all actors in this troupe.
         pub struct Directory {{
             {dir_fields}
         }}
@@ -271,30 +355,79 @@ pub fn troupe(input: TokenStream) -> TokenStream {
             }}
         }}
 
-        pub fn run() -> ::std::result::Result<(), ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>> {{
-            ::std::thread::scope(|s| {{
+        /// Handles exposed to parent troupes.
+        pub struct ExposedHandles {{
+            {exposed_fields}
+        }}
+
+        /// Troupe manages actor group lifecycle.
+        ///
+        /// Use `new()` to create, `exposed()` to get handles for parent,
+        /// then `play()` to run actors in scoped threads.
+        pub struct Troupe {{
+            directory: Directory,
+            {scheduler_fields}
+        }}
+
+        impl Troupe {{
+            /// Create a new troupe. Builds directory and schedulers, but doesn't spawn threads.
+            ///
+            /// This is phase 1 of two-phase initialization:
+            /// 1. `new()` - create channels, parent can grab exposed handles
+            /// 2. `play()` - spawn threads, run actors
+            pub fn new() -> Self {{
                 {create_actors}
 
-                let dir = Directory {{
+                let directory = Directory {{
                     {dir_init}
                 }};
-                let dir = &dir;
 
-                {spawns}
+                Self {{
+                    directory,
+                    {scheduler_init}
+                }}
+            }}
 
-                {main_run}
+            /// Get handles to exposed actors.
+            ///
+            /// Call this after `new()` but before `play()` to give parent
+            /// troupe access to child actors.
+            pub fn exposed(&self) -> ExposedHandles {{
+                ExposedHandles {{
+                    {exposed_clone}
+                }}
+            }}
 
-                Ok(())
-            }})
+            /// Get a reference to the directory.
+            pub fn directory(&self) -> &Directory {{
+                &self.directory
+            }}
+
+            /// Run the troupe. Spawns threads for non-main actors,
+            /// runs main actor on calling thread. Blocks until main actor exits.
+            ///
+            /// This is phase 2 of two-phase initialization.
+            pub fn play(self) -> ::std::result::Result<(), ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>> {{
+                let dir = self.directory;
+                ::std::thread::scope(|s| {{
+                    let dir = &dir;
+
+                    {spawns}
+
+                    {main_run}
+
+                    Ok(())
+                }})
+            }}
+        }}
+
+        /// Convenience function: creates troupe and runs it.
+        ///
+        /// Equivalent to `Troupe::new().play()`.
+        pub fn run() -> ::std::result::Result<(), ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>> {{
+            Troupe::new().play()
         }}
         "#,
-        shutdown_bounds = actors
-            .iter()
-            .map(|(_, ty, _)| {
-                format!("<{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control: Default")
-            })
-            .collect::<Vec<_>>()
-            .join(",\n")
     )
     .parse()
     .expect("failed to parse generated troupe code")
