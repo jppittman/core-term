@@ -10,7 +10,10 @@ use crate::input::{KeySymbol, Modifiers};
 use crate::platform::waker::{EventLoopWaker, X11Waker};
 use anyhow::{anyhow, Result};
 use log::{info, trace};
-use pixelflow_graphics::render::color::Bgra;
+use pixelflow_graphics::render::color::Bgra8;
+
+// Type alias for backward compatibility
+type Bgra = Bgra8;
 use pixelflow_graphics::render::Frame;
 use std::ffi::{CStr, CString};
 use std::mem;
@@ -612,8 +615,8 @@ impl X11State {
                 xlib::ZPixmap,
                 0,
                 data_ptr,
-                frame.width,
-                frame.height,
+                frame.width as u32,
+                frame.height as u32,
                 32,
                 0,
             );
@@ -631,8 +634,8 @@ impl X11State {
                 0,
                 0,
                 0,
-                frame.width,
-                frame.height,
+                frame.width as u32,
+                frame.height as u32,
             );
 
             (*image).data = ptr::null_mut();

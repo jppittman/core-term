@@ -3,7 +3,7 @@
 //! The base coordinate manifolds: X, Y, Z, W.
 //! Also defines the `Axis` enum for 4D topology.
 
-use crate::{Field, Manifold};
+use crate::Manifold;
 
 /// The explicit 4D axes of the manifold topology.
 /// Used for indexing `Vector` outputs.
@@ -56,20 +56,35 @@ impl Dimension for W {
     const AXIS: Axis = Axis::W;
 }
 
-/// Generate a scalar Manifold impl that returns Field.
-macro_rules! impl_scalar_manifold {
-    ($ty:ty, |$x:ident, $y:ident, $z:ident, $w:ident| $body:expr) => {
-        impl Manifold for $ty {
-            type Output = Field;
-            #[inline(always)]
-            fn eval_raw(&self, $x: Field, $y: Field, $z: Field, $w: Field) -> Field {
-                $body
-            }
-        }
-    };
+// Variables are polymorphic - they return their coordinate unchanged
+impl<I: crate::numeric::Numeric> Manifold<I> for X {
+    type Output = I;
+    #[inline(always)]
+    fn eval_raw(&self, x: I, _y: I, _z: I, _w: I) -> I {
+        x
+    }
 }
 
-impl_scalar_manifold!(X, |x, _y, _z, _w| x);
-impl_scalar_manifold!(Y, |_x, y, _z, _w| y);
-impl_scalar_manifold!(Z, |_x, _y, z, _w| z);
-impl_scalar_manifold!(W, |_x, _y, _z, w| w);
+impl<I: crate::numeric::Numeric> Manifold<I> for Y {
+    type Output = I;
+    #[inline(always)]
+    fn eval_raw(&self, _x: I, y: I, _z: I, _w: I) -> I {
+        y
+    }
+}
+
+impl<I: crate::numeric::Numeric> Manifold<I> for Z {
+    type Output = I;
+    #[inline(always)]
+    fn eval_raw(&self, _x: I, _y: I, z: I, _w: I) -> I {
+        z
+    }
+}
+
+impl<I: crate::numeric::Numeric> Manifold<I> for W {
+    type Output = I;
+    #[inline(always)]
+    fn eval_raw(&self, _x: I, _y: I, _z: I, w: I) -> I {
+        w
+    }
+}
