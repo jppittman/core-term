@@ -25,9 +25,13 @@
 //! The grid lookup is itself expressed as manifold composition.
 //!
 //! Uses `ColorManifold` from pixelflow-graphics for RGBA packing.
+//! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
-use pixelflow_core::{Discrete, Field, Lt, Manifold, Select, X, Y};
+use pixelflow_core::{Field, Lt, Manifold, Select, X, Y};
 use pixelflow_graphics::render::rgba::Color as ColorManifold;
+
+// Re-export Color for solid color manifolds
+pub use pixelflow_graphics::render::color::Color;
 
 // ============================================================================
 // Cell: Glyph Coverage + Colors → RGBA
@@ -240,51 +244,6 @@ fn build_channel_tree<F: CellFactory, const CHANNEL: usize>(
 }
 
 // ============================================================================
-// Solid Color (Background)
-// ============================================================================
-
-/// A constant color manifold - returns the same Discrete everywhere.
-#[derive(Clone, Copy, Debug)]
-pub struct SolidColor {
-    pub r: f32,
-    pub g: f32,
-    pub b: f32,
-    pub a: f32,
-}
-
-impl SolidColor {
-    pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
-        Self { r, g, b, a }
-    }
-
-    pub fn from_rgba(rgba: [f32; 4]) -> Self {
-        Self::new(rgba[0], rgba[1], rgba[2], rgba[3])
-    }
-
-    pub fn black() -> Self {
-        Self::new(0.0, 0.0, 0.0, 1.0)
-    }
-
-    pub fn white() -> Self {
-        Self::new(1.0, 1.0, 1.0, 1.0)
-    }
-}
-
-impl Manifold for SolidColor {
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
-        Discrete::pack(
-            Field::from(self.r),
-            Field::from(self.g),
-            Field::from(self.b),
-            Field::from(self.a),
-        )
-    }
-}
-
-// ============================================================================
 // Constant Coverage (for empty cells or solid blocks)
 // ============================================================================
 
@@ -407,8 +366,9 @@ mod tests {
     }
 
     #[test]
-    fn test_solid_color() {
-        let red = SolidColor::new(1.0, 0.0, 0.0, 1.0);
+    fn test_color_manifold() {
+        // Color::Rgb from pixelflow-graphics implements Manifold<Output = Discrete>
+        let red = Color::Rgb(255, 0, 0);
 
         let result = red.eval_raw(
             Field::from(0.0),
