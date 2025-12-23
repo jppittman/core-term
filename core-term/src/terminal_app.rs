@@ -54,7 +54,9 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
     fn handle_data(&mut self, _data: EngineEventData) {}
     fn handle_control(&mut self, _ctrl: EngineEventControl) {}
     fn handle_management(&mut self, _mgmt: EngineEventManagement) {}
-    fn park(&mut self, _hint: ParkHint) {}
+    fn park(&mut self, _hint: ParkHint) -> ParkHint {
+        ParkHint::Wait
+    }
 }
 
 /// Creates terminal app and spawns it in a thread.

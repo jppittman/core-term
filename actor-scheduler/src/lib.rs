@@ -73,7 +73,7 @@
 //!     fn handle_management(&mut self, msg: String) {
 //!         println!("Management: {}", msg);
 //!     }
-//!     fn park(&mut self, _hint: ParkHint) {}
+//!     fn park(&mut self, _hint: ParkHint) -> ParkHint { ParkHint::Wait }
 //! }
 //!
 //! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
@@ -170,9 +170,11 @@ pub trait Actor<D, C, M> {
     /// Handle a management message.
     fn handle_management(&mut self, msg: M);
 
-    /// The "Hook" where the Actor creates the bridge to the OS
+    /// The "Hook" where the Actor creates the bridge to the OS.
     /// Called when the scheduler has drained available messages (or hit burst limits).
-    fn park(&mut self, hint: ParkHint);
+    ///
+    /// Returns a hint about whether the scheduler should block or poll.
+    fn park(&mut self, hint: ParkHint) -> ParkHint;
 }
 
 /// Legacy alias for backward compatibility
@@ -546,61 +548,20 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 if data_count >= self.data_burst_limit {
                     keep_working = true;
                 }
+
+                // Call park with appropriate hint based on whether we'll loop again
+                let hint = if keep_working {
+                    ParkHint::Poll // Queues still have work, do quick OS poll
+                } else {
+                    ParkHint::Wait // Queues drained, can block
+                };
+                let returned_hint = actor.park(hint);
+
+                // Actor can override and request to keep looping
+                if returned_hint == ParkHint::Poll {
+                    keep_working = true;
+                }
             }
-
-            // Determine Hint
-            // If we hit burst limit or have data pending (implied by loop exit condition logic that might be complex,
-            // but here we just exited the loop), we might need to poll?
-            // Actually, `keep_working` logic in the `while` loop above is a bit simplified.
-            // If we exited the inner `while keep_working`, it means queues are empty
-            // OR we yielded voluntarily?
-            // Reviewing the inner loop:
-            // It loops while `keep_working` is true.
-            // `keep_working` is set true if we processed Control or Mgmt.
-            // For Data, if we hit burst limit, we set `keep_working = true`.
-            // So if `keep_working` was true, we loop again.
-            // Thus, when we exit the `while keep_working` loop, it means:
-            // 1. Control queue empty.
-            // 2. Mgmt queue empty.
-            // 3. Data queue empty OR data processed < burst limit.
-
-            // So effectively, we are "done" with immediate work.
-            // Therefore, we should probably WAIT.
-
-            // However, the `DriverActor` spec says:
-            // "If we hit burst limit or have data pending, use Poll."
-            // But here, `ActorScheduler::run` logic *already drains* until empty or burst limit *within* the loop?
-            // Wait, my strict reading of the previous `run` implementation:
-            // It loops `while keep_working`.
-            // If data limit is hit, `keep_working=true`.
-            // So it would loop again immediately! It wouldn't call `park`?
-
-            // Actually, the previous implementation had `actor.park()` *outside* the `while keep_working` loop?
-            // Yes.
-            // So `park` is only called when we are fully drained (or at least satisfied).
-            // So `ParkHint::Wait` seems appropriate.
-
-            // BUT, if we want to allow the "OS Loop" to run, we might want to park *more often*?
-            // The user spec for `DriverActor` says:
-            // "1. Drain Scheduler ... 2. Determine Hint ... 3. Enter OS Loop".
-            // It seems `DriverActor.run()` *is* the loop, and it calls `platform.park()`.
-
-            // Wait, `ActorScheduler::run` takes ownership of the loop!
-            // The provided `DriverActor` spec shows:
-            // `pub fn run(&mut self) { loop { ... scheduler drain ... platform.park(hint) } }`
-            // This suggests `DriverActor` does NOT use `ActorScheduler::run`. It implements its own loop using `scheduler`.
-
-            // Ah! `ActorScheduler` *struct* has the receivers.
-            // `ActorScheduler::run` is a convenience helper method in `lib.rs`.
-            // The user's `DriverActor` spec re-implements the drain logic manually (implied by "We implement the drain loop manually here").
-
-            // So updating `ActorScheduler::run` in `lib.rs` is good for *other* consumers (like tests),
-            // but `DriverActor` might implement its own.
-            // Still, I should update `ActorScheduler::run` to match the trait signature.
-
-            // In the default `run` implementation, since we drain everything we can,
-            // we probably want `ParkHint::Wait` because we have nothing left to do.
-            actor.park(ParkHint::Wait);
         }
     }
 }
@@ -627,8 +588,9 @@ mod tests {
             self.log.lock().unwrap().push(format!("Mgmt: {}", msg));
         }
 
-        fn park(&mut self, _hint: ParkHint) {
+        fn park(&mut self, _hint: ParkHint) -> ParkHint {
             // No-op for test
+            ParkHint::Wait
         }
     }
 
@@ -714,7 +676,9 @@ mod tests {
             fn handle_management(&mut self, _: bool) {
                 self.mgmt_count += 1;
             }
-            fn park(&mut self, _hint: ParkHint) {}
+            fn park(&mut self, _hint: ParkHint) -> ParkHint {
+                ParkHint::Wait
+            }
         }
 
         let (tx, mut rx) = ActorScheduler::new(10, 100);
@@ -785,13 +749,18 @@ mod troupe_tests {
                 EngineControl::Tick => {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                     // Tell display to render
-                    let _ = self.dir.display.send(Message::Control(DisplayControl::Render));
+                    let _ = self
+                        .dir
+                        .display
+                        .send(Message::Control(DisplayControl::Render));
                 }
                 EngineControl::Shutdown => {}
             }
         }
         fn handle_management(&mut self, _msg: EngineManagement) {}
-        fn park(&mut self, _hint: ParkHint) {}
+        fn park(&mut self, _hint: ParkHint) -> ParkHint {
+            ParkHint::Wait
+        }
     }
 
     #[allow(clippy::needless_lifetimes)]
@@ -822,14 +791,19 @@ mod troupe_tests {
                     let count = self.render_count.fetch_add(1, Ordering::SeqCst) + 1;
                     if count >= self.shutdown_after {
                         // Signal shutdown to engine
-                        let _ = self.dir.engine.send(Message::Control(EngineControl::Shutdown));
+                        let _ = self
+                            .dir
+                            .engine
+                            .send(Message::Control(EngineControl::Shutdown));
                     }
                 }
                 DisplayControl::Shutdown => {}
             }
         }
         fn handle_management(&mut self, _msg: DisplayManagement) {}
-        fn park(&mut self, _hint: ParkHint) {}
+        fn park(&mut self, _hint: ParkHint) -> ParkHint {
+            ParkHint::Wait
+        }
     }
 
     #[allow(clippy::needless_lifetimes)]
@@ -915,7 +889,9 @@ mod troupe_nesting_tests {
         fn handle_data(&mut self, _msg: WorkerData) {}
         fn handle_control(&mut self, _msg: WorkerControl) {}
         fn handle_management(&mut self, _msg: WorkerManagement) {}
-        fn park(&mut self, _hint: ParkHint) {}
+        fn park(&mut self, _hint: ParkHint) -> ParkHint {
+            ParkHint::Wait
+        }
     }
 
     impl<'a, Dir: 'a> TroupeActor<'a, Dir> for WorkerActor<'a> {

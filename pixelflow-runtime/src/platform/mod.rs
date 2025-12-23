@@ -85,7 +85,15 @@ impl EnginePlatform {
             DisplayMgmt,
         >(1024, Some(waker));
 
-        Self::new_with_platform(app, engine_handle, scheduler, config, platform, driver_handle, driver_scheduler)
+        Self::new_with_platform(
+            app,
+            engine_handle,
+            scheduler,
+            config,
+            platform,
+            driver_handle,
+            driver_scheduler,
+        )
     }
 
     #[cfg(target_os = "linux")]
@@ -98,7 +106,8 @@ impl EnginePlatform {
         info!("EnginePlatform::new() - Creating ActorScheduler-based platform with app (Linux)");
 
         // 1. Create Platform Ops (Linux/X11)
-        let ops = linux::LinuxOps::new(engine_handle.clone()).context("Failed to create platform ops")?;
+        let ops =
+            linux::LinuxOps::new(engine_handle.clone()).context("Failed to create platform ops")?;
         let platform = PlatformActor::new(ops);
 
         // 2. Create Scheduler for the Driver (no special waker needed for Linux yet)
@@ -108,7 +117,15 @@ impl EnginePlatform {
             DisplayMgmt,
         >(1024, None);
 
-        Self::new_with_platform(app, engine_handle, scheduler, config, platform, driver_handle, driver_scheduler)
+        Self::new_with_platform(
+            app,
+            engine_handle,
+            scheduler,
+            config,
+            platform,
+            driver_handle,
+            driver_scheduler,
+        )
     }
 
     fn new_with_platform(
@@ -117,10 +134,17 @@ impl EnginePlatform {
         scheduler: EngineActorScheduler<PlatformPixel>,
         config: EngineConfig,
         platform: ActivePlatform,
-        driver_handle: actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
-        driver_scheduler: actor_scheduler::ActorScheduler<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
+        driver_handle: actor_scheduler::ActorHandle<
+            DisplayData<PlatformPixel>,
+            DisplayControl,
+            DisplayMgmt,
+        >,
+        driver_scheduler: actor_scheduler::ActorScheduler<
+            DisplayData<PlatformPixel>,
+            DisplayControl,
+            DisplayMgmt,
+        >,
     ) -> Result<Self> {
-
         // 3. Create DriverActor
         let driver = DriverActor::new(driver_scheduler, platform);
 
@@ -221,12 +245,18 @@ impl<A: Application> EngineHandler<A> {
     pub fn new(
         app: A,
         engine_handle: EngineActorHandle<PlatformPixel>,
-        driver_handle: actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
-        vsync_handle: Option<actor_scheduler::ActorHandle<
-            crate::vsync_actor::RenderedResponse,
-            crate::vsync_actor::VsyncCommand,
-            crate::vsync_actor::VsyncManagement,
-        >>,
+        driver_handle: actor_scheduler::ActorHandle<
+            DisplayData<PlatformPixel>,
+            DisplayControl,
+            DisplayMgmt,
+        >,
+        vsync_handle: Option<
+            actor_scheduler::ActorHandle<
+                crate::vsync_actor::RenderedResponse,
+                crate::vsync_actor::VsyncCommand,
+                crate::vsync_actor::VsyncManagement,
+            >,
+        >,
         render_threads: usize,
     ) -> Self {
         Self {
@@ -474,8 +504,9 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
         }
     }
 
-    fn park(&mut self, _hint: actor_scheduler::ParkHint) {
+    fn park(&mut self, _hint: actor_scheduler::ParkHint) -> actor_scheduler::ParkHint {
         // Engine loop doesn't have periodic tasks, it reacts to messages
+        actor_scheduler::ParkHint::Wait
     }
 }
 

@@ -86,5 +86,7 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
             .push(ReceivedMessage::Management(msg));
     }
 
-    fn park(&mut self, _hint: ParkHint) {}
+    fn park(&mut self, _hint: ParkHint) -> ParkHint {
+        ParkHint::Wait
+    }
 }
