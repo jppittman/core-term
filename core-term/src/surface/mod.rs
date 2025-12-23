@@ -21,11 +21,9 @@
 //!
 //! See [`manifold`] module for the elegant type-level composition.
 
-pub mod grid;
 pub mod manifold;
 pub mod terminal;
 
-pub use grid::GridBuffer;
 pub use manifold::{
     build_grid, Cell, CellA, CellB, CellChannel, CellFactory, CellG, CellR, Color, ConstCoverage,
     LocalCoords,
