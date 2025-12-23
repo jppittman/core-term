@@ -88,7 +88,8 @@ impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
         // No management messages
     }
 
-    fn park(&mut self, _hint: ParkHint) {
+    fn park(&mut self, _hint: ParkHint) -> ParkHint {
         // No periodic tasks
+        ParkHint::Wait
     }
 }

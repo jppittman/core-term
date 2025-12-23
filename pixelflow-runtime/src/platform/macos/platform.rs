@@ -164,7 +164,7 @@ impl PlatformOps for MetalOps {
         }
     }
 
-    fn park(&mut self, hint: ParkHint) {
+    fn park(&mut self, hint: ParkHint) -> ParkHint {
         // Logic for event loop interaction
         unsafe {
             let until_date = match hint {
@@ -241,5 +241,6 @@ impl PlatformOps for MetalOps {
                 self.app.send_event(event);
             }
         }
+        hint
     }
 }

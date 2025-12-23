@@ -41,7 +41,7 @@ impl PlatformOps for LinuxOps {
         // TODO: Implement X11 management handling
     }
 
-    fn park(&mut self, hint: ParkHint) {
+    fn park(&mut self, hint: ParkHint) -> ParkHint {
         // Simple sleep-based parking for now
         match hint {
             ParkHint::Poll => {
@@ -52,5 +52,6 @@ impl PlatformOps for LinuxOps {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
+        hint
     }
 }

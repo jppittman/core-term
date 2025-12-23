@@ -15,6 +15,20 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::platform::PlatformPixel;
+
+/// Configuration for VsyncActor
+#[derive(Debug, Clone)]
+pub struct VsyncConfig {
+    pub refresh_rate: f64,
+}
+
+impl Default for VsyncConfig {
+    fn default() -> Self {
+        Self { refresh_rate: 60.0 }
+    }
+}
+
 /// Messages TO the VSync actor (commands) - Control lane
 #[derive(Debug)]
 pub enum VsyncCommand {
@@ -46,6 +60,12 @@ actor_scheduler::impl_data_message!(RenderedResponse);
 pub enum VsyncManagement {
     /// Internal clock tick - wakes the actor to check vsync timing
     Tick,
+    /// Configure the vsync actor (set refresh rate, engine handle, etc.)
+    SetConfig {
+        config: VsyncConfig,
+        engine_handle: crate::api::private::EngineActorHandle<crate::platform::PlatformPixel>,
+        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+    },
 }
 actor_scheduler::impl_management_message!(VsyncManagement);
 
@@ -59,8 +79,8 @@ enum ClockCommand {
 }
 
 /// VSync actor - generates periodic vsync timing signals.
-pub struct VsyncActor<P: pixelflow_graphics::Pixel> {
-    engine_handle: crate::api::private::EngineActorHandle<P>,
+pub struct VsyncActor {
+    engine_handle: Option<crate::api::private::EngineActorHandle<PlatformPixel>>,
 
     // VSync state
     refresh_rate: f64,
@@ -82,11 +102,11 @@ pub struct VsyncActor<P: pixelflow_graphics::Pixel> {
 
 const MAX_TOKENS: u32 = 3;
 
-impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
+impl VsyncActor {
     /// Create a new VsyncActor. Takes the handle to itself (for the clock thread).
     pub fn new(
         refresh_rate: f64,
-        engine_handle: crate::api::private::EngineActorHandle<P>,
+        engine_handle: crate::api::private::EngineActorHandle<PlatformPixel>,
         self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
     ) -> Self {
         let interval = Duration::from_secs_f64(1.0 / refresh_rate);
@@ -124,7 +144,7 @@ impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
             .expect("Failed to spawn vsync clock thread");
 
         Self {
-            engine_handle,
+            engine_handle: Some(engine_handle),
             refresh_rate,
             interval,
             running: false,
@@ -142,11 +162,8 @@ impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
     /// Returns an ActorHandle that can be used to send commands and responses.
     pub fn spawn(
         refresh_rate: f64,
-        engine_handle: crate::api::private::EngineActorHandle<P>,
-    ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>
-    where
-        P: 'static,
-    {
+        engine_handle: crate::api::private::EngineActorHandle<PlatformPixel>,
+    ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement> {
         let (handle, mut scheduler) =
             actor_scheduler::create_actor::<RenderedResponse, VsyncCommand, VsyncManagement>(
                 1024, // Data buffer (RenderedResponse)
@@ -168,14 +185,17 @@ impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
     }
 
     fn send_vsync(&mut self) {
+        let Some(ref engine_handle) = self.engine_handle else {
+            return; // Not configured yet
+        };
+
         let now = Instant::now();
         let timestamp = now;
         let target_timestamp = now + self.interval;
 
         use crate::api::private::EngineControl;
 
-        if self
-            .engine_handle
+        if engine_handle
             .send(EngineControl::VSync {
                 timestamp,
                 target_timestamp,
@@ -223,9 +243,7 @@ impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
     }
 }
 
-impl<P: pixelflow_graphics::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncManagement>
-    for VsyncActor<P>
-{
+impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
     fn handle_data(&mut self, response: RenderedResponse) {
         // Received frame rendered feedback - add token
         if self.tokens < MAX_TOKENS {
@@ -284,11 +302,53 @@ impl<P: pixelflow_graphics::Pixel> Actor<RenderedResponse, VsyncCommand, VsyncMa
     fn handle_management(&mut self, msg: VsyncManagement) {
         match msg {
             VsyncManagement::Tick => self.handle_tick(),
+            VsyncManagement::SetConfig {
+                config,
+                engine_handle,
+                self_handle,
+            } => {
+                // Configure the vsync actor (called via Management after construction)
+                self.engine_handle = Some(engine_handle);
+                self.refresh_rate = config.refresh_rate;
+                self.interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
+                self.running = true;
+
+                info!(
+                    "VsyncActor: Configured with {:.2} Hz, auto-started",
+                    config.refresh_rate
+                );
+
+                // Spawn clock thread
+                let (clock_tx, clock_rx) = std::sync::mpsc::channel();
+                let interval = self.interval;
+
+                thread::Builder::new()
+                    .name("vsync-clock".to_string())
+                    .spawn(move || {
+                        let mut current_interval = interval;
+                        loop {
+                            match clock_rx.recv_timeout(current_interval) {
+                                Ok(ClockCommand::Stop) => break,
+                                Ok(ClockCommand::SetInterval(d)) => current_interval = d,
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    if self_handle.send(VsyncManagement::Tick).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    })
+                    .expect("Failed to spawn vsync clock thread");
+
+                self.clock_control = Some(clock_tx);
+            }
         }
     }
 
-    fn park(&mut self, _hint: actor_scheduler::ParkHint) {
+    fn park(&mut self, _hint: actor_scheduler::ParkHint) -> actor_scheduler::ParkHint {
         // No-op. We are driven by the clock thread messages.
         // The scheduler will block on the mailbox (doorbell) automatically.
+        actor_scheduler::ParkHint::Wait
     }
 }

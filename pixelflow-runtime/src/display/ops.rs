@@ -9,5 +9,5 @@ pub trait PlatformOps: Send + 'static {
     fn handle_data(&mut self, data: DisplayData<Self::Pixel>);
     fn handle_control(&mut self, ctrl: DisplayControl);
     fn handle_management(&mut self, mgmt: DisplayMgmt);
-    fn park(&mut self, hint: ParkHint);
+    fn park(&mut self, hint: ParkHint) -> ParkHint;
 }

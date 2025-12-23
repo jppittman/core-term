@@ -38,8 +38,8 @@ impl<Ops: PlatformOps> Actor<DisplayData<Ops::Pixel>, DisplayControl, DisplayMgm
         self.ops.handle_management(msg);
     }
 
-    fn park(&mut self, hint: ParkHint) {
-        self.ops.park(hint);
+    fn park(&mut self, hint: ParkHint) -> ParkHint {
+        self.ops.park(hint)
     }
 }
 
