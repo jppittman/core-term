@@ -2,8 +2,7 @@
 //!
 //! Provides the `Text` manifold for rendering strings.
 
-use super::font::Font;
-use super::loopblinn::Glyph;
+use super::ttf::{Font, Glyph};
 
 /// A manifold representing a line of text (WIP).
 #[derive(Clone, Debug)]
