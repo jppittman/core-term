@@ -10,99 +10,88 @@ use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
     RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
-use actor_scheduler::{Actor, Message, TroupeActor};
-use anyhow::{Context, Result};
+use actor_scheduler::{Actor, Message, ParkHint, TroupeActor};
+use anyhow::Result;
 
 /// Engine handler - coordinates app, rendering, display.
 pub struct EngineHandler<'a> {
-    dir: &'a Directory,
-    app: Option<Box<dyn crate::api::public::Application + Send>>,
-    framebuffer: Option<crate::render_pool::Frame<PlatformPixel>>,
-    frame_count: u64,
+    _dir: &'a (), // Placeholder - will be Directory after macro expansion
 }
 
-#[actor_scheduler::actor_impl]
-impl EngineHandler<'_> {
-    type Data = EngineData<PlatformPixel>;
-    type Control = EngineControl<PlatformPixel>;
-    type Management = AppManagement;
-
-    fn new(dir: &Directory) -> Self {
-        Self {
-            dir,
-            app: None,
-            framebuffer: None,
-            frame_count: 0,
-        }
-    }
-
-    fn handle_data(&mut self, _data: Self::Data) {
-        // TODO: Implement rendering logic from platform/mod.rs EngineHandler
-    }
-
-    fn handle_control(&mut self, _ctrl: Self::Control) {
-        // TODO: Implement control logic
-    }
-
-    fn handle_management(&mut self, mgmt: Self::Management) {
-        match mgmt {
-            AppManagement::SetTitle(_) => {}
-            AppManagement::Quit => {}
-            _ => {}
-        }
-    }
-
-    fn park(&mut self, hint: actor_scheduler::ParkHint) -> actor_scheduler::ParkHint {
-        hint
-    }
-}
-
-// Generate troupe structures using macro
+// Generate troupe structures using macro - this creates Directory and Troupe types
 actor_scheduler::troupe! {
     driver: DriverActor<ActivePlatform> [main],
     engine: EngineHandler [expose],
     vsync: VsyncActor,
 }
 
-impl Troupe {
-    /// Create troupe with platform-specific configuration.
-    #[cfg(target_os = "macos")]
-    pub fn with_config(config: EngineConfig) -> Result<Self> {
-        use crate::platform::{waker, MetalOps};
-
-        let troupe = Self::new();
-        let dir = troupe.directory();
-
-        // Create Metal platform
-        let ops = MetalOps::new(dir.engine.clone()).context("Failed to create Metal ops")?;
-        let platform = PlatformActor::new(ops);
-
-        // Configure vsync
-        dir.vsync
-            .send(Message::Management(VsyncManagement::SetConfig {
-                config: VsyncConfig {
-                    refresh_rate: config.performance.target_fps as f64,
-                },
-                engine_handle: dir.engine.clone(),
-                self_handle: dir.vsync.clone(),
-            }))?;
-
-        // Send platform to driver - TODO: Add SetPlatform management message
-        drop(platform); // Temporary - need to solve platform injection
-
-        Ok(troupe)
+// Now implement Actor trait for EngineHandler
+impl<'a> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
+    for EngineHandler<'a>
+{
+    fn handle_data(&mut self, _data: EngineData<PlatformPixel>) {
+        // TODO: Implement rendering logic
     }
 
-    #[cfg(target_os = "linux")]
-    pub fn with_config(config: EngineConfig) -> Result<Self> {
-        use crate::platform::linux::LinuxOps;
+    fn handle_control(&mut self, _ctrl: EngineControl<PlatformPixel>) {
+        // TODO: Implement control logic
+    }
 
+    fn handle_management(&mut self, _mgmt: AppManagement) {
+        // TODO: Implement management logic
+    }
+
+    fn park(&mut self, hint: ParkHint) -> ParkHint {
+        hint
+    }
+}
+
+// Implement TroupeActor for EngineHandler - uses Directory from macro
+impl<'a> TroupeActor<'a, Directory> for EngineHandler<'a> {
+    type Data = EngineData<PlatformPixel>;
+    type Control = EngineControl<PlatformPixel>;
+    type Management = AppManagement;
+
+    fn new(_dir: &'a Directory) -> Self {
+        Self { _dir: &() }
+    }
+}
+
+// Implement TroupeActor for DriverActor - creates platform in new()
+impl<'a> TroupeActor<'a, Directory> for DriverActor<ActivePlatform> {
+    type Data = DisplayData<PlatformPixel>;
+    type Control = DisplayControl;
+    type Management = DisplayMgmt;
+
+    fn new(dir: &'a Directory) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            use crate::platform::MetalOps;
+            let ops = MetalOps::new(dir.engine.clone()).expect("Failed to create Metal ops");
+            let platform = PlatformActor::new(ops);
+            DriverActor::new(platform)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use crate::platform::linux::LinuxOps;
+            let ops = LinuxOps::new(dir.engine.clone()).expect("Failed to create Linux ops");
+            let platform = PlatformActor::new(ops);
+            DriverActor::new(platform)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            panic!("Unsupported platform");
+        }
+    }
+}
+
+impl Troupe {
+    /// Create troupe and configure vsync actor.
+    pub fn with_config(config: EngineConfig) -> Result<Self> {
         let troupe = Self::new();
         let dir = troupe.directory();
 
-        let ops = LinuxOps::new(dir.engine.clone()).context("Failed to create Linux ops")?;
-        let platform = PlatformActor::new(ops);
-
+        // Configure vsync with target FPS
         dir.vsync
             .send(Message::Management(VsyncManagement::SetConfig {
                 config: VsyncConfig {
@@ -112,7 +101,6 @@ impl Troupe {
                 self_handle: dir.vsync.clone(),
             }))?;
 
-        drop(platform);
         Ok(troupe)
     }
 }
