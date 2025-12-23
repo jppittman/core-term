@@ -20,6 +20,7 @@ pub use render::color::{
     X11Pixel,
 };
 pub use render::frame::Frame;
+pub use render::rasterizer::TensorShape;
 // TODO: Update glyph exports once render/glyph.rs is fixed
 // pub use render::glyph::{font, gamma_decode, gamma_encode, subpixel, SubpixelBlend, SubpixelMap};
 

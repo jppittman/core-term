@@ -42,3 +42,64 @@ impl Manifold for Field {
         *self
     }
 }
+
+// Arc<M> is a manifold if M is (allows Arc<dyn Manifold> to work)
+impl<M: Manifold + ?Sized> Manifold for alloc::sync::Arc<M> {
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
+        (**self).eval_raw(x, y, z, w)
+    }
+}
+
+// Box<M> is a manifold if M is
+impl<M: Manifold + ?Sized> Manifold for alloc::boxed::Box<M> {
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
+        (**self).eval_raw(x, y, z, w)
+    }
+}
+
+// &M is a manifold if M is
+impl<M: Manifold + ?Sized> Manifold for &M {
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
+        (**self).eval_raw(x, y, z, w)
+    }
+}
+
+// ============================================================================
+// Scale Combinator
+// ============================================================================
+
+/// A combinator that scales the coordinate space of an inner manifold.
+///
+/// When evaluated at (x, y), it evaluates the inner manifold at (x/scale, y/scale).
+#[derive(Clone, Copy, Debug)]
+pub struct Scale<M> {
+    inner: M,
+    scale: f32,
+}
+
+impl<M> Scale<M> {
+    /// Create a new Scale combinator with uniform scaling.
+    pub fn uniform(inner: M, scale: f64) -> Self {
+        Self {
+            inner,
+            scale: scale as f32,
+        }
+    }
+}
+
+impl<M: Manifold> Manifold for Scale<M> {
+    type Output = M::Output;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
+        let inv_scale = Field::from(1.0 / self.scale);
+        self.inner
+            .eval_raw(x * inv_scale, y * inv_scale, z, w)
+    }
+}
