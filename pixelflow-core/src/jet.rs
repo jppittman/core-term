@@ -16,7 +16,7 @@ pub struct Jet2 {
     pub val: Field,
     /// Partial derivative ∂f/∂x
     pub dx: Field,
-    /// Partial derivative ∂f/∂y  
+    /// Partial derivative ∂f/∂y
     pub dy: Field,
 }
 
