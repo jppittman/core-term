@@ -5,6 +5,13 @@ version = 4
 [[package]]
 name = "actor-scheduler"
 version = "0.1.0"
+dependencies = [
+ "actor-scheduler-macros",
+]
+
+[[package]]
+name = "actor-scheduler-macros"
+version = "0.1.0"
 
 [[package]]
 name = "addr2line"
