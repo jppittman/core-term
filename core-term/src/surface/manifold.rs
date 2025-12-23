@@ -28,7 +28,7 @@
 //! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
 use pixelflow_core::{Field, Lt, Manifold, Select, X, Y};
-use pixelflow_graphics::render::rgba::Color as ColorManifold;
+use pixelflow_graphics::render::color::ColorManifold;
 
 // Re-export Color for solid color manifolds
 pub use pixelflow_graphics::render::color::Color;
