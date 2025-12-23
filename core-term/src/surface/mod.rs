@@ -6,14 +6,18 @@
 //!
 //! # Architecture
 //!
-//! The terminal is rendered as a tiled manifold where each tile is a cell.
-//! The type hierarchy encodes the rendering algorithm:
+//! The terminal grid is built as a binary search tree of Select combinators:
 //!
 //! ```text
-//! Tile<GridLookup<G, A>>
-//!   where G: CellGrid     -- provides cell data (char, fg, bg)
-//!         A: GlyphAtlas   -- provides coverage manifolds for characters
+//! PackRGBA {
+//!   r: Select(x < mid, left_r, right_r),
+//!   g: Select(x < mid, left_g, right_g),
+//!   ...
+//! }
 //! ```
+//!
+//! Each color channel is a separate Select tree, enabling use of the
+//! standard pixelflow-core Select combinator (which works on Field values).
 //!
 //! See [`manifold`] module for the elegant type-level composition.
 
@@ -23,7 +27,7 @@ pub mod terminal;
 
 pub use grid::GridBuffer;
 pub use manifold::{
-    Blend, CellData, CellGrid, CellRenderer, GlyphAtlas, GridLookup, SolidColor, Terminal, Tile,
-    terminal,
+    build_grid, Cell, CellA, CellB, CellChannel, CellFactory, CellG, CellR, ConstCoverage,
+    LocalCoords, SolidColor,
 };
 pub use terminal::TerminalSurface;

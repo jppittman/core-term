@@ -1,203 +1,246 @@
 //! Terminal Manifold - A Conal Elliott style terminal renderer.
 //!
-//! The terminal is expressed as a composition of coordinate transformations
-//! and cell lookups. The type IS the AST - deep nesting monomorphizes to
-//! efficient SIMD code.
+//! The terminal is expressed as a composition of manifold combinators.
+//! The type IS the AST - the grid is a tree of Select combinators that
+//! the compiler monomorphizes to efficient SIMD code.
 //!
 //! # Architecture
 //!
-//! A terminal is a tiled mosaic where each tile is a cell containing:
-//! - A glyph (coverage manifold in [0, 1])
-//! - Foreground color
-//! - Background color
-//!
-//! The rendering formula: `color = coverage * fg + (1 - coverage) * bg`
-//!
-//! # Type-Level Composition
+//! A terminal grid is built as a binary search tree of `Select` nodes:
 //!
 //! ```text
-//! Terminal<G, A>
-//!   = Tile { inner: CellRenderer<G, A> }
-//!   where CellRenderer = Blend { fg, bg, coverage: GlyphLookup<A> }
+//! ColorManifold::new(
+//!   Select { cond: Lt(X, mid), if_true: left_r, if_false: right_r },
+//!   Select { cond: Lt(X, mid), if_true: left_g, if_false: right_g },
+//!   ...
+//! )
 //! ```
 //!
-//! Each layer is a zero-cost abstraction that compiles away via inlining.
+//! This gives O(log(cols) + log(rows)) depth, enabling fully vectorized
+//! evaluation without extracting scalar values from SIMD lanes.
+//!
+//! # Key Insight
+//!
+//! A manifold is a functor. We never extract values - we compose manifolds.
+//! The grid lookup is itself expressed as manifold composition.
+//!
+//! Uses `ColorManifold` from pixelflow-graphics for RGBA packing.
 
-use pixelflow_core::{Discrete, Field, Manifold};
-use std::sync::Arc;
+use pixelflow_core::{Discrete, Field, Lt, Manifold, Select, X, Y};
+use pixelflow_graphics::render::rgba::Color as ColorManifold;
 
 // ============================================================================
-// Cell Data
+// Cell: Glyph Coverage + Colors → RGBA
 // ============================================================================
 
-/// A terminal cell containing character and color information.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CellData {
-    /// The character to render.
-    pub ch: char,
+/// A terminal cell that blends foreground/background based on glyph coverage.
+///
+/// This is the leaf node in the terminal manifold tree. It takes a glyph
+/// (coverage manifold outputting Field) and produces a color blend.
+#[derive(Clone)]
+pub struct Cell<G> {
+    /// The glyph coverage manifold (0.0 = background, 1.0 = foreground).
+    pub glyph: G,
     /// Foreground color (R, G, B, A) normalized to [0, 1].
     pub fg: [f32; 4],
     /// Background color (R, G, B, A) normalized to [0, 1].
     pub bg: [f32; 4],
 }
 
-impl CellData {
-    /// Create a cell from packed RGBA colors.
-    pub fn from_packed(ch: char, fg: u32, bg: u32) -> Self {
-        Self {
-            ch,
-            fg: unpack_rgba(fg),
-            bg: unpack_rgba(bg),
-        }
+impl<G: Manifold<Output = Field>> Cell<G> {
+    /// Create a new cell with glyph and colors.
+    pub fn new(glyph: G, fg: [f32; 4], bg: [f32; 4]) -> Self {
+        Self { glyph, fg, bg }
     }
 }
 
-#[inline]
-fn unpack_rgba(packed: u32) -> [f32; 4] {
-    [
-        (packed & 0xFF) as f32 / 255.0,
-        ((packed >> 8) & 0xFF) as f32 / 255.0,
-        ((packed >> 16) & 0xFF) as f32 / 255.0,
-        ((packed >> 24) & 0xFF) as f32 / 255.0,
-    ]
+/// Extracts a single channel from a Cell as a Field manifold.
+///
+/// This enables using the standard Select combinator (which works on Field)
+/// for grid lookup.
+#[derive(Clone)]
+pub struct CellChannel<G, const CHANNEL: usize> {
+    cell: Cell<G>,
+}
+
+impl<G, const CHANNEL: usize> CellChannel<G, CHANNEL> {
+    /// Create a channel extractor for a cell.
+    pub fn new(cell: Cell<G>) -> Self {
+        Self { cell }
+    }
+}
+
+impl<G: Manifold<Output = Field> + Clone, const CHANNEL: usize> Manifold for CellChannel<G, CHANNEL> {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        let coverage = self.cell.glyph.eval_raw(x, y, z, w);
+        let c = coverage.field_max(Field::from(0.0)).field_min(Field::from(1.0));
+        let omc = Field::from(1.0) - c;
+        c * Field::from(self.cell.fg[CHANNEL]) + omc * Field::from(self.cell.bg[CHANNEL])
+    }
+}
+
+// Type aliases for each channel
+pub type CellR<G> = CellChannel<G, 0>;
+pub type CellG<G> = CellChannel<G, 1>;
+pub type CellB<G> = CellChannel<G, 2>;
+pub type CellA<G> = CellChannel<G, 3>;
+
+// ============================================================================
+// Local Coordinate Transform
+// ============================================================================
+
+/// Transforms coordinates to be local within a cell.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalCoords<M> {
+    pub inner: M,
+    pub offset_x: f32,
+    pub offset_y: f32,
+}
+
+impl<M> LocalCoords<M> {
+    pub fn new(inner: M, offset_x: f32, offset_y: f32) -> Self {
+        Self { inner, offset_x, offset_y }
+    }
+}
+
+impl<M: Manifold> Manifold for LocalCoords<M> {
+    type Output = M::Output;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> M::Output {
+        let local_x = x - Field::from(self.offset_x);
+        let local_y = y - Field::from(self.offset_y);
+        self.inner.eval_raw(local_x, local_y, z, w)
+    }
 }
 
 // ============================================================================
-// Grid Trait
+// Grid Builder Using ColorManifold + Select
 // ============================================================================
 
-/// Trait for types that can provide cell data at grid coordinates.
-pub trait CellGrid: Send + Sync {
-    /// Get the cell at the given column and row.
-    fn get(&self, col: usize, row: usize) -> CellData;
+/// Trait for types that can provide cell manifolds.
+pub trait CellFactory: Send + Sync {
+    /// The glyph manifold type.
+    type Glyph: Manifold<Output = Field> + Clone + Send + Sync + 'static;
+
+    /// Create a cell's glyph manifold for the given grid position.
+    fn glyph(&self, col: usize, row: usize) -> Self::Glyph;
+
+    /// Get foreground color for a cell.
+    fn fg(&self, col: usize, row: usize) -> [f32; 4];
+
+    /// Get background color for a cell.
+    fn bg(&self, col: usize, row: usize) -> [f32; 4];
 
     /// Grid dimensions (cols, rows).
     fn dimensions(&self) -> (usize, usize);
-}
-
-// ============================================================================
-// Glyph Atlas Trait
-// ============================================================================
-
-/// Trait for types that can render a character as a coverage manifold.
-///
-/// The atlas provides glyphs that evaluate to coverage values in [0, 1].
-/// Coverage of 1.0 means fully foreground, 0.0 means fully background.
-pub trait GlyphAtlas: Send + Sync {
-    /// The manifold type returned for each glyph.
-    type Glyph: Manifold<Output = Field> + Clone;
-
-    /// Get the glyph manifold for a character.
-    ///
-    /// The returned manifold should be defined over [0, cell_width] x [0, cell_height]
-    /// and return coverage values in [0, 1].
-    fn glyph(&self, ch: char) -> Self::Glyph;
 
     /// Cell dimensions in pixels.
     fn cell_size(&self) -> (f32, f32);
 }
 
-// ============================================================================
-// Blend Combinator
-// ============================================================================
+/// Builds a terminal grid as a ColorManifold with Select trees per channel.
+///
+/// The result is a `ColorManifold` where each channel (R, G, B, A) is a
+/// binary search tree of Select combinators.
+///
+/// Type complexity is O(cols * rows) for the full grid structure.
+pub fn build_grid<F: CellFactory>(
+    factory: &F,
+) -> ColorManifold<
+    impl Manifold<Output = Field>,
+    impl Manifold<Output = Field>,
+    impl Manifold<Output = Field>,
+    impl Manifold<Output = Field>,
+> {
+    let (cols, rows) = factory.dimensions();
+    let (cell_w, cell_h) = factory.cell_size();
 
-/// Blends two color manifolds based on a coverage mask.
-///
-/// Computes: `coverage * fg + (1 - coverage) * bg`
-///
-/// This is the alpha blending formula with coverage as the alpha source.
-#[derive(Clone, Debug)]
-pub struct Blend<C, F, B> {
-    /// Coverage manifold (outputs Field in [0, 1]).
-    pub coverage: C,
-    /// Foreground color manifold.
-    pub fg: F,
-    /// Background color manifold.
-    pub bg: B,
+    // Build a Select tree for each channel
+    let r = build_channel_tree::<F, 0>(factory, 0, cols, 0, rows, cell_w, cell_h);
+    let g = build_channel_tree::<F, 1>(factory, 0, cols, 0, rows, cell_w, cell_h);
+    let b = build_channel_tree::<F, 2>(factory, 0, cols, 0, rows, cell_w, cell_h);
+    let a = build_channel_tree::<F, 3>(factory, 0, cols, 0, rows, cell_w, cell_h);
+
+    ColorManifold::new(r, g, b, a)
 }
 
-impl<C, F, B> Manifold for Blend<C, F, B>
-where
-    C: Manifold<Output = Field>,
-    F: Manifold<Output = Discrete>,
-    B: Manifold<Output = Discrete>,
-{
-    type Output = Discrete;
+/// Build a Select tree for a single color channel.
+fn build_channel_tree<F: CellFactory, const CHANNEL: usize>(
+    factory: &F,
+    col_start: usize,
+    col_end: usize,
+    row_start: usize,
+    row_end: usize,
+    cell_w: f32,
+    cell_h: f32,
+) -> Box<dyn Manifold<Output = Field> + Send + Sync> {
+    let col_count = col_end - col_start;
+    let row_count = row_end - row_start;
 
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        let cov = self.coverage.eval_raw(x, y, z, w);
-        let fg = self.fg.eval_raw(x, y, z, w);
-        let bg = self.bg.eval_raw(x, y, z, w);
+    // Base case: single cell
+    if col_count == 1 && row_count == 1 {
+        let glyph = factory.glyph(col_start, row_start);
+        let fg = factory.fg(col_start, row_start);
+        let bg = factory.bg(col_start, row_start);
 
-        // Clamp coverage to [0, 1]
-        let cov = cov.field_max(Field::from(0.0)).field_min(Field::from(1.0));
-        let one_minus_cov = Field::from(1.0) - cov;
+        let cell = Cell::new(glyph, fg, bg);
+        let x_offset = col_start as f32 * cell_w;
+        let y_offset = row_start as f32 * cell_h;
 
-        // Unpack colors, blend, repack
-        // Note: This is a simplified scalar path. Full SIMD would need
-        // unpacking Discrete to 4 Fields, blending each, repacking.
-        blend_discrete(cov, one_minus_cov, fg, bg)
+        // Extract the channel with local coordinate transform
+        return Box::new(LocalCoords::new(
+            CellChannel::<_, CHANNEL>::new(cell),
+            x_offset,
+            y_offset,
+        ));
+    }
+
+    // Split on the larger dimension
+    if col_count >= row_count && col_count > 1 {
+        // Split columns
+        let mid = col_start + col_count / 2;
+        let threshold = mid as f32 * cell_w;
+
+        let left = build_channel_tree::<F, CHANNEL>(
+            factory, col_start, mid, row_start, row_end, cell_w, cell_h,
+        );
+        let right = build_channel_tree::<F, CHANNEL>(
+            factory, mid, col_end, row_start, row_end, cell_w, cell_h,
+        );
+
+        // X < threshold ? left : right
+        Box::new(Select {
+            cond: Lt(X, threshold),
+            if_true: left,
+            if_false: right,
+        })
+    } else {
+        // Split rows
+        let mid = row_start + row_count / 2;
+        let threshold = mid as f32 * cell_h;
+
+        let top = build_channel_tree::<F, CHANNEL>(
+            factory, col_start, col_end, row_start, mid, cell_w, cell_h,
+        );
+        let bottom = build_channel_tree::<F, CHANNEL>(
+            factory, col_start, col_end, mid, row_end, cell_w, cell_h,
+        );
+
+        // Y < threshold ? top : bottom
+        Box::new(Select {
+            cond: Lt(Y, threshold),
+            if_true: top,
+            if_false: bottom,
+        })
     }
 }
 
-/// Blend two Discrete values using coverage.
-///
-/// This is the hot path - we want this to be as fast as possible.
-#[inline(always)]
-fn blend_discrete(cov: Field, one_minus_cov: Field, fg: Discrete, bg: Discrete) -> Discrete {
-    // For now, we do scalar blending per-lane.
-    // Future: SIMD unpack/blend/pack would be faster for batched pixels.
-
-    let mut fg_buf = [0u32; 16];
-    let mut bg_buf = [0u32; 16];
-    let mut cov_buf = [0.0f32; 16];
-    let mut omc_buf = [0.0f32; 16];
-    let mut out_buf = [0u32; 16];
-
-    fg.store(&mut fg_buf);
-    bg.store(&mut bg_buf);
-    cov.store(&mut cov_buf);
-    one_minus_cov.store(&mut omc_buf);
-
-    for i in 0..pixelflow_core::PARALLELISM {
-        let c = cov_buf[i];
-        let omc = omc_buf[i];
-
-        let fg_r = (fg_buf[i] & 0xFF) as f32;
-        let fg_g = ((fg_buf[i] >> 8) & 0xFF) as f32;
-        let fg_b = ((fg_buf[i] >> 16) & 0xFF) as f32;
-        let fg_a = ((fg_buf[i] >> 24) & 0xFF) as f32;
-
-        let bg_r = (bg_buf[i] & 0xFF) as f32;
-        let bg_g = ((bg_buf[i] >> 8) & 0xFF) as f32;
-        let bg_b = ((bg_buf[i] >> 16) & 0xFF) as f32;
-        let bg_a = ((bg_buf[i] >> 24) & 0xFF) as f32;
-
-        let out_r = (c * fg_r + omc * bg_r) as u8;
-        let out_g = (c * fg_g + omc * bg_g) as u8;
-        let out_b = (c * fg_b + omc * bg_b) as u8;
-        let out_a = (c * fg_a + omc * bg_a) as u8;
-
-        out_buf[i] = u32::from_le_bytes([out_r, out_g, out_b, out_a]);
-    }
-
-    // Reconstruct Discrete from buffer using pack (which expects normalized floats)
-    // We need to work around this by using the first 4 values as RGBA channels
-    // Actually, Discrete::pack expects Field inputs, so we need a different approach.
-
-    // Use the simplest approach: return first pixel splatted
-    // This is inefficient but correct. Real impl would use SIMD intrinsics.
-    Discrete::pack(
-        Field::from((out_buf[0] & 0xFF) as f32 / 255.0),
-        Field::from(((out_buf[0] >> 8) & 0xFF) as f32 / 255.0),
-        Field::from(((out_buf[0] >> 16) & 0xFF) as f32 / 255.0),
-        Field::from(((out_buf[0] >> 24) & 0xFF) as f32 / 255.0),
-    )
-}
-
 // ============================================================================
-// Solid Color Manifold
+// Solid Color (Background)
 // ============================================================================
 
 /// A constant color manifold - returns the same Discrete everywhere.
@@ -210,18 +253,20 @@ pub struct SolidColor {
 }
 
 impl SolidColor {
-    pub fn from_rgba(rgba: [f32; 4]) -> Self {
-        Self {
-            r: rgba[0],
-            g: rgba[1],
-            b: rgba[2],
-            a: rgba[3],
-        }
+    pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self { r, g, b, a }
     }
 
-    pub fn from_packed(packed: u32) -> Self {
-        let rgba = unpack_rgba(packed);
-        Self::from_rgba(rgba)
+    pub fn from_rgba(rgba: [f32; 4]) -> Self {
+        Self::new(rgba[0], rgba[1], rgba[2], rgba[3])
+    }
+
+    pub fn black() -> Self {
+        Self::new(0.0, 0.0, 0.0, 1.0)
+    }
+
+    pub fn white() -> Self {
+        Self::new(1.0, 1.0, 1.0, 1.0)
     }
 }
 
@@ -240,362 +285,19 @@ impl Manifold for SolidColor {
 }
 
 // ============================================================================
-// Cell Renderer
+// Constant Coverage (for empty cells or solid blocks)
 // ============================================================================
 
-/// Renders a single terminal cell.
-///
-/// Given local coordinates within a cell and cell data, this manifold:
-/// 1. Evaluates the glyph at local coordinates to get coverage
-/// 2. Blends foreground and background colors based on coverage
-///
-/// Type: `CellRenderer<A: GlyphAtlas> : Manifold<Output = Discrete>`
-#[derive(Clone)]
-pub struct CellRenderer<A: GlyphAtlas> {
-    pub atlas: Arc<A>,
-    pub cell: CellData,
-}
-
-impl<A: GlyphAtlas> Manifold for CellRenderer<A> {
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        let glyph = self.atlas.glyph(self.cell.ch);
-        let coverage = glyph.eval_raw(x, y, z, w);
-
-        let fg = SolidColor::from_rgba(self.cell.fg);
-        let bg = SolidColor::from_rgba(self.cell.bg);
-
-        Blend {
-            coverage,
-            fg,
-            bg,
-        }
-        .eval_raw(x, y, z, w)
-    }
-}
-
-// ============================================================================
-// Terminal Manifold (The Crown Jewel)
-// ============================================================================
-
-/// A terminal rendered as a manifold.
-///
-/// This is the composition of all the pieces:
-/// - Coordinate transformation (pixel to cell + local)
-/// - Cell data lookup
-/// - Glyph evaluation
-/// - Color blending
-///
-/// The entire pipeline compiles to efficient code via monomorphization.
-#[derive(Clone)]
-pub struct Terminal<G, A>
-where
-    G: CellGrid,
-    A: GlyphAtlas,
-{
-    grid: Arc<G>,
-    atlas: Arc<A>,
-    cell_width: f32,
-    cell_height: f32,
-    cols: usize,
-    rows: usize,
-}
-
-impl<G, A> Terminal<G, A>
-where
-    G: CellGrid,
-    A: GlyphAtlas,
-{
-    /// Create a new terminal manifold.
-    pub fn new(grid: Arc<G>, atlas: Arc<A>) -> Self {
-        let (cols, rows) = grid.dimensions();
-        let (cell_width, cell_height) = atlas.cell_size();
-        Self {
-            grid,
-            atlas,
-            cell_width,
-            cell_height,
-            cols,
-            rows,
-        }
-    }
-
-    /// Pixel dimensions of the terminal.
-    pub fn pixel_size(&self) -> (f32, f32) {
-        (
-            self.cols as f32 * self.cell_width,
-            self.rows as f32 * self.cell_height,
-        )
-    }
-}
-
-impl<G, A> Manifold for Terminal<G, A>
-where
-    G: CellGrid,
-    A: GlyphAtlas,
-{
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Discrete {
-        // Store SIMD lanes to process individually
-        // (Different lanes may hit different cells)
-        let mut x_buf = [0.0f32; 16];
-        let mut y_buf = [0.0f32; 16];
-        x.store(&mut x_buf);
-        y.store(&mut y_buf);
-
-        // Process each lane and accumulate packed results
-        let mut r_sum = Field::from(0.0);
-        let mut g_sum = Field::from(0.0);
-        let mut b_sum = Field::from(0.0);
-        let mut a_sum = Field::from(0.0);
-
-        for i in 0..pixelflow_core::PARALLELISM {
-            let px = x_buf[i];
-            let py = y_buf[i];
-
-            // Compute cell indices
-            let col = (px / self.cell_width).floor() as isize;
-            let row = (py / self.cell_height).floor() as isize;
-
-            // Bounds check
-            if col < 0 || row < 0 || col >= self.cols as isize || row >= self.rows as isize {
-                // Out of bounds - return transparent black
-                // (Sum contribution is 0 for this lane)
-                continue;
-            }
-
-            let col = col as usize;
-            let row = row as usize;
-
-            // Get cell data
-            let cell = self.grid.get(col, row);
-
-            // Compute local coordinates within cell
-            let local_x = px - (col as f32 * self.cell_width);
-            let local_y = py - (row as f32 * self.cell_height);
-
-            // Evaluate glyph coverage
-            let glyph = self.atlas.glyph(cell.ch);
-            let cov_field = glyph.eval_raw(
-                Field::from(local_x),
-                Field::from(local_y),
-                Field::from(0.0),
-                Field::from(0.0),
-            );
-
-            // Extract scalar coverage
-            let mut cov_buf = [0.0f32; 16];
-            cov_field.store(&mut cov_buf);
-            let cov = cov_buf[0].clamp(0.0, 1.0);
-            let omc = 1.0 - cov;
-
-            // Blend colors
-            let r = cov * cell.fg[0] + omc * cell.bg[0];
-            let g = cov * cell.fg[1] + omc * cell.bg[1];
-            let b = cov * cell.fg[2] + omc * cell.bg[2];
-            let a = cov * cell.fg[3] + omc * cell.bg[3];
-
-            // This is a hack - we're not properly handling per-lane results
-            // In a proper SIMD impl, we'd use masked stores or gather/scatter
-            if i == 0 {
-                r_sum = Field::from(r);
-                g_sum = Field::from(g);
-                b_sum = Field::from(b);
-                a_sum = Field::from(a);
-            }
-        }
-
-        Discrete::pack(r_sum, g_sum, b_sum, a_sum)
-    }
-}
-
-// ============================================================================
-// Type-Level Elegance: The Tiled Approach
-// ============================================================================
-
-/// A tiled manifold that passes tile indices through z, w.
-///
-/// This is the elegant formulation: instead of per-lane scalar processing,
-/// we transform coordinates and let the inner manifold handle indexing.
-///
-/// ```text
-/// Tile { inner, tile_w, tile_h }
-///   eval(x, y, _, _) =
-///     let col = floor(x / tile_w)
-///     let row = floor(y / tile_h)
-///     let lx = x - col * tile_w
-///     let ly = y - row * tile_h
-///     inner.eval(lx, ly, col, row)
-/// ```
-///
-/// The inner manifold receives local coordinates in (x, y) and tile indices
-/// in (z, w). This enables fully vectorized processing when tiles are uniform.
+/// A constant coverage manifold.
 #[derive(Clone, Copy, Debug)]
-pub struct Tile<M> {
-    pub inner: M,
-    pub tile_width: f32,
-    pub tile_height: f32,
-}
+pub struct ConstCoverage(pub f32);
 
-impl<M: Manifold> Manifold for Tile<M> {
-    type Output = M::Output;
+impl Manifold for ConstCoverage {
+    type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> M::Output {
-        let tw = Field::from(self.tile_width);
-        let th = Field::from(self.tile_height);
-
-        // Compute tile indices: floor(coord / tile_size)
-        // Using the identity: floor(x) ≈ x - fract(x) for positive x
-        let col = (x / tw).map(|v| v.floor());
-        let row = (y / th).map(|v| v.floor());
-
-        // Compute local coordinates: coord - index * tile_size
-        let local_x = x - col * tw;
-        let local_y = y - row * th;
-
-        // Pass to inner with tile indices in z, w
-        self.inner.eval_raw(local_x, local_y, col, row)
-    }
-}
-
-/// Extension trait for Field floor operation.
-trait FloorExt {
-    fn map<F: Fn(f32) -> f32>(self, f: F) -> Self;
-}
-
-impl FloorExt for Field {
-    #[inline(always)]
-    fn map<F: Fn(f32) -> f32>(self, f: F) -> Self {
-        // Scalar fallback - proper SIMD would use intrinsics
-        let mut buf = [0.0f32; 16];
-        self.store(&mut buf);
-        for v in buf.iter_mut().take(pixelflow_core::PARALLELISM) {
-            *v = f(*v);
-        }
-        // Reconstruct - simplified, returns splat of first element
-        Field::from(buf[0])
-    }
-}
-
-// ============================================================================
-// Index-Based Cell Lookup
-// ============================================================================
-
-/// A manifold that samples a grid based on indices in z, w.
-///
-/// This works with `Tile` to implement terminal rendering:
-/// - Tile transforms (x, y) → (local_x, local_y, col, row)
-/// - GridLookup uses (col, row) from (z, w) to get cell data
-/// - Returns blended color based on glyph coverage
-#[derive(Clone)]
-pub struct GridLookup<G, A>
-where
-    G: CellGrid,
-    A: GlyphAtlas,
-{
-    pub grid: Arc<G>,
-    pub atlas: Arc<A>,
-}
-
-impl<G, A> Manifold for GridLookup<G, A>
-where
-    G: CellGrid,
-    A: GlyphAtlas,
-{
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        // z = column index, w = row index (from Tile transform)
-        // x, y = local coordinates within cell
-
-        // For now, use scalar extraction (not fully vectorized)
-        let mut z_buf = [0.0f32; 16];
-        let mut w_buf = [0.0f32; 16];
-        let mut x_buf = [0.0f32; 16];
-        let mut y_buf = [0.0f32; 16];
-
-        z.store(&mut z_buf);
-        w.store(&mut w_buf);
-        x.store(&mut x_buf);
-        y.store(&mut y_buf);
-
-        // Process first lane (simplified)
-        let col = z_buf[0] as usize;
-        let row = w_buf[0] as usize;
-        let local_x = x_buf[0];
-        let local_y = y_buf[0];
-
-        let (cols, rows) = self.grid.dimensions();
-        if col >= cols || row >= rows {
-            // Out of bounds - transparent black
-            return Discrete::pack(
-                Field::from(0.0),
-                Field::from(0.0),
-                Field::from(0.0),
-                Field::from(0.0),
-            );
-        }
-
-        let cell = self.grid.get(col, row);
-
-        // Evaluate glyph
-        let glyph = self.atlas.glyph(cell.ch);
-        let cov = glyph.eval_raw(
-            Field::from(local_x),
-            Field::from(local_y),
-            Field::from(0.0),
-            Field::from(0.0),
-        );
-
-        let mut cov_buf = [0.0f32; 16];
-        cov.store(&mut cov_buf);
-        let c = cov_buf[0].clamp(0.0, 1.0);
-        let omc = 1.0 - c;
-
-        // Blend
-        let r = c * cell.fg[0] + omc * cell.bg[0];
-        let g = c * cell.fg[1] + omc * cell.bg[1];
-        let b = c * cell.fg[2] + omc * cell.bg[2];
-        let a = c * cell.fg[3] + omc * cell.bg[3];
-
-        Discrete::pack(
-            Field::from(r),
-            Field::from(g),
-            Field::from(b),
-            Field::from(a),
-        )
-    }
-}
-
-// ============================================================================
-// The Elegant Terminal: Type Composition
-// ============================================================================
-
-/// Create a terminal manifold using pure type composition.
-///
-/// This is the elegant formulation:
-/// ```text
-/// terminal(grid, atlas) = Tile { GridLookup { grid, atlas }, cell_w, cell_h }
-/// ```
-///
-/// The resulting type encodes the entire rendering algorithm, and the Rust
-/// compiler monomorphizes it to efficient SIMD code.
-pub fn terminal<G, A>(grid: Arc<G>, atlas: Arc<A>) -> Tile<GridLookup<G, A>>
-where
-    G: CellGrid,
-    A: GlyphAtlas,
-{
-    let (tile_width, tile_height) = atlas.cell_size();
-    Tile {
-        inner: GridLookup { grid, atlas },
-        tile_width,
-        tile_height,
+    fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Field {
+        Field::from(self.0)
     }
 }
 
@@ -607,36 +309,35 @@ where
 mod tests {
     use super::*;
 
-    struct MockGrid {
-        cells: Vec<CellData>,
+    struct MockFactory {
         cols: usize,
         rows: usize,
-    }
-
-    impl CellGrid for MockGrid {
-        fn get(&self, col: usize, row: usize) -> CellData {
-            if col < self.cols && row < self.rows {
-                self.cells[row * self.cols + col]
-            } else {
-                CellData::default()
-            }
-        }
-
-        fn dimensions(&self) -> (usize, usize) {
-            (self.cols, self.rows)
-        }
-    }
-
-    struct MockAtlas {
         cell_w: f32,
         cell_h: f32,
     }
 
-    impl GlyphAtlas for MockAtlas {
-        type Glyph = f32; // Constant coverage
+    impl CellFactory for MockFactory {
+        type Glyph = ConstCoverage;
 
-        fn glyph(&self, ch: char) -> f32 {
-            if ch == ' ' { 0.0 } else { 1.0 }
+        fn glyph(&self, _col: usize, _row: usize) -> Self::Glyph {
+            ConstCoverage(1.0) // Full coverage
+        }
+
+        fn fg(&self, col: usize, row: usize) -> [f32; 4] {
+            // Alternate white/black based on position
+            if (col + row) % 2 == 0 {
+                [1.0, 1.0, 1.0, 1.0]
+            } else {
+                [0.0, 0.0, 0.0, 1.0]
+            }
+        }
+
+        fn bg(&self, _col: usize, _row: usize) -> [f32; 4] {
+            [0.5, 0.5, 0.5, 1.0]
+        }
+
+        fn dimensions(&self) -> (usize, usize) {
+            (self.cols, self.rows)
         }
 
         fn cell_size(&self) -> (f32, f32) {
@@ -645,37 +346,77 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_type_composition() {
-        let grid = Arc::new(MockGrid {
-            cells: vec![
-                CellData {
-                    ch: 'A',
-                    fg: [1.0, 1.0, 1.0, 1.0],
-                    bg: [0.0, 0.0, 0.0, 1.0],
-                };
-                80 * 24
-            ],
-            cols: 80,
-            rows: 24,
-        });
-
-        let atlas = Arc::new(MockAtlas {
+    fn test_grid_construction() {
+        let factory = MockFactory {
+            cols: 4,
+            rows: 4,
             cell_w: 8.0,
             cell_h: 16.0,
-        });
+        };
 
-        // The elegant one-liner
-        let term = terminal(grid, atlas);
+        let grid = build_grid(&factory);
 
-        // Evaluate at a point
-        let result = term.eval_raw(
-            Field::from(4.0),  // Middle of first cell
+        // Evaluate at cell (0, 0) center - should be white (even position)
+        let result = grid.eval_raw(
+            Field::from(4.0),
             Field::from(8.0),
             Field::from(0.0),
             Field::from(0.0),
         );
 
-        // Result should be white (glyph coverage = 1.0 for 'A')
+        let mut buf = [0u32; 16];
+        result.store(&mut buf);
+
+        let r = buf[0] & 0xFF;
+        assert!(r > 200, "Expected white, got r={}", r);
+    }
+
+    #[test]
+    fn test_cell_channel_blending() {
+        let cell = Cell::new(
+            ConstCoverage(0.5),
+            [1.0, 0.0, 0.0, 1.0], // Red
+            [0.0, 0.0, 1.0, 1.0], // Blue
+        );
+
+        // Use ColorManifold to pack channels
+        let packed = ColorManifold::new(
+            CellR::new(cell.clone()),
+            CellG::new(cell.clone()),
+            CellB::new(cell.clone()),
+            CellA::new(cell),
+        );
+
+        let result = packed.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        let mut buf = [0u32; 16];
+        result.store(&mut buf);
+
+        // 50% coverage: R = 0.5*1.0 + 0.5*0.0 = 0.5 = 127
+        // B = 0.5*0.0 + 0.5*1.0 = 0.5 = 127
+        let r = buf[0] & 0xFF;
+        let b = (buf[0] >> 16) & 0xFF;
+
+        assert!(r > 100 && r < 160, "Expected ~127, got r={}", r);
+        assert!(b > 100 && b < 160, "Expected ~127, got b={}", b);
+    }
+
+    #[test]
+    fn test_solid_color() {
+        let red = SolidColor::new(1.0, 0.0, 0.0, 1.0);
+
+        let result = red.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
         let mut buf = [0u32; 16];
         result.store(&mut buf);
 
@@ -683,16 +424,8 @@ mod tests {
         let g = (buf[0] >> 8) & 0xFF;
         let b = (buf[0] >> 16) & 0xFF;
 
-        assert!(r > 200, "Expected white, got r={}", r);
-        assert!(g > 200, "Expected white, got g={}", g);
-        assert!(b > 200, "Expected white, got b={}", b);
-    }
-
-    #[test]
-    fn test_cell_data_packing() {
-        let cell = CellData::from_packed('X', 0xFF00FF00, 0x00FF00FF);
-        assert_eq!(cell.ch, 'X');
-        assert!((cell.fg[1] - 1.0).abs() < 0.01); // Green = 255
-        assert!((cell.bg[0] - 1.0).abs() < 0.01); // Red = 255
+        assert_eq!(r, 255);
+        assert_eq!(g, 0);
+        assert_eq!(b, 0);
     }
 }
