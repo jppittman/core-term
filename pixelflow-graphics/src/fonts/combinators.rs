@@ -1,4 +1,4 @@
-use super::curves::{Line, Quadratic, Segment};
+use super::curves::{Curve, Segment};
 use super::glyph::{eval_curves, CurveSurface, GlyphBounds};
 use pixelflow_core::{Field, Manifold};
 use std::sync::Arc;
@@ -88,26 +88,34 @@ impl<S: CurveSurface> Manifold for Slant<S> {
     }
 }
 
+fn slant_point(p: [f32; 2], factor: f32) -> [f32; 2] {
+    [p[0] + p[1] * factor, p[1]]
+}
+
+fn scale_point(p: [f32; 2], factor: f32) -> [f32; 2] {
+    [p[0] * factor, p[1] * factor]
+}
+
 impl<S: CurveSurface> Slant<S> {
     pub fn new(source: S, factor: f32) -> Self {
         let curves = source
             .curves()
             .iter()
-            .map(|seg| match seg {
-                Segment::Line(l) => Segment::Line(Line {
-                    p0: [l.p0[0] + l.p0[1] * factor, l.p0[1]],
-                    p1: [l.p1[0] + l.p1[1] * factor, l.p1[1]],
-                }),
-                Segment::Quad(q) => {
-                    let p0 = [q.p0[0] + q.p0[1] * factor, q.p0[1]];
-                    let p1 = [q.p1[0] + q.p1[1] * factor, q.p1[1]];
-                    let p2 = [q.p2[0] + q.p2[1] * factor, q.p2[1]];
-                    if let Some(new_q) = Quadratic::try_new(p0, p1, p2) {
-                        Segment::Quad(new_q)
-                    } else {
-                        Segment::Line(Line { p0, p1: p2 })
-                    }
+            .map(|seg| match *seg {
+                Segment::Line(Curve([p0, p1])) => {
+                    Segment::Line(Curve([slant_point(p0, factor), slant_point(p1, factor)]))
                 }
+                Segment::Quad(Curve([p0, p1, p2])) => Segment::Quad(Curve([
+                    slant_point(p0, factor),
+                    slant_point(p1, factor),
+                    slant_point(p2, factor),
+                ])),
+                Segment::Cubic(Curve([p0, p1, p2, p3])) => Segment::Cubic(Curve([
+                    slant_point(p0, factor),
+                    slant_point(p1, factor),
+                    slant_point(p2, factor),
+                    slant_point(p3, factor),
+                ])),
             })
             .collect::<Vec<_>>();
 
@@ -157,21 +165,21 @@ impl<S: CurveSurface> CurveScale<S> {
         let curves = source
             .curves()
             .iter()
-            .map(|seg| match seg {
-                Segment::Line(l) => Segment::Line(Line {
-                    p0: [l.p0[0] * factor, l.p0[1] * factor],
-                    p1: [l.p1[0] * factor, l.p1[1] * factor],
-                }),
-                Segment::Quad(q) => {
-                    let p0 = [q.p0[0] * factor, q.p0[1] * factor];
-                    let p1 = [q.p1[0] * factor, q.p1[1] * factor];
-                    let p2 = [q.p2[0] * factor, q.p2[1] * factor];
-                    if let Some(new_q) = Quadratic::try_new(p0, p1, p2) {
-                        Segment::Quad(new_q)
-                    } else {
-                        Segment::Line(Line { p0, p1: p2 })
-                    }
+            .map(|seg| match *seg {
+                Segment::Line(Curve([p0, p1])) => {
+                    Segment::Line(Curve([scale_point(p0, factor), scale_point(p1, factor)]))
                 }
+                Segment::Quad(Curve([p0, p1, p2])) => Segment::Quad(Curve([
+                    scale_point(p0, factor),
+                    scale_point(p1, factor),
+                    scale_point(p2, factor),
+                ])),
+                Segment::Cubic(Curve([p0, p1, p2, p3])) => Segment::Cubic(Curve([
+                    scale_point(p0, factor),
+                    scale_point(p1, factor),
+                    scale_point(p2, factor),
+                    scale_point(p3, factor),
+                ])),
             })
             .collect::<Vec<_>>();
 
