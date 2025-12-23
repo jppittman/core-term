@@ -63,4 +63,7 @@ pub trait Numeric:
 
     /// Create from i32 scalar.
     fn from_i32(val: i32) -> Self;
+
+    /// Create from Field (zero-cost for Field, constant jet for Jet2).
+    fn from_field(field: crate::Field) -> Self;
 }
