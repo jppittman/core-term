@@ -260,7 +260,7 @@ const CONTROL_MGMT_BUFFER_SIZE: usize = 128;
 const MIN_BACKOFF: Duration = Duration::from_micros(10);
 
 /// Maximum backoff duration when no messages are available
-const MAX_BACKOFF: Duration = Duration::from_millis(1);
+const MAX_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Calculate exponential backoff with jitter.
 ///
@@ -279,22 +279,24 @@ const JITTER_MIN_PCT: u64 = 50;
 /// Jitter range (50-99%).
 const JITTER_RANGE: u64 = 50;
 
-fn backoff_with_jitter(attempt: u32) -> Duration {
+fn backoff_with_jitter(attempt: u32) -> Result<Duration, SendError> {
     let base_micros = MIN_BACKOFF.as_micros() as u64;
     let max_micros = MAX_BACKOFF.as_micros() as u64;
 
     let multiplier = 2u64.saturating_pow(attempt);
     let backoff_micros = base_micros.saturating_mul(multiplier);
-    let capped_micros = backoff_micros.min(max_micros);
+    if backoff_micros > max_micros {
+        return Err(SendError::Timeout);
+    }
 
     // Add jitter: random value between [0.5 * backoff, 1.0 * backoff]
     // Using Instant hash for "randomness" (good enough for backoff jitter)
     let now = Instant::now();
     let hash = (now.elapsed().as_nanos() as u64).wrapping_mul(JITTER_HASH_CONSTANT);
     let jitter_pct = JITTER_MIN_PCT + (hash % JITTER_RANGE);
-    let jittered_micros = (capped_micros * jitter_pct) / 100;
+    let jittered_micros = (backoff_micros * jitter_pct) / 100;
 
-    Duration::from_micros(jittered_micros)
+    Ok(Duration::from_micros(jittered_micros))
 }
 
 /// A unified sender handle that routes messages to the scheduler with priority lanes.
@@ -345,7 +347,7 @@ fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError>
             Ok(()) => return Ok(()),
             Err(TrySendError::Full(returned_msg)) => {
                 // Channel full - backoff with jitter for fairness
-                let backoff = backoff_with_jitter(attempt);
+                let backoff = backoff_with_jitter(attempt)?;
                 std::thread::sleep(backoff);
                 attempt = attempt.saturating_add(1);
                 msg = returned_msg; // Restore message for retry
@@ -424,6 +426,7 @@ pub struct ActorScheduler<D, C, M> {
     rx_control: Receiver<C>, // No wrapper - just C directly
     rx_mgmt: Receiver<M>,
     data_burst_limit: usize,
+    management_burst_limit: usize,
 }
 
 impl<D, C, M> ActorScheduler<D, C, M> {
@@ -455,6 +458,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             rx_control,
             rx_mgmt,
             data_burst_limit,
+            management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
         };
 
         (sender, receiver)
@@ -496,6 +500,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             rx_control,
             rx_mgmt,
             data_burst_limit,
+            management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
         };
 
         (sender, receiver)
@@ -528,8 +533,18 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                     keep_working = true;
                 }
 
-                while let Ok(msg) = self.rx_mgmt.try_recv() {
-                    actor.handle_management(msg);
+                let mut mgmt_count = 0;
+                while mgmt_count < self.management_burst_limit {
+                    match self.rx_mgmt.try_recv() {
+                        Ok(msg) => {
+                            actor.handle_management(msg);
+                            mgmt_count += 1;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => return,
+                    }
+                }
+                if mgmt_count >= self.management_burst_limit {
                     keep_working = true;
                 }
 
