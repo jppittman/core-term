@@ -19,13 +19,13 @@ pub use fonts::font::{Font, FontError, FontMetrics};
 
 // Re-export render
 pub use render::color::{
-    AttrFlags, Bgra8, CocoaPixel, Color, ColorVector, NamedColor, Pixel, Rgba, Rgba8, WebPixel,
-    X11Pixel,
+    AttrFlags, Bgra8, CocoaPixel, Color, NamedColor, Pixel, Rgba8, WebPixel, X11Pixel,
 };
 pub use render::frame::Frame;
 pub use render::rasterizer::TensorShape;
-// TODO: Update glyph exports once render/glyph.rs is fixed
-// pub use render::glyph::{font, gamma_decode, gamma_encode, subpixel, SubpixelBlend, SubpixelMap};
+
+// Re-export color manifolds
+pub use render::rgba::{Color as ColorManifold, ColorMap, Lift};
 
 // Re-export core types for convenience
-pub use pixelflow_core::{Field, Manifold, ManifoldExt, W, X, Y, Z};
+pub use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, Map, W, X, Y, Z};

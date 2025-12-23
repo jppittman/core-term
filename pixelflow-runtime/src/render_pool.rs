@@ -1,8 +1,9 @@
 //! Parallel rasterization with thread spawning.
 
 use pixelflow_core::Manifold;
-use pixelflow_graphics::render::color::{ColorVector, Pixel};
+use pixelflow_graphics::render::color::Pixel;
 use pixelflow_graphics::render::rasterizer::{execute, execute_stripe, Stripe, TensorShape};
+use pixelflow_graphics::Discrete;
 
 /// Parallel rendering options.
 #[derive(Copy, Clone, Debug)]
@@ -25,7 +26,7 @@ pub fn render_parallel<P, M>(
     options: RenderOptions,
 ) where
     P: Pixel + Send,
-    M: Manifold<Output = ColorVector> + Sync,
+    M: Manifold<Output = Discrete> + Sync,
 {
     if options.num_threads <= 1 {
         execute(manifold, buffer, shape);

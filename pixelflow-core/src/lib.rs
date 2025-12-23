@@ -58,21 +58,27 @@ pub use variables::*;
 // Field: The ONLY User-Facing SIMD Type
 // ============================================================================
 
-use backend::{Backend, SimdOps};
+use backend::{Backend, SimdOps, SimdU32Ops};
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
+#[cfg(target_arch = "x86_64")]
+type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
 
 #[cfg(target_arch = "aarch64")]
 type NativeSimd = <backend::arm::Neon as Backend>::F32;
+#[cfg(target_arch = "aarch64")]
+type NativeU32Simd = <backend::arm::Neon as Backend>::U32;
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 type NativeSimd = <backend::scalar::Scalar as Backend>::F32;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
 
-/// The computational substrate.
+/// The computational substrate for continuous values.
 ///
 /// `Field` represents a SIMD batch of floating-point values.
 /// This is the concrete type that manifolds evaluate to.
@@ -82,6 +88,16 @@ type NativeSimd = <backend::scalar::Scalar as Backend>::F32;
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct Field(NativeSimd);
+
+/// SIMD batch of packed RGBA pixels.
+///
+/// `Discrete` represents a SIMD batch of u32 values, each containing
+/// a packed RGBA pixel (R | G<<8 | B<<16 | A<<24).
+///
+/// This is the output type for color manifolds, ready for framebuffer writes.
+#[derive(Copy, Clone, Debug, Default)]
+#[repr(transparent)]
+pub struct Discrete(NativeU32Simd);
 
 impl Field {
     /// Create sequential values [start, start+1, start+2, ...].
@@ -160,6 +176,58 @@ impl Field {
     #[inline(always)]
     pub(crate) fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
         Self(NativeSimd::select(mask.0, if_true.0, if_false.0))
+    }
+}
+
+impl Discrete {
+    /// Store packed pixels to a slice.
+    #[inline(always)]
+    pub fn store(&self, out: &mut [u32]) {
+        self.0.store(out)
+    }
+
+    /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
+        Self(backend::arm::U32x4::pack_rgba(
+            unsafe { core::mem::transmute(r.0) },
+            unsafe { core::mem::transmute(g.0) },
+            unsafe { core::mem::transmute(b.0) },
+            unsafe { core::mem::transmute(a.0) },
+        ))
+    }
+
+    /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
+    #[cfg(not(target_arch = "aarch64"))]
+    #[inline(always)]
+    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
+        // Scalar fallback
+        let mut r_buf = [0.0f32; PARALLELISM];
+        let mut g_buf = [0.0f32; PARALLELISM];
+        let mut b_buf = [0.0f32; PARALLELISM];
+        let mut a_buf = [0.0f32; PARALLELISM];
+        r.store(&mut r_buf);
+        g.store(&mut g_buf);
+        b.store(&mut b_buf);
+        a.store(&mut a_buf);
+
+        let mut out = [0u32; PARALLELISM];
+        for i in 0..PARALLELISM {
+            let r_u8 = (r_buf[i].clamp(0.0, 1.0) * 255.0) as u32;
+            let g_u8 = (g_buf[i].clamp(0.0, 1.0) * 255.0) as u32;
+            let b_u8 = (b_buf[i].clamp(0.0, 1.0) * 255.0) as u32;
+            let a_u8 = (a_buf[i].clamp(0.0, 1.0) * 255.0) as u32;
+            out[i] = r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24);
+        }
+
+        let mut result = Self::default();
+        // For scalar backend, just store first element
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            result.0 = backend::scalar::ScalarU32::splat(out[0]);
+        }
+        result
     }
 }
 
@@ -316,27 +384,16 @@ impl core::ops::Not for Field {
 // Public API
 // ============================================================================
 
-/// Materialize a scalar manifold into a buffer.
-///
-/// Evaluates at sequential x coordinates starting from (x, y).
-#[inline(always)]
-pub fn materialize<M>(m: &M, x: f32, y: f32, out: &mut [f32])
-where
-    M: Manifold<Output = Field>,
-{
-    let xs = Field::sequential(x);
-    let val = m.eval(xs, Field::from(y), Field::from(0.0), Field::from(0.0));
-    val.store(out);
-}
-
-/// Materialize a vector manifold into interleaved output.
+/// Materialize a color manifold into an interleaved buffer.
 ///
 /// Evaluates at sequential x coordinates starting from (x, y), then transposes
 /// from SoA (structure of arrays) to AoS (array of structures) for storage.
 ///
-/// Output is interleaved: [x0,y0,z0,w0, x1,y1,z1,w1, ...]
+/// Output is interleaved RGBA: [r0,g0,b0,a0, r1,g1,b1,a1, ...]
+///
+/// For scalar manifolds, use `Lift` to convert them to a uniform color first.
 #[inline(always)]
-pub fn materialize_vector<M, V>(m: &M, x: f32, y: f32, out: &mut [f32])
+pub fn materialize<M, V>(m: &M, x: f32, y: f32, out: &mut [f32])
 where
     M: Manifold<Output = V> + ?Sized,
     V: ops::Vector<Component = Field>,

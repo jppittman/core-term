@@ -128,7 +128,7 @@ impl MacWindow {
 
     pub fn present(
         &mut self,
-        frame: pixelflow_graphics::render::Frame<pixelflow_graphics::render::color::Rgba>,
+        frame: pixelflow_graphics::render::Frame<pixelflow_graphics::render::color::Rgba8>,
     ) {
         // Metal presentation logic.
         unsafe {

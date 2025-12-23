@@ -1,8 +1,8 @@
 //! Scalar fallback backend for non-SIMD platforms.
 
-use super::{Backend, SimdOps};
+use super::{Backend, SimdOps, SimdU32Ops};
 use core::fmt::Debug;
-use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Sub};
+use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
 
 /// Scalar fallback backend (1 lane - no SIMD).
 #[derive(Copy, Clone, Debug, Default)]
@@ -11,6 +11,7 @@ pub struct Scalar;
 impl Backend for Scalar {
     const LANES: usize = 1;
     type F32 = ScalarF32;
+    type U32 = ScalarU32;
 }
 
 /// Scalar f32 wrapper that implements all required ops.
@@ -117,7 +118,7 @@ impl SimdOps for ScalarF32 {
 }
 
 // ============================================================================
-// Operator Implementations
+// Operator Implementations for ScalarF32
 // ============================================================================
 
 impl Add for ScalarF32 {
@@ -173,5 +174,77 @@ impl Not for ScalarF32 {
     #[inline(always)]
     fn not(self) -> Self {
         Self(f32::from_bits(!self.0.to_bits()))
+    }
+}
+
+// ============================================================================
+// ScalarU32 - Scalar u32 for Discrete fallback
+// ============================================================================
+
+/// Scalar u32 wrapper for packed RGBA pixel.
+#[derive(Copy, Clone, Debug, Default)]
+#[repr(transparent)]
+pub struct ScalarU32(u32);
+
+impl SimdU32Ops for ScalarU32 {
+    const LANES: usize = 1;
+
+    #[inline(always)]
+    fn splat(val: u32) -> Self {
+        Self(val)
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u32]) {
+        out[0] = self.0;
+    }
+
+    #[inline(always)]
+    fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
+        Self::default()
+    }
+}
+
+impl BitAnd for ScalarU32 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
+    }
+}
+
+impl BitOr for ScalarU32 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl Shl<u32> for ScalarU32 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: u32) -> Self {
+        Self(self.0 << rhs)
+    }
+}
+
+impl Shr<u32> for ScalarU32 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: u32) -> Self {
+        Self(self.0 >> rhs)
+    }
+}
+
+impl ScalarU32 {
+    /// Pack 4 f32 values (RGBA in 0-1) into a packed u32 pixel.
+    #[inline(always)]
+    pub fn pack_rgba(r: ScalarF32, g: ScalarF32, b: ScalarF32, a: ScalarF32) -> Self {
+        let r_u8 = (r.0.clamp(0.0, 1.0) * 255.0) as u32;
+        let g_u8 = (g.0.clamp(0.0, 1.0) * 255.0) as u32;
+        let b_u8 = (b.0.clamp(0.0, 1.0) * 255.0) as u32;
+        let a_u8 = (a.0.clamp(0.0, 1.0) * 255.0) as u32;
+        Self(r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24))
     }
 }

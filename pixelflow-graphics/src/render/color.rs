@@ -3,128 +3,17 @@
 //!
 //! This module provides:
 //! - **Semantic colors**: `Color` enum for high-level specification
-//! - **Algebraic colors**: `ColorVector` (value) and `Rgba` (manifold)
 //! - **Pixel formats**: `Rgba8`, `Bgra8` for framebuffer storage
 //!
-//! # The Algebra of Color
-//!
-//! Color is not a single value; it is a manifold (a function over space/time) producing a vector.
-//!
-//! - `ColorVector`: A point in 4D color space (R, G, B, A), using `Field` (f32 SIMD) for components.
-//! - `Rgba<R, G, B, A>`: A composable manifold. It contains four inner manifolds, one per channel.
-//!
-//! Evaluating an `Rgba` manifold at `(x, y)` evaluates its four component manifolds
-//! and produces a `ColorVector`.
+//! For color manifolds, use `pixelflow_core::{Rgba, Red, Green, Blue, Alpha}`.
 
 use bitflags::bitflags;
-use pixelflow_core::{ops::Vector, variables::Axis, Field, Manifold};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 // Re-export the Pixel trait from the local pixel module
 pub use super::pixel::Pixel;
-
-// =============================================================================
-// Algebraic Color Types (The "Math" tier)
-// =============================================================================
-
-/// A value in continuous 4D color space.
-///
-/// This is the result of evaluating a Color Manifold. Components are `Field` (SIMD f32),
-/// typically in the range [0.0, 1.0], though higher values (HDR) or negative values are possible.
-#[derive(Clone, Copy, Debug)]
-pub struct ColorVector {
-    /// Red component.
-    pub r: Field,
-    /// Green component.
-    pub g: Field,
-    /// Blue component.
-    pub b: Field,
-    /// Alpha component.
-    pub a: Field,
-}
-
-impl ColorVector {
-    /// Create a new ColorVector.
-    #[inline(always)]
-    pub fn new(r: Field, g: Field, b: Field, a: Field) -> Self {
-        Self { r, g, b, a }
-    }
-
-    /// Splat scalar values into a ColorVector (broadcast across lanes).
-    #[inline(always)]
-    pub fn splat(r: f32, g: f32, b: f32, a: f32) -> Self {
-        Self {
-            r: Field::from(r),
-            g: Field::from(g),
-            b: Field::from(b),
-            a: Field::from(a),
-        }
-    }
-}
-
-// Implement Vector trait for ColorVector so it can be projected.
-impl Vector for ColorVector {
-    type Component = Field;
-
-    #[inline(always)]
-    fn get(&self, axis: Axis) -> Self::Component {
-        match axis {
-            Axis::X => self.r,
-            Axis::Y => self.g,
-            Axis::Z => self.b,
-            Axis::W => self.a,
-        }
-    }
-}
-
-/// A Color Manifold.
-///
-/// This struct composes four inner manifolds, one for each channel.
-/// When evaluated, it produces a `ColorVector`.
-///
-/// Use this to define gradients, textures, or procedural colors.
-#[derive(Clone, Copy, Debug)]
-pub struct Rgba<R, G, B, A> {
-    /// The Red channel manifold.
-    pub r: R,
-    /// The Green channel manifold.
-    pub g: G,
-    /// The Blue channel manifold.
-    pub b: B,
-    /// The Alpha channel manifold.
-    pub a: A,
-}
-
-impl<R, G, B, A> Rgba<R, G, B, A> {
-    /// Construct a new Rgba manifold from four component manifolds.
-    #[inline(always)]
-    pub fn new(r: R, g: G, b: B, a: A) -> Self {
-        Self { r, g, b, a }
-    }
-}
-
-// The core implementation: Color is a Manifold of Manifolds.
-impl<R, G, B, A> Manifold for Rgba<R, G, B, A>
-where
-    R: Manifold<Output = Field>,
-    G: Manifold<Output = Field>,
-    B: Manifold<Output = Field>,
-    A: Manifold<Output = Field>,
-{
-    type Output = ColorVector;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
-        ColorVector {
-            r: self.r.eval_raw(x, y, z, w),
-            g: self.g.eval_raw(x, y, z, w),
-            b: self.b.eval_raw(x, y, z, w),
-            a: self.a.eval_raw(x, y, z, w),
-        }
-    }
-}
 
 // =============================================================================
 // Semantic Color Types (The "User Input" tier)
@@ -215,17 +104,6 @@ pub enum Color {
 }
 
 impl Color {
-    /// Convert `Color` to a `ColorVector` (Splatting constant values).
-    pub fn to_vector(self) -> ColorVector {
-        let u32_val = u32::from(self);
-        // Extract components from the u32 (0xAABBGGRR)
-        let r = (u32_val & 0xFF) as f32 / 255.0;
-        let g = ((u32_val >> 8) & 0xFF) as f32 / 255.0;
-        let b = ((u32_val >> 16) & 0xFF) as f32 / 255.0;
-        let a = ((u32_val >> 24) & 0xFF) as f32 / 255.0;
-        ColorVector::splat(r, g, b, a)
-    }
-
     /// Convert to an Rgba8 pixel.
     #[inline]
     pub fn to_rgba8(self) -> Rgba8 {
@@ -446,8 +324,6 @@ pub type WebPixel = Rgba8;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_core::combinators::Project;
-    use pixelflow_core::variables::{X, Y};
 
     #[test]
     fn test_rgba8_components() {
@@ -475,31 +351,5 @@ mod tests {
         assert_eq!(bgra.g(), 0x22);
         assert_eq!(bgra.b(), 0x33);
         assert_eq!(bgra.a(), 0xFF);
-    }
-
-    #[test]
-    fn test_manifold_types() {
-        // Just checking that we can instantiate the new types
-        let _v = ColorVector::splat(1.0, 0.0, 0.0, 1.0);
-        let _m = Rgba::new(1.0, 0.0, 0.0, 1.0); // Scalars are manifolds
-    }
-
-    #[test]
-    fn test_projection() {
-        // The Algebraic Unification Test
-        // Project(Color, X) should return the Red (1st) component.
-
-        let color = Rgba::new(1.0, 0.5, 0.0, 1.0);
-
-        // This would fail without type annotation - use explicit type below
-        // let red_channel = Project::new(color);
-
-        // This fails to compile unless we specify WHICH dimension.
-        // Rust generic inference needs help here or we need Project<M, X> construction syntax.
-        // Let's rely on explicit types for the test
-        let red_proj: Project<_, X> = Project::new(color);
-
-        // TODO: We need to properly instantiate backend to run eval, skipping runtime check here.
-        // This is primarily a type-check test.
     }
 }
