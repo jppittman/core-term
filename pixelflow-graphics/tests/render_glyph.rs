@@ -1,65 +1,95 @@
-//! Test to render a glyph to an image file.
-//!
-//! TODO: This test needs updating to work with the new Color manifold system.
-//! For now, it renders glyphs using direct Field evaluation.
+//! Tests for the TTF parser and glyph rendering.
 
 use pixelflow_core::{Field, Manifold};
 use pixelflow_graphics::fonts::Font;
-use std::fs::File;
-use std::io::Write;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
-/// Write a grayscale image as PPM (P5 format).
-fn write_ppm(path: &str, width: usize, height: usize, data: &[u8]) {
-    let mut file = File::create(path).expect("Failed to create file");
-    writeln!(file, "P5").unwrap();
-    writeln!(file, "{} {}", width, height).unwrap();
-    writeln!(file, "255").unwrap();
-    file.write_all(data).unwrap();
+#[test]
+fn parse_font_and_get_glyph() {
+    let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
+
+    // Test metrics
+    let metrics = font.metrics();
+    assert!(metrics.units_per_em > 0, "Font should have units_per_em");
+    assert!(metrics.ascent > 0, "Font should have positive ascent");
+
+    // Test getting glyphs
+    let glyph_a = font.glyph('A', 64.0).expect("Glyph 'A' not found");
+    assert!(glyph_a.advance > 0.0, "Glyph should have positive advance");
+
+    // Test that we can get curves
+    let curves = glyph_a.curves();
+    assert!(!curves.is_empty(), "Glyph 'A' should have curves");
+
+    println!("Glyph 'A' has {} curve segments", curves.len());
+    println!("Glyph advance: {}", glyph_a.advance);
+    println!("Glyph bounds: {:?}", glyph_a.bounds());
 }
 
-/// Render a scalar manifold to a grayscale buffer.
-fn render_manifold<M: Manifold<Output = Field>>(
-    manifold: &M,
-    width: usize,
-    height: usize,
-) -> Vec<u8> {
-    let mut buffer = vec![0u8; width * height];
+#[test]
+fn glyph_is_manifold() {
+    let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
+    let glyph = font.glyph('A', 64.0).expect("Glyph 'A' not found");
 
-    for y in 0..height {
-        for x in 0..width {
-            let _val = manifold.eval_raw(
+    // Verify the glyph implements Manifold by evaluating it
+    // We can't extract the values, but we can verify it doesn't panic
+    let _val = glyph.eval_raw(
+        Field::from(32.0),
+        Field::from(32.0),
+        Field::from(0.0),
+        Field::from(0.0),
+    );
+
+    // Test evaluation at various points
+    for y in 0..64 {
+        for x in 0..64 {
+            let _val = glyph.eval_raw(
                 Field::from(x as f32 + 0.5),
                 Field::from(y as f32 + 0.5),
                 Field::from(0.0),
                 Field::from(0.0),
             );
-            // Extract first lane (all lanes have same value for constant coords)
-            // We can't use store directly since it's pub(crate), so we work around
-            // For now just use a placeholder implementation
-            buffer[y * width + x] = 128; // TODO: proper extraction
         }
     }
 
-    buffer
+    println!("Successfully evaluated glyph at 64x64 points");
 }
 
 #[test]
-#[ignore = "Needs update for new Field storage API"]
-fn render_letter_a() {
+fn all_printable_ascii_glyphs_exist() {
     let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
-    let glyph = font.glyph('A', 64.0).expect("Glyph 'A' not found");
 
-    println!("Glyph advance: {}", glyph.advance);
+    for ch in ' '..='~' {
+        let glyph = font.glyph(ch, 16.0);
+        assert!(
+            glyph.is_some(),
+            "Printable ASCII character '{}' (0x{:02X}) should exist",
+            ch,
+            ch as u32
+        );
+    }
 
-    let width = 64;
-    let height = 64;
-    let buffer = render_manifold(&glyph, width, height);
+    println!("All printable ASCII characters found in font");
+}
 
-    write_ppm("/tmp/glyph_A.pgm", width, height, &buffer);
-    println!("\nWrote glyph to /tmp/glyph_A.pgm");
+#[test]
+fn advance_and_kern() {
+    let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
 
-    let non_zero = buffer.iter().filter(|&&v| v > 0).count();
-    assert!(non_zero > 0, "Glyph should have some coverage");
+    let advance_a = font.advance('A', 16.0);
+    let advance_w = font.advance('W', 16.0);
+
+    assert!(advance_a > 0.0, "Advance for 'A' should be positive");
+    assert!(advance_w > 0.0, "Advance for 'W' should be positive");
+
+    // In a monospace font, all advances should be equal
+    assert!(
+        (advance_a - advance_w).abs() < 0.01,
+        "Monospace font should have equal advances"
+    );
+
+    // Kerning (currently returns 0.0 as TODO)
+    let kern = font.kern('A', 'V', 16.0);
+    assert_eq!(kern, 0.0, "Kerning returns 0.0 (not yet implemented)");
 }
