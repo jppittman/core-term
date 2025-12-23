@@ -1,0 +1,264 @@
+# Performance Analysis Report
+
+This document identifies performance anti-patterns, potential N+1 issues, and inefficient algorithms found in the core-term codebase.
+
+## Executive Summary
+
+The codebase is generally well-designed with deliberate performance considerations (SIMD vectorization, lazy evaluation, zero-copy frames). However, several opportunities for optimization exist, particularly in the terminal grid management and rendering pipeline.
+
+---
+
+## 🔴 HIGH Priority Issues
+
+### 1. Arc Copy-on-Write Overhead Per Character Write
+
+**Location:** `core-term/src/term/screen.rs:236, 396, 437, 644`
+
+**Problem:** Every glyph modification triggers `Arc::make_mut()`, which clones the entire row if the Arc is shared (refcount > 1).
+
+```rust
+// screen.rs:644 - set_glyph()
+let row = Arc::make_mut(&mut grid_to_use[y]);
+row[x] = glyph;
+```
+
+**Impact:** During rapid terminal output (e.g., `cat large_file.txt`), each character write may cause a full row clone if a snapshot is held. With 80-column rows, this is O(80) allocations per character in the worst case.
+
+**Pattern:** This is effectively an **N+1-like problem** - writing N characters causes N row clones instead of 1 batch operation.
+
+**Recommendation:**
+- Consider batching mutations: collect writes within a single "frame" and apply them together
+- Use dirty tracking at character level to defer `make_mut` until render time
+- Alternative: switch to `Rc<RefCell<Vec<Glyph>>>` for single-threaded mutation with explicit snapshot copies
+
+---
+
+### 2. Full Grid Traversal Every Frame
+
+**Location:** `core-term/src/surface/grid.rs:100-121`
+
+**Problem:** `GridBuffer::from_snapshot()` iterates ALL cells every frame, regardless of what changed:
+
+```rust
+// grid.rs:108-119
+for (row_idx, line) in snapshot.lines.iter().enumerate() {
+    for (col_idx, glyph) in line.cells.iter().enumerate() {
+        if col_idx < cols && row_idx < rows {
+            grid.set(col_idx, row_idx, Cell::from_glyph(glyph, default_fg, default_bg));
+        }
+    }
+}
+```
+
+**Impact:** For an 80×24 terminal, this is **1,920 cell conversions per frame** even if only 1 character changed. At 60 FPS, that's 115,200 cell conversions/second unnecessarily.
+
+**Pattern:** This is a classic **unnecessary re-render anti-pattern**.
+
+**Recommendation:**
+- The `SnapshotLine` already has `is_dirty: bool` - use it!
+- Only process lines where `is_dirty == true`
+- Consider incremental GridBuffer updates rather than full reconstruction
+
+---
+
+### 3. SIMD Sequential Field Creation Suboptimal
+
+**Location:** `pixelflow-graphics/src/render/rasterizer/mod.rs:88`
+
+**Problem:** The rasterizer creates sequential SIMD coordinates inefficiently:
+
+```rust
+// rasterizer/mod.rs:88 - marked with TODO: sequential
+let xs = Field::from(fx) + Field::from(0.0);
+```
+
+**Impact:** Extra SIMD addition operation per pixel batch (PARALLELISM pixels). While minor per-operation, this is in the hottest loop of the renderer.
+
+**Recommendation:** Use `Field::sequential(x)` directly if available, or construct the SIMD vector in one operation.
+
+---
+
+## 🟡 MEDIUM Priority Issues
+
+### 4. Thread Creation Per Frame
+
+**Location:** `pixelflow-runtime/src/render_pool.rs:58-64`
+
+**Problem:** Uses `std::thread::scope()` creating new threads for every parallel render:
+
+```rust
+// render_pool.rs:58
+std::thread::scope(|s| {
+    for (chunk, start_y, end_y) in buffer_chunks {
+        s.spawn(move || { ... });
+    }
+});
+```
+
+**Impact:**
+- Thread creation/destruction overhead (~10-20μs per thread)
+- CPU cache thrashing as threads don't maintain affinity
+- Stack allocation per spawn
+
+**Recommendation:**
+- Use a persistent thread pool (e.g., `rayon` or custom pool)
+- Pin threads to cores for consistent cache behavior
+- Reuse worker threads across frames
+
+---
+
+### 5. Range Object Creation in UTF-8 Decoder Hot Path
+
+**Location:** `core-term/src/ansi/lexer.rs:86-94`
+
+**Problem:** Creates multiple `RangeInclusive` objects per byte in the decode hot path:
+
+```rust
+// lexer.rs:86-94 - called for EVERY byte
+fn decode_first_byte(&mut self, byte: u8) -> Utf8DecodeResult {
+    let utf8_ascii_range: std::ops::RangeInclusive<u8> = 0x00..=UTF8_ASCII_MAX;
+    let utf8_invalid_early_start_range: std::ops::RangeInclusive<u8> = ...;
+    let utf8_2_byte_start_range: std::ops::RangeInclusive<u8> = ...;
+    let utf8_3_byte_start_range: std::ops::RangeInclusive<u8> = ...;
+    // ...
+}
+```
+
+**Impact:** While Rust likely optimizes this, it's conceptually wasteful. For high-throughput terminal I/O (MB/s), every nanosecond matters.
+
+**Recommendation:**
+- Declare ranges as `const` at module level (already partially done with individual bounds)
+- Use direct comparison: `if byte <= UTF8_ASCII_MAX` instead of `utf8_ascii_range.contains(&byte)`
+- Consider a lookup table for byte classification
+
+---
+
+### 6. Actor Scheduler Backoff Overhead
+
+**Location:** `actor-scheduler/src/lib.rs:280-296`
+
+**Problem:** Uses `Instant::now().elapsed()` for jitter hash in backoff:
+
+```rust
+// lib.rs:290-291
+let now = Instant::now();
+let hash = (now.elapsed().as_nanos() as u64).wrapping_mul(JITTER_HASH_CONSTANT);
+```
+
+**Impact:**
+- Syscall overhead to get current time
+- `elapsed()` called immediately after `now()` is meaningless (always ~0)
+- Called in tight retry loop
+
+**Recommendation:**
+- Use a thread-local PRNG or simple counter for jitter
+- Or use `Instant::now().as_nanos()` directly if some time-based variation is desired
+
+---
+
+### 7. Potential Vec Reallocation in Token Collection
+
+**Location:** `core-term/src/ansi/lexer.rs:183-184, 288-290`
+
+**Problem:** `AnsiLexer` uses a `Vec<AnsiToken>` that grows dynamically:
+
+```rust
+pub struct AnsiLexer {
+    tokens: Vec<AnsiToken>,  // No capacity hint
+    // ...
+}
+```
+
+**Impact:** For large input bursts, the Vec may reallocate multiple times as it grows.
+
+**Recommendation:**
+- Pre-allocate with `Vec::with_capacity()` based on expected input size
+- Consider using a ring buffer or bounded queue
+- Reuse the Vec across calls via `clear()` instead of `take()`
+
+---
+
+## 🟢 LOW Priority / Informational
+
+### 8. Scrollback Buffer Memory Growth
+
+**Location:** `core-term/src/term/screen.rs:67-69`
+
+**Issue:** Unbounded VecDeque with configurable limit. Memory grows linearly with scroll history.
+
+**Mitigation:** Already has `scrollback_limit` from config. No action needed unless memory becomes an issue.
+
+---
+
+### 9. Bounds Clamping Instead of Assertions
+
+**Location:** `core-term/src/surface/grid.rs:126-128`
+
+**Issue:** Out-of-bounds access is silently clamped:
+
+```rust
+pub fn get(&self, col: usize, row: usize) -> &Cell {
+    let idx = row * self.cols + col;
+    &self.cells[idx.min(self.cells.len() - 1)]  // Silent clamp!
+}
+```
+
+**Impact:** This hides bugs - wrong cell returned instead of panic.
+
+**Recommendation:** Use `debug_assert!` to catch bounds violations in debug builds while keeping release performance.
+
+---
+
+### 10. Manifold Evaluation Depth
+
+**Location:** `pixelflow-core/src/` (manifold trait implementations)
+
+**Issue:** Each pixel triggers recursive manifold evaluation. Deep combinator nesting = repeated coordinate transforms.
+
+**Mitigation:** Monomorphization and `#[inline(always)]` help significantly. The design is intentional for flexibility.
+
+---
+
+## Algorithmic Complexity Summary
+
+| Operation | Current | Optimal | Gap |
+|-----------|---------|---------|-----|
+| Single char write | O(row_width) | O(1) | Arc::make_mut clones row |
+| Frame render (grid) | O(cols × rows) | O(dirty_cells) | No dirty tracking used |
+| UTF-8 decode | O(1) per byte | O(1) | Minor: range object creation |
+| Parallel render setup | O(threads) | O(1) | Thread creation per frame |
+
+---
+
+## Recommended Priority Order
+
+1. **Use dirty flags in GridBuffer::from_snapshot()** - Quick win, significant impact
+2. **Batch Arc mutations for terminal writes** - Medium effort, high impact for I/O-heavy workloads
+3. **Thread pool for render_pool** - Medium effort, consistent frame times
+4. **Optimize UTF-8 decoder** - Low effort, matters for high-throughput scenarios
+5. **Fix Instant backoff** - Trivial fix
+
+---
+
+## Profiling Recommendations
+
+To validate these findings, profile with:
+
+```bash
+# Build with profiling symbols
+RUSTFLAGS="-C debuginfo=2" cargo build --release
+
+# Use flamegraph
+cargo flamegraph --bin core-term -- [your test case]
+
+# Key metrics to measure:
+# - Time in GridBuffer::from_snapshot()
+# - Count of Arc::make_mut() clones
+# - render_pool thread spawn overhead
+# - Per-frame latency distribution
+```
+
+Focus profiling on:
+1. `cat /dev/urandom | head -c 1000000` - stress test terminal I/O
+2. `seq 1 100000` - rapid line output
+3. Interactive typing - latency-sensitive path
