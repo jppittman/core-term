@@ -108,8 +108,9 @@ impl<P: Pixel> From<EngineControl<P>>
 pub const DISPLAY_EVENT_BUFFER_SIZE: usize = 256;
 pub const DISPLAY_EVENT_BURST_LIMIT: usize = 32;
 
+// We wrap ActorHandle in Arc to allow sharing, as ActorHandle is no longer Clone.
 pub type EngineActorHandle<P> =
-    ActorHandle<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>;
+    Arc<ActorHandle<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>>;
 pub type EngineActorScheduler<P> =
     ActorScheduler<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>;
 
@@ -120,5 +121,6 @@ pub fn create_engine_actor<P: Pixel>(
     // We should probably remove it from the signature in a future refactor,
     // but for now we keep it for backward compatibility and ignore it.
     let _ = wake_handler;
-    actor_scheduler::ActorScheduler::new(DISPLAY_EVENT_BUFFER_SIZE, DISPLAY_EVENT_BURST_LIMIT)
+    let (handle, scheduler) = actor_scheduler::ActorScheduler::new(DISPLAY_EVENT_BUFFER_SIZE, DISPLAY_EVENT_BURST_LIMIT);
+    (Arc::new(handle), scheduler)
 }

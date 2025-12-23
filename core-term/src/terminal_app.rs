@@ -65,19 +65,19 @@ pub fn spawn_terminal_app<P: Pixel + 'static>(
     config: Config,
     engine_tx: EngineActorHandle<P>,
 ) -> std::io::Result<(
-    actor_scheduler::ActorHandle<EngineEventData, EngineEventControl, EngineEventManagement>,
+    std::sync::Arc<actor_scheduler::ActorHandle<EngineEventData, EngineEventControl, EngineEventManagement>>,
     std::thread::JoinHandle<()>,
 )> {
-    let (app_tx, mut app_rx) =
+    let (app_tx, app_rx) =
         ActorScheduler::<EngineEventData, EngineEventControl, EngineEventManagement>::new(10, 128);
 
-    let mut app = TerminalApp::new(emulator, pty_tx, pty_rx, config, engine_tx);
+    let app = TerminalApp::new(emulator, pty_tx, pty_rx, config, engine_tx);
 
     let handle = std::thread::Builder::new()
         .name("terminal-app".to_string())
         .spawn(move || {
-            app_rx.run(&mut app);
+            app_rx.run(app);
         })?;
 
-    Ok((app_tx, handle))
+    Ok((std::sync::Arc::new(app_tx), handle))
 }

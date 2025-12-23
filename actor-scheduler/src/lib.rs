@@ -16,6 +16,7 @@
 //!
 //! ```rust
 //! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler};
+//! use std::sync::Arc;
 //!
 //! struct MyHandler;
 //!
@@ -29,14 +30,16 @@
 //!     fn handle_management(&mut self, msg: String) {
 //!         println!("Management: {}", msg);
 //!     }
+//!     fn park(&mut self, _: actor_scheduler::ParkHint) {}
 //! }
 //!
-//! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
+//! let (tx, rx) = ActorScheduler::<String, String, String>::new(10, 100);
+//! let tx = Arc::new(tx);
 //!
 //! // Spawn receiver thread
 //! std::thread::spawn(move || {
-//!     let mut handler = MyHandler;
-//!     rx.run(&mut handler);
+//!     let handler = MyHandler;
+//!     rx.run(handler);
 //! });
 //!
 //! // Send messages from any thread
@@ -228,19 +231,8 @@ impl<D, C, M> std::fmt::Debug for ActorHandle<D, C, M> {
     }
 }
 
-// Manual Clone implementation - we don't require D, C, M to be Clone
-// because we're just cloning the channel senders, not the messages.
-impl<D, C, M> Clone for ActorHandle<D, C, M> {
-    fn clone(&self) -> Self {
-        Self {
-            tx_doorbell: self.tx_doorbell.clone(),
-            tx_data: self.tx_data.clone(),
-            tx_control: self.tx_control.clone(),
-            tx_mgmt: self.tx_mgmt.clone(),
-            wake_handler: self.wake_handler.clone(),
-        }
-    }
-}
+// Clone implementation removed to enforce shared ownership via Arc or references.
+// Use Arc<ActorHandle<...>> if you need to share the handle across threads.
 
 /// Send with retry and exponential backoff + jitter for fairness.
 ///
@@ -415,10 +407,10 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// Blocks on the Doorbell channel. Prioritizes Control > Management > Data.
     ///
     /// # Arguments
-    /// * `actor` - Implementation of `Actor` trait
+    /// * `actor` - Implementation of `Actor` trait. Takes ownership of the actor.
     ///
     /// This method runs forever until all senders are dropped.
-    pub fn run<A>(&mut self, actor: &mut A)
+    pub fn run<A>(self, mut actor: A)
     where
         A: Actor<D, C, M>,
     {
@@ -460,60 +452,79 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 }
             }
 
-            // Determine Hint
-            // If we hit burst limit or have data pending (implied by loop exit condition logic that might be complex,
-            // but here we just exited the loop), we might need to poll?
-            // Actually, `keep_working` logic in the `while` loop above is a bit simplified.
-            // If we exited the inner `while keep_working`, it means queues are empty
-            // OR we yielded voluntarily?
-            // Reviewing the inner loop:
-            // It loops while `keep_working` is true.
-            // `keep_working` is set true if we processed Control or Mgmt.
-            // For Data, if we hit burst limit, we set `keep_working = true`.
-            // So if `keep_working` was true, we loop again.
-            // Thus, when we exit the `while keep_working` loop, it means:
-            // 1. Control queue empty.
-            // 2. Mgmt queue empty.
-            // 3. Data queue empty OR data processed < burst limit.
-
-            // So effectively, we are "done" with immediate work.
-            // Therefore, we should probably WAIT.
-
-            // However, the `DriverActor` spec says:
-            // "If we hit burst limit or have data pending, use Poll."
-            // But here, `ActorScheduler::run` logic *already drains* until empty or burst limit *within* the loop?
-            // Wait, my strict reading of the previous `run` implementation:
-            // It loops `while keep_working`.
-            // If data limit is hit, `keep_working=true`.
-            // So it would loop again immediately! It wouldn't call `park`?
-
-            // Actually, the previous implementation had `actor.park()` *outside* the `while keep_working` loop?
-            // Yes.
-            // So `park` is only called when we are fully drained (or at least satisfied).
-            // So `ParkHint::Wait` seems appropriate.
-
-            // BUT, if we want to allow the "OS Loop" to run, we might want to park *more often*?
-            // The user spec for `DriverActor` says:
-            // "1. Drain Scheduler ... 2. Determine Hint ... 3. Enter OS Loop".
-            // It seems `DriverActor.run()` *is* the loop, and it calls `platform.park()`.
-
-            // Wait, `ActorScheduler::run` takes ownership of the loop!
-            // The provided `DriverActor` spec shows:
-            // `pub fn run(&mut self) { loop { ... scheduler drain ... platform.park(hint) } }`
-            // This suggests `DriverActor` does NOT use `ActorScheduler::run`. It implements its own loop using `scheduler`.
-
-            // Ah! `ActorScheduler` *struct* has the receivers.
-            // `ActorScheduler::run` is a convenience helper method in `lib.rs`.
-            // The user's `DriverActor` spec re-implements the drain logic manually (implied by "We implement the drain loop manually here").
-
-            // So updating `ActorScheduler::run` in `lib.rs` is good for *other* consumers (like tests),
-            // but `DriverActor` might implement its own.
-            // Still, I should update `ActorScheduler::run` to match the trait signature.
-
-            // In the default `run` implementation, since we drain everything we can,
-            // we probably want `ParkHint::Wait` because we have nothing left to do.
             actor.park(ParkHint::Wait);
         }
+    }
+}
+
+/// A collection of actors managed as a single unit.
+///
+/// `Troupe` manages the lifecycle of multiple actors by owning their thread handles.
+/// It simplifies the "bootstrapping" process by providing a central registry for spawned actors.
+pub struct Troupe {
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Troupe {
+    /// Create a new empty Troupe.
+    pub fn new() -> Self {
+        Self {
+            threads: Vec::new(),
+        }
+    }
+
+    /// Spawn an actor into a new thread managed by this Troupe.
+    ///
+    /// This method takes ownership of the scheduler and the actor, spawns a thread,
+    /// and runs the actor loop in that thread.
+    pub fn spawn<A, D, C, M>(&mut self, scheduler: ActorScheduler<D, C, M>, actor: A)
+    where
+        A: Actor<D, C, M> + Send + 'static,
+        D: Send + 'static,
+        C: Send + 'static,
+        M: Send + 'static,
+    {
+        let handle = std::thread::Builder::new()
+            .name(format!("actor-{}", self.threads.len()))
+            .spawn(move || {
+                scheduler.run(actor);
+            })
+            .expect("Failed to spawn actor thread");
+
+        self.threads.push(handle);
+    }
+
+    /// Spawn an actor into a new thread managed by this Troupe, with a custom name.
+    pub fn spawn_named<A, D, C, M>(&mut self, name: &str, scheduler: ActorScheduler<D, C, M>, actor: A)
+    where
+        A: Actor<D, C, M> + Send + 'static,
+        D: Send + 'static,
+        C: Send + 'static,
+        M: Send + 'static,
+    {
+        let handle = std::thread::Builder::new()
+            .name(name.to_string())
+            .spawn(move || {
+                scheduler.run(actor);
+            })
+            .expect("Failed to spawn actor thread");
+
+        self.threads.push(handle);
+    }
+
+    /// Wait for all actors in the Troupe to finish.
+    ///
+    /// This blocks the current thread until all actor threads have joined.
+    pub fn wait(self) {
+        for handle in self.threads {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Default for Troupe {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -546,13 +557,14 @@ mod tests {
 
     #[test]
     fn verify_priority_ordering_contract() {
-        let (tx, mut rx) = ActorScheduler::new(2, 10);
+        let (tx, rx) = ActorScheduler::new(2, 10);
+        let tx = Arc::new(tx); // Use Arc since Clone is removed
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_clone = log.clone();
 
         let handle = thread::spawn(move || {
-            let mut handler = TestHandler { log: log_clone };
-            rx.run(&mut handler);
+            let handler = TestHandler { log: log_clone };
+            rx.run(handler);
         });
 
         // Send messages in mixed order
@@ -583,13 +595,14 @@ mod tests {
 
     #[test]
     fn verify_data_lane_backpressure_contract() {
-        let (tx, mut rx) = ActorScheduler::new(2, 1); // Buffer size 1, burst limit 2
+        let (tx, rx) = ActorScheduler::new(2, 1); // Buffer size 1, burst limit 2
+        let tx = Arc::new(tx);
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_clone = log.clone();
 
         thread::spawn(move || {
-            let mut handler = TestHandler { log: log_clone };
-            rx.run(&mut handler);
+            let handler = TestHandler { log: log_clone };
+            rx.run(handler);
         });
 
         let tx_clone = tx.clone();
@@ -629,16 +642,38 @@ mod tests {
             fn park(&mut self, _hint: ParkHint) {}
         }
 
-        let (tx, mut rx) = ActorScheduler::new(10, 100);
+        let (tx, rx) = ActorScheduler::new(10, 100);
+
+        // We can't return the actor anymore from join handle because run() consumes it and drops it.
+        // So we need to use a shared state to verify the result, OR implement return from run?
+        // The previous test returned `handler`. But `run` now consumes it.
+        // We can use Arc<Mutex> for state or Channels.
+
+        // Wrap handler to send state on Drop? Or just share state.
+        // Let's use Arc<Mutex> for counts.
+        let counts = Arc::new(Mutex::new((0, 0, 0)));
+        let counts_clone = counts.clone();
+
+        struct SharedHandler {
+            counts: Arc<Mutex<(usize, usize, usize)>>,
+        }
+
+        impl SchedulerHandler<i32, String, bool> for SharedHandler {
+            fn handle_data(&mut self, _: i32) {
+                self.counts.lock().unwrap().0 += 1;
+            }
+            fn handle_control(&mut self, _: String) {
+                self.counts.lock().unwrap().1 += 1;
+            }
+            fn handle_management(&mut self, _: bool) {
+                self.counts.lock().unwrap().2 += 1;
+            }
+            fn park(&mut self, _hint: ParkHint) {}
+        }
 
         let handle = thread::spawn(move || {
-            let mut handler = CountingHandler {
-                data_count: 0,
-                ctrl_count: 0,
-                mgmt_count: 0,
-            };
-            rx.run(&mut handler);
-            handler
+            let handler = SharedHandler { counts: counts_clone };
+            rx.run(handler);
         });
 
         tx.send(Message::Data(1)).unwrap();
@@ -649,9 +684,53 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         drop(tx);
 
-        let actor = handle.join().unwrap();
-        assert_eq!(actor.data_count, 2);
-        assert_eq!(actor.ctrl_count, 1);
-        assert_eq!(actor.mgmt_count, 1);
+        handle.join().unwrap();
+        let final_counts = counts.lock().unwrap();
+        assert_eq!(final_counts.0, 2);
+        assert_eq!(final_counts.1, 1);
+        assert_eq!(final_counts.2, 1);
+    }
+
+    #[test]
+    fn verify_troupe_lifecycle() {
+        let mut troupe = Troupe::new();
+        let counts = Arc::new(Mutex::new((0, 0, 0)));
+
+        struct SharedHandler {
+            counts: Arc<Mutex<(usize, usize, usize)>>,
+        }
+
+        impl SchedulerHandler<i32, String, bool> for SharedHandler {
+            fn handle_data(&mut self, _: i32) {
+                self.counts.lock().unwrap().0 += 1;
+            }
+            fn handle_control(&mut self, _: String) {
+                self.counts.lock().unwrap().1 += 1;
+            }
+            fn handle_management(&mut self, _: bool) {
+                self.counts.lock().unwrap().2 += 1;
+            }
+            fn park(&mut self, _hint: ParkHint) {}
+        }
+
+        let (tx1, rx1) = ActorScheduler::new(10, 100);
+        let counts1 = counts.clone();
+        troupe.spawn(rx1, SharedHandler { counts: counts1 });
+
+        let (tx2, rx2) = ActorScheduler::new(10, 100);
+        let counts2 = counts.clone();
+        troupe.spawn(rx2, SharedHandler { counts: counts2 });
+
+        tx1.send(Message::Data(1)).unwrap();
+        tx2.send(Message::Data(2)).unwrap();
+
+        thread::sleep(Duration::from_millis(50));
+        drop(tx1);
+        drop(tx2);
+
+        troupe.wait();
+
+        let final_counts = counts.lock().unwrap();
+        assert_eq!(final_counts.0, 2);
     }
 }

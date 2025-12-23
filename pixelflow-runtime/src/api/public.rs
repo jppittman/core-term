@@ -112,7 +112,24 @@ impl Application
             EngineEvent::Management(mgmt) => actor_scheduler::Message::Management(mgmt),
             EngineEvent::Data(data) => actor_scheduler::Message::Data(data),
         };
-        self.send(msg)
+        // Explicitly call ActorHandle::send on the dereferenced Arc to resolve ambiguity
+        // with Application::send which takes the same name.
+        actor_scheduler::ActorHandle::send(self, msg)
+            .map_err(|e| anyhow::anyhow!("Failed to send event to application: {}", e))
+    }
+}
+
+impl Application
+    for std::sync::Arc<actor_scheduler::ActorHandle<EngineEventData, EngineEventControl, EngineEventManagement>>
+{
+    fn send(&self, event: EngineEvent) -> anyhow::Result<()> {
+        let msg = match event {
+            EngineEvent::Control(ctrl) => actor_scheduler::Message::Control(ctrl),
+            EngineEvent::Management(mgmt) => actor_scheduler::Message::Management(mgmt),
+            EngineEvent::Data(data) => actor_scheduler::Message::Data(data),
+        };
+        // Explicitly call ActorHandle::send
+        actor_scheduler::ActorHandle::send(self, msg)
             .map_err(|e| anyhow::anyhow!("Failed to send event to application: {}", e))
     }
 }

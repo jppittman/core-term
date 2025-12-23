@@ -26,18 +26,18 @@ impl ParserThread {
     /// * `rx` - Receiver for raw byte batches
     /// * `cmd_tx` - Sender for parsed ANSI command batches
     pub fn spawn(
-        mut rx: ActorScheduler<Vec<u8>, NoControl, NoManagement>,
+        rx: ActorScheduler<Vec<u8>, NoControl, NoManagement>,
         cmd_tx: SyncSender<Vec<AnsiCommand>>,
     ) -> anyhow::Result<Self> {
         let handle = std::thread::Builder::new()
             .name("pty-parser".to_string())
             .spawn(move || {
                 debug!("Parser thread started");
-                let mut parser_actor = ParserActor {
+                let parser_actor = ParserActor {
                     parser: AnsiProcessor::new(),
                     cmd_tx,
                 };
-                rx.run(&mut parser_actor);
+                rx.run(parser_actor);
                 debug!("Parser thread exited");
             })?;
 

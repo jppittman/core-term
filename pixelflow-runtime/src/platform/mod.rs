@@ -17,7 +17,7 @@ use crate::config::EngineConfig;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt};
 use crate::input::MouseButton;
 use crate::render_pool::render_parallel;
-use actor_scheduler::{Actor, Message};
+use actor_scheduler::{Actor, Message, Troupe};
 use std::time::Instant;
 
 #[cfg(target_os = "macos")]
@@ -57,10 +57,11 @@ pub type PlatformDriver = DriverActor<ActivePlatform>;
 pub struct EnginePlatform {
     driver: PlatformDriver,
     driver_handle:
-        actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
+        std::sync::Arc<actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>>,
     config: EngineConfig,
     #[allow(dead_code)]
     handle: EngineActorHandle<PlatformPixel>,
+    troupe: Troupe,
 }
 
 impl EnginePlatform {
@@ -85,6 +86,8 @@ impl EnginePlatform {
             DisplayMgmt,
         >(1024, Some(waker));
 
+        let driver_handle = std::sync::Arc::new(driver_handle);
+
         Self::new_with_platform(app, engine_handle, scheduler, config, platform, driver_handle, driver_scheduler)
     }
 
@@ -108,89 +111,112 @@ impl EnginePlatform {
             DisplayMgmt,
         >(1024, None);
 
+        let driver_handle = std::sync::Arc::new(driver_handle);
+
         Self::new_with_platform(app, engine_handle, scheduler, config, platform, driver_handle, driver_scheduler)
     }
 
     fn new_with_platform(
         app: impl Application + Send + 'static,
         engine_handle: EngineActorHandle<PlatformPixel>,
-        scheduler: EngineActorScheduler<PlatformPixel>,
+        engine_scheduler: EngineActorScheduler<PlatformPixel>,
         config: EngineConfig,
         platform: ActivePlatform,
-        driver_handle: actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
+        driver_handle: std::sync::Arc<actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>>,
         driver_scheduler: actor_scheduler::ActorScheduler<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
     ) -> Result<Self> {
+        let mut troupe = Troupe::new();
 
         // 3. Create DriverActor
         let driver = DriverActor::new(driver_scheduler, platform);
 
-        // Spawn engine thread with app
-        // Driver must be CLONED? No, DriverActor is not clone.
-        // `driver` runs on main thread.
-        // The *Handle* (`driver_handle`) is what we give to the engine to talk to the driver.
-        // But `EnginePlatform::driver` field is `PlatformDriver` (DriverActor).
-        // Wait, `EnginePlatform` stores `driver` and calls `run` on it.
-        // `driver.send`?? `DriverActor` does not have `send`.
-        // `driver_handle` has `send`.
-
-        // Refactor `EnginePlatform` to hold `driver` (to run it) and `driver_handle` (to pass to engine).
-
-        // Spawn engine thread
+        // 4. Create VsyncActor
         let target_fps = config.performance.target_fps;
+        let (vsync_handle, vsync_scheduler) = actor_scheduler::create_actor::<
+            crate::vsync_actor::RenderedResponse,
+            crate::vsync_actor::VsyncCommand,
+            crate::vsync_actor::VsyncManagement,
+        >(1024, None);
+        let vsync_handle = std::sync::Arc::new(vsync_handle);
+
+        let vsync_actor = crate::vsync_actor::VsyncActor::new(
+            target_fps as f64,
+            engine_handle.clone(),
+            vsync_handle.clone(),
+        );
+
+        // Spawn Vsync Actor
+        troupe.spawn_named("vsync-actor", vsync_scheduler, vsync_actor);
+        let _ = vsync_handle.send(crate::vsync_actor::VsyncCommand::Start);
+
+        // 5. Create EngineHandler
         let render_threads = config.performance.render_threads;
+        let driver_handle_clone = driver_handle.clone();
 
-        let driver_handle_clone = driver_handle.clone(); // For engine thread
-        let engine_handle_clone = engine_handle.clone();
+        let engine_handler = EngineHandler {
+            app,
+            engine_handle: engine_handle.clone(),
+            driver_handle: driver_handle_clone,
+            framebuffer: None,
+            physical_width: 0,
+            physical_height: 0,
+            scale_factor: 1.0,
+            vsync_actor: Some(vsync_handle),
+            render_threads,
+            frame_count: 0,
+        };
 
-        std::thread::spawn(move || {
-            let loop_options = crate::render_pool::RenderOptions {
-                num_threads: render_threads,
-            };
-            if let Err(e) = engine_loop(
-                app,
-                engine_handle_clone,
-                driver_handle_clone,
-                scheduler,
-                target_fps,
-                loop_options,
-            ) {
-                log::error!("Engine loop error: {}", e);
-            }
-        });
+        // Spawn Engine Actor
+        troupe.spawn_named("engine-actor", engine_scheduler, engine_handler);
 
         Ok(Self {
             driver,
             driver_handle,
             config,
             handle: engine_handle,
+            troupe,
         })
     }
 
     /// Run the engine (driver loop on main thread).
-    pub fn run(mut self) -> Result<()> {
+    pub fn run(self) -> Result<()> {
         info!("EnginePlatform::run() - Starting driver on main thread");
 
-        // Send CreateWindow command
+        // Destructure self to get ownership of parts
+        let EnginePlatform { driver, driver_handle, config, troupe, .. } = self;
+
         // Send CreateWindow command
         // DriverCommand is internal API enum, we need to map to DisplayMgmt
-        let width = (self.config.window.columns as usize * self.config.window.cell_width_px) as u32;
-        let height = (self.config.window.rows as usize * self.config.window.cell_height_px) as u32;
+        let width = (config.window.columns as usize * config.window.cell_width_px) as u32;
+        let height = (config.window.rows as usize * config.window.cell_height_px) as u32;
 
         // Manual mapping to DisplayMgmt::Create
-        let _ = self
-            .driver_handle
+        let _ = driver_handle
             .send(Message::Management(DisplayMgmt::Create {
                 id: WindowId::PRIMARY,
                 settings: crate::api::public::WindowDescriptor {
-                    title: self.config.window.title.clone(),
+                    title: config.window.title.clone(),
                     width,
                     height,
                     ..Default::default()
                 },
             }));
 
+        // Explicitly drop driver_handle to ensure the driver's channel can be closed if needed
+        // (though DriverActor runs on the scheduler which owns the receiver, so dropping sender
+        // here is good practice to avoid holding it unnecessarily during the blocking run).
+        // More critically, if the driver waits for all senders to disconnect to shut down,
+        // we MUST drop this handle.
+        drop(driver_handle);
+
         // Run driver on main thread (blocks)
-        self.driver.run()
+        let res = driver.run();
+
+        // Wait for other actors to finish when driver exits
+        info!("EnginePlatform: Driver exited, waiting for troupe shutdown...");
+        troupe.wait();
+
+        res
     }
 }
 
@@ -200,17 +226,17 @@ struct EngineHandler<A: Application> {
     engine_handle: EngineActorHandle<PlatformPixel>,
     // driver: PlatformDriver, // EngineHandler does not need the DriverActor, only the handle
     driver_handle:
-        actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
+        std::sync::Arc<actor_scheduler::ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>>,
     framebuffer: Option<Frame<PlatformPixel>>,
     physical_width: u32,
     physical_height: u32,
     scale_factor: f64,
     vsync_actor: Option<
-        actor_scheduler::ActorHandle<
+        std::sync::Arc<actor_scheduler::ActorHandle<
             crate::vsync_actor::RenderedResponse,
             crate::vsync_actor::VsyncCommand,
             crate::vsync_actor::VsyncManagement,
-        >,
+        >>,
     >,
     render_threads: usize,
     frame_count: u64,
@@ -372,20 +398,16 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
                         refresh_rate,
                     ));
                 } else {
-                    // Spawn VSync actor for the first time
-                    info!("Engine: Spawning VSync actor with {:.2} Hz", refresh_rate);
-                    let vsync_actor = crate::vsync_actor::VsyncActor::spawn(
-                        refresh_rate,
-                        self.engine_handle.clone(),
-                    );
-                    let _ = vsync_actor.send(crate::vsync_actor::VsyncCommand::Start);
-                    self.vsync_actor = Some(vsync_actor);
+                    // This path should ideally be unreachable now that Vsync is spawned in new()
+                    // But if we support dynamic respawning, we'd need access to Troupe or handle.
+                    // For now, logging error.
+                    log::error!("Engine: Cannot spawn new VSync actor - missing Troupe access");
                 }
             }
             EngineControl::VsyncActorReady(actor) => {
                 info!("Engine: VSync actor received from platform");
                 let _ = actor.send(crate::vsync_actor::VsyncCommand::Start);
-                self.vsync_actor = Some(actor);
+                self.vsync_actor = Some(std::sync::Arc::new(actor));
             }
             EngineControl::Quit => {
                 info!("Engine: Quit requested from app");
@@ -449,45 +471,6 @@ impl<A: Application> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixe
     fn park(&mut self, _hint: actor_scheduler::ParkHint) {
         // Engine loop doesn't have periodic tasks, it reacts to messages
     }
-}
-
-fn engine_loop<A: Application>(
-    app: A,
-    engine_handle: EngineActorHandle<PlatformPixel>,
-    driver_handle: actor_scheduler::ActorHandle<
-        DisplayData<PlatformPixel>,
-        DisplayControl,
-        DisplayMgmt,
-    >,
-    mut scheduler: EngineActorScheduler<PlatformPixel>,
-    target_fps: u32,
-    render_options: crate::render_pool::RenderOptions,
-) -> Result<()> {
-    info!(
-        "Engine loop started (scheduler model, {} threads, target FPS: {})",
-        render_options.num_threads, target_fps
-    );
-
-    // Spawn VSync actor immediately to start the render loop
-    let vsync_actor =
-        crate::vsync_actor::VsyncActor::spawn(target_fps as f64, engine_handle.clone());
-    let _ = vsync_actor.send(crate::vsync_actor::VsyncCommand::Start);
-
-    let mut handler = EngineHandler {
-        app,
-        engine_handle,
-        driver_handle,
-        framebuffer: None,
-        physical_width: 0,
-        physical_height: 0,
-        scale_factor: 1.0,
-        vsync_actor: Some(vsync_actor),
-        render_threads: render_options.num_threads,
-        frame_count: 0,
-    };
-
-    scheduler.run(&mut handler);
-    Ok(())
 }
 
 /// Convert DisplayEvent to EngineEvent, converting physical to logical pixels.

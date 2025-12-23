@@ -25,20 +25,22 @@ impl MockEngine {
     pub fn new() -> Self {
         let messages = Arc::new(Mutex::new(Vec::new()));
 
-        let mut collector = MessageCollector {
+        let collector = MessageCollector {
             messages: messages.clone(),
         };
 
         // Create scheduler channels
-        let (handle, mut scheduler) = actor_scheduler::create_actor::<
+        let (handle, scheduler) = actor_scheduler::create_actor::<
             EngineData<PlatformPixel>,
             EngineControl<PlatformPixel>,
             AppManagement,
         >(100, None);
 
+        let handle = Arc::new(handle);
+
         // Spawn background thread to process messages
         let thread = std::thread::spawn(move || {
-            scheduler.run(&mut collector);
+            scheduler.run(collector);
         });
 
         Self {

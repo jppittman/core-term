@@ -11,7 +11,7 @@
 
 use actor_scheduler::{Actor, ActorHandle};
 use log::info;
-use std::sync::mpsc::Sender;
+use std::sync::{Arc, mpsc::Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -83,10 +83,10 @@ pub struct VsyncActor<P: pixelflow_graphics::Pixel> {
 const MAX_TOKENS: u32 = 3;
 
 impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
-    fn new(
+    pub fn new(
         refresh_rate: f64,
         engine_handle: crate::api::private::EngineActorHandle<P>,
-        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+        self_handle: Arc<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>,
     ) -> Self {
         let interval = Duration::from_secs_f64(1.0 / refresh_rate);
 
@@ -139,27 +139,33 @@ impl<P: pixelflow_graphics::Pixel> VsyncActor<P> {
     /// Spawn VSync actor in a new thread.
     ///
     /// Returns an ActorHandle that can be used to send commands and responses.
+    ///
+    /// # Deprecated
+    /// This method spawns a detached thread. Use `Troupe::spawn` with `VsyncActor::new` instead
+    /// for proper lifecycle management.
+    #[deprecated(note = "Use Troupe::spawn with VsyncActor::new")]
     pub fn spawn(
         refresh_rate: f64,
         engine_handle: crate::api::private::EngineActorHandle<P>,
-    ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>
+    ) -> Arc<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>
     where
         P: 'static,
     {
-        let (handle, mut scheduler) =
+        let (handle, scheduler) =
             actor_scheduler::create_actor::<RenderedResponse, VsyncCommand, VsyncManagement>(
                 1024, // Data buffer (RenderedResponse)
                 None, // No wake handler
             );
 
+        let handle = Arc::new(handle);
         // We need to pass the handle to new(), so we clone it
         let actor_handle = handle.clone();
 
         thread::Builder::new()
             .name("vsync-actor".to_string())
             .spawn(move || {
-                let mut actor = VsyncActor::new(refresh_rate, engine_handle, actor_handle);
-                scheduler.run(&mut actor);
+                let actor = VsyncActor::new(refresh_rate, engine_handle, actor_handle);
+                scheduler.run(actor); // Passing by value, correct for new ownership model
             })
             .expect("Failed to spawn vsync actor thread");
 

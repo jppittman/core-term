@@ -34,7 +34,7 @@ pub use x11_waker::X11Waker;
 mod x11_waker {
     use super::*;
     use std::mem;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, OnceLock};
     use x11::xlib;
 
     /// Inner state for X11Waker, populated once window exists.
@@ -58,7 +58,7 @@ mod x11_waker {
     /// X11 window is created. Before initialization, `wake()` is a no-op.
     #[derive(Clone)]
     pub struct X11Waker {
-        inner: Arc<Mutex<Option<WakerInner>>>,
+        inner: Arc<OnceLock<WakerInner>>,
     }
 
     impl Default for X11Waker {
@@ -73,7 +73,7 @@ mod x11_waker {
         /// Call `set_target()` once the X11 window is created.
         pub fn new() -> Self {
             Self {
-                inner: Arc::new(Mutex::new(None)),
+                inner: Arc::new(OnceLock::new()),
             }
         }
 
@@ -87,8 +87,7 @@ mod x11_waker {
             unsafe {
                 let wake_atom = xlib::XInternAtom(display, c"PIXELFLOW_WAKE".as_ptr(), xlib::False);
 
-                let mut guard = self.inner.lock().unwrap();
-                *guard = Some(WakerInner {
+                let _ = self.inner.set(WakerInner {
                     display,
                     window,
                     wake_atom,
@@ -98,14 +97,13 @@ mod x11_waker {
 
         /// Get the wake atom for filtering in the event loop.
         pub fn wake_atom(&self) -> Option<xlib::Atom> {
-            self.inner.lock().unwrap().as_ref().map(|i| i.wake_atom)
+            self.inner.get().map(|i| i.wake_atom)
         }
     }
 
     impl EventLoopWaker for X11Waker {
         fn wake(&self) -> Result<()> {
-            let guard = self.inner.lock().unwrap();
-            if let Some(inner) = guard.as_ref() {
+            if let Some(inner) = self.inner.get() {
                 unsafe {
                     let mut event: xlib::XClientMessageEvent = mem::zeroed();
                     event.type_ = xlib::ClientMessage;

@@ -42,26 +42,12 @@ impl<P: Platform> DriverActor<P> {
     }
 
     /// Run the driver loop.
-    pub fn run(&mut self) -> Result<()> {
-        loop {
-            // 1. Drain Scheduler (Priority Logic)
-            // We implement the drain loop manually here to support the ParkHint
-            // and because we want to drive the platform's `park` method.
+    pub fn run(self) -> Result<()> {
+        // 1. Drain Scheduler (Priority Logic)
+        // We delegate to scheduler.run which loops forever and calls actor.park(hint).
+        self.scheduler.run(self.platform);
 
-            // This is effectively `ActorScheduler::run` but unrolled to allow `park` with specific hint.
-            // Actually, we can use `scheduler.run(&mut self.platform)` IF `ActorScheduler` supported `ParkHint`.
-            // Which I updated it to do!
-
-            // So I can just delegate to scheduler.run?
-            // `scheduler.run` loops forever.
-            // But `Platform::park` needs to be called.
-            // Yes, `scheduler.run` calls `actor.park(hint)`.
-            // So this `run` method is just a wrapper.
-
-            self.scheduler.run(&mut self.platform);
-
-            // If run returns, it means we are shutting down (channels closed).
-            return Ok(());
-        }
+        // If run returns, it means we are shutting down (channels closed).
+        Ok(())
     }
 }
