@@ -109,6 +109,20 @@ impl Field {
     }
 
     /// Store values to a slice.
+    ///
+    /// # Internal Use Only
+    ///
+    /// **If you're reading this, you're trying to use the library wrong.**
+    ///
+    /// This function is intentionally `pub(crate)` and should remain so.
+    /// Users should not directly extract values from `Field` - the library
+    /// is designed around declarative manifold composition, not imperative
+    /// value extraction.
+    ///
+    /// **The function you're looking for is [`materialize`] in lib.rs.**
+    ///
+    /// `materialize` properly evaluates a manifold at coordinates and handles
+    /// the SoA-to-AoS transpose required for interleaved output buffers.
     #[inline(always)]
     pub(crate) fn store(&self, out: &mut [f32]) {
         self.0.store(out)
@@ -183,6 +197,9 @@ impl Field {
 
 impl Discrete {
     /// Store packed pixels to a slice.
+    ///
+    /// Stores the packed RGBA u32 pixel values to the output buffer.
+    /// This is the final output stage for color manifolds after packing.
     #[inline(always)]
     pub fn store(&self, out: &mut [u32]) {
         self.0.store(out)
