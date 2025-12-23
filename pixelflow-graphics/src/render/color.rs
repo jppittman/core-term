@@ -88,6 +88,28 @@ impl NamedColor {
     }
 }
 
+// Make NamedColor a manifold - an infinite field of that ANSI color
+impl pixelflow_core::Manifold for NamedColor {
+    type Output = pixelflow_core::Discrete;
+
+    #[inline(always)]
+    fn eval_raw(
+        &self,
+        _x: pixelflow_core::Field,
+        _y: pixelflow_core::Field,
+        _z: pixelflow_core::Field,
+        _w: pixelflow_core::Field,
+    ) -> pixelflow_core::Discrete {
+        let (r, g, b) = self.to_rgb();
+        pixelflow_core::Discrete::pack(
+            pixelflow_core::Field::from(r as f32 / 255.0),
+            pixelflow_core::Field::from(g as f32 / 255.0),
+            pixelflow_core::Field::from(b as f32 / 255.0),
+            pixelflow_core::Field::from(1.0),
+        )
+    }
+}
+
 /// Represents a semantic color value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -114,6 +136,40 @@ impl Color {
     #[inline]
     pub fn to_bgra8(self) -> Bgra8 {
         Bgra8::from(self.to_rgba8())
+    }
+
+    /// Convert to normalized f32 RGBA components.
+    #[inline]
+    pub fn to_f32_rgba(self) -> (f32, f32, f32, f32) {
+        let rgba = self.to_rgba8();
+        (
+            rgba.r() as f32 / 255.0,
+            rgba.g() as f32 / 255.0,
+            rgba.b() as f32 / 255.0,
+            rgba.a() as f32 / 255.0,
+        )
+    }
+}
+
+// Make Color a manifold - an infinite field of that color
+impl pixelflow_core::Manifold for Color {
+    type Output = pixelflow_core::Discrete;
+
+    #[inline(always)]
+    fn eval_raw(
+        &self,
+        _x: pixelflow_core::Field,
+        _y: pixelflow_core::Field,
+        _z: pixelflow_core::Field,
+        _w: pixelflow_core::Field,
+    ) -> pixelflow_core::Discrete {
+        let (r, g, b, a) = self.to_f32_rgba();
+        pixelflow_core::Discrete::pack(
+            pixelflow_core::Field::from(r),
+            pixelflow_core::Field::from(g),
+            pixelflow_core::Field::from(b),
+            pixelflow_core::Field::from(a),
+        )
     }
 }
 

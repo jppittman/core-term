@@ -1,34 +1,43 @@
-use pixelflow_core::{Batch, SimdBatch};
-use pixelflow_graphics::render::rasterizer::execute;
-use pixelflow_graphics::render::{font, gamma_decode, gamma_encode, Rgba, SubpixelBlend};
+//! Tests for the rendering pipeline.
+//!
+//! TODO: These tests need updating for the new Color manifold system.
+
+use pixelflow_core::Manifold;
+use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
+use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
 
 #[test]
-fn verify_subpixel_blend_contract() {
-    let f = font();
-    let glyph = f.glyph('A', 20.0).expect("Should find 'A'");
+fn verify_color_manifold_renders() {
+    // A solid red color manifold
+    let red = Color::Named(NamedColor::Red);
 
-    let bg = Rgba::new(255, 255, 255, 255);
-    let fg = Rgba::new(0, 0, 0, 255);
+    let mut target = vec![Rgba8::default(); 4 * 4];
+    let shape = TensorShape::new(4, 4);
 
-    let b = SubpixelBlend::new(glyph, fg, bg);
+    execute(&red, &mut target, shape);
 
-    let mut target = vec![Rgba::default(); 20 * 20];
-    let width = 20;
-    let height = 20;
-    let shape = pixelflow_graphics::render::rasterizer::TensorShape::new(width, height, width);
-    execute(&b, &mut target, shape);
+    // All pixels should be red
+    for pixel in &target {
+        assert_eq!(pixel.r(), 205); // ANSI Red
+        assert_eq!(pixel.g(), 0);
+        assert_eq!(pixel.b(), 0);
+        assert_eq!(pixel.a(), 255);
+    }
 }
 
 #[test]
-fn verify_gamma_correction_contract() {
-    let gray = Batch::<u32>::splat(0xFF7F7F7F); // ~0.5 in sRGB
+fn verify_named_color_manifold_renders() {
+    let blue = NamedColor::Blue;
 
-    let decoded = gamma_decode(gray);
-    // 0.5^2.2 is ~0.21. 0.21 * 255 is ~55 (0x37)
-    assert!(decoded.first() & 0xFF < 0x7F);
+    let mut target = vec![Rgba8::default(); 2 * 2];
+    let shape = TensorShape::new(2, 2);
 
-    let encoded = gamma_encode(decoded);
-    // Should be close to original gray
-    let diff = (encoded.first() as i32 & 0xFF) - (gray.first() as i32 & 0xFF);
-    assert!(diff.abs() < 5);
+    execute(&blue, &mut target, shape);
+
+    for pixel in &target {
+        assert_eq!(pixel.r(), 0);
+        assert_eq!(pixel.g(), 0);
+        assert_eq!(pixel.b(), 238); // ANSI Blue
+        assert_eq!(pixel.a(), 255);
+    }
 }

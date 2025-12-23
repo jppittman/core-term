@@ -1,24 +1,53 @@
 //! Idiomatic pixelflow example to verify SIMD codegen
-use pixelflow_core::{ManifoldExt, PARALLELISM, X, Y, materialize};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM, X, Y};
 
 #[inline(never)]
-pub fn render_circle(buffer: &mut [f32]) {
-    // Circle SDF - pure algebra, no splat!
-    let circle = (X * X + Y * Y).sqrt() - 100.0;
+pub fn render_circle(buffer: &mut [u32]) {
+    // Circle SDF - pure algebra
+    let sdf = (X * X + Y * Y).sqrt() - 100.0;
+
+    let mut packed = [0u32; PARALLELISM];
 
     // Render a 100x100 grid
     for y in 0..100 {
         for x_chunk in (0..100).step_by(PARALLELISM) {
             let offset = y * 100 + x_chunk;
-            materialize(&circle, x_chunk as f32, y as f32, &mut buffer[offset..]);
+
+            // Evaluate the SDF at PARALLELISM points
+            let dist = sdf.eval_raw(
+                Field::from(x_chunk as f32),
+                Field::from(y as f32),
+                Field::from(0.0),
+                Field::from(0.0),
+            );
+
+            // Distance as grayscale - doing arithmetic on Field directly
+            let scale = Field::from(0.01);
+            let half = Field::from(0.5);
+            let one = Field::from(1.0);
+            let zero = Field::from(0.0);
+
+            let normalized = dist * scale + half;
+            let clamped = normalized.min(one).max(zero);
+
+            // Pack to grayscale RGBA
+            let discrete = Discrete::pack(clamped, clamped, clamped, one);
+            discrete.store(&mut packed);
+
+            for i in 0..PARALLELISM {
+                if offset + i < buffer.len() {
+                    buffer[offset + i] = packed[i];
+                }
+            }
         }
     }
 }
 
 fn main() {
-    let mut buffer = vec![0.0f32; 10000];
+    let mut buffer = vec![0u32; 10000];
     render_circle(&mut buffer);
 
-    // Check center (50,50) - should be sqrt(50²+50²) - 100 = 70.7 - 100 = -29.3
-    println!("Center distance: {:.1}", buffer[50 * 100 + 50]);
+    // Check that we rendered something
+    let non_zero = buffer.iter().filter(|&&p| p != 0).count();
+    println!("Rendered {} non-zero pixels", non_zero);
 }
