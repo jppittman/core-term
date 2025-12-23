@@ -62,11 +62,13 @@ use backend::{Backend, SimdOps, SimdU32Ops};
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
 
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+type NativeU32Simd = <backend::x86::Sse2 as Backend>::U32;
 
 #[cfg(target_arch = "aarch64")]
 type NativeSimd = <backend::arm::Neon as Backend>::F32;

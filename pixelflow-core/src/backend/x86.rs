@@ -1,6 +1,6 @@
 //! x86_64 backend.
 
-use super::{Backend, SimdOps};
+use super::{Backend, SimdOps, SimdU32Ops};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 use core::fmt::{Debug, Formatter};
@@ -17,6 +17,7 @@ pub struct Sse2;
 impl Backend for Sse2 {
     const LANES: usize = 4;
     type F32 = F32x4;
+    type U32 = U32x4;
 }
 
 /// 4-lane f32 SIMD vector for SSE2.
@@ -210,6 +211,137 @@ impl Not for F32x4 {
             // XOR with all 1s
             let all_ones = _mm_castsi128_ps(_mm_set1_epi32(-1));
             Self(_mm_xor_ps(self.0, all_ones))
+        }
+    }
+}
+
+// ============================================================================
+// U32x4 - 4-lane u32 SIMD for packed RGBA pixels (SSE2)
+// ============================================================================
+
+/// 4-lane u32 SIMD vector for SSE2 (packed RGBA pixels).
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U32x4(__m128i);
+
+impl Default for U32x4 {
+    fn default() -> Self {
+        unsafe { Self(_mm_setzero_si128()) }
+    }
+}
+
+impl Debug for U32x4 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let arr = self.to_array();
+        write!(f, "U32x4({:?})", arr)
+    }
+}
+
+impl U32x4 {
+    #[inline(always)]
+    fn to_array(self) -> [u32; 4] {
+        let mut arr = [0u32; 4];
+        unsafe { _mm_storeu_si128(arr.as_mut_ptr() as *mut __m128i, self.0) };
+        arr
+    }
+}
+
+impl SimdU32Ops for U32x4 {
+    const LANES: usize = 4;
+
+    #[inline(always)]
+    fn splat(val: u32) -> Self {
+        unsafe { Self(_mm_set1_epi32(val as i32)) }
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u32]) {
+        assert!(out.len() >= Self::LANES);
+        unsafe { _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, self.0) }
+    }
+
+    #[inline(always)]
+    fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
+        // Placeholder - actual packing is done via pack_rgba
+        Self::default()
+    }
+}
+
+impl BitAnd for U32x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        unsafe { Self(_mm_and_si128(self.0, rhs.0)) }
+    }
+}
+
+impl BitOr for U32x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        unsafe { Self(_mm_or_si128(self.0, rhs.0)) }
+    }
+}
+
+impl Shl<u32> for U32x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: u32) -> Self {
+        unsafe {
+            // _mm_sll_epi32 takes shift count in lower 64-bits of __m128i
+            let shift = _mm_cvtsi32_si128(rhs as i32);
+            Self(_mm_sll_epi32(self.0, shift))
+        }
+    }
+}
+
+impl Shr<u32> for U32x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: u32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(rhs as i32);
+            Self(_mm_srl_epi32(self.0, shift))
+        }
+    }
+}
+
+impl U32x4 {
+    /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
+    #[inline(always)]
+    pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
+        unsafe {
+            // Clamp to [0, 1] and scale to [0, 255]
+            let scale = _mm_set1_ps(255.0);
+            let zero = _mm_setzero_ps();
+            let one = _mm_set1_ps(1.0);
+
+            let r_clamped = _mm_min_ps(_mm_max_ps(r.0, zero), one);
+            let g_clamped = _mm_min_ps(_mm_max_ps(g.0, zero), one);
+            let b_clamped = _mm_min_ps(_mm_max_ps(b.0, zero), one);
+            let a_clamped = _mm_min_ps(_mm_max_ps(a.0, zero), one);
+
+            let r_scaled = _mm_mul_ps(r_clamped, scale);
+            let g_scaled = _mm_mul_ps(g_clamped, scale);
+            let b_scaled = _mm_mul_ps(b_clamped, scale);
+            let a_scaled = _mm_mul_ps(a_clamped, scale);
+
+            // Convert to i32 (SSE2 cvttps converts to signed)
+            let r_i32 = _mm_cvttps_epi32(r_scaled);
+            let g_i32 = _mm_cvttps_epi32(g_scaled);
+            let b_i32 = _mm_cvttps_epi32(b_scaled);
+            let a_i32 = _mm_cvttps_epi32(a_scaled);
+
+            // Pack: R | (G << 8) | (B << 16) | (A << 24)
+            let g_shifted = _mm_slli_epi32(g_i32, 8);
+            let b_shifted = _mm_slli_epi32(b_i32, 16);
+            let a_shifted = _mm_slli_epi32(a_i32, 24);
+
+            let packed = _mm_or_si128(
+                _mm_or_si128(r_i32, g_shifted),
+                _mm_or_si128(b_shifted, a_shifted),
+            );
+            Self(packed)
         }
     }
 }
