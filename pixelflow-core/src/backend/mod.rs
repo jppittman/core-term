@@ -52,16 +52,22 @@ pub trait SimdOps:
     /// Check if all lanes are non-zero.
     fn all(&self) -> bool;
 
-    // Comparisons (return masks)
+    /// Less than comparison (returns mask).
     fn cmp_lt(self, rhs: Self) -> Self;
+    /// Less than or equal comparison (returns mask).
     fn cmp_le(self, rhs: Self) -> Self;
+    /// Greater than comparison (returns mask).
     fn cmp_gt(self, rhs: Self) -> Self;
+    /// Greater than or equal comparison (returns mask).
     fn cmp_ge(self, rhs: Self) -> Self;
 
-    // Float operations
+    /// Square root.
     fn sqrt(self) -> Self;
+    /// Absolute value.
     fn abs(self) -> Self;
+    /// Element-wise minimum.
     fn min(self, rhs: Self) -> Self;
+    /// Element-wise maximum.
     fn max(self, rhs: Self) -> Self;
 
     /// Conditional select: if mask bit is 1, take from if_true, else if_false.
