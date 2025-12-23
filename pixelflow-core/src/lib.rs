@@ -164,13 +164,13 @@ impl Field {
 
     /// Element-wise minimum.
     #[inline(always)]
-    pub(crate) fn min(self, rhs: Self) -> Self {
+    pub fn field_min(self, rhs: Self) -> Self {
         Self(self.0.min(rhs.0))
     }
 
     /// Element-wise maximum.
     #[inline(always)]
-    pub(crate) fn max(self, rhs: Self) -> Self {
+    pub fn field_max(self, rhs: Self) -> Self {
         Self(self.0.max(rhs.0))
     }
 
@@ -254,12 +254,12 @@ impl numeric::Numeric for Field {
 
     #[inline(always)]
     fn min(self, rhs: Self) -> Self {
-        Self::min(self, rhs)
+        Self::field_min(self, rhs)
     }
 
     #[inline(always)]
     fn max(self, rhs: Self) -> Self {
-        Self::max(self, rhs)
+        Self::field_max(self, rhs)
     }
 
     #[inline(always)]

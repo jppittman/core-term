@@ -3,7 +3,7 @@
 //! TODO: This test needs updating to work with the new Color manifold system.
 //! For now, it renders glyphs using direct Field evaluation.
 
-use pixelflow_core::{Field, Manifold, PARALLELISM};
+use pixelflow_core::{Field, Manifold};
 use pixelflow_graphics::fonts::Font;
 use std::fs::File;
 use std::io::Write;
@@ -29,14 +29,13 @@ fn render_manifold<M: Manifold<Output = Field>>(
 
     for y in 0..height {
         for x in 0..width {
-            let val = manifold.eval_raw(
+            let _val = manifold.eval_raw(
                 Field::from(x as f32 + 0.5),
                 Field::from(y as f32 + 0.5),
                 Field::from(0.0),
                 Field::from(0.0),
             );
             // Extract first lane (all lanes have same value for constant coords)
-            let mut out = [0.0f32; PARALLELISM];
             // We can't use store directly since it's pub(crate), so we work around
             // For now just use a placeholder implementation
             buffer[y * width + x] = 128; // TODO: proper extraction

@@ -28,7 +28,7 @@ pub fn render_circle(buffer: &mut [u32]) {
             let zero = Field::from(0.0);
 
             let normalized = dist * scale + half;
-            let clamped = normalized.min(one).max(zero);
+            let clamped = normalized.field_min(one).field_max(zero);
 
             // Pack to grayscale RGBA
             let discrete = Discrete::pack(clamped, clamped, clamped, one);
