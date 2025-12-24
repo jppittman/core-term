@@ -199,6 +199,71 @@ impl Field {
     pub(crate) fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
         Self(NativeSimd::select(mask.0, if_true.0, if_false.0))
     }
+
+    // ========================================================================
+    // Trigonometric Operations (for Spherical Harmonics)
+    // ========================================================================
+
+    /// Sine (per-lane via libm).
+    #[inline(always)]
+    pub(crate) fn sin(self) -> Self {
+        self.map_lanes(libm::sinf)
+    }
+
+    /// Cosine (per-lane via libm).
+    #[inline(always)]
+    pub(crate) fn cos(self) -> Self {
+        self.map_lanes(libm::cosf)
+    }
+
+    /// Two-argument arctangent (per-lane via libm).
+    #[inline(always)]
+    pub(crate) fn atan2(self, x: Self) -> Self {
+        self.zip_lanes(x, libm::atan2f)
+    }
+
+    /// Power function (per-lane via libm).
+    #[inline(always)]
+    pub(crate) fn pow(self, exp: Self) -> Self {
+        self.zip_lanes(exp, libm::powf)
+    }
+
+    /// Exponential function (per-lane via libm).
+    #[inline(always)]
+    pub(crate) fn exp(self) -> Self {
+        self.map_lanes(libm::expf)
+    }
+
+    /// Apply a unary function to each lane.
+    #[inline(always)]
+    pub(crate) fn map_lanes(self, f: fn(f32) -> f32) -> Self {
+        let mut buf = [0.0f32; PARALLELISM];
+        self.store(&mut buf);
+        for v in buf.iter_mut() {
+            *v = f(*v);
+        }
+        // Reconstruct from buffer
+        Self::from_slice(&buf)
+    }
+
+    /// Apply a binary function to each pair of lanes.
+    #[inline(always)]
+    fn zip_lanes(self, other: Self, f: fn(f32, f32) -> f32) -> Self {
+        let mut buf_a = [0.0f32; PARALLELISM];
+        let mut buf_b = [0.0f32; PARALLELISM];
+        self.store(&mut buf_a);
+        other.store(&mut buf_b);
+        for i in 0..PARALLELISM {
+            buf_a[i] = f(buf_a[i], buf_b[i]);
+        }
+        Self::from_slice(&buf_a)
+    }
+
+    /// Load from a slice.
+    #[inline(always)]
+    fn from_slice(slice: &[f32]) -> Self {
+        Self(NativeSimd::from_slice(slice))
+    }
 }
 
 impl Discrete {
@@ -333,6 +398,31 @@ impl numeric::Numeric for Field {
     #[inline(always)]
     fn from_field(field: Field) -> Self {
         field
+    }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        Self::sin(self)
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        Self::cos(self)
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        Self::atan2(self, x)
+    }
+
+    #[inline(always)]
+    fn pow(self, exp: Self) -> Self {
+        Self::pow(self, exp)
+    }
+
+    #[inline(always)]
+    fn exp(self) -> Self {
+        Self::exp(self)
     }
 }
 

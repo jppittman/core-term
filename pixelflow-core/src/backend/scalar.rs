@@ -115,6 +115,11 @@ impl SimdOps for ScalarF32 {
             if_false.0
         })
     }
+
+    #[inline(always)]
+    fn from_slice(slice: &[f32]) -> Self {
+        Self(slice[0])
+    }
 }
 
 // ============================================================================

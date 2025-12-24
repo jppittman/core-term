@@ -83,6 +83,9 @@ pub trait SimdOps:
 
     /// Conditional select: if mask bit is 1, take from if_true, else if_false.
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
+
+    /// Load from a slice.
+    fn from_slice(slice: &[f32]) -> Self;
 }
 
 /// SIMD operations for u32 (packed pixels).

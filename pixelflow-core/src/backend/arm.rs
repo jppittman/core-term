@@ -144,6 +144,12 @@ impl SimdOps for F32x4 {
             Self(result)
         }
     }
+
+    #[inline(always)]
+    fn from_slice(slice: &[f32]) -> Self {
+        assert!(slice.len() >= Self::LANES);
+        unsafe { Self(vld1q_f32(slice.as_ptr())) }
+    }
 }
 
 // ============================================================================

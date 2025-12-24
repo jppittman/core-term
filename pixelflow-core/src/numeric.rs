@@ -66,4 +66,23 @@ pub trait Numeric:
 
     /// Create from Field (zero-cost for Field, constant jet for Jet2).
     fn from_field(field: crate::Field) -> Self;
+
+    // ========================================================================
+    // Trigonometric Operations (for Spherical Harmonics)
+    // ========================================================================
+
+    /// Sine.
+    fn sin(self) -> Self;
+
+    /// Cosine.
+    fn cos(self) -> Self;
+
+    /// Two-argument arctangent (atan2(y, x)).
+    fn atan2(self, x: Self) -> Self;
+
+    /// Raise to a power.
+    fn pow(self, exp: Self) -> Self;
+
+    /// Exponential function.
+    fn exp(self) -> Self;
 }
