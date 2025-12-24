@@ -290,7 +290,6 @@ dependencies = [
  "libc",
  "log",
  "nix 0.30.1",
- "once_cell",
  "pixelflow-core",
  "pixelflow-graphics",
  "pixelflow-runtime",
@@ -299,7 +298,6 @@ dependencies = [
  "rexpect",
  "serde",
  "serde_json",
- "termios",
  "test-log",
 ]
 
@@ -788,7 +786,6 @@ dependencies = [
  "bitflags 2.9.1",
  "js-sys",
  "log",
- "once_cell",
  "pixelflow-core",
  "pixelflow-graphics",
  "pkg-config",
@@ -1152,15 +1149,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
-]
-
-[[package]]
-name = "termios"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "411c5bf740737c7918b8b1fe232dca4dc9f8e754b8ad5e20966814001ed0ac6b"
-dependencies = [
- "libc",
 ]
 
 [[package]]

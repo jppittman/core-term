@@ -13,15 +13,15 @@ use crate::{
     term::cursor::CursorShape, // Assumes CursorShape is in `crate::term::modes`
 };
 use log::{error, info}; // Added warn, info
-use once_cell::sync::Lazy;
 use pixelflow_runtime::config::PerformanceConfig;
+use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // --- Global Configuration Access ---
 
 /// Lazily initialized global static storage for the application's configuration.
-pub static CONFIG: Lazy<Config> = Lazy::new(|| {
+pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {
     // This closure is executed once.
     // It attempts to load the configuration and falls back to defaults if necessary.
     match load_config_from_file_or_defaults() {
