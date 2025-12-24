@@ -6,6 +6,11 @@
 use crate::render::color::Pixel;
 use pixelflow_core::{materialize_discrete, Discrete, Field, Manifold, PARALLELISM};
 
+pub mod parallel;
+pub mod pool;
+pub use parallel::{render_parallel, render_parallel_pooled, RenderOptions};
+pub use pool::ThreadPool;
+
 /// A wrapper that adapts a continuous manifold for rasterization.
 #[derive(Clone, Copy, Debug)]
 pub struct Rasterize<M>(pub M);

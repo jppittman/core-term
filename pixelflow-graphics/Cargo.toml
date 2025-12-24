@@ -14,9 +14,14 @@ pixelflow-core = { path = "../pixelflow-core" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+freetype-rs = "0.32"
 
 [[bench]]
 name = "graphics_benches"
+harness = false
+
+[[bench]]
+name = "font_deathmatch"
 harness = false
 
 [features]
