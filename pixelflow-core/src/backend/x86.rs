@@ -171,6 +171,21 @@ impl SimdOps for F32x4 {
         }
         Self::from_slice(&out)
     }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        unsafe {
+            // SSE2 floor emulation:
+            // 1. Truncate toward zero
+            let trunc = _mm_cvtepi32_ps(_mm_cvttps_epi32(self.0));
+            // 2. For negative non-integers, truncation rounds toward zero (wrong direction)
+            //    Need to subtract 1 where self < trunc
+            let mask = _mm_cmplt_ps(self.0, trunc);
+            let one = _mm_set1_ps(1.0);
+            let correction = _mm_and_ps(mask, one);
+            Self(_mm_sub_ps(trunc, correction))
+        }
+    }
 }
 
 // Operators for F32x4
@@ -549,6 +564,15 @@ impl SimdOps for F32x16 {
             out[i] = slice[ix];
         }
         Self::from_slice(&out)
+    }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        unsafe {
+            // AVX-512: use roundscale with floor mode (1 = floor, bit 3 = suppress exceptions)
+            // imm8 = 0b1001 = 9
+            Self(_mm512_roundscale_ps::<9>(self.0))
+        }
     }
 }
 

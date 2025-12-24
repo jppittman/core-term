@@ -126,6 +126,11 @@ impl SimdOps for ScalarF32 {
         let idx = (libm::floorf(indices.0) as isize).clamp(0, slice.len() as isize - 1) as usize;
         Self(slice[idx])
     }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        Self(libm::floorf(self.0))
+    }
 }
 
 // ============================================================================

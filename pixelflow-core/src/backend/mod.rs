@@ -91,6 +91,9 @@ pub trait SimdOps:
     /// Each lane i loads `slice[floor(self[i]) as usize]`.
     /// Indices are clamped to `[0, len-1]`.
     fn gather(slice: &[f32], indices: Self) -> Self;
+
+    /// Floor (round toward negative infinity).
+    fn floor(self) -> Self;
 }
 
 /// SIMD operations for u32 (packed pixels).
