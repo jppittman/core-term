@@ -452,3 +452,5 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     .expect("failed to parse generated troupe code")
 }
 
+#[cfg(test)]
+mod tests;
