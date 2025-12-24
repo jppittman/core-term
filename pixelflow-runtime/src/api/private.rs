@@ -72,7 +72,7 @@ impl<P: Pixel> From<DisplayEvent>
 }
 
 // Engine control message (low priority)
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum EngineControl<P: Pixel> {
     PresentComplete(Frame<P>),
     VSync {
@@ -88,6 +88,7 @@ pub enum EngineControl<P: Pixel> {
             crate::vsync_actor::VsyncManagement,
         >,
     ),
+    #[default]
     Quit,
     DriverAck,
 }

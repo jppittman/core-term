@@ -55,8 +55,9 @@ impl PlatformOps for MockOps {
         }
     }
 
-    fn park(&mut self, hint: ParkHint) {
+    fn park(&mut self, hint: ParkHint) -> ParkHint {
         self.push_log(&format!("Park {:?}", hint));
+        hint
     }
 }
 

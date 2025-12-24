@@ -189,7 +189,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
                 type_tokens.push(tok);
             }
         }
-        
+
         let type_name = type_tokens
             .into_iter()
             .map(|t| t.to_string())
@@ -235,9 +235,9 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .map(|(name, ty, _, _)| {
             format!(
                 "pub {name}: ::actor_scheduler::ActorHandle<
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Self>>::Data,
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Self>>::Control,
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Self>>::Management,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Data,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Control,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Management,
                 >,"
             )
         })
@@ -251,9 +251,9 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .map(|(name, ty, _, _)| {
             format!(
                 "pub {name}: ::actor_scheduler::ActorHandle<
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Data,
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control,
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Management,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Data,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Control,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Management,
                 >,"
             )
         })
@@ -273,9 +273,9 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .map(|(name, ty, _, _)| {
             format!(
                 "{name}_scheduler: ::actor_scheduler::ActorScheduler<
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Data,
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control,
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Management,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Data,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Control,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Management,
                 >,"
             )
         })
@@ -288,9 +288,9 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .map(|(name, ty, _, _)| {
             format!(
                 "let ({name}_h, {name}_s) = ::actor_scheduler::create_actor::<
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Data,
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control,
-                    <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Management,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Data,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Control,
+                    <{ty} as ::actor_scheduler::ActorTypes>::Management,
                 >(1024, None);"
             )
         })
@@ -343,16 +343,16 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     let shutdown_impl = actors
         .iter()
         .map(|(name, _, _, _)| {
-            format!("let _ = self.{name}.send(::actor_scheduler::Message::Control(Default::default()));")
+            format!(
+                "let _ = self.{name}.send(::actor_scheduler::Message::Control(Default::default()));"
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
 
     let shutdown_bounds = actors
         .iter()
-        .map(|(_, ty, _, _)| {
-            format!("<{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::Control: Default")
-        })
+        .map(|(_, ty, _, _)| format!("<{ty} as ::actor_scheduler::ActorTypes>::Control: Default"))
         .collect::<Vec<_>>()
         .join(",\n");
 
@@ -451,4 +451,3 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     .parse()
     .expect("failed to parse generated troupe code")
 }
-

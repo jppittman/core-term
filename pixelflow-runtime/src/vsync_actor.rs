@@ -30,7 +30,7 @@ impl Default for VsyncConfig {
 }
 
 /// Messages TO the VSync actor (commands) - Control lane
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum VsyncCommand {
     /// Start sending vsync signals
     Start,
@@ -41,6 +41,7 @@ pub enum VsyncCommand {
     /// Request current FPS stats
     RequestCurrentFPS(Sender<f64>),
     /// Shutdown the actor
+    #[default]
     Shutdown,
 }
 actor_scheduler::impl_control_message!(VsyncCommand);
@@ -369,12 +370,15 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
     }
 }
 
-// TroupeActor impl for VsyncActor
-impl<'a, Dir: 'a> actor_scheduler::TroupeActor<'a, Dir> for VsyncActor {
+// ActorTypes impl for VsyncActor
+impl actor_scheduler::ActorTypes for VsyncActor {
     type Data = RenderedResponse;
     type Control = VsyncCommand;
     type Management = VsyncManagement;
-    
+}
+
+// TroupeActor impl for VsyncActor
+impl<'a, Dir: 'a> actor_scheduler::TroupeActor<'a, Dir> for VsyncActor {
     fn new(_dir: &Dir) -> Self {
         Self::new_empty()
     }

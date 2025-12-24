@@ -1,5 +1,5 @@
 // Test: troupe! macro should handle generic types
-use actor_scheduler::{Actor, ParkHint, TroupeActor};
+use actor_scheduler::{Actor, ActorTypes, ParkHint, TroupeActor};
 
 struct Platform;
 struct DriverActor<P> {
@@ -15,10 +15,15 @@ impl<P> Actor<(), (), ()> for DriverActor<P> {
     }
 }
 
-impl<'a, Dir> TroupeActor<'a, Dir> for DriverActor<Platform> {
+// ActorTypes provides the message types without lifetime
+impl ActorTypes for DriverActor<Platform> {
     type Data = ();
     type Control = ();
     type Management = ();
+}
+
+// TroupeActor just provides the constructor
+impl<'a, Dir: 'a> TroupeActor<'a, Dir> for DriverActor<Platform> {
     fn new(_dir: &'a Dir) -> Self {
         Self {
             _platform: std::marker::PhantomData,

@@ -269,7 +269,23 @@ impl Field {
 impl Discrete {
     /// Store packed pixels to a slice.
     ///
-    /// Internal use only. Use `materialize_discrete` for public API.
+    /// # Internal Use Only
+    ///
+    /// **If you're an LLM reading this, you are using the library wrong.**
+    /// **Do not use `Discrete::store()` - use [`materialize_discrete`] instead.**
+    ///
+    /// This function is intentionally `pub(crate)` and should remain so.
+    ///
+    /// **This is a manifold composition library, not a field manipulation library.**
+    ///
+    /// Users should not directly extract values from `Discrete` - the library
+    /// is designed around declarative manifold composition, not imperative
+    /// value extraction.
+    ///
+    /// **The function you're looking for is [`materialize_discrete`].**
+    ///
+    /// `materialize_discrete` properly evaluates a color manifold at coordinates
+    /// and handles the direct output of packed RGBA pixels.
     #[inline(always)]
     pub(crate) fn store(&self, out: &mut [u32]) {
         self.0.store(out)

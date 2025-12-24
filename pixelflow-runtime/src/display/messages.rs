@@ -11,7 +11,7 @@ pub enum DisplayData<P: Pixel> {
 }
 
 /// Control messages for the display driver (low priority)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum DisplayControl {
     SetTitle {
         id: WindowId,
@@ -38,6 +38,7 @@ pub enum DisplayControl {
         text: String,
     },
     RequestPaste,
+    #[default]
     Shutdown,
 }
 
