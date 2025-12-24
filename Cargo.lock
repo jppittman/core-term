@@ -789,6 +789,7 @@ dependencies = [
  "pixelflow-core",
  "pixelflow-graphics",
  "pkg-config",
+ "rayon",
  "serde",
  "serde-wasm-bindgen",
  "thiserror 1.0.69",

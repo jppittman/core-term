@@ -1,5 +1,7 @@
-# Bolt's Journal
+## 2025-05-23 - Performance Analysis Review
+**Learning:** `PERFORMANCE_ANALYSIS.md` is a critical resource. It pointed directly to thread creation as a bottleneck.
+**Action:** Always check for `PERFORMANCE_ANALYSIS.md` or similar documents before starting.
 
-## 2024-05-24 - String Allocation in Selection
-**Learning:** The `get_selected_text` method allocates a new `String` for every line in the selection to build the line content before appending it to the main buffer. This is inefficient for large selections.
-**Action:** Append characters directly to the result buffer and handle whitespace trimming by tracking indices, avoiding intermediate allocations.
+## 2025-05-23 - Dependency Management
+**Learning:** `rayon` is present in `Cargo.lock` but not in `pixelflow-runtime`'s `Cargo.toml`.
+**Action:** Dependencies must be explicitly added to the crate's `Cargo.toml` to be used.
