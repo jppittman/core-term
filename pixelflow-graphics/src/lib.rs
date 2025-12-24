@@ -2,12 +2,14 @@
 //!
 //! Consolidated graphics crate merging rendering and font logic.
 
+pub mod baked;
 pub mod fonts;
 pub mod image;
 pub mod render;
 pub mod shapes;
 pub mod transform;
 
+pub use baked::Baked;
 pub use transform::Scale;
 
 // Re-export fonts
