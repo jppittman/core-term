@@ -6,7 +6,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use pixelflow_core::{Discrete, Field, Manifold, PARALLELISM};
 use pixelflow_graphics::{
     render::rasterizer::{execute, TensorShape},
-    Color, ColorManifold, Font, Lift, NamedColor, Rgba8,
+    CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
 };
 
 // ============================================================================
@@ -503,6 +503,181 @@ fn bench_shapes(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Font Caching Benchmarks
+// ============================================================================
+
+fn bench_glyph_cache(c: &mut Criterion) {
+    let mut group = c.benchmark_group("glyph_cache");
+
+    let font = Font::parse(FONT_DATA).unwrap();
+
+    // Benchmark cache warming
+    group.bench_function("warm_ascii_16px", |bencher| {
+        bencher.iter(|| {
+            let mut cache = GlyphCache::new();
+            cache.warm_ascii(&font, 16.0);
+            black_box(cache.len())
+        })
+    });
+
+    group.bench_function("warm_ascii_32px", |bencher| {
+        bencher.iter(|| {
+            let mut cache = GlyphCache::new();
+            cache.warm_ascii(&font, 32.0);
+            black_box(cache.len())
+        })
+    });
+
+    // Benchmark cache hit vs miss
+    group.bench_function("cache_hit", |bencher| {
+        let mut cache = GlyphCache::new();
+        cache.warm_ascii(&font, 16.0);
+
+        bencher.iter(|| {
+            black_box(cache.get(&font, 'A', 16.0));
+        })
+    });
+
+    group.bench_function("cache_miss", |bencher| {
+        bencher.iter(|| {
+            let mut cache = GlyphCache::new();
+            black_box(cache.get(&font, 'A', 16.0));
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_cached_vs_uncached_eval(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cached_vs_uncached_eval");
+    group.throughput(Throughput::Elements(PARALLELISM as u64));
+
+    let font = Font::parse(FONT_DATA).unwrap();
+
+    let x = Field::sequential(16.0);
+    let y = Field::from(16.0);
+    let z = Field::from(0.0);
+    let w = Field::from(0.0);
+
+    // Uncached glyph evaluation
+    let uncached = font.glyph_scaled('A', 32.0).unwrap();
+
+    group.bench_function("uncached_glyph_A_32px", |bencher| {
+        bencher.iter(|| black_box(uncached.eval_raw(black_box(x), y, z, w)))
+    });
+
+    // Cached glyph evaluation
+    let cached = CachedGlyph::new(&uncached, 32);
+
+    group.bench_function("cached_glyph_A_32px", |bencher| {
+        bencher.iter(|| black_box(cached.eval_raw(black_box(x), y, z, w)))
+    });
+
+    // Complex glyph (@)
+    let uncached_at = font.glyph_scaled('@', 32.0).unwrap();
+    let cached_at = CachedGlyph::new(&uncached_at, 32);
+
+    group.bench_function("uncached_glyph_@_32px", |bencher| {
+        bencher.iter(|| black_box(uncached_at.eval_raw(black_box(x), y, z, w)))
+    });
+
+    group.bench_function("cached_glyph_@_32px", |bencher| {
+        bencher.iter(|| black_box(cached_at.eval_raw(black_box(x), y, z, w)))
+    });
+
+    group.finish();
+}
+
+fn bench_cached_vs_uncached_raster(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cached_vs_uncached_raster");
+
+    let font = Font::parse(FONT_DATA).unwrap();
+
+    for size in [32, 64, 128].iter() {
+        let total_pixels = size * size;
+        group.throughput(Throughput::Elements(total_pixels as u64));
+
+        // Uncached rasterization
+        group.bench_with_input(
+            BenchmarkId::new("uncached_glyph_A", format!("{}x{}", size, size)),
+            size,
+            |bencher, &size| {
+                let glyph = font.glyph_scaled('A', size as f32).unwrap();
+                let colored = Lift(glyph);
+                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
+                let shape = TensorShape::new(size, size);
+
+                bencher.iter(|| {
+                    execute(&colored, &mut buffer, shape);
+                    black_box(&buffer);
+                })
+            },
+        );
+
+        // Cached rasterization (sampling from texture)
+        group.bench_with_input(
+            BenchmarkId::new("cached_glyph_A", format!("{}x{}", size, size)),
+            size,
+            |bencher, &size| {
+                let glyph = font.glyph_scaled('A', size as f32).unwrap();
+                let cached = CachedGlyph::new(&glyph, size);
+                let colored = Lift(cached);
+                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
+                let shape = TensorShape::new(size, size);
+
+                bencher.iter(|| {
+                    execute(&colored, &mut buffer, shape);
+                    black_box(&buffer);
+                })
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_cached_text(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cached_text");
+
+    let font = Font::parse(FONT_DATA).unwrap();
+    let text = "Hello, World!";
+    let size = 16.0;
+
+    // Pre-warm cache
+    let mut cache = GlyphCache::new();
+    cache.warm_ascii(&font, size);
+
+    group.bench_function("cached_text_layout", |bencher| {
+        let mut cache_copy = cache.clone();
+        bencher.iter(|| {
+            let cached_text = CachedText::new(&font, &mut cache_copy, text, size);
+            black_box(cached_text)
+        })
+    });
+
+    // Benchmark rendering
+    let width = 200;
+    let height = 32;
+    let total_pixels = width * height;
+    group.throughput(Throughput::Elements(total_pixels as u64));
+
+    group.bench_function("render_cached_text", |bencher| {
+        let mut cache_copy = cache.clone();
+        let cached_text = CachedText::new(&font, &mut cache_copy, text, size);
+        let colored = Lift(cached_text);
+        let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); width * height];
+        let shape = TensorShape::new(width, height);
+
+        bencher.iter(|| {
+            execute(&colored, &mut buffer, shape);
+            black_box(&buffer);
+        })
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // End-to-End Text Rendering Benchmark
 // ============================================================================
 
@@ -587,11 +762,20 @@ criterion_group!(shape_benches, bench_shapes,);
 
 criterion_group!(text_benches, bench_text_rendering,);
 
+criterion_group!(
+    cache_benches,
+    bench_glyph_cache,
+    bench_cached_vs_uncached_eval,
+    bench_cached_vs_uncached_raster,
+    bench_cached_text,
+);
+
 criterion_main!(
     font_benches,
     glyph_eval_benches,
     rasterize_benches,
     color_benches,
     shape_benches,
-    text_benches
+    text_benches,
+    cache_benches
 );
