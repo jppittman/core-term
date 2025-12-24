@@ -163,6 +163,11 @@ impl SimdOps for F32x4 {
         }
         Self::from_slice(&out)
     }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        unsafe { Self(vrndmq_f32(self.0)) }
+    }
 }
 
 // ============================================================================
