@@ -87,4 +87,7 @@ pub trait Numeric:
 
     /// Exponential function.
     fn exp(self) -> Self;
+
+    /// Floor (round toward negative infinity).
+    fn floor(self) -> Self;
 }

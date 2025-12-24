@@ -308,4 +308,10 @@ impl Numeric for Jet2 {
             dy: self.dy * exp_val,
         }
     }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        // Floor is a step function - derivative is 0 almost everywhere
+        Self::constant(self.val.floor())
+    }
 }

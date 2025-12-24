@@ -34,7 +34,7 @@
 
 use crate::Manifold;
 use crate::combinators::{Map, Select};
-use crate::ops::{Abs, Add, Div, Ge, Gt, Le, Lt, Max, Min, Mul, Sqrt, Sub};
+use crate::ops::{Abs, Add, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Sqrt, Sub};
 
 use alloc::sync::Arc;
 
@@ -181,6 +181,11 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     /// Absolute value.
     fn abs(self) -> Abs<Self> {
         Abs(self)
+    }
+
+    /// Floor (round toward negative infinity).
+    fn floor(self) -> Floor<Self> {
+        Floor(self)
     }
 
     /// Element-wise maximum.
