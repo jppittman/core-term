@@ -33,13 +33,17 @@ let result: Field = manifold.eval_raw(x, y, z, w);
 
 ### Manifold
 
-The one trait. Everything is a function over 4D coordinates:
+The one trait. Everything is a function over 4D coordinates, generic over the numeric type:
 
 ```rust
-pub trait Manifold: Send + Sync {
-    fn eval(&self, x: Field, y: Field, z: Field, w: Field) -> Field;
+pub trait Manifold<I: Numeric = Field>: Send + Sync {
+    type Output;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output;
 }
 ```
+
+The `I` type parameter enables **automatic differentiation**: evaluate with `Field` for
+concrete values, or `Jet2` to compute gradients automatically.
 
 ### Variables
 
@@ -193,13 +197,41 @@ materialize(&manifold, x_start, y, &mut buffer);
 // buffer now contains u8 values (0-255) from the manifold
 ```
 
+## Automatic Differentiation with Jet2
+
+All expressions built with `ManifoldExt` are generic over the `Numeric` type. This means
+the same expression can be evaluated with `Field` (for values) or `Jet2` (for gradients):
+
+```rust
+use pixelflow_core::{ManifoldExt, X, Y, Jet2, Manifold, Numeric};
+
+// Build expression using ManifoldExt
+let circle = (X * X + Y * Y).sqrt() - 10.0;
+
+// Evaluate with Field (concrete values)
+let distance = circle.eval(3.0, 4.0, 0.0, 0.0);  // Returns 5.0 - 10.0 = -5.0
+
+// Evaluate with Jet2 (automatic differentiation)
+let x_jet = Jet2::x(3.0.into());  // x = 3, ∂x/∂x = 1, ∂x/∂y = 0
+let y_jet = Jet2::y(4.0.into());  // y = 4, ∂y/∂x = 0, ∂y/∂y = 1
+let zero = Jet2::constant(0.0.into());
+
+let result = circle.eval_raw(x_jet, y_jet, zero, zero);
+// result.val = -5.0 (the distance value)
+// result.dx = 0.6   (∂distance/∂x = x/√(x²+y²) = 3/5)
+// result.dy = 0.8   (∂distance/∂y = y/√(x²+y²) = 4/5)
+```
+
+This is useful for computing normals, gradients for optimization, and ray marching.
+
 ## Architecture
 
 Under the hood:
-- `Field` = `SimdVec<f32>` (4 lanes on ARM NEON, 8 on AVX2)
+- `Field` = `SimdVec<f32>` (4 lanes on SSE2, 16 on AVX-512)
 - Expressions build an AST of `Add`, `Mul`, `Sqrt`, `Select`, etc.
 - Evaluation inlines to tight SIMD loops
 - Zero runtime dispatch—the compiler monomorphizes everything
+- Generic `Numeric` trait enables both `Field` and `Jet2` evaluation
 
 ## License
 
