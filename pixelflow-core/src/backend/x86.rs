@@ -158,6 +158,19 @@ impl SimdOps for F32x4 {
         assert!(slice.len() >= Self::LANES);
         unsafe { Self(_mm_loadu_ps(slice.as_ptr())) }
     }
+
+    #[inline(always)]
+    fn gather(slice: &[f32], indices: Self) -> Self {
+        // SSE2 doesn't have gather - do scalar loads
+        let idx = indices.to_array();
+        let len = slice.len();
+        let mut out = [0.0f32; 4];
+        for i in 0..4 {
+            let ix = (libm::floorf(idx[i]) as isize).clamp(0, len as isize - 1) as usize;
+            out[i] = slice[ix];
+        }
+        Self::from_slice(&out)
+    }
 }
 
 // Operators for F32x4
@@ -523,6 +536,19 @@ impl SimdOps for F32x16 {
     fn from_slice(slice: &[f32]) -> Self {
         assert!(slice.len() >= Self::LANES);
         unsafe { Self(_mm512_loadu_ps(slice.as_ptr())) }
+    }
+
+    #[inline(always)]
+    fn gather(slice: &[f32], indices: Self) -> Self {
+        // Scalar fallback - could use _mm512_i32gather_ps for perf
+        let idx = indices.to_array();
+        let len = slice.len();
+        let mut out = [0.0f32; 16];
+        for i in 0..16 {
+            let ix = (libm::floorf(idx[i]) as isize).clamp(0, len as isize - 1) as usize;
+            out[i] = slice[ix];
+        }
+        Self::from_slice(&out)
     }
 }
 
