@@ -12,7 +12,9 @@ pub(super) fn translate_key_input(
     text: Option<String>,
     dec_modes: &DecPrivateModes,
 ) -> Vec<u8> {
-    let mut bytes_to_send: Vec<u8> = Vec::new();
+    // Pre-allocate buffer for key sequence (most are < 16 bytes)
+    // to avoid reallocation on push
+    let mut bytes_to_send: Vec<u8> = Vec::with_capacity(16);
 
     // Handle Alt modifier by prepending ESC
     if modifiers.contains(Modifiers::ALT) {
