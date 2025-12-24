@@ -86,6 +86,11 @@ pub trait SimdOps:
 
     /// Load from a slice.
     fn from_slice(slice: &[f32]) -> Self;
+
+    /// Gather: load from slice at indices specified by self.
+    /// Each lane i loads `slice[floor(self[i]) as usize]`.
+    /// Indices are clamped to `[0, len-1]`.
+    fn gather(slice: &[f32], indices: Self) -> Self;
 }
 
 /// SIMD operations for u32 (packed pixels).

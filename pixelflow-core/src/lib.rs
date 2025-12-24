@@ -234,6 +234,12 @@ impl Field {
         self.map_lanes(libm::expf)
     }
 
+    /// Floor (per-lane via libm).
+    #[inline(always)]
+    pub(crate) fn floor(self) -> Self {
+        self.map_lanes(libm::floorf)
+    }
+
     /// Apply a unary function to each lane.
     #[inline(always)]
     pub(crate) fn map_lanes(self, f: fn(f32) -> f32) -> Self {
@@ -263,6 +269,14 @@ impl Field {
     #[inline(always)]
     fn from_slice(slice: &[f32]) -> Self {
         Self(NativeSimd::from_slice(slice))
+    }
+
+    /// Gather: load from slice at indices specified by `indices`.
+    /// Each lane i loads `slice[floor(indices[i]) as usize]`.
+    /// Indices are clamped to valid range.
+    #[inline(always)]
+    pub(crate) fn gather(slice: &[f32], indices: Self) -> Self {
+        Self(NativeSimd::gather(slice, indices.0))
     }
 }
 
