@@ -234,10 +234,10 @@ impl Field {
         self.map_lanes(libm::expf)
     }
 
-    /// Floor (per-lane via libm).
+    /// Floor (round toward negative infinity).
     #[inline(always)]
     pub(crate) fn floor(self) -> Self {
-        self.map_lanes(libm::floorf)
+        Self(self.0.floor())
     }
 
     /// Apply a unary function to each lane.
