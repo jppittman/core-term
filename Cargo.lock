@@ -750,6 +750,7 @@ checksum = "3b3cff922bd51709b605d9ead9aa71031d81447142d828eb4a6eba76fe619f9b"
 name = "pixelflow-core"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "libm",
 ]
 
@@ -759,6 +760,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitflags 2.9.1",
+ "criterion",
  "log",
  "pixelflow-core",
  "serde",
