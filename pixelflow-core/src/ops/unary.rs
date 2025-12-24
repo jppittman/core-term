@@ -1,6 +1,6 @@
 //! # Unary Operations
 //!
-//! AST nodes for unary ops: Sqrt, Abs, Min, Max.
+//! AST nodes for unary ops: Sqrt, Abs, Floor, Min, Max.
 
 use crate::Manifold;
 use crate::numeric::Numeric;
@@ -12,6 +12,10 @@ pub struct Sqrt<M>(pub M);
 /// Absolute value.
 #[derive(Clone, Copy, Debug)]
 pub struct Abs<M>(pub M);
+
+/// Floor (round toward negative infinity).
+#[derive(Clone, Copy, Debug)]
+pub struct Floor<M>(pub M);
 
 /// Element-wise maximum.
 #[derive(Clone, Copy, Debug)]
@@ -44,6 +48,19 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w).abs()
+    }
+}
+
+impl<M, I> Manifold<I> for Floor<M>
+where
+    I: crate::numeric::Numeric,
+    M: Manifold<I>,
+    M::Output: crate::numeric::Numeric,
+{
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        self.0.eval_raw(x, y, z, w).floor()
     }
 }
 
