@@ -464,6 +464,11 @@ impl numeric::Numeric for Field {
     fn exp(self) -> Self {
         Self::exp(self)
     }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        Self::floor(self)
+    }
 }
 
 // ============================================================================
