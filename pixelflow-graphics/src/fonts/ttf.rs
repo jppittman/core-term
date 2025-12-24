@@ -117,6 +117,8 @@ pub enum Segment {
 
 impl Manifold<Field> for Line {
     type Output = Field;
+
+    #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, _: Field, _: Field) -> Field {
         let [[x0, y0], [x1, y1]] = self.0;
         let (dy, dx) = (y1 - y0, x1 - x0);
@@ -136,6 +138,8 @@ impl Manifold<Field> for Line {
 
 impl Manifold<Field> for Quad {
     type Output = Field;
+
+    #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, _: Field, _: Field) -> Field {
         let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
         let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
@@ -169,6 +173,8 @@ impl Manifold<Field> for Quad {
 
 impl Manifold<Jet2> for Line {
     type Output = Jet2;
+
+    #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
         let [[x0, y0], [x1, y1]] = self.0;
         let (dy, dx) = (y1 - y0, x1 - x0);
@@ -190,6 +196,8 @@ impl Manifold<Jet2> for Line {
 
 impl Manifold<Jet2> for Quad {
     type Output = Jet2;
+
+    #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
         let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
         let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
@@ -224,6 +232,8 @@ impl Manifold<Jet2> for Quad {
 
 impl Manifold<Field> for Segment {
     type Output = Field;
+
+    #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         match self {
             Self::Line(c) => c.eval_raw(x, y, z, w),
@@ -234,6 +244,8 @@ impl Manifold<Field> for Segment {
 
 impl Manifold<Jet2> for Segment {
     type Output = Jet2;
+
+    #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
         match self {
             Self::Line(c) => c.eval_raw(x, y, z, w),
