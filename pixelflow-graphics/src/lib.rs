@@ -11,7 +11,7 @@ pub mod transform;
 pub use transform::Scale;
 
 // Re-export fonts
-pub use fonts::{CurveSurface, Font, FontError, FontMetrics, Glyph, GlyphBounds};
+pub use fonts::{Affine, Font, FontError, FontMetrics, Glyph, Sum};
 
 // Re-export render
 pub use render::color::{

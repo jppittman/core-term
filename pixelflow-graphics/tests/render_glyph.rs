@@ -1,13 +1,13 @@
 //! Tests for the TTF parser and glyph rendering.
 
 use pixelflow_core::{Field, Manifold};
-use pixelflow_graphics::fonts::{CurveSurface, Font};
+use pixelflow_graphics::fonts::Font;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
 #[test]
 fn parse_font_and_get_glyph() {
-    let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
+    let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
 
     // Test metrics
     let metrics = font.metrics();
@@ -15,22 +15,25 @@ fn parse_font_and_get_glyph() {
     assert!(metrics.ascent > 0, "Font should have positive ascent");
 
     // Test getting glyphs
-    let glyph_a = font.glyph('A', 64.0).expect("Glyph 'A' not found");
-    assert!(glyph_a.advance > 0.0, "Glyph should have positive advance");
+    let glyph_a = font.glyph_scaled('A', 64.0).expect("Glyph 'A' not found");
+    let advance = font.advance_scaled('A', 64.0).expect("Advance for 'A' not found");
+    assert!(advance > 0.0, "Glyph should have positive advance");
 
-    // Test that we can get curves
-    let curves = glyph_a.curves();
-    assert!(!curves.is_empty(), "Glyph 'A' should have curves");
-
-    println!("Glyph 'A' has {} curve segments", curves.len());
-    println!("Glyph advance: {}", glyph_a.advance);
-    println!("Glyph bounds: {:?}", glyph_a.bounds());
+    // Test that we can evaluate the glyph
+    let val = glyph_a.eval_raw(
+        Field::from(32.0),
+        Field::from(32.0),
+        Field::from(0.0),
+        Field::from(0.0),
+    );
+    println!("Glyph 'A' evaluated at (32,32): {:?}", val);
+    println!("Glyph advance: {}", advance);
 }
 
 #[test]
 fn glyph_is_manifold() {
-    let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
-    let glyph = font.glyph('A', 64.0).expect("Glyph 'A' not found");
+    let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
+    let glyph = font.glyph_scaled('A', 64.0).expect("Glyph 'A' not found");
 
     // Verify the glyph implements Manifold by evaluating it
     // We can't extract the values, but we can verify it doesn't panic
@@ -58,10 +61,10 @@ fn glyph_is_manifold() {
 
 #[test]
 fn all_printable_ascii_glyphs_exist() {
-    let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
+    let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
 
     for ch in ' '..='~' {
-        let glyph = font.glyph(ch, 16.0);
+        let glyph = font.glyph(ch);
         assert!(
             glyph.is_some(),
             "Printable ASCII character '{}' (0x{:02X}) should exist",
@@ -75,10 +78,10 @@ fn all_printable_ascii_glyphs_exist() {
 
 #[test]
 fn advance_and_kern() {
-    let font = Font::from_bytes(FONT_BYTES).expect("Failed to parse font");
+    let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
 
-    let advance_a = font.advance('A', 16.0);
-    let advance_w = font.advance('W', 16.0);
+    let advance_a = font.advance_scaled('A', 16.0).unwrap();
+    let advance_w = font.advance_scaled('W', 16.0).unwrap();
 
     assert!(advance_a > 0.0, "Advance for 'A' should be positive");
     assert!(advance_w > 0.0, "Advance for 'W' should be positive");

@@ -1,17 +1,9 @@
 pub mod combinators;
-pub mod curves;
-pub mod glyph;
 pub mod text;
 pub mod ttf;
 
 // Re-export font types
-pub use ttf::{Font, FontError, FontMetrics};
-
-// Re-export curve types
-pub use curves::{Cubic, Curve, Line, Quad, Segment};
-
-// Re-export glyph types
-pub use glyph::{CurveSurface, Glyph, GlyphBounds};
+pub use ttf::{Affine, Curve, Font, FontError, FontMetrics, Glyph, Line, Quad, Segment, Sum};
 
 // Re-export text
 pub use text::Text;
