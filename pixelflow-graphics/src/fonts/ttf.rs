@@ -9,7 +9,7 @@ use std::sync::Arc;
 // Combinators
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Affine<M> {
     pub inner: M,
     pub inv: [f32; 6], // [a b c d tx ty] inverted
@@ -43,7 +43,7 @@ impl<I: Numeric, M: Manifold<I>> Manifold<I> for Affine<M> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Sum<M>(pub Arc<[M]>);
 
 impl<I: Numeric, M: Manifold<I, Output = I>> Manifold<I> for Sum<M> {
@@ -115,7 +115,7 @@ impl<I: Numeric> Manifold<I> for Segment {
 // Glyph (Recursive Scene Graph)
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Glyph {
     Empty,
     Simple(Sum<Segment>),

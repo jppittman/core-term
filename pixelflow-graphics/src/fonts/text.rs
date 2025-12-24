@@ -1,64 +1,76 @@
-//! Text rendering helpers.
+//! Text rendering as a category of composition.
 //!
-//! Provides the `Text` manifold for rendering strings.
+//! We map a string into a Sum of Translated, Scaled Glyphs.
 
-use super::ttf::{Affine, Font, Glyph, Sum};
+use super::ttf::{Font, Glyph, Sum};
+use crate::transform::{Scale, Translate};
 use pixelflow_core::{Manifold, Numeric};
+use std::sync::Arc;
 
-/// A manifold representing a line of text.
-#[derive(Clone)]
-pub struct Text(pub Glyph);
+/// A Monoid representing a line of text.
+///
+/// It is literally just the Sum of its parts.
+/// Type: Sum<Translate<Scale<Glyph>>>
+#[derive(Clone, Debug)]
+pub struct Text {
+    // We Monomorphize the scene graph to a concrete type for maximum throughput.
+    // No dynamic dispatch. No VTables. Just a massive inlineable expression.
+    pub inner: Sum<Translate<Scale<Glyph>>>,
+    pub width: f32,
+}
 
 impl Text {
-    /// Create a new Text manifold from a string.
+    /// Bind the string to the font geometry.
+    ///
+    /// This is a scan (prefix sum) operation over the character stream,
+    /// lifting each character into the Manifold category.
     pub fn new(font: &Font, text: &str, size: f32) -> Self {
-        let mut glyphs = Vec::new();
-        let mut cursor_x = 0.0f32;
-        let mut prev_char = None;
+        // 1. The Scaling Factor (Em Space -> Screen Space)
+        let scale = size / font.units_per_em as f32;
 
-        for ch in text.chars() {
-            // Apply kerning
-            if let Some(prev) = prev_char {
-                cursor_x += font.kern(prev, ch, size);
-            }
+        // 2. The Stream: Char -> (Glyph, Advance)
+        let stream = text.chars().map(|ch| {
+            (
+                font.glyph(ch).unwrap_or(Glyph::Empty),
+                font.advance(ch).unwrap_or(0.0) * scale, // Scale advance to pixels
+            )
+        });
 
-            // Retrieve glyph
-            if let Some(g) = font.glyph_scaled(ch, size) {
-                // Translate glyph to cursor position
-                glyphs.push(Affine::new(g, [1.0, 0.0, 0.0, 1.0, cursor_x, 0.0]));
-            }
+        // 3. The Scan: Accumulate X position
+        // We use a mutable fold to keep it linear and zero-alloc in the cursor logic.
+        let mut cursor = 0.0;
+        let terms: Vec<_> = stream
+            .map(|(glyph, advance)| {
+                let pos = cursor;
+                cursor += advance;
 
-            // Advance cursor
-            if let Some(adv) = font.advance_scaled(ch, size) {
-                cursor_x += adv;
-            }
+                // The Morphism:
+                // Glyph -> Scale(Glyph) -> Translate(Scale(Glyph))
+                Translate {
+                    manifold: Scale {
+                        manifold: glyph,
+                        factor: scale,
+                    },
+                    offset: [pos, 0.0],
+                }
+            })
+            .collect();
 
-            prev_char = Some(ch);
+        // 4. The Monoid: Sum the terms
+        Self {
+            inner: Sum(Arc::from(terms)),
+            width: cursor,
         }
-
-        Self(Glyph::Compound(Sum(glyphs.into())))
-    }
-
-    /// Get the width of the text in pixels.
-    pub fn width(font: &Font, text: &str, size: f32) -> f32 {
-        let mut w = 0.0f32;
-        let mut prev = None;
-        for ch in text.chars() {
-            if let Some(p) = prev {
-                w += font.kern(p, ch, size);
-            }
-            if let Some(adv) = font.advance_scaled(ch, size) {
-                w += adv;
-            }
-            prev = Some(ch);
-        }
-        w
     }
 }
 
+// The Text object is itself a Manifold.
+// It simply delegates to the inner Sum.
 impl<I: Numeric> Manifold<I> for Text {
     type Output = I;
+
+    #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        self.0.eval_raw(x, y, z, w)
+        self.inner.eval_raw(x, y, z, w)
     }
 }
