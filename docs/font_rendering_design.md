@@ -96,26 +96,36 @@ let glyph = font.glyph_scaled('A', 17.3).unwrap();
 
 ## 5. Performance
 
-Benchmarks show the tradeoffs of caching:
+Benchmarks comparing binary (Field) vs anti-aliased (Jet2) vs cached:
 
-| Operation | Uncached | Cached | Notes |
-|-----------|----------|--------|-------|
-| Cache hit lookup | - | 27 ns | HashMap lookup + clone |
-| Cache miss | - | 3.4 µs | Rasterize and store |
-| Simple glyph eval ('A') | 57 ns | 68 ns | Similar performance |
-| Complex glyph eval ('@') | 210 ns | 68 ns | **3x speedup** |
-| ASCII warm (95 chars, 16px) | - | 450 µs | One-time startup cost |
+| Glyph | Field (binary) | Jet2 (AA) | Cached | Notes |
+|-------|----------------|-----------|--------|-------|
+| 'A' (simple) | 68 ns | 492 ns | 67 ns | AA is 7x slower |
+| '@' (complex) | 702 ns | 1.75 µs | 67 ns | **Cache: 10-26x faster** |
 
-**When to use caching:**
-- Complex glyphs with many segments benefit most
-- Cache hit is 100x+ faster than cache miss
-- Pre-warming at startup amortizes the cost
-- Simple glyphs may not benefit (already fast)
+Cache operations:
 
-**When to skip caching:**
+| Operation | Time |
+|-----------|------|
+| Cache hit | 27 ns |
+| Cache miss | 3.4 µs |
+| ASCII warm (95 chars) | ~450 µs |
+
+**Key insights:**
+- Complex glyphs benefit massively from caching (10x+)
+- AA (Jet2) is 2-7x slower than binary - caching is essential
+- Cache hits are 100x+ faster than cache misses
+- Pre-warming at startup amortizes the baking cost
+
+**When to cache:**
+- Terminal/editor with fixed font sizes (always)
+- Complex Unicode glyphs (CJK, emoji, symbols)
+- Anti-aliased rendering (Jet2 is expensive)
+
+**When not to cache:**
 - Memory-constrained environments
-- Highly variable font sizes
-- Rare characters that won't be reused
+- Highly variable font sizes (zooming UI)
+- One-off characters that won't repeat
 
 ## 6. Integration
 

@@ -3,7 +3,7 @@
 //! Tests font parsing, glyph rendering, rasterization, and color operations.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use pixelflow_core::{Discrete, Field, Manifold, PARALLELISM};
+use pixelflow_core::{Discrete, Field, Jet2, Manifold, PARALLELISM};
 use pixelflow_graphics::{
     render::rasterizer::{execute, TensorShape},
     CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
@@ -583,6 +583,20 @@ fn bench_cached_vs_uncached_eval(c: &mut Criterion) {
 
     group.bench_function("cached_glyph_@_32px", |bencher| {
         bencher.iter(|| black_box(cached_at.eval_raw(black_box(x), y, z, w)))
+    });
+
+    // AA (Jet2) evaluation - anti-aliased glyphs
+    let x_jet = Jet2::x(x);
+    let y_jet = Jet2::y(y);
+    let z_jet = Jet2::constant(z);
+    let w_jet = Jet2::constant(w);
+
+    group.bench_function("aa_glyph_A_32px", |bencher| {
+        bencher.iter(|| black_box(uncached.eval_raw(black_box(x_jet), y_jet, z_jet, w_jet)))
+    });
+
+    group.bench_function("aa_glyph_@_32px", |bencher| {
+        bencher.iter(|| black_box(uncached_at.eval_raw(black_box(x_jet), y_jet, z_jet, w_jet)))
     });
 
     group.finish();
