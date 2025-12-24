@@ -83,50 +83,47 @@ impl Utf8Decoder {
 
     #[inline]
     fn decode_first_byte(&mut self, byte: u8) -> Utf8DecodeResult {
-        let utf8_ascii_range: std::ops::RangeInclusive<u8> = 0x00..=UTF8_ASCII_MAX;
-        let utf8_invalid_early_start_range: std::ops::RangeInclusive<u8> =
-            UTF8_INVALID_AS_START_MIN_RANGE1..=UTF8_INVALID_AS_START_MAX_RANGE1; // 0x80..=0xC1
-        let utf8_2_byte_start_range: std::ops::RangeInclusive<u8> = UTF8_2_BYTE_MIN..=0xDF;
-        let utf8_3_byte_start_range: std::ops::RangeInclusive<u8> = UTF8_3_BYTE_MIN..=0xEF;
-        let utf8_4_byte_start_range: std::ops::RangeInclusive<u8> =
-            UTF8_4_BYTE_MIN..=UTF8_4_BYTE_MAX; // 0xF0..=0xF4
-        let utf8_invalid_late_start_range: std::ops::RangeInclusive<u8> =
-            UTF8_INVALID_AS_START_MIN_RANGE2..=0xFF; // 0xF5..=0xFF
-
-        match byte {
-            b if utf8_ascii_range.contains(&b) => Utf8DecodeResult::Decoded(b as char),
-            b if utf8_2_byte_start_range.contains(&b) => {
-                self.expected = 2;
-                self.buffer[0] = b;
-                self.len = 1;
-                Utf8DecodeResult::NeedsMoreBytes
-            }
-            b if utf8_3_byte_start_range.contains(&b) => {
-                self.expected = 3;
-                self.buffer[0] = b;
-                self.len = 1;
-                Utf8DecodeResult::NeedsMoreBytes
-            }
-            b if utf8_4_byte_start_range.contains(&b) => {
-                self.expected = 4;
-                self.buffer[0] = b;
-                self.len = 1;
-                Utf8DecodeResult::NeedsMoreBytes
-            }
-            // Catches invalid start bytes: 0x80-0xC1 (continuation / overlong C0/C1) and 0xF5-0xFF
-            b if utf8_invalid_early_start_range.contains(&b)
-                || utf8_invalid_late_start_range.contains(&b) =>
-            {
-                warn!("invalid utf8 sequence byte: {:X?}", b);
-                self.reset();
-                Utf8DecodeResult::InvalidSequence
-            }
-            _ => {
-                unreachable!(
-                    "This default branch should ideally not be hit if ranges cover all u8 values."
-                );
-            }
+        // Optimized range checks using direct comparisons to avoid RangeInclusive object creation
+        // and improve branch prediction in the hot path.
+        if byte <= UTF8_ASCII_MAX {
+            return Utf8DecodeResult::Decoded(byte as char);
         }
+
+        if byte >= UTF8_2_BYTE_MIN && byte <= 0xDF {
+            self.expected = 2;
+            self.buffer[0] = byte;
+            self.len = 1;
+            return Utf8DecodeResult::NeedsMoreBytes;
+        }
+
+        if byte >= UTF8_3_BYTE_MIN && byte <= 0xEF {
+            self.expected = 3;
+            self.buffer[0] = byte;
+            self.len = 1;
+            return Utf8DecodeResult::NeedsMoreBytes;
+        }
+
+        if byte >= UTF8_4_BYTE_MIN && byte <= UTF8_4_BYTE_MAX {
+            self.expected = 4;
+            self.buffer[0] = byte;
+            self.len = 1;
+            return Utf8DecodeResult::NeedsMoreBytes;
+        }
+
+        // Invalid start bytes: 0x80..0xC1 and 0xF5..0xFF
+        // This check handles everything not caught above because of the gaps in logic
+        // But to be precise and safe matching the original logic:
+        if (byte >= UTF8_INVALID_AS_START_MIN_RANGE1 && byte <= UTF8_INVALID_AS_START_MAX_RANGE1)
+            || (byte >= UTF8_INVALID_AS_START_MIN_RANGE2)
+        {
+            warn!("invalid utf8 sequence byte: {:X?}", byte);
+            self.reset();
+            return Utf8DecodeResult::InvalidSequence;
+        }
+
+        unreachable!(
+            "This default branch should ideally not be hit if logic covers all u8 values."
+        );
     }
 
     #[inline]
