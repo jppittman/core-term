@@ -13,7 +13,7 @@ pub use baked::Baked;
 pub use transform::Scale;
 
 // Re-export fonts
-pub use fonts::{Affine, Font, Glyph, Sum};
+pub use fonts::{Affine, CachedGlyph, CachedText, Font, Glyph, GlyphCache, Sum};
 
 // Re-export render
 pub use render::color::{
