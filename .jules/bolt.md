@@ -5,3 +5,6 @@
 ## 2025-05-23 - Dependency Management
 **Learning:** `rayon` is present in `Cargo.lock` but not in `pixelflow-runtime`'s `Cargo.toml`.
 **Action:** Dependencies must be explicitly added to the crate's `Cargo.toml` to be used.
+## 2025-05-23 - Dependency Management (Rayon Rejection)
+**Learning:** Even if a dependency is in the lockfile, adding it to a crate might be rejected if the user wants to avoid heavy dependencies for simple tasks. 'Chesterton's fence' applies to missing dependencies too.
+**Action:** Always ask before adding a dependency, even if it seems 'available'. Preference is for lightweight, native solutions.
