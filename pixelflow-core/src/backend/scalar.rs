@@ -120,6 +120,12 @@ impl SimdOps for ScalarF32 {
     fn from_slice(slice: &[f32]) -> Self {
         Self(slice[0])
     }
+
+    #[inline(always)]
+    fn gather(slice: &[f32], indices: Self) -> Self {
+        let idx = (libm::floorf(indices.0) as isize).clamp(0, slice.len() as isize - 1) as usize;
+        Self(slice[idx])
+    }
 }
 
 // ============================================================================

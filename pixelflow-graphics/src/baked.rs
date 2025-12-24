@@ -1,26 +1,20 @@
 //! # Baked Combinator
 //!
-//! Caches a color manifold's results to a Frame.
-//! Queries are served from the cache via modular arithmetic.
+//! Caches a color manifold's results to memory.
+//! Queries are served from the cache with proper SIMD sampling.
 //!
 //! This is the foundation for glyph caching - bake once, sample many.
 
 use crate::render::color::Pixel;
 use crate::render::frame::Frame;
 use crate::render::rasterizer::{execute, TensorShape};
-use pixelflow_core::{Discrete, Field, Manifold};
+use pixelflow_core::{Discrete, Field, Manifold, Texture};
 
-/// A color manifold baked to a Frame cache.
+/// A color manifold baked to a texture cache.
 ///
 /// `Baked` pre-computes a color manifold at a given resolution and serves
-/// subsequent queries from the cached Frame. Coordinates map to cache
-/// pixels via modular arithmetic (wrapping at cache boundaries).
-///
-/// # Usage
-///
-/// The primary use is as a texture cache:
-/// 1. Bake an expensive manifold once at construction
-/// 2. Query the cache many times during rendering
+/// subsequent queries via SIMD-friendly texture sampling. It stores
+/// separate f32 textures for each RGBA channel.
 ///
 /// # Example
 ///
@@ -30,15 +24,26 @@ use pixelflow_core::{Discrete, Field, Manifold};
 /// // Bake an expensive gradient at 256x256
 /// let cached: Baked<_, Rgba8> = Baked::new(expensive_gradient, 256, 256);
 ///
-/// // Use as a manifold - queries sample from cache
-/// rasterizer::execute(&cached, target, shape);
+/// // Now queries sample from the cache with SIMD
+/// let color = cached.eval_raw(x, y, z, w);
 /// ```
 pub struct Baked<M, P: Pixel> {
-    /// The cached frame (row-major pixels).
-    cache: Frame<P>,
+    /// Red channel texture.
+    r: Texture,
+    /// Green channel texture.
+    g: Texture,
+    /// Blue channel texture.
+    b: Texture,
+    /// Alpha channel texture.
+    a: Texture,
+    /// Cache dimensions.
+    width: usize,
+    height: usize,
     /// The original manifold.
     #[allow(dead_code)]
     inner: M,
+    /// Pixel type marker.
+    _pixel: core::marker::PhantomData<P>,
 }
 
 impl<M, P> Baked<M, P>
@@ -46,65 +51,76 @@ where
     M: Manifold<Output = Discrete>,
     P: Pixel,
 {
-    /// Bake a color manifold to a Frame at the given resolution.
+    /// Bake a color manifold to textures at the given resolution.
     ///
-    /// Eagerly rasterizes the manifold to the cache.
+    /// Eagerly rasterizes the manifold, then extracts RGBA channels
+    /// into separate f32 textures for SIMD-friendly sampling.
     pub fn new(source: M, width: usize, height: usize) -> Self {
-        let mut cache = Frame::<P>::new(width as u32, height as u32);
-        execute(&source, cache.as_slice_mut(), TensorShape::new(width, height));
-        Self {
-            cache,
-            inner: source,
-        }
-    }
+        // First rasterize to a Frame
+        let mut frame = Frame::<P>::new(width as u32, height as u32);
+        execute(&source, frame.as_slice_mut(), TensorShape::new(width, height));
 
-    /// Create from an existing Frame.
-    pub fn from_frame(inner: M, cache: Frame<P>) -> Self {
-        Self { cache, inner }
+        // Extract channels to separate f32 buffers
+        let mut r_data = Vec::with_capacity(width * height);
+        let mut g_data = Vec::with_capacity(width * height);
+        let mut b_data = Vec::with_capacity(width * height);
+        let mut a_data = Vec::with_capacity(width * height);
+
+        for pixel in &frame.data {
+            let packed = pixel.to_u32();
+            let [r, g, b, a] = packed.to_le_bytes();
+            r_data.push(r as f32 / 255.0);
+            g_data.push(g as f32 / 255.0);
+            b_data.push(b as f32 / 255.0);
+            a_data.push(a as f32 / 255.0);
+        }
+
+        Self {
+            r: Texture::new(r_data, width, height),
+            g: Texture::new(g_data, width, height),
+            b: Texture::new(b_data, width, height),
+            a: Texture::new(a_data, width, height),
+            width,
+            height,
+            inner: source,
+            _pixel: core::marker::PhantomData,
+        }
     }
 
     /// Get the cache width.
     #[inline]
     pub fn width(&self) -> usize {
-        self.cache.width
+        self.width
     }
 
     /// Get the cache height.
     #[inline]
     pub fn height(&self) -> usize {
-        self.cache.height
+        self.height
     }
 
-    /// Get the underlying Frame.
+    /// Get the red channel texture.
     #[inline]
-    pub fn frame(&self) -> &Frame<P> {
-        &self.cache
+    pub fn red(&self) -> &Texture {
+        &self.r
     }
 
-    /// Get mutable access to the underlying Frame.
+    /// Get the green channel texture.
     #[inline]
-    pub fn frame_mut(&mut self) -> &mut Frame<P> {
-        &mut self.cache
+    pub fn green(&self) -> &Texture {
+        &self.g
     }
 
-    /// Sample a coordinate from the cache (with wrapping).
+    /// Get the blue channel texture.
     #[inline]
-    fn sample(&self, x: f32, y: f32) -> u32 {
-        let ix = (x.floor() as isize).rem_euclid(self.cache.width as isize) as usize;
-        let iy = (y.floor() as isize).rem_euclid(self.cache.height as isize) as usize;
-        self.cache.data[iy * self.cache.width + ix].to_u32()
+    pub fn blue(&self) -> &Texture {
+        &self.b
     }
 
-    /// Unpack RGBA from u32 pixel (assumes RGBA8 layout).
+    /// Get the alpha channel texture.
     #[inline]
-    fn unpack(pixel: u32) -> (f32, f32, f32, f32) {
-        let [r, g, b, a] = pixel.to_le_bytes();
-        (
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            a as f32 / 255.0,
-        )
+    pub fn alpha(&self) -> &Texture {
+        &self.a
     }
 }
 
@@ -116,28 +132,15 @@ where
     type Output = Discrete;
 
     #[inline(always)]
-    fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
-        // The rasterizer queries with Field::sequential(x_start) for x,
-        // and Field::from(y_val) for y - sequential x, constant y.
-        //
-        // Since we can't extract individual Field lanes from outside core,
-        // we use the inner manifold's eval to get coordinate-dependent sampling.
-        // This delegates to the original manifold, which defeats caching.
-        //
-        // For true cache-based evaluation, use frame() directly and blit,
-        // or extend pixelflow_core with lane access methods.
-        //
-        // Workaround: sample at origin and broadcast. This is wrong but
-        // demonstrates the pattern. Real usage should blit the frame directly.
-        let pixel = self.sample(0.5, 0.5);
-        let (r, g, b, a) = Self::unpack(pixel);
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+        // Sample each channel texture (proper SIMD gather)
+        let r = self.r.eval_raw(x, y, z, w);
+        let g = self.g.eval_raw(x, y, z, w);
+        let b = self.b.eval_raw(x, y, z, w);
+        let a = self.a.eval_raw(x, y, z, w);
 
-        Discrete::pack(
-            Field::from(r),
-            Field::from(g),
-            Field::from(b),
-            Field::from(a),
-        )
+        // Pack into Discrete
+        Discrete::pack(r, g, b, a)
     }
 }
 
@@ -145,7 +148,7 @@ where
 mod tests {
     use super::*;
     use crate::Rgba8;
-    use pixelflow_core::Discrete;
+    use pixelflow_core::{Discrete, PARALLELISM, materialize_discrete};
 
     // A simple solid color manifold for testing
     struct SolidColor(u8, u8, u8, u8);
@@ -170,20 +173,18 @@ mod tests {
 
         assert_eq!(baked.width(), 8);
         assert_eq!(baked.height(), 8);
-
-        // Check that the frame was filled
-        let frame = baked.frame();
-        assert_eq!(frame.data.len(), 64);
     }
 
     #[test]
-    fn test_baked_sample() {
+    fn test_baked_eval() {
         let color = SolidColor(255, 0, 0, 255);
         let baked: Baked<_, Rgba8> = Baked::new(color, 4, 4);
 
-        // Sample should return the cached red color
-        let pixel = baked.sample(0.5, 0.5);
-        let [r, g, b, a] = pixel.to_le_bytes();
+        // Sample should return red
+        let mut buf = [0u32; PARALLELISM];
+        materialize_discrete(&baked, 0.5, 0.5, &mut buf);
+
+        let [r, g, b, a] = buf[0].to_le_bytes();
         assert_eq!(r, 255);
         assert_eq!(g, 0);
         assert_eq!(b, 0);
@@ -191,16 +192,33 @@ mod tests {
     }
 
     #[test]
-    fn test_baked_wrapping() {
-        let color = SolidColor(128, 128, 128, 255);
-        let baked: Baked<_, Rgba8> = Baked::new(color, 4, 4);
+    fn test_baked_sequential_sampling() {
+        // Create a gradient: red increases with x
+        struct Gradient;
+        impl Manifold for Gradient {
+            type Output = Discrete;
+            fn eval_raw(&self, x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
+                // Red channel = x / 4 (for 4 wide texture)
+                let r = x / Field::from(4.0);
+                Discrete::pack(r, Field::from(0.0), Field::from(0.0), Field::from(1.0))
+            }
+        }
 
-        // Coordinates outside [0, 4) should wrap
-        let p1 = baked.sample(0.5, 0.5);
-        let p2 = baked.sample(4.5, 0.5); // wraps to x=0
-        let p3 = baked.sample(-3.5, 0.5); // wraps to x=0
+        let baked: Baked<_, Rgba8> = Baked::new(Gradient, 4, 4);
 
-        assert_eq!(p1, p2);
-        assert_eq!(p1, p3);
+        // Sample at x=0.5 should give red ~= 0.125 (pixel 0 sampled at 0.5)
+        // Sample at x=1.5 should give red ~= 0.375 (pixel 1 sampled at 1.5)
+        let mut buf = [0u32; PARALLELISM];
+        materialize_discrete(&baked, 0.5, 0.5, &mut buf);
+
+        // First pixel (x=0.5) should have low red
+        let [r0, _, _, _] = buf[0].to_le_bytes();
+        assert!(r0 < 50, "expected low red at x=0, got {}", r0);
+
+        // Second pixel (x=1.5) should have higher red
+        if PARALLELISM > 1 {
+            let [r1, _, _, _] = buf[1].to_le_bytes();
+            assert!(r1 > r0, "expected red to increase with x");
+        }
     }
 }
