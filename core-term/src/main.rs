@@ -55,7 +55,10 @@ fn parse_args() -> Args {
         }
     }
 
-    Args { command, args: trailing_args }
+    Args {
+        command,
+        args: trailing_args,
+    }
 }
 
 /// Main entry point for the `myterm` application.
@@ -156,7 +159,8 @@ fn main() -> anyhow::Result<()> {
     info!("Engine config created. Creating EngineTroupe...");
 
     // Phase 1: Create troupe (channels ready, no threads spawned yet)
-    let troupe = EngineTroupe::new(engine_config).context("Failed to create EngineTroupe")?;
+    let troupe =
+        EngineTroupe::with_config(engine_config).context("Failed to create EngineTroupe")?;
 
     // Phase 2: Get engine handle for app before spawning
     let engine_handle = troupe.engine_handle();
@@ -194,8 +198,10 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to spawn EventMonitorActor")?;
         info!("EventMonitorActor spawned successfully");
 
-        // Phase 3: Run troupe with app (blocks on main thread)
-        troupe.play(app_handle).context("EngineTroupe play failed")?;
+        // Phase 3: Run troupe (blocks on main thread)
+        // The _app_handle keeps the terminal app channel alive
+        let _ = app_handle; // Keep app_handle alive until troupe completes
+        troupe.play().map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     info!("core-term exited successfully.");

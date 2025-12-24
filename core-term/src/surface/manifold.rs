@@ -74,13 +74,17 @@ impl<G, const CHANNEL: usize> CellChannel<G, CHANNEL> {
     }
 }
 
-impl<G: Manifold<Output = Field> + Clone, const CHANNEL: usize> Manifold for CellChannel<G, CHANNEL> {
+impl<G: Manifold<Output = Field> + Clone, const CHANNEL: usize> Manifold
+    for CellChannel<G, CHANNEL>
+{
     type Output = Field;
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         let coverage = self.cell.glyph.eval_raw(x, y, z, w);
-        let c = coverage.field_max(Field::from(0.0)).field_min(Field::from(1.0));
+        let c = coverage
+            .field_max(Field::from(0.0))
+            .field_min(Field::from(1.0));
         let omc = Field::from(1.0) - c;
         c * Field::from(self.cell.fg[CHANNEL]) + omc * Field::from(self.cell.bg[CHANNEL])
     }
@@ -106,7 +110,11 @@ pub struct LocalCoords<M> {
 
 impl<M> LocalCoords<M> {
     pub fn new(inner: M, offset_x: f32, offset_y: f32) -> Self {
-        Self { inner, offset_x, offset_y }
+        Self {
+            inner,
+            offset_x,
+            offset_y,
+        }
     }
 }
 
@@ -306,6 +314,8 @@ mod tests {
 
     #[test]
     fn test_grid_construction() {
+        use pixelflow_graphics::render::{execute, TensorShape};
+
         let factory = MockFactory {
             cols: 4,
             rows: 4,
@@ -315,23 +325,20 @@ mod tests {
 
         let grid = build_grid(&factory);
 
-        // Evaluate at cell (0, 0) center - should be white (even position)
-        let result = grid.eval_raw(
-            Field::from(4.0),
-            Field::from(8.0),
-            Field::from(0.0),
-            Field::from(0.0),
-        );
+        // Render a small region to test
+        let mut buf = [0u32; 64]; // 8x8 pixels
+        execute(&grid, &mut buf, TensorShape::new(8, 8));
 
-        let mut buf = [0u32; 16];
-        result.store(&mut buf);
-
-        let r = buf[0] & 0xFF;
+        // Check pixel at (4, 0) - should be in first cell (0,0) - white
+        let pixel_index = 0 * 8 + 4; // row 0, col 4
+        let r = buf[pixel_index] & 0xFF;
         assert!(r > 200, "Expected white, got r={}", r);
     }
 
     #[test]
     fn test_cell_channel_blending() {
+        use pixelflow_graphics::render::{execute, TensorShape};
+
         let cell = Cell::new(
             ConstCoverage(0.5),
             [1.0, 0.0, 0.0, 1.0], // Red
@@ -346,15 +353,9 @@ mod tests {
             CellA::new(cell),
         );
 
-        let result = packed.eval_raw(
-            Field::from(0.0),
-            Field::from(0.0),
-            Field::from(0.0),
-            Field::from(0.0),
-        );
-
-        let mut buf = [0u32; 16];
-        result.store(&mut buf);
+        // Render a single pixel
+        let mut buf = [0u32; 1];
+        execute(&packed, &mut buf, TensorShape::new(1, 1));
 
         // 50% coverage: R = 0.5*1.0 + 0.5*0.0 = 0.5 = 127
         // B = 0.5*0.0 + 0.5*1.0 = 0.5 = 127
@@ -367,18 +368,14 @@ mod tests {
 
     #[test]
     fn test_color_manifold() {
+        use pixelflow_graphics::render::{execute, TensorShape};
+
         // Color::Rgb from pixelflow-graphics implements Manifold<Output = Discrete>
         let red = Color::Rgb(255, 0, 0);
 
-        let result = red.eval_raw(
-            Field::from(0.0),
-            Field::from(0.0),
-            Field::from(0.0),
-            Field::from(0.0),
-        );
-
-        let mut buf = [0u32; 16];
-        result.store(&mut buf);
+        // Render a single pixel
+        let mut buf = [0u32; 1];
+        execute(&red, &mut buf, TensorShape::new(1, 1));
 
         let r = buf[0] & 0xFF;
         let g = (buf[0] >> 8) & 0xFF;

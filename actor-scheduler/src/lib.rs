@@ -181,6 +181,30 @@ pub trait Actor<D, C, M> {
 #[deprecated(since = "0.2.0", note = "Use `Actor` instead")]
 pub use Actor as SchedulerHandler;
 
+/// Defines the message types for an actor managed by the troupe! macro.
+///
+/// This trait is separate from `TroupeActor` to allow extracting type information
+/// without lifetime parameters, which is necessary for the `troupe!` macro to
+/// generate struct field types.
+///
+/// # Example
+///
+/// ```ignore
+/// impl ActorTypes for MyActor {
+///     type Data = MyData;
+///     type Control = MyControl;
+///     type Management = MyManagement;
+/// }
+/// ```
+pub trait ActorTypes {
+    /// The data message type for this actor.
+    type Data: Send + 'static;
+    /// The control message type for this actor.
+    type Control: Send + 'static;
+    /// The management message type for this actor.
+    type Management: Send + 'static;
+}
+
 /// The TroupeActor trait for actors managed by the troupe! macro.
 ///
 /// Unlike the basic `Actor` trait, `TroupeActor` is parameterized over a Directory
@@ -194,29 +218,34 @@ pub use Actor as SchedulerHandler;
 ///     dir: &'a Directory,
 /// }
 ///
-/// #[actor_impl]
-/// impl EngineActor<'_> {
+/// impl ActorTypes for EngineActor<'_> {
 ///     type Data = EngineData;
 ///     type Control = EngineControl;
 ///     type Management = EngineManagement;
+/// }
 ///
-///     fn new(dir: &Directory) -> Self { Self { dir } }
-///     fn handle_data(&mut self, msg: Self::Data) { }
-///     fn handle_control(&mut self, msg: Self::Control) { }
-///     fn handle_management(&mut self, msg: Self::Management) { }
+/// impl<'a> TroupeActor<'a, Directory> for EngineActor<'a> {
+///     fn new(dir: &'a Directory) -> Self { Self { dir } }
+/// }
+///
+/// impl Actor<EngineData, EngineControl, EngineManagement> for EngineActor<'_> {
+///     fn handle_data(&mut self, msg: EngineData) { }
+///     fn handle_control(&mut self, msg: EngineControl) { }
+///     fn handle_management(&mut self, msg: EngineManagement) { }
+///     fn park(&mut self, hint: ParkHint) -> ParkHint { hint }
 /// }
 /// ```
-pub trait TroupeActor<'a, Dir>: Sized + Actor<Self::Data, Self::Control, Self::Management>
+pub trait TroupeActor<'a, Dir>:
+    Sized
+    + ActorTypes
+    + Actor<
+        <Self as ActorTypes>::Data,
+        <Self as ActorTypes>::Control,
+        <Self as ActorTypes>::Management,
+    >
 where
     Dir: 'a,
 {
-    /// The data message type for this actor.
-    type Data: Send + 'static;
-    /// The control message type for this actor.
-    type Control: Send + 'static;
-    /// The management message type for this actor.
-    type Management: Send + 'static;
-
     /// Create a new actor with a reference to the directory.
     fn new(dir: &'a Dir) -> Self;
 }
@@ -778,15 +807,14 @@ mod troupe_tests {
         }
     }
 
-    #[allow(clippy::needless_lifetimes)]
-    impl<'__dir, __Dir> TroupeActor<'__dir, __Dir> for EngineActor<'__dir>
-    where
-        __Dir: '__dir,
-    {
+    impl ActorTypes for EngineActor<'_> {
         type Data = EngineData;
         type Control = EngineControl;
         type Management = EngineManagement;
+    }
 
+    #[allow(clippy::needless_lifetimes)]
+    impl<'__dir, __Dir: '__dir> TroupeActor<'__dir, __Dir> for EngineActor<'__dir> {
         fn new(_dir: &'__dir __Dir) -> Self {
             panic!("use new_with_counter instead")
         }
@@ -821,15 +849,14 @@ mod troupe_tests {
         }
     }
 
-    #[allow(clippy::needless_lifetimes)]
-    impl<'__dir, __Dir> TroupeActor<'__dir, __Dir> for DisplayActor<'__dir>
-    where
-        __Dir: '__dir,
-    {
+    impl ActorTypes for DisplayActor<'_> {
         type Data = DisplayData;
         type Control = DisplayControl;
         type Management = DisplayManagement;
+    }
 
+    #[allow(clippy::needless_lifetimes)]
+    impl<'__dir, __Dir: '__dir> TroupeActor<'__dir, __Dir> for DisplayActor<'__dir> {
         fn new(_dir: &'__dir __Dir) -> Self {
             panic!("use new_with_counter instead")
         }
@@ -909,11 +936,13 @@ mod troupe_nesting_tests {
         }
     }
 
-    impl<'a, Dir: 'a> TroupeActor<'a, Dir> for WorkerActor<'a> {
+    impl ActorTypes for WorkerActor<'_> {
         type Data = WorkerData;
         type Control = WorkerControl;
         type Management = WorkerManagement;
+    }
 
+    impl<'a, Dir: 'a> TroupeActor<'a, Dir> for WorkerActor<'a> {
         fn new(_dir: &'a Dir) -> Self {
             panic!("test only")
         }

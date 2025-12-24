@@ -36,9 +36,8 @@ mod tests {
 
         fn handle_control(&mut self, _msg: EngineControl<PlatformPixel>) {}
         fn handle_management(&mut self, _msg: AppManagement) {}
-        fn park(&mut self, _hint: ParkHint) {
-            // No-op for mock, maybe sleep to prevent tight loop if we were polling in run
-            // But scheduler usually handles waiting on channel
+        fn park(&mut self, hint: ParkHint) -> ParkHint {
+            hint
         }
     }
 

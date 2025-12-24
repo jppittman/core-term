@@ -7,14 +7,25 @@ use crate::display::driver::DriverActor;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use crate::display::platform::PlatformActor;
 use crate::platform::{ActivePlatform, PlatformPixel};
-use crate::vsync_actor::{
-    RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
-};
-use actor_scheduler::{Actor, Message, ParkHint, TroupeActor};
+use crate::vsync_actor::{VsyncActor, VsyncConfig, VsyncManagement};
+use actor_scheduler::{Actor, ActorTypes, Message, ParkHint, TroupeActor};
 use anyhow::Result;
 
 /// Engine handler - coordinates app, rendering, display.
 pub struct EngineHandler;
+
+// ActorTypes impls - required for troupe! macro
+impl ActorTypes for EngineHandler {
+    type Data = EngineData<PlatformPixel>;
+    type Control = EngineControl<PlatformPixel>;
+    type Management = AppManagement;
+}
+
+impl ActorTypes for DriverActor<ActivePlatform> {
+    type Data = DisplayData<PlatformPixel>;
+    type Control = DisplayControl;
+    type Management = DisplayMgmt;
+}
 
 // Generate troupe structures using macro
 actor_scheduler::troupe! {
@@ -46,10 +57,6 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
 
 // Implement TroupeActor for EngineHandler
 impl<'a> TroupeActor<'a, Directory> for EngineHandler {
-    type Data = EngineData<PlatformPixel>;
-    type Control = EngineControl<PlatformPixel>;
-    type Management = AppManagement;
-
     fn new(_dir: &'a Directory) -> Self {
         Self
     }
@@ -57,10 +64,6 @@ impl<'a> TroupeActor<'a, Directory> for EngineHandler {
 
 // Implement TroupeActor for DriverActor
 impl<'a> TroupeActor<'a, Directory> for DriverActor<ActivePlatform> {
-    type Data = DisplayData<PlatformPixel>;
-    type Control = DisplayControl;
-    type Management = DisplayMgmt;
-
     fn new(dir: &'a Directory) -> Self {
         #[cfg(target_os = "macos")]
         {
@@ -100,5 +103,16 @@ impl Troupe {
             }))?;
 
         Ok(troupe)
+    }
+
+    /// Get a handle to the engine actor for external components to communicate with.
+    pub fn engine_handle(
+        &self,
+    ) -> actor_scheduler::ActorHandle<
+        EngineData<PlatformPixel>,
+        EngineControl<PlatformPixel>,
+        AppManagement,
+    > {
+        self.directory().engine.clone()
     }
 }

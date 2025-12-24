@@ -1,10 +1,34 @@
-// Test 1: Simple type (works currently)
-use actor_scheduler::troupe;
+// Test: troupe! macro with simple actor type
+use actor_scheduler::{Actor, ActorTypes, ParkHint, TroupeActor};
 
 struct SimpleActor;
 
-troupe! {
-    simple: SimpleActor,
+impl Actor<(), (), ()> for SimpleActor {
+    fn handle_data(&mut self, _: ()) {}
+    fn handle_control(&mut self, _: ()) {}
+    fn handle_management(&mut self, _: ()) {}
+    fn park(&mut self, hint: ParkHint) -> ParkHint {
+        hint
+    }
 }
 
-fn main() {}
+impl ActorTypes for SimpleActor {
+    type Data = ();
+    type Control = ();
+    type Management = ();
+}
+
+impl<'a, Dir: 'a> TroupeActor<'a, Dir> for SimpleActor {
+    fn new(_dir: &'a Dir) -> Self {
+        Self
+    }
+}
+
+actor_scheduler::troupe! {
+    simple: SimpleActor [main],
+}
+
+fn main() {
+    // Success if this compiles
+    let _troupe = Troupe::new();
+}
