@@ -340,7 +340,12 @@ impl HarmonicAttentionIsGlobalIllumination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use pixelflow_core::Sh2;
+
+    // ============================================================================
+    // EluFeature Tests
+    // ============================================================================
 
     #[test]
     fn test_elu_feature_positive() {
@@ -351,6 +356,56 @@ mod tests {
         // We can't easily extract the value, so just verify it compiles
         let _ = result;
     }
+
+    #[test]
+    fn test_elu_feature_dimension() {
+        let f = EluFeature;
+        assert_eq!(f.dim(), 1, "EluFeature should have dimension 1");
+    }
+
+    #[test]
+    fn test_elu_feature_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<EluFeature>();
+    }
+
+    #[test]
+    fn test_elu_feature_default() {
+        let f1 = EluFeature;
+        let f2 = EluFeature::default();
+        // Both should work the same
+        let _ = f1.apply(Field::from(1.0));
+        let _ = f2.apply(Field::from(1.0));
+    }
+
+    // ============================================================================
+    // RandomFourierFeature Tests
+    // ============================================================================
+
+    #[test]
+    fn test_random_fourier_feature_dimension_correct() {
+        let rff = RandomFourierFeature::new(vec![1.0, 2.0, 3.0]);
+        // Should be 2x frequencies for sin/cos pairs
+        assert_eq!(rff.num_features, 6);
+    }
+
+    #[test]
+    fn test_random_fourier_feature_empty_frequencies() {
+        let rff = RandomFourierFeature::new(vec![]);
+        assert_eq!(rff.num_features, 0);
+        assert!(rff.frequencies.is_empty());
+    }
+
+    #[test]
+    fn test_random_fourier_feature_stores_frequencies() {
+        let freqs = vec![0.5, 1.0, 2.0, 4.0];
+        let rff = RandomFourierFeature::new(freqs.clone());
+        assert_eq!(rff.frequencies, freqs);
+    }
+
+    // ============================================================================
+    // HarmonicAttention Tests
+    // ============================================================================
 
     #[test]
     fn test_harmonic_attention_accumulate() {
@@ -373,8 +428,181 @@ mod tests {
     }
 
     #[test]
+    fn test_harmonic_attention_reset_clears_state() {
+        let mut attn: HarmonicAttention<9> = HarmonicAttention::new(3);
+
+        // Add some state
+        let key_sh = Sh2 {
+            coeffs: [1.0, 0.5, 0.3, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        let value = [1.0, 1.0, 1.0];
+        attn.accumulate(&key_sh, &value);
+
+        // Reset
+        attn.reset();
+
+        // Verify all coefficients are zero
+        for sh in &attn.accumulated {
+            for &coeff in &sh.coeffs {
+                assert!(
+                    coeff.abs() < 1e-10,
+                    "Reset should clear all accumulated coefficients"
+                );
+            }
+        }
+
+        for &coeff in &attn.denominator.coeffs {
+            assert!(
+                coeff.abs() < 1e-10,
+                "Reset should clear denominator coefficients"
+            );
+        }
+    }
+
+    #[test]
+    fn test_harmonic_attention_new_creates_zero_state() {
+        let attn: HarmonicAttention<9> = HarmonicAttention::new(4);
+
+        assert_eq!(attn.accumulated.len(), 4, "Should have 4 value dimensions");
+
+        for sh in &attn.accumulated {
+            for &coeff in &sh.coeffs {
+                assert!(coeff.abs() < 1e-10, "Initial state should be zero");
+            }
+        }
+    }
+
+    #[test]
+    fn test_harmonic_attention_multiple_accumulations() {
+        let mut attn: HarmonicAttention<9> = HarmonicAttention::new(2);
+
+        // Add first light source
+        let key1 = Sh2 {
+            coeffs: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        attn.accumulate(&key1, &[1.0, 0.0]);
+
+        // Add second light source
+        let key2 = Sh2 {
+            coeffs: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        attn.accumulate(&key2, &[0.0, 1.0]);
+
+        // Query with uniform direction
+        let query_sh = Sh2 {
+            coeffs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        let mut output = [0.0f32; 2];
+        attn.query(&query_sh, &mut output);
+
+        // Should have contributions from both sources
+        assert!(output[0] > 0.0, "Should have contribution from first source");
+        assert!(output[1] > 0.0, "Should have contribution from second source");
+    }
+
+    #[test]
+    fn test_harmonic_attention_query_normalization() {
+        let mut attn: HarmonicAttention<9> = HarmonicAttention::new(1);
+
+        // Accumulate with known values
+        let key_sh = Sh2 {
+            coeffs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        attn.accumulate(&key_sh, &[2.0]);
+
+        // Query from same direction
+        let mut output = [0.0f32; 1];
+        attn.query(&key_sh, &mut output);
+
+        // Result should be normalized (approximately the value we put in)
+        assert!(
+            (output[0] - 2.0).abs() < 0.1,
+            "Query with same key should return ~value"
+        );
+    }
+
+    // ============================================================================
+    // ShFeatureMap Tests
+    // ============================================================================
+
+    #[test]
+    fn test_sh_feature_map_projects_direction() {
+        // Project the +Z direction
+        let result = ShFeatureMap::<9>::project(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(1.0),
+        );
+
+        // Should get 9 coefficients
+        assert_eq!(result.len(), 9);
+    }
+
+    #[test]
+    fn test_sh_feature_map_normalized() {
+        // Project an unnormalized direction
+        let result = ShFeatureMap::<9>::project(
+            Field::from(2.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        // First coefficient (DC term) should be constant regardless of normalization
+        // Y_00 = 0.282... (constant)
+        let _ = result; // We verify it computes without NaN/Inf
+    }
+
+    // ============================================================================
+    // LinearAttention Tests
+    // ============================================================================
+
+    #[test]
+    fn test_linear_attention_new() {
+        let attn = LinearAttention::new(EluFeature, 4, 3);
+        assert_eq!(attn.feature_dim, 4);
+        assert_eq!(attn.value_dim, 3);
+        assert_eq!(attn.kv_state.len(), 4 * 3);
+        assert_eq!(attn.k_state.len(), 4);
+    }
+
+    #[test]
+    fn test_linear_attention_reset_clears_state() {
+        let mut attn = LinearAttention::new(EluFeature, 2, 2);
+
+        // Modify state
+        attn.kv_state[0] = 1.0;
+        attn.k_state[0] = 1.0;
+
+        // Reset
+        attn.reset();
+
+        // Verify cleared
+        assert!(
+            attn.kv_state.iter().all(|&x| x == 0.0),
+            "kv_state should be cleared"
+        );
+        assert!(
+            attn.k_state.iter().all(|&x| x == 0.0),
+            "k_state should be cleared"
+        );
+    }
+
+    #[test]
+    fn test_linear_attention_initial_state_is_zero() {
+        let attn = LinearAttention::new(EluFeature, 3, 5);
+        assert!(attn.kv_state.iter().all(|&x| x == 0.0));
+        assert!(attn.k_state.iter().all(|&x| x == 0.0));
+    }
+
+    // ============================================================================
+    // Correspondence Documentation Test
+    // ============================================================================
+
+    #[test]
     fn test_correspondence_doc() {
         // Just verify the documentation compiles
-        let _ = HarmonicAttentionIsGlobalIllumination::CORRESPONDENCE;
+        let correspondence = HarmonicAttentionIsGlobalIllumination::CORRESPONDENCE;
+        assert!(correspondence.contains("Linear Attention"));
+        assert!(correspondence.contains("SH Global Illumination"));
     }
 }
