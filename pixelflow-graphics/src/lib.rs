@@ -5,6 +5,7 @@
 pub mod baked;
 pub mod fonts;
 pub mod image;
+pub mod raymarch;
 pub mod render;
 pub mod shapes;
 pub mod transform;
