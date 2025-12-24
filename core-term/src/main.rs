@@ -61,6 +61,36 @@ fn parse_args() -> Args {
     }
 }
 
+/// Get secure log file path using user-specific runtime directory.
+/// Falls back to user's cache directory to avoid world-readable /tmp.
+fn get_secure_log_path() -> std::path::PathBuf {
+    // Prefer XDG_RUNTIME_DIR (user-specific, restricted permissions)
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return std::path::PathBuf::from(runtime_dir).join("core-term.log");
+    }
+
+    // Fall back to user's cache directory
+    if let Some(home) = std::env::var_os("HOME") {
+        let cache_dir = std::path::PathBuf::from(home).join(".cache").join("core-term");
+        // Create directory with restricted permissions if it doesn't exist
+        if !cache_dir.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                let _ = std::fs::DirBuilder::new().mode(0o700).create(&cache_dir);
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = std::fs::create_dir_all(&cache_dir);
+            }
+        }
+        return cache_dir.join("core-term.log");
+    }
+
+    // Last resort: use /tmp with PID to reduce collision risk
+    std::path::PathBuf::from(format!("/tmp/core-term-{}.log", std::process::id()))
+}
+
 /// Main entry point for the `myterm` application.
 fn main() -> anyhow::Result<()> {
     let args = parse_args();
@@ -74,11 +104,28 @@ fn main() -> anyhow::Result<()> {
         .build()
         .expect("Failed to start profiler");
 
+    let log_path = get_secure_log_path();
+
+    // Open log file securely - avoid following symlinks on Unix
+    #[cfg(unix)]
+    let log_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            // O_NOFOLLOW prevents symlink attacks
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&log_path)
+            .expect("Failed to open log file")
+    };
+
+    #[cfg(not(unix))]
     let log_file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open("/tmp/core-term.log")
+        .open(&log_path)
         .expect("Failed to open log file");
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -209,18 +256,27 @@ fn main() -> anyhow::Result<()> {
     // Write flamegraph on exit if profiling enabled
     #[cfg(feature = "profiling")]
     {
-        let path = "/tmp/core-term-flamegraph.svg";
-        info!("Writing flamegraph to {}...", path);
+        // Use secure path in same directory as log file
+        let path = get_secure_log_path()
+            .parent()
+            .map(|p| p.join("core-term-flamegraph.svg"))
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(format!(
+                    "/tmp/core-term-flamegraph-{}.svg",
+                    std::process::id()
+                ))
+            });
+        info!("Writing flamegraph to {}...", path.display());
         match profiler_guard.report().build() {
-            Ok(report) => match std::fs::File::create(path) {
+            Ok(report) => match std::fs::File::create(&path) {
                 Ok(file) => {
                     if let Err(e) = report.flamegraph(file) {
                         warn!("Failed to write flamegraph: {}", e);
                     } else {
-                        info!("Flamegraph written to {}", path);
+                        info!("Flamegraph written to {}", path.display());
                     }
                 }
-                Err(e) => warn!("Failed to create {}: {}", path, e),
+                Err(e) => warn!("Failed to create {}: {}", path.display(), e),
             },
             Err(e) => warn!("Failed to build profiler report: {:?}", e),
         }
