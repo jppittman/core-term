@@ -220,4 +220,74 @@ impl Numeric for Jet2 {
     fn from_field(field: Field) -> Self {
         Self::constant(field)
     }
+
+    // ========================================================================
+    // Trigonometric Operations with Automatic Differentiation
+    // ========================================================================
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        // Chain rule: (sin f)' = cos(f) * f'
+        let sin_val = self.val.sin();
+        let cos_deriv = self.val.cos();
+        Self {
+            val: sin_val,
+            dx: self.dx * cos_deriv,
+            dy: self.dy * cos_deriv,
+        }
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        // Chain rule: (cos f)' = -sin(f) * f'
+        let cos_val = self.val.cos();
+        let neg_sin = Field::from(0.0) - self.val.sin();
+        Self {
+            val: cos_val,
+            dx: self.dx * neg_sin,
+            dy: self.dy * neg_sin,
+        }
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        // atan2(y, x) derivatives:
+        // ∂/∂y = x / (x² + y²)
+        // ∂/∂x = -y / (x² + y²)
+        let r_sq = self.val * self.val + x.val * x.val;
+        let dy_darg = x.val / r_sq;
+        let dx_darg = (Field::from(0.0) - self.val) / r_sq;
+        Self {
+            val: self.val.atan2(x.val),
+            dx: self.dx * dy_darg + x.dx * dx_darg,
+            dy: self.dy * dy_darg + x.dy * dx_darg,
+        }
+    }
+
+    #[inline(always)]
+    fn pow(self, exp: Self) -> Self {
+        // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
+        // Simplified case when g is constant: (f^c)' = c * f^(c-1) * f'
+        let val = self.val.pow(exp.val);
+        // Use general formula
+        let ln_base = self.val.map_lanes(libm::logf);
+        let scale = val * (exp.dx * ln_base + exp.val * self.dx / self.val);
+        let scale_y = val * (exp.dy * ln_base + exp.val * self.dy / self.val);
+        Self {
+            val,
+            dx: scale,
+            dy: scale_y,
+        }
+    }
+
+    #[inline(always)]
+    fn exp(self) -> Self {
+        // Chain rule: (exp f)' = exp(f) * f'
+        let exp_val = self.val.exp();
+        Self {
+            val: exp_val,
+            dx: self.dx * exp_val,
+            dy: self.dy * exp_val,
+        }
+    }
 }

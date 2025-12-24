@@ -766,6 +766,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pixelflow-ml"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "pixelflow-core",
+]
+
+[[package]]
 name = "pixelflow-runtime"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,9 @@
+[package]
+name = "pixelflow-ml"
+version = "0.1.0"
+edition = "2024"
+description = "Linear Attention as Harmonic Global Illumination"
+
+[dependencies]
+pixelflow-core = { path = "../pixelflow-core" }
+libm = "0.2.15"

@@ -152,6 +152,12 @@ impl SimdOps for F32x4 {
             Self(_mm_or_ps(t, f))
         }
     }
+
+    #[inline(always)]
+    fn from_slice(slice: &[f32]) -> Self {
+        assert!(slice.len() >= Self::LANES);
+        unsafe { Self(_mm_loadu_ps(slice.as_ptr())) }
+    }
 }
 
 // Operators for F32x4
@@ -509,6 +515,12 @@ impl SimdOps for F32x16 {
             ))
         }
     }
+
+    #[inline(always)]
+    fn from_slice(slice: &[f32]) -> Self {
+        assert!(slice.len() >= Self::LANES);
+        unsafe { Self(_mm512_loadu_ps(slice.as_ptr())) }
+    }
 }
 
 #[cfg(target_feature = "avx512f")]
@@ -576,3 +588,4 @@ impl Not for F32x16 {
         }
     }
 }
+
