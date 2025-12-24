@@ -4,6 +4,7 @@ use pixelflow_core::Manifold;
 use pixelflow_graphics::render::color::Pixel;
 use pixelflow_graphics::render::rasterizer::{execute, execute_stripe, Stripe, TensorShape};
 use pixelflow_graphics::Discrete;
+use rayon::prelude::*;
 
 /// Parallel rendering options.
 #[derive(Copy, Clone, Debug)]
@@ -54,12 +55,10 @@ pub fn render_parallel<P, M>(
         start_y = end_y;
     }
 
-    // Use scope to spawn threads with borrowed data
-    std::thread::scope(|s| {
-        for (chunk, start_y, end_y) in buffer_chunks {
-            s.spawn(move || {
-                execute_stripe(manifold, chunk, shape.width, Stripe { start_y, end_y });
-            });
-        }
-    });
+    // Use rayon for parallel execution
+    buffer_chunks
+        .into_par_iter()
+        .for_each(|(chunk, start_y, end_y)| {
+            execute_stripe(manifold, chunk, shape.width, Stripe { start_y, end_y });
+        });
 }
