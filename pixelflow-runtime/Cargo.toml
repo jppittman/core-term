@@ -16,7 +16,6 @@ serde = { version = "1.0", features = ["derive"] }
 # Workspace dependencies
 pixelflow-core = { path = "../pixelflow-core" }
 pixelflow-graphics = { path = "../pixelflow-graphics", features = ["serde"] }
-rayon = "1.11.0"
 
 [dependencies.actor-scheduler]
 path = "../actor-scheduler"
