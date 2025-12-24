@@ -14,6 +14,13 @@ thiserror = "1.0"
 # SIMD library for optimized rendering
 pixelflow-core = { path = "../pixelflow-core" }
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "graphics_benches"
+harness = false
+
 [features]
 default = []
 serde = ["dep:serde"]
