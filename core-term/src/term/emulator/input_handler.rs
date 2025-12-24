@@ -70,10 +70,14 @@ pub(super) fn process_user_input_action(
         UserInputAction::PasteText(text_to_paste) => {
             if emulator.dec_modes.bracketed_paste_mode {
                 log::debug!("InputHandler: Bracketed paste mode ON. Wrapping and sending to PTY.");
-                let mut pasted_bytes = Vec::new();
-                pasted_bytes.extend_from_slice(b"\x1b[200~");
-                pasted_bytes.extend_from_slice(text_to_paste.as_bytes());
-                pasted_bytes.extend_from_slice(b"\x1b[201~");
+                let start_marker = b"\x1b[200~";
+                let end_marker = b"\x1b[201~";
+                let text_bytes = text_to_paste.as_bytes();
+                let capacity = start_marker.len() + text_bytes.len() + end_marker.len();
+                let mut pasted_bytes = Vec::with_capacity(capacity);
+                pasted_bytes.extend_from_slice(start_marker);
+                pasted_bytes.extend_from_slice(text_bytes);
+                pasted_bytes.extend_from_slice(end_marker);
                 return Some(EmulatorAction::WritePty(pasted_bytes));
             } else {
                 log::debug!("InputHandler: Bracketed paste mode OFF. Calling emulator.paste_text.");
