@@ -80,14 +80,17 @@ impl<I: Numeric> Manifold<I> for Line {
             return I::from_f32(0.0);
         }
         let (y0f, y1f) = (I::from_f32(y0), I::from_f32(y1));
-        let in_y = y.ge(y0f.min(y1f)) * y.lt(y0f.max(y1f));
+        // Use bitwise AND (&) for combining masks, not multiplication (*)
+        // SIMD comparison results are bit masks (0xFFFFFFFF for true),
+        // and multiplying them gives NaN, not a valid mask.
+        let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
         let x_int = I::from_f32(x0) + (y - y0f) * I::from_f32(dx / dy);
         let dir = if dy > 0.0 {
             I::from_f32(1.0)
         } else {
             I::from_f32(-1.0)
         };
-        I::select(in_y * x.lt(x_int), dir, I::from_f32(0.0))
+        I::select(in_y & x.lt(x_int), dir, I::from_f32(0.0))
     }
 }
 
@@ -317,8 +320,11 @@ impl<'a> Font<'a> {
     pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph> {
         let g = self.glyph(ch)?;
         let scale = size / self.units_per_em as f32;
+        // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
+        // so the top of the text is at Y=0 in screen coordinates.
+        let y_offset = self.ascent as f32 * scale;
         Some(Glyph::Compound(Sum(
-            [Affine::new(g, [scale, 0.0, 0.0, -scale, 0.0, 0.0])].into(),
+            [Affine::new(g, [scale, 0.0, 0.0, -scale, 0.0, y_offset])].into(),
         )))
     }
 
