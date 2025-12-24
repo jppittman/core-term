@@ -1,266 +1,103 @@
-//! Engine Troupe - Coordinated lifecycle for render pipeline actors.
-//!
-//! The EngineTroupe manages three cooperating actors:
-//! - **DriverActor** [main]: Platform display driver, runs on main/GUI thread
-//! - **EngineHandler**: Coordinates app, rendering, and display
-//! - **VsyncActor**: Generates frame timing signals
-//!
-//! # Two-Phase Initialization
-//!
-//! ```ignore
-//! // Phase 1: Create troupe (channels ready, no threads yet)
-//! let troupe = EngineTroupe::new(config)?;
-//!
-//! // Phase 2: Get engine handle for app
-//! let engine_handle = troupe.engine_handle();
-//!
-//! // Create app with engine handle
-//! let app = MyApp::new(engine_handle);
-//!
-//! // Phase 3: Run troupe with app (blocks on main thread)
-//! troupe.play(app)?;
-//! ```
+//! Engine Troupe - Render pipeline actor coordination using troupe! macro.
 
-use crate::api::private::{EngineActorHandle, EngineActorScheduler, EngineControl, EngineData, WindowId};
-use crate::api::public::{AppManagement, Application};
+use crate::api::private::{EngineControl, EngineData};
+use crate::api::public::AppManagement;
 use crate::config::EngineConfig;
 use crate::display::driver::DriverActor;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use crate::display::platform::PlatformActor;
 use crate::platform::{ActivePlatform, PlatformPixel};
-use crate::vsync_actor::{RenderedResponse, VsyncActor, VsyncCommand, VsyncManagement};
-use actor_scheduler::{ActorHandle, ActorScheduler, Message};
-use anyhow::{Context, Result};
-use log::info;
+use crate::vsync_actor::{RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement};
+use actor_scheduler::{Actor, Message, ParkHint, TroupeActor};
+use anyhow::Result;
 
-/// Directory of handles for all actors in the engine troupe.
-pub struct EngineDirectory {
-    /// Handle to send to the engine (for external app)
-    pub engine: EngineActorHandle<PlatformPixel>,
-    /// Handle to send to the driver
-    pub driver: ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
-    /// Handle to send to vsync actor
-    pub vsync: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+/// Engine handler - coordinates app, rendering, display.
+/// Lifetime bound to Directory created by troupe.
+pub struct EngineHandler;
+
+// Generate troupe structures using macro
+actor_scheduler::troupe! {
+    driver: DriverActor<ActivePlatform> [main],
+    engine: EngineHandler [expose],
+    vsync: VsyncActor,
 }
 
-/// Handles exposed to external code (the app).
-pub struct ExposedHandles {
-    /// Engine handle - app sends render surfaces here
-    pub engine: EngineActorHandle<PlatformPixel>,
+// Implement Actor for EngineHandler
+impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement> for EngineHandler {
+    fn handle_data(&mut self, _data: EngineData<PlatformPixel>) {
+        // TODO: Implement rendering logic
+    }
+
+    fn handle_control(&mut self, _ctrl: EngineControl<PlatformPixel>) {
+        // TODO: Implement control logic
+    }
+
+    fn handle_management(&mut self, _mgmt: AppManagement) {
+        // TODO: Implement management logic
+    }
+
+    fn park(&mut self, hint: ParkHint) -> ParkHint {
+        hint
+    }
 }
 
-/// Engine Troupe manages the render pipeline lifecycle.
-///
-/// Owns all schedulers and the platform driver. Use two-phase init:
-/// 1. `new()` - creates all channels
-/// 2. `engine_handle()` - get handle for app
-/// 3. `play(app)` - run actors
-pub struct EngineTroupe {
-    // Directory of handles (for actor communication)
-    directory: EngineDirectory,
-
-    // Schedulers (owned, consumed in play())
-    engine_scheduler: EngineActorScheduler<PlatformPixel>,
-    // Note: driver_scheduler is owned by the DriverActor
-    vsync_scheduler: ActorScheduler<RenderedResponse, VsyncCommand, VsyncManagement>,
-
-    // Platform-specific driver actor (runs on main thread, owns its scheduler)
-    driver: DriverActor<ActivePlatform>,
-
-    // Configuration
-    config: EngineConfig,
+// Implement TroupeActor for EngineHandler
 }
 
-impl EngineTroupe {
-    /// Create a new engine troupe. Phase 1: channels are created, no threads spawned.
-    #[cfg(target_os = "macos")]
-    pub fn new(config: EngineConfig) -> Result<Self> {
-        use crate::platform::{waker, MetalOps};
+// Implement TroupeActor for DriverActor
+impl<'a> TroupeActor<'a, Directory> for DriverActor<ActivePlatform> {
+    type Data = DisplayData<PlatformPixel>;
+    type Control = DisplayControl;
+    type Management = DisplayMgmt;
 
-        info!("EngineTroupe::new() - Creating render pipeline (macOS)");
-
-        // Phase 1: Create all handles and schedulers upfront
-
-        // Engine actor (receives from driver and app)
-        let (engine_handle, engine_scheduler) = actor_scheduler::create_actor::<
-            EngineData<PlatformPixel>,
-            EngineControl<PlatformPixel>,
-            AppManagement,
-        >(256, None);
-
-        // VSync actor (receives timing feedback and commands)
-        let (vsync_handle, vsync_scheduler) = actor_scheduler::create_actor::<
-            RenderedResponse,
-            VsyncCommand,
-            VsyncManagement,
-        >(64, None);
-
-        // Platform ops and driver
-        let ops = MetalOps::new(engine_handle.clone())
-            .context("Failed to create Metal platform ops")?;
-        let platform = PlatformActor::new(ops);
-
-        // Driver with Cocoa waker for main thread wake
-        let waker = std::sync::Arc::new(waker::CocoaWaker::new());
-        let (driver_handle, driver_scheduler) = actor_scheduler::create_actor::<
-            DisplayData<PlatformPixel>,
-            DisplayControl,
-            DisplayMgmt,
-        >(1024, Some(waker));
-
-        let driver = DriverActor::new(driver_scheduler, platform);
-
-        // Build directory
-        let directory = EngineDirectory {
-            engine: engine_handle,
-            driver: driver_handle,
-            vsync: vsync_handle,
-        };
-
-        Ok(Self {
-            directory,
-            engine_scheduler,
-            vsync_scheduler,
-            driver,
-            config,
-        })
-    }
-
-    /// Create a new engine troupe. Phase 1: channels are created, no threads spawned.
-    #[cfg(target_os = "linux")]
-    pub fn new(config: EngineConfig) -> Result<Self> {
-        use crate::platform::linux::LinuxOps;
-
-        info!("EngineTroupe::new() - Creating render pipeline (Linux)");
-
-        // Phase 1: Create all handles and schedulers upfront
-
-        // Engine actor (receives from driver and app)
-        let (engine_handle, engine_scheduler) = actor_scheduler::create_actor::<
-            EngineData<PlatformPixel>,
-            EngineControl<PlatformPixel>,
-            AppManagement,
-        >(256, None);
-
-        // VSync actor (receives timing feedback and commands)
-        let (vsync_handle, vsync_scheduler) = actor_scheduler::create_actor::<
-            RenderedResponse,
-            VsyncCommand,
-            VsyncManagement,
-        >(64, None);
-
-        // Platform ops and driver
-        let ops = LinuxOps::new(engine_handle.clone())
-            .context("Failed to create Linux platform ops")?;
-        let platform = PlatformActor::new(ops);
-
-        // Driver (no special waker on Linux)
-        let (driver_handle, driver_scheduler) = actor_scheduler::create_actor::<
-            DisplayData<PlatformPixel>,
-            DisplayControl,
-            DisplayMgmt,
-        >(1024, None);
-
-        let driver = DriverActor::new(driver_scheduler, platform);
-
-        // Build directory
-        let directory = EngineDirectory {
-            engine: engine_handle,
-            driver: driver_handle,
-            vsync: vsync_handle,
-        };
-
-        Ok(Self {
-            directory,
-            engine_scheduler,
-            vsync_scheduler,
-            driver,
-            config,
-        })
-    }
-
-    /// Get the engine handle for the app. Call after new(), before play().
-    pub fn engine_handle(&self) -> EngineActorHandle<PlatformPixel> {
-        self.directory.engine.clone()
-    }
-
-    /// Get exposed handles for external code.
-    pub fn exposed(&self) -> ExposedHandles {
-        ExposedHandles {
-            engine: self.directory.engine.clone(),
+    fn new(dir: &'a Directory) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            use crate::platform::MetalOps;
+            let ops = MetalOps::new(dir.engine.clone()).expect("Failed to create Metal ops");
+            let platform = PlatformActor::new(ops);
+            DriverActor::new(platform)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use crate::platform::linux::LinuxOps;
+            let ops = LinuxOps::new(dir.engine.clone()).expect("Failed to create Linux ops");
+            let platform = PlatformActor::new(ops);
+            DriverActor::new(platform)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            panic!("Unsupported platform");
         }
     }
+}
 
-    /// Run the troupe with the given application. Blocks on main thread.
-    ///
-    /// Phase 3: Spawns engine and vsync threads, runs driver on main thread.
-    pub fn play<A: Application + Send + 'static>(self, app: A) -> Result<()> {
-        info!("EngineTroupe::play() - Starting render pipeline");
+impl Troupe {
+    /// Create troupe and configure vsync actor.
+    pub fn with_config(config: EngineConfig) -> Result<Self> {
+        let troupe = Self::new();
+        let dir = troupe.directory();
 
-        let Self {
-            directory,
-            mut engine_scheduler,
-            mut vsync_scheduler,
-            mut driver,
-            config,
-        } = self;
-
-        // Spawn VSync actor thread
-        let vsync_handle = directory.vsync.clone();
-        let engine_handle_for_vsync = directory.engine.clone();
-        let target_fps = config.performance.target_fps as f64;
-
-        std::thread::Builder::new()
-            .name("vsync".to_string())
-            .spawn(move || {
-                // VsyncActor::new takes the handle to itself (for clock thread)
-                let mut actor = VsyncActor::new(
-                    target_fps,
-                    engine_handle_for_vsync,
-                    vsync_handle,
-                );
-                vsync_scheduler.run(&mut actor);
-            })
-            .context("Failed to spawn vsync thread")?;
-
-        // Start vsync
-        let _ = directory.vsync.send(Message::Control(VsyncCommand::Start));
-
-        // Spawn engine thread
-        let driver_handle = directory.driver.clone();
-        let engine_handle = directory.engine.clone();
-        let vsync_handle_for_engine = directory.vsync.clone();
-        let render_threads = config.performance.render_threads;
-
-        std::thread::Builder::new()
-            .name("engine".to_string())
-            .spawn(move || {
-                let mut handler = super::platform::EngineHandler::new(
-                    app,
-                    engine_handle,
-                    driver_handle,
-                    Some(vsync_handle_for_engine),
-                    render_threads,
-                );
-                engine_scheduler.run(&mut handler);
-            })
-            .context("Failed to spawn engine thread")?;
-
-        // Send CreateWindow command to driver
-        let width = (config.window.columns as usize * config.window.cell_width_px) as u32;
-        let height = (config.window.rows as usize * config.window.cell_height_px) as u32;
-
-        let _ = directory.driver.send(Message::Management(DisplayMgmt::Create {
-            id: WindowId::PRIMARY,
-            settings: crate::api::public::WindowDescriptor {
-                title: config.window.title.clone(),
-                width,
-                height,
-                ..Default::default()
+        // Configure vsync with target FPS
+        dir.vsync.send(Message::Management(VsyncManagement::SetConfig {
+            config: VsyncConfig {
+                refresh_rate: config.performance.target_fps as f64,
             },
-        }));
+            engine_handle: dir.engine.clone(),
+            self_handle: dir.vsync.clone(),
+        }))?;
 
-        // Run driver on main thread [main] - blocks until shutdown
-        driver.run()
+        Ok(troupe)
+    }
+}
+
+// Implement TroupeActor for EngineHandler - use macro-generated Directory type
+impl<'a> TroupeActor<'a, Directory> for EngineHandler {
+    type Data = EngineData<PlatformPixel>;
+    type Control = EngineControl<PlatformPixel>;
+    type Management = AppManagement;
+
+    fn new(_dir: &'a Directory) -> Self {
+        Self
     }
 }

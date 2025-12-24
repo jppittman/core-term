@@ -14,20 +14,18 @@ use actor_scheduler::{Actor, Message, ParkHint, TroupeActor};
 use anyhow::Result;
 
 /// Engine handler - coordinates app, rendering, display.
-pub struct EngineHandler<'a> {
-    _dir: &'a (), // Placeholder - will be Directory after macro expansion
-}
+pub struct EngineHandler;
 
-// Generate troupe structures using macro - this creates Directory and Troupe types
+// Generate troupe structures using macro
 actor_scheduler::troupe! {
     driver: DriverActor<ActivePlatform> [main],
     engine: EngineHandler [expose],
     vsync: VsyncActor,
 }
 
-// Now implement Actor trait for EngineHandler
-impl<'a> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
-    for EngineHandler<'a>
+// Implement Actor for EngineHandler
+impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
+    for EngineHandler
 {
     fn handle_data(&mut self, _data: EngineData<PlatformPixel>) {
         // TODO: Implement rendering logic
@@ -46,18 +44,18 @@ impl<'a> Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManag
     }
 }
 
-// Implement TroupeActor for EngineHandler - uses Directory from macro
-impl<'a> TroupeActor<'a, Directory> for EngineHandler<'a> {
+// Implement TroupeActor for EngineHandler
+impl<'a> TroupeActor<'a, Directory> for EngineHandler {
     type Data = EngineData<PlatformPixel>;
     type Control = EngineControl<PlatformPixel>;
     type Management = AppManagement;
 
     fn new(_dir: &'a Directory) -> Self {
-        Self { _dir: &() }
+        Self
     }
 }
 
-// Implement TroupeActor for DriverActor - creates platform in new()
+// Implement TroupeActor for DriverActor
 impl<'a> TroupeActor<'a, Directory> for DriverActor<ActivePlatform> {
     type Data = DisplayData<PlatformPixel>;
     type Control = DisplayControl;
