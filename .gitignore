@@ -3,3 +3,6 @@ CoreTerm.app
 .DS_Store
 /vendor
 
+
+.gemini/
+gha-creds-*.json
