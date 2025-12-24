@@ -307,13 +307,24 @@ impl Discrete {
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
-        Self(backend::x86::U32x4::pack_rgba(
-            // SAFETY: F32x4 and Field have the same repr(transparent) layout
-            unsafe { core::mem::transmute(r.0) },
-            unsafe { core::mem::transmute(g.0) },
-            unsafe { core::mem::transmute(b.0) },
-            unsafe { core::mem::transmute(a.0) },
-        ))
+        #[cfg(target_feature = "avx512f")]
+        {
+            Self(backend::x86::U32x16::pack_rgba(
+                unsafe { core::mem::transmute(r.0) },
+                unsafe { core::mem::transmute(g.0) },
+                unsafe { core::mem::transmute(b.0) },
+                unsafe { core::mem::transmute(a.0) },
+            ))
+        }
+        #[cfg(not(target_feature = "avx512f"))]
+        {
+            Self(backend::x86::U32x4::pack_rgba(
+                unsafe { core::mem::transmute(r.0) },
+                unsafe { core::mem::transmute(g.0) },
+                unsafe { core::mem::transmute(b.0) },
+                unsafe { core::mem::transmute(a.0) },
+            ))
+        }
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.

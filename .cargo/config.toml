@@ -1,3 +1,6 @@
 [alias]
 # Build and run the bundled macOS app (required for keyboard input on macOS)
 bundle-run = "run --package xtask --release -- bundle-run"
+
+[build]
+rustflags = ["-C", "target-cpu=native"]

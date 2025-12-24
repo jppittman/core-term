@@ -365,6 +365,7 @@ pub struct Avx512;
 impl Backend for Avx512 {
     const LANES: usize = 16;
     type F32 = F32x16;
+    type U32 = U32x16;
 }
 
 /// 16-lane f32 SIMD vector for AVX512.
@@ -399,9 +400,11 @@ impl F32x16 {
 
     #[inline(always)]
     unsafe fn from_mask(mask: __mmask16) -> Self {
-        let all_ones = _mm512_castsi512_ps(_mm512_set1_epi32(-1));
-        let all_zeros = _mm512_setzero_ps();
-        Self(_mm512_mask_blend_ps(mask, all_zeros, all_ones))
+        unsafe {
+            let all_ones = _mm512_castsi512_ps(_mm512_set1_epi32(-1));
+            let all_zeros = _mm512_setzero_ps();
+            Self(_mm512_mask_blend_ps(mask, all_zeros, all_ones))
+        }
     }
 }
 
@@ -589,3 +592,130 @@ impl Not for F32x16 {
     }
 }
 
+// ============================================================================
+// U32x16 - 16-lane u32 SIMD for packed RGBA pixels (AVX512)
+// ============================================================================
+
+/// 16-lane u32 SIMD vector for AVX512 (packed RGBA pixels).
+#[cfg(target_feature = "avx512f")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U32x16(__m512i);
+
+#[cfg(target_feature = "avx512f")]
+impl Default for U32x16 {
+    fn default() -> Self {
+        unsafe { Self(_mm512_setzero_si512()) }
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl Debug for U32x16 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let mut arr = [0u32; 16];
+        unsafe { _mm512_storeu_si512(arr.as_mut_ptr() as *mut __m512i, self.0) };
+        write!(f, "U32x16({:?})", arr)
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl SimdU32Ops for U32x16 {
+    const LANES: usize = 16;
+
+    #[inline(always)]
+    fn splat(val: u32) -> Self {
+        unsafe { Self(_mm512_set1_epi32(val as i32)) }
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u32]) {
+        assert!(out.len() >= Self::LANES);
+        unsafe { _mm512_storeu_si512(out.as_mut_ptr() as *mut __m512i, self.0) }
+    }
+
+    #[inline(always)]
+    fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
+        // Placeholder
+        Self::default()
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl BitAnd for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        unsafe { Self(_mm512_and_si512(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl BitOr for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        unsafe { Self(_mm512_or_si512(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl Shl<u32> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: u32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(rhs as i32);
+            Self(_mm512_sll_epi32(self.0, shift))
+        }
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl Shr<u32> for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: u32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(rhs as i32);
+            Self(_mm512_srl_epi32(self.0, shift))
+        }
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl U32x16 {
+    /// Pack 16 f32 Fields (RGBA) into packed u32 pixels.
+    #[inline(always)]
+    pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
+        unsafe {
+            let scale = _mm512_set1_ps(255.0);
+            let zero = _mm512_setzero_ps();
+            let one = _mm512_set1_ps(1.0);
+
+            let r_clamped = _mm512_min_ps(_mm512_max_ps(r.0, zero), one);
+            let g_clamped = _mm512_min_ps(_mm512_max_ps(g.0, zero), one);
+            let b_clamped = _mm512_min_ps(_mm512_max_ps(b.0, zero), one);
+            let a_clamped = _mm512_min_ps(_mm512_max_ps(a.0, zero), one);
+
+            let r_scaled = _mm512_mul_ps(r_clamped, scale);
+            let g_scaled = _mm512_mul_ps(g_clamped, scale);
+            let b_scaled = _mm512_mul_ps(b_clamped, scale);
+            let a_scaled = _mm512_mul_ps(a_clamped, scale);
+
+            let r_i32 = _mm512_cvttps_epi32(r_scaled);
+            let g_i32 = _mm512_cvttps_epi32(g_scaled);
+            let b_i32 = _mm512_cvttps_epi32(b_scaled);
+            let a_i32 = _mm512_cvttps_epi32(a_scaled);
+
+            let g_shifted = _mm512_slli_epi32(g_i32, 8);
+            let b_shifted = _mm512_slli_epi32(b_i32, 16);
+            let a_shifted = _mm512_slli_epi32(a_i32, 24);
+
+            let packed = _mm512_or_si512(
+                _mm512_or_si512(r_i32, g_shifted),
+                _mm512_or_si512(b_shifted, a_shifted),
+            );
+            Self(packed)
+        }
+    }
+}
