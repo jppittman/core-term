@@ -1,651 +1,491 @@
-//! Minimal TTF parser for pixelflow-fonts.
+//! pixelflow-graphics/src/fonts/ttf.rs
 //!
-//! Outputs `Vec<Segment>` directly in pixel coordinates.
-//! No intermediate normalization. One transform during construction.
+//! Pure Manifold TTF Parser.
 
-use std::collections::HashMap;
-use std::ops::Range;
-use std::sync::{Arc, RwLock};
+use pixelflow_core::{Manifold, Numeric};
+use std::sync::Arc;
 
-use super::curves::{Curve, Segment};
-use super::glyph::{Glyph, GlyphBounds};
+// ═══════════════════════════════════════════════════════════════════════════
+// Combinators
+// ═══════════════════════════════════════════════════════════════════════════
 
-// ============================================================================
-// PUBLIC API
-// ============================================================================
-
-/// A parsed TrueType font.
-pub struct TtfFont<'a> {
-    data: &'a [u8],
-    tables: HashMap<Tag, Range<usize>>,
-    cache: RwLock<HashMap<(u16, u32), Arc<CachedGlyph>>>,
-}
-
-/// Cached glyph data.
 #[derive(Clone)]
-struct CachedGlyph {
-    segments: Arc<[Segment]>,
-    bounds: GlyphBounds,
-    advance: f32,
+pub struct Affine<M> {
+    pub inner: M,
+    pub inv: [f32; 6], // [a b c d tx ty] inverted
 }
 
-/// Font-wide metrics.
+impl<M> Affine<M> {
+    pub fn new(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Self {
+        let det = a * d - b * c;
+        let inv_det = if det.abs() < 1e-6 { 0.0 } else { 1.0 / det };
+        Self {
+            inner,
+            inv: [
+                d * inv_det,
+                -b * inv_det,
+                -c * inv_det,
+                a * inv_det,
+                tx,
+                ty,
+            ],
+        }
+    }
+}
+
+impl<I: Numeric, M: Manifold<I>> Manifold<I> for Affine<M> {
+    type Output = M::Output;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        let [a, b, c, d, tx, ty] = self.inv;
+        let x2 = (x - I::from_f32(tx)) * I::from_f32(a) + (y - I::from_f32(ty)) * I::from_f32(b);
+        let y2 = (x - I::from_f32(tx)) * I::from_f32(c) + (y - I::from_f32(ty)) * I::from_f32(d);
+        self.inner.eval_raw(x2, y2, z, w)
+    }
+}
+
+#[derive(Clone)]
+pub struct Sum<M>(pub Arc<[M]>);
+
+impl<I: Numeric, M: Manifold<I, Output = I>> Manifold<I> for Sum<M> {
+    type Output = I;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+        self.0
+            .iter()
+            .fold(I::from_f32(0.0), |acc, m| acc + m.eval_raw(x, y, z, w))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Geometry
+// ═══════════════════════════════════════════════════════════════════════════
+
 #[derive(Clone, Copy, Debug)]
-pub struct FontMetrics {
+pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
+
+pub type Line = Curve<2>;
+pub type Quad = Curve<3>;
+
+#[derive(Clone, Copy, Debug)]
+pub enum Segment {
+    Line(Line),
+    Quad(Quad),
+}
+
+impl<I: Numeric> Manifold<I> for Line {
+    type Output = I;
+    fn eval_raw(&self, x: I, y: I, _: I, _: I) -> I {
+        let [[x0, y0], [x1, y1]] = self.0;
+        let (dy, dx) = (y1 - y0, x1 - x0);
+        if dy.abs() < 1e-6 {
+            return I::from_f32(0.0);
+        }
+        let (y0f, y1f) = (I::from_f32(y0), I::from_f32(y1));
+        let in_y = y.ge(y0f.min(y1f)) * y.lt(y0f.max(y1f));
+        let x_int = I::from_f32(x0) + (y - y0f) * I::from_f32(dx / dy);
+        let dir = if dy > 0.0 {
+            I::from_f32(1.0)
+        } else {
+            I::from_f32(-1.0)
+        };
+        I::select(in_y * x.lt(x_int), dir, I::from_f32(0.0))
+    }
+}
+
+impl<I: Numeric> Manifold<I> for Quad {
+    type Output = I;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+        let [[x0, y0], _, [x2, y2]] = self.0;
+        // For winding number, endpoints matter most
+        let line: Line = Curve([[x0, y0], [x2, y2]]);
+        line.eval_raw(x, y, z, w)
+    }
+}
+
+impl<I: Numeric> Manifold<I> for Segment {
+    type Output = I;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+        match self {
+            Self::Line(c) => c.eval_raw(x, y, z, w),
+            Self::Quad(c) => c.eval_raw(x, y, z, w),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Glyph (Recursive Scene Graph)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone)]
+pub enum Glyph {
+    Empty,
+    Simple(Sum<Segment>),
+    Compound(Sum<Affine<Glyph>>),
+}
+
+impl<I: Numeric> Manifold<I> for Glyph {
+    type Output = I;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+        let winding = match self {
+            Self::Empty => I::from_f32(0.0),
+            Self::Simple(s) => s.eval_raw(x, y, z, w),
+            Self::Compound(c) => c.eval_raw(x, y, z, w),
+        };
+        // Convert winding to coverage
+        let winding_abs = winding.abs();
+        let inside = winding_abs.ge(I::from_f32(0.5));
+        I::select(inside, I::from_f32(1.0), I::from_f32(0.0))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Reader
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Copy)]
+struct R<'a>(&'a [u8], usize);
+
+impl<'a> R<'a> {
+    fn u8(&mut self) -> Option<u8> {
+        let v = *self.0.get(self.1)?;
+        self.1 += 1;
+        Some(v)
+    }
+    fn i8(&mut self) -> Option<i8> {
+        self.u8().map(|v| v as i8)
+    }
+    fn u16(&mut self) -> Option<u16> {
+        let s = self.0.get(self.1..self.1 + 2)?;
+        self.1 += 2;
+        Some(u16::from_be_bytes(s.try_into().ok()?))
+    }
+    fn i16(&mut self) -> Option<i16> {
+        self.u16().map(|v| v as i16)
+    }
+    fn u32(&mut self) -> Option<u32> {
+        let s = self.0.get(self.1..self.1 + 4)?;
+        self.1 += 4;
+        Some(u32::from_be_bytes(s.try_into().ok()?))
+    }
+    fn skip(&mut self, n: usize) -> Option<()> {
+        self.0.get(self.1..self.1 + n)?;
+        self.1 += n;
+        Some(())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tables (Dependent Types)
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum Loca<'a> {
+    Short(&'a [u8]),
+    Long(&'a [u8]),
+}
+
+impl Loca<'_> {
+    fn get(&self, i: usize) -> Option<usize> {
+        match self {
+            Self::Short(d) => Some(R(*d, i * 2).u16()? as usize * 2),
+            Self::Long(d) => Some(R(*d, i * 4).u32()? as usize),
+        }
+    }
+}
+
+enum Cmap<'a> {
+    Fmt4(&'a [u8]),
+    Fmt12(&'a [u8]),
+}
+
+impl Cmap<'_> {
+    fn lookup(&self, c: u32) -> Option<u16> {
+        match self {
+            Self::Fmt4(d) if c <= 0xFFFF => {
+                let n = R(*d, 6).u16()? as usize / 2;
+                (0..n).find_map(|i| {
+                    let end = R(*d, 14 + i * 2).u16()?;
+                    if c as u16 > end {
+                        return None;
+                    }
+                    let start = R(*d, 16 + n * 2 + i * 2).u16()?;
+                    if (c as u16) < start {
+                        return Some(0);
+                    }
+                    let delta = R(*d, 16 + n * 4 + i * 2).i16()?;
+                    let range = R(*d, 16 + n * 6 + i * 2).u16()?;
+                    Some(if range == 0 {
+                        (c as i16).wrapping_add(delta) as u16
+                    } else {
+                        let off = 16 + n * 6 + i * 2 + range as usize + (c as u16 - start) as usize * 2;
+                        let g = R(*d, off).u16()?;
+                        if g == 0 { 0 } else { (g as i16).wrapping_add(delta) as u16 }
+                    })
+                })
+            }
+            Self::Fmt12(d) => (0..R(*d, 12).u32()? as usize).find_map(|i| {
+                let (s, e, g) = (
+                    R(*d, 16 + i * 12).u32()?,
+                    R(*d, 20 + i * 12).u32()?,
+                    R(*d, 24 + i * 12).u32()?,
+                );
+                (c >= s && c <= e).then(|| (g + c - s) as u16)
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Font
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub struct Font<'a> {
+    data: &'a [u8],
+    glyf: usize,
+    loca: Loca<'a>,
+    cmap: Cmap<'a>,
+    hmtx: usize,
+    num_hm: usize,
     pub units_per_em: u16,
     pub ascent: i16,
     pub descent: i16,
     pub line_gap: i16,
 }
 
-impl<'a> TtfFont<'a> {
-    /// Parse a TTF from bytes.
+impl<'a> Font<'a> {
     pub fn parse(data: &'a [u8]) -> Option<Self> {
-        if data.len() < 12 {
-            return None;
-        }
-        let n = u16::from_be_bytes([data[4], data[5]]) as usize;
-        let mut tables = HashMap::new();
+        // TTF header: sfntVersion(4) + numTables(2) + searchRange(2) + entrySelector(2) + rangeShift(2) = 12 bytes
+        // Table record: tag(4) + checksum(4) + offset(4) + length(4) = 16 bytes
+        let num_tables = R(data, 4).u16()? as usize;
+        let mut t = std::collections::HashMap::new();
 
-        for i in 0..n {
-            let off = 12 + i * 16;
-            if off + 16 > data.len() {
-                return None;
-            }
-            let tag = Tag([data[off], data[off + 1], data[off + 2], data[off + 3]]);
-            let offset =
-                u32::from_be_bytes([data[off + 8], data[off + 9], data[off + 10], data[off + 11]])
-                    as usize;
-            let length = u32::from_be_bytes([
-                data[off + 12],
-                data[off + 13],
-                data[off + 14],
-                data[off + 15],
-            ]) as usize;
-            tables.insert(tag, offset..offset + length);
+        for i in 0..num_tables {
+            let rec = 12 + i * 16;
+            let tag = [data[rec], data[rec + 1], data[rec + 2], data[rec + 3]];
+            let offset = R(data, rec + 8).u32()? as usize;
+            t.insert(tag, offset);
         }
 
-        // Validate required tables
-        for tag in [
-            Tag::HEAD,
-            Tag::MAXP,
-            Tag::CMAP,
-            Tag::LOCA,
-            Tag::GLYF,
-            Tag::HHEA,
-            Tag::HMTX,
-        ] {
-            if !tables.contains_key(&tag) {
-                return None;
-            }
-        }
+        let head = *t.get(b"head")?;
+        let loca = *t.get(b"loca")?;
+        let hhea = *t.get(b"hhea")?;
 
         Some(Self {
             data,
-            tables,
-            cache: RwLock::new(HashMap::new()),
-        })
-    }
-
-    /// Font metrics.
-    pub fn metrics(&self) -> FontMetrics {
-        let head = self.table(Tag::HEAD);
-        let hhea = self.table(Tag::HHEA);
-
-        FontMetrics {
-            units_per_em: u16::from_be_bytes([head[18], head[19]]),
-            ascent: i16::from_be_bytes([hhea[4], hhea[5]]),
-            descent: i16::from_be_bytes([hhea[6], hhea[7]]),
-            line_gap: i16::from_be_bytes([hhea[8], hhea[9]]),
-        }
-    }
-
-    /// Get a glyph at a specific pixel size.
-    pub fn glyph(&self, ch: char, size: f32) -> Option<Glyph> {
-        let glyph_id = self.cmap_lookup(ch)?;
-        let size_bits = size.to_bits();
-        let key = (glyph_id, size_bits);
-
-        // Check cache
-        if let Some(cached) = self.cache.read().unwrap().get(&key) {
-            return Some(Glyph {
-                segments: cached.segments.clone(),
-                bounds: cached.bounds,
-                advance: cached.advance,
-            });
-        }
-
-        // Compile
-        let cached = self.compile_glyph(glyph_id, size)?;
-        let cached = Arc::new(cached);
-        self.cache.write().unwrap().insert(key, cached.clone());
-
-        Some(Glyph {
-            segments: cached.segments.clone(),
-            bounds: cached.bounds,
-            advance: cached.advance,
-        })
-    }
-
-    /// Horizontal advance for a character at given size.
-    pub fn advance(&self, ch: char, size: f32) -> f32 {
-        let glyph_id = match self.cmap_lookup(ch) {
-            Some(id) => id,
-            None => return 0.0,
-        };
-
-        let scale = size / self.metrics().units_per_em as f32;
-        self.advance_raw(glyph_id) as f32 * scale
-    }
-
-    /// Kerning between two characters.
-    pub fn kern(&self, _left: char, _right: char, _size: f32) -> f32 {
-        // TODO: implement kern table lookup
-        0.0
-    }
-}
-
-// ============================================================================
-// INTERNAL: Table Access
-// ============================================================================
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct Tag([u8; 4]);
-
-impl Tag {
-    const HEAD: Self = Self(*b"head");
-    const MAXP: Self = Self(*b"maxp");
-    const CMAP: Self = Self(*b"cmap");
-    const LOCA: Self = Self(*b"loca");
-    const GLYF: Self = Self(*b"glyf");
-    const HHEA: Self = Self(*b"hhea");
-    const HMTX: Self = Self(*b"hmtx");
-}
-
-impl<'a> TtfFont<'a> {
-    fn table(&self, tag: Tag) -> &'a [u8] {
-        let range = self.tables.get(&tag).expect("missing table");
-        &self.data[range.clone()]
-    }
-
-    fn loca_format(&self) -> bool {
-        let head = self.table(Tag::HEAD);
-        i16::from_be_bytes([head[50], head[51]]) != 0
-    }
-
-    fn num_glyphs(&self) -> u16 {
-        let maxp = self.table(Tag::MAXP);
-        u16::from_be_bytes([maxp[4], maxp[5]])
-    }
-
-    fn glyph_offset(&self, glyph_id: u16) -> Option<Range<usize>> {
-        if glyph_id >= self.num_glyphs() {
-            return None;
-        }
-
-        let loca = self.table(Tag::LOCA);
-        let id = glyph_id as usize;
-
-        let (start, end) = if self.loca_format() {
-            let s = u32::from_be_bytes([
-                loca[id * 4],
-                loca[id * 4 + 1],
-                loca[id * 4 + 2],
-                loca[id * 4 + 3],
-            ]) as usize;
-            let e = u32::from_be_bytes([
-                loca[id * 4 + 4],
-                loca[id * 4 + 5],
-                loca[id * 4 + 6],
-                loca[id * 4 + 7],
-            ]) as usize;
-            (s, e)
-        } else {
-            let s = u16::from_be_bytes([loca[id * 2], loca[id * 2 + 1]]) as usize * 2;
-            let e = u16::from_be_bytes([loca[id * 2 + 2], loca[id * 2 + 3]]) as usize * 2;
-            (s, e)
-        };
-
-        Some(start..end)
-    }
-
-    fn glyph_data(&self, glyph_id: u16) -> Option<&'a [u8]> {
-        let range = self.glyph_offset(glyph_id)?;
-        if range.is_empty() {
-            return None;
-        }
-        let glyf = self.table(Tag::GLYF);
-        Some(&glyf[range])
-    }
-
-    fn advance_raw(&self, glyph_id: u16) -> u16 {
-        let hmtx = self.table(Tag::HMTX);
-        let hhea = self.table(Tag::HHEA);
-        let num_h_metrics = u16::from_be_bytes([hhea[34], hhea[35]]) as usize;
-        let idx = (glyph_id as usize).min(num_h_metrics.saturating_sub(1));
-        u16::from_be_bytes([hmtx[idx * 4], hmtx[idx * 4 + 1]])
-    }
-}
-
-// ============================================================================
-// INTERNAL: cmap
-// ============================================================================
-
-impl<'a> TtfFont<'a> {
-    fn cmap_lookup(&self, ch: char) -> Option<u16> {
-        let cmap = self.table(Tag::CMAP);
-        let codepoint = ch as u32;
-
-        if codepoint > 0xFFFF {
-            return None; // BMP only for now
-        }
-        let c = codepoint as u16;
-
-        let num_tables = u16::from_be_bytes([cmap[2], cmap[3]]) as usize;
-        let mut subtable_offset = None;
-
-        for i in 0..num_tables {
-            let off = 4 + i * 8;
-            let platform = u16::from_be_bytes([cmap[off], cmap[off + 1]]);
-            let encoding = u16::from_be_bytes([cmap[off + 2], cmap[off + 3]]);
-            let offset = u32::from_be_bytes([
-                cmap[off + 4],
-                cmap[off + 5],
-                cmap[off + 6],
-                cmap[off + 7],
-            ]) as usize;
-
-            if (platform == 3 && encoding == 1) || (platform == 0 && encoding == 3) {
-                subtable_offset = Some(offset);
-                break;
-            }
-            if platform == 0 && subtable_offset.is_none() {
-                subtable_offset = Some(offset);
-            }
-        }
-
-        let offset = subtable_offset?;
-        let format = u16::from_be_bytes([cmap[offset], cmap[offset + 1]]);
-        if format != 4 {
-            return None;
-        }
-
-        let seg_count = u16::from_be_bytes([cmap[offset + 6], cmap[offset + 7]]) as usize / 2;
-        let end_off = offset + 14;
-        let start_off = end_off + seg_count * 2 + 2;
-        let delta_off = start_off + seg_count * 2;
-        let range_off = delta_off + seg_count * 2;
-
-        for i in 0..seg_count {
-            let end_code = u16::from_be_bytes([cmap[end_off + i * 2], cmap[end_off + i * 2 + 1]]);
-            if c > end_code {
-                continue;
-            }
-
-            let start_code =
-                u16::from_be_bytes([cmap[start_off + i * 2], cmap[start_off + i * 2 + 1]]);
-            if c < start_code {
-                return Some(0);
-            }
-
-            let delta = i16::from_be_bytes([cmap[delta_off + i * 2], cmap[delta_off + i * 2 + 1]]);
-            let range = u16::from_be_bytes([cmap[range_off + i * 2], cmap[range_off + i * 2 + 1]]);
-
-            if range == 0 {
-                return Some((c as i16).wrapping_add(delta) as u16);
+            glyf: *t.get(b"glyf")?,
+            loca: if R(data, head + 50).i16()? != 0 {
+                Loca::Long(&data[loca..])
             } else {
-                let glyph_off = range_off + i * 2 + range as usize + (c - start_code) as usize * 2;
-                let glyph_id = u16::from_be_bytes([cmap[glyph_off], cmap[glyph_off + 1]]);
-                if glyph_id == 0 {
-                    return Some(0);
-                }
-                return Some((glyph_id as i16).wrapping_add(delta) as u16);
-            }
-        }
-
-        Some(0)
-    }
-}
-
-// ============================================================================
-// INTERNAL: Glyph Compilation
-// ============================================================================
-
-#[derive(Clone, Copy)]
-struct RawPoint {
-    x: i16,
-    y: i16,
-    on_curve: bool,
-}
-
-struct RawContour {
-    points: Vec<RawPoint>,
-}
-
-#[derive(Clone, Copy, Default)]
-struct BBox {
-    x_min: i16,
-    y_min: i16,
-    x_max: i16,
-    y_max: i16,
-}
-
-impl<'a> TtfFont<'a> {
-    fn compile_glyph(&self, glyph_id: u16, size: f32) -> Option<CachedGlyph> {
-        let metrics = self.metrics();
-        let scale = size / metrics.units_per_em as f32;
-
-        let (contours, bbox) = self.parse_glyph(glyph_id)?;
-
-        if contours.is_empty() {
-            return Some(CachedGlyph {
-                segments: Arc::from([]),
-                bounds: GlyphBounds::default(),
-                advance: self.advance_raw(glyph_id) as f32 * scale,
-            });
-        }
-
-        // Transform: origin at (x_min, y_max), Y-flip, scale to pixels
-        let ox = bbox.x_min as f32;
-        let oy = bbox.y_max as f32;
-
-        let transform = |x: i16, y: i16| -> [f32; 2] {
-            [(x as f32 - ox) * scale, (oy - y as f32) * scale]
-        };
-
-        let mut segments = Vec::new();
-        for contour in &contours {
-            let expanded = expand_contour(&contour.points);
-            segments.extend(contour_to_segments(&expanded, &transform));
-        }
-
-        let width = ((bbox.x_max - bbox.x_min) as f32 * scale).ceil() as u32;
-        let height = ((bbox.y_max - bbox.y_min) as f32 * scale).ceil() as u32;
-
-        Some(CachedGlyph {
-            segments: Arc::from(segments),
-            bounds: GlyphBounds {
-                width,
-                height,
-                bearing_x: (bbox.x_min as f32 * scale) as i32,
-                bearing_y: (bbox.y_max as f32 * scale) as i32,
+                Loca::Short(&data[loca..])
             },
-            advance: self.advance_raw(glyph_id) as f32 * scale,
+            cmap: Self::find_cmap(&data[*t.get(b"cmap")?..])?,
+            hmtx: *t.get(b"hmtx")?,
+            num_hm: R(data, hhea + 34).u16()? as usize,
+            units_per_em: R(data, head + 18).u16()?,
+            ascent: R(data, hhea + 4).i16()?,
+            descent: R(data, hhea + 6).i16()?,
+            line_gap: R(data, hhea + 8).i16()?,
         })
     }
 
-    fn parse_glyph(&self, glyph_id: u16) -> Option<(Vec<RawContour>, BBox)> {
-        let data = match self.glyph_data(glyph_id) {
-            Some(d) if !d.is_empty() => d,
-            _ => return Some((vec![], BBox::default())),
-        };
+    fn find_cmap(d: &'a [u8]) -> Option<Cmap<'a>> {
+        (0..R(d, 2).u16()? as usize)
+            .filter_map(|i| {
+                let (p, e, o) = (
+                    R(d, 4 + i * 8).u16()?,
+                    R(d, 6 + i * 8).u16()?,
+                    R(d, 8 + i * 8).u32()? as usize,
+                );
+                let f = R(d, o).u16()?;
+                match (p, e, f) {
+                    (3, 10, 12) | (0, 4, 12) => Some((2, o, f)),
+                    (3, 1, 4) | (0, 3, 4) => Some((1, o, f)),
+                    _ => None,
+                }
+            })
+            .max_by_key(|x| x.0)
+            .and_then(|(_, o, f)| match f {
+                4 => Some(Cmap::Fmt4(&d[o..])),
+                12 => Some(Cmap::Fmt12(&d[o..])),
+                _ => None,
+            })
+    }
 
-        let num_contours = i16::from_be_bytes([data[0], data[1]]);
-        let bbox = BBox {
-            x_min: i16::from_be_bytes([data[2], data[3]]),
-            y_min: i16::from_be_bytes([data[4], data[5]]),
-            x_max: i16::from_be_bytes([data[6], data[7]]),
-            y_max: i16::from_be_bytes([data[8], data[9]]),
-        };
+    pub fn glyph(&self, ch: char) -> Option<Glyph> {
+        self.compile(self.cmap.lookup(ch as u32)?)
+    }
 
-        if num_contours >= 0 {
-            let contours = self.parse_simple_glyph(&data[10..], num_contours as usize);
-            Some((contours, bbox))
+    pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph> {
+        let g = self.glyph(ch)?;
+        let scale = size / self.units_per_em as f32;
+        Some(Glyph::Compound(Sum(
+            [Affine::new(g, [scale, 0.0, 0.0, -scale, 0.0, 0.0])].into(),
+        )))
+    }
+
+    pub fn advance(&self, ch: char) -> Option<f32> {
+        let id = self.cmap.lookup(ch as u32)?;
+        let i = (id as usize).min(self.num_hm.saturating_sub(1));
+        Some(R(self.data, self.hmtx + i * 4).u16()? as f32)
+    }
+
+    pub fn advance_scaled(&self, ch: char, size: f32) -> Option<f32> {
+        Some(self.advance(ch)? * size / self.units_per_em as f32)
+    }
+
+    fn compile(&self, id: u16) -> Option<Glyph> {
+        let (a, b) = (
+            self.loca.get(id as usize)?,
+            self.loca.get(id as usize + 1)?,
+        );
+        if a == b {
+            return Some(Glyph::Empty);
+        }
+        let mut r = R(self.data, self.glyf + a);
+        let n = r.i16()?;
+        r.skip(8)?;
+        if n >= 0 {
+            self.simple(&mut r, n as usize)
         } else {
-            self.parse_compound_glyph(&data[10..], bbox)
+            self.compound(&mut r)
         }
     }
 
-    fn parse_simple_glyph(&self, data: &[u8], num_contours: usize) -> Vec<RawContour> {
-        if num_contours == 0 {
-            return vec![];
+    fn simple(&self, r: &mut R, n: usize) -> Option<Glyph> {
+        if n == 0 {
+            return Some(Glyph::Empty);
+        }
+        let ends: Vec<_> = (0..n)
+            .map(|_| r.u16().map(|v| v as usize))
+            .collect::<Option<_>>()?;
+        let np = *ends.last()? + 1;
+        let instr_len = r.u16()? as usize;
+        r.skip(instr_len)?;
+
+        let mut fl = Vec::with_capacity(np);
+        while fl.len() < np {
+            let f = r.u8()?;
+            fl.push(f);
+            if f & 8 != 0 {
+                for _ in 0..r.u8()?.min((np - fl.len()) as u8) {
+                    fl.push(f);
+                }
+            }
         }
 
-        let mut cursor = 0;
-        let mut end_points = Vec::with_capacity(num_contours);
-        for _ in 0..num_contours {
-            end_points.push(u16::from_be_bytes([data[cursor], data[cursor + 1]]) as usize);
-            cursor += 2;
-        }
-
-        let num_points = end_points.last().map(|&e| e + 1).unwrap_or(0);
-        if num_points == 0 {
-            return vec![];
-        }
-
-        let instr_len = u16::from_be_bytes([data[cursor], data[cursor + 1]]) as usize;
-        cursor += 2 + instr_len;
-
-        let (flags, flags_consumed) = decode_flags(&data[cursor..], num_points);
-        cursor += flags_consumed;
-
-        let (xs, rest) = decode_coords(&flags, &data[cursor..], 0x02, 0x10);
-        let (ys, _) = decode_coords(&flags, rest, 0x04, 0x20);
-
-        let mut contours = Vec::with_capacity(num_contours);
-        let mut start = 0;
-
-        for &end in &end_points {
-            let points: Vec<_> = (start..=end)
-                .map(|i| RawPoint {
-                    x: xs[i],
-                    y: ys[i],
-                    on_curve: flags[i] & 0x01 != 0,
+        let dec = |r: &mut R, s: u8, m: u8| {
+            fl.iter()
+                .try_fold((0i16, vec![]), |(mut v, mut out), &f| {
+                    v += match (f & s != 0, f & m != 0) {
+                        (true, true) => r.u8()? as i16,
+                        (true, false) => -(r.u8()? as i16),
+                        (false, true) => 0,
+                        (false, false) => r.i16()?,
+                    };
+                    out.push(v);
+                    Some((v, out))
                 })
-                .collect();
-            contours.push(RawContour { points });
-            start = end + 1;
-        }
+                .map(|(_, v)| v)
+        };
 
-        contours
+        let (xs, ys) = (dec(r, 2, 16)?, dec(r, 4, 32)?);
+        let pts: Vec<_> = (0..np).map(|i| (xs[i], ys[i], fl[i] & 1 != 0)).collect();
+
+        let segs: Vec<Segment> = ends
+            .iter()
+            .scan(0, |s, &e| {
+                let c = &pts[*s..=e];
+                *s = e + 1;
+                Some(c.to_vec())
+            })
+            .flat_map(|c| to_segs(&c))
+            .collect();
+
+        Some(Glyph::Simple(Sum(segs.into())))
     }
 
-    fn parse_compound_glyph(&self, data: &[u8], bbox: BBox) -> Option<(Vec<RawContour>, BBox)> {
-        let mut cursor = 0;
-        let mut all_contours = Vec::new();
-
+    fn compound(&self, r: &mut R) -> Option<Glyph> {
+        let mut kids = vec![];
         loop {
-            let flags = u16::from_be_bytes([data[cursor], data[cursor + 1]]);
-            let component_id = u16::from_be_bytes([data[cursor + 2], data[cursor + 3]]);
-            cursor += 4;
-
-            const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
-            const ARGS_ARE_XY_VALUES: u16 = 0x0002;
-            const WE_HAVE_A_SCALE: u16 = 0x0008;
-            const MORE_COMPONENTS: u16 = 0x0020;
-            const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
-            const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
-
-            let (dx, dy) = if flags & ARGS_ARE_XY_VALUES != 0 {
-                if flags & ARG_1_AND_2_ARE_WORDS != 0 {
-                    let dx = i16::from_be_bytes([data[cursor], data[cursor + 1]]);
-                    let dy = i16::from_be_bytes([data[cursor + 2], data[cursor + 3]]);
-                    cursor += 4;
-                    (dx, dy)
+            let fl = r.u16()?;
+            let id = r.u16()?;
+            let (dx, dy) = if fl & 2 != 0 {
+                if fl & 1 != 0 {
+                    (r.i16()?, r.i16()?)
                 } else {
-                    let dx = data[cursor] as i8 as i16;
-                    let dy = data[cursor + 1] as i8 as i16;
-                    cursor += 2;
-                    (dx, dy)
+                    (r.i8()? as i16, r.i8()? as i16)
                 }
             } else {
-                if flags & ARG_1_AND_2_ARE_WORDS != 0 {
-                    cursor += 4;
-                } else {
-                    cursor += 2;
-                }
+                r.skip(if fl & 1 != 0 { 4 } else { 2 })?;
                 (0, 0)
             };
-
-            if flags & WE_HAVE_A_SCALE != 0 {
-                cursor += 2;
-            } else if flags & WE_HAVE_AN_X_AND_Y_SCALE != 0 {
-                cursor += 4;
-            } else if flags & WE_HAVE_A_TWO_BY_TWO != 0 {
-                cursor += 8;
+            let mut m = [1.0, 0.0, 0.0, 1.0, dx as f32, dy as f32];
+            if fl & 0x08 != 0 {
+                let s = r.i16()? as f32 / 16384.0;
+                m[0] = s;
+                m[3] = s;
+            } else if fl & 0x40 != 0 {
+                m[0] = r.i16()? as f32 / 16384.0;
+                m[3] = r.i16()? as f32 / 16384.0;
+            } else if fl & 0x80 != 0 {
+                m[0] = r.i16()? as f32 / 16384.0;
+                m[1] = r.i16()? as f32 / 16384.0;
+                m[2] = r.i16()? as f32 / 16384.0;
+                m[3] = r.i16()? as f32 / 16384.0;
             }
-
-            if let Some((mut contours, _)) = self.parse_glyph(component_id) {
-                for contour in &mut contours {
-                    for pt in &mut contour.points {
-                        pt.x += dx;
-                        pt.y += dy;
-                    }
-                }
-                all_contours.extend(contours);
+            if let Some(g) = self.compile(id) {
+                kids.push(Affine::new(g, m));
             }
-
-            if flags & MORE_COMPONENTS == 0 {
+            if fl & 0x20 == 0 {
                 break;
             }
         }
-
-        Some((all_contours, bbox))
+        Some(Glyph::Compound(Sum(kids.into())))
     }
 }
 
-// ============================================================================
-// INTERNAL: Flag & Coordinate Decoding
-// ============================================================================
+fn to_segs(pts: &[(i16, i16, bool)]) -> Vec<Segment> {
+    if pts.is_empty() {
+        return vec![];
+    }
+    let exp: Vec<_> = pts
+        .iter()
+        .enumerate()
+        .flat_map(|(i, &(x, y, on))| {
+            let (nx, ny, non) = pts[(i + 1) % pts.len()];
+            if !on && !non {
+                vec![(x, y, on), ((x + nx) / 2, (y + ny) / 2, true)]
+            } else {
+                vec![(x, y, on)]
+            }
+        })
+        .collect();
 
-fn decode_flags(data: &[u8], num_points: usize) -> (Vec<u8>, usize) {
-    let mut flags = Vec::with_capacity(num_points);
+    if exp.is_empty() {
+        return vec![];
+    }
+
+    let start = exp.iter().position(|p| p.2).unwrap_or(0);
+    let mut out = vec![];
     let mut i = 0;
-
-    while flags.len() < num_points {
-        let flag = data[i];
-        i += 1;
-        flags.push(flag);
-
-        if flag & 0x08 != 0 {
-            let repeat = (data[i] as usize).min(num_points - flags.len());
-            i += 1;
-            for _ in 0..repeat {
-                flags.push(flag);
-            }
-        }
-    }
-
-    (flags, i)
-}
-
-fn decode_coords<'a>(
-    flags: &[u8],
-    data: &'a [u8],
-    short_bit: u8,
-    same_bit: u8,
-) -> (Vec<i16>, &'a [u8]) {
-    let mut coords = Vec::with_capacity(flags.len());
-    let mut cursor = 0;
-    let mut prev = 0i16;
-
-    for &flag in flags {
-        let is_short = flag & short_bit != 0;
-        let is_same_or_positive = flag & same_bit != 0;
-
-        let delta = match (is_short, is_same_or_positive) {
-            (true, true) => {
-                let v = data[cursor] as i16;
-                cursor += 1;
-                v
-            }
-            (true, false) => {
-                let v = -(data[cursor] as i16);
-                cursor += 1;
-                v
-            }
-            (false, true) => 0,
-            (false, false) => {
-                let v = i16::from_be_bytes([data[cursor], data[cursor + 1]]);
-                cursor += 2;
-                v
-            }
+    while i < exp.len() {
+        let p = |j: usize| {
+            let (x, y, _) = exp[(start + j) % exp.len()];
+            [x as f32, y as f32]
         };
-
-        prev += delta;
-        coords.push(prev);
-    }
-
-    (coords, &data[cursor..])
-}
-
-// ============================================================================
-// INTERNAL: Contour → Segments
-// ============================================================================
-
-fn expand_contour(points: &[RawPoint]) -> Vec<RawPoint> {
-    if points.is_empty() {
-        return vec![];
-    }
-
-    let mut result = Vec::with_capacity(points.len() * 2);
-
-    for i in 0..points.len() {
-        let curr = points[i];
-        let next = points[(i + 1) % points.len()];
-
-        result.push(curr);
-
-        if !curr.on_curve && !next.on_curve {
-            result.push(RawPoint {
-                x: (curr.x + next.x) / 2,
-                y: (curr.y + next.y) / 2,
-                on_curve: true,
-            });
-        }
-    }
-
-    result
-}
-
-fn contour_to_segments<F>(points: &[RawPoint], transform: &F) -> Vec<Segment>
-where
-    F: Fn(i16, i16) -> [f32; 2],
-{
-    if points.is_empty() {
-        return vec![];
-    }
-
-    let start = points.iter().position(|p| p.on_curve).unwrap_or(0);
-    let n = points.len();
-    let mut segments = Vec::new();
-    let mut i = 0;
-
-    while i < n {
-        let idx0 = (start + i) % n;
-        let idx1 = (start + i + 1) % n;
-
-        let p0 = &points[idx0];
-        let p1 = &points[idx1];
-
-        if p1.on_curve {
-            // Line: on → on
-            let t0 = transform(p0.x, p0.y);
-            let t1 = transform(p1.x, p1.y);
-            segments.push(Segment::Line(Curve([t0, t1])));
+        if exp[(start + i + 1) % exp.len()].2 {
+            out.push(Segment::Line(Curve([p(i), p(i + 1)])));
             i += 1;
         } else {
-            // Quad: on → off → on
-            let idx2 = (start + i + 2) % n;
-            let p2 = &points[idx2];
-
-            let t0 = transform(p0.x, p0.y);
-            let t1 = transform(p1.x, p1.y);
-            let t2 = transform(p2.x, p2.y);
-
-            segments.push(Segment::Quad(Curve([t0, t1, t2])));
+            out.push(Segment::Quad(Curve([p(i), p(i + 1), p(i + 2)])));
             i += 2;
         }
     }
-
-    segments
+    out
 }
 
-// ============================================================================
-// COMPAT: Re-exports
-// ============================================================================
-
-pub use TtfFont as Font;
+// ═══════════════════════════════════════════════════════════════════════════
+// Compat
+// ═══════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
 pub enum FontError {
@@ -660,8 +500,25 @@ impl std::fmt::Display for FontError {
 
 impl std::error::Error for FontError {}
 
-impl<'a> TtfFont<'a> {
-    pub fn from_bytes(data: &'a [u8]) -> Result<Self, FontError> {
-        Self::parse(data).ok_or(FontError::ParseError)
+pub struct FontMetrics {
+    pub ascent: i16,
+    pub descent: i16,
+    pub line_gap: i16,
+    pub units_per_em: u16,
+}
+
+impl<'a> Font<'a> {
+    pub fn metrics(&self) -> FontMetrics {
+        FontMetrics {
+            ascent: self.ascent,
+            descent: self.descent,
+            line_gap: self.line_gap,
+            units_per_em: self.units_per_em,
+        }
+    }
+
+    /// Kerning - stub for now (TODO: parse kern/GPOS tables)
+    pub fn kern(&self, _a: char, _b: char, _size: f32) -> f32 {
+        0.0
     }
 }

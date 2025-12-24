@@ -2,22 +2,18 @@
 //!
 //! Provides the `Text` manifold for rendering strings.
 
-use super::glyph::Glyph;
-use super::ttf::Font;
+use super::ttf::{Affine, Font, Glyph, Sum};
+use pixelflow_core::{Manifold, Numeric};
 
-/// A manifold representing a line of text (WIP).
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct Text {
-    glyphs: Vec<(Glyph, f32)>, // Glyph and its X position
-    pub width: f32,
-}
+/// A manifold representing a line of text.
+#[derive(Clone)]
+pub struct Text(pub Glyph);
 
 impl Text {
     /// Create a new Text manifold from a string.
     pub fn new(font: &Font, text: &str, size: f32) -> Self {
         let mut glyphs = Vec::new();
-        let mut cursor_x = 0.0;
+        let mut cursor_x = 0.0f32;
         let mut prev_char = None;
 
         for ch in text.chars() {
@@ -27,44 +23,42 @@ impl Text {
             }
 
             // Retrieve glyph
-            if let Some(glyph) = font.glyph(ch, size) {
-                // Use the glyph's advance to update cursor
-                let advance = glyph.advance;
-                glyphs.push((glyph, cursor_x));
-                cursor_x += advance;
+            if let Some(g) = font.glyph_scaled(ch, size) {
+                // Translate glyph to cursor position
+                glyphs.push(Affine::new(g, [1.0, 0.0, 0.0, 1.0, cursor_x, 0.0]));
+            }
+
+            // Advance cursor
+            if let Some(adv) = font.advance_scaled(ch, size) {
+                cursor_x += adv;
             }
 
             prev_char = Some(ch);
         }
 
-        Self {
-            glyphs,
-            width: cursor_x,
+        Self(Glyph::Compound(Sum(glyphs.into())))
+    }
+
+    /// Get the width of the text in pixels.
+    pub fn width(font: &Font, text: &str, size: f32) -> f32 {
+        let mut w = 0.0f32;
+        let mut prev = None;
+        for ch in text.chars() {
+            if let Some(p) = prev {
+                w += font.kern(p, ch, size);
+            }
+            if let Some(adv) = font.advance_scaled(ch, size) {
+                w += adv;
+            }
+            prev = Some(ch);
         }
+        w
     }
 }
 
-// DIAGNOSTIC: Commented out to investigate trait conflict
-// impl Manifold for Text {
-//     type Output = Field;
-//
-//     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-//         let mut sum = Field::from(0.0);
-//
-//         // Naive iteration over all glyphs in the line.
-//         // For production use, a spatial partition or checking bounding box overlap
-//         // (x range) would be preferred.
-//         for (glyph, pos_x) in &self.glyphs {
-//             // Translate x into glyph's local space (glyph is at 0,0 locally)
-//             // local_x = x - pos_x
-//             let local_x = x - Field::from(*pos_x);
-//
-//             // Eval glyph
-//             let val = glyph.eval_raw(local_x, y, z, w);
-//             sum = sum + val;
-//         }
-//
-//         // Clamp to 0..1
-//         sum.min(Field::from(1.0)).max(Field::from(0.0))
-//     }
-// }
+impl<I: Numeric> Manifold<I> for Text {
+    type Output = I;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+        self.0.eval_raw(x, y, z, w)
+    }
+}
