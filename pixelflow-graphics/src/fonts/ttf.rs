@@ -258,14 +258,53 @@ impl Manifold<Jet2> for Segment {
 // Glyph (Compositional Scene Graph)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Optimized geometry storage separating lines and quads to avoid enum dispatch.
+#[derive(Clone, Debug)]
+pub struct Geometry {
+    pub lines: Arc<[Line]>,
+    pub quads: Arc<[Quad]>,
+}
+
+impl Manifold<Field> for Geometry {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        let mut acc = Field::from(0.0);
+        for l in self.lines.iter() {
+            acc = acc + l.eval_raw(x, y, z, w);
+        }
+        for q in self.quads.iter() {
+            acc = acc + q.eval_raw(x, y, z, w);
+        }
+        acc
+    }
+}
+
+impl Manifold<Jet2> for Geometry {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        let mut acc = Jet2::from_f32(0.0);
+        for l in self.lines.iter() {
+            acc = acc + l.eval_raw(x, y, z, w);
+        }
+        for q in self.quads.iter() {
+            acc = acc + q.eval_raw(x, y, z, w);
+        }
+        acc
+    }
+}
+
 /// A simple glyph: segments in unit space, thresholded, bounded, then transformed.
 ///
-/// The composition is: Affine<Select<UnitSquare, Threshold<Sum<Segment>>, 0.0>>
-/// - Sum<Segment>: Accumulates winding numbers from curve segments
+/// The composition is: Affine<Select<UnitSquare, Threshold<Geometry>, 0.0>>
+/// - Geometry: Optimized Sum of Lines and Quads
 /// - Threshold: Converts winding to 0/1 via non-zero rule
 /// - Select (via square): Bounds check with short-circuit
 /// - Affine: Restores to font coordinate space
-pub type SimpleGlyph = Affine<Bounded<Threshold<Sum<Segment>>>>;
+pub type SimpleGlyph = Affine<Bounded<Threshold<Geometry>>>;
 
 /// A compound glyph: sum of transformed child glyphs.
 pub type CompoundGlyph = Sum<Affine<Glyph>>;
@@ -633,9 +672,12 @@ impl<'a> Font<'a> {
         }
     }
 
-    fn simple(&self, r: &mut R, n: usize, scale: f32, tx: f32, ty: f32) -> Option<Sum<Segment>> {
+    fn simple(&self, r: &mut R, n: usize, scale: f32, tx: f32, ty: f32) -> Option<Geometry> {
         if n == 0 {
-            return Some(Sum(vec![].into()));
+            return Some(Geometry {
+                lines: vec![].into(),
+                quads: vec![].into(),
+            });
         }
         let ends: Vec<_> = (0..n)
             .map(|_| r.u16().map(|v| v as usize))
@@ -679,17 +721,21 @@ impl<'a> Font<'a> {
             fl[i] & 1 != 0
         )).collect();
 
-        let segs: Vec<Segment> = ends
-            .iter()
-            .scan(0, |s, &e| {
-                let c = &pts[*s..=e];
-                *s = e + 1;
-                Some(c.to_vec())
-            })
-            .flat_map(|c| to_segs(&c))
-            .collect();
+        // Partition segments into lines and quads
+        let mut lines = Vec::new();
+        let mut quads = Vec::new();
 
-        Some(Sum(segs.into()))
+        let mut start = 0;
+        for &e in ends.iter() {
+            let c = &pts[start..=e];
+            start = e + 1;
+            push_segs(c, &mut lines, &mut quads);
+        }
+
+        Some(Geometry {
+            lines: lines.into(),
+            quads: quads.into(),
+        })
     }
 
     fn compound(&self, r: &mut R) -> Option<Glyph> {
@@ -732,9 +778,9 @@ impl<'a> Font<'a> {
     }
 }
 
-fn to_segs(pts: &[(f32, f32, bool)]) -> Vec<Segment> {
+fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line>, quads: &mut Vec<Quad>) {
     if pts.is_empty() {
-        return vec![];
+        return;
     }
     let exp: Vec<_> = pts
         .iter()
@@ -750,11 +796,10 @@ fn to_segs(pts: &[(f32, f32, bool)]) -> Vec<Segment> {
         .collect();
 
     if exp.is_empty() {
-        return vec![];
+        return;
     }
 
     let start = exp.iter().position(|p| p.2).unwrap_or(0);
-    let mut out = vec![];
     let mut i = 0;
     while i < exp.len() {
         let p = |j: usize| {
@@ -762,12 +807,11 @@ fn to_segs(pts: &[(f32, f32, bool)]) -> Vec<Segment> {
             [x, y]
         };
         if exp[(start + i + 1) % exp.len()].2 {
-            out.push(Segment::Line(Curve([p(i), p(i + 1)])));
+            lines.push(Curve([p(i), p(i + 1)]));
             i += 1;
         } else {
-            out.push(Segment::Quad(Curve([p(i), p(i + 1), p(i + 2)])));
+            quads.push(Curve([p(i), p(i + 1), p(i + 2)]));
             i += 2;
         }
     }
-    out
 }
