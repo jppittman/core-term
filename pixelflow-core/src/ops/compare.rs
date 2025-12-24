@@ -115,22 +115,14 @@ use crate::ops::logic::{And, Or};
 
 macro_rules! impl_logic_ops {
     ($ty:ident) => {
-        impl<L, R, Rhs> core::ops::BitAnd<Rhs> for $ty<L, R>
-        where
-            Self: Manifold,
-            Rhs: Manifold,
-        {
+        impl<L, R, Rhs> core::ops::BitAnd<Rhs> for $ty<L, R> {
             type Output = And<Self, Rhs>;
             fn bitand(self, rhs: Rhs) -> Self::Output {
                 And(self, rhs)
             }
         }
 
-        impl<L, R, Rhs> core::ops::BitOr<Rhs> for $ty<L, R>
-        where
-            Self: Manifold,
-            Rhs: Manifold,
-        {
+        impl<L, R, Rhs> core::ops::BitOr<Rhs> for $ty<L, R> {
             type Output = Or<Self, Rhs>;
             fn bitor(self, rhs: Rhs) -> Self::Output {
                 Or(self, rhs)

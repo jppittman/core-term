@@ -31,9 +31,15 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> O {
         let mask = self.cond.eval_raw(x, y, z, w);
+        if mask.all() {
+            return self.if_true.eval_raw(x, y, z, w)
+        }
+        if !mask.any() {
+            return self.if_false.eval_raw(x, y, z, w)
+        }
+
         let true_val = self.if_true.eval_raw(x, y, z, w);
         let false_val = self.if_false.eval_raw(x, y, z, w);
-
         O::select(mask, true_val, false_val)
     }
 }

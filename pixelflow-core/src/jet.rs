@@ -127,6 +127,18 @@ impl core::ops::BitOr for Jet2 {
     }
 }
 
+impl core::ops::Not for Jet2 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self {
+            val: !self.val,
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+        }
+    }
+}
+
 // ============================================================================
 // Numeric trait implementation
 // ============================================================================

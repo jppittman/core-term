@@ -143,6 +143,16 @@ fn bench_glyph_evaluation(c: &mut Criterion) {
         bencher.iter(|| black_box(glyph_at.eval_raw(black_box(x), black_box(y), z, w)))
     });
 
+    // Add AA benchmark using Jet2
+    group.bench_function("eval_glyph_A_AA_single_point", |bencher| {
+        use pixelflow_core::Jet2;
+        let xj = Jet2::x(x);
+        let yj = Jet2::y(y);
+        let zj = Jet2::constant(z);
+        let wj = Jet2::constant(w);
+        bencher.iter(|| black_box(glyph_a.eval_raw(black_box(xj), black_box(yj), zj, wj)))
+    });
+
     // Evaluate across a small grid
     group.bench_function("eval_glyph_A_8x8_grid", |bencher| {
         bencher.iter(|| {
@@ -293,6 +303,56 @@ fn bench_rasterize_glyph(c: &mut Criterion) {
             |bencher, &size| {
                 let glyph = font.glyph_scaled('@', size as f32).unwrap();
                 let colored = Lift(glyph);
+                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
+                let shape = TensorShape::new(size, size);
+
+                bencher.iter(|| {
+                    execute(&colored, &mut buffer, shape);
+                    black_box(&buffer);
+                })
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_rasterize_glyph_aa(c: &mut Criterion) {
+    use pixelflow_graphics::render::aa::aa_coverage;
+
+    let mut group = c.benchmark_group("rasterize_glyph_aa");
+
+    let font = Font::parse(FONT_DATA).unwrap();
+
+    for size in [32, 64, 128].iter() {
+        let total_pixels = size * size;
+        group.throughput(Throughput::Elements(total_pixels as u64));
+
+        // Anti-aliased glyph using Jet2 via aa_coverage wrapper
+        group.bench_with_input(
+            BenchmarkId::new("glyph_A_aa", format!("{}x{}", size, size)),
+            size,
+            |bencher, &size| {
+                let glyph = font.glyph_scaled('A', size as f32).unwrap();
+                let aa_glyph = aa_coverage(glyph);
+                let colored = Lift(aa_glyph);
+                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
+                let shape = TensorShape::new(size, size);
+
+                bencher.iter(|| {
+                    execute(&colored, &mut buffer, shape);
+                    black_box(&buffer);
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("glyph_@_aa", format!("{}x{}", size, size)),
+            size,
+            |bencher, &size| {
+                let glyph = font.glyph_scaled('@', size as f32).unwrap();
+                let aa_glyph = aa_coverage(glyph);
+                let colored = Lift(aa_glyph);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -513,6 +573,7 @@ criterion_group!(
     bench_rasterize_gradient,
     bench_rasterize_circle,
     bench_rasterize_glyph,
+    bench_rasterize_glyph_aa,
 );
 
 criterion_group!(

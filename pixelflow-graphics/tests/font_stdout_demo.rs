@@ -16,13 +16,12 @@ fn demo_single_glyph_rasterization() {
     println!("  Font Rasterizer Demo - Single Glyph");
     println!("========================================\n");
 
-    // Get metrics
-    let metrics = font.metrics();
+    // Print font metrics (fields are public on Font)
     println!("Font metrics:");
-    println!("  units_per_em: {}", metrics.units_per_em);
-    println!("  ascent: {}", metrics.ascent);
-    println!("  descent: {}", metrics.descent);
-    println!("  line_gap: {}", metrics.line_gap);
+    println!("  units_per_em: {}", font.units_per_em);
+    println!("  ascent: {}", font.ascent);
+    println!("  descent: {}", font.descent);
+    println!("  line_gap: {}", font.line_gap);
     println!();
 
     // Render 'A' at size 32

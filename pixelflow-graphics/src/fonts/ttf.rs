@@ -1,15 +1,20 @@
 //! pixelflow-graphics/src/fonts/ttf.rs
 //!
 //! Pure Manifold TTF Parser.
+//!
+//! Glyphs are parsed into unit space [0,1]², bounded with Select for
+//! short-circuit evaluation, then wrapped in Affine transforms.
 
-use pixelflow_core::{Manifold, Numeric};
+use crate::shapes::{square, Bounded};
+use pixelflow_core::{Field, Jet2, Manifold, Numeric};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Combinators
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[derive(Clone)]
+/// Affine transform combinator - generic over any inner manifold.
+#[derive(Clone, Debug)]
 pub struct Affine<M> {
     pub inner: M,
     pub inv: [f32; 6], // [a b c d tx ty] inverted
@@ -33,8 +38,15 @@ impl<M> Affine<M> {
     }
 }
 
-impl<I: Numeric, M: Manifold<I>> Manifold<I> for Affine<M> {
+/// Generic Affine implementation for any inner manifold.
+impl<M, I> Manifold<I> for Affine<M>
+where
+    I: Numeric,
+    M: Manifold<I>,
+{
     type Output = M::Output;
+
+    #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         let [a, b, c, d, tx, ty] = self.inv;
         let x2 = (x - I::from_f32(tx)) * I::from_f32(a) + (y - I::from_f32(ty)) * I::from_f32(b);
@@ -43,15 +55,45 @@ impl<I: Numeric, M: Manifold<I>> Manifold<I> for Affine<M> {
     }
 }
 
-#[derive(Clone)]
+/// Monoid sum - accumulates winding numbers from multiple segments/glyphs.
+#[derive(Clone, Debug)]
 pub struct Sum<M>(pub Arc<[M]>);
 
-impl<I: Numeric, M: Manifold<I, Output = I>> Manifold<I> for Sum<M> {
+/// Generic Sum implementation for any inner manifold.
+impl<M, I> Manifold<I> for Sum<M>
+where
+    I: Numeric,
+    M: Manifold<I, Output = I>,
+{
     type Output = I;
+
+    #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
         self.0
             .iter()
             .fold(I::from_f32(0.0), |acc, m| acc + m.eval_raw(x, y, z, w))
+    }
+}
+
+/// Threshold combinator - converts winding number to inside/outside (0 or 1).
+///
+/// Applies the non-zero winding rule: |winding| >= 0.5 means inside.
+#[derive(Clone, Debug)]
+pub struct Threshold<M>(pub M);
+
+impl<M, I> Manifold<I> for Threshold<M>
+where
+    I: Numeric,
+    M: Manifold<I, Output = I>,
+{
+    type Output = I;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+        let winding = self.0.eval_raw(x, y, z, w);
+        // Non-zero winding rule: |winding| >= 0.5 means inside
+        let inside = winding.abs().ge(I::from_f32(0.5));
+        I::select(inside, I::from_f32(1.0), I::from_f32(0.0))
     }
 }
 
@@ -71,42 +113,128 @@ pub enum Segment {
     Quad(Quad),
 }
 
-impl<I: Numeric> Manifold<I> for Line {
-    type Output = I;
-    fn eval_raw(&self, x: I, y: I, _: I, _: I) -> I {
+// ─── Field Implementation (Aliased / Hard Edges) ───────────────────────────
+
+impl Manifold<Field> for Line {
+    type Output = Field;
+    fn eval_raw(&self, x: Field, y: Field, _: Field, _: Field) -> Field {
         let [[x0, y0], [x1, y1]] = self.0;
         let (dy, dx) = (y1 - y0, x1 - x0);
         if dy.abs() < 1e-6 {
-            return I::from_f32(0.0);
+            return Field::from(0.0);
         }
-        let (y0f, y1f) = (I::from_f32(y0), I::from_f32(y1));
         // Use bitwise AND (&) for combining masks, not multiplication (*)
         // SIMD comparison results are bit masks (0xFFFFFFFF for true),
         // and multiplying them gives NaN, not a valid mask.
+        let (y0f, y1f) = (Field::from(y0), Field::from(y1));
         let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
-        let x_int = I::from_f32(x0) + (y - y0f) * I::from_f32(dx / dy);
-        let dir = if dy > 0.0 {
-            I::from_f32(1.0)
-        } else {
-            I::from_f32(-1.0)
+        let x_int = Field::from(x0) + (y - y0f) * Field::from(dx / dy);
+        let dir = if dy > 0.0 { Field::from(1.0) } else { Field::from(-1.0) };
+        Field::select(in_y & x.lt(x_int), dir, Field::from(0.0))
+    }
+}
+
+impl Manifold<Field> for Quad {
+    type Output = Field;
+    fn eval_raw(&self, x: Field, y: Field, _: Field, _: Field) -> Field {
+        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
+        let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
+        let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
+
+        let eval_t = |t: Field| -> Field {
+            let in_t = t.ge(Field::from(0.0)) & t.lt(Field::from(1.0));
+            if !in_t.any() { return Field::from(0.0); }
+            let x_int = (Field::from(ax) * t + Field::from(bx)) * t + Field::from(cx);
+            let dy_dt = Field::from(2.0 * ay) * t + Field::from(by);
+            let dir = Field::select(dy_dt.gt(Field::from(0.0)), Field::from(1.0), Field::from(-1.0));
+            Field::select(in_t & x.lt(x_int), dir, Field::from(0.0))
         };
-        I::select(in_y & x.lt(x_int), dir, I::from_f32(0.0))
+
+        if ay.abs() < 1e-6 {
+            if by.abs() < 1e-6 { return Field::from(0.0); }
+            eval_t((y - Field::from(cy)) / Field::from(by))
+        } else {
+            let c_val = Field::from(cy) - y;
+            let d = Field::from(by * by) - Field::from(4.0 * ay) * c_val;
+            let valid = d.ge(Field::from(0.0));
+            let sd = d.abs().sqrt();
+            let t1 = (Field::from(-by) - sd) / Field::from(2.0 * ay);
+            let t2 = (Field::from(-by) + sd) / Field::from(2.0 * ay);
+            Field::select(valid, eval_t(t1) + eval_t(t2), Field::from(0.0))
+        }
     }
 }
 
-impl<I: Numeric> Manifold<I> for Quad {
-    type Output = I;
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        let [[x0, y0], _, [x2, y2]] = self.0;
-        // For winding number, endpoints matter most
-        let line: Line = Curve([[x0, y0], [x2, y2]]);
-        line.eval_raw(x, y, z, w)
+// ─── Jet2 Implementation (Anti-Aliased / Smooth Edges) ─────────────────────
+
+impl Manifold<Jet2> for Line {
+    type Output = Jet2;
+    fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
+        let [[x0, y0], [x1, y1]] = self.0;
+        let (dy, dx) = (y1 - y0, x1 - x0);
+        if dy.abs() < 1e-6 { return Jet2::from_f32(0.0); }
+        let (y0f, y1f) = (Jet2::from_f32(y0), Jet2::from_f32(y1));
+        let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
+        if !in_y.val.any() { return Jet2::from_f32(0.0); }
+
+        let x_int = Jet2::from_f32(x0) + (y - y0f) * Jet2::from_f32(dx / dy);
+        let dir = if dy > 0.0 { Jet2::from_f32(1.0) } else { Jet2::from_f32(-1.0) };
+
+        let dist = x_int - x;
+        let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy).sqrt().max(Field::from(1e-6));
+        let coverage = (dist.val / grad_mag + Field::from(0.5)).max(Field::from(0.0)).min(Field::from(1.0));
+        
+        Jet2::select(in_y, dir * Jet2::constant(coverage), Jet2::from_f32(0.0))
     }
 }
 
-impl<I: Numeric> Manifold<I> for Segment {
-    type Output = I;
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+impl Manifold<Jet2> for Quad {
+    type Output = Jet2;
+    fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
+        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
+        let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
+        let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
+
+        let eval_t = |t: Jet2| -> Jet2 {
+            let in_t = t.ge(Jet2::from_f32(0.0)) & t.lt(Jet2::from_f32(1.0));
+            if !in_t.val.any() { return Jet2::from_f32(0.0); }
+            let x_int = (Jet2::from_f32(ax) * t + Jet2::from_f32(bx)) * t + Jet2::from_f32(cx);
+            let dy_dt = Jet2::from_f32(2.0 * ay) * t + Jet2::from_f32(by);
+            let dir = Jet2::select(dy_dt.gt(Jet2::from_f32(0.0)), Jet2::from_f32(1.0), Jet2::from_f32(-1.0));
+            let dist = x_int - x;
+            let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy).sqrt().max(Field::from(1e-6));
+            let coverage = (dist.val / grad_mag + Field::from(0.5)).max(Field::from(0.0)).min(Field::from(1.0));
+            Jet2::select(in_t, dir * Jet2::constant(coverage), Jet2::from_f32(0.0))
+        };
+
+        if ay.abs() < 1e-6 {
+            if by.abs() < 1e-6 { return Jet2::from_f32(0.0); }
+            eval_t((y - Jet2::from_f32(cy)) / Jet2::from_f32(by))
+        } else {
+            let c_val = Jet2::from_f32(cy) - y;
+            let d = Jet2::from_f32(by * by) - Jet2::from_f32(4.0 * ay) * c_val;
+            let valid = d.ge(Jet2::from_f32(0.0));
+            let sd = d.abs().sqrt();
+            let t1 = (Jet2::from_f32(-by) - sd) / Jet2::from_f32(2.0 * ay);
+            let t2 = (Jet2::from_f32(-by) + sd) / Jet2::from_f32(2.0 * ay);
+            Jet2::select(valid, eval_t(t1) + eval_t(t2), Jet2::from_f32(0.0))
+        }
+    }
+}
+
+impl Manifold<Field> for Segment {
+    type Output = Field;
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        match self {
+            Self::Line(c) => c.eval_raw(x, y, z, w),
+            Self::Quad(c) => c.eval_raw(x, y, z, w),
+        }
+    }
+}
+
+impl Manifold<Jet2> for Segment {
+    type Output = Jet2;
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
         match self {
             Self::Line(c) => c.eval_raw(x, y, z, w),
             Self::Quad(c) => c.eval_raw(x, y, z, w),
@@ -115,28 +243,68 @@ impl<I: Numeric> Manifold<I> for Segment {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Glyph (Recursive Scene Graph)
+// Glyph (Compositional Scene Graph)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// A simple glyph: segments in unit space, thresholded, bounded, then transformed.
+///
+/// The composition is: Affine<Select<UnitSquare, Threshold<Sum<Segment>>, 0.0>>
+/// - Sum<Segment>: Accumulates winding numbers from curve segments
+/// - Threshold: Converts winding to 0/1 via non-zero rule
+/// - Select (via square): Bounds check with short-circuit
+/// - Affine: Restores to font coordinate space
+pub type SimpleGlyph = Affine<Bounded<Threshold<Sum<Segment>>>>;
+
+/// A compound glyph: sum of transformed child glyphs.
+pub type CompoundGlyph = Sum<Affine<Glyph>>;
+
+/// A glyph is either empty, a simple outline, or a compound of sub-glyphs.
 #[derive(Clone)]
 pub enum Glyph {
+    /// No geometry - evaluates to 0.
     Empty,
-    Simple(Sum<Segment>),
-    Compound(Sum<Affine<Glyph>>),
+    /// Simple glyph: bounded, thresholded segments in unit space.
+    Simple(SimpleGlyph),
+    /// Compound glyph: sum of transformed child glyphs.
+    Compound(CompoundGlyph),
 }
 
-impl<I: Numeric> Manifold<I> for Glyph {
-    type Output = I;
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        let winding = match self {
-            Self::Empty => I::from_f32(0.0),
-            Self::Simple(s) => s.eval_raw(x, y, z, w),
-            Self::Compound(c) => c.eval_raw(x, y, z, w),
-        };
-        // Convert winding to coverage
-        let winding_abs = winding.abs();
-        let inside = winding_abs.ge(I::from_f32(0.5));
-        I::select(inside, I::from_f32(1.0), I::from_f32(0.0))
+impl core::fmt::Debug for Glyph {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "Glyph::Empty"),
+            Self::Simple(_) => write!(f, "Glyph::Simple(...)"),
+            Self::Compound(_) => write!(f, "Glyph::Compound(...)"),
+        }
+    }
+}
+
+// Glyph evaluation - concrete impls because Line/Quad/Segment have
+// different implementations for Field (hard) vs Jet2 (anti-aliased).
+
+impl Manifold<Field> for Glyph {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        match self {
+            Self::Empty => Field::from(0.0),
+            Self::Simple(g) => g.eval_raw(x, y, z, w),
+            Self::Compound(g) => g.eval_raw(x, y, z, w),
+        }
+    }
+}
+
+impl Manifold<Jet2> for Glyph {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        match self {
+            Self::Empty => Jet2::from_f32(0.0),
+            Self::Simple(g) => g.eval_raw(x, y, z, w),
+            Self::Compound(g) => g.eval_raw(x, y, z, w),
+        }
     }
 }
 
@@ -237,6 +405,64 @@ impl Cmap<'_> {
     }
 }
 
+enum Kern<'a> {
+    /// Format 0: sorted pairs (left_glyph, right_glyph, value)
+    Fmt0 { data: &'a [u8], n_pairs: usize },
+    /// No kerning table
+    None,
+}
+
+impl<'a> Kern<'a> {
+    fn parse(data: &'a [u8]) -> Self {
+        let Some(n_tables) = R(data, 2).u16() else { return Self::None };
+        let mut off = 4;
+
+        for _ in 0..n_tables {
+            let Some(length) = R(data, off + 2).u16() else { return Self::None };
+            let Some(coverage) = R(data, off + 4).u16() else { return Self::None };
+
+            let format = coverage >> 8;
+            let horizontal = coverage & 1;
+
+            if format == 0 && horizontal == 1 {
+                let Some(n_pairs) = R(data, off + 6).u16() else { return Self::None };
+                return Self::Fmt0 {
+                    data: &data[off + 14..], // Skip header to pairs
+                    n_pairs: n_pairs as usize,
+                };
+            }
+            off += length as usize;
+        }
+        Self::None
+    }
+
+    fn get(&self, left: u16, right: u16) -> i16 {
+        match self {
+            Self::Fmt0 { data, n_pairs } => {
+                // Binary search: each pair is 6 bytes (left:2, right:2, value:2)
+                let key = ((left as u32) << 16) | (right as u32);
+                let (mut lo, mut hi) = (0, *n_pairs);
+
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    let pair = ((R(*data, mid * 6).u16().unwrap_or(0) as u32) << 16)
+                        | (R(*data, mid * 6 + 2).u16().unwrap_or(0) as u32);
+
+                    match pair.cmp(&key) {
+                        std::cmp::Ordering::Less => lo = mid + 1,
+                        std::cmp::Ordering::Greater => hi = mid,
+                        std::cmp::Ordering::Equal => {
+                            return R(*data, mid * 6 + 4).i16().unwrap_or(0)
+                        }
+                    }
+                }
+                0
+            }
+            Self::None => 0,
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Font
 // ═══════════════════════════════════════════════════════════════════════════
@@ -246,6 +472,7 @@ pub struct Font<'a> {
     glyf: usize,
     loca: Loca<'a>,
     cmap: Cmap<'a>,
+    kern: Kern<'a>,
     hmtx: usize,
     num_hm: usize,
     pub units_per_em: u16,
@@ -281,6 +508,7 @@ impl<'a> Font<'a> {
                 Loca::Short(&data[loca..])
             },
             cmap: Self::find_cmap(&data[*t.get(b"cmap")?..])?,
+            kern: t.get(b"kern").map(|&off| Kern::parse(&data[off..])).unwrap_or(Kern::None),
             hmtx: *t.get(b"hmtx")?,
             num_hm: R(data, hhea + 34).u16()? as usize,
             units_per_em: R(data, head + 18).u16()?,
@@ -338,6 +566,18 @@ impl<'a> Font<'a> {
         Some(self.advance(ch)? * size / self.units_per_em as f32)
     }
 
+    /// Get kerning adjustment between two characters in font units.
+    pub fn kern(&self, left: char, right: char) -> f32 {
+        let left_id = self.cmap.lookup(left as u32).unwrap_or(0);
+        let right_id = self.cmap.lookup(right as u32).unwrap_or(0);
+        self.kern.get(left_id, right_id) as f32
+    }
+
+    /// Get kerning adjustment between two characters, scaled to size.
+    pub fn kern_scaled(&self, left: char, right: char, size: f32) -> f32 {
+        self.kern(left, right) * size / self.units_per_em as f32
+    }
+
     fn compile(&self, id: u16) -> Option<Glyph> {
         let (a, b) = (
             self.loca.get(id as usize)?,
@@ -348,17 +588,42 @@ impl<'a> Font<'a> {
         }
         let mut r = R(self.data, self.glyf + a);
         let n = r.i16()?;
-        r.skip(8)?;
+        let x_min = r.i16()?;
+        let y_min = r.i16()?;
+        let x_max = r.i16()?;
+        let y_max = r.i16()?;
+
+        let width = (x_max - x_min) as f32;
+        let height = (y_max - y_min) as f32;
+        let max_dim = width.max(height).max(1.0); // Avoid div by 0
+
+        // Normalize transform: map [x_min, x_min+max_dim] -> [0, 1]
+        let norm_scale = 1.0 / max_dim;
+        let norm_tx = -(x_min as f32) * norm_scale;
+        let norm_ty = -(y_min as f32) * norm_scale;
+
+        // The restore transform maps [0, 1] back to font units
+        // x_world = x_local * max_dim + x_min
+        let restore = [max_dim, 0.0, 0.0, max_dim, x_min as f32, y_min as f32];
+
         if n >= 0 {
-            self.simple(&mut r, n as usize)
+            // Parse segments in normalized [0,1] space
+            let sum_segs = self.simple(&mut r, n as usize, norm_scale, norm_tx, norm_ty)?;
+
+            // Compose: Sum -> Threshold -> Bounded (via square) -> Affine
+            // This gives us: Affine<Select<UnitSquare, Threshold<Sum<Segment>>, f32>>
+            let thresholded = Threshold(sum_segs);
+            let bounded = square(thresholded, 0.0f32);
+            Some(Glyph::Simple(Affine::new(bounded, restore)))
         } else {
+            // Compound glyphs: children are already fully composed with their own bounds
             self.compound(&mut r)
         }
     }
 
-    fn simple(&self, r: &mut R, n: usize) -> Option<Glyph> {
+    fn simple(&self, r: &mut R, n: usize, scale: f32, tx: f32, ty: f32) -> Option<Sum<Segment>> {
         if n == 0 {
-            return Some(Glyph::Empty);
+            return Some(Sum(vec![].into()));
         }
         let ends: Vec<_> = (0..n)
             .map(|_| r.u16().map(|v| v as usize))
@@ -394,7 +659,13 @@ impl<'a> Font<'a> {
         };
 
         let (xs, ys) = (dec(r, 2, 16)?, dec(r, 4, 32)?);
-        let pts: Vec<_> = (0..np).map(|i| (xs[i], ys[i], fl[i] & 1 != 0)).collect();
+        
+        // Normalize points immediately
+        let pts: Vec<_> = (0..np).map(|i| (
+            (xs[i] as f32) * scale + tx, 
+            (ys[i] as f32) * scale + ty, 
+            fl[i] & 1 != 0
+        )).collect();
 
         let segs: Vec<Segment> = ends
             .iter()
@@ -406,7 +677,7 @@ impl<'a> Font<'a> {
             .flat_map(|c| to_segs(&c))
             .collect();
 
-        Some(Glyph::Simple(Sum(segs.into())))
+        Some(Sum(segs.into()))
     }
 
     fn compound(&self, r: &mut R) -> Option<Glyph> {
@@ -449,7 +720,7 @@ impl<'a> Font<'a> {
     }
 }
 
-fn to_segs(pts: &[(i16, i16, bool)]) -> Vec<Segment> {
+fn to_segs(pts: &[(f32, f32, bool)]) -> Vec<Segment> {
     if pts.is_empty() {
         return vec![];
     }
@@ -459,7 +730,7 @@ fn to_segs(pts: &[(i16, i16, bool)]) -> Vec<Segment> {
         .flat_map(|(i, &(x, y, on))| {
             let (nx, ny, non) = pts[(i + 1) % pts.len()];
             if !on && !non {
-                vec![(x, y, on), ((x + nx) / 2, (y + ny) / 2, true)]
+                vec![(x, y, on), ((x + nx) / 2.0, (y + ny) / 2.0, true)]
             } else {
                 vec![(x, y, on)]
             }
@@ -476,7 +747,7 @@ fn to_segs(pts: &[(i16, i16, bool)]) -> Vec<Segment> {
     while i < exp.len() {
         let p = |j: usize| {
             let (x, y, _) = exp[(start + j) % exp.len()];
-            [x as f32, y as f32]
+            [x, y]
         };
         if exp[(start + i + 1) % exp.len()].2 {
             out.push(Segment::Line(Curve([p(i), p(i + 1)])));
@@ -487,44 +758,4 @@ fn to_segs(pts: &[(i16, i16, bool)]) -> Vec<Segment> {
         }
     }
     out
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Compat
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[derive(Debug)]
-pub enum FontError {
-    ParseError,
-}
-
-impl std::fmt::Display for FontError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Failed to parse font")
-    }
-}
-
-impl std::error::Error for FontError {}
-
-pub struct FontMetrics {
-    pub ascent: i16,
-    pub descent: i16,
-    pub line_gap: i16,
-    pub units_per_em: u16,
-}
-
-impl<'a> Font<'a> {
-    pub fn metrics(&self) -> FontMetrics {
-        FontMetrics {
-            ascent: self.ascent,
-            descent: self.descent,
-            line_gap: self.line_gap,
-            units_per_em: self.units_per_em,
-        }
-    }
-
-    /// Kerning - stub for now (TODO: parse kern/GPOS tables)
-    pub fn kern(&self, _a: char, _b: char, _size: f32) -> f32 {
-        0.0
-    }
 }
