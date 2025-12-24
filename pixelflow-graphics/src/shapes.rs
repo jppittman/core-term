@@ -5,10 +5,18 @@
 //! - Natural composition via nesting
 //! - Automatic bounds checking (outer shapes clip inner)
 //! - Short-circuit evaluation via Select's all/any checks
-//!
-//! Note: Requires core to support operator overloading for manifolds.
 
-use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
+use pixelflow_core::{And, Field, Ge, Le, Manifold, ManifoldExt, Select, X, Y};
+
+// ============================================================================
+// Type Aliases
+// ============================================================================
+
+/// The unit square condition: (x >= 0) & (x <= 1) & (y >= 0) & (y <= 1)
+pub type UnitSquareCond = And<And<And<Ge<X, f32>, Le<X, f32>>, Ge<Y, f32>>, Le<Y, f32>>;
+
+/// A manifold bounded to the unit square.
+pub type Bounded<M> = Select<UnitSquareCond, M, f32>;
 
 // ============================================================================
 // Constants
@@ -17,7 +25,7 @@ use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
 /// Empty/transparent - evaluates to 0.0 everywhere.
 pub const EMPTY: f32 = 0.0;
 
-/// Solid/opaque - evaluates to 1.0 everywhere.  
+/// Solid/opaque - evaluates to 1.0 everywhere.
 pub const SOLID: f32 = 1.0;
 
 // ============================================================================
@@ -38,37 +46,12 @@ pub fn circle<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
 /// Unit square from [0,0] to [1,1].
 ///
 /// Returns fg where 0 ≤ x ≤ 1 and 0 ≤ y ≤ 1, bg elsewhere.
-#[derive(Clone, Debug)]
-pub struct Square<F, B> {
-    pub fg: F,
-    pub bg: B,
-}
-
-impl<F, B> Manifold for Square<F, B>
-where
-    F: Manifold<Output = Field> + Clone,
-    B: Manifold<Output = Field> + Clone,
-{
-    type Output = Field;
-
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        // DEBUG: Check coordinates
-        // use std::io::Write;
-        // let _ = std::io::stdout().flush();
-        // println!("Square check");
-        let mask = X.ge(0.0) & X.le(1.0) & Y.ge(0.0) & Y.le(1.0);
-        mask.select(self.fg.clone(), self.bg.clone())
-            .eval_raw(x, y, z, w)
-    }
-}
-
-/// Helper to create a Square manifold.
-pub fn square<F, B>(fg: F, bg: B) -> Square<F, B>
-where
-    F: Manifold<Output = Field>,
-    B: Manifold<Output = Field>,
-{
-    Square { fg, bg }
+///
+/// Works with both Field and Jet2 for anti-aliased rendering.
+/// Returns concrete type for use in type aliases.
+pub fn square<F, B>(fg: F, bg: B) -> Select<UnitSquareCond, F, B> {
+    let cond = Ge(X, 0.0f32) & Le(X, 1.0f32) & Ge(Y, 0.0f32) & Le(Y, 1.0f32);
+    Select { cond, if_true: fg, if_false: bg }
 }
 
 /// Half-plane: x ≥ 0

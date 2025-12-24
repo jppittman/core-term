@@ -8,7 +8,7 @@
 
 use pixelflow_core::{materialize_discrete, PARALLELISM};
 use pixelflow_graphics::fonts::{Font, Text};
-use pixelflow_graphics::fonts::ttf::{Curve, Glyph, Line, Segment, Sum};
+use pixelflow_graphics::fonts::ttf::{Curve, Line, Segment, Sum, Threshold};
 use pixelflow_graphics::render::color::{Lift, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 use std::sync::Arc;
@@ -26,14 +26,15 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 #[test]
 fn regression_mask_and_not_multiply() {
     // Create a 400x400 square from (100,100) to (500,500)
+    // Use Sum<Segment> for winding accumulation, then Threshold for non-zero rule
     let segments: Vec<Segment> = vec![
         Segment::Line(Curve([[100.0, 100.0], [500.0, 100.0]])), // bottom
         Segment::Line(Curve([[500.0, 100.0], [500.0, 500.0]])), // right
         Segment::Line(Curve([[500.0, 500.0], [100.0, 500.0]])), // top
         Segment::Line(Curve([[100.0, 500.0], [100.0, 100.0]])), // left
     ];
-    let glyph = Glyph::Simple(Sum(Arc::from(segments.into_boxed_slice())));
-    let lifted = Lift(glyph);
+    let shape = Threshold(Sum(Arc::from(segments.into_boxed_slice())));
+    let lifted = Lift(shape);
 
     // Test center (should be inside, coverage = 255)
     let mut center_pixels = [0u32; PARALLELISM];
@@ -190,12 +191,11 @@ fn regression_all_printable_ascii_render() {
 #[test]
 fn regression_font_metrics() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
-    let metrics = font.metrics();
 
-    // NotoSansMono should have these approximate values
-    assert!(metrics.units_per_em >= 1000, "units_per_em should be >= 1000");
-    assert!(metrics.ascent > 0, "ascent should be positive");
-    assert!(metrics.descent < 0, "descent should be negative");
+    // NotoSansMono should have these approximate values (fields are public on Font)
+    assert!(font.units_per_em >= 1000, "units_per_em should be >= 1000");
+    assert!(font.ascent > 0, "ascent should be positive");
+    assert!(font.descent < 0, "descent should be negative");
 }
 
 /// Test that the advance width is consistent for monospace font.
