@@ -109,6 +109,24 @@ impl core::ops::Div for Jet2 {
     }
 }
 
+impl core::ops::BitAnd for Jet2 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        // Bitwise AND on masks - derivatives are zero (step function)
+        Self::constant(self.val & rhs.val)
+    }
+}
+
+impl core::ops::BitOr for Jet2 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        // Bitwise OR on masks - derivatives are zero (step function)
+        Self::constant(self.val | rhs.val)
+    }
+}
+
 // ============================================================================
 // Numeric trait implementation
 // ============================================================================

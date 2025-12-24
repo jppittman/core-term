@@ -20,6 +20,8 @@ pub trait Numeric:
     + core::ops::Sub<Output = Self>
     + core::ops::Mul<Output = Self>
     + core::ops::Div<Output = Self>
+    + core::ops::BitAnd<Output = Self>
+    + core::ops::BitOr<Output = Self>
 {
     /// Square root.
     fn sqrt(self) -> Self;
