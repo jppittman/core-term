@@ -314,6 +314,15 @@ impl NSEvent {
     pub fn key_code(&self) -> u16 {
         unsafe { sys::send(self.0, sys::sel(b"keyCode\0")) }
     }
+
+    // Scroll wheel specifics
+    pub fn scrolling_delta_x(&self) -> f64 {
+        unsafe { sys::send(self.0, sys::sel(b"scrollingDeltaX\0")) }
+    }
+
+    pub fn scrolling_delta_y(&self) -> f64 {
+        unsafe { sys::send(self.0, sys::sel(b"scrollingDeltaY\0")) }
+    }
 }
 
 // --- Constants ---
