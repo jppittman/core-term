@@ -8,7 +8,7 @@
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
-use anyhow::{anyhow, Result};
+use crate::error::RuntimeError;
 use log::info;
 use pixelflow_render::color::Rgba;
 use pixelflow_render::Frame;
@@ -43,7 +43,7 @@ impl Clone for HeadlessDisplayDriver {
 impl DisplayDriver for HeadlessDisplayDriver {
     type Pixel = Rgba;
 
-    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self> {
+    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self, RuntimeError> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -52,16 +52,16 @@ impl DisplayDriver for HeadlessDisplayDriver {
         })
     }
 
-    fn send(&self, cmd: DriverCommand<Rgba>) -> Result<()> {
-        self.cmd_tx.send(cmd)?;
+    fn send(&self, cmd: DriverCommand<Rgba>) -> Result<(), RuntimeError> {
+        self.cmd_tx.send(cmd).map_err(|_| RuntimeError::DriverChannelDisconnected)?;
         Ok(())
     }
 
-    fn run(&self) -> Result<()> {
+    fn run(&self) -> Result<(), RuntimeError> {
         let run_state = self
             .run_state
             .as_ref()
-            .ok_or_else(|| anyhow!("Only original driver can run (this is a clone)"))?;
+            .ok_or_else(|| RuntimeError::DriverCloneError)?;
 
         run_event_loop(&run_state.cmd_rx, &run_state.engine_tx)
     }
@@ -72,16 +72,16 @@ impl DisplayDriver for HeadlessDisplayDriver {
 fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Rgba>>,
     engine_tx: &EngineSender<Rgba>,
-) -> Result<()> {
+) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
-    let (window_id, width_px, height_px, title) = match cmd_rx.recv()? {
+    let (window_id, width_px, height_px, title) = match cmd_rx.recv().map_err(|_| RuntimeError::DriverChannelDisconnected)? {
         DriverCommand::CreateWindow {
             id,
             width,
             height,
             title,
         } => (id, width, height, title),
-        other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
+        other => return Err(RuntimeError::UnexpectedCommand(format!("{:?}", other))),
     };
 
     info!(
@@ -99,7 +99,7 @@ fn run_event_loop(
 
     // 2. Run simple event loop
     loop {
-        match cmd_rx.recv()? {
+        match cmd_rx.recv().map_err(|_| RuntimeError::DriverChannelDisconnected)? {
             DriverCommand::CreateWindow { .. } => {
                 // Already created, ignore
             }

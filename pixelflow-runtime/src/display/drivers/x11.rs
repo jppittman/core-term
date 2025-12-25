@@ -6,9 +6,9 @@
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
+use crate::error::RuntimeError;
 use crate::input::{KeySymbol, Modifiers};
 use crate::platform::waker::{EventLoopWaker, X11Waker};
-use anyhow::{anyhow, Result};
 use log::{info, trace};
 use pixelflow_graphics::render::color::Bgra8;
 
@@ -84,7 +84,7 @@ impl Clone for X11DisplayDriver {
 impl DisplayDriver for X11DisplayDriver {
     type Pixel = Bgra;
 
-    fn new(engine_tx: EngineSender<Bgra>) -> Result<Self> {
+    fn new(engine_tx: EngineSender<Bgra>) -> Result<Self, RuntimeError> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -94,7 +94,7 @@ impl DisplayDriver for X11DisplayDriver {
         })
     }
 
-    fn send(&self, cmd: DriverCommand<Bgra>) -> Result<()> {
+    fn send(&self, cmd: DriverCommand<Bgra>) -> Result<(), RuntimeError> {
         let mut cmd = cmd;
         loop {
             match self.cmd_tx.try_send(cmd) {
@@ -106,7 +106,7 @@ impl DisplayDriver for X11DisplayDriver {
                     std::thread::yield_now();
                 }
                 Err(TrySendError::Disconnected(_)) => {
-                    return Err(anyhow!("Driver channel disconnected"));
+                    return Err(RuntimeError::DriverChannelDisconnected);
                 }
             }
         }
@@ -115,11 +115,11 @@ impl DisplayDriver for X11DisplayDriver {
         Ok(())
     }
 
-    fn run(&self) -> Result<()> {
+    fn run(&self) -> Result<(), RuntimeError> {
         let run_state = self
             .run_state
             .as_ref()
-            .ok_or_else(|| anyhow!("Only original driver can run (this is a clone)"))?;
+            .ok_or_else(|| RuntimeError::DriverCloneError)?;
 
         run_event_loop(&run_state.cmd_rx, &run_state.engine_tx, &self.waker)
     }
@@ -131,16 +131,16 @@ fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Bgra>>,
     engine_tx: &EngineSender<Bgra>,
     waker: &X11Waker,
-) -> Result<()> {
+) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
-    let (window_id, width, height, title) = match cmd_rx.recv()? {
+    let (window_id, width, height, title) = match cmd_rx.recv().map_err(|_| RuntimeError::DriverChannelDisconnected)? {
         DriverCommand::CreateWindow {
             id,
             width,
             height,
             title,
         } => (id, width, height, title),
-        other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
+        other => return Err(RuntimeError::UnexpectedCommand(format!("{:?}", other))),
     };
 
     info!("X11: Creating window '{}' {}x{}", title, width, height);
@@ -148,12 +148,12 @@ fn run_event_loop(
     // 2. Create X11 resources
     unsafe {
         if xlib::XInitThreads() == 0 {
-            return Err(anyhow!("XInitThreads failed"));
+            return Err(RuntimeError::XInitThreadsFailed);
         }
 
         let display = xlib::XOpenDisplay(ptr::null());
         if display.is_null() {
-            return Err(anyhow!("Failed to open X display"));
+            return Err(RuntimeError::XOpenDisplayFailed);
         }
 
         let screen = xlib::XDefaultScreen(display);
@@ -322,7 +322,7 @@ impl X11State {
         &mut self,
         cmd_rx: &Receiver<DriverCommand<Bgra>>,
         engine_tx: &EngineSender<Bgra>,
-    ) -> Result<()> {
+    ) -> Result<(), RuntimeError> {
         loop {
             // 1. Process all pending commands first
             while let Ok(cmd) = cmd_rx.try_recv() {
@@ -602,7 +602,7 @@ impl X11State {
 
     // --- Command handlers ---
 
-    fn handle_present(&mut self, frame: Frame<Bgra>) -> Result<Frame<Bgra>> {
+    fn handle_present(&mut self, frame: Frame<Bgra>) -> Result<Frame<Bgra>, RuntimeError> {
         unsafe {
             let depth = xlib::XDefaultDepth(self.display, self.screen);
             let visual = xlib::XDefaultVisual(self.display, self.screen);
@@ -622,7 +622,7 @@ impl X11State {
             );
 
             if image.is_null() {
-                return Err(anyhow!("XCreateImage failed"));
+                return Err(RuntimeError::XCreateImageFailed);
             }
 
             xlib::XPutImage(

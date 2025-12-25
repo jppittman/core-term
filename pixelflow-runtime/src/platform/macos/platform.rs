@@ -6,8 +6,8 @@ use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
 use crate::platform::PlatformPixel;
+use crate::error::RuntimeError;
 use actor_scheduler::{Message, ParkHint};
-use anyhow::Result;
 
 use std::collections::HashMap;
 
@@ -28,7 +28,7 @@ pub struct MetalOps {
 unsafe impl Send for MetalOps {}
 
 impl MetalOps {
-    pub fn new(event_tx: EngineActorHandle<PlatformPixel>) -> Result<Self> {
+    pub fn new(event_tx: EngineActorHandle<PlatformPixel>) -> Result<Self, RuntimeError> {
         // Initialize Cocoa Application
         let app = unsafe {
             // Pool:

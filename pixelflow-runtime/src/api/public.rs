@@ -100,20 +100,20 @@ impl<P: pixelflow_graphics::Pixel> std::fmt::Debug for AppData<P> {
 
 /// Application trait that defines the logic.
 pub trait Application {
-    fn send(&self, event: EngineEvent) -> anyhow::Result<()>;
+    fn send(&self, event: EngineEvent) -> Result<(), crate::error::RuntimeError>;
 }
 
 impl Application
     for actor_scheduler::ActorHandle<EngineEventData, EngineEventControl, EngineEventManagement>
 {
-    fn send(&self, event: EngineEvent) -> anyhow::Result<()> {
+    fn send(&self, event: EngineEvent) -> Result<(), crate::error::RuntimeError> {
         let msg = match event {
             EngineEvent::Control(ctrl) => actor_scheduler::Message::Control(ctrl),
             EngineEvent::Management(mgmt) => actor_scheduler::Message::Management(mgmt),
             EngineEvent::Data(data) => actor_scheduler::Message::Data(data),
         };
         self.send(msg)
-            .map_err(|e| anyhow::anyhow!("Failed to send event to application: {}", e))
+            .map_err(|e| crate::error::RuntimeError::EventSendError(e.to_string()))
     }
 }
 

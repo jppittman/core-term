@@ -8,8 +8,8 @@ use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use crate::display::platform::PlatformActor;
 use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{VsyncActor, VsyncConfig, VsyncManagement};
+use crate::error::RuntimeError;
 use actor_scheduler::{Actor, ActorTypes, Message, ParkHint, TroupeActor};
-use anyhow::Result;
 
 /// Engine handler - coordinates app, rendering, display.
 pub struct EngineHandler;
@@ -88,7 +88,7 @@ impl<'a> TroupeActor<'a, Directory> for DriverActor<ActivePlatform> {
 
 impl Troupe {
     /// Create troupe and configure vsync actor.
-    pub fn with_config(config: EngineConfig) -> Result<Self> {
+    pub fn with_config(config: EngineConfig) -> Result<Self, RuntimeError> {
         let troupe = Self::new();
         let dir = troupe.directory();
 
@@ -100,7 +100,7 @@ impl Troupe {
                 },
                 engine_handle: dir.engine.clone(),
                 self_handle: dir.vsync.clone(),
-            }))?;
+            })).map_err(|e| RuntimeError::InitError(format!("Failed to configure vsync: {}", e)))?;
 
         Ok(troupe)
     }

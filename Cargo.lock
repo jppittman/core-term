@@ -761,7 +761,6 @@ dependencies = [
 name = "pixelflow-graphics"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bitflags 2.9.1",
  "criterion",
  "log",
@@ -783,7 +782,6 @@ name = "pixelflow-runtime"
 version = "0.1.0"
 dependencies = [
  "actor-scheduler",
- "anyhow",
  "bincode",
  "bitflags 2.9.1",
  "js-sys",

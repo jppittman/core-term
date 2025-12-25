@@ -27,8 +27,8 @@ use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
     RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
+use crate::error::RuntimeError;
 use actor_scheduler::{ActorHandle, Message};
-use anyhow::{Context, Result};
 use log::info;
 
 // Use the troupe! macro to generate Directory, ExposedHandles, Troupe, and run()
@@ -52,7 +52,7 @@ pub struct EngineHandler {
 impl Troupe {
     /// Create troupe with platform-specific configuration.
     #[cfg(target_os = "macos")]
-    pub fn with_config(config: EngineConfig) -> Result<Self> {
+    pub fn with_config(config: EngineConfig) -> Result<Self, RuntimeError> {
         use crate::platform::{waker, MetalOps};
 
         info!("EngineTroupe::with_config() - Creating render pipeline (macOS)");
@@ -63,7 +63,7 @@ impl Troupe {
         // Phase 2: Platform-specific initialization
         // Create Metal ops using engine handle from directory
         let ops = MetalOps::new(troupe.directory().engine.clone())
-            .context("Failed to create Metal platform ops")?;
+            .map_err(|e| RuntimeError::InitError(format!("Failed to create Metal platform ops: {}", e)))?;
         let platform = PlatformActor::new(ops);
 
         // TODO: Send platform to driver via Management message
@@ -80,13 +80,13 @@ impl Troupe {
                 config: vsync_config,
                 engine_handle: troupe.directory().engine.clone(),
                 self_handle: troupe.directory().vsync.clone(),
-            }))?;
+            })).map_err(|e| RuntimeError::InitError(format!("Failed to configure vsync: {}", e)))?;
 
         Ok(troupe)
     }
 
     #[cfg(target_os = "linux")]
-    pub fn with_config(config: EngineConfig) -> Result<Self> {
+    pub fn with_config(config: EngineConfig) -> Result<Self, RuntimeError> {
         use crate::platform::linux::LinuxOps;
 
         info!("EngineTroupe::with_config() - Creating render pipeline (Linux)");
@@ -94,7 +94,7 @@ impl Troupe {
         let troupe = Self::new();
 
         let ops = LinuxOps::new(troupe.directory().engine.clone())
-            .context("Failed to create Linux platform ops")?;
+            .map_err(|e| RuntimeError::InitError(format!("Failed to create Linux platform ops: {}", e)))?;
         let platform = PlatformActor::new(ops);
 
         // TODO: Same platform initialization issue
@@ -109,7 +109,7 @@ impl Troupe {
                 config: vsync_config,
                 engine_handle: troupe.directory().engine.clone(),
                 self_handle: troupe.directory().vsync.clone(),
-            }))?;
+            })).map_err(|e| RuntimeError::InitError(format!("Failed to configure vsync: {}", e)))?;
 
         Ok(troupe)
     }
