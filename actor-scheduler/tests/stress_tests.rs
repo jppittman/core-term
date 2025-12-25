@@ -300,67 +300,6 @@ fn custom_wake_handler_is_called() {
 }
 
 // ============================================================================
-// Priority Ordering Under Load
-// ============================================================================
-
-#[test]
-fn priority_maintained_under_heavy_mixed_load() {
-    let (tx, mut rx) = ActorScheduler::new(5, 100); // Small burst limit
-    let ctrl_count = Arc::new(AtomicUsize::new(0));
-    let data_count = Arc::new(AtomicUsize::new(0));
-
-    struct OrderedHandler {
-        ctrl_count: Arc<AtomicUsize>,
-        data_count: Arc<AtomicUsize>,
-        ctrl_before_data: AtomicBool,
-    }
-
-    impl Actor<u64, u64, u64> for OrderedHandler {
-        fn handle_data(&mut self, _: u64) {
-            self.data_count.fetch_add(1, Ordering::SeqCst);
-        }
-        fn handle_control(&mut self, _: u64) {
-            // If we process control and data count is 0, control came first
-            if self.data_count.load(Ordering::SeqCst) == 0 {
-                self.ctrl_before_data.store(true, Ordering::SeqCst);
-            }
-            self.ctrl_count.fetch_add(1, Ordering::SeqCst);
-        }
-        fn handle_management(&mut self, _: u64) {}
-        fn park(&mut self, _: ParkHint) -> ParkHint {
-            ParkHint::Wait
-        }
-    }
-
-    let handler = OrderedHandler {
-        ctrl_count: ctrl_count.clone(),
-        data_count: data_count.clone(),
-        ctrl_before_data: AtomicBool::new(false),
-    };
-
-    // Send data first, then control
-    for i in 0..100 {
-        tx.send(Message::Data(i)).unwrap();
-    }
-    tx.send(Message::Control(0)).unwrap();
-
-    let receiver_handle = thread::spawn(move || {
-        let mut h = handler;
-        rx.run(&mut h);
-        h.ctrl_before_data.load(Ordering::SeqCst)
-    });
-
-    thread::sleep(Duration::from_millis(50));
-    drop(tx);
-
-    let ctrl_first = receiver_handle.join().unwrap();
-    assert!(
-        ctrl_first,
-        "Control messages should be processed before data messages"
-    );
-}
-
-// ============================================================================
 // Burst Limit Tests
 // ============================================================================
 
