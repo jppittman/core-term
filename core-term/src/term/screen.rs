@@ -27,6 +27,24 @@ pub type Row = Arc<Vec<Glyph>>;
 // Define a type alias for the grid itself (for primary and alternate screens)
 pub type Grid = VecDeque<Row>;
 
+/// Mode for scrolling history preservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollHistory {
+    /// Save lines scrolled off the top to the history buffer.
+    Save,
+    /// Discard lines scrolled off the top.
+    Discard,
+}
+
+/// Mode for clearing the alternate screen upon entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AltScreenClear {
+    /// Clear the alternate screen when entering it.
+    Clear,
+    /// Preserve the existing content of the alternate screen.
+    Preserve,
+}
+
 /// Defines the modes for clearing tab stops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabClearMode {
@@ -242,10 +260,11 @@ impl Screen {
     }
 
     /// Scrolls lines within the defined scrolling region upwards by `n` lines.
+    ///
     /// New lines at the bottom of the region are filled with the default fill glyph.
-    /// If `save_to_history` is true AND we are scrolling from the top of the screen (top=0),
+    /// If `history_mode` is `ScrollHistory::Save` AND we are scrolling from the top of the screen (top=0),
     /// lines scrolled off are moved to the scrollback buffer.
-    pub fn scroll_up(&mut self, n: usize, save_to_history: bool) {
+    pub fn scroll_up(&mut self, n: usize, history_mode: ScrollHistory) {
         let fill_glyph = self.get_default_fill_glyph();
         if self.scroll_top > self.scroll_bot || self.scroll_bot >= self.height {
             warn!(
@@ -286,7 +305,7 @@ impl Screen {
             // If scroll_top == 0 (full screen), this is pop_front() which is O(1)
             if let Some(row) = active_grid.remove(scroll_top) {
                 // Save to history if requested and scrolling from top
-                if save_to_history && scroll_top == 0 && !alt_screen_active && scrollback_limit > 0 {
+                if history_mode == ScrollHistory::Save && scroll_top == 0 && !alt_screen_active && scrollback_limit > 0 {
                     self.scrollback.push_back(row);
                     if self.scrollback.len() > scrollback_limit {
                         self.scrollback.pop_front();
@@ -579,14 +598,14 @@ impl Screen {
         }
     }
 
-    pub fn enter_alt_screen(&mut self, clear_alt_screen: bool) {
+    pub fn enter_alt_screen(&mut self, clear_mode: AltScreenClear) {
         if self.alt_screen_active {
             return;
         }
         self.clear_selection();
         self.alt_screen_active = true;
 
-        if clear_alt_screen {
+        if clear_mode == AltScreenClear::Clear {
             let fill_glyph = self.get_default_fill_glyph();
             for y_idx in 0..self.height {
                 self.fill_region_with_glyph(y_idx, 0, self.width, fill_glyph);
@@ -1048,6 +1067,7 @@ mod tests {
         Glyph,
         Point,
         Screen,
+        ScrollHistory,
         Selection,
         SelectionMode, // Removed AttrFlags
         SelectionRange,
@@ -1468,7 +1488,7 @@ mod tests {
         let mut screen = create_test_screen_with_scrollback(10, 5, 10);
         fill_screen_with_pattern(&mut screen);
         // scroll up 1 line. Top line should go to scrollback.
-        screen.scroll_up(1, true);
+        screen.scroll_up(1, ScrollHistory::Save);
         assert_eq!(screen.scrollback.len(), 1, "Scrollback should contain 1 line after scroll up");
     }
 }

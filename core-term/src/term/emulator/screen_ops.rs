@@ -3,6 +3,7 @@
 use super::TerminalEmulator;
 // For default_attributes
 use crate::term::modes::EraseMode; // EraseMode is used by erase_in_display, erase_in_line
+use crate::term::screen::ScrollHistory;
 use std::cmp::min; // For erase_chars
 
 use log::warn;
@@ -151,7 +152,7 @@ impl TerminalEmulator {
 
             self.screen
                 .set_scrolling_region(cy_phys + 1, original_scroll_bottom + 1);
-            self.screen.scroll_up(n, false);
+            self.screen.scroll_up(n, ScrollHistory::Discard);
 
             self.screen
                 .set_scrolling_region(original_scroll_top + 1, original_scroll_bottom + 1);
@@ -166,7 +167,7 @@ impl TerminalEmulator {
     pub(super) fn scroll_up(&mut self, n: usize) {
         self.cursor_wrap_next = false;
         self.screen.default_attributes = self.cursor_controller.attributes();
-        self.screen.scroll_up(n, false);
+        self.screen.scroll_up(n, ScrollHistory::Discard);
     }
 
     pub(super) fn scroll_down(&mut self, n: usize) {
@@ -208,7 +209,7 @@ impl TerminalEmulator {
             // Physical Y = scroll_top + logical_y.
             // Scrolling occurs if the physical cursor is at the bottom of the scrolling region (scroll_bot).
             if current_physical_y == screen_ctx.scroll_bot {
-                self.screen.scroll_up(1, true); // Scrolls region [scroll_top, scroll_bot]
+                self.screen.scroll_up(1, ScrollHistory::Save); // Scrolls region [scroll_top, scroll_bot]
                 scrolled_this_op = true;
                 // Cursor's logical_y remains at (scroll_bot - scroll_top), effectively staying on the
                 // new bottom line of the region (which is now blank).
@@ -233,7 +234,7 @@ impl TerminalEmulator {
             // Scrolling should occur if the cursor is at the bottom of the active scrolling region (scroll_bot).
             // This aligns with st.c's tnewline behavior: `if (y == term.bot) tscrollup(term.top, 1);`
             if current_physical_y == screen_ctx.scroll_bot {
-                self.screen.scroll_up(1, true); // scroll_up uses screen.scroll_top and screen.scroll_bot
+                self.screen.scroll_up(1, ScrollHistory::Save); // scroll_up uses screen.scroll_top and screen.scroll_bot
                 scrolled_this_op = true;
                 log::trace!(
                     "move_down_one_line (origin_mode OFF): Scrolled region [{},{}] due to cursor at scroll_bot ({})",
