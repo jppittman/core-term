@@ -4,6 +4,7 @@ pub mod api;
 // Internal modules
 pub mod channel;
 pub mod config;
+pub mod error;
 pub mod display;
 pub mod engine_troupe;
 pub mod frame;
@@ -16,6 +17,7 @@ pub mod vsync_actor;
 
 // Re-export public API types at crate root (new, preferred)
 pub use api::public::*;
+pub use error::RuntimeError;
 
 // Re-export priority-channel as actor module
 /// Actor model primitives (message passing, scheduling, priority lanes)

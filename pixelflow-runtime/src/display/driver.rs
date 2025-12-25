@@ -1,8 +1,8 @@
 use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use super::platform::Platform;
 use crate::channel::{DriverCommand, EngineSender};
+use crate::error::RuntimeError;
 use actor_scheduler::{Actor, ParkHint};
-use anyhow::Result;
 use pixelflow_graphics::Pixel;
 
 /// Legacy DisplayDriver trait for backward compatibility with old X11 driver code.
@@ -13,13 +13,13 @@ pub trait DisplayDriver: Clone + Send {
     type Pixel: Pixel;
 
     /// Create a new driver with the given engine sender.
-    fn new(engine_tx: EngineSender<Self::Pixel>) -> Result<Self>;
+    fn new(engine_tx: EngineSender<Self::Pixel>) -> Result<Self, RuntimeError>;
 
     /// Send a command to the driver.
-    fn send(&self, cmd: DriverCommand<Self::Pixel>) -> Result<()>;
+    fn send(&self, cmd: DriverCommand<Self::Pixel>) -> Result<(), RuntimeError>;
 
     /// Run the driver event loop (blocking).
-    fn run(&self) -> Result<()>;
+    fn run(&self) -> Result<(), RuntimeError>;
 }
 
 /// The Driver Actor - wraps a Platform implementation as an Actor.

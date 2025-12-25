@@ -6,8 +6,8 @@
 use crate::api::private::EngineActorHandle;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use crate::display::ops::PlatformOps;
+use crate::error::RuntimeError;
 use actor_scheduler::ParkHint;
-use anyhow::Result;
 use pixelflow_graphics::render::color::Bgra8;
 
 /// Linux platform pixel type (BGRA for X11).
@@ -21,7 +21,7 @@ pub struct LinuxOps {
 
 impl LinuxOps {
     /// Create new Linux platform ops.
-    pub fn new(engine_handle: EngineActorHandle<LinuxPixel>) -> Result<Self> {
+    pub fn new(engine_handle: EngineActorHandle<LinuxPixel>) -> Result<Self, RuntimeError> {
         Ok(Self { engine_handle })
     }
 }
