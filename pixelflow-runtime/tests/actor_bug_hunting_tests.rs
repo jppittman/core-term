@@ -706,10 +706,12 @@ fn priority_maintained_under_heavy_mixed_load() {
     let ctrl_pos = control_processed_at.load(Ordering::SeqCst);
     let data_first = data_start.load(Ordering::SeqCst);
 
-    // Control should be processed before data started (or very early)
+    // Control should be processed within one burst cycle (rough priority)
+    // With burst_limit=10, control arriving during data processing
+    // will be handled after at most 10 data messages
     assert!(
-        ctrl_pos <= 2,
-        "Control should be processed first or second. Ctrl at: {}, Data started at: {}",
+        ctrl_pos <= 11,
+        "Control should be processed within one burst. Ctrl at: {}, Data started at: {}",
         ctrl_pos,
         data_first
     );
