@@ -8,7 +8,7 @@ use crate::{
     term::{
         action::EmulatorAction,
         modes::{DecPrivateModes, EraseMode},
-        screen::TabClearMode,
+        screen::{ScrollHistory, TabClearMode},
         DEFAULT_TAB_INTERVAL,
     },
 };
@@ -72,7 +72,7 @@ impl TerminalEmulator {
         let (_, current_physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
 
         if current_physical_y == screen_ctx.scroll_bot {
-            self.screen.scroll_up(1, true);
+            self.screen.scroll_up(1, ScrollHistory::Save);
         } else if current_physical_y < screen_ctx.height.saturating_sub(1) {
             self.cursor_controller.move_down(1, &screen_ctx);
         }
