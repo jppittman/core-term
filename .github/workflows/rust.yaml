@@ -38,5 +38,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Run tests (actor-scheduler crates - 100x)
+        shell: bash
+        run: |
+          for i in {1..100}; do
+            echo "::group::Actor Scheduler Tests Run $i/100"
+            cargo test -p actor-scheduler -p actor-scheduler-macros --verbose || exit 1
+            echo "::endgroup::"
+          done
+
+      - name: Run tests (other crates - 5x)
+        shell: bash
+        run: |
+          for i in {1..5}; do
+            echo "::group::Other Crates Tests Run $i/5"
+            cargo test --workspace --exclude actor-scheduler --exclude actor-scheduler-macros --verbose || exit 1
+            echo "::endgroup::"
+          done
