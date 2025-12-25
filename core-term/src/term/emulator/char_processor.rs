@@ -2,7 +2,7 @@
 
 use super::TerminalEmulator;
 use crate::{
-    glyph::{ContentCell, Glyph}, // Removed AttrFlags, Attributes
+    glyph::{ContentCell, Glyph},
     term::{
         charset::{map_to_dec_line_drawing, CharacterSet}, // For map_char_to_active_charset
         unicode::get_char_display_width,

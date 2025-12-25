@@ -2,12 +2,12 @@
 
 use crate::ansi::commands::{Attribute, C0Control, CsiCommand};
 use crate::color::{Color, NamedColor};
-use crate::glyph::{Attributes, ContentCell, Glyph}; // Removed AttrFlags
+use crate::glyph::{Attributes, ContentCell, Glyph};
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::term::{
     modes::DecModeConstant,   // For DECTCEM test
-    snapshot::SelectionRange, // Corrected import for SelectionRange
+    snapshot::SelectionRange,
     AnsiCommand,
     ControlEvent,
     CursorRenderState,
@@ -15,10 +15,9 @@ use crate::term::{
     EmulatorAction,
     EmulatorInput,
     // Imports for new tests:
-    Point,     // From snapshot
-    Selection, // Added missing import
+    Point,
+    Selection,
     SelectionMode,
-    // SelectionRenderState, // This was the old name, replaced by snapshot::Selection
     SnapshotLine,
     TerminalEmulator,
     TerminalSnapshot,
@@ -396,7 +395,7 @@ fn test_mouse_press_starts_selection() {
     );
     assert_eq!(
         emu.screen.selection.mode,
-        SelectionMode::Cell, // Updated to Cell
+        SelectionMode::Cell,
         "Default selection mode should be Cell."
     );
     assert_eq!(
@@ -601,10 +600,9 @@ fn test_selection_coordinates_adjust_on_scroll() {
     assert!(!emu.screen.selection.is_active);
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        // Changed from term to emu
         CsiCommand::CursorPosition(3, 1),
     )));
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
     assert_eq!(
         emu.screen.selection.range.map(|r| r.start),
@@ -1137,7 +1135,7 @@ fn test_ps1_multiline_with_sgr_at_bottom_scrolls() {
 fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     let cols = 10;
     let rows = 5;
-    let mut emu = create_test_emulator(cols, rows); // Changed from term to emu
+    let mut emu = create_test_emulator(cols, rows);
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetMode(20),
     )));
@@ -1147,16 +1145,16 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     );
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        // Changed from term to emu
+
         CsiCommand::ResetModePrivate(DecModeConstant::Origin as u16),
     )));
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        // Changed from term to emu
+
         CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
     )));
 
-    let snap_after_stbm = emu.get_render_snapshot().expect("Snapshot was None"); // Changed from term to emu
+    let snap_after_stbm = emu.get_render_snapshot().expect("Snapshot was None");
     assert_screen_state(
         &snap_after_stbm,
         &[
@@ -1170,35 +1168,35 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     );
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        // Changed from term to emu
+
         CsiCommand::CursorPosition(1, 1),
     )));
     for _ in 0..5 {
-        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X'))); // Changed from term to emu
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
     }
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        // Changed from term to emu
+
         CsiCommand::CursorPosition(2, 1),
     )));
     for _ in 0..5 {
-        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X'))); // Changed from term to emu
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
     }
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        // Changed from term to emu
+
         CsiCommand::CursorPosition(3, 1),
     )));
     for _ in 0..5 {
-        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Y'))); // Changed from term to emu
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Y')));
     }
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        // Changed from term to emu
+
         CsiCommand::CursorPosition(4, 1),
     )));
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z'))); // Changed from term to emu
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z'))); // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z')));
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z')));
 
-    let snapshot_before_lf = emu.get_render_snapshot().expect("Snapshot was None"); // Changed from term to emu
+    let snapshot_before_lf = emu.get_render_snapshot().expect("Snapshot was None");
     assert_screen_state(
         &snapshot_before_lf,
         &[
@@ -1211,9 +1209,9 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
         Some((3, 2)),
     );
 
-    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF))); // Changed from term to emu
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
-    let snapshot_after_lf = emu.get_render_snapshot().expect("Snapshot was None"); // Changed from term to emu
+    let snapshot_after_lf = emu.get_render_snapshot().expect("Snapshot was None");
     assert_screen_state(
         &snapshot_after_lf,
         &[

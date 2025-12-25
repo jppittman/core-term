@@ -233,7 +233,7 @@ fn run_event_loop(
             xrm_db,
             width_px: width,
             height_px: height,
-            scale_factor: 1.0, // Updated below
+            scale_factor: 1.0,
             clipboard_data: String::new(),
         };
 

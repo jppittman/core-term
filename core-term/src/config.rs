@@ -12,7 +12,7 @@ use crate::{
     term::action::UserInputAction,
     term::cursor::CursorShape, // Assumes CursorShape is in `crate::term::modes`
 };
-use log::{error, info}; // Added warn, info
+use log::{error, info};
 use once_cell::sync::Lazy;
 use pixelflow_runtime::config::PerformanceConfig;
 use serde::{Deserialize, Serialize};
