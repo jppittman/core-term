@@ -882,41 +882,7 @@ impl Screen {
                 // Point is on a line between the start and end lines.
                 // In 'Cell' mode, this means the entire line is selected.
                 true
-            } // TODO: Implement other selection modes like Block if they are added.
-              // For now, Block, SemanticLine, SemanticWord are commented out or not present
-              // in the SelectionMode enum used by this logic.
-              // e.g., SelectionMode::Block => {
-              //     let min_x = std_min(raw_start.x, raw_end.x);
-              //     let max_x = max(raw_start.x, raw_end.x);
-              //     let min_y = std_min(raw_start.y, raw_end.y);
-              //     let max_y = max(raw_start.y, raw_end.y);
-              //     return point.x >= min_x
-              //         && point.x <= max_x
-              //         && point.y >= min_y
-              //         && point.y <= max_y;
-              // }
-              // SelectionMode::SemanticLine | SelectionMode::SemanticWord => {
-              //     // For semantic selections, is_selected might behave like Normal or Block
-              //     // depending on how the range was defined by the semantic logic.
-              //     // Assuming for now it behaves like Normal for highlighting purposes.
-              //     let (box_start_y, box_end_y) = if raw_start.y <= raw_end.y {
-              //         (raw_start.y, raw_end.y)
-              //     } else {
-              //         (raw_end.y, raw_start.y)
-              //     };
-
-              //     if point.y < box_start_y || point.y > box_end_y {
-              //         return false;
-              //     }
-
-              //     if raw_start.y == raw_end.y {
-              //         let line_min_x = std_min(raw_start.x, raw_end.x);
-              //         let line_max_x = max(raw_start.x, raw_end.x);
-              //         return point.x >= line_min_x && point.x <= line_max_x;
-              //     }
-              //      // For multi-line semantic (like line selection), assume full lines are selected
-              //     return true;
-              // }
+            }
         }
     }
 
