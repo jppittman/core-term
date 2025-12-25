@@ -68,8 +68,17 @@ pub fn map_event(event: NSEvent, window_height: f64) -> Option<DisplayEvent> {
             })
         }
         event_type::SCROLL_WHEEL => {
-            // TODO: Scroll mapping requires deltaX/Y from cocoa wrapper
-            None
+            let pos = event.location_in_window();
+            let dx = event.scrolling_delta_x() as f32;
+            let dy = event.scrolling_delta_y() as f32;
+            Some(DisplayEvent::MouseScroll {
+                id: WindowId::PRIMARY,
+                dx,
+                dy,
+                x: pos.x as i32,
+                y: (window_height - pos.y) as i32,
+                modifiers: map_modifiers(event.modifier_flags()),
+            })
         }
         _ => None,
     }
