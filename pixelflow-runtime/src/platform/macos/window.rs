@@ -1,7 +1,7 @@
 use crate::api::public::WindowDescriptor;
 use crate::platform::macos::cocoa::{NSPoint, NSRect, NSSize, NSView, NSWindow};
 use crate::platform::macos::sys::{self, Id, BOOL, YES};
-use anyhow::Result;
+use crate::error::RuntimeError;
 use std::ffi::c_void;
 
 pub struct MacWindow {
@@ -13,7 +13,7 @@ pub struct MacWindow {
 }
 
 impl MacWindow {
-    pub fn new(desc: WindowDescriptor) -> Result<Self> {
+    pub fn new(desc: WindowDescriptor) -> Result<Self, RuntimeError> {
         let rect = NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(desc.width as f64, desc.height as f64),
@@ -43,7 +43,7 @@ impl MacWindow {
             }
             let device = MTLCreateSystemDefaultDevice();
             if device.is_null() {
-                anyhow::bail!("Failed to create Metal device");
+                return Err(RuntimeError::MetalDeviceError);
             }
             sys::send_1::<(), Id>(layer, sys::sel(b"setDevice:\0"), device);
 

@@ -1,5 +1,5 @@
 use crate::display::DisplayEvent;
-use anyhow::{anyhow, Result};
+use crate::error::RuntimeError;
 use js_sys::{Atomics, Int32Array, SharedArrayBuffer, Uint8Array};
 
 // Layout in SharedArrayBuffer:
@@ -38,7 +38,7 @@ impl SharedRingBuffer {
 
     /// Block until an event is available or timeout occurs.
     /// Timeout is in milliseconds.
-    pub fn blocking_read_timeout(&self, timeout_ms: i32) -> Result<Option<DisplayEvent>> {
+    pub fn blocking_read_timeout(&self, timeout_ms: i32) -> Result<Option<DisplayEvent>, RuntimeError> {
         loop {
             let read_pos = self.read_idx();
             let write_pos = self.write_idx();
@@ -59,7 +59,7 @@ impl SharedRingBuffer {
                         // If ok or not-equal, continue loop to check indices
                         continue;
                     }
-                    Err(e) => return Err(anyhow!("Atomics error: {:?}", e)),
+                    Err(e) => return Err(RuntimeError::AtomicsError(format!("{:?}", e))),
                 }
             }
 
@@ -79,14 +79,14 @@ impl SharedRingBuffer {
             // But strict alignment helps. Let's assume byte alignment.
             let next_read_pos = (read_pos + 4 + len as i32) % (self.capacity as i32);
             Atomics::store(&self.indices, IDX_READ, next_read_pos)
-                .map_err(|e| anyhow!("Atomics store failed: {:?}", e))?;
+                .map_err(|e| RuntimeError::AtomicsStoreError(format!("{:?}", e)))?;
 
             // Notify writer (if it was waiting for space) - optional for unbounded writer?
             // Better to notify.
             Atomics::notify(&self.indices, IDX_READ)
-                .map_err(|e| anyhow!("Atomics notify failed: {:?}", e))?;
+                .map_err(|e| RuntimeError::AtomicsNotifyError(format!("{:?}", e)))?;
 
-            let event: DisplayEvent = bincode::deserialize(&payload)?;
+            let event: DisplayEvent = bincode::deserialize(&payload).map_err(|e| RuntimeError::InitError(format!("Bincode error: {}", e)))?;
             return Ok(Some(event));
         }
     }
@@ -104,8 +104,8 @@ impl SharedRingBuffer {
     }
 
     // Called by Main Thread (Writer)
-    pub fn write(&self, event: &DisplayEvent) -> Result<()> {
-        let payload = bincode::serialize(event)?;
+    pub fn write(&self, event: &DisplayEvent) -> Result<(), RuntimeError> {
+        let payload = bincode::serialize(event).map_err(|e| RuntimeError::InitError(format!("Bincode error: {}", e)))?;
         let len = payload.len() as u32;
         let total_len = 4 + len;
 
@@ -134,7 +134,7 @@ impl SharedRingBuffer {
                 // So we must return error or drop event.
                 // Or spin? Spinning on main thread is bad.
                 // We'll return Error::WouldBlock or simply error.
-                return Err(anyhow!("RingBuffer full"));
+                return Err(RuntimeError::RingBufferFull);
             }
 
             // Write Length
@@ -147,11 +147,11 @@ impl SharedRingBuffer {
             // Update Write Index
             let next_write_pos = (write_pos + 4 + len as i32) % (self.capacity as i32);
             Atomics::store(&self.indices, IDX_WRITE, next_write_pos)
-                .map_err(|e| anyhow!("Atomics store failed: {:?}", e))?;
+                .map_err(|e| RuntimeError::AtomicsStoreError(format!("{:?}", e)))?;
 
             // Notify Reader (Worker)
             Atomics::notify(&self.indices, IDX_WRITE)
-                .map_err(|e| anyhow!("Atomics notify failed: {:?}", e))?;
+                .map_err(|e| RuntimeError::AtomicsNotifyError(format!("{:?}", e)))?;
 
             return Ok(());
         }

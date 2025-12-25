@@ -10,7 +10,7 @@ pub mod ipc;
 use crate::channel::{DriverCommand, EngineCommand, EngineSender};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
-use anyhow::{anyhow, Result};
+use crate::error::RuntimeError;
 use ipc::SharedRingBuffer;
 use js_sys::SharedArrayBuffer;
 use pixelflow_render::color::Rgba;
@@ -59,7 +59,7 @@ impl Clone for WebDisplayDriver {
 impl DisplayDriver for WebDisplayDriver {
     type Pixel = Rgba;
 
-    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self> {
+    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self, RuntimeError> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -68,16 +68,16 @@ impl DisplayDriver for WebDisplayDriver {
         })
     }
 
-    fn send(&self, cmd: DriverCommand<Rgba>) -> Result<()> {
-        self.cmd_tx.send(cmd)?;
+    fn send(&self, cmd: DriverCommand<Rgba>) -> Result<(), RuntimeError> {
+        self.cmd_tx.send(cmd).map_err(|_| RuntimeError::DriverChannelDisconnected)?;
         Ok(())
     }
 
-    fn run(&self) -> Result<()> {
+    fn run(&self) -> Result<(), RuntimeError> {
         let run_state = self
             .run_state
             .as_ref()
-            .ok_or_else(|| anyhow!("Only original driver can run (this is a clone)"))?;
+            .ok_or_else(|| RuntimeError::DriverCloneError)?;
 
         run_event_loop(&run_state.cmd_rx, &run_state.engine_tx)
     }
@@ -88,31 +88,31 @@ impl DisplayDriver for WebDisplayDriver {
 fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Rgba>>,
     engine_tx: &EngineSender<Rgba>,
-) -> Result<()> {
+) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
-    let (window_id, width_px, height_px) = match cmd_rx.recv()? {
+    let (window_id, width_px, height_px) = match cmd_rx.recv().map_err(|_| RuntimeError::DriverChannelDisconnected)? {
         DriverCommand::CreateWindow {
             id,
             width,
             height,
             ..
         } => (id, width, height),
-        other => return Err(anyhow!("Expected CreateWindow, got {:?}", other)),
+        other => return Err(RuntimeError::UnexpectedCommand(format!("{:?}", other))),
     };
 
     // Get web resources from thread-local storage
     let (canvas, sab, scale_factor) = RESOURCES.with(|r| {
         r.borrow_mut()
             .take()
-            .ok_or_else(|| anyhow!("Web resources not initialized. Call init_resources() first."))
+            .ok_or_else(|| RuntimeError::WebResourcesNotInitialized)
     })?;
 
     let context = canvas
         .get_context("2d")
-        .map_err(|_| anyhow!("Failed to get 2d context"))?
-        .ok_or_else(|| anyhow!("Context is null"))?
+        .map_err(|_| RuntimeError::WebContextError)?
+        .ok_or_else(|| RuntimeError::WebContextNull)?
         .dyn_into::<OffscreenCanvasRenderingContext2d>()
-        .map_err(|_| anyhow!("Failed to cast context"))?;
+        .map_err(|_| RuntimeError::WebContextCastError)?;
 
     let ipc = SharedRingBuffer::new(&sab);
 
@@ -153,7 +153,7 @@ impl WebState {
         &mut self,
         cmd_rx: &Receiver<DriverCommand<Rgba>>,
         engine_tx: &EngineSender<Rgba>,
-    ) -> Result<()> {
+    ) -> Result<(), RuntimeError> {
         loop {
             // 1. Poll IPC events (from main thread via SharedArrayBuffer)
             match self.ipc.blocking_read_timeout(16) {
@@ -218,18 +218,18 @@ impl WebState {
         }
     }
 
-    fn handle_present(&mut self, frame: Frame<Rgba>) -> Result<Frame<Rgba>> {
+    fn handle_present(&mut self, frame: Frame<Rgba>) -> Result<Frame<Rgba>, RuntimeError> {
         let data = frame.as_bytes();
         let image_data = ImageData::new_with_u8_clamped_array_and_sh(
             Clamped(data),
             frame.width,
             frame.height,
         )
-        .map_err(|e| anyhow!("Failed to create ImageData: {:?}", e))?;
+        .map_err(|e| RuntimeError::WebImageDataError(format!("{:?}", e)))?;
 
         self.context
             .put_image_data(&image_data, 0.0, 0.0)
-            .map_err(|e| anyhow!("Failed to put image data: {:?}", e))?;
+            .map_err(|e| RuntimeError::WebPutImageError(format!("{:?}", e)))?;
 
         Ok(frame)
     }

@@ -5,7 +5,7 @@
 //! the platform to process events, they can call wake() to interrupt the
 //! platform's event loop and force it to check for pending work.
 
-use anyhow::Result;
+use crate::error::RuntimeError;
 
 /// Trait for waking the platform event loop from background threads.
 ///
@@ -13,13 +13,13 @@ use anyhow::Result;
 /// event queue to interrupt blocking event polls.
 pub trait EventLoopWaker: Send + Sync {
     /// Wake the event loop, causing it to return from blocking poll.
-    fn wake(&self) -> Result<()>;
+    fn wake(&self) -> Result<(), RuntimeError>;
 }
 
 pub struct NoOpWaker;
 
 impl EventLoopWaker for NoOpWaker {
-    fn wake(&self) -> Result<()> {
+    fn wake(&self) -> Result<(), RuntimeError> {
         Ok(())
     }
 }
@@ -103,7 +103,7 @@ mod x11_waker {
     }
 
     impl EventLoopWaker for X11Waker {
-        fn wake(&self) -> Result<()> {
+        fn wake(&self) -> Result<(), RuntimeError> {
             let guard = self.inner.lock().unwrap();
             if let Some(inner) = guard.as_ref() {
                 unsafe {
@@ -157,7 +157,7 @@ mod cocoa_waker {
     }
 
     impl EventLoopWaker for CocoaWaker {
-        fn wake(&self) -> Result<()> {
+        fn wake(&self) -> Result<(), RuntimeError> {
             unsafe {
                 log::trace!("CocoaWaker: Waking up NSApp");
                 let app = NSApplication::shared();
