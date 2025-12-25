@@ -11,7 +11,7 @@ use nix::pty::openpty;
 use nix::sys::signal::{kill, Signal};
 use nix::sys::termios;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{execvp, fork, setsid, ForkResult, Pid}; // Added ForkResult
+use nix::unistd::{execvp, fork, setsid, ForkResult, Pid};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 /// Configuration for spawning a PTY.

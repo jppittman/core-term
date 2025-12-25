@@ -5,7 +5,7 @@ use actor_scheduler::{Actor, ParkHint};
 use std::sync::{Arc, Mutex};
 
 /// A recorded message received by the MockEngine.
-#[derive(Debug)] // Removed Clone as EngineData/Control might not be Clone
+#[derive(Debug)]
 pub enum ReceivedMessage {
     Data(EngineData<PlatformPixel>),
     Control(EngineControl<PlatformPixel>),

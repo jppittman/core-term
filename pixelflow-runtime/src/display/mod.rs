@@ -12,7 +12,7 @@ pub mod driver;
 pub mod drivers;
 pub mod messages;
 
-pub use driver::DriverActor; // Changed from DisplayDriver
+pub use driver::DriverActor;
 pub use messages::DisplayEvent;
 pub use platform::Platform;
 

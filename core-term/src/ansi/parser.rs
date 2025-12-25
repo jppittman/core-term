@@ -4,7 +4,6 @@
 //! Takes individual `AnsiToken`s and accumulates `AnsiCommand`s internally.
 
 // Import necessary items from commands and lexer modules
-// Removed unused EscCommand import
 use super::commands::{AnsiCommand, C0Control};
 use super::lexer::AnsiToken;
 use log::{error, trace, warn};

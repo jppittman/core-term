@@ -11,12 +11,12 @@
 //! is expected to be kept in sync by `TerminalEmulator`.
 
 use std::cmp::min;
-use std::cmp::{max, min as std_min}; // For local min/max, renamed from std::cmp::min
+use std::cmp::{max, min as std_min};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::config::CONFIG;
-use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph}; // Added AttrFlags
+use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
 use crate::term::snapshot::{Point, Selection, SelectionMode, SelectionRange};
 use log::{trace, warn};
 
@@ -1069,9 +1069,9 @@ mod tests {
         Screen,
         ScrollHistory,
         Selection,
-        SelectionMode, // Removed AttrFlags
+        SelectionMode,
         SelectionRange,
-    }; // Added ContentCell
+    };
 
     // Helper function for tests, using a fixed scrollback for test predictability
     // or allowing tests to specify if some need to test scrollback behavior explicitly.
@@ -1479,7 +1479,7 @@ mod tests {
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 5, y: 2 });
         assert!(screen.selection.range.is_some());
-        screen.resize(20, 10); // Removed scrollback limit argument
+        screen.resize(20, 10);
         assert_eq!(screen.selection, Selection::default());
     }
 
