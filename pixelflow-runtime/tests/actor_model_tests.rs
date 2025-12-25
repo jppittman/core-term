@@ -298,38 +298,115 @@ fn fifo_ordering_within_same_lane() {
 }
 
 // ============================================================================
-// Burst Limit Tests
+// Robustness Tests
 // ============================================================================
 
 #[test]
-fn data_burst_limit_enforced() {
-    // Use a small burst limit to verify enforcement
-    let burst_limit = 5;
-    let (tx, mut rx) = ActorScheduler::new(burst_limit, 100);
-    let processed = Arc::new(Mutex::new(Vec::new()));
-    let processed_clone = processed.clone();
+fn mixed_priority_messages_all_delivered() {
+    // Verify that mixing different priority messages doesn't cause loss or corruption.
+    // This prevents bugs where priority switching could skip messages.
+    let (tx, mut rx) = ActorScheduler::new(100, 1000);
+    let counts = Arc::new((
+        AtomicUsize::new(0), // data
+        AtomicUsize::new(0), // control
+        AtomicUsize::new(0), // management
+    ));
+    let counts_clone = counts.clone();
 
     let handle = thread::spawn(move || {
-        let mut actor = SlowActor {
-            delay: Duration::from_millis(1),
-            processed: processed_clone,
-        };
-        rx.run(&mut actor);
+        struct Counter(Arc<(AtomicUsize, AtomicUsize, AtomicUsize)>);
+        impl Actor<i32, i32, i32> for Counter {
+            fn handle_data(&mut self, _: i32) {
+                self.0 .0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn handle_control(&mut self, _: i32) {
+                self.0 .1.fetch_add(1, Ordering::SeqCst);
+            }
+            fn handle_management(&mut self, _: i32) {
+                self.0 .2.fetch_add(1, Ordering::SeqCst);
+            }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
+        }
+        rx.run(&mut Counter(counts_clone));
     });
 
-    // Send more messages than burst limit
-    for i in 0..20 {
-        tx.send(Message::Data(format!("{}", i))).unwrap();
+    // Interleave different priority messages
+    for i in 0..100 {
+        match i % 3 {
+            0 => tx.send(Message::Data(i)).unwrap(),
+            1 => tx.send(Message::Control(i)).unwrap(),
+            _ => tx.send(Message::Management(i)).unwrap(),
+        }
     }
 
-    // Small sleep to allow processing to start
-    thread::sleep(Duration::from_millis(100));
+    // Small delay to ensure messages start processing
+    thread::sleep(Duration::from_millis(10));
     drop(tx);
     handle.join().unwrap();
 
-    // All messages should eventually be processed
-    let messages = processed.lock().unwrap();
-    assert_eq!(messages.len(), 20, "All 20 messages should be processed");
+    // All messages must be delivered (33 or 34 of each type)
+    let (data, ctrl, mgmt) = (
+        counts.0.load(Ordering::SeqCst),
+        counts.1.load(Ordering::SeqCst),
+        counts.2.load(Ordering::SeqCst),
+    );
+    let total = data + ctrl + mgmt;
+
+    assert_eq!(
+        total, 100,
+        "All 100 messages must be processed. Got data={}, ctrl={}, mgmt={}",
+        data, ctrl, mgmt
+    );
+}
+
+#[test]
+fn no_starvation_with_continuous_high_priority() {
+    // Verify that lower priority messages eventually get processed even when
+    // high priority messages keep arriving. This prevents starvation bugs.
+    let (tx, mut rx) = ActorScheduler::new(50, 500);
+    let data_processed = Arc::new(AtomicBool::new(false));
+    let data_clone = data_processed.clone();
+
+    let handle = thread::spawn(move || {
+        struct Tracker {
+            data_processed: Arc<AtomicBool>,
+        }
+        impl Actor<(), (), ()> for Tracker {
+            fn handle_data(&mut self, _: ()) {
+                self.data_processed.store(true, Ordering::SeqCst);
+            }
+            fn handle_control(&mut self, _: ()) {
+                // High priority, but shouldn't starve data
+            }
+            fn handle_management(&mut self, _: ()) {}
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
+        }
+        rx.run(&mut Tracker {
+            data_processed: data_clone,
+        });
+    });
+
+    // Send one data message
+    tx.send(Message::Data(())).unwrap();
+
+    // Flood with control messages
+    for _ in 0..100 {
+        tx.send(Message::Control(())).unwrap();
+    }
+
+    thread::sleep(Duration::from_millis(50));
+    drop(tx);
+    handle.join().unwrap();
+
+    // Data message must have been processed despite control flood
+    assert!(
+        data_processed.load(Ordering::SeqCst),
+        "Data message must not be starved by control messages"
+    );
 }
 
 #[test]
