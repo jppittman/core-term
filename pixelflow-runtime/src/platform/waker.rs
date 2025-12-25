@@ -94,7 +94,9 @@ mod x11_waker {
         /// The display pointer must be valid.
         pub unsafe fn set_target(&self, display: *mut xlib::Display, window: xlib::Window) {
             unsafe {
-                let wake_atom = xlib::XInternAtom(display, c"PIXELFLOW_WAKE".as_ptr(), xlib::False);
+                let wake_atom_name = b"PIXELFLOW_WAKE\0";
+                let wake_atom =
+                    xlib::XInternAtom(display, wake_atom_name.as_ptr() as *const i8, xlib::False);
 
                 let mut guard = get_global_waker().lock().unwrap();
                 *guard = Some(WakerInner {
