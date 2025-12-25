@@ -902,20 +902,31 @@ impl Screen {
                 // In 'Cell' mode, this means the entire line is selected.
                 true
             }
+            SelectionMode::Block => {
+                // For block selection, the selection is a rectangle.
+                // A point is selected if it falls within the bounding box.
+                let min_x = std_min(raw_start.x, raw_end.x);
+                let max_x = max(raw_start.x, raw_end.x);
+                let min_y = std_min(raw_start.y, raw_end.y);
+                let max_y = max(raw_start.y, raw_end.y);
+
+                point.x >= min_x && point.x <= max_x && point.y >= min_y && point.y <= max_y
+            }
         }
     }
 
     /// Retrieves the text content of the current selection.
     ///
-    /// This method currently primarily handles `SelectionMode::Cell` (similar to typical
-    /// terminal "normal" or "stream" selection). Text is ordered logically from the
-    /// selection start to end (top-left to bottom-right after normalization).
+    /// Handles both `SelectionMode::Cell` and `SelectionMode::Block` selection modes.
     ///
-    /// For `SelectionMode::Cell`, it attempts to replicate common terminal behavior regarding
-    /// line endings and the trimming of trailing whitespace from lines that are fully selected
-    /// but are not the last line of the selection.
+    /// For `SelectionMode::Cell` (stream selection), text flows from top-left to bottom-right.
+    /// It attempts to replicate common terminal behavior regarding line endings and the
+    /// trimming of trailing whitespace from lines that are fully selected but are not
+    /// the last line of the selection.
     ///
-    /// Other modes like `Block` selection are not implemented in this function.
+    /// For `SelectionMode::Block` (rectangular selection), a rectangular region is selected
+    /// based on the min/max x coordinates of the selection range, extracting the same
+    /// column range from each row.
     ///
     /// # Returns
     /// An `Option<String>` containing the selected text, or `None` if there's
@@ -1023,29 +1034,31 @@ impl Screen {
                         selected_text_buffer.push('\n');
                     }
                 }
-            } // TODO: Implement Block selection text retrieval if/when that mode is fully supported.
-              // SelectionMode::Block => {
-              //     let min_x = std_min(start_point.x, end_point.x);
-              //     let max_x = max(start_point.x, end_point.x);
+            }
+            SelectionMode::Block => {
+                // For block selection, we take the rectangular region defined by
+                // the min/max x coordinates across all lines.
+                let min_x = std_min(range.start.x, range.end.x);
+                let max_x = max(range.start.x, range.end.x);
 
-              //     for y in norm_start_point.y..=norm_end_point.y {
-              //         if y >= grid_to_use.len() { continue; }
-              //         let current_row_glyphs = &grid_to_use[y];
-              //         let mut current_line_text = String::new();
+                for y in norm_start_point.y..=norm_end_point.y {
+                    if y >= grid_to_use.len() {
+                        continue;
+                    }
+                    let current_row_glyphs = &grid_to_use[y];
 
-              //         for x in min_x..=max_x {
-              //             if x < current_row_glyphs.len() {
-              //                 current_line_text.push(current_row_glyphs[x].c);
-              //             } else {
-              //                 current_line_text.push(' ');
-              //             }
-              //         }
-              //         selected_text_buffer.push_str(&current_line_text);
-              //         if y < norm_end_point.y {
-              //             selected_text_buffer.push('\n');
-              //         }
-              //     }
-              // }
+                    for x in min_x..=max_x {
+                        if x < current_row_glyphs.len() {
+                            selected_text_buffer.push(current_row_glyphs[x].display_char());
+                        } else {
+                            selected_text_buffer.push(' ');
+                        }
+                    }
+                    if y < norm_end_point.y {
+                        selected_text_buffer.push('\n');
+                    }
+                }
+            }
         }
 
         if selected_text_buffer.is_empty() {
@@ -1276,29 +1289,28 @@ mod tests {
         }));
     }
 
-    // Commenting out Block tests as Block mode is not defined
-    // #[test]
-    // fn test_is_selected_block_no_selection() {
-    //     let screen = create_test_screen(10, 5);
-    //     assert!(!screen.is_selected(Point { x: 1, y: 1 }));
-    // }
+    #[test]
+    fn test_is_selected_block_no_selection() {
+        let screen = create_test_screen(10, 5);
+        assert!(!screen.is_selected(Point { x: 1, y: 1 }));
+    }
 
-    // #[test]
-    // fn test_is_selected_block_simple() {
-    //     let mut screen = create_test_screen(10, 5);
-    //     screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
-    //     screen.update_selection(Point { x: 3, y: 3 });
-    //     assert!(screen.is_selected(Point { x: 2, y: 2 }));
-    //     assert!(!screen.is_selected(Point { x: 0, y: 2 }));
-    // }
+    #[test]
+    fn test_is_selected_block_simple() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 3, y: 3 });
+        assert!(screen.is_selected(Point { x: 2, y: 2 }));
+        assert!(!screen.is_selected(Point { x: 0, y: 2 }));
+    }
 
-    // #[test]
-    // fn test_is_selected_block_reverse_points() {
-    //     let mut screen = create_test_screen(10, 5);
-    //     screen.start_selection(Point { x: 3, y: 3 }, SelectionMode::Block);
-    //     screen.update_selection(Point { x: 1, y: 1 });
-    //     assert!(screen.is_selected(Point { x: 2, y: 2 }));
-    // }
+    #[test]
+    fn test_is_selected_block_reverse_points() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 3, y: 3 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 1, y: 1 });
+        assert!(screen.is_selected(Point { x: 2, y: 2 }));
+    }
 
     #[test]
     fn test_get_selected_text_normal_no_selection() {
@@ -1412,66 +1424,71 @@ mod tests {
         assert_eq!(screen.get_selected_text(), Some("aa\nbb".to_string()));
     }
 
-    // Commenting out Block tests as Block mode is not defined
-    // #[test]
-    // fn test_get_selected_text_block_no_selection() {
-    //     let mut screen = create_test_screen(10, 5);
-    //     screen.selection.mode = SelectionMode::Block;
-    //     assert_eq!(screen.get_selected_text(), None);
-    // }
+    #[test]
+    fn test_get_selected_text_block_no_selection() {
+        let mut screen = create_test_screen(10, 5);
+        screen.selection.mode = SelectionMode::Block;
+        assert_eq!(screen.get_selected_text(), None);
+    }
 
-    // #[test]
-    // fn test_get_selected_text_block_simple() {
-    //     let mut screen = create_test_screen(5, 4);
-    //     fill_screen_with_pattern(&mut screen);
-    //     screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
-    //     screen.update_selection(Point { x: 3, y: 2 });
-    //     assert_eq!(screen.get_selected_text(), Some("bcd\ncde\ndef".to_string()));
-    // }
+    #[test]
+    fn test_get_selected_text_block_simple() {
+        let mut screen = create_test_screen(5, 4);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 3, y: 2 });
+        assert_eq!(screen.get_selected_text(), Some("bcd\ncde\ndef".to_string()));
+    }
 
-    // #[test]
-    // fn test_get_selected_text_block_reversed_points() {
-    //     let mut screen = create_test_screen(5, 4);
-    //     fill_screen_with_pattern(&mut screen);
-    //     screen.start_selection(Point { x: 3, y: 2 }, SelectionMode::Block);
-    //     screen.update_selection(Point { x: 1, y: 0 });
-    //     assert_eq!(screen.get_selected_text(), Some("bcd\ncde\ndef".to_string()));
-    // }
+    #[test]
+    fn test_get_selected_text_block_reversed_points() {
+        let mut screen = create_test_screen(5, 4);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 3, y: 2 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 1, y: 0 });
+        assert_eq!(screen.get_selected_text(), Some("bcd\ncde\ndef".to_string()));
+    }
 
-    // #[test]
-    // fn test_get_selected_text_block_one_column() {
-    //     let mut screen = create_test_screen(5, 4);
-    //     fill_screen_with_pattern(&mut screen);
-    //     screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
-    //     screen.update_selection(Point { x: 1, y: 2 });
-    //     assert_eq!(screen.get_selected_text(), Some("b\nc\nd".to_string()));
-    // }
+    #[test]
+    fn test_get_selected_text_block_one_column() {
+        let mut screen = create_test_screen(5, 4);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 1, y: 2 });
+        assert_eq!(screen.get_selected_text(), Some("b\nc\nd".to_string()));
+    }
 
-    // #[test]
-    // fn test_get_selected_text_block_one_row() {
-    //     let mut screen = create_test_screen(5, 4);
-    //     fill_screen_with_pattern(&mut screen);
-    //     screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
-    //     screen.update_selection(Point { x: 3, y: 1 });
-    //     assert_eq!(screen.get_selected_text(), Some("cde".to_string()));
-    // }
+    #[test]
+    fn test_get_selected_text_block_one_row() {
+        let mut screen = create_test_screen(5, 4);
+        fill_screen_with_pattern(&mut screen);
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 3, y: 1 });
+        assert_eq!(screen.get_selected_text(), Some("cde".to_string()));
+    }
 
-    // #[test]
-    // fn test_get_selected_text_block_beyond_line_length() {
-    //     let mut screen = create_test_screen(3, 2);
-    //     screen.grid[0][0] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
-    //     screen.grid[0][1] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-    //     screen.grid[0][2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-    //     screen.grid[1][0] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
-    //     screen.grid[1][1] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-    //     screen.grid[1][2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-    //     screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
-    //     screen.update_selection(Point { x: 1, y: 1 });
-    //     assert_eq!(screen.get_selected_text(), Some("a \nb ".to_string()));
-    //     screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
-    //     screen.update_selection(Point { x: 2, y: 1 });
-    //     assert_eq!(screen.get_selected_text(), Some("a  \nb  ".to_string()));
-    // }
+    #[test]
+    fn test_get_selected_text_block_beyond_line_length() {
+        let mut screen = create_test_screen(3, 2);
+        {
+            let row0 = Arc::make_mut(&mut screen.grid[0]);
+            row0[0] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
+            row0[1] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row0[2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        }
+        {
+            let row1 = Arc::make_mut(&mut screen.grid[1]);
+            row1[0] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
+            row1[1] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row1[2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+        }
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 1, y: 1 });
+        assert_eq!(screen.get_selected_text(), Some("a \nb ".to_string()));
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 2, y: 1 });
+        assert_eq!(screen.get_selected_text(), Some("a  \nb  ".to_string()));
+    }
 
     #[test]
     fn test_selection_cleared_on_resize() {
