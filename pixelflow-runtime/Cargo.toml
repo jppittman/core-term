@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 # Core dependencies
 log = "0.4"
-thiserror = "1.0"
 once_cell = "1.19"
 bitflags = { version = "2.4", features = ["serde"] }
 
