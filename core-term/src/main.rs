@@ -1,21 +1,8 @@
 // In src/main.rs
 
-//! Main entry point and module declarations for `core-term`.
+//! Main entry point for `core-term`.
 
-// Declare modules
-pub mod ansi;
-pub mod color;
-pub mod config;
-pub mod glyph;
-pub mod io;
-pub mod keys;
-pub mod messages;
-pub mod surface;
-pub mod term;
-pub mod terminal_app;
-
-// Use statements for items needed in main.rs
-use crate::config::CONFIG;
+use core_term::config::CONFIG;
 use anyhow::Context;
 use log::{info, warn};
 
@@ -173,7 +160,7 @@ fn main() -> anyhow::Result<()> {
 
     info!("Shell command: '{}', args: {:?}", shell_command, shell_args);
 
-    use crate::term::TerminalEmulator;
+    use core_term::term::TerminalEmulator;
 
     let term_cols = CONFIG.appearance.columns as usize;
     let term_rows = CONFIG.appearance.rows as usize;
@@ -216,16 +203,16 @@ fn main() -> anyhow::Result<()> {
     let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
 
     {
-        use crate::io::event_monitor_actor::EventMonitorActor;
-        use crate::io::pty::{NixPty, PtyConfig};
-        use crate::terminal_app::spawn_terminal_app;
+        use core_term::io::event_monitor_actor::EventMonitorActor;
+        use core_term::io::pty::{NixPty, PtyConfig};
+        use core_term::terminal_app::spawn_terminal_app;
 
         // Spawn terminal app with engine handle
         let (app_handle, _app_thread_handle) = spawn_terminal_app(
             term_emulator,
             pty_write_tx,
             pty_cmd_rx,
-            crate::config::Config::default(),
+            core_term::config::Config::default(),
             engine_handle,
         )
         .context("Failed to spawn terminal app")?;
