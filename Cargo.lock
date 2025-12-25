@@ -766,7 +766,6 @@ dependencies = [
  "log",
  "pixelflow-core",
  "serde",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -792,7 +791,6 @@ dependencies = [
  "pkg-config",
  "serde",
  "serde-wasm-bindgen",
- "thiserror 1.0.69",
  "wasm-bindgen",
  "web-sys",
  "x11",
