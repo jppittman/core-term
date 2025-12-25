@@ -577,6 +577,12 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                     keep_working = true;
                 }
 
+                // Check control between management and data for rough priority
+                while let Ok(ctrl_msg) = self.rx_control.try_recv() {
+                    actor.handle_control(ctrl_msg);
+                    keep_working = true;
+                }
+
                 let mut data_count = 0;
                 while data_count < self.data_burst_limit {
                     match self.rx_data.try_recv() {
