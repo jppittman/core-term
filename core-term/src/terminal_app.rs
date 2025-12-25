@@ -56,13 +56,17 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
     fn handle_control(&mut self, ctrl: EngineEventControl) {
         match ctrl {
             EngineEventControl::Resize(width_px, height_px) => {
-                let cell_width = self._config.appearance.cell_width_px;
-                let cell_height = self._config.appearance.cell_height_px;
-                if cell_width > 0 && cell_height > 0 {
-                    let cols = width_px as usize / cell_width;
-                    let rows = height_px as usize / cell_height;
-                    self._emulator.resize(cols, rows);
-                }
+                use crate::term::{ControlEvent, EmulatorInput, TerminalInterface};
+                // Convert u32 pixels to u16 for ControlEvent
+                // Saturate at u16::MAX to prevent overflow panics
+                let width_u16 = width_px.min(u16::MAX as u32) as u16;
+                let height_u16 = height_px.min(u16::MAX as u32) as u16;
+
+                let input = EmulatorInput::Control(ControlEvent::Resize {
+                    width_px: width_u16,
+                    height_px: height_u16,
+                });
+                self._emulator.interpret_input(input);
             }
             EngineEventControl::CloseRequested => {
                 // Handle close request?
@@ -76,15 +80,29 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
 
     fn handle_management(&mut self, mgmt: EngineEventManagement) {
         match mgmt {
-            EngineEventManagement::KeyDown {
-                key: _,
-                mods: _,
-                text,
-            } => {
-                if let Some(txt) = text {
-                    // Forward text to PTY
-                    if let Err(e) = self._pty_tx.send(txt.into_bytes()) {
-                        log::warn!("Failed to send input to PTY: {}", e);
+            EngineEventManagement::KeyDown { key, mods, text } => {
+                use crate::term::{EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction};
+
+                let input = EmulatorInput::User(UserInputAction::KeyInput {
+                    symbol: key,
+                    modifiers: mods,
+                    text,
+                });
+
+                if let Some(action) = self._emulator.interpret_input(input) {
+                    match action {
+                        EmulatorAction::WritePty(bytes) => {
+                            if let Err(e) = self._pty_tx.send(bytes) {
+                                log::warn!("Failed to send input to PTY: {}", e);
+                            }
+                        }
+                        EmulatorAction::Quit => {
+                            // Handle quit
+                            // self._engine_tx.send(...)
+                        }
+                        _ => {
+                            // Handle other actions (e.g., paste, copy, etc.) if necessary
+                        }
                     }
                 }
             }
@@ -173,32 +191,22 @@ mod tests {
         let (mut app, _pty_rx, _cmd_tx, _) = create_test_app();
 
         // Initial size is 80x24
-        assert_eq!(app._emulator.dimensions(), (80, 24));
+        use crate::term::TerminalInterface;
+        let snapshot_initial = app._emulator.get_render_snapshot().expect("Snapshot");
+        assert_eq!(snapshot_initial.dimensions, (80, 24));
 
-        // Send resize event (assuming cells for now, or pixels that map to cells)
-        // Note: EngineEventControl::Resize usually sends window pixels.
-        // TerminalApp needs to convert.
-        // For this test, let's assume we implement logic that eventually resizes the emulator.
-        // To make the test meaningful, we should check if _emulator.dimensions() changes.
-
-        // Simulating a resize that results in 100x30 cells.
-        // We'll pass raw pixels, and inside handle_control we'll need to use config.cell_width/height.
-        // Config defaults are likely 0 or something unless we set them.
-        // Config::default() -> defaults.
-
-        // Let's assume standard cell size 10x20
-        // Resize(1000, 600) -> 100x30
-        let resize_event = EngineEventControl::Resize(1000, 600);
+        // Send resize event
+        // Default config: cell width 10, height 16.
+        // Resize to 1000x800 -> 100x50 cells.
+        let resize_event = EngineEventControl::Resize(1000, 800);
         app.handle_control(resize_event);
 
-        // Since handle_control is empty, this will remain 80x24.
-        // We ASSERT that it CHANGED to prove it fails.
-        // If it passes, it means it didn't change (if we asserted eq).
-        // We want to prove the implementation is missing.
-        assert_ne!(
-            app._emulator.dimensions(),
-            (80, 24),
-            "Emulator should have resized"
+        // Verify resize via snapshot
+        let snapshot_new = app._emulator.get_render_snapshot().expect("Snapshot");
+        assert_eq!(
+            snapshot_new.dimensions,
+            (100, 50),
+            "Emulator should have resized to 100x50"
         );
     }
 
