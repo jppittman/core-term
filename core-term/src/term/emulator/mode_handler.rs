@@ -7,7 +7,7 @@ use crate::{
     term::{
         action::EmulatorAction,
         charset::CharacterSet,
-        modes::{DecModeConstant, Mode},
+        modes::{DecModeConstant, Mode, ModeAction, StandardModeConstant},
     },
 };
 use log::{trace, warn};
@@ -77,14 +77,15 @@ impl TerminalEmulator {
     pub(super) fn handle_set_mode(
         &mut self,
         mode_type: Mode,
-        enable: bool,
+        action: ModeAction,
     ) -> Option<EmulatorAction> {
         self.cursor_wrap_next = false;
         let mut action_to_return = None;
+        let enable = action == ModeAction::Enable;
 
         match mode_type {
             Mode::DecPrivate(mode_num) => {
-                trace!("Setting DEC Private Mode {} to {}", mode_num, enable);
+                trace!("Setting DEC Private Mode {} to {:?}", mode_num, action);
                 match DecModeConstant::from_u16(mode_num) {
                     Some(DecModeConstant::CursorKeys) => {
                         self.dec_modes.cursor_keys_app_mode = enable
@@ -222,20 +223,22 @@ impl TerminalEmulator {
                     }
                 }
             }
-            Mode::Standard(mode_num) => match mode_num {
-                4 => {
-                    self.dec_modes.insert_mode = enable;
+            Mode::Standard(mode_num) => {
+                match StandardModeConstant::from_u16(mode_num) {
+                    Some(StandardModeConstant::InsertMode) => {
+                        self.dec_modes.insert_mode = enable;
+                    }
+                    Some(StandardModeConstant::LinefeedNewlineMode) => {
+                        self.dec_modes.linefeed_newline_mode = enable;
+                    }
+                    None => {
+                        warn!(
+                            "Standard mode {} set/reset to {} - not fully implemented yet.",
+                            mode_num, enable
+                        );
+                    }
                 }
-                20 => {
-                    self.dec_modes.linefeed_newline_mode = enable;
-                }
-                _ => {
-                    warn!(
-                        "Standard mode {} set/reset to {} - not fully implemented yet.",
-                        mode_num, enable
-                    );
-                }
-            },
+            }
         }
         action_to_return
     }
