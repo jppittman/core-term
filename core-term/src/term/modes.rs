@@ -199,6 +199,38 @@ impl Default for DecPrivateModes {
     }
 }
 
+/// Represents the action to take on a mode (set or reset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeAction {
+    /// Enable/set the mode.
+    Enable,
+    /// Disable/reset the mode.
+    Disable,
+}
+
+/// Defines specific standard mode numbers used in SM/RM sequences.
+/// These modes control general terminal behavior (as opposed to DEC private modes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum StandardModeConstant {
+    /// Insert Mode (IRM). When enabled, characters are inserted at the cursor instead of overwriting.
+    InsertMode = 4,
+    /// Linefeed/Newline Mode (LNM). When enabled, LF also moves cursor to the next line.
+    LinefeedNewlineMode = 20,
+}
+
+impl StandardModeConstant {
+    /// Converts a `u16` value to an `Option<StandardModeConstant>`.
+    /// Returns `None` if the value does not correspond to a known constant.
+    pub fn from_u16(value: u16) -> Option<Self> {
+        match value {
+            4 => Some(StandardModeConstant::InsertMode),
+            20 => Some(StandardModeConstant::LinefeedNewlineMode),
+            _ => None,
+        }
+    }
+}
+
 /// Represents the type of mode being set or reset by SM/RM sequences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
