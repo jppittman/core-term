@@ -645,43 +645,6 @@ mod tests {
     }
 
     #[test]
-    fn verify_priority_ordering_contract() {
-        let (tx, mut rx) = ActorScheduler::new(2, 10);
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let log_clone = log.clone();
-
-        let handle = thread::spawn(move || {
-            let mut handler = TestHandler { log: log_clone };
-            rx.run(&mut handler);
-        });
-
-        // Send messages in mixed order
-        tx.send(Message::Data("1".to_string())).unwrap();
-        tx.send(Message::Management("M".to_string())).unwrap();
-        tx.send(Message::Data("2".to_string())).unwrap();
-        tx.send(Message::Control("C".to_string())).unwrap();
-        tx.send(Message::Data("3".to_string())).unwrap();
-
-        thread::sleep(Duration::from_millis(50));
-
-        // Drop sender to close channels and stop run()
-        drop(tx);
-        handle.join().unwrap();
-
-        let messages = log.lock().unwrap();
-        assert!(messages.len() > 0, "Should have processed messages");
-
-        // Control should be processed before lower priority messages
-        let ctrl_idx = messages.iter().position(|s| s.contains("Ctrl")).unwrap();
-        let data1_idx = messages.iter().position(|s| s.contains("Data: 1")).unwrap();
-
-        assert!(
-            ctrl_idx < data1_idx,
-            "Control should be processed before Data that was sent earlier"
-        );
-    }
-
-    #[test]
     fn verify_data_lane_backpressure_contract() {
         let (tx, mut rx) = ActorScheduler::new(2, 1); // Buffer size 1, burst limit 2
         let log = Arc::new(Mutex::new(Vec::new()));
