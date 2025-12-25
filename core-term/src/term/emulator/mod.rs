@@ -107,12 +107,12 @@ impl TerminalEmulator {
         }
     }
 
-    pub(super) fn dimensions(&self) -> (usize, usize) {
+    pub fn dimensions(&self) -> (usize, usize) {
         (self.screen.width, self.screen.height)
     }
 
     /// Resizes the terminal display grid.
-    pub(super) fn resize(&mut self, cols: usize, rows: usize) {
+    pub fn resize(&mut self, cols: usize, rows: usize) {
         self.cursor_wrap_next = false;
         // Screen::resize now gets scrollback_limit from CONFIG
         self.screen.resize(cols, rows);
