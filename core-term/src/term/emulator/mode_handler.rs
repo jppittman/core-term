@@ -10,6 +10,7 @@ use crate::{
         modes::{DecModeConstant, Mode, ModeAction, StandardModeConstant},
     },
 };
+use crate::term::screen::AltScreenClear;
 use log::{trace, warn};
 
 impl TerminalEmulator {
@@ -114,9 +115,13 @@ impl TerminalEmulator {
                             );
                             return None;
                         }
-                        let clear_on_entry = mode_num
-                            == DecModeConstant::AltScreenBufferClear as u16
-                            || mode_num == DecModeConstant::AltScreenBufferSaveRestore as u16;
+                        let clear_mode = if mode_num == DecModeConstant::AltScreenBufferClear as u16
+                            || mode_num == DecModeConstant::AltScreenBufferSaveRestore as u16
+                        {
+                            AltScreenClear::Clear
+                        } else {
+                            AltScreenClear::Preserve
+                        };
 
                         if enable {
                             if !self.dec_modes.using_alt_screen {
@@ -126,7 +131,7 @@ impl TerminalEmulator {
                                 }
                                 self.screen.default_attributes =
                                     self.cursor_controller.attributes();
-                                self.screen.enter_alt_screen(clear_on_entry);
+                                self.screen.enter_alt_screen(clear_mode);
                                 self.dec_modes.using_alt_screen = true;
                                 self.cursor_controller.move_to_logical(
                                     0,
