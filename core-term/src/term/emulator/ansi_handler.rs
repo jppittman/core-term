@@ -8,7 +8,7 @@ use crate::{
         charset::CharacterSet,
         cursor::CursorShape,
         emulator::FocusState,
-        modes::{EraseMode, Mode},
+        modes::{EraseMode, Mode, ModeAction},
         screen::TabClearMode,
     },
 };
@@ -171,16 +171,16 @@ pub(super) fn process_ansi_command(
                 None
             }
             CsiCommand::SetMode(mode_num) => {
-                emulator.handle_set_mode(Mode::Standard(mode_num), true) // Call as method
+                emulator.handle_set_mode(Mode::Standard(mode_num), ModeAction::Enable)
             }
             CsiCommand::ResetMode(mode_num) => {
-                emulator.handle_set_mode(Mode::Standard(mode_num), false) // Call as method
+                emulator.handle_set_mode(Mode::Standard(mode_num), ModeAction::Disable)
             }
             CsiCommand::SetModePrivate(mode_num) => {
-                emulator.handle_set_mode(Mode::DecPrivate(mode_num), true) // Call as method
+                emulator.handle_set_mode(Mode::DecPrivate(mode_num), ModeAction::Enable)
             }
             CsiCommand::ResetModePrivate(mode_num) => {
-                emulator.handle_set_mode(Mode::DecPrivate(mode_num), false) // Call as method
+                emulator.handle_set_mode(Mode::DecPrivate(mode_num), ModeAction::Disable)
             }
             CsiCommand::DeviceStatusReport(dsr_param) => {
                 if dsr_param == 0 || dsr_param == 6 {
