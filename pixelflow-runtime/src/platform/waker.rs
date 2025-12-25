@@ -34,7 +34,7 @@ pub use x11_waker::X11Waker;
 mod x11_waker {
     use super::*;
     use std::mem;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Mutex, OnceLock};
     use x11::xlib;
 
     /// Inner state for X11Waker, populated once window exists.
@@ -49,6 +49,13 @@ mod x11_waker {
     unsafe impl Send for WakerInner {}
     unsafe impl Sync for WakerInner {}
 
+    /// Global Waker state shared by all X11Waker instances.
+    static GLOBAL_WAKER: OnceLock<Mutex<Option<WakerInner>>> = OnceLock::new();
+
+    fn get_global_waker() -> &'static Mutex<Option<WakerInner>> {
+        GLOBAL_WAKER.get_or_init(|| Mutex::new(None))
+    }
+
     /// X11 implementation of EventLoopWaker using XSendEvent.
     ///
     /// Posts a ClientMessage event to the window's event queue, waking the
@@ -57,8 +64,12 @@ mod x11_waker {
     /// The waker starts empty and is initialized by `set_target()` once the
     /// X11 window is created. Before initialization, `wake()` is a no-op.
     #[derive(Clone)]
-    pub struct X11Waker {
-        inner: Arc<Mutex<Option<WakerInner>>>,
+    pub struct X11Waker;
+
+    impl actor_scheduler::WakeHandler for X11Waker {
+        fn wake(&self) {
+            let _ = <Self as EventLoopWaker>::wake(self);
+        }
     }
 
     impl Default for X11Waker {
@@ -72,9 +83,7 @@ mod x11_waker {
         ///
         /// Call `set_target()` once the X11 window is created.
         pub fn new() -> Self {
-            Self {
-                inner: Arc::new(Mutex::new(None)),
-            }
+            Self
         }
 
         /// Initialize the waker with the X11 display and window.
@@ -87,7 +96,7 @@ mod x11_waker {
             unsafe {
                 let wake_atom = xlib::XInternAtom(display, c"PIXELFLOW_WAKE".as_ptr(), xlib::False);
 
-                let mut guard = self.inner.lock().unwrap();
+                let mut guard = get_global_waker().lock().unwrap();
                 *guard = Some(WakerInner {
                     display,
                     window,
@@ -98,13 +107,26 @@ mod x11_waker {
 
         /// Get the wake atom for filtering in the event loop.
         pub fn wake_atom(&self) -> Option<xlib::Atom> {
-            self.inner.lock().unwrap().as_ref().map(|i| i.wake_atom)
+            get_global_waker()
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|i| i.wake_atom)
+        }
+
+        /// Clear the target display/window.
+        ///
+        /// Call this before destroying the X11 Display to prevent use-after-free
+        /// if wake() is called during shutdown.
+        pub fn clear() {
+            let mut guard = get_global_waker().lock().unwrap();
+            *guard = None;
         }
     }
 
     impl EventLoopWaker for X11Waker {
         fn wake(&self) -> Result<()> {
-            let guard = self.inner.lock().unwrap();
+            let guard = get_global_waker().lock().unwrap();
             if let Some(inner) = guard.as_ref() {
                 unsafe {
                     let mut event: xlib::XClientMessageEvent = mem::zeroed();
