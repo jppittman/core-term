@@ -106,8 +106,17 @@ impl MacWindow {
         }
     }
 
-    pub fn set_cursor(&mut self, _icon: crate::api::public::CursorIcon) {
-        // TODO: Implement set_cursor
+    pub fn set_cursor(&mut self, icon: crate::api::public::CursorIcon) {
+        use crate::api::public::CursorIcon;
+        unsafe {
+            let cursor_class = sys::class(b"NSCursor\0");
+            let cursor: Id = match icon {
+                CursorIcon::Default => sys::send(cursor_class, sys::sel(b"arrowCursor\0")),
+                CursorIcon::Pointer => sys::send(cursor_class, sys::sel(b"pointingHandCursor\0")),
+                CursorIcon::Text => sys::send(cursor_class, sys::sel(b"IBeamCursor\0")),
+            };
+            sys::send::<()>(cursor, sys::sel(b"set\0"));
+        }
     }
 
     pub fn set_visible(&mut self, visible: bool) {
