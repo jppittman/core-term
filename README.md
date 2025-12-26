@@ -45,7 +45,7 @@ PixelFlow answers three questions:
 
 ## The Manifold Abstraction
 
-Everything in PixelFlow is a `Manifold`—a function from 4D coordinates to a value:
+Everything in PixelFlow is a `Manifold`—a functor from 4D coordinates to a value:
 
 ```rust
 trait Manifold<Input = Field> {
@@ -54,22 +54,26 @@ trait Manifold<Input = Field> {
 }
 ```
 
-This single abstraction enables:
-- **Coordinate warping** (camera movement, distortion)
+`Manifold` is a true functor: a structure-preserving map that respects composition. You can build arbitrarily complex manifolds by composing simpler ones, and the type system optimizes the entire composition into fused SIMD code.
+
+This enables:
+- **Coordinate transformation** (warping, camera movement, distortion)
 - **Rendering** (colors, textures, signed distance fields)
-- **Simulation** (fractals, iterative systems via the `Fix` combinator)
+- **Simulation** (fractals, iterative systems, time-based animation)
 - **Automatic differentiation** (gradients for antialiasing, normals, ray marching)
 
-## The Six Eigenshaders
+## Common Composition Patterns
 
-All graphics in PixelFlow compose from six primitives:
+In practice, most PixelFlow graphics compose from a few recurring patterns (though the system is not limited to them):
 
-1. **Warp** — Remap coordinates before sampling
+1. **Warp** — Remap coordinates before sampling a manifold
 2. **Grade** — Linear transform on values (matrix + bias)
 3. **Lerp** — Smooth interpolation between two manifolds
-4. **Select** — Branchless conditional (discrete choice)
-5. **Fix** — Iteration as a dimension (fractals, feedback systems)
-6. **Compute** — Escape hatch (any closure is a Manifold)
+4. **Select** — Branchless conditional (discrete choice via lane masks)
+5. **Fix** — Iteration as a coordinate dimension (for Mandelbrot, raymarching, animation)
+6. **Compute** — Direct closure (escape hatch for opaque computation)
+
+These patterns compose freely. Any manifold can be built from combinations of simpler ones.
 
 ## Performance
 
