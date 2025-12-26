@@ -12,7 +12,9 @@ use crate::Field;
 ///
 /// The `I` type parameter represents the input coordinate type.
 /// By default it's `Field`, but can be `Jet2` for automatic differentiation.
-pub trait Manifold<I: crate::numeric::Numeric = Field>: Send + Sync {
+/// The bound is `Computational`, which provides arithmetic operators and
+/// constant creation methods (`from_f32`, `sequential`).
+pub trait Manifold<I: crate::numeric::Computational = Field>: Send + Sync {
     /// The type this manifold produces when evaluated.
     type Output;
 
@@ -20,8 +22,8 @@ pub trait Manifold<I: crate::numeric::Numeric = Field>: Send + Sync {
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output;
 }
 
-// Scalar constants are manifolds - they promote to the input Numeric type
-impl<I: crate::numeric::Numeric> Manifold<I> for f32 {
+// Scalar constants are manifolds - they promote to the input Computational type
+impl<I: crate::numeric::Computational> Manifold<I> for f32 {
     type Output = I;
     #[inline(always)]
     fn eval_raw(&self, _x: I, _y: I, _z: I, _w: I) -> I {
@@ -29,6 +31,7 @@ impl<I: crate::numeric::Numeric> Manifold<I> for f32 {
     }
 }
 
+// i32 needs Numeric for from_i32 (internal use)
 impl<I: crate::numeric::Numeric> Manifold<I> for i32 {
     type Output = I;
     #[inline(always)]
@@ -37,7 +40,7 @@ impl<I: crate::numeric::Numeric> Manifold<I> for i32 {
     }
 }
 
-// Field is a constant manifold - promotes to the input Numeric type
+// Field needs Numeric for from_field (internal use)
 impl<I: crate::numeric::Numeric> Manifold<I> for Field {
     type Output = I;
     #[inline(always)]

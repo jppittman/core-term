@@ -2,7 +2,18 @@
 //!
 //! AST nodes for comparisons: Lt, Gt, Le, Ge (hard thresholds)
 //! and SoftLt, SoftGt, SoftSelect (sigmoid-smooth for Jet2 gradients).
+//!
+//! ## Automatic Optimization
+//!
+//! When used with `Select`, comparison operations automatically use native
+//! mask registers (k-registers on AVX-512) without any extra work:
+//!
+//! ```ignore
+//! // This automatically uses native masks - no manual optimization needed!
+//! Select { cond: Lt(a, b), if_true, if_false }
+//! ```
 
+use crate::numeric::Computational;
 use crate::{Jet2, Manifold};
 
 // ============================================================================
@@ -25,17 +36,8 @@ pub struct Le<L, R>(pub L, pub R);
 #[derive(Clone, Copy, Debug)]
 pub struct Ge<L, R>(pub L, pub R);
 
-/// Hard select: returns if_true where mask != 0, else if_false.
-/// Always returns Field (for final pixel evaluation).
-#[derive(Clone, Copy, Debug)]
-pub struct Select<Mask, IfTrue, IfFalse> {
-    /// The condition mask.
-    pub mask: Mask,
-    /// Value when condition is true.
-    pub if_true: IfTrue,
-    /// Value when condition is false.
-    pub if_false: IfFalse,
-}
+// Select is defined in combinators/select.rs with early-exit optimization.
+// Use `pixelflow_core::Select` from there.
 
 impl<L, R, I> Manifold<I> for Lt<L, R>
 where
@@ -89,23 +91,6 @@ where
     }
 }
 
-// Select always returns Field
-impl<Mask, IfTrue, IfFalse, I> Manifold<I> for Select<Mask, IfTrue, IfFalse>
-where
-    I: crate::numeric::Numeric,
-    Mask: Manifold<I, Output = I>,
-    IfTrue: Manifold<I, Output = I>,
-    IfFalse: Manifold<I, Output = I>,
-{
-    type Output = I;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        let mask_val = self.mask.eval_raw(x, y, z, w);
-        let true_val = self.if_true.eval_raw(x, y, z, w);
-        let false_val = self.if_false.eval_raw(x, y, z, w);
-        I::select(mask_val, true_val, false_val)
-    }
-}
 
 // ============================================================================
 // Bitwise ops for chaining comparisons: X.ge(0) & X.le(1)
@@ -193,8 +178,6 @@ where
     type Output = Jet2;
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
-        use crate::numeric::Numeric;
-
         let left_val = self.left.eval_raw(x, y, z, w);
         let right_val = self.right.eval_raw(x, y, z, w);
         let diff = left_val - right_val;
@@ -219,8 +202,6 @@ where
     type Output = Jet2;
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
-        use crate::numeric::Numeric;
-
         let left_val = self.left.eval_raw(x, y, z, w);
         let right_val = self.right.eval_raw(x, y, z, w);
         let diff = right_val - left_val; // Reversed for Lt

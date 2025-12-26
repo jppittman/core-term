@@ -101,8 +101,8 @@ impl Manifold for Texture {
         let max_y = Field::from((self.height - 1) as f32);
 
         // Floor first to get integer pixel coords, then clamp
-        let x_idx = x.floor().field_max(zero).field_min(max_x);
-        let y_idx = y.floor().field_max(zero).field_min(max_y);
+        let x_idx = x.floor().max(zero).min(max_x);
+        let y_idx = y.floor().max(zero).min(max_y);
 
         // Linear index = y * width + x
         let indices = y_idx * w + x_idx;

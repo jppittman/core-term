@@ -8,7 +8,7 @@
 
 use pixelflow_core::{materialize_discrete, PARALLELISM};
 use pixelflow_graphics::fonts::{Font, Text};
-use pixelflow_graphics::fonts::ttf::{Curve, Line, Segment, Sum, Threshold};
+use pixelflow_graphics::fonts::ttf::{Geometry, Line};
 use pixelflow_graphics::render::color::{Lift, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 use std::sync::Arc;
@@ -22,74 +22,106 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 /// Test that SIMD mask AND works correctly (bug: using `*` gave NaN).
 ///
 /// This test creates a simple square and verifies that points inside
-/// have coverage=1 and points outside have coverage=0.
+/// have high coverage and points outside have low coverage.
+/// Note: With analytical AA, coverage is smooth 0.0-1.0, not hard 0/1.
 #[test]
 fn regression_mask_and_not_multiply() {
     // Create a 400x400 square from (100,100) to (500,500)
-    // Use Sum<Segment> for winding accumulation, then Threshold for non-zero rule
-    let segments: Vec<Segment> = vec![
-        Segment::Line(Curve([[100.0, 100.0], [500.0, 100.0]])), // bottom
-        Segment::Line(Curve([[500.0, 100.0], [500.0, 500.0]])), // right
-        Segment::Line(Curve([[500.0, 500.0], [100.0, 500.0]])), // top
-        Segment::Line(Curve([[100.0, 500.0], [100.0, 100.0]])), // left
+    // Use Geometry with lines (which now produce smooth AA coverage)
+    let lines: Vec<Line> = vec![
+        Line::new([[100.0, 100.0], [500.0, 100.0]]), // bottom
+        Line::new([[500.0, 100.0], [500.0, 500.0]]), // right
+        Line::new([[500.0, 500.0], [100.0, 500.0]]), // top
+        Line::new([[100.0, 500.0], [100.0, 100.0]]), // left
     ];
-    let shape = Threshold(Sum(Arc::from(segments.into_boxed_slice())));
-    let lifted = Lift(shape);
+    let geo = Geometry {
+        lines: Arc::from(lines),
+        quads: Arc::from(vec![]),
+    };
+    let lifted = Lift(geo);
 
-    // Test center (should be inside, coverage = 255)
+    // Test center (should be inside, coverage > 200)
     let mut center_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 300.0, 300.0, &mut center_pixels);
     let center_coverage = center_pixels[0] & 0xFF;
-    assert_eq!(center_coverage, 255, "Center of square should be inside (coverage=255)");
+    assert!(
+        center_coverage > 200,
+        "Center of square should be inside (coverage > 200), got {}",
+        center_coverage
+    );
 
-    // Test outside left (should be outside, coverage = 0)
+    // Test outside left (should be outside, coverage < 50)
     let mut left_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 50.0, 300.0, &mut left_pixels);
     let left_coverage = left_pixels[0] & 0xFF;
-    assert_eq!(left_coverage, 0, "Left of square should be outside (coverage=0)");
+    assert!(
+        left_coverage < 50,
+        "Left of square should be outside (coverage < 50), got {}",
+        left_coverage
+    );
 
     // Test outside right
     let mut right_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 600.0, 300.0, &mut right_pixels);
     let right_coverage = right_pixels[0] & 0xFF;
-    assert_eq!(right_coverage, 0, "Right of square should be outside (coverage=0)");
+    assert!(
+        right_coverage < 50,
+        "Right of square should be outside (coverage < 50), got {}",
+        right_coverage
+    );
 
     // Test outside above
     let mut above_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 300.0, 50.0, &mut above_pixels);
     let above_coverage = above_pixels[0] & 0xFF;
-    assert_eq!(above_coverage, 0, "Above square should be outside (coverage=0)");
+    assert!(
+        above_coverage < 50,
+        "Above square should be outside (coverage < 50), got {}",
+        above_coverage
+    );
 
     // Test outside below
     let mut below_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 300.0, 600.0, &mut below_pixels);
     let below_coverage = below_pixels[0] & 0xFF;
-    assert_eq!(below_coverage, 0, "Below square should be outside (coverage=0)");
+    assert!(
+        below_coverage < 50,
+        "Below square should be outside (coverage < 50), got {}",
+        below_coverage
+    );
 }
 
 /// Test that line segment winding calculation correctly handles the x < x_intersection test.
+/// Note: With analytical AA, we get smooth coverage rather than hard 0/1.
 #[test]
 fn regression_line_x_intersection_test() {
     // Vertical line at x=500, going from (500,100) to (500,500)
-    let line: Line = Curve([[500.0, 100.0], [500.0, 500.0]]);
-    let lifted = Lift(line);
+    let line = Line::new([[500.0, 100.0], [500.0, 500.0]]);
+    let geo = Geometry {
+        lines: Arc::from(vec![line]),
+        quads: Arc::from(vec![]),
+    };
+    let lifted = Lift(geo);
 
-    // Points to the left (x < 500) should contribute +1 (winding direction)
+    // Points to the left (x < 500) should contribute winding (high coverage)
     let mut left_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 100.0, 300.0, &mut left_pixels);
     let left_value = left_pixels[0] & 0xFF;
-    assert_eq!(left_value, 255, "Point left of line should get +1 contribution");
+    assert!(
+        left_value > 200,
+        "Point left of line should get high contribution, got {}",
+        left_value
+    );
 
-    // Points on or to the right (x >= 500) should contribute 0
-    let mut on_pixels = [0u32; PARALLELISM];
-    materialize_discrete(&lifted, 500.0, 300.0, &mut on_pixels);
-    let on_value = on_pixels[0] & 0xFF;
-    assert_eq!(on_value, 0, "Point on line should get 0 contribution");
-
+    // Points well to the right (x >= 500) should have low contribution
     let mut right_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 600.0, 300.0, &mut right_pixels);
     let right_value = right_pixels[0] & 0xFF;
-    assert_eq!(right_value, 0, "Point right of line should get 0 contribution");
+    assert!(
+        right_value < 50,
+        "Point right of line should get low contribution, got {}",
+        right_value
+    );
 }
 
 // =============================================================================
@@ -115,14 +147,14 @@ fn regression_glyph_ascent_offset() {
 
     execute(&lifted, &mut pixels, TensorShape::new(width, height));
 
-    // Count non-black pixels
+    // Count non-black pixels (with AA, we have smooth gradients)
     let white_pixels = pixels.iter().filter(|p| p.r() > 0).count();
 
-    // There should be a significant number of white pixels (glyph area)
+    // There should be a significant number of non-black pixels (glyph area)
     // A typical 'A' at 100px would cover at least 1000 pixels
     assert!(
         white_pixels > 500,
-        "Expected at least 500 white pixels, got {} (glyph may be outside visible area)",
+        "Expected at least 500 non-black pixels, got {} (glyph may be outside visible area)",
         white_pixels
     );
 
@@ -153,15 +185,22 @@ fn regression_text_rendering_pipeline() {
 
     execute(&lifted, &mut pixels, TensorShape::new(width, height));
 
-    // Count white (inside glyph) and black (outside) pixels
-    let white_count = pixels.iter().filter(|p| p.r() == 255).count();
-    let black_count = pixels.iter().filter(|p| p.r() == 0).count();
-    let total = width * height;
+    // Count pixels by brightness
+    let bright_count = pixels.iter().filter(|p| p.r() > 128).count();
+    let dark_count = pixels.iter().filter(|p| p.r() < 128).count();
 
     // Text should take up some space but not fill the entire buffer
-    assert!(white_count > 100, "Expected at least 100 white pixels for 'HELLO', got {}", white_count);
-    assert!(black_count > 500, "Expected at least 500 black pixels for background, got {}", black_count);
-    assert_eq!(white_count + black_count, total, "All pixels should be either 0 or 255");
+    // With AA, we expect smooth gradients at edges
+    assert!(
+        bright_count > 50,
+        "Expected at least 50 bright pixels for 'HELLO', got {}",
+        bright_count
+    );
+    assert!(
+        dark_count > 500,
+        "Expected at least 500 dark pixels for background, got {}",
+        dark_count
+    );
 }
 
 /// Test that all printable ASCII characters can be rendered.
@@ -174,7 +213,8 @@ fn regression_all_printable_ascii_render() {
         assert!(
             glyph.is_some(),
             "Character '{}' (0x{:02X}) should have a scaled glyph",
-            ch, ch as u32
+            ch,
+            ch as u32
         );
 
         // Also verify we can get advance width

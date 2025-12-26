@@ -83,8 +83,8 @@ impl<G: Manifold<Output = Field> + Clone, const CHANNEL: usize> Manifold
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         let coverage = self.cell.glyph.eval_raw(x, y, z, w);
         let c = coverage
-            .field_max(Field::from(0.0))
-            .field_min(Field::from(1.0));
+            .max(Field::from(0.0))
+            .min(Field::from(1.0));
         let omc = Field::from(1.0) - c;
         c * Field::from(self.cell.fg[CHANNEL]) + omc * Field::from(self.cell.bg[CHANNEL])
     }

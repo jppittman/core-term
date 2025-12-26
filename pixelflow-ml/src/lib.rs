@@ -60,7 +60,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use pixelflow_core::{Field, Numeric, ShCoeffs};
+use pixelflow_core::{Field, ShCoeffs};
 
 // ============================================================================
 // Feature Maps: The Bridge Between Attention and SH
@@ -95,8 +95,8 @@ impl FeatureMap for EluFeature {
     fn apply(&self, x: Field) -> Field {
         // ELU(x) + 1 = max(0, x) + exp(min(0, x))
         let zero = Field::from(0.0);
-        let pos_part = Numeric::max(x, zero);
-        let neg_part = Numeric::min(x, zero).exp();
+        let pos_part = x.max(zero);
+        let neg_part = x.min(zero).exp();
         pos_part + neg_part
     }
 
@@ -226,7 +226,7 @@ impl ShFeatureMap<9> {
         use pixelflow_core::SH_NORM;
 
         // Normalize direction
-        let r = Numeric::sqrt(x * x + y * y + z * z);
+        let r = (x * x + y * y + z * z).sqrt();
         let inv_r = Field::from(1.0) / r;
         let nx = x * inv_r;
         let ny = y * inv_r;

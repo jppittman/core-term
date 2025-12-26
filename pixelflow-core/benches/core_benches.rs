@@ -4,7 +4,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use pixelflow_core::{
-    combinators::Fix, Field, Jet2, Manifold, ManifoldExt, PARALLELISM, X, Y,
+    combinators::Fix, Field, Jet2, Manifold, ManifoldExt, PARALLELISM, X, Y, Z,
 };
 
 // ============================================================================
@@ -80,11 +80,11 @@ fn bench_field_math(c: &mut Criterion) {
     });
 
     group.bench_function("min", |bencher| {
-        bencher.iter(|| black_box(black_box(a).field_min(black_box(b))))
+        bencher.iter(|| black_box(black_box(a).min(black_box(b))))
     });
 
     group.bench_function("max", |bencher| {
-        bencher.iter(|| black_box(black_box(a).field_max(black_box(b))))
+        bencher.iter(|| black_box(black_box(a).max(black_box(b))))
     });
 
     group.finish();
@@ -218,8 +218,14 @@ fn bench_manifold_simple(c: &mut Criterion) {
         bencher.iter(|| black_box(m.eval_raw(black_box(x), black_box(y), z, w)))
     });
 
+    // FMA benchmark: X * Y + Z goes through MulAdd combinator
+    group.bench_function("fma_X_mul_Y_plus_Z", |bencher| {
+        let m = X * Y + Z; // This is MulAdd<X, Y, Z> - uses vfmadd instruction
+        bencher.iter(|| black_box(m.eval_raw(black_box(x), black_box(y), z, w)))
+    });
+
     group.bench_function("distance_squared", |bencher| {
-        // x² + y²
+        // x² + y² - this is MulAdd<X, X, MulAdd<Y, Y, ...>> due to chaining
         let m = X * X + Y * Y;
         bencher.iter(|| black_box(m.eval_raw(black_box(x), black_box(y), z, w)))
     });
@@ -370,8 +376,6 @@ fn bench_jet2_arithmetic(c: &mut Criterion) {
 }
 
 fn bench_jet2_math(c: &mut Criterion) {
-    use pixelflow_core::Numeric;
-
     let mut group = c.benchmark_group("jet2_math");
     group.throughput(Throughput::Elements(PARALLELISM as u64));
 
@@ -399,8 +403,6 @@ fn bench_jet2_math(c: &mut Criterion) {
 }
 
 fn bench_jet2_gradient(c: &mut Criterion) {
-    use pixelflow_core::Numeric;
-
     let mut group = c.benchmark_group("jet2_gradient");
     group.throughput(Throughput::Elements(PARALLELISM as u64));
 

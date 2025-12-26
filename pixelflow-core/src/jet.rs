@@ -3,7 +3,7 @@
 //! 2-jets: value + gradient (∂f/∂x, ∂f/∂y)
 
 use crate::Field;
-use crate::numeric::Numeric;
+use crate::numeric::{Computational, Numeric};
 
 /// A 2-jet: value and first derivatives.
 ///
@@ -49,6 +49,112 @@ impl Jet2 {
             dx: Field::from(0.0),
             dy: Field::from(0.0),
         }
+    }
+
+    /// Raw select without early exit (pub(crate) only).
+    #[inline(always)]
+    pub(crate) fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
+        Self {
+            val: Field::select_raw(mask.val, if_true.val, if_false.val),
+            dx: Field::select_raw(mask.val, if_true.dx, if_false.dx),
+            dy: Field::select_raw(mask.val, if_true.dy, if_false.dy),
+        }
+    }
+
+    // ========================================================================
+    // Public methods for comparison and math operations
+    // ========================================================================
+
+    /// Less than comparison (returns mask jet).
+    #[inline(always)]
+    pub fn lt(self, rhs: Self) -> Self {
+        Self::constant(self.val.lt(rhs.val))
+    }
+
+    /// Less than or equal (returns mask jet).
+    #[inline(always)]
+    pub fn le(self, rhs: Self) -> Self {
+        Self::constant(self.val.le(rhs.val))
+    }
+
+    /// Greater than comparison (returns mask jet).
+    #[inline(always)]
+    pub fn gt(self, rhs: Self) -> Self {
+        Self::constant(self.val.gt(rhs.val))
+    }
+
+    /// Greater than or equal (returns mask jet).
+    #[inline(always)]
+    pub fn ge(self, rhs: Self) -> Self {
+        Self::constant(self.val.ge(rhs.val))
+    }
+
+    /// Square root with derivative.
+    #[inline(always)]
+    pub fn sqrt(self) -> Self {
+        // Chain rule: (√f)' = f' / (2√f)
+        let sqrt_val = self.val.sqrt();
+        let two_sqrt = Field::from(2.0) * sqrt_val;
+        Self {
+            val: sqrt_val,
+            dx: self.dx / two_sqrt,
+            dy: self.dy / two_sqrt,
+        }
+    }
+
+    /// Absolute value with derivative.
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        // |f|' = f' * sign(f)
+        let sign = self.val / self.val.abs();
+        Self {
+            val: self.val.abs(),
+            dx: self.dx * sign,
+            dy: self.dy * sign,
+        }
+    }
+
+    /// Element-wise minimum with derivative.
+    #[inline(always)]
+    pub fn min(self, rhs: Self) -> Self {
+        let mask = self.val.lt(rhs.val);
+        Self {
+            val: self.val.min(rhs.val),
+            dx: Field::select_raw(mask, self.dx, rhs.dx),
+            dy: Field::select_raw(mask, self.dy, rhs.dy),
+        }
+    }
+
+    /// Element-wise maximum with derivative.
+    #[inline(always)]
+    pub fn max(self, rhs: Self) -> Self {
+        let mask = self.val.gt(rhs.val);
+        Self {
+            val: self.val.max(rhs.val),
+            dx: Field::select_raw(mask, self.dx, rhs.dx),
+            dy: Field::select_raw(mask, self.dy, rhs.dy),
+        }
+    }
+
+    /// Check if any lane of the value is non-zero.
+    #[inline(always)]
+    pub fn any(&self) -> bool {
+        self.val.any()
+    }
+
+    /// Check if all lanes of the value are non-zero.
+    #[inline(always)]
+    pub fn all(&self) -> bool {
+        self.val.all()
+    }
+
+    /// Conditional select with early-exit optimization.
+    /// Returns if_true where mask is set, if_false elsewhere.
+    #[inline(always)]
+    pub fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
+        if mask.all() { return if_true; }
+        if !mask.any() { return if_false; }
+        Self::select_raw(mask, if_true, if_false)
     }
 }
 
@@ -140,7 +246,24 @@ impl core::ops::Not for Jet2 {
 }
 
 // ============================================================================
-// Numeric trait implementation
+// Computational trait implementation (Public API)
+// ============================================================================
+
+impl Computational for Jet2 {
+    #[inline(always)]
+    fn from_f32(val: f32) -> Self {
+        Self::constant(Field::from(val))
+    }
+
+    #[inline(always)]
+    fn sequential(start: f32) -> Self {
+        // Zero derivatives - users wrap with Jet2::x() to seed X-differentiation
+        Self::constant(Field::sequential(start))
+    }
+}
+
+// ============================================================================
+// Numeric trait implementation (Internal)
 // ============================================================================
 
 impl Numeric for Jet2 {
@@ -172,11 +295,12 @@ impl Numeric for Jet2 {
     fn min(self, rhs: Self) -> Self {
         // min(f,g)' = f' if f < g, g' otherwise
         // The mask determines which derivative to use
+        // This is a true blend - both derivatives already computed
         let mask = self.val.lt(rhs.val);
         Self {
             val: self.val.min(rhs.val),
-            dx: Field::select(mask, self.dx, rhs.dx),
-            dy: Field::select(mask, self.dy, rhs.dy),
+            dx: Field::select_raw(mask, self.dx, rhs.dx),
+            dy: Field::select_raw(mask, self.dy, rhs.dy),
         }
     }
 
@@ -186,8 +310,8 @@ impl Numeric for Jet2 {
         let mask = self.val.gt(rhs.val);
         Self {
             val: self.val.max(rhs.val),
-            dx: Field::select(mask, self.dx, rhs.dx),
-            dy: Field::select(mask, self.dy, rhs.dy),
+            dx: Field::select_raw(mask, self.dx, rhs.dx),
+            dy: Field::select_raw(mask, self.dy, rhs.dy),
         }
     }
 
@@ -215,11 +339,18 @@ impl Numeric for Jet2 {
 
     #[inline(always)]
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        // Use the mask's value to select, blend derivatives
+        if mask.all() { return if_true; }
+        if !mask.any() { return if_false; }
+        Self::select_raw(mask, if_true, if_false)
+    }
+
+    #[inline(always)]
+    fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
+        // Blend values and derivatives
         Self {
-            val: Field::select(mask.val, if_true.val, if_false.val),
-            dx: Field::select(mask.val, if_true.dx, if_false.dx),
-            dy: Field::select(mask.val, if_true.dy, if_false.dy),
+            val: Field::select_raw(mask.val, if_true.val, if_false.val),
+            dx: Field::select_raw(mask.val, if_true.dx, if_false.dx),
+            dy: Field::select_raw(mask.val, if_true.dy, if_false.dy),
         }
     }
 
@@ -234,11 +365,6 @@ impl Numeric for Jet2 {
     fn all(&self) -> bool {
         // Check if all lanes of the VALUE are true
         self.val.all()
-    }
-
-    #[inline(always)]
-    fn from_f32(val: f32) -> Self {
-        Self::constant(Field::from(val))
     }
 
     #[inline(always)]
@@ -325,5 +451,54 @@ impl Numeric for Jet2 {
     fn floor(self) -> Self {
         // Floor is a step function - derivative is 0 almost everywhere
         Self::constant(self.val.floor())
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        // (a * b + c)' where a, b, c are jets
+        // val = a.val * b.val + c.val
+        // d/dx = a.dx * b.val + a.val * b.dx + c.dx  (product rule + chain rule)
+        // d/dy = a.dy * b.val + a.val * b.dy + c.dy
+        Self {
+            val: self.val.mul_add(b.val, c.val),
+            dx: self.dx * b.val + self.val * b.dx + c.dx,
+            dy: self.dy * b.val + self.val * b.dy + c.dy,
+        }
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        // (1/f)' = -f'/f²
+        let inv = self.val.recip();
+        let neg_inv_sq = Field::from(0.0) - inv * inv;
+        Self {
+            val: inv,
+            dx: self.dx * neg_inv_sq,
+            dy: self.dy * neg_inv_sq,
+        }
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        // d/dx[1/√f] = -f' / (2 * f * √f) = -f' * rsqrt(f) / (2f)
+        // = -f' / (2 * f^(3/2)) = -f' * rsqrt(f)³ / 2
+        let rsqrt_val = self.val.rsqrt();
+        let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
+        let scale = Field::from(-0.5) * rsqrt_cubed;
+        Self {
+            val: rsqrt_val,
+            dx: self.dx * scale,
+            dy: self.dy * scale,
+        }
+    }
+
+    #[inline(always)]
+    fn add_masked(self, val: Self, mask: Self) -> Self {
+        // For jets, mask.val is the actual mask
+        Self {
+            val: self.val.add_masked(val.val, mask.val),
+            dx: self.dx.add_masked(val.dx, mask.val),
+            dy: self.dy.add_masked(val.dy, mask.val),
+        }
     }
 }
