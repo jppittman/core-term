@@ -178,8 +178,9 @@ pub trait Basis: Sized + Send + Sync {
 pub struct Frame {
     /// Origin in world space.
     pub origin: (f32, f32, f32),
-    /// Z-axis direction (for aligned frames).
-    pub z_axis: (f32, f32, f32),
+    /// Rotation matrix (row-major, 3x3) from world to local.
+    /// Identity when z_axis = (0, 0, 1).
+    rotation: [[f32; 3]; 3],
 }
 
 impl Default for Frame {
@@ -193,7 +194,11 @@ impl Frame {
     pub const fn identity() -> Self {
         Self {
             origin: (0.0, 0.0, 0.0),
-            z_axis: (0.0, 0.0, 1.0),
+            rotation: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
         }
     }
 
@@ -201,7 +206,11 @@ impl Frame {
     pub const fn centered_at(origin: (f32, f32, f32)) -> Self {
         Self {
             origin,
-            z_axis: (0.0, 0.0, 1.0),
+            rotation: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
         }
     }
 
@@ -209,41 +218,94 @@ impl Frame {
     ///
     /// The z-axis of the frame is aligned with the given normal.
     /// Useful for hemispherical integration (irradiance, AO).
+    ///
+    /// Constructs an orthonormal basis where:
+    /// - Z-axis = normalized normal
+    /// - X and Y axes are perpendicular to Z and each other
     pub fn aligned_to(origin: (f32, f32, f32), normal: (f32, f32, f32)) -> Self {
-        // Normalize the normal
+        // Normalize the normal (this becomes local Z-axis)
         let len = libm::sqrtf(normal.0 * normal.0 + normal.1 * normal.1 + normal.2 * normal.2);
-        let z_axis = if len > 1e-6 {
+        let z = if len > 1e-6 {
             (normal.0 / len, normal.1 / len, normal.2 / len)
         } else {
             (0.0, 0.0, 1.0)
         };
 
-        Self { origin, z_axis }
+        // Build orthonormal basis using Gram-Schmidt
+        // Choose a vector not parallel to z
+        let up = if libm::fabsf(z.1) < 0.999 {
+            (0.0, 1.0, 0.0)
+        } else {
+            (1.0, 0.0, 0.0)
+        };
+
+        // x = normalize(up × z)
+        let x_raw = (
+            up.1 * z.2 - up.2 * z.1,
+            up.2 * z.0 - up.0 * z.2,
+            up.0 * z.1 - up.1 * z.0,
+        );
+        let x_len = libm::sqrtf(x_raw.0 * x_raw.0 + x_raw.1 * x_raw.1 + x_raw.2 * x_raw.2);
+        let x = (x_raw.0 / x_len, x_raw.1 / x_len, x_raw.2 / x_len);
+
+        // y = z × x (already normalized since z and x are orthonormal)
+        let y = (
+            z.1 * x.2 - z.2 * x.1,
+            z.2 * x.0 - z.0 * x.2,
+            z.0 * x.1 - z.1 * x.0,
+        );
+
+        // Rotation matrix: rows are the local axes expressed in world coords
+        // To go from world to local, we use the transpose (since orthonormal)
+        Self {
+            origin,
+            rotation: [
+                [x.0, x.1, x.2],
+                [y.0, y.1, y.2],
+                [z.0, z.1, z.2],
+            ],
+        }
+    }
+
+    /// Get the z-axis (normal direction) of this frame.
+    #[inline(always)]
+    pub fn z_axis(&self) -> (f32, f32, f32) {
+        (self.rotation[2][0], self.rotation[2][1], self.rotation[2][2])
     }
 
     /// Transform a world-space direction to frame-local space.
     #[inline(always)]
     pub fn to_local(&self, world: (f32, f32, f32)) -> (f32, f32, f32) {
         // Translate by origin
-        let local = (
+        let translated = (
             world.0 - self.origin.0,
             world.1 - self.origin.1,
             world.2 - self.origin.2,
         );
 
-        // If frame is aligned (z_axis != (0,0,1)), we'd rotate here.
-        // For now, simplified: just translation.
-        // Full implementation would build rotation matrix from z_axis.
-        local
+        // Apply rotation matrix (world to local)
+        (
+            self.rotation[0][0] * translated.0 + self.rotation[0][1] * translated.1 + self.rotation[0][2] * translated.2,
+            self.rotation[1][0] * translated.0 + self.rotation[1][1] * translated.1 + self.rotation[1][2] * translated.2,
+            self.rotation[2][0] * translated.0 + self.rotation[2][1] * translated.1 + self.rotation[2][2] * translated.2,
+        )
     }
 
     /// Transform a frame-local direction to world space.
     #[inline(always)]
     pub fn to_world(&self, local: (f32, f32, f32)) -> (f32, f32, f32) {
+        // Apply inverse rotation (transpose for orthonormal matrix)
+        let rotated = (
+            self.rotation[0][0] * local.0 + self.rotation[1][0] * local.1 + self.rotation[2][0] * local.2,
+            self.rotation[0][1] * local.0 + self.rotation[1][1] * local.1 + self.rotation[2][1] * local.2,
+            self.rotation[0][2] * local.0 + self.rotation[1][2] * local.1 + self.rotation[2][2] * local.2,
+        );
+
+        // Translate back
         (
-            local.0 + self.origin.0,
-            local.1 + self.origin.1,
-            local.2 + self.origin.2,
+            rotated.0 + self.origin.0,
+            rotated.1 + self.origin.1,
+            rotated.2 + self.origin.2,
         )
     }
 }
@@ -474,6 +536,66 @@ where
     {
         self.coeffs.get(0)
     }
+
+    /// Scale all coefficients by a factor.
+    pub fn scale(&self, factor: f32) -> Self
+    where
+        <S::Basis as Basis>::Coeffs: Coefficients,
+    {
+        let mut result = self.coeffs.clone();
+        for i in 0..<<S::Basis as Basis>::Coeffs as Coefficients>::NUM_COEFFS {
+            *result.get_mut(i) *= factor;
+        }
+        Self {
+            coeffs: result,
+            frame: self.frame.clone(),
+            _symmetry: PhantomData,
+        }
+    }
+
+    /// Add two compressed fields coefficient-wise.
+    ///
+    /// Both fields should be in the same frame for meaningful results.
+    pub fn add(&self, other: &Self) -> Self
+    where
+        <S::Basis as Basis>::Coeffs: Coefficients,
+    {
+        let mut result = self.coeffs.clone();
+        for i in 0..<<S::Basis as Basis>::Coeffs as Coefficients>::NUM_COEFFS {
+            *result.get_mut(i) += other.coeffs.get(i);
+        }
+        Self {
+            coeffs: result,
+            frame: self.frame.clone(),
+            _symmetry: PhantomData,
+        }
+    }
+
+    /// Linear interpolation between two compressed fields.
+    pub fn lerp(&self, other: &Self, t: f32) -> Self
+    where
+        <S::Basis as Basis>::Coeffs: Coefficients,
+    {
+        let mut result = <<S::Basis as Basis>::Coeffs as Coefficients>::zero();
+        for i in 0..<<S::Basis as Basis>::Coeffs as Coefficients>::NUM_COEFFS {
+            let a = self.coeffs.get(i);
+            let b = other.coeffs.get(i);
+            *result.get_mut(i) = a + t * (b - a);
+        }
+        Self {
+            coeffs: result,
+            frame: self.frame.clone(),
+            _symmetry: PhantomData,
+        }
+    }
+
+    /// Get the L2 norm (energy) of the coefficients.
+    pub fn energy(&self) -> f32
+    where
+        <S::Basis as Basis>::Coeffs: Coefficients,
+    {
+        self.coeffs.dot(&self.coeffs)
+    }
 }
 
 // ============================================================================
@@ -501,24 +623,151 @@ where
     }
 }
 
-impl<I: Numeric> Manifold<I> for CompressedManifold<RotInv2> {
-    type Output = I;
+impl Manifold<Field> for CompressedManifold<RotInv2> {
+    type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, _x: I, _y: I, _z: I, _w: I) -> I {
-        // For SIMD evaluation, we compute basis at each lane and dot product.
-        // This is a simplified implementation - production would extract
-        // per-lane values and compute SH at each direction.
-        //
-        // TODO: Full vectorized implementation would:
-        // 1. Extract x,y,z to f32 arrays
-        // 2. Compute SH basis at each direction
-        // 3. Dot product with coefficients per lane
+    fn eval_raw(&self, x: Field, y: Field, z: Field, _w: Field) -> Field {
+        use crate::SH_NORM;
 
-        // For now, sample at nominal +Z direction
-        let val = self.inner.sample((0.0, 0.0, 1.0));
-        I::from_f32(val)
+        // Normalize directions (vectorized)
+        let r = (x * x + y * y + z * z).sqrt();
+        let inv_r = Field::from(1.0) / r;
+        let nx = x * inv_r;
+        let ny = y * inv_r;
+        let nz = z * inv_r;
+
+        // Compute SH basis functions (vectorized)
+        // l=0
+        let y00 = Field::from(SH_NORM[0][0]);
+
+        // l=1
+        let y1m1 = Field::from(SH_NORM[1][1]) * ny;
+        let y10 = Field::from(SH_NORM[1][0]) * nz;
+        let y11 = Field::from(SH_NORM[1][1]) * nx;
+
+        // l=2
+        let y2m2 = Field::from(SH_NORM[2][2]) * nx * ny;
+        let y2m1 = Field::from(SH_NORM[2][1]) * ny * nz;
+        let y20 = Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0));
+        let y21 = Field::from(SH_NORM[2][1]) * nx * nz;
+        let y22 = Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny);
+
+        // Dot product with coefficients (broadcast scalar coeffs, multiply vectorized basis)
+        let c = &self.inner.coeffs.coeffs;
+        Field::from(c[0]) * y00
+            + Field::from(c[1]) * y1m1
+            + Field::from(c[2]) * y10
+            + Field::from(c[3]) * y11
+            + Field::from(c[4]) * y2m2
+            + Field::from(c[5]) * y2m1
+            + Field::from(c[6]) * y20
+            + Field::from(c[7]) * y21
+            + Field::from(c[8]) * y22
     }
+}
+
+// ============================================================================
+// SH Projection from Manifold
+// ============================================================================
+
+/// Project a direction manifold onto SH basis via Monte Carlo sampling.
+///
+/// Takes N samples over the sphere and computes SH coefficients.
+/// The manifold should map directions (x,y,z) to scalar values.
+pub fn project_to_sh<M>(manifold: &M, samples: usize) -> Compressed<RotInv2>
+where
+    M: Manifold<Field, Output = Field>,
+{
+    use crate::SH_NORM;
+
+    let mut coeffs = [0.0f32; 9];
+
+    // Use a simple uniform sampling pattern (Fibonacci sphere)
+    let golden_ratio = (1.0 + libm::sqrtf(5.0)) / 2.0;
+
+    for i in 0..samples {
+        let i_f = i as f32;
+        let n_f = samples as f32;
+
+        // Fibonacci sphere point
+        let theta = 2.0 * core::f32::consts::PI * i_f / golden_ratio;
+        let phi = libm::acosf(1.0 - 2.0 * (i_f + 0.5) / n_f);
+
+        let sin_phi = libm::sinf(phi);
+        let cos_phi = libm::cosf(phi);
+        let sin_theta = libm::sinf(theta);
+        let cos_theta = libm::cosf(theta);
+
+        let x = sin_phi * cos_theta;
+        let y = sin_phi * sin_theta;
+        let z = cos_phi;
+
+        // Evaluate manifold at this direction
+        let x_field = Field::from(x);
+        let y_field = Field::from(y);
+        let z_field = Field::from(z);
+        let val = manifold.eval_raw(x_field, y_field, z_field, Field::from(0.0));
+
+        // Extract first lane
+        let mut buf = [0.0f32; crate::PARALLELISM];
+        val.store(&mut buf);
+        let value = buf[0];
+
+        // Accumulate SH coefficients (basis × value)
+        // l=0
+        coeffs[0] += SH_NORM[0][0] * value;
+        // l=1
+        coeffs[1] += SH_NORM[1][1] * y * value;
+        coeffs[2] += SH_NORM[1][0] * z * value;
+        coeffs[3] += SH_NORM[1][1] * x * value;
+        // l=2
+        coeffs[4] += SH_NORM[2][2] * x * y * value;
+        coeffs[5] += SH_NORM[2][1] * y * z * value;
+        coeffs[6] += SH_NORM[2][0] * (3.0 * z * z - 1.0) * value;
+        coeffs[7] += SH_NORM[2][1] * x * z * value;
+        coeffs[8] += SH_NORM[2][2] * (x * x - y * y) * value;
+    }
+
+    // Normalize by solid angle per sample (4π / samples)
+    let weight = 4.0 * core::f32::consts::PI / (samples as f32);
+    for c in coeffs.iter_mut() {
+        *c *= weight;
+    }
+
+    Compressed::from_coeffs(ShBasis::new(coeffs))
+}
+
+/// Create SH coefficients for a directional light.
+///
+/// A directional light in direction `dir` with intensity `intensity`
+/// is represented as a delta function, which projects onto SH as
+/// the evaluation of each basis function at that direction.
+pub fn directional_light_sh(dir: (f32, f32, f32), intensity: f32) -> Compressed<RotInv2> {
+    let basis = ShBasis::<9>::eval_at_scalar(dir.0, dir.1, dir.2);
+    let mut coeffs = basis.coeffs;
+    for c in coeffs.iter_mut() {
+        *c *= intensity;
+    }
+    Compressed::from_coeffs(ShBasis::new(coeffs))
+}
+
+/// Create SH coefficients for ambient (uniform) lighting.
+///
+/// Uniform lighting only has a DC (l=0) component.
+pub fn ambient_light_sh(intensity: f32) -> Compressed<RotInv2> {
+    use crate::SH_NORM;
+
+    // DC term for uniform sphere = intensity / Y_0^0
+    // Since ∫ Y_0^0 dΩ = √(4π), and Y_0^0 = 1/(2√π)
+    // For uniform intensity I over hemisphere, DC = I * √(4π)
+    let dc = intensity * libm::sqrtf(4.0 * core::f32::consts::PI);
+
+    Compressed::from_coeffs(ShBasis::new([
+        dc * SH_NORM[0][0],
+        0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0,
+    ]))
 }
 
 // ============================================================================
@@ -583,21 +832,94 @@ pub fn irradiance(
 mod tests {
     use super::*;
 
+    // Helper: compute vector length
+    fn vec_len(v: (f32, f32, f32)) -> f32 {
+        libm::sqrtf(v.0 * v.0 + v.1 * v.1 + v.2 * v.2)
+    }
+
+    // Helper: normalize vector
+    fn normalize(v: (f32, f32, f32)) -> (f32, f32, f32) {
+        let len = vec_len(v);
+        (v.0 / len, v.1 / len, v.2 / len)
+    }
+
+    // Helper: dot product
+    #[allow(dead_code)]
+    fn dot3(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
+        a.0 * b.0 + a.1 * b.1 + a.2 * b.2
+    }
+
+    // ========================================================================
+    // Frame Tests
+    // ========================================================================
+
     #[test]
     fn test_frame_identity() {
         let frame = Frame::identity();
         assert_eq!(frame.origin, (0.0, 0.0, 0.0));
-        assert_eq!(frame.z_axis, (0.0, 0.0, 1.0));
+        let z = frame.z_axis();
+        assert!((z.0).abs() < 1e-6);
+        assert!((z.1).abs() < 1e-6);
+        assert!((z.2 - 1.0).abs() < 1e-6);
     }
 
     #[test]
-    fn test_frame_to_local() {
+    fn test_frame_to_local_translation() {
         let frame = Frame::centered_at((1.0, 2.0, 3.0));
         let local = frame.to_local((2.0, 4.0, 6.0));
         assert!((local.0 - 1.0).abs() < 1e-6);
         assert!((local.1 - 2.0).abs() < 1e-6);
         assert!((local.2 - 3.0).abs() < 1e-6);
     }
+
+    #[test]
+    fn test_frame_roundtrip() {
+        let frame = Frame::aligned_to((1.0, 2.0, 3.0), (1.0, 1.0, 1.0));
+        let world = (5.0, 6.0, 7.0);
+        let local = frame.to_local(world);
+        let back = frame.to_world(local);
+
+        assert!((back.0 - world.0).abs() < 1e-5);
+        assert!((back.1 - world.1).abs() < 1e-5);
+        assert!((back.2 - world.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_frame_aligned_orthonormal() {
+        let normal = normalize((1.0, 2.0, 3.0));
+        let frame = Frame::aligned_to((0.0, 0.0, 0.0), normal);
+
+        // Z-axis should be the normal
+        let z = frame.z_axis();
+        assert!((z.0 - normal.0).abs() < 1e-5);
+        assert!((z.1 - normal.1).abs() < 1e-5);
+        assert!((z.2 - normal.2).abs() < 1e-5);
+
+        // Local (0,0,1) should map to normal in world space
+        let local_z = frame.to_world((0.0, 0.0, 1.0));
+        assert!((local_z.0 - normal.0).abs() < 1e-5);
+        assert!((local_z.1 - normal.1).abs() < 1e-5);
+        assert!((local_z.2 - normal.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_frame_rotation_preserves_length() {
+        let frame = Frame::aligned_to((0.0, 0.0, 0.0), (1.0, 1.0, 0.0));
+        let v = (3.0, 4.0, 5.0);
+        let local = frame.to_local(v);
+        let world = frame.to_world(local);
+
+        let len_orig = vec_len(v);
+        let len_local = vec_len(local);
+        let len_back = vec_len(world);
+
+        assert!((len_orig - len_local).abs() < 1e-5);
+        assert!((len_orig - len_back).abs() < 1e-5);
+    }
+
+    // ========================================================================
+    // ShBasis Tests
+    // ========================================================================
 
     #[test]
     fn test_sh_basis_dot() {
@@ -607,30 +929,97 @@ mod tests {
     }
 
     #[test]
-    fn test_sh_basis_eval() {
+    fn test_sh_basis_dot_general() {
+        let a = ShBasis::<9>::new([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        let b = ShBasis::<9>::new([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+        // 1+2+3+4+5+6+7+8+9 = 45
+        assert!((a.dot(&b) - 45.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_sh_basis_zero() {
+        let z = ShBasis::<9>::zero();
+        for c in z.coeffs {
+            assert!(c.abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_sh_basis_eval_z_direction() {
         // +Z direction should have strong l=0 and l=1,m=0 components
         let coeffs = ShBasis::<9>::eval_at_scalar(0.0, 0.0, 1.0);
-        assert!(coeffs.coeffs[0] > 0.0); // DC term
+        assert!(coeffs.coeffs[0] > 0.0); // DC term (Y_0^0)
         assert!(coeffs.coeffs[2] > 0.0); // Y_1^0 (z-aligned)
+        // Y_1^{-1} and Y_1^{1} should be ~0 for +Z
+        assert!(coeffs.coeffs[1].abs() < 1e-6);
+        assert!(coeffs.coeffs[3].abs() < 1e-6);
     }
 
     #[test]
-    fn test_compressed_sample() {
-        // Constant field (DC only)
-        let coeffs = ShBasis::<9>::new([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let compressed = Compressed::<RotInv2>::from_coeffs(coeffs);
-
-        // Should return approximately the DC term regardless of direction
-        let val1 = compressed.sample((0.0, 0.0, 1.0));
-        let val2 = compressed.sample((1.0, 0.0, 0.0));
-
-        // DC contribution is constant * Y_0^0(dir) ≈ 0.282
-        assert!(val1 > 0.0);
-        assert!((val1 - val2).abs() < 0.1);
+    fn test_sh_basis_eval_x_direction() {
+        // +X direction should have strong Y_1^1 component
+        let coeffs = ShBasis::<9>::eval_at_scalar(1.0, 0.0, 0.0);
+        assert!(coeffs.coeffs[0] > 0.0); // DC term
+        assert!(coeffs.coeffs[3] > 0.0); // Y_1^1 (x-aligned)
+        // Y_1^0 should be ~0 for directions in xy-plane
+        assert!(coeffs.coeffs[2].abs() < 1e-6);
     }
 
     #[test]
-    fn test_cg_multiplication() {
+    fn test_sh_basis_eval_y_direction() {
+        // +Y direction should have strong Y_1^{-1} component
+        let coeffs = ShBasis::<9>::eval_at_scalar(0.0, 1.0, 0.0);
+        assert!(coeffs.coeffs[0] > 0.0); // DC term
+        assert!(coeffs.coeffs[1] > 0.0); // Y_1^{-1} (y-aligned)
+    }
+
+    #[test]
+    fn test_sh_orthonormality_approximate() {
+        // SH basis functions are orthonormal over the sphere
+        // ∫ Y_l^m Y_l'^m' dΩ = δ_{ll'} δ_{mm'}
+        //
+        // We approximate this with discrete samples
+
+        let samples = 1000;
+        let golden = (1.0 + libm::sqrtf(5.0)) / 2.0;
+
+        // Compute ∫ Y_0^0 * Y_0^0 dΩ ≈ 1 (self-dot of DC)
+        let mut integral_00_00 = 0.0;
+        // Compute ∫ Y_0^0 * Y_1^0 dΩ ≈ 0 (orthogonal)
+        let mut integral_00_10 = 0.0;
+
+        for i in 0..samples {
+            let i_f = i as f32;
+            let n_f = samples as f32;
+            let theta = 2.0 * core::f32::consts::PI * i_f / golden;
+            let phi = libm::acosf(1.0 - 2.0 * (i_f + 0.5) / n_f);
+
+            let x = libm::sinf(phi) * libm::cosf(theta);
+            let y = libm::sinf(phi) * libm::sinf(theta);
+            let z = libm::cosf(phi);
+
+            let sh = ShBasis::<9>::eval_at_scalar(x, y, z);
+            integral_00_00 += sh.coeffs[0] * sh.coeffs[0];
+            integral_00_10 += sh.coeffs[0] * sh.coeffs[2];
+        }
+
+        // Normalize by solid angle
+        let weight = 4.0 * core::f32::consts::PI / (samples as f32);
+        integral_00_00 *= weight;
+        integral_00_10 *= weight;
+
+        // Y_0^0 self-integral should be ~1
+        assert!((integral_00_00 - 1.0).abs() < 0.1);
+        // Orthogonal integral should be ~0
+        assert!(integral_00_10.abs() < 0.1);
+    }
+
+    // ========================================================================
+    // Clebsch-Gordan Tests
+    // ========================================================================
+
+    #[test]
+    fn test_cg_multiplication_dc_dc() {
         // DC × DC → DC
         let a = ShBasis::<9>::new([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let b = ShBasis::<9>::new([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
@@ -638,7 +1027,124 @@ mod tests {
 
         // Should have non-zero DC term
         assert!(result.coeffs[0].abs() > 0.0);
+        // Higher order terms should be ~0
+        for i in 1..9 {
+            assert!(result.coeffs[i].abs() < 1e-6);
+        }
     }
+
+    #[test]
+    fn test_cg_multiplication_dc_l1() {
+        // DC × l=1 → l=1 (DC acts like identity up to scale)
+        let dc = ShBasis::<9>::new([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let l1 = ShBasis::<9>::new([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let result = dc.multiply(&l1, CG_ORDER_2);
+
+        // Should have l=1 component
+        assert!(result.coeffs[1].abs() > 0.0);
+    }
+
+    #[test]
+    fn test_cg_multiplication_l1_l1_to_dc() {
+        // l=1 × l=1 → includes DC (trace)
+        let a = ShBasis::<9>::new([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let b = ShBasis::<9>::new([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let result = a.multiply(&b, CG_ORDER_2);
+
+        // Should have DC contribution (Y_1^{-1} × Y_1^{-1} → Y_0^0)
+        assert!(result.coeffs[0].abs() > 0.0);
+    }
+
+    #[test]
+    fn test_cg_multiplication_commutative() {
+        let a = ShBasis::<9>::new([1.0, 0.5, 0.3, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0]);
+        let b = ShBasis::<9>::new([0.5, 0.3, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+        let ab = a.multiply(&b, CG_ORDER_2);
+        let ba = b.multiply(&a, CG_ORDER_2);
+
+        for i in 0..9 {
+            assert!((ab.coeffs[i] - ba.coeffs[i]).abs() < 1e-6);
+        }
+    }
+
+    // ========================================================================
+    // Compressed Field Tests
+    // ========================================================================
+
+    #[test]
+    fn test_compressed_sample_constant() {
+        // Constant field (DC only)
+        let coeffs = ShBasis::<9>::new([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let compressed = Compressed::<RotInv2>::from_coeffs(coeffs);
+
+        // Sample in multiple directions - should be approximately constant
+        let val1 = compressed.sample((0.0, 0.0, 1.0));
+        let val2 = compressed.sample((1.0, 0.0, 0.0));
+        let val3 = compressed.sample((0.0, 1.0, 0.0));
+        let val4 = compressed.sample(normalize((1.0, 1.0, 1.0)));
+
+        // DC contribution is constant * Y_0^0(dir) ≈ 0.282
+        assert!(val1 > 0.0);
+        assert!((val1 - val2).abs() < 0.05);
+        assert!((val2 - val3).abs() < 0.05);
+        assert!((val3 - val4).abs() < 0.05);
+    }
+
+    #[test]
+    fn test_compressed_scale() {
+        let coeffs = ShBasis::<9>::new([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let c = Compressed::<RotInv2>::from_coeffs(coeffs);
+        let scaled = c.scale(2.0);
+
+        assert!((scaled.coeffs.coeffs[0] - 2.0).abs() < 1e-6);
+        assert!((scaled.coeffs.coeffs[1] - 4.0).abs() < 1e-6);
+        assert!((scaled.coeffs.coeffs[2] - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compressed_add() {
+        let a = Compressed::<RotInv2>::from_coeffs(
+            ShBasis::new([1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        );
+        let b = Compressed::<RotInv2>::from_coeffs(
+            ShBasis::new([3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        );
+        let sum = a.add(&b);
+
+        assert!((sum.coeffs.coeffs[0] - 4.0).abs() < 1e-6);
+        assert!((sum.coeffs.coeffs[1] - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compressed_lerp() {
+        let a = Compressed::<RotInv2>::from_coeffs(
+            ShBasis::new([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        );
+        let b = Compressed::<RotInv2>::from_coeffs(
+            ShBasis::new([10.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        );
+
+        let mid = a.lerp(&b, 0.5);
+        assert!((mid.coeffs.coeffs[0] - 5.0).abs() < 1e-6);
+        assert!((mid.coeffs.coeffs[1] - 10.0).abs() < 1e-6);
+
+        let quarter = a.lerp(&b, 0.25);
+        assert!((quarter.coeffs.coeffs[0] - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compressed_energy() {
+        let c = Compressed::<RotInv2>::from_coeffs(
+            ShBasis::new([3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        );
+        // Energy = 3² + 4² = 25
+        assert!((c.energy() - 25.0).abs() < 1e-6);
+    }
+
+    // ========================================================================
+    // Lighting Tests
+    // ========================================================================
 
     #[test]
     fn test_cosine_lobe_sh() {
@@ -650,11 +1156,50 @@ mod tests {
         // Sample should be maximal in the lobe direction
         let up = lobe.sample((0.0, 0.0, 1.0));
         let side = lobe.sample((1.0, 0.0, 0.0));
+        let down = lobe.sample((0.0, 0.0, -1.0));
+
         assert!(up > side);
+        assert!(side > down);
     }
 
     #[test]
-    fn test_irradiance() {
+    fn test_cosine_lobe_different_normals() {
+        let lobe_z = cosine_lobe_sh((0.0, 0.0, 1.0));
+        let lobe_x = cosine_lobe_sh((1.0, 0.0, 0.0));
+
+        // Each should be maximal in its own direction
+        assert!(lobe_z.sample((0.0, 0.0, 1.0)) > lobe_z.sample((1.0, 0.0, 0.0)));
+        assert!(lobe_x.sample((1.0, 0.0, 0.0)) > lobe_x.sample((0.0, 0.0, 1.0)));
+    }
+
+    #[test]
+    fn test_directional_light() {
+        let light_dir = normalize((0.0, 0.0, 1.0));
+        let light = directional_light_sh(light_dir, 1.0);
+
+        // Sampling in light direction should give highest value
+        let in_dir = light.sample(light_dir);
+        let perp = light.sample((1.0, 0.0, 0.0));
+
+        assert!(in_dir > perp);
+    }
+
+    #[test]
+    fn test_ambient_light() {
+        let ambient = ambient_light_sh(1.0);
+
+        // Ambient should be roughly equal in all directions
+        let val_z = ambient.sample((0.0, 0.0, 1.0));
+        let val_x = ambient.sample((1.0, 0.0, 0.0));
+        let val_neg = ambient.sample((0.0, 0.0, -1.0));
+
+        // Should all be similar (within tolerance)
+        assert!((val_z - val_x).abs() < 0.1);
+        assert!((val_x - val_neg).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_irradiance_uniform() {
         // Uniform environment (DC only)
         let env = Compressed::<RotInv2>::from_coeffs(
             ShBasis::new([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -663,8 +1208,138 @@ mod tests {
         // Irradiance at any normal should be roughly constant
         let e1 = irradiance(&env, (0.0, 0.0, 1.0));
         let e2 = irradiance(&env, (1.0, 0.0, 0.0));
+        let e3 = irradiance(&env, normalize((1.0, 1.0, 1.0)));
 
-        // Not exactly equal due to SH approximation, but close
         assert!((e1 - e2).abs() < 0.5);
+        assert!((e2 - e3).abs() < 0.5);
+    }
+
+    #[test]
+    fn test_irradiance_directional() {
+        // Light from +Z
+        let env = directional_light_sh((0.0, 0.0, 1.0), 1.0);
+
+        // Surface facing up should receive more light than facing down
+        let e_up = irradiance(&env, (0.0, 0.0, 1.0));
+        let e_down = irradiance(&env, (0.0, 0.0, -1.0));
+        let e_side = irradiance(&env, (1.0, 0.0, 0.0));
+
+        assert!(e_up > e_side);
+        assert!(e_side > e_down || (e_down - e_side).abs() < 0.5);
+    }
+
+    // ========================================================================
+    // Manifold Integration Tests
+    // ========================================================================
+
+    #[test]
+    fn test_compressed_manifold_eval() {
+        let coeffs = ShBasis::<9>::new([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let compressed = Compressed::<RotInv2>::from_coeffs(coeffs);
+        let manifold = CompressedManifold::new(compressed);
+
+        // Evaluate at +Z direction
+        let result = manifold.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(1.0),
+            Field::from(0.0),
+        );
+
+        // Extract result
+        let mut buf = [0.0f32; crate::PARALLELISM];
+        result.store(&mut buf);
+
+        // Should be non-zero
+        assert!(buf[0].abs() > 0.0);
+    }
+
+    #[test]
+    fn test_compressed_manifold_directional() {
+        // Create SH for +Z directional
+        let coeffs = ShBasis::<9>::eval_at_scalar(0.0, 0.0, 1.0);
+        let compressed = Compressed::<RotInv2>::from_coeffs(coeffs);
+        let manifold = CompressedManifold::new(compressed);
+
+        // Evaluate at +Z vs +X
+        let val_z = manifold.eval_raw(
+            Field::from(0.0), Field::from(0.0), Field::from(1.0), Field::from(0.0)
+        );
+        let val_x = manifold.eval_raw(
+            Field::from(1.0), Field::from(0.0), Field::from(0.0), Field::from(0.0)
+        );
+
+        let mut buf_z = [0.0f32; crate::PARALLELISM];
+        let mut buf_x = [0.0f32; crate::PARALLELISM];
+        val_z.store(&mut buf_z);
+        val_x.store(&mut buf_x);
+
+        // +Z direction should give higher value
+        assert!(buf_z[0] > buf_x[0]);
+    }
+
+    // ========================================================================
+    // Edge Cases and Numerical Stability
+    // ========================================================================
+
+    #[test]
+    fn test_sh_eval_zero_direction() {
+        // Zero direction should not panic
+        let coeffs = ShBasis::<9>::eval_at_scalar(0.0, 0.0, 0.0);
+        // With proper handling, should return zeros or handle gracefully
+        for c in coeffs.coeffs {
+            assert!(c.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_sh_eval_unnormalized() {
+        // Should work with unnormalized directions
+        let coeffs1 = ShBasis::<9>::eval_at_scalar(0.0, 0.0, 1.0);
+        let coeffs2 = ShBasis::<9>::eval_at_scalar(0.0, 0.0, 10.0);
+
+        // Should be the same (direction only matters)
+        for i in 0..9 {
+            assert!((coeffs1.coeffs[i] - coeffs2.coeffs[i]).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn test_frame_degenerate_normal() {
+        // Nearly-zero normal should still produce valid frame
+        let frame = Frame::aligned_to((0.0, 0.0, 0.0), (1e-10, 1e-10, 1e-10));
+        let local = frame.to_local((1.0, 0.0, 0.0));
+        let back = frame.to_world(local);
+
+        // Should not be NaN
+        assert!(back.0.is_finite());
+        assert!(back.1.is_finite());
+        assert!(back.2.is_finite());
+    }
+
+    #[test]
+    fn test_compressed_zero_coefficients() {
+        let zero = Compressed::<RotInv2>::from_coeffs(ShBasis::zero());
+
+        // Sampling should return 0
+        let val = zero.sample((0.0, 0.0, 1.0));
+        assert!(val.abs() < 1e-10);
+
+        // DC term should be 0
+        assert!(zero.dc_term().abs() < 1e-10);
+
+        // Energy should be 0
+        assert!(zero.energy().abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_compressed_large_coefficients() {
+        let large = Compressed::<RotInv2>::from_coeffs(
+            ShBasis::new([1e6, 1e6, 1e6, 1e6, 1e6, 1e6, 1e6, 1e6, 1e6])
+        );
+
+        let val = large.sample((0.0, 0.0, 1.0));
+        assert!(val.is_finite());
+        assert!(val.abs() > 0.0);
     }
 }
