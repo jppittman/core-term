@@ -3,19 +3,19 @@
 //! We map a string into a Sum of Translated, Scaled Glyphs.
 
 use super::ttf::{Font, Glyph, Sum};
-use crate::transform::{Scale, Translate};
+use crate::transform::Translate;
 use pixelflow_core::{Field, Jet2, Manifold};
 use std::sync::Arc;
 
 /// A Monoid representing a line of text.
 ///
 /// It is literally just the Sum of its parts.
-/// Type: Sum<Translate<Scale<Glyph>>>
+/// Type: Sum<Translate<Glyph>>
 #[derive(Clone, Debug)]
 pub struct Text {
     // We Monomorphize the scene graph to a concrete type for maximum throughput.
     // No dynamic dispatch. No VTables. Just a massive inlineable expression.
-    pub inner: Sum<Translate<Scale<Glyph>>>,
+    pub inner: Sum<Translate<Glyph>>,
     pub width: f32,
 }
 
@@ -25,36 +25,31 @@ impl Text {
     /// This is a scan (prefix sum) operation over the character stream,
     /// lifting each character into the Manifold category.
     pub fn new(font: &Font, text: &str, size: f32) -> Self {
-        // 1. The Scaling Factor (Em Space -> Screen Space)
-        let scale = size / font.units_per_em as f32;
-
-        // 2. The Stream: Char -> (Glyph, Advance)
+        // The Stream: Char -> (Scaled Glyph, Scaled Advance)
+        // glyph_scaled handles: scaling, Y-axis flip, and ascent offset
         let stream = text.chars().map(|ch| {
             (
-                font.glyph(ch).unwrap_or(Glyph::Empty),
-                font.advance(ch).unwrap_or(0.0) * scale // Scale advance to pixels
+                font.glyph_scaled(ch, size).unwrap_or(Glyph::Empty),
+                font.advance_scaled(ch, size).unwrap_or(0.0),
             )
         });
 
-        // 3. The Scan: Accumulate X position
-        // We use a mutable fold to keep it linear and zero-alloc in the cursor logic.
+        // The Scan: Accumulate X position
         let mut cursor = 0.0;
-        let terms: Vec<_> = stream.map(|(glyph, advance)| {
-            let pos = cursor;
-            cursor += advance;
+        let terms: Vec<_> = stream
+            .map(|(glyph, advance)| {
+                let pos = cursor;
+                cursor += advance;
 
-            // The Morphism:
-            // Glyph -> Scale(Glyph) -> Translate(Scale(Glyph))
-            Translate {
-                manifold: Scale {
+                // The Morphism: Translate the pre-scaled glyph
+                Translate {
                     manifold: glyph,
-                    factor: scale,
-                },
-                offset: [pos, 0.0],
-            }
-        }).collect();
+                    offset: [pos, 0.0],
+                }
+            })
+            .collect();
 
-        // 4. The Monoid: Sum the terms
+        // The Monoid: Sum the terms
         Self {
             inner: Sum(Arc::from(terms)),
             width: cursor,
