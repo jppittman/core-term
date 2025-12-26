@@ -5,6 +5,7 @@
 pub mod baked;
 pub mod fonts;
 pub mod image;
+pub mod lighting;
 pub mod render;
 pub mod shapes;
 pub mod transform;
@@ -22,6 +23,12 @@ pub use render::color::{
 };
 pub use render::frame::Frame;
 pub use render::rasterizer::TensorShape;
+
+// Re-export lighting
+pub use lighting::{
+    AmbientLight, CosineLobe, DirectionalLight, IrradianceField, IrradianceManifold,
+    ambient_light_sh, cosine_lobe_sh, directional_light_sh, irradiance,
+};
 
 // Re-export core types for convenience
 pub use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, Map, W, X, Y, Z};

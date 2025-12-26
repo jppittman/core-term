@@ -23,15 +23,17 @@
 //! - [`Frame`]: Coordinate frame for gauge freedom
 //! - [`Compressed`]: A field projected onto its natural basis
 //!
-//! ## Example: Spherical Harmonics for Irradiance
+//! ## Example: Spherical Harmonics
 //!
 //! ```ignore
-//! // Environment light, baked once
-//! let env = Compressed::<RotationInvariant3D>::bake(sky_manifold, Frame::identity());
+//! // Project a field onto SH basis
+//! let compressed = project_to_sh(&manifold, 1000);
 //!
-//! // At each shading point: multiply in basis space
-//! let result = env.mul_coeffs(&visibility_sh);
-//! let irradiance = result.sample(normal);
+//! // Multiply two SH fields (stays in basis)
+//! let result = compressed.mul_coeffs(&other);
+//!
+//! // Sample at a direction
+//! let value = result.sample((0.0, 0.0, 1.0));
 //! ```
 
 use crate::manifold::Manifold;
@@ -737,91 +739,6 @@ where
     Compressed::from_coeffs(ShBasis::new(coeffs))
 }
 
-/// Create SH coefficients for a directional light.
-///
-/// A directional light in direction `dir` with intensity `intensity`
-/// is represented as a delta function, which projects onto SH as
-/// the evaluation of each basis function at that direction.
-pub fn directional_light_sh(dir: (f32, f32, f32), intensity: f32) -> Compressed<RotInv2> {
-    let basis = ShBasis::<9>::eval_at_scalar(dir.0, dir.1, dir.2);
-    let mut coeffs = basis.coeffs;
-    for c in coeffs.iter_mut() {
-        *c *= intensity;
-    }
-    Compressed::from_coeffs(ShBasis::new(coeffs))
-}
-
-/// Create SH coefficients for ambient (uniform) lighting.
-///
-/// Uniform lighting only has a DC (l=0) component.
-pub fn ambient_light_sh(intensity: f32) -> Compressed<RotInv2> {
-    use crate::SH_NORM;
-
-    // DC term for uniform sphere = intensity / Y_0^0
-    // Since ∫ Y_0^0 dΩ = √(4π), and Y_0^0 = 1/(2√π)
-    // For uniform intensity I over hemisphere, DC = I * √(4π)
-    let dc = intensity * libm::sqrtf(4.0 * core::f32::consts::PI);
-
-    Compressed::from_coeffs(ShBasis::new([
-        dc * SH_NORM[0][0],
-        0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0,
-    ]))
-}
-
-// ============================================================================
-// Cosine Lobe (Analytic SH)
-// ============================================================================
-
-/// Analytic SH coefficients for a clamped cosine lobe.
-///
-/// The cosine lobe `max(0, n·ω)` has known SH projection:
-/// - Only l=0, l=1 are non-zero for Lambertian BRDF
-/// - Coefficients are: [π, 2π/3, 2π/3, 2π/3, 0, 0, 0, 0, 0]
-///   when lobe is aligned with +z.
-pub fn cosine_lobe_sh(normal: (f32, f32, f32)) -> Compressed<RotInv2> {
-    // Normalize
-    let len = libm::sqrtf(normal.0 * normal.0 + normal.1 * normal.1 + normal.2 * normal.2);
-    let (nx, ny, nz) = if len > 1e-6 {
-        (normal.0 / len, normal.1 / len, normal.2 / len)
-    } else {
-        (0.0, 0.0, 1.0)
-    };
-
-    // Analytic coefficients for cosine lobe
-    // These are the ZH coefficients rotated to align with normal
-    let a0 = core::f32::consts::PI; // l=0: π * Y_0^0
-    let a1 = 2.0 * core::f32::consts::PI / 3.0; // l=1: 2π/3 * Y_1^m
-
-    let coeffs = ShBasis::new([
-        a0 * 0.282_094_79,                    // l=0
-        a1 * 0.488_602_51 * ny,               // l=1, m=-1
-        a1 * 0.488_602_51 * nz,               // l=1, m=0
-        a1 * 0.488_602_51 * nx,               // l=1, m=1
-        0.0, 0.0, 0.0, 0.0, 0.0,              // l=2 (zero for Lambertian)
-    ]);
-
-    Compressed::from_coeffs(coeffs)
-}
-
-// ============================================================================
-// Irradiance Computation
-// ============================================================================
-
-/// Compute irradiance at a point given environment SH and normal.
-///
-/// This is the fundamental operation:
-/// `E(n) = L_sh · T_sh(n)`
-///
-/// where L_sh is the environment lighting and T_sh is the
-/// cosine-weighted transfer function.
-pub fn irradiance(
-    environment: &Compressed<RotInv2>,
-    normal: (f32, f32, f32),
-) -> f32 {
-    let transfer = cosine_lobe_sh(normal);
-    environment.mul_coeffs(&transfer).dc_term()
-}
 
 // ============================================================================
 // Tests
@@ -1139,92 +1056,6 @@ mod tests {
         );
         // Energy = 3² + 4² = 25
         assert!((c.energy() - 25.0).abs() < 1e-6);
-    }
-
-    // ========================================================================
-    // Lighting Tests
-    // ========================================================================
-
-    #[test]
-    fn test_cosine_lobe_sh() {
-        let lobe = cosine_lobe_sh((0.0, 0.0, 1.0));
-
-        // DC term should be non-zero (ambient)
-        assert!(lobe.dc_term().abs() > 0.0);
-
-        // Sample should be maximal in the lobe direction
-        let up = lobe.sample((0.0, 0.0, 1.0));
-        let side = lobe.sample((1.0, 0.0, 0.0));
-        let down = lobe.sample((0.0, 0.0, -1.0));
-
-        assert!(up > side);
-        assert!(side > down);
-    }
-
-    #[test]
-    fn test_cosine_lobe_different_normals() {
-        let lobe_z = cosine_lobe_sh((0.0, 0.0, 1.0));
-        let lobe_x = cosine_lobe_sh((1.0, 0.0, 0.0));
-
-        // Each should be maximal in its own direction
-        assert!(lobe_z.sample((0.0, 0.0, 1.0)) > lobe_z.sample((1.0, 0.0, 0.0)));
-        assert!(lobe_x.sample((1.0, 0.0, 0.0)) > lobe_x.sample((0.0, 0.0, 1.0)));
-    }
-
-    #[test]
-    fn test_directional_light() {
-        let light_dir = normalize((0.0, 0.0, 1.0));
-        let light = directional_light_sh(light_dir, 1.0);
-
-        // Sampling in light direction should give highest value
-        let in_dir = light.sample(light_dir);
-        let perp = light.sample((1.0, 0.0, 0.0));
-
-        assert!(in_dir > perp);
-    }
-
-    #[test]
-    fn test_ambient_light() {
-        let ambient = ambient_light_sh(1.0);
-
-        // Ambient should be roughly equal in all directions
-        let val_z = ambient.sample((0.0, 0.0, 1.0));
-        let val_x = ambient.sample((1.0, 0.0, 0.0));
-        let val_neg = ambient.sample((0.0, 0.0, -1.0));
-
-        // Should all be similar (within tolerance)
-        assert!((val_z - val_x).abs() < 0.1);
-        assert!((val_x - val_neg).abs() < 0.1);
-    }
-
-    #[test]
-    fn test_irradiance_uniform() {
-        // Uniform environment (DC only)
-        let env = Compressed::<RotInv2>::from_coeffs(
-            ShBasis::new([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        );
-
-        // Irradiance at any normal should be roughly constant
-        let e1 = irradiance(&env, (0.0, 0.0, 1.0));
-        let e2 = irradiance(&env, (1.0, 0.0, 0.0));
-        let e3 = irradiance(&env, normalize((1.0, 1.0, 1.0)));
-
-        assert!((e1 - e2).abs() < 0.5);
-        assert!((e2 - e3).abs() < 0.5);
-    }
-
-    #[test]
-    fn test_irradiance_directional() {
-        // Light from +Z
-        let env = directional_light_sh((0.0, 0.0, 1.0), 1.0);
-
-        // Surface facing up should receive more light than facing down
-        let e_up = irradiance(&env, (0.0, 0.0, 1.0));
-        let e_down = irradiance(&env, (0.0, 0.0, -1.0));
-        let e_side = irradiance(&env, (1.0, 0.0, 0.0));
-
-        assert!(e_up > e_side);
-        assert!(e_side > e_down || (e_down - e_side).abs() < 0.5);
     }
 
     // ========================================================================

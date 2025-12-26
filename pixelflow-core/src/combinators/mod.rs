@@ -13,9 +13,8 @@ pub mod texture;
 
 pub use fix::Fix;
 pub use kernel::{
-    Basis, CgEntry, Coefficients, Compressed, CompressedManifold, Frame, RotInv2,
-    RotationInvariant3D, ShBasis, Symmetry, CG_ORDER_2, ambient_light_sh, cosine_lobe_sh,
-    directional_light_sh, irradiance, project_to_sh,
+    Basis, CgEntry, Coefficients, Compressed, CompressedManifold, Frame,
+    RotInv2, RotationInvariant3D, ShBasis, Symmetry, CG_ORDER_2, project_to_sh,
 };
 pub use map::Map;
 pub use pack::Pack;

@@ -5,8 +5,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use pixelflow_core::{
     combinators::{
-        ambient_light_sh, cosine_lobe_sh, directional_light_sh, irradiance, Basis,
-        Coefficients, CompressedManifold, Fix, ShBasis,
+        Basis, CG_ORDER_2, Coefficients, Compressed, CompressedManifold, Fix, RotInv2, ShBasis,
     },
     Field, Jet2, Manifold, ManifoldExt, PARALLELISM, X, Y, Z,
 };
@@ -520,7 +519,7 @@ fn bench_evaluation_throughput(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Kernel Algebra Benchmarks (Spherical Harmonics Lighting)
+// Kernel Algebra Benchmarks (Spherical Harmonics - Pure Math)
 // ============================================================================
 
 fn bench_sh_basis_eval(c: &mut Criterion) {
@@ -558,64 +557,17 @@ fn bench_sh_basis_eval(c: &mut Criterion) {
 fn bench_sh_coefficients(c: &mut Criterion) {
     let mut group = c.benchmark_group("sh_coefficients");
 
-    // Create two SH coefficient sets
-    let cosine = cosine_lobe_sh((0.0, 1.0, 0.0));
-    let light = directional_light_sh((0.577, 0.577, 0.577), 1.0);
+    // Create two SH coefficient sets (pure math, no lighting)
+    let coeffs_a = ShBasis::<9>::new([1.0, 0.5, 0.3, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005]);
+    let coeffs_b = ShBasis::<9>::new([0.8, 0.4, 0.2, 0.1, 0.05, 0.025, 0.01, 0.005, 0.002]);
 
     group.bench_function("dot_product_9coeff", |bencher| {
-        bencher.iter(|| black_box(black_box(&cosine.coeffs).dot(black_box(&light.coeffs))))
+        bencher.iter(|| black_box(black_box(&coeffs_a).dot(black_box(&coeffs_b))))
     });
 
     group.bench_function("clebsch_gordan_multiply_9coeff", |bencher| {
-        use pixelflow_core::combinators::CG_ORDER_2;
         bencher.iter(|| {
-            black_box(
-                black_box(&cosine.coeffs).multiply(black_box(&light.coeffs), CG_ORDER_2),
-            )
-        })
-    });
-
-    group.finish();
-}
-
-fn bench_compressed_creation(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compressed_creation");
-
-    group.bench_function("cosine_lobe_sh", |bencher| {
-        let normal = (0.0f32, 1.0f32, 0.0f32);
-        bencher.iter(|| black_box(cosine_lobe_sh(black_box(normal))))
-    });
-
-    group.bench_function("directional_light_sh", |bencher| {
-        let dir = (0.577f32, 0.577f32, 0.577f32);
-        bencher.iter(|| black_box(directional_light_sh(black_box(dir), 1.0)))
-    });
-
-    group.bench_function("ambient_light_sh", |bencher| {
-        bencher.iter(|| black_box(ambient_light_sh(black_box(1.0))))
-    });
-
-    group.finish();
-}
-
-fn bench_irradiance_computation(c: &mut Criterion) {
-    let mut group = c.benchmark_group("irradiance");
-
-    // Pre-create environment light
-    let env = directional_light_sh((0.577, 0.577, 0.577), 1.0);
-
-    group.bench_function("single_normal", |bencher| {
-        let normal = (0.0f32, 1.0f32, 0.0f32);
-        bencher.iter(|| black_box(irradiance(black_box(&env), black_box(normal))))
-    });
-
-    group.bench_function("full_pipeline_diffuse", |bencher| {
-        // Full diffuse lighting: create cosine lobe, multiply with env, extract DC
-        let normal = (0.0f32, 1.0f32, 0.0f32);
-        bencher.iter(|| {
-            let cosine = cosine_lobe_sh(black_box(normal));
-            let lit = cosine.coeffs.dot(&env.coeffs);
-            black_box(lit)
+            black_box(black_box(&coeffs_a).multiply(black_box(&coeffs_b), CG_ORDER_2))
         })
     });
 
@@ -626,14 +578,16 @@ fn bench_compressed_manifold(c: &mut Criterion) {
     let mut group = c.benchmark_group("compressed_manifold");
     group.throughput(Throughput::Elements(PARALLELISM as u64));
 
-    // Create a directional light as CompressedManifold
-    let light = directional_light_sh((0.577, 0.577, 0.577), 1.0);
-    let manifold = CompressedManifold::new(light);
+    // Create compressed field from SH basis evaluation (pure math)
+    let dir = (0.577f32, 0.577f32, 0.577f32);
+    let coeffs = ShBasis::<9>::eval_at_scalar(dir.0, dir.1, dir.2);
+    let compressed = Compressed::<RotInv2>::from_coeffs(coeffs);
+    let manifold = CompressedManifold::new(compressed);
 
     let w = Field::from(0.0);
 
     group.bench_function("eval_vectorized", |bencher| {
-        // Sample at multiple directions (hemisphere-ish)
+        // Sample at multiple directions
         let x = Field::sequential(0.0) * Field::from(0.1);
         let y = Field::from(0.5);
         let z = Field::from(0.5);
@@ -643,7 +597,7 @@ fn bench_compressed_manifold(c: &mut Criterion) {
     });
 
     group.bench_function("eval_batch_16_directions", |bencher| {
-        // More realistic: sample 16 directions (simulating hemisphere sampling)
+        // Sample 16 directions
         bencher.iter(|| {
             let mut total = Field::from(0.0);
             for i in 0..16 {
@@ -660,49 +614,41 @@ fn bench_compressed_manifold(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_lighting_scenarios(c: &mut Criterion) {
-    let mut group = c.benchmark_group("lighting_scenarios");
+fn bench_compressed_operations(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compressed_operations");
 
-    group.bench_function("sky_dome_3_lights", |bencher| {
-        // Realistic: sun + sky + ground bounce
-        bencher.iter(|| {
-            let sun = directional_light_sh((0.2, 0.9, 0.4), 2.0);
-            let sky = ambient_light_sh(0.3);
-            let ground = directional_light_sh((0.0, -1.0, 0.0), 0.1);
+    // Create two compressed fields (pure math)
+    let coeffs_a = ShBasis::<9>::new([1.0, 0.5, 0.3, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005]);
+    let coeffs_b = ShBasis::<9>::new([0.8, 0.4, 0.2, 0.1, 0.05, 0.025, 0.01, 0.005, 0.002]);
+    let compressed_a = Compressed::<RotInv2>::from_coeffs(coeffs_a);
+    let compressed_b = Compressed::<RotInv2>::from_coeffs(coeffs_b);
 
-            // Combine lights (add coefficients)
-            let combined = sun.add(&sky).add(&ground);
-
-            // Sample at normal pointing up
-            let normal = (0.0f32, 1.0f32, 0.0f32);
-            black_box(irradiance(&combined, normal))
-        })
+    group.bench_function("add", |bencher| {
+        bencher.iter(|| black_box(compressed_a.add(black_box(&compressed_b))))
     });
 
-    group.bench_function("irradiance_grid_8x8", |bencher| {
-        // Pre-bake environment
-        let env = {
-            let sun = directional_light_sh((0.2, 0.9, 0.4), 2.0);
-            let sky = ambient_light_sh(0.3);
-            sun.add(&sky)
-        };
+    group.bench_function("scale", |bencher| {
+        bencher.iter(|| black_box(compressed_a.scale(black_box(2.5))))
+    });
 
-        bencher.iter(|| {
-            let mut total = 0.0f32;
-            // 8x8 grid of varying normals
-            for i in 0..8 {
-                for j in 0..8 {
-                    let nx = (i as f32 - 3.5) * 0.2;
-                    let ny = 0.8f32;
-                    let nz = (j as f32 - 3.5) * 0.2;
-                    // Normalize
-                    let len = libm::sqrtf(nx * nx + ny * ny + nz * nz);
-                    let normal = (nx / len, ny / len, nz / len);
-                    total += irradiance(&env, normal);
-                }
-            }
-            black_box(total)
-        })
+    group.bench_function("lerp", |bencher| {
+        bencher.iter(|| black_box(compressed_a.lerp(black_box(&compressed_b), black_box(0.5))))
+    });
+
+    group.bench_function("mul_coeffs", |bencher| {
+        bencher.iter(|| black_box(compressed_a.mul_coeffs(black_box(&compressed_b))))
+    });
+
+    group.bench_function("sample", |bencher| {
+        bencher.iter(|| black_box(compressed_a.sample(black_box((0.577, 0.577, 0.577)))))
+    });
+
+    group.bench_function("dc_term", |bencher| {
+        bencher.iter(|| black_box(compressed_a.dc_term()))
+    });
+
+    group.bench_function("energy", |bencher| {
+        bencher.iter(|| black_box(compressed_a.energy()))
     });
 
     group.finish();
@@ -716,10 +662,8 @@ criterion_group!(
     kernel_benches,
     bench_sh_basis_eval,
     bench_sh_coefficients,
-    bench_compressed_creation,
-    bench_irradiance_computation,
     bench_compressed_manifold,
-    bench_lighting_scenarios,
+    bench_compressed_operations,
 );
 
 criterion_group!(

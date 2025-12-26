@@ -27,6 +27,7 @@ use crate::{Field, Manifold};
 /// // Sample at coordinates - returns cached values
 /// let val = tex.eval_raw(x, y, z, w);
 /// ```
+#[derive(Clone)]
 pub struct Texture {
     /// Row-major f32 data.
     data: Vec<f32>,
