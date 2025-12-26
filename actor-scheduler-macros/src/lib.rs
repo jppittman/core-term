@@ -339,22 +339,15 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         "#
     );
 
-    // Generate shutdown_all method
+    // Generate shutdown method - sends in reverse declaration order (last started = first stopped)
     let shutdown_impl = actors
         .iter()
+        .rev()
         .map(|(name, _, _, _)| {
-            format!(
-                "let _ = self.{name}.send(::actor_scheduler::Message::Control(Default::default()));"
-            )
+            format!("let _ = self.{name}.send(::actor_scheduler::Message::Shutdown);")
         })
         .collect::<Vec<_>>()
         .join("\n");
-
-    let shutdown_bounds = actors
-        .iter()
-        .map(|(_, ty, _, _)| format!("<{ty} as ::actor_scheduler::ActorTypes>::Control: Default"))
-        .collect::<Vec<_>>()
-        .join(",\n");
 
     format!(
         r#"
@@ -364,12 +357,14 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         }}
 
         impl Directory {{
-            /// Send shutdown signal to all actors.
-            /// Note: Each actor's Control type must implement Default.
-            pub fn shutdown_all(&self)
-            where
-                {shutdown_bounds}
-            {{
+            /// Initiate graceful shutdown of all actors in this troupe.
+            ///
+            /// Sends `Message::Shutdown` to each actor in reverse declaration order
+            /// (last declared = first to receive shutdown). Actors exit on next
+            /// message drain - they never see the Shutdown message.
+            ///
+            /// Does not block. Scoped threads in `play()` will join automatically.
+            pub fn shutdown(&self) {{
                 {shutdown_impl}
             }}
         }}

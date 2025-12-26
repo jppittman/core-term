@@ -636,17 +636,88 @@ fn actors_can_coordinate_startup_with_barrier() {
 }
 
 // ============================================================================
-// Default Control Message Tests (for shutdown_all pattern)
+// Message::Shutdown Tests
 // ============================================================================
 
 #[test]
-fn default_control_enables_shutdown_all_pattern() {
-    // The troupe! macro uses Default::default() for shutdown_all()
-    // Verify our test types have the right default
+fn shutdown_message_causes_actor_exit() {
+    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
 
-    let shutdown: AlphaControl = Default::default();
-    assert!(matches!(shutdown, AlphaControl::Shutdown));
+    let exited = Arc::new(AtomicBool::new(false));
+    let exited_clone = exited.clone();
 
-    let shutdown: BetaControl = Default::default();
-    assert!(matches!(shutdown, BetaControl::Shutdown));
+    let handle = thread::spawn(move || {
+        struct NoopActor;
+        impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
+            fn handle_data(&mut self, _: AlphaData) {}
+            fn handle_control(&mut self, _: AlphaControl) {}
+            fn handle_management(&mut self, _: AlphaManagement) {}
+            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+        }
+        alpha_s.run(&mut NoopActor);
+        exited_clone.store(true, Ordering::SeqCst);
+    });
+
+    // Verify running
+    thread::sleep(Duration::from_millis(20));
+    assert!(!exited.load(Ordering::SeqCst));
+
+    // Send shutdown
+    alpha_h.send(Message::Shutdown).unwrap();
+
+    // Should exit
+    handle.join().unwrap();
+    assert!(exited.load(Ordering::SeqCst));
+}
+
+#[test]
+fn shutdown_works_with_multiple_actors() {
+    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+    let (beta_h, mut beta_s) = ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
+
+    let alpha_exited = Arc::new(AtomicBool::new(false));
+    let beta_exited = Arc::new(AtomicBool::new(false));
+
+    let alpha_exit = alpha_exited.clone();
+    let beta_exit = beta_exited.clone();
+
+    let alpha_thread = thread::spawn(move || {
+        struct NoopActor;
+        impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
+            fn handle_data(&mut self, _: AlphaData) {}
+            fn handle_control(&mut self, _: AlphaControl) {}
+            fn handle_management(&mut self, _: AlphaManagement) {}
+            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+        }
+        alpha_s.run(&mut NoopActor);
+        alpha_exit.store(true, Ordering::SeqCst);
+    });
+
+    let beta_thread = thread::spawn(move || {
+        struct NoopActor;
+        impl Actor<BetaData, BetaControl, BetaManagement> for NoopActor {
+            fn handle_data(&mut self, _: BetaData) {}
+            fn handle_control(&mut self, _: BetaControl) {}
+            fn handle_management(&mut self, _: BetaManagement) {}
+            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+        }
+        beta_s.run(&mut NoopActor);
+        beta_exit.store(true, Ordering::SeqCst);
+    });
+
+    // Verify both running
+    thread::sleep(Duration::from_millis(20));
+    assert!(!alpha_exited.load(Ordering::SeqCst));
+    assert!(!beta_exited.load(Ordering::SeqCst));
+
+    // Shutdown both (simulating directory.shutdown())
+    beta_h.send(Message::Shutdown).unwrap();
+    alpha_h.send(Message::Shutdown).unwrap();
+
+    // Both should exit
+    alpha_thread.join().unwrap();
+    beta_thread.join().unwrap();
+
+    assert!(alpha_exited.load(Ordering::SeqCst));
+    assert!(beta_exited.load(Ordering::SeqCst));
 }

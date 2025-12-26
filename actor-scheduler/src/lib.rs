@@ -106,8 +106,11 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message<D, C, M> {
     Data(D),
-    Control(C), // No wrapper - just C directly
+    Control(C),
     Management(M),
+    /// Shutdown signal. Handled directly by the scheduler - actor never sees it.
+    /// When received, the scheduler exits its run loop immediately.
+    Shutdown,
 }
 
 /// Implement From for a Control message type.
@@ -330,11 +333,13 @@ fn backoff_with_jitter(attempt: u32) -> Result<Duration, SendError> {
 
 /// A unified sender handle that routes messages to the scheduler with priority lanes.
 pub struct ActorHandle<D, C, M> {
-    // Doorbell channel (buffer: 1) - highest priority wake signal
+    // Doorbell channel (buffer: 1) - wake signal
     tx_doorbell: SyncSender<()>,
+    // Shutdown channel (buffer: 1) - shutdown signal
+    tx_shutdown: SyncSender<()>,
     // All lanes are bounded for backpressure
     tx_data: SyncSender<D>,
-    tx_control: SyncSender<C>, // No wrapper - just C directly
+    tx_control: SyncSender<C>,
     tx_mgmt: SyncSender<M>,
     // Optional custom wake handler for platform-specific wake mechanisms
     wake_handler: Option<Arc<dyn WakeHandler>>,
@@ -355,6 +360,7 @@ impl<D, C, M> Clone for ActorHandle<D, C, M> {
     fn clone(&self) -> Self {
         Self {
             tx_doorbell: self.tx_doorbell.clone(),
+            tx_shutdown: self.tx_shutdown.clone(),
             tx_data: self.tx_data.clone(),
             tx_control: self.tx_control.clone(),
             tx_mgmt: self.tx_mgmt.clone(),
@@ -428,6 +434,11 @@ impl<D, C, M> ActorHandle<D, C, M> {
                 send_with_backoff(&self.tx_mgmt, m)?;
                 self.wake();
             }
+            Message::Shutdown => {
+                // Shutdown: send signal and wake (try_send - drop if already pending)
+                let _ = self.tx_shutdown.try_send(());
+                self.wake();
+            }
         };
         Ok(())
     }
@@ -450,9 +461,10 @@ impl<D, C, M> ActorHandle<D, C, M> {
 
 /// The receiver side that implements the priority scheduling logic.
 pub struct ActorScheduler<D, C, M> {
-    rx_doorbell: Receiver<()>, // Highest priority - wake signal
+    rx_doorbell: Receiver<()>, // Wake signal
+    rx_shutdown: Receiver<()>, // Shutdown signal
     rx_data: Receiver<D>,
-    rx_control: Receiver<C>, // No wrapper - just C directly
+    rx_control: Receiver<C>,
     rx_mgmt: Receiver<M>,
     data_burst_limit: usize,
     management_burst_limit: usize,
@@ -468,13 +480,15 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
     pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1); // Buffer size 1
+        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
+        let (tx_shutdown, rx_shutdown) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
         let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
         let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
 
         let sender = ActorHandle {
             tx_doorbell,
+            tx_shutdown,
             tx_data,
             tx_control,
             tx_mgmt,
@@ -483,6 +497,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
         let receiver = ActorScheduler {
             rx_doorbell,
+            rx_shutdown,
             rx_data,
             rx_control,
             rx_mgmt,
@@ -510,13 +525,15 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
     ) -> (ActorHandle<D, C, M>, Self) {
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1); // Buffer size 1
+        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
+        let (tx_shutdown, rx_shutdown) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
         let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
         let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
 
         let sender = ActorHandle {
             tx_doorbell,
+            tx_shutdown,
             tx_data,
             tx_control,
             tx_mgmt,
@@ -525,6 +542,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
         let receiver = ActorScheduler {
             rx_doorbell,
+            rx_shutdown,
             rx_data,
             rx_control,
             rx_mgmt,
@@ -536,12 +554,14 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     }
 
     /// The Main Scheduler Loop.
-    /// Blocks on the Doorbell channel. Prioritizes Control > Management > Data.
+    /// Blocks on the Doorbell channel. Prioritizes Shutdown > Control > Management > Data.
     ///
     /// # Arguments
     /// * `actor` - Implementation of `Actor` trait
     ///
-    /// This method runs forever until all senders are dropped.
+    /// This method runs until:
+    /// - A `Shutdown` message is received (immediate exit, actor never sees it)
+    /// - All senders are dropped (channel disconnected)
     pub fn run<A>(&mut self, actor: &mut A)
     where
         A: Actor<D, C, M>,
@@ -556,6 +576,11 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
             while keep_working {
                 keep_working = false;
+
+                // Check shutdown first - highest priority, causes immediate exit
+                if self.rx_shutdown.try_recv().is_ok() {
+                    return;
+                }
 
                 while let Ok(ctrl_msg) = self.rx_control.try_recv() {
                     actor.handle_control(ctrl_msg);
@@ -718,6 +743,75 @@ mod tests {
         assert_eq!(actor.data_count, 2);
         assert_eq!(actor.ctrl_count, 1);
         assert_eq!(actor.mgmt_count, 1);
+    }
+
+    #[test]
+    fn shutdown_message_exits_scheduler_immediately() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (tx, mut rx) = ActorScheduler::<(), (), ()>::new(10, 100);
+
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_clone = exited.clone();
+
+        let handle = thread::spawn(move || {
+            struct NoopActor;
+            impl Actor<(), (), ()> for NoopActor {
+                fn handle_data(&mut self, _: ()) {}
+                fn handle_control(&mut self, _: ()) {}
+                fn handle_management(&mut self, _: ()) {}
+                fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            }
+            rx.run(&mut NoopActor);
+            exited_clone.store(true, Ordering::SeqCst);
+        });
+
+        // Verify running
+        thread::sleep(Duration::from_millis(20));
+        assert!(!exited.load(Ordering::SeqCst), "should still be running");
+
+        // Send shutdown
+        tx.send(Message::Shutdown).unwrap();
+
+        // Should exit quickly
+        handle.join().unwrap();
+        assert!(exited.load(Ordering::SeqCst), "should have exited");
+    }
+
+    #[test]
+    fn shutdown_takes_priority_over_pending_messages() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (tx, mut rx) = ActorScheduler::<i32, (), ()>::new(10, 100);
+
+        let processed = Arc::new(AtomicUsize::new(0));
+        let processed_clone = processed.clone();
+
+        // Queue many data messages
+        for i in 0..50 {
+            tx.send(Message::Data(i)).unwrap();
+        }
+        // Then shutdown
+        tx.send(Message::Shutdown).unwrap();
+
+        let handle = thread::spawn(move || {
+            struct CountActor(Arc<AtomicUsize>);
+            impl Actor<i32, (), ()> for CountActor {
+                fn handle_data(&mut self, _: i32) {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+                fn handle_control(&mut self, _: ()) {}
+                fn handle_management(&mut self, _: ()) {}
+                fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            }
+            rx.run(&mut CountActor(processed_clone));
+        });
+
+        handle.join().unwrap();
+
+        // Shutdown should have caused exit before all data processed
+        let count = processed.load(Ordering::SeqCst);
+        assert!(count < 50, "shutdown should exit before processing all data, processed {}", count);
     }
 }
 
