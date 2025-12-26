@@ -3,6 +3,7 @@
 //! Control flow and structural combinators.
 
 pub mod fix;
+pub mod kernel;
 pub mod map;
 pub mod pack;
 pub mod project;
@@ -11,6 +12,10 @@ pub mod spherical;
 pub mod texture;
 
 pub use fix::Fix;
+pub use kernel::{
+    Basis, CgEntry, Coefficients, Compressed, CompressedManifold, Frame, RotInv2,
+    RotationInvariant3D, ShBasis, Symmetry, CG_ORDER_2, cosine_lobe_sh, irradiance,
+};
 pub use map::Map;
 pub use pack::Pack;
 pub use project::Project;
