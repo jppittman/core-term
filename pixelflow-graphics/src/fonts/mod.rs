@@ -4,7 +4,7 @@ pub mod text;
 pub mod ttf;
 
 // Re-export font types
-pub use ttf::{Affine, Curve, Font, Glyph, Line, Quad, Segment, Sum};
+pub use ttf::{Affine, Curve, Font, Glyph, Line, Quad, Sum};
 
 // Re-export text
 pub use text::Text;

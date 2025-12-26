@@ -1,5 +1,5 @@
 use pixelflow_core::{Field, Manifold};
-use pixelflow_graphics::fonts::ttf::{Curve, Geometry};
+use pixelflow_graphics::fonts::ttf::{Geometry, Line};
 use std::hint::black_box;
 
 // Prevent LTO from removing the function we want to inspect
@@ -11,8 +11,8 @@ fn run_kernel(geo: &Geometry, x: Field, y: Field) -> Field {
 fn main() {
     let p0 = [10.0, 10.0];
     let p1 = [20.0, 30.0];
-    let line = Curve([p0, p1]);
-    
+    let line = Line::new([p0, p1]);
+
     let geo = Geometry {
         lines: vec![line].into(),
         quads: vec![].into(),

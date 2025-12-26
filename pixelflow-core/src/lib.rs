@@ -47,7 +47,7 @@ pub use combinators::*;
 pub use ext::*;
 pub use jet::Jet2;
 pub use manifold::*;
-pub use numeric::Numeric;
+pub use numeric::Computational;
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
@@ -58,7 +58,7 @@ pub use variables::*;
 // Field: The ONLY User-Facing SIMD Type
 // ============================================================================
 
-use backend::{Backend, SimdOps, SimdU32Ops};
+use backend::{Backend, MaskOps, SimdOps, SimdU32Ops};
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
@@ -136,68 +136,72 @@ impl Field {
 
     /// Check if any lane is non-zero.
     #[inline(always)]
-    pub(crate) fn any(&self) -> bool {
-        self.0.any()
+    pub fn any(&self) -> bool {
+        // Convert float representation to native mask, then check
+        self.0.float_to_mask().any()
     }
 
     /// Check if all lanes are non-zero.
     #[inline(always)]
-    pub(crate) fn all(&self) -> bool {
-        self.0.all()
+    pub fn all(&self) -> bool {
+        // Convert float representation to native mask, then check
+        self.0.float_to_mask().all()
     }
 
-    /// Less than comparison (returns mask).
+    /// Less than comparison (returns mask as Field).
     #[inline(always)]
-    pub(crate) fn lt(self, rhs: Self) -> Self {
-        Self(self.0.cmp_lt(rhs.0))
+    pub fn lt(self, rhs: Self) -> Self {
+        // Returns native mask, convert back to float representation
+        Self(NativeSimd::mask_to_float(self.0.cmp_lt(rhs.0)))
     }
 
-    /// Less than or equal (returns mask).
+    /// Less than or equal (returns mask as Field).
     #[inline(always)]
-    pub(crate) fn le(self, rhs: Self) -> Self {
-        Self(self.0.cmp_le(rhs.0))
+    pub fn le(self, rhs: Self) -> Self {
+        Self(NativeSimd::mask_to_float(self.0.cmp_le(rhs.0)))
     }
 
-    /// Greater than comparison (returns mask).
+    /// Greater than comparison (returns mask as Field).
     #[inline(always)]
-    pub(crate) fn gt(self, rhs: Self) -> Self {
-        Self(self.0.cmp_gt(rhs.0))
+    pub fn gt(self, rhs: Self) -> Self {
+        Self(NativeSimd::mask_to_float(self.0.cmp_gt(rhs.0)))
     }
 
-    /// Greater than or equal (returns mask).
+    /// Greater than or equal (returns mask as Field).
     #[inline(always)]
-    pub(crate) fn ge(self, rhs: Self) -> Self {
-        Self(self.0.cmp_ge(rhs.0))
+    pub fn ge(self, rhs: Self) -> Self {
+        Self(NativeSimd::mask_to_float(self.0.cmp_ge(rhs.0)))
     }
 
     /// Square root.
     #[inline(always)]
-    pub(crate) fn sqrt(self) -> Self {
+    pub fn sqrt(self) -> Self {
         Self(self.0.sqrt())
     }
 
     /// Absolute value.
     #[inline(always)]
-    pub(crate) fn abs(self) -> Self {
+    pub fn abs(self) -> Self {
         Self(self.0.abs())
     }
 
     /// Element-wise minimum.
     #[inline(always)]
-    pub fn field_min(self, rhs: Self) -> Self {
+    pub fn min(self, rhs: Self) -> Self {
         Self(self.0.min(rhs.0))
     }
 
     /// Element-wise maximum.
     #[inline(always)]
-    pub fn field_max(self, rhs: Self) -> Self {
+    pub fn max(self, rhs: Self) -> Self {
         Self(self.0.max(rhs.0))
     }
 
-    /// Conditional select.
+    /// Conditional select (raw SIMD, no early exit).
     #[inline(always)]
-    pub(crate) fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        Self(NativeSimd::select(mask.0, if_true.0, if_false.0))
+    pub(crate) fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
+        // Convert float mask to native, use native select
+        Self(NativeSimd::select(mask.0.float_to_mask(), if_true.0, if_false.0))
     }
 
     // ========================================================================
@@ -230,14 +234,45 @@ impl Field {
 
     /// Exponential function (per-lane via libm).
     #[inline(always)]
-    pub(crate) fn exp(self) -> Self {
+    pub fn exp(self) -> Self {
         self.map_lanes(libm::expf)
     }
 
     /// Floor (round toward negative infinity).
     #[inline(always)]
-    pub(crate) fn floor(self) -> Self {
+    pub fn floor(self) -> Self {
         Self(self.0.floor())
+    }
+
+    /// Fused multiply-add: self * b + c
+    /// Uses FMA instruction when available (single rounding).
+    #[inline(always)]
+    pub(crate) fn mul_add(self, b: Self, c: Self) -> Self {
+        Self(self.0.mul_add(b.0, c.0))
+    }
+
+    /// Fast approximate reciprocal (1/x).
+    /// Uses SIMD reciprocal instruction (~12-14 bits accuracy).
+    #[inline(always)]
+    pub(crate) fn recip(self) -> Self {
+        Self(self.0.recip())
+    }
+
+    /// Fast reciprocal square root (1/sqrt(x)) with Newton-Raphson refinement.
+    ///
+    /// Uses SIMD rsqrt + one NR iteration for near-full f32 precision.
+    /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
+    #[inline(always)]
+    pub fn rsqrt(self) -> Self {
+        Self(self.0.rsqrt())
+    }
+
+    /// Masked add: self + (mask ? val : 0)
+    /// Optimized for winding accumulation patterns.
+    #[inline(always)]
+    pub(crate) fn add_masked(self, val: Self, mask: Self) -> Self {
+        // Convert float mask to native, use native add_masked
+        Self(self.0.add_masked(val.0, mask.0.float_to_mask()))
     }
 
     /// Apply a unary function to each lane.
@@ -366,7 +401,23 @@ impl Discrete {
 }
 
 // ============================================================================
-// Numeric Implementation for Field
+// Computational Implementation for Field (Public API)
+// ============================================================================
+
+impl numeric::Computational for Field {
+    #[inline(always)]
+    fn from_f32(val: f32) -> Self {
+        Self::from(val)
+    }
+
+    #[inline(always)]
+    fn sequential(start: f32) -> Self {
+        Self(NativeSimd::sequential(start))
+    }
+}
+
+// ============================================================================
+// Numeric Implementation for Field (Internal)
 // ============================================================================
 
 impl numeric::Numeric for Field {
@@ -382,12 +433,12 @@ impl numeric::Numeric for Field {
 
     #[inline(always)]
     fn min(self, rhs: Self) -> Self {
-        Self::field_min(self, rhs)
+        Self::min(self, rhs)
     }
 
     #[inline(always)]
     fn max(self, rhs: Self) -> Self {
-        Self::field_max(self, rhs)
+        Self::max(self, rhs)
     }
 
     #[inline(always)]
@@ -412,7 +463,15 @@ impl numeric::Numeric for Field {
 
     #[inline(always)]
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        Self::select(mask, if_true, if_false)
+        if mask.all() { return if_true; }
+        if !mask.any() { return if_false; }
+        Self::select_raw(mask, if_true, if_false)
+    }
+
+    #[inline(always)]
+    fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
+        // Convert float mask to native, use native select
+        Self(NativeSimd::select(mask.0.float_to_mask(), if_true.0, if_false.0))
     }
 
     #[inline(always)]
@@ -423,11 +482,6 @@ impl numeric::Numeric for Field {
     #[inline(always)]
     fn all(&self) -> bool {
         Self::all(self)
-    }
-
-    #[inline(always)]
-    fn from_f32(val: f32) -> Self {
-        Self::from(val)
     }
 
     #[inline(always)]
@@ -468,6 +522,26 @@ impl numeric::Numeric for Field {
     #[inline(always)]
     fn floor(self) -> Self {
         Self::floor(self)
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        Self::mul_add(self, b, c)
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        Self::recip(self)
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        Self::rsqrt(self)
+    }
+
+    #[inline(always)]
+    fn add_masked(self, val: Self, mask: Self) -> Self {
+        Self::add_masked(self, val, mask)
     }
 }
 

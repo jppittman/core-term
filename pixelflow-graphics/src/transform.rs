@@ -1,6 +1,6 @@
 //! Coordinate transformations for manifolds.
 
-use pixelflow_core::{Manifold, Numeric};
+use pixelflow_core::{Computational, Manifold};
 
 /// Uniform scaling of the manifold domain.
 ///
@@ -15,7 +15,7 @@ pub struct Scale<M> {
 impl<M, I> Manifold<I> for Scale<M>
 where
     M: Manifold<I>,
-    I: Numeric,
+    I: Computational,
 {
     type Output = M::Output;
 
@@ -38,7 +38,7 @@ pub struct Translate<M> {
 impl<M, I> Manifold<I> for Translate<M>
 where
     M: Manifold<I>,
-    I: Numeric,
+    I: Computational,
 {
     type Output = M::Output;
 

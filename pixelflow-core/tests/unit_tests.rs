@@ -22,8 +22,8 @@ use pixelflow_core::{
     manifold::Scale,
     // Jet2
     Jet2,
-    // Numeric trait (needed for Jet2 methods)
-    Numeric,
+    // Computational trait (needed for from_f32)
+    Computational,
     // Materialize
     materialize,
 };
@@ -78,8 +78,8 @@ mod field_tests {
         let a: Field = 5.0f32.into();
         let b: Field = 3.0f32.into();
 
-        let _min = a.field_min(b);
-        let _max = a.field_max(b);
+        let _min = a.min(b);
+        let _max = a.max(b);
     }
 }
 
@@ -665,7 +665,7 @@ mod map_tests {
 
     #[test]
     fn test_map_clamp() {
-        let clamped = X.map(|v| v.field_max(Field::from(0.0)).field_min(Field::from(1.0)));
+        let clamped = X.map(|v| v.max(Field::from(0.0)).min(Field::from(1.0)));
 
         // Test value in range
         let x = Field::from(0.5);
@@ -966,8 +966,10 @@ mod jet2_tests {
 
     #[test]
     fn test_jet2_from_scalars() {
-        let from_f32 = Jet2::from_f32(42.0);
-        let from_i32 = Jet2::from_i32(42);
+        // Use Computational trait method
+        let from_f32 = <Jet2 as Computational>::from_f32(42.0);
+        // from_i32 is no longer public, use constant(Field::from(...)) instead
+        let from_i32 = Jet2::constant(Field::from(42));
 
         let _ = from_f32.val;
         let _ = from_i32.val;

@@ -36,7 +36,7 @@ impl<Seed: Manifold<Output = Field>, Step: Manifold<Output = Field>, Done: Manif
             let done_mask = self.done.eval_raw(x, y, z, state);
 
             // Retire converged lanes: active = active AND NOT done
-            active = Field::select(done_mask, zero, active);
+            active = Field::select_raw(done_mask, zero, active);
 
             // Early exit if all lanes converged
             if !active.any() {
@@ -45,7 +45,7 @@ impl<Seed: Manifold<Output = Field>, Step: Manifold<Output = Field>, Done: Manif
 
             // Step only active lanes
             let next = self.step.eval_raw(x, y, z, state);
-            state = Field::select(active, next, state);
+            state = Field::select_raw(active, next, state);
         }
 
         state

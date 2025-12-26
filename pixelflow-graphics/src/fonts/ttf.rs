@@ -6,7 +6,7 @@
 //! short-circuit evaluation, then wrapped in Affine transforms.
 
 use crate::shapes::{square, Bounded};
-use pixelflow_core::{Field, Jet2, Manifold, Numeric};
+use pixelflow_core::{Abs, Computational, Field, Ge, Jet2, Manifold, Select};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -41,7 +41,7 @@ impl<M> Affine<M> {
 /// Generic Affine implementation for any inner manifold.
 impl<M, I> Manifold<I> for Affine<M>
 where
-    I: Numeric,
+    I: Computational,
     M: Manifold<I>,
 {
     type Output = M::Output;
@@ -62,13 +62,17 @@ pub struct Sum<M>(pub Arc<[M]>);
 /// Generic Sum implementation for any inner manifold.
 impl<M, I> Manifold<I> for Sum<M>
 where
-    I: Numeric,
+    I: Computational,
     M: Manifold<I, Output = I>,
 {
     type Output = I;
 
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+        // Fast path for single-element sums (common case: scaled glyphs)
+        if self.0.len() == 1 {
+            return self.0[0].eval_raw(x, y, z, w);
+        }
         self.0
             .iter()
             .fold(I::from_f32(0.0), |acc, m| acc + m.eval_raw(x, y, z, w))
@@ -78,22 +82,17 @@ where
 /// Threshold combinator - converts winding number to inside/outside (0 or 1).
 ///
 /// Applies the non-zero winding rule: |winding| >= 0.5 means inside.
-#[derive(Clone, Debug)]
-pub struct Threshold<M>(pub M);
+/// Threshold: |winding| >= 0.5 → 1.0, else 0.0 (non-zero winding rule)
+/// Defined as combinator composition, not imperative code.
+pub type Threshold<M> = Select<Ge<Abs<M>, f32>, f32, f32>;
 
-impl<M, I> Manifold<I> for Threshold<M>
-where
-    I: Numeric,
-    M: Manifold<I, Output = I>,
-{
-    type Output = I;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        let winding = self.0.eval_raw(x, y, z, w);
-        // Non-zero winding rule: |winding| >= 0.5 means inside
-        let inside = winding.abs().ge(I::from_f32(0.5));
-        I::select(inside, I::from_f32(1.0), I::from_f32(0.0))
+/// Create a threshold manifold from a winding number manifold.
+#[inline(always)]
+pub fn threshold<M>(m: M) -> Threshold<M> {
+    Select {
+        cond: Ge(Abs(m), 0.5f32),
+        if_true: 1.0f32,
+        if_false: 0.0f32,
     }
 }
 
@@ -104,35 +103,158 @@ where
 #[derive(Clone, Copy, Debug)]
 pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
 
-pub type Line = Curve<2>;
 pub type Quad = Curve<3>;
 
+/// Line segment with precomputed AA scale for smooth anti-aliasing.
+///
+/// The `aa_scale` is `|dy|/len` where `len = sqrt(dx² + dy²)`.
+/// This converts horizontal distance to normalized distance for coverage.
 #[derive(Clone, Copy, Debug)]
-pub enum Segment {
-    Line(Line),
-    Quad(Quad),
+pub struct Line {
+    pub points: [[f32; 2]; 2],
+    /// Precomputed |dy|/sqrt(dx² + dy²) for AA coverage
+    pub aa_scale: f32,
 }
 
-// ─── Field Implementation (Aliased / Hard Edges) ───────────────────────────
+impl Line {
+    /// Create a line from two points, precomputing the AA scale.
+    #[inline(always)]
+    pub fn new([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> Self {
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let len_sq = dx * dx + dy * dy;
+        let aa_scale = if len_sq > 1e-12 {
+            dy.abs() / len_sq.sqrt()
+        } else {
+            0.0
+        };
+        Self {
+            points: [[x0, y0], [x1, y1]],
+            aa_scale,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Optimized Geometry with Precomputed Reciprocals
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Line segment optimized with precomputed division reciprocal.
+#[derive(Clone, Copy, Debug)]
+pub struct OptLine {
+    x0: f32,
+    y0: f32,
+    y_min: f32,
+    y_max: f32,
+    dx_over_dy: f32, // Precomputed dx/dy
+    dir: f32,        // +1 or -1
+}
+
+impl OptLine {
+    /// Create from two points. Returns None for horizontal lines.
+    #[inline(always)]
+    pub fn new([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
+        let dy = y1 - y0;
+        if dy.abs() < 1e-6 {
+            return None;
+        }
+        let dx = x1 - x0;
+        Some(Self {
+            x0,
+            y0,
+            y_min: y0.min(y1),
+            y_max: y0.max(y1),
+            dx_over_dy: dx / dy, // Division at construction, not evaluation
+            dir: if dy > 0.0 { 1.0 } else { -1.0 },
+        })
+    }
+}
+
+/// Quadratic curve optimized with precomputed reciprocals.
+#[derive(Clone, Copy, Debug)]
+pub struct OptQuad {
+    // Bezier coefficients
+    ax: f32,
+    bx: f32,
+    cx: f32,
+    ay: f32,
+    by: f32,
+    cy: f32,
+    two_ay: f32,
+    // Precomputed reciprocals (0.0 if degenerate)
+    inv_by: f32,    // 1/by for linear Y case
+    inv_2ay: f32,   // 1/(2*ay) for quadratic case
+    // Precomputed quadratic formula values
+    neg_by: f32,
+    by_sq: f32,
+    four_ay: f32,
+    // Flag for which case we're in
+    is_linear: bool,
+    is_degenerate: bool,
+}
+
+impl OptQuad {
+    /// Create from three control points.
+    #[inline(always)]
+    pub fn new([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> Self {
+        let ay = y0 - 2.0 * y1 + y2;
+        let by = 2.0 * (y1 - y0);
+        let cy = y0;
+        let ax = x0 - 2.0 * x1 + x2;
+        let bx = 2.0 * (x1 - x0);
+        let cx = x0;
+
+        let is_linear = ay.abs() < 1e-6;
+        let is_degenerate = is_linear && by.abs() < 1e-6;
+
+        Self {
+            ax,
+            bx,
+            cx,
+            ay,
+            by,
+            cy,
+            two_ay: 2.0 * ay,
+            inv_by: if !is_linear || is_degenerate {
+                0.0
+            } else {
+                1.0 / by
+            },
+            inv_2ay: if is_linear { 0.0 } else { 1.0 / (2.0 * ay) },
+            neg_by: -by,
+            by_sq: by * by,
+            four_ay: 4.0 * ay,
+            is_linear,
+            is_degenerate,
+        }
+    }
+}
+
+// ─── Field Implementation (Smooth Anti-Aliased Coverage) ───────────────────
 
 impl Manifold<Field> for Line {
     type Output = Field;
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, _: Field, _: Field) -> Field {
-        let [[x0, y0], [x1, y1]] = self.0;
+        let [[x0, y0], [x1, y1]] = self.points;
         let (dy, dx) = (y1 - y0, x1 - x0);
         if dy.abs() < 1e-6 {
             return Field::from(0.0);
         }
-        // Use bitwise AND (&) for combining masks, not multiplication (*)
-        // SIMD comparison results are bit masks (0xFFFFFFFF for true),
-        // and multiplying them gives NaN, not a valid mask.
         let (y0f, y1f) = (Field::from(y0), Field::from(y1));
         let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
+
         let x_int = Field::from(x0) + (y - y0f) * Field::from(dx / dy);
         let dir = if dy > 0.0 { Field::from(1.0) } else { Field::from(-1.0) };
-        Field::select(in_y & x.lt(x_int), dir, Field::from(0.0))
+
+        // Smooth AA: dist * aa_scale gives normalized distance, then map to [0,1]
+        // aa_scale = |dy|/len was precomputed at construction
+        let dist = x_int - x;
+        let coverage = (dist * Field::from(self.aa_scale) + Field::from(0.5))
+            .max(Field::from(0.0))
+            .min(Field::from(1.0));
+
+        (in_y & (dir * coverage)) | (!in_y & Field::from(0.0))
     }
 }
 
@@ -145,17 +267,42 @@ impl Manifold<Field> for Quad {
         let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
         let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
 
+        // Analytical AA: derivative of quadratic is linear in t
+        // dx/dt = 2*ax*t + bx, dy/dt = 2*ay*t + by
+        // grad_mag = sqrt(dx_dt² + dy_dt²) / |dy_dt|
         let eval_t = |t: Field| -> Field {
             let in_t = t.ge(Field::from(0.0)) & t.lt(Field::from(1.0));
-            if !in_t.any() { return Field::from(0.0); }
+            if !in_t.any() {
+                return Field::from(0.0);
+            }
             let x_int = (Field::from(ax) * t + Field::from(bx)) * t + Field::from(cx);
+
+            // Analytical derivatives (linear in t)
+            let dx_dt = Field::from(2.0 * ax) * t + Field::from(bx);
             let dy_dt = Field::from(2.0 * ay) * t + Field::from(by);
-            let dir = Field::select(dy_dt.gt(Field::from(0.0)), Field::from(1.0), Field::from(-1.0));
-            Field::select(in_t & x.lt(x_int), dir, Field::from(0.0))
+
+            // Direction based on curve tangent
+            let dir_mask = dy_dt.gt(Field::from(0.0));
+            let dir = (dir_mask & Field::from(1.0)) | (!dir_mask & Field::from(-1.0));
+
+            // Smooth AA coverage using fast rsqrt
+            // aa_scale = |dy_dt| / sqrt(dx_dt² + dy_dt²)
+            //          = |dy_dt| * rsqrt(dx_dt² + dy_dt²)
+            // rsqrt is ~5 cycles vs sqrt+div at ~27 cycles
+            let dist = x_int - x;
+            let curve_grad_sq = dx_dt * dx_dt + dy_dt * dy_dt;
+            let aa_scale = dy_dt.abs() * curve_grad_sq.max(Field::from(1e-12)).rsqrt();
+            let coverage = (dist * aa_scale + Field::from(0.5))
+                .max(Field::from(0.0))
+                .min(Field::from(1.0));
+
+            (in_t & (dir * coverage)) | (!in_t & Field::from(0.0))
         };
 
         if ay.abs() < 1e-6 {
-            if by.abs() < 1e-6 { return Field::from(0.0); }
+            if by.abs() < 1e-6 {
+                return Field::from(0.0);
+            }
             eval_t((y - Field::from(cy)) / Field::from(by))
         } else {
             let c_val = Field::from(cy) - y;
@@ -164,33 +311,47 @@ impl Manifold<Field> for Quad {
             let sd = d.abs().sqrt();
             let t1 = (Field::from(-by) - sd) / Field::from(2.0 * ay);
             let t2 = (Field::from(-by) + sd) / Field::from(2.0 * ay);
-            Field::select(valid, eval_t(t1) + eval_t(t2), Field::from(0.0))
+            (valid & (eval_t(t1) + eval_t(t2))) | (!valid & Field::from(0.0))
         }
     }
 }
 
 // ─── Jet2 Implementation (Anti-Aliased / Smooth Edges) ─────────────────────
+// Note: The Field implementation now produces smooth AA coverage directly.
+// Jet2 impls are kept for automatic differentiation use cases beyond AA.
 
 impl Manifold<Jet2> for Line {
     type Output = Jet2;
 
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
-        let [[x0, y0], [x1, y1]] = self.0;
+        let [[x0, y0], [x1, y1]] = self.points;
         let (dy, dx) = (y1 - y0, x1 - x0);
-        if dy.abs() < 1e-6 { return Jet2::from_f32(0.0); }
+        if dy.abs() < 1e-6 {
+            return Jet2::from_f32(0.0);
+        }
         let (y0f, y1f) = (Jet2::from_f32(y0), Jet2::from_f32(y1));
         let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
-        if !in_y.val.any() { return Jet2::from_f32(0.0); }
+        if !in_y.val.any() {
+            return Jet2::from_f32(0.0);
+        }
 
         let x_int = Jet2::from_f32(x0) + (y - y0f) * Jet2::from_f32(dx / dy);
-        let dir = if dy > 0.0 { Jet2::from_f32(1.0) } else { Jet2::from_f32(-1.0) };
+        let dir = if dy > 0.0 {
+            Jet2::from_f32(1.0)
+        } else {
+            Jet2::from_f32(-1.0)
+        };
 
         let dist = x_int - x;
-        let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy).sqrt().max(Field::from(1e-6));
-        let coverage = (dist.val / grad_mag + Field::from(0.5)).max(Field::from(0.0)).min(Field::from(1.0));
-        
-        Jet2::select(in_y, dir * Jet2::constant(coverage), Jet2::from_f32(0.0))
+        let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
+            .sqrt()
+            .max(Field::from(1e-6));
+        let coverage = (dist.val / grad_mag + Field::from(0.5))
+            .max(Field::from(0.0))
+            .min(Field::from(1.0));
+
+        (in_y & (dir * Jet2::constant(coverage))) | (!in_y & Jet2::from_f32(0.0))
     }
 }
 
@@ -208,11 +369,12 @@ impl Manifold<Jet2> for Quad {
             if !in_t.val.any() { return Jet2::from_f32(0.0); }
             let x_int = (Jet2::from_f32(ax) * t + Jet2::from_f32(bx)) * t + Jet2::from_f32(cx);
             let dy_dt = Jet2::from_f32(2.0 * ay) * t + Jet2::from_f32(by);
-            let dir = Jet2::select(dy_dt.gt(Jet2::from_f32(0.0)), Jet2::from_f32(1.0), Jet2::from_f32(-1.0));
+            let dir_mask = dy_dt.gt(Jet2::from_f32(0.0));
+            let dir = (dir_mask & Jet2::from_f32(1.0)) | (!dir_mask & Jet2::from_f32(-1.0));
             let dist = x_int - x;
             let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy).sqrt().max(Field::from(1e-6));
             let coverage = (dist.val / grad_mag + Field::from(0.5)).max(Field::from(0.0)).min(Field::from(1.0));
-            Jet2::select(in_t, dir * Jet2::constant(coverage), Jet2::from_f32(0.0))
+            (in_t & (dir * Jet2::constant(coverage))) | (!in_t & Jet2::from_f32(0.0))
         };
 
         if ay.abs() < 1e-6 {
@@ -225,31 +387,7 @@ impl Manifold<Jet2> for Quad {
             let sd = d.abs().sqrt();
             let t1 = (Jet2::from_f32(-by) - sd) / Jet2::from_f32(2.0 * ay);
             let t2 = (Jet2::from_f32(-by) + sd) / Jet2::from_f32(2.0 * ay);
-            Jet2::select(valid, eval_t(t1) + eval_t(t2), Jet2::from_f32(0.0))
-        }
-    }
-}
-
-impl Manifold<Field> for Segment {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        match self {
-            Self::Line(c) => c.eval_raw(x, y, z, w),
-            Self::Quad(c) => c.eval_raw(x, y, z, w),
-        }
-    }
-}
-
-impl Manifold<Jet2> for Segment {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
-        match self {
-            Self::Line(c) => c.eval_raw(x, y, z, w),
-            Self::Quad(c) => c.eval_raw(x, y, z, w),
+            (valid & (eval_t(t1) + eval_t(t2))) | (!valid & Jet2::from_f32(0.0))
         }
     }
 }
@@ -277,7 +415,9 @@ impl Manifold<Field> for Geometry {
         for q in self.quads.iter() {
             acc = acc + q.eval_raw(x, y, z, w);
         }
-        acc
+        // Apply non-zero winding rule: |winding| becomes coverage
+        // Clamp to [0, 1] to handle overlapping contours
+        acc.abs().min(Field::from(1.0))
     }
 }
 
@@ -293,18 +433,22 @@ impl Manifold<Jet2> for Geometry {
         for q in self.quads.iter() {
             acc = acc + q.eval_raw(x, y, z, w);
         }
-        acc
+        // Apply non-zero winding rule: |winding| becomes coverage
+        // Clamp to [0, 1] to handle overlapping contours
+        acc.abs().min(Jet2::from_f32(1.0))
     }
 }
 
-/// A simple glyph: segments in unit space, thresholded, bounded, then transformed.
+/// A simple glyph: segments in unit space, bounded, then transformed.
 ///
-/// The composition is: Affine<Select<UnitSquare, Threshold<Geometry>, 0.0>>
-/// - Geometry: Optimized Sum of Lines and Quads
-/// - Threshold: Converts winding to 0/1 via non-zero rule
+/// The composition is: Affine<Select<UnitSquare, Geometry, 0.0>>
+/// - Geometry: Optimized Sum of Lines and Quads (produces smooth 0.0-1.0 coverage)
 /// - Select (via square): Bounds check with short-circuit
 /// - Affine: Restores to font coordinate space
-pub type SimpleGlyph = Affine<Bounded<Threshold<Geometry>>>;
+///
+/// Note: Lines and Quads now produce analytically anti-aliased coverage directly,
+/// so Threshold is no longer needed.
+pub type SimpleGlyph = Affine<Bounded<Geometry>>;
 
 /// A compound glyph: sum of transformed child glyphs.
 pub type CompoundGlyph = Sum<Affine<Glyph>>;
@@ -661,10 +805,8 @@ impl<'a> Font<'a> {
             // Parse segments in normalized [0,1] space
             let sum_segs = self.simple(&mut r, n as usize, norm_scale, norm_tx, norm_ty)?;
 
-            // Compose: Sum -> Threshold -> Bounded (via square) -> Affine
-            // This gives us: Affine<Select<UnitSquare, Threshold<Sum<Segment>>, f32>>
-            let thresholded = Threshold(sum_segs);
-            let bounded = square(thresholded, 0.0f32);
+            // Compose: Geometry (smooth AA coverage) -> Bounded (via square) -> Affine
+            let bounded = square(sum_segs, 0.0f32);
             Some(Glyph::Simple(Affine::new(bounded, restore)))
         } else {
             // Compound glyphs: children are already fully composed with their own bounds
@@ -807,7 +949,8 @@ fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line>, quads: &mut Vec<Qu
             [x, y]
         };
         if exp[(start + i + 1) % exp.len()].2 {
-            lines.push(Curve([p(i), p(i + 1)]));
+            // Use Line::new() to precompute aa_scale
+            lines.push(Line::new([p(i), p(i + 1)]));
             i += 1;
         } else {
             quads.push(Curve([p(i), p(i + 1), p(i + 2)]));

@@ -17,6 +17,11 @@ pub struct Abs<M>(pub M);
 #[derive(Clone, Copy, Debug)]
 pub struct Floor<M>(pub M);
 
+/// Reciprocal square root: 1/sqrt(M).
+/// Uses fast SIMD rsqrt with Newton-Raphson refinement.
+#[derive(Clone, Copy, Debug)]
+pub struct Rsqrt<M>(pub M);
+
 /// Element-wise maximum.
 #[derive(Clone, Copy, Debug)]
 pub struct Max<L, R>(pub L, pub R);
@@ -61,6 +66,19 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w).floor()
+    }
+}
+
+impl<M, I> Manifold<I> for Rsqrt<M>
+where
+    I: crate::numeric::Numeric,
+    M: Manifold<I>,
+    M::Output: crate::numeric::Numeric,
+{
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        self.0.eval_raw(x, y, z, w).rsqrt()
     }
 }
 

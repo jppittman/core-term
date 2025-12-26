@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use pixelflow_core::backend::SimdOps;
+    use pixelflow_core::backend::{MaskOps, SimdOps};
     use pixelflow_core::backend::x86::F32x4;
     use std::prelude::v1::*;
 
@@ -42,10 +42,11 @@ mod tests {
         let a = F32x4::splat(1.0);
         let b = F32x4::splat(2.0);
 
+        // cmp_lt returns native Mask4
         let lt = a.cmp_lt(b);
         assert!(lt.all());
 
-        // Check select
+        // Check select with native mask
         let t = F32x4::splat(10.0);
         let f = F32x4::splat(20.0);
         let sel = F32x4::select(lt, t, f);
@@ -89,16 +90,19 @@ mod tests {
     }
 
     #[test]
-    fn test_sse2_any_all() {
+    fn test_sse2_mask_any_all() {
+        // Test MaskOps methods directly on masks
         let zero = F32x4::splat(0.0);
-        assert!(!zero.any());
-        assert!(!zero.all());
+        let zero_mask = zero.float_to_mask();
+        assert!(!zero_mask.any());
+        assert!(!zero_mask.all());
 
-        let one = F32x4::splat(1.0);
-        assert!(one.any());
-        assert!(one.all());
+        let all_true = F32x4::splat(1.0).cmp_gt(F32x4::splat(0.0));
+        assert!(all_true.any());
+        assert!(all_true.all());
 
-        let mixed = F32x4::sequential(0.0); // 0, 1, 2, 3
+        // Mixed: first lane is false, rest are true (0 > 0 is false, 1 > 0, 2 > 0, 3 > 0 are true)
+        let mixed = F32x4::sequential(0.0).cmp_gt(F32x4::splat(0.0));
         assert!(mixed.any());
         assert!(!mixed.all());
     }

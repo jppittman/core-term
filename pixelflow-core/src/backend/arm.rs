@@ -1,6 +1,6 @@
 //! ARM NEON backend (4 lanes for f32).
 
-use super::{Backend, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
 use core::arch::aarch64::*;
 use core::fmt::{Debug, Formatter};
 use core::ops::*;
@@ -13,6 +13,81 @@ impl Backend for Neon {
     const LANES: usize = 4;
     type F32 = F32x4;
     type U32 = U32x4;
+}
+
+// ============================================================================
+// Mask4 - 4-lane mask for NEON (integer-based)
+// ============================================================================
+
+/// 4-lane mask for ARM NEON.
+///
+/// NEON doesn't have dedicated mask registers like AVX-512's k-registers.
+/// Masks are stored as u32 vectors where each lane is either all-1s (0xFFFFFFFF)
+/// or all-0s (0x00000000).
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct Mask4(uint32x4_t);
+
+impl Default for Mask4 {
+    fn default() -> Self {
+        unsafe { Self(vdupq_n_u32(0)) }
+    }
+}
+
+impl Debug for Mask4 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let arr = self.to_array();
+        let bits = (if arr[0] != 0 { 1 } else { 0 })
+            | (if arr[1] != 0 { 2 } else { 0 })
+            | (if arr[2] != 0 { 4 } else { 0 })
+            | (if arr[3] != 0 { 8 } else { 0 });
+        write!(f, "Mask4({:04b})", bits)
+    }
+}
+
+impl Mask4 {
+    #[inline(always)]
+    fn to_array(self) -> [u32; 4] {
+        let mut arr = [0u32; 4];
+        unsafe { vst1q_u32(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+}
+
+impl MaskOps for Mask4 {
+    #[inline(always)]
+    fn any(self) -> bool {
+        unsafe { vmaxvq_u32(self.0) != 0 }
+    }
+
+    #[inline(always)]
+    fn all(self) -> bool {
+        unsafe { vminvq_u32(self.0) != 0 }
+    }
+}
+
+impl BitAnd for Mask4 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        unsafe { Self(vandq_u32(self.0, rhs.0)) }
+    }
+}
+
+impl BitOr for Mask4 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        unsafe { Self(vorrq_u32(self.0, rhs.0)) }
+    }
+}
+
+impl Not for Mask4 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe { Self(vmvnq_u32(self.0)) }
+    }
 }
 
 /// 4-lane f32 SIMD vector for ARM NEON.
@@ -47,6 +122,7 @@ impl F32x4 {
 // ============================================================================
 
 impl SimdOps for F32x4 {
+    type Mask = Mask4;
     const LANES: usize = 4;
 
     #[inline(always)]
@@ -68,52 +144,23 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn any(&self) -> bool {
-        unsafe {
-            // Convert to u32 mask, check if max > 0
-            let as_u32: uint32x4_t = vreinterpretq_u32_f32(self.0);
-            vmaxvq_u32(as_u32) != 0
-        }
+    fn cmp_lt(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(vcltq_f32(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn all(&self) -> bool {
-        unsafe {
-            let as_u32: uint32x4_t = vreinterpretq_u32_f32(self.0);
-            vminvq_u32(as_u32) != 0
-        }
+    fn cmp_le(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(vcleq_f32(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn cmp_lt(self, rhs: Self) -> Self {
-        unsafe {
-            let mask = vcltq_f32(self.0, rhs.0);
-            Self(vreinterpretq_f32_u32(mask))
-        }
+    fn cmp_gt(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(vcgtq_f32(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn cmp_le(self, rhs: Self) -> Self {
-        unsafe {
-            let mask = vcleq_f32(self.0, rhs.0);
-            Self(vreinterpretq_f32_u32(mask))
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_gt(self, rhs: Self) -> Self {
-        unsafe {
-            let mask = vcgtq_f32(self.0, rhs.0);
-            Self(vreinterpretq_f32_u32(mask))
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_ge(self, rhs: Self) -> Self {
-        unsafe {
-            let mask = vcgeq_f32(self.0, rhs.0);
-            Self(vreinterpretq_f32_u32(mask))
-        }
+    fn cmp_ge(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(vcgeq_f32(self.0, rhs.0)) }
     }
 
     #[inline(always)]
@@ -137,10 +184,9 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
+    fn select(mask: Mask4, if_true: Self, if_false: Self) -> Self {
         unsafe {
-            let mask_u32 = vreinterpretq_u32_f32(mask.0);
-            let result = vbslq_f32(mask_u32, if_true.0, if_false.0);
+            let result = vbslq_f32(mask.0, if_true.0, if_false.0);
             Self(result)
         }
     }
@@ -167,6 +213,54 @@ impl SimdOps for F32x4 {
     #[inline(always)]
     fn floor(self) -> Self {
         unsafe { Self(vrndmq_f32(self.0)) }
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        // ARM NEON FMA: vfmaq_f32(c, a, b) computes a*b + c
+        unsafe { Self(vfmaq_f32(c.0, self.0, b.0)) }
+    }
+
+    #[inline(always)]
+    fn add_masked(self, val: Self, mask: Mask4) -> Self {
+        // NEON: no native masked add, emulate with select
+        // self + (mask ? val : 0)
+        unsafe {
+            let zero = vdupq_n_f32(0.0);
+            let masked_val = vbslq_f32(mask.0, val.0, zero);
+            Self(vaddq_f32(self.0, masked_val))
+        }
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        // NEON approximate reciprocal (~8 bits accuracy)
+        // One Newton-Raphson iteration improves to ~16 bits
+        unsafe {
+            let est = vrecpeq_f32(self.0);
+            // Newton-Raphson: est = est * (2 - x * est)
+            let refined = vmulq_f32(est, vrecpsq_f32(self.0, est));
+            Self(refined)
+        }
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        // Fast reciprocal square root (~8 bits accuracy)
+        // Sufficient for AA coverage calculations
+        unsafe { Self(vrsqrteq_f32(self.0)) }
+    }
+
+    #[inline(always)]
+    fn mask_to_float(mask: Mask4) -> Self {
+        // Convert u32 mask to float representation
+        unsafe { Self(vreinterpretq_f32_u32(mask.0)) }
+    }
+
+    #[inline(always)]
+    fn float_to_mask(self) -> Mask4 {
+        // Convert float representation to u32 mask
+        unsafe { Mask4(vreinterpretq_u32_f32(self.0)) }
     }
 }
 

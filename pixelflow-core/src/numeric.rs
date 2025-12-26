@@ -1,17 +1,18 @@
-//! # Numeric Trait
+//! # Numeric Traits
 //!
-//! The computational substrate - types that operations can be performed on.
-//! This trait is internal and abstracts Field and Jet2.
+//! Two-tier trait design:
+//! - `Computational`: Public trait for user-facing manifold bounds
+//! - `Numeric`: Internal trait with full SIMD operations
 
-/// The computational substrate for manifolds.
+/// Public trait for user-facing manifold bounds.
 ///
-/// Types implementing this trait represent values that can flow through
-/// manifold computations. Currently implemented by:
-/// - `Field`: Concrete SIMD batches (the default)
-/// - `Jet2`: AD-enhanced values tracking derivatives
+/// Provides arithmetic operators and constant creation. Users implement
+/// `Manifold<I: Computational>` for their types. The library's combinators
+/// (Sqrt, Abs, Select, etc.) handle the actual SIMD operations internally.
 ///
-/// This trait is intentionally private to maintain API flexibility.
-pub trait Numeric:
+/// This trait intentionally hides SIMD internals like `sqrt`, `select_raw`,
+/// and mask introspection. Use the provided combinators instead.
+pub trait Computational:
     Copy
     + Send
     + Sync
@@ -22,7 +23,23 @@ pub trait Numeric:
     + core::ops::Div<Output = Self>
     + core::ops::BitAnd<Output = Self>
     + core::ops::BitOr<Output = Self>
+    + core::ops::Not<Output = Self>
 {
+    /// Create from f32 constant (broadcasts to all lanes).
+    fn from_f32(val: f32) -> Self;
+
+    /// Create sequential values [start, start+1, start+2, ...].
+    ///
+    /// For SIMD types, creates a vector with lane values:
+    /// `[start, start+1, start+2, ..., start+(LANES-1)]`
+    fn sequential(start: f32) -> Self;
+}
+
+/// Internal trait with full SIMD operations.
+///
+/// Extends `Computational` with methods users shouldn't call directly.
+/// These are used by the library's combinators (Sqrt, Select, etc.).
+pub(crate) trait Numeric: Computational {
     /// Square root.
     fn sqrt(self) -> Self;
 
@@ -47,8 +64,14 @@ pub trait Numeric:
     /// Greater than or equal (returns mask).
     fn ge(self, rhs: Self) -> Self;
 
-    /// Conditional select.
+    /// Conditional select with early-exit optimization.
+    /// Returns if_true where mask is set, if_false elsewhere.
+    /// Short-circuits: if all lanes true, returns if_true without evaluating if_false's blend.
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
+
+    /// Raw conditional select - always blends both values.
+    /// Use this in hot loops where you've already computed both branches.
+    fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self;
 
     /// Check if any lane/component is non-zero.
     /// For SIMD types, checks if any lane is true.
@@ -59,9 +82,6 @@ pub trait Numeric:
     /// For SIMD types, checks if all lanes are true.
     /// For scalar/jet types, can return false to disable short-circuit optimization.
     fn all(&self) -> bool;
-
-    /// Create from f32 scalar.
-    fn from_f32(val: f32) -> Self;
 
     /// Create from i32 scalar.
     fn from_i32(val: i32) -> Self;
@@ -90,4 +110,28 @@ pub trait Numeric:
 
     /// Floor (round toward negative infinity).
     fn floor(self) -> Self;
+
+    /// Fused multiply-add: self * b + c
+    /// Uses FMA instruction when available (single rounding).
+    fn mul_add(self, b: Self, c: Self) -> Self;
+
+    /// Fast approximate reciprocal (1/x).
+    /// Uses SIMD reciprocal instruction when available (~12-14 bits accuracy).
+    fn recip(self) -> Self;
+
+    /// Fast approximate reciprocal square root (1/sqrt(x)).
+    /// Uses SIMD rsqrt instruction when available (~12-14 bits accuracy).
+    ///
+    /// This is much faster than `sqrt` followed by division:
+    /// - rsqrt: ~5 cycles
+    /// - sqrt + div: ~25 cycles
+    fn rsqrt(self) -> Self;
+
+    /// Masked add: self + (mask ? val : 0)
+    /// Optimized for winding accumulation patterns.
+    #[inline(always)]
+    fn add_masked(self, val: Self, mask: Self) -> Self {
+        // Default implementation - backends can override with masked instructions
+        self + (mask & val)
+    }
 }

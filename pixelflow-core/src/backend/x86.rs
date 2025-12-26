@@ -1,6 +1,6 @@
 //! x86_64 backend.
 
-use super::{Backend, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 use core::fmt::{Debug, Formatter};
@@ -13,6 +13,70 @@ use core::ops::*;
 /// SSE2 Backend (4 lanes).
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Sse2;
+
+// ============================================================================
+// Mask4 - 4-lane mask for SSE2 (float-based, no separate mask unit)
+// ============================================================================
+
+/// 4-lane mask for SSE2.
+///
+/// On SSE2, there's no separate mask register file like AVX-512's k-registers.
+/// Masks are stored as float vectors where each lane is either all-1s (true)
+/// or all-0s (false).
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct Mask4(__m128);
+
+impl Default for Mask4 {
+    fn default() -> Self {
+        unsafe { Self(_mm_setzero_ps()) }
+    }
+}
+
+impl Debug for Mask4 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Mask4({:04b})", unsafe { _mm_movemask_ps(self.0) })
+    }
+}
+
+impl MaskOps for Mask4 {
+    #[inline(always)]
+    fn any(self) -> bool {
+        unsafe { _mm_movemask_ps(self.0) != 0 }
+    }
+
+    #[inline(always)]
+    fn all(self) -> bool {
+        unsafe { _mm_movemask_ps(self.0) == 0xF }
+    }
+}
+
+impl BitAnd for Mask4 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        unsafe { Self(_mm_and_ps(self.0, rhs.0)) }
+    }
+}
+
+impl BitOr for Mask4 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        unsafe { Self(_mm_or_ps(self.0, rhs.0)) }
+    }
+}
+
+impl Not for Mask4 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm_castsi128_ps(_mm_set1_epi32(-1));
+            Self(_mm_xor_ps(self.0, all_ones))
+        }
+    }
+}
 
 impl Backend for Sse2 {
     const LANES: usize = 4;
@@ -48,6 +112,7 @@ impl F32x4 {
 }
 
 impl SimdOps for F32x4 {
+    type Mask = Mask4;
     const LANES: usize = 4;
 
     #[inline(always)]
@@ -70,52 +135,23 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn any(&self) -> bool {
-        unsafe {
-            let int_vec = _mm_castps_si128(self.0);
-            let zero = _mm_setzero_si128();
-            // Check if any bit is set (bitwise non-zero)
-            let eq = _mm_cmpeq_epi32(int_vec, zero);
-            // If any lane is non-zero, eq for that lane is 0x00000000
-            // If all lanes are zero, eq is all 0xFFFFFFFF
-            // movemask takes MSB of each byte.
-            // If any lane is non-zero, at least one byte in eq is 0.
-            // So movemask != 0xFFFF.
-            _mm_movemask_epi8(eq) != 0xFFFF
-        }
+    fn cmp_lt(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(_mm_cmplt_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn all(&self) -> bool {
-        unsafe {
-            let int_vec = _mm_castps_si128(self.0);
-            let zero = _mm_setzero_si128();
-            // Check if all lanes are non-zero (bitwise)
-            let eq = _mm_cmpeq_epi32(int_vec, zero);
-            // If all are non-zero, eq is all 0x00000000
-            // movemask == 0
-            _mm_movemask_epi8(eq) == 0
-        }
+    fn cmp_le(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(_mm_cmple_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn cmp_lt(self, rhs: Self) -> Self {
-        unsafe { Self(_mm_cmplt_ps(self.0, rhs.0)) }
+    fn cmp_gt(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(_mm_cmpgt_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn cmp_le(self, rhs: Self) -> Self {
-        unsafe { Self(_mm_cmple_ps(self.0, rhs.0)) }
-    }
-
-    #[inline(always)]
-    fn cmp_gt(self, rhs: Self) -> Self {
-        unsafe { Self(_mm_cmpgt_ps(self.0, rhs.0)) }
-    }
-
-    #[inline(always)]
-    fn cmp_ge(self, rhs: Self) -> Self {
-        unsafe { Self(_mm_cmpge_ps(self.0, rhs.0)) }
+    fn cmp_ge(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(_mm_cmpge_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
@@ -143,7 +179,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
+    fn select(mask: Mask4, if_true: Self, if_false: Self) -> Self {
         unsafe {
             // (mask & if_true) | (!mask & if_false)
             // _mm_andnot_ps(a, b) computes (!a) & b
@@ -180,11 +216,59 @@ impl SimdOps for F32x4 {
             let trunc = _mm_cvtepi32_ps(_mm_cvttps_epi32(self.0));
             // 2. For negative non-integers, truncation rounds toward zero (wrong direction)
             //    Need to subtract 1 where self < trunc
-            let mask = _mm_cmplt_ps(self.0, trunc);
+            let cmp_mask = _mm_cmplt_ps(self.0, trunc);
             let one = _mm_set1_ps(1.0);
-            let correction = _mm_and_ps(mask, one);
+            let correction = _mm_and_ps(cmp_mask, one);
             Self(_mm_sub_ps(trunc, correction))
         }
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        #[cfg(target_feature = "fma")]
+        unsafe {
+            Self(_mm_fmadd_ps(self.0, b.0, c.0))
+        }
+        #[cfg(not(target_feature = "fma"))]
+        {
+            // Fallback: separate mul + add (two roundings)
+            self * b + c
+        }
+    }
+
+    #[inline(always)]
+    fn add_masked(self, val: Self, mask: Mask4) -> Self {
+        // SSE2: no native masked add, emulate with select
+        // self + (mask ? val : 0)
+        unsafe {
+            let masked_val = _mm_and_ps(mask.0, val.0);
+            Self(_mm_add_ps(self.0, masked_val))
+        }
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        // Use fast reciprocal approximation (~12 bits accuracy)
+        unsafe { Self(_mm_rcp_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        // Fast reciprocal square root (~12 bits accuracy)
+        // Sufficient for AA coverage calculations
+        unsafe { Self(_mm_rsqrt_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn mask_to_float(mask: Mask4) -> Self {
+        // Mask4 already stores float representation
+        Self(mask.0)
+    }
+
+    #[inline(always)]
+    fn float_to_mask(self) -> Mask4 {
+        // Float representation is already a valid mask
+        Mask4(self.0)
     }
 }
 
@@ -384,6 +468,84 @@ impl U32x4 {
 // AVX512 Backend
 // ============================================================================
 
+// ============================================================================
+// Mask16 - 16-lane native k-register mask for AVX-512
+// ============================================================================
+
+/// 16-lane mask using AVX-512 k-registers.
+///
+/// This is the big win: AVX-512 has dedicated 8 mask registers (k0-k7) that
+/// run on a separate execution unit from the float ALU. Mask operations
+/// (and/or/not/any/all) are effectively free - they execute in parallel
+/// with float work.
+///
+/// - `kortestw k1, k1` for any() - ~0 cycles (mask unit)
+/// - `kand/kor/knot` for mask logic - ~0-1 cycles (mask unit)
+/// - `vblendmps` uses k-register directly - no conversion overhead
+#[cfg(target_feature = "avx512f")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct Mask16(pub(crate) __mmask16);
+
+#[cfg(target_feature = "avx512f")]
+impl Default for Mask16 {
+    fn default() -> Self {
+        Self(0)
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl Debug for Mask16 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Mask16({:016b})", self.0)
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl MaskOps for Mask16 {
+    #[inline(always)]
+    fn any(self) -> bool {
+        // kortestw k1, k1 - runs on mask unit, ~0 cycles
+        self.0 != 0
+    }
+
+    #[inline(always)]
+    fn all(self) -> bool {
+        // Mask equality check - runs on mask unit, ~0 cycles
+        self.0 == 0xFFFF
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl BitAnd for Mask16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        // kand - runs on mask unit, ~0-1 cycles
+        Self(self.0 & rhs.0)
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl BitOr for Mask16 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        // kor - runs on mask unit, ~0-1 cycles
+        Self(self.0 | rhs.0)
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl Not for Mask16 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        // knot - runs on mask unit, ~0-1 cycles
+        Self(!self.0)
+    }
+}
+
 /// AVX512 Backend (16 lanes).
 #[cfg(target_feature = "avx512f")]
 #[derive(Copy, Clone, Debug, Default)]
@@ -438,6 +600,7 @@ impl F32x16 {
 
 #[cfg(target_feature = "avx512f")]
 impl SimdOps for F32x16 {
+    type Mask = Mask16;
     const LANES: usize = 16;
 
     #[inline(always)]
@@ -464,53 +627,24 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn any(&self) -> bool {
-        unsafe {
-            let as_int = _mm512_castps_si512(self.0);
-            let mask = _mm512_cmp_epi32_mask(as_int, _mm512_setzero_si512(), _MM_CMPINT_NE);
-            mask != 0
-        }
+    fn cmp_lt(self, rhs: Self) -> Mask16 {
+        // Returns native k-register mask directly - no conversion!
+        unsafe { Mask16(_mm512_cmp_ps_mask(self.0, rhs.0, _CMP_LT_OQ)) }
     }
 
     #[inline(always)]
-    fn all(&self) -> bool {
-        unsafe {
-            let as_int = _mm512_castps_si512(self.0);
-            let mask = _mm512_cmp_epi32_mask(as_int, _mm512_setzero_si512(), _MM_CMPINT_NE);
-            mask == 0xFFFF
-        }
+    fn cmp_le(self, rhs: Self) -> Mask16 {
+        unsafe { Mask16(_mm512_cmp_ps_mask(self.0, rhs.0, _CMP_LE_OQ)) }
     }
 
     #[inline(always)]
-    fn cmp_lt(self, rhs: Self) -> Self {
-        unsafe {
-            let mask = _mm512_cmp_ps_mask(self.0, rhs.0, _CMP_LT_OQ);
-            Self::from_mask(mask)
-        }
+    fn cmp_gt(self, rhs: Self) -> Mask16 {
+        unsafe { Mask16(_mm512_cmp_ps_mask(self.0, rhs.0, _CMP_GT_OQ)) }
     }
 
     #[inline(always)]
-    fn cmp_le(self, rhs: Self) -> Self {
-        unsafe {
-            let mask = _mm512_cmp_ps_mask(self.0, rhs.0, _CMP_LE_OQ);
-            Self::from_mask(mask)
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_gt(self, rhs: Self) -> Self {
-        unsafe {
-            let mask = _mm512_cmp_ps_mask(self.0, rhs.0, _CMP_GT_OQ);
-            Self::from_mask(mask)
-        }
-    }
-
-    #[inline(always)]
-    fn cmp_ge(self, rhs: Self) -> Self {
-        unsafe {
-            let mask = _mm512_cmp_ps_mask(self.0, rhs.0, _CMP_GE_OQ);
-            Self::from_mask(mask)
-        }
+    fn cmp_ge(self, rhs: Self) -> Mask16 {
+        unsafe { Mask16(_mm512_cmp_ps_mask(self.0, rhs.0, _CMP_GE_OQ)) }
     }
 
     #[inline(always)]
@@ -521,8 +655,8 @@ impl SimdOps for F32x16 {
     #[inline(always)]
     fn abs(self) -> Self {
         unsafe {
-            let mask = _mm512_castsi512_ps(_mm512_set1_epi32(0x7FFFFFFF));
-            Self(_mm512_and_ps(self.0, mask))
+            let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(0x7FFFFFFF));
+            Self(_mm512_and_ps(self.0, abs_mask))
         }
     }
 
@@ -537,14 +671,10 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        unsafe {
-            // (mask & if_true) | (!mask & if_false)
-            Self(_mm512_or_ps(
-                _mm512_and_ps(mask.0, if_true.0),
-                _mm512_andnot_ps(mask.0, if_false.0)
-            ))
-        }
+    fn select(mask: Mask16, if_true: Self, if_false: Self) -> Self {
+        // Native k-register blend - no conversion needed!
+        // vblendmps uses k-register directly
+        unsafe { Self(_mm512_mask_blend_ps(mask.0, if_false.0, if_true.0)) }
     }
 
     #[inline(always)]
@@ -572,6 +702,53 @@ impl SimdOps for F32x16 {
             // AVX-512: use roundscale with floor mode (1 = floor, bit 3 = suppress exceptions)
             // imm8 = 0b1001 = 9
             Self(_mm512_roundscale_ps::<9>(self.0))
+        }
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        // AVX-512F always includes FMA
+        unsafe { Self(_mm512_fmadd_ps(self.0, b.0, c.0)) }
+    }
+
+    #[inline(always)]
+    fn add_masked(self, val: Self, mask: Mask16) -> Self {
+        // Native masked add using k-register directly - no conversion!
+        // This is the hot path for winding number accumulation
+        unsafe { Self(_mm512_mask_add_ps(self.0, mask.0, self.0, val.0)) }
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        // AVX-512 has higher accuracy reciprocal (~14 bits)
+        unsafe { Self(_mm512_rcp14_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        // Fast reciprocal square root (~14 bits accuracy)
+        // Sufficient for AA coverage calculations
+        unsafe { Self(_mm512_rsqrt14_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn mask_to_float(mask: Mask16) -> Self {
+        // Convert k-register to float representation (all-1s or all-0s)
+        // This is the "expensive" direction - try to avoid in hot paths
+        unsafe {
+            let all_ones = _mm512_castsi512_ps(_mm512_set1_epi32(-1));
+            let all_zeros = _mm512_setzero_ps();
+            Self(_mm512_mask_blend_ps(mask.0, all_zeros, all_ones))
+        }
+    }
+
+    #[inline(always)]
+    fn float_to_mask(self) -> Mask16 {
+        // Convert float representation to k-register mask
+        // Check if each lane is non-zero
+        unsafe {
+            let as_int = _mm512_castps_si512(self.0);
+            Mask16(_mm512_cmp_epi32_mask(as_int, _mm512_setzero_si512(), _MM_CMPINT_NE))
         }
     }
 }

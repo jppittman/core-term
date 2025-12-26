@@ -1,6 +1,6 @@
 //! Scalar fallback backend for non-SIMD platforms.
 
-use super::{Backend, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
 use core::fmt::Debug;
 use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
 
@@ -14,6 +14,51 @@ impl Backend for Scalar {
     type U32 = ScalarU32;
 }
 
+// ============================================================================
+// MaskScalar - 1-lane mask for scalar backend
+// ============================================================================
+
+/// Scalar mask (1-lane, just a bool).
+#[derive(Copy, Clone, Debug, Default)]
+#[repr(transparent)]
+pub struct MaskScalar(bool);
+
+impl MaskOps for MaskScalar {
+    #[inline(always)]
+    fn any(self) -> bool {
+        self.0
+    }
+
+    #[inline(always)]
+    fn all(self) -> bool {
+        self.0
+    }
+}
+
+impl BitAnd for MaskScalar {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 && rhs.0)
+    }
+}
+
+impl BitOr for MaskScalar {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 || rhs.0)
+    }
+}
+
+impl Not for MaskScalar {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(!self.0)
+    }
+}
+
 /// Scalar f32 wrapper that implements all required ops.
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
@@ -24,6 +69,7 @@ pub struct ScalarF32(f32);
 // ============================================================================
 
 impl SimdOps for ScalarF32 {
+    type Mask = MaskScalar;
     const LANES: usize = 1;
 
     #[inline(always)]
@@ -42,49 +88,23 @@ impl SimdOps for ScalarF32 {
     }
 
     #[inline(always)]
-    fn any(&self) -> bool {
-        self.0.to_bits() != 0
+    fn cmp_lt(self, rhs: Self) -> MaskScalar {
+        MaskScalar(self.0 < rhs.0)
     }
 
     #[inline(always)]
-    fn all(&self) -> bool {
-        self.0.to_bits() != 0
+    fn cmp_le(self, rhs: Self) -> MaskScalar {
+        MaskScalar(self.0 <= rhs.0)
     }
 
     #[inline(always)]
-    fn cmp_lt(self, rhs: Self) -> Self {
-        Self(if self.0 < rhs.0 {
-            f32::from_bits(!0u32)
-        } else {
-            0.0
-        })
+    fn cmp_gt(self, rhs: Self) -> MaskScalar {
+        MaskScalar(self.0 > rhs.0)
     }
 
     #[inline(always)]
-    fn cmp_le(self, rhs: Self) -> Self {
-        Self(if self.0 <= rhs.0 {
-            f32::from_bits(!0u32)
-        } else {
-            0.0
-        })
-    }
-
-    #[inline(always)]
-    fn cmp_gt(self, rhs: Self) -> Self {
-        Self(if self.0 > rhs.0 {
-            f32::from_bits(!0u32)
-        } else {
-            0.0
-        })
-    }
-
-    #[inline(always)]
-    fn cmp_ge(self, rhs: Self) -> Self {
-        Self(if self.0 >= rhs.0 {
-            f32::from_bits(!0u32)
-        } else {
-            0.0
-        })
+    fn cmp_ge(self, rhs: Self) -> MaskScalar {
+        MaskScalar(self.0 >= rhs.0)
     }
 
     #[inline(always)]
@@ -108,12 +128,8 @@ impl SimdOps for ScalarF32 {
     }
 
     #[inline(always)]
-    fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        Self(if mask.0.to_bits() != 0 {
-            if_true.0
-        } else {
-            if_false.0
-        })
+    fn select(mask: MaskScalar, if_true: Self, if_false: Self) -> Self {
+        Self(if mask.0 { if_true.0 } else { if_false.0 })
     }
 
     #[inline(always)]
@@ -130,6 +146,39 @@ impl SimdOps for ScalarF32 {
     #[inline(always)]
     fn floor(self) -> Self {
         Self(libm::floorf(self.0))
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        // Use libm's fmaf for correct single-rounding FMA
+        Self(libm::fmaf(self.0, b.0, c.0))
+    }
+
+    #[inline(always)]
+    fn add_masked(self, val: Self, mask: MaskScalar) -> Self {
+        Self(if mask.0 { self.0 + val.0 } else { self.0 })
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        Self(1.0 / self.0)
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        Self(1.0 / libm::sqrtf(self.0))
+    }
+
+    #[inline(always)]
+    fn mask_to_float(mask: MaskScalar) -> Self {
+        // Convert bool mask to float representation
+        Self(if mask.0 { f32::from_bits(!0u32) } else { 0.0 })
+    }
+
+    #[inline(always)]
+    fn float_to_mask(self) -> MaskScalar {
+        // Convert float representation to bool mask
+        MaskScalar(self.0.to_bits() != 0)
     }
 }
 
