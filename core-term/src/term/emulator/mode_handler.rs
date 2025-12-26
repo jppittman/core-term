@@ -7,6 +7,7 @@ use crate::{
     term::{
         action::EmulatorAction,
         charset::CharacterSet,
+        cursor_visibility::CursorVisibility,
         modes::{DecModeConstant, Mode, ModeAction, StandardModeConstant},
     },
 };
@@ -102,8 +103,9 @@ impl TerminalEmulator {
                     }
                     Some(DecModeConstant::TextCursorEnable) => {
                         self.dec_modes.text_cursor_enable_mode = enable;
-                        self.cursor_controller.set_visible(enable);
-                        action_to_return = Some(EmulatorAction::SetCursorVisibility(enable));
+                        let visibility = CursorVisibility::from(enable);
+                        self.cursor_controller.set_visible(visibility);
+                        action_to_return = Some(EmulatorAction::SetCursorVisibility(visibility));
                     }
                     Some(DecModeConstant::AltScreenBufferClear)
                     | Some(DecModeConstant::AltScreenBufferSaveRestore) => {
