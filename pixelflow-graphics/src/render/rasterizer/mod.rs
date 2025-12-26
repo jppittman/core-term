@@ -86,12 +86,12 @@ where
         let row_offset = row_idx * width;
         let mut x = 0;
 
-        let mut xs = Field::sequential(0.5);
-        let x_step = Field::from(PARALLELISM as f32);
         let ys = Field::from(y as f32 + 0.5);
 
         // SIMD Hot Path - process PARALLELISM pixels at a time
         while x + PARALLELISM <= width {
+            let xs = Field::sequential(x as f32 + 0.5);
+
             // Use materialize_discrete_fields to evaluate and store
             materialize_discrete_fields(manifold, xs, ys, &mut packed);
 
@@ -101,7 +101,6 @@ where
             }
 
             x += PARALLELISM;
-            xs = xs + x_step;
         }
 
         // Scalar Fallback (Tail) - handle remaining pixels one at a time
