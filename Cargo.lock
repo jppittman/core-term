@@ -785,9 +785,12 @@ dependencies = [
  "bitflags 2.9.1",
  "criterion",
  "freetype-rs",
+ "libc",
  "log",
  "pixelflow-core",
  "serde",
+ "tempfile",
+ "windows-sys",
 ]
 
 [[package]]
