@@ -576,6 +576,30 @@ where
     discrete.store(out);
 }
 
+/// Materialize a discrete color manifold into packed u32 pixels using precomputed Fields.
+///
+/// This is an optimized version of [`materialize_discrete`] where coordinate Fields
+/// are precomputed or updated in a loop (e.g., via vector addition).
+///
+/// # Example
+/// ```ignore
+/// let mut xs = Field::sequential(0.0);
+/// let step = Field::from(PARALLELISM as f32);
+/// let ys = Field::from(0.0);
+/// let mut pixels = [0u32; PARALLELISM];
+///
+/// materialize_discrete_fields(&color, xs, ys, &mut pixels);
+/// xs = xs + step;
+/// ```
+#[inline(always)]
+pub fn materialize_discrete_fields<M>(m: &M, x: Field, y: Field, out: &mut [u32])
+where
+    M: Manifold<Output = Discrete> + ?Sized,
+{
+    let discrete = m.eval_raw(x, y, Field::from(0.0), Field::from(0.0));
+    discrete.store(out);
+}
+
 /// Materialize a vector manifold into an interleaved f32 buffer.
 ///
 /// Evaluates at sequential x coordinates starting from (x, y), then transposes
