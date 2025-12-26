@@ -6,6 +6,7 @@
 //! abstracting away the complexities of different terminal modes like Origin Mode (DECOM)
 //! from the main terminal emulation logic.
 
+use crate::term::cursor_visibility::CursorVisibility;
 use crate::{config, glyph::Attributes};
 use anyhow::{anyhow, Result};
 use log::{trace, warn};
@@ -233,9 +234,12 @@ impl CursorController {
     }
 
     /// Sets the visibility of the cursor.
-    pub fn set_visible(&mut self, visible: bool) {
-        trace!("Cursor visibility set to: {}", visible);
-        self.cursor.visible = visible;
+    pub fn set_visible(&mut self, visibility: CursorVisibility) {
+        trace!("Cursor visibility set to: {:?}", visibility);
+        self.cursor.visible = match visibility {
+            CursorVisibility::Visible => true,
+            CursorVisibility::Hidden => false,
+        };
     }
 
     /// Returns `true` if the cursor is currently set to be visible.
@@ -388,7 +392,7 @@ impl CursorController {
     }
     pub fn reset(&mut self) {
         self.set_attributes(Attributes::default());
-        self.set_visible(true);
+        self.set_visible(CursorVisibility::Visible);
         self.cursor = Cursor::default();
     }
 }
