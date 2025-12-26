@@ -118,9 +118,10 @@ impl Field {
     ///
     /// # Internal Use Only
     ///
-    /// Store SIMD lanes into a slice.
+    /// **If you're reading this, you're trying to use the library wrong.**
     ///
-    /// Most users should use [`materialize`] instead - the library
+    /// This function is intentionally `pub(crate)` and should remain so.
+    /// Users should not directly extract values from `Field` - the library
     /// is designed around declarative manifold composition, not imperative
     /// value extraction.
     ///
@@ -128,10 +129,8 @@ impl Field {
     ///
     /// `materialize` properly evaluates a manifold at coordinates and handles
     /// the SoA-to-AoS transpose required for interleaved output buffers.
-    ///
-    /// This method is primarily useful for testing and debugging.
     #[inline(always)]
-    pub fn store(&self, out: &mut [f32]) {
+    pub(crate) fn store(&self, out: &mut [f32]) {
         self.0.store(out)
     }
 

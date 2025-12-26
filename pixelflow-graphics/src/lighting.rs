@@ -351,12 +351,6 @@ pub fn cosine_lobe_sh(normal: (f32, f32, f32)) -> Compressed<RotInv2> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_core::PARALLELISM;
-
-    fn normalize(v: (f32, f32, f32)) -> (f32, f32, f32) {
-        let len = sqrtf(v.0 * v.0 + v.1 * v.1 + v.2 * v.2);
-        (v.0 / len, v.1 / len, v.2 / len)
-    }
 
     #[test]
     fn test_directional_light() {
@@ -414,7 +408,7 @@ mod tests {
         let field = IrradianceField::bake(|_x, _y| env.clone(), 4, 4);
         let manifold = field.into_manifold((0.0, 0.0, 1.0));
 
-        // Evaluate should return positive value
+        // Evaluate and check positivity using Field comparison methods
         let result = manifold.eval_raw(
             Field::from(2.0),
             Field::from(2.0),
@@ -422,33 +416,27 @@ mod tests {
             Field::from(0.0),
         );
 
-        let mut buf = [0.0f32; PARALLELISM];
-        result.store(&mut buf);
-        assert!(buf[0] > 0.0);
+        // All lanes should be positive for uniform ambient lighting
+        assert!(result.gt(Field::from(0.0)).all());
     }
 
     #[test]
     fn test_irradiance_field_spatial_variation() {
-        // Bake with position-dependent lighting
+        // Bake with position-dependent lighting (intensity increases with x)
         let field = IrradianceField::bake(|x, _y| {
             ambient_light_sh(x / 4.0)
         }, 4, 4);
 
-        let manifold_left = field.clone().into_manifold((0.0, 0.0, 1.0));
-        let manifold_right = field.into_manifold((0.0, 0.0, 1.0));
+        let manifold = field.into_manifold((0.0, 0.0, 1.0));
 
-        let left = manifold_left.eval_raw(
+        let left = manifold.eval_raw(
             Field::from(0.5), Field::from(2.0), Field::from(0.0), Field::from(0.0)
         );
-        let right = manifold_right.eval_raw(
+        let right = manifold.eval_raw(
             Field::from(3.5), Field::from(2.0), Field::from(0.0), Field::from(0.0)
         );
 
-        let mut buf_l = [0.0f32; PARALLELISM];
-        let mut buf_r = [0.0f32; PARALLELISM];
-        left.store(&mut buf_l);
-        right.store(&mut buf_r);
-
-        assert!(buf_r[0] > buf_l[0]);
+        // Right side should be brighter than left (higher x = higher intensity)
+        assert!(right.gt(left).all());
     }
 }
