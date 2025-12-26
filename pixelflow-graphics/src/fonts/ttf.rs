@@ -571,34 +571,71 @@ impl Cmap<'_> {
         match self {
             Self::Fmt4(d) if c <= 0xFFFF => {
                 let n = R(*d, 6).u16()? as usize / 2;
-                (0..n).find_map(|i| {
-                    let end = R(*d, 14 + i * 2).u16()?;
-                    if c as u16 > end {
-                        return None;
-                    }
-                    let start = R(*d, 16 + n * 2 + i * 2).u16()?;
-                    if (c as u16) < start {
-                        return Some(0);
-                    }
-                    let delta = R(*d, 16 + n * 4 + i * 2).i16()?;
-                    let range = R(*d, 16 + n * 6 + i * 2).u16()?;
-                    Some(if range == 0 {
-                        (c as i16).wrapping_add(delta) as u16
+                let c = c as u16;
+
+                // Binary search on endCode array (sorted in ascending order)
+                let mut lo = 0;
+                let mut hi = n;
+
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    let end = R(*d, 14 + mid * 2).u16()?;
+
+                    if c > end {
+                        lo = mid + 1;
                     } else {
-                        let off = 16 + n * 6 + i * 2 + range as usize + (c as u16 - start) as usize * 2;
-                        let g = R(*d, off).u16()?;
-                        if g == 0 { 0 } else { (g as i16).wrapping_add(delta) as u16 }
-                    })
+                        hi = mid;
+                    }
+                }
+
+                // lo now points to the first segment where endCode >= c
+                if lo >= n {
+                    return Some(0); // Character beyond all ranges
+                }
+
+                let start = R(*d, 16 + n * 2 + lo * 2).u16()?;
+
+                // Check if c is within this segment
+                if c < start {
+                    return Some(0); // In gap between segments
+                }
+
+                // c is within [start, end], compute glyph ID
+                let delta = R(*d, 16 + n * 4 + lo * 2).i16()?;
+                let range = R(*d, 16 + n * 6 + lo * 2).u16()?;
+
+                Some(if range == 0 {
+                    (c as i16).wrapping_add(delta) as u16
+                } else {
+                    let off = 16 + n * 6 + lo * 2 + range as usize + (c - start) as usize * 2;
+                    let g = R(*d, off).u16()?;
+                    if g == 0 { 0 } else { (g as i16).wrapping_add(delta) as u16 }
                 })
             }
-            Self::Fmt12(d) => (0..R(*d, 12).u32()? as usize).find_map(|i| {
-                let (s, e, g) = (
-                    R(*d, 16 + i * 12).u32()?,
-                    R(*d, 20 + i * 12).u32()?,
-                    R(*d, 24 + i * 12).u32()?,
-                );
-                (c >= s && c <= e).then(|| (g + c - s) as u16)
-            }),
+            Self::Fmt12(d) => {
+                // Binary search for Format 12
+                let num_groups = R(*d, 12).u32()? as usize;
+                let mut lo = 0;
+                let mut hi = num_groups;
+
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    let start = R(*d, 16 + mid * 12).u32()?;
+                    let end = R(*d, 20 + mid * 12).u32()?;
+
+                    if c < start {
+                        hi = mid;
+                    } else if c > end {
+                        lo = mid + 1;
+                    } else {
+                        // Found the group containing c
+                        let glyph_start = R(*d, 24 + mid * 12).u32()?;
+                        return Some((glyph_start + c - start) as u16);
+                    }
+                }
+
+                Some(0) // Not found
+            }
             _ => None,
         }
     }
@@ -744,11 +781,26 @@ impl<'a> Font<'a> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
+    #[inline]
+    pub fn glyph_gid(&self, gid: u16) -> Option<Glyph> {
+        self.compile(gid)
+    }
+
     pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph> {
         let g = self.glyph(ch)?;
         let scale = size / self.units_per_em as f32;
         // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
         // so the top of the text is at Y=0 in screen coordinates.
+        let y_offset = self.ascent as f32 * scale;
+        Some(Glyph::Compound(Sum(
+            [Affine::new(g, [scale, 0.0, 0.0, -scale, 0.0, y_offset])].into(),
+        )))
+    }
+
+    #[inline]
+    pub fn glyph_scaled_gid(&self, gid: u16, size: f32) -> Option<Glyph> {
+        let g = self.glyph_gid(gid)?;
+        let scale = size / self.units_per_em as f32;
         let y_offset = self.ascent as f32 * scale;
         Some(Glyph::Compound(Sum(
             [Affine::new(g, [scale, 0.0, 0.0, -scale, 0.0, y_offset])].into(),
@@ -775,6 +827,37 @@ impl<'a> Font<'a> {
     /// Get kerning adjustment between two characters, scaled to size.
     pub fn kern_scaled(&self, left: char, right: char, size: f32) -> f32 {
         self.kern(left, right) * size / self.units_per_em as f32
+    }
+
+    /// Map a Unicode codepoint to a glyph ID.
+    #[inline]
+    pub fn codepoint_to_gid(&self, ch: char) -> Option<u16> {
+        self.cmap.lookup(ch as u32)
+    }
+
+    /// Get advance width for a glyph ID in font units.
+    #[inline]
+    pub fn advance_gid(&self, gid: u16) -> Option<f32> {
+        let i = (gid as usize).min(self.num_hm.saturating_sub(1));
+        Some(R(self.data, self.hmtx + i * 4).u16()? as f32)
+    }
+
+    /// Get advance width for a glyph ID, scaled to size.
+    #[inline]
+    pub fn advance_gid_scaled(&self, gid: u16, size: f32) -> Option<f32> {
+        Some(self.advance_gid(gid)? * size / self.units_per_em as f32)
+    }
+
+    /// Get kerning adjustment between two glyph IDs in font units.
+    #[inline]
+    pub fn kern_gid(&self, left_gid: u16, right_gid: u16) -> f32 {
+        self.kern.get(left_gid, right_gid) as f32
+    }
+
+    /// Get kerning adjustment between two glyph IDs, scaled to size.
+    #[inline]
+    pub fn kern_gid_scaled(&self, left_gid: u16, right_gid: u16, size: f32) -> f32 {
+        self.kern_gid(left_gid, right_gid) * size / self.units_per_em as f32
     }
 
     fn compile(&self, id: u16) -> Option<Glyph> {

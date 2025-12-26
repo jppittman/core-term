@@ -199,6 +199,29 @@ impl GlyphCache {
         Some(cached)
     }
 
+    /// Get or create a cached glyph by glyph ID.
+    ///
+    /// If the glyph at this size bucket is already cached, returns it.
+    /// Otherwise, bakes the glyph and caches it.
+    /// Note: codepoint is still used as cache key for compatibility.
+    pub fn get_gid(&mut self, font: &Font, codepoint: u32, gid: u16, size: f32) -> Option<CachedGlyph> {
+        let bucket = size_bucket(size);
+        let key = CacheKey {
+            codepoint,
+            size_bucket: bucket,
+        };
+
+        if let Some(cached) = self.entries.get(&key) {
+            return Some(cached.clone());
+        }
+
+        // Bake the glyph at the bucket size
+        let glyph = font.glyph_scaled_gid(gid, bucket as f32)?;
+        let cached = CachedGlyph::new(&glyph, bucket);
+        self.entries.insert(key, cached.clone());
+        Some(cached)
+    }
+
     /// Check if a glyph is cached at this size.
     pub fn contains(&self, ch: char, size: f32) -> bool {
         let bucket = size_bucket(size);
@@ -284,31 +307,36 @@ impl CachedText {
     pub fn new(font: &Font, cache: &mut GlyphCache, text: &str, size: f32) -> Self {
         let mut glyphs = Vec::new();
         let mut cursor_x = 0.0f32;
-        let mut prev_char = None;
+        let mut prev_gid = None;
 
         let bucket = size_bucket(size);
         let scale = size / bucket as f32;
 
         for ch in text.chars() {
-            // Apply kerning
-            if let Some(prev) = prev_char {
-                cursor_x += font.kern_scaled(prev, ch, size);
+            // Single CMAP lookup per character
+            let Some(gid) = font.codepoint_to_gid(ch) else {
+                continue;
+            };
+
+            // Apply kerning using glyph IDs
+            if let Some(prev) = prev_gid {
+                cursor_x += font.kern_gid_scaled(prev, gid, size);
             }
 
-            // Get cached glyph
-            if let Some(cached) = cache.get(font, ch, size) {
+            // Get cached glyph using glyph ID
+            if let Some(cached) = cache.get_gid(font, ch as u32, gid, size) {
                 // Scale and translate to cursor position
                 // The cached glyph is at bucket size, so we need to scale it
                 let transform = [scale, 0.0, 0.0, scale, cursor_x, 0.0];
                 glyphs.push(Affine::new(cached, transform));
             }
 
-            // Advance cursor
-            if let Some(adv) = font.advance_scaled(ch, size) {
+            // Advance cursor using glyph ID
+            if let Some(adv) = font.advance_gid_scaled(gid, size) {
                 cursor_x += adv;
             }
 
-            prev_char = Some(ch);
+            prev_gid = Some(gid);
         }
 
         Self {
