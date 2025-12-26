@@ -5,6 +5,7 @@
 //! the emulator signals to the orchestrator.
 
 use crate::keys::{KeySymbol, Modifiers};
+use crate::term::cursor_visibility::CursorVisibility;
 use serde::{Deserialize, Serialize};
 
 // --- User Input Actions ---
@@ -101,7 +102,7 @@ pub enum EmulatorAction {
     RequestRedraw,
     // Keeping it for now as it's a common signal.
     /// Request to set the visibility of the (potentially native) cursor by the driver.
-    SetCursorVisibility(bool),
+    SetCursorVisibility(CursorVisibility),
 
     /// Request to copy the provided text to the system clipboard.
     CopyToClipboard(String),

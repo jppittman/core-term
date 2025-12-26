@@ -5,6 +5,7 @@
 
 // Sub-modules - existing and new
 pub mod cursor;
+pub mod cursor_visibility;
 pub mod screen;
 pub mod unicode;
 

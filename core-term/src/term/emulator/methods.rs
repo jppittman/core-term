@@ -7,6 +7,7 @@ use crate::{
     glyph::Attributes,
     term::{
         action::EmulatorAction,
+        cursor_visibility::CursorVisibility,
         modes::{DecPrivateModes, EraseMode},
         screen::{ScrollHistory, TabClearMode},
         DEFAULT_TAB_INTERVAL,
@@ -45,7 +46,7 @@ impl TerminalEmulator {
         }
         self.cursor_wrap_next = false;
         if self.dec_modes.text_cursor_enable_mode {
-            return Some(EmulatorAction::SetCursorVisibility(true));
+            return Some(EmulatorAction::SetCursorVisibility(CursorVisibility::Visible));
         }
         None
     }
