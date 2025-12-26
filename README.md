@@ -1,83 +1,241 @@
-# core-term (PixelFlow v11.0)
+# PixelFlow — Pull-Based Functional Graphics on CPU SIMD
 
-**`core-term` is a correct, high-performance terminal emulator powered by the PixelFlow Zero-Copy Functional Kernel.**
+**A GPU-free graphics engine proving that elegant algebraic abstractions can achieve 155 FPS at 1080p on pure CPU.**
 
-Its vision is to provide a robust and simple core terminal experience, utilizing a novel **Zero-Copy Functional Kernel** architecture (`pixelflow`) to achieve zero allocation per frame and static compilation of the entire render pipeline.
+PixelFlow is a research project demonstrating a novel paradigm for real-time graphics: **pull-based rendering** with **SIMD as algebra**. Nothing computes until a coordinate arrives. Pixels are sampled, not pushed. The type system builds compute graphs. The compiler emits optimal vector assembly.
 
-## Project Structure
+**`core-term`** is the first consumer application—a high-performance, correct terminal emulator built entirely on PixelFlow.
 
-The project is organized as a Cargo workspace with the following members:
+## Vision
 
-*   **`core-term`**: The main terminal emulator application. Contains the state machine, platform layers, IO handling, and actor orchestration.
-*   **`pixelflow-core`**: A high-performance, zero-cost SIMD abstraction library for pixel operations. It provides the mathematical foundation for rendering.
-*   **`pixelflow-engine`**: The execution core and runtime environment.
-*   **`pixelflow-render`**: The software rendering primitives (Surfaces) built on top of `pixelflow-core`.
-*   **`xtask`**: Automation scripts for building and bundling the application (especially for macOS).
+PixelFlow answers three questions:
 
-## Core Philosophy
+1. **What if we stopped pushing pixels and started pulling them?** In traditional rasterization, every primitive computes its contribution to every pixel. In PixelFlow, pixels ask "what color am I?" and only that computation happens.
 
-`core-term` embraces several key philosophies:
+2. **What if SIMD was algebra, not an optimization?** Instead of SIMD as a lower-level concern, PixelFlow treats SIMD vectors as the natural representation of continuous fields over coordinates.
 
-*   **`st`-Inspiration:** The feature set focuses on essential terminal functionalities.
-*   **Simplicity:** Complexity is managed through modular architecture rather than monolithic structures.
-*   **Correctness:** Aims for accurate VT100/VT220/XTerm emulation.
-*   **Zero-Copy Functional Rendering:** Prioritizes stability and predictability by using a high-performance CPU-based functional kernel (`pixelflow`), avoiding complex GPU driver dependencies while maintaining high frame rates.
+3. **What if the type system compiled graphics?** The entire rendering pipeline—composed from six primitives (Warp, Grade, Lerp, Select, Fix, Compute)—monomorphizes into fused kernels with zero runtime dispatch.
 
-## Architecture
+## The Stack
 
-This project implements the **PixelFlow v11.0** architecture, a synthesis of Functional Programming (Surface) and Actor Concurrency (Recycle Loop).
+```
+┌─────────────────────────────────────────┐
+│          core-term (App)                │  First consumer: Terminal emulator
+├─────────────────────────────────────────┤
+│ pixelflow-runtime (Platform)            │  Cocoa/X11/Web display drivers,
+│ actor-scheduler (Concurrency)           │  input handling, render loop
+├─────────────────────────────────────────┤
+│ pixelflow-graphics (Materialization)    │  Colors, fonts, compositing,
+│                                         │  rasterization to pixels
+├─────────────────────────────────────────┤
+│ pixelflow-core (Algebra)                │  Field, Manifold, coordinates,
+│                                         │  no_std, SIMD abstraction
+└─────────────────────────────────────────┘
+```
 
-See [PixelFlow Architecture v11.0](docs/NORTH_STAR.md) for the complete blueprint.
+## Crates at a Glance
 
-Key Architectural Pillars:
-* **The Monolith (Surface)**: Everything is a function `F(u, v) -> Color`.
-* **Zero-Copy Recycle**: Ping-Pong buffer strategy for zero allocation per frame.
-* **Engine as Compiler**: Monomorphization of the scene graph for AVX-512 optimization.
+| Crate | Edition | Purpose |
+|-------|---------|---------|
+| `pixelflow-core` | 2024 | Pure algebra. `Field`, `Manifold`, coordinate variables. No I/O, no colors. |
+| `pixelflow-graphics` | 2021 | Colors (`Rgba8`), fonts, rasterization, antialiasing via automatic differentiation. |
+| `pixelflow-runtime` | 2021 | Display drivers (Cocoa/X11/Web), input handling, render orchestration. |
+| `actor-scheduler` | 2024 | Priority message passing with `troupe!` macro for lock-free concurrent actors. |
+| `core-term` | 2021 | Terminal emulator. ANSI parsing, PTY management, state machine. The first PixelFlow consumer. |
 
-## Building and Running
+## The Manifold Abstraction
+
+Everything in PixelFlow is a `Manifold`—a function from 4D coordinates to a value:
+
+```rust
+trait Manifold<Input = Field> {
+    type Output;
+    fn eval_raw(&self, x: Input, y: Input, z: Input, w: Input) -> Self::Output;
+}
+```
+
+This single abstraction enables:
+- **Coordinate warping** (camera movement, distortion)
+- **Rendering** (colors, textures, signed distance fields)
+- **Simulation** (fractals, iterative systems via the `Fix` combinator)
+- **Automatic differentiation** (gradients for antialiasing, normals, ray marching)
+
+## The Six Eigenshaders
+
+All graphics in PixelFlow compose from six primitives:
+
+1. **Warp** — Remap coordinates before sampling
+2. **Grade** — Linear transform on values (matrix + bias)
+3. **Lerp** — Smooth interpolation between two manifolds
+4. **Select** — Branchless conditional (discrete choice)
+5. **Fix** — Iteration as a dimension (fractals, feedback systems)
+6. **Compute** — Escape hatch (any closure is a Manifold)
+
+## Performance
+
+- **Target:** 155 FPS at 1080p (~5 nanoseconds per pixel)
+- **Backend:** Pure CPU, no GPU required. SIMD: AVX-512, SSE2, NEON
+- **Memory:** Zero allocation per frame (ping-pong buffer strategy)
+- **Compilation:** Entire scene monomorphizes into fused kernels
+
+## Getting Started with PixelFlow
+
+### Documentation
+
+The complete PixelFlow architecture is documented in `/docs/`:
+
+- **[NORTH_STAR.md](docs/NORTH_STAR.md)** — PixelFlow vision, philosophy, and high-level design
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Detailed crate architecture and dependencies
+- **[ACTOR_ARCHITECTURE.md](docs/ACTOR_ARCHITECTURE.md)** — Zero-latency input via actor model
+- **[STYLE.md](docs/STYLE.md)** — Code style guide and design principles
+
+For core-term specifics:
+- **[THREADING_DESIGN.md](docs/THREADING_DESIGN.md)** — Platform-specific threading and I/O
+- **[PERFORMANCE_ANALYSIS.md](docs/PERFORMANCE_ANALYSIS.md)** — Profiling and optimization notes
 
 ### Prerequisites
 
-You will need Rust (stable) installed.
-
-On Linux, you need X11 development headers:
-```bash
-sudo apt-get install libx11-dev libxext-dev libxft-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev
-```
+- **Rust:** Nightly (see `rust-toolchain.toml`)
+- **Platform dependencies:**
+  - **macOS:** Native Cocoa support
+  - **Linux:** X11 development headers
+    ```bash
+    sudo apt-get install libx11-dev libxext-dev libxft-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev
+    ```
 
 ### Building
 
-Standard cargo build:
+Standard Rust build:
 ```bash
 cargo build --release
 ```
 
-### Running
-
-To run the terminal:
+Run tests:
 ```bash
-cargo run --release
+cargo test
 ```
 
-### Bundling (macOS)
+Run benchmarks:
+```bash
+cargo bench -p pixelflow-core
+cargo bench -p pixelflow-graphics
+```
 
-We provide an `xtask` to bundle the application into a `.app` for macOS:
+### Running core-term
 
+#### Standard
+```bash
+cargo run --release -p core-term
+```
+
+#### macOS (bundled app)
 ```bash
 cargo xtask bundle-run
 ```
-This will build `CoreTerm.app`, place it in the root directory, and launch it.
+Builds and launches `CoreTerm.app` with native macOS integration.
 
-## Configuration
+#### With Profiling
+```bash
+cargo xtask bundle-run --features profiling
+```
+Writes flamegraph on exit.
 
-`core-term` looks for configuration or uses sensible defaults.
-(Currently, configuration is mostly code-defined or loaded from defaults, see `core-term/src/config.rs`).
+## Architecture Overview
+
+### Pull-Based Rendering
+
+Traditional GPU pipeline: **push** every primitive to every pixel.
+
+PixelFlow: **pull** each pixel samples what it needs.
+
+```rust
+// A pixel asks: "What color am I?"
+// The manifold computes only what's necessary.
+let color = manifold.eval_raw(x, y, 0.0, 0.0);
+```
+
+This eliminates:
+- Overdraw
+- Primitive list parsing
+- Conditional branching in the hot loop
+
+### Actor Model for Zero-Latency Input
+
+Three-thread architecture:
+
+```
+Main Thread (Display)          Orchestrator Thread          PTY I/O Thread
+├─ Cocoa/X11 event loop       ├─ Terminal state machine   ├─ kqueue/epoll
+├─ Platform events            ├─ ANSI parser              ├─ PTY read/write
+└─ Render commands            └─ Scene generation         └─ I/O events
+    (BackendEvent)                (Render command)            (IOEvent)
+         ↓                              ↓                          ↓
+    Three-lane priority channel (Control > Management > Data)
+```
+
+Input latency is decoupled from render latency.
+
+### Crate Separation Philosophy
+
+PixelFlow is extracted from core-term because:
+
+1. **No terminal logic in PixelFlow.** Graphics library stays general-purpose.
+2. **Gradual extraction:** Each crate is independently useful.
+3. **Future applications:** PixelFlow can power other renderers (UI toolkits, games, simulations).
+
+## Extending PixelFlow
+
+### Creating a New Manifold
+
+```rust
+use pixelflow_core::{Manifold, X, Y};
+
+// A circle signed distance field
+let circle = (X * X + Y * Y).sqrt() - 100.0;
+
+// Compose with warp (zoom by 2x)
+let zoomed = circle.warp(|x, y, z, w| (x * 2.0, y * 2.0, z, w));
+
+// Render to pixels (handled by pixelflow-graphics)
+```
+
+### Composing Graphics
+
+```rust
+use pixelflow_graphics::{Color, NamedColor};
+
+let background = Color::Named(NamedColor::Black);
+let foreground = circle.select(
+    Color::Named(NamedColor::White),
+    background,
+);
+```
 
 ## Contributing
 
-Contributions are welcome!
-- **Code Style:** Follow Rust standard style. Docstrings are required for all public items.
-- **Architecture:** Please refer to [docs/NORTH_STAR.md](docs/NORTH_STAR.md) for architectural guidelines.
+See [CLAUDE.md](CLAUDE.md) for architectural constraints and development guidelines.
+
+Key points:
+- **Code style:** Follow Rust idioms. See [STYLE.md](docs/STYLE.md).
+- **No magic in PixelFlow:** Keep the algebra pure and portable.
+- **Tests:** Public API changes require test updates.
+
+## Performance Targets
+
+- **Throughput:** 155 FPS at 1080p (full terminal)
+- **Per-pixel cost:** ~5 nanoseconds
+- **Memory:** Zero allocations per frame (ping-pong buffers)
+- **Latency:** <5ms input-to-render (actor model)
+
+## Research Context
+
+PixelFlow is inspired by:
+- [Conal Elliott's denotational design](http://conal.net/papers/icfp97/)
+- [Halide](https://halide-lang.org/) (pull-based, algebraic composition)
+- [Elm](https://elm-lang.org/) and pure functional graphics
+- [Seamless.js](https://github.com/scttnlsn/seamless) (algebraic surfaces)
+
+The goal: prove that **pure algebra** scales to real-time graphics without GPU compromise.
 
 ## License
 
