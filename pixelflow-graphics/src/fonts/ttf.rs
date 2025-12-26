@@ -249,6 +249,7 @@ impl Manifold<Field> for Line {
 
         // Smooth AA: dist * aa_scale gives normalized distance, then map to [0,1]
         // aa_scale = |dy|/len was precomputed at construction
+        // dist > 0 when query is LEFT of crossing (x < x_int)
         let dist = x_int - x;
         let coverage = (dist * Field::from(self.aa_scale) + Field::from(0.5))
             .max(Field::from(0.0))
@@ -289,6 +290,7 @@ impl Manifold<Field> for Quad {
             // aa_scale = |dy_dt| / sqrt(dx_dt² + dy_dt²)
             //          = |dy_dt| * rsqrt(dx_dt² + dy_dt²)
             // rsqrt is ~5 cycles vs sqrt+div at ~27 cycles
+            // dist > 0 when query is LEFT of crossing (x < x_int)
             let dist = x_int - x;
             let curve_grad_sq = dx_dt * dx_dt + dy_dt * dy_dt;
             let aa_scale = dy_dt.abs() * curve_grad_sq.max(Field::from(1e-12)).rsqrt();
@@ -343,6 +345,7 @@ impl Manifold<Jet2> for Line {
             Jet2::from_f32(-1.0)
         };
 
+        // dist > 0 when query is LEFT of crossing (x < x_int)
         let dist = x_int - x;
         let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
             .sqrt()
@@ -371,6 +374,7 @@ impl Manifold<Jet2> for Quad {
             let dy_dt = Jet2::from_f32(2.0 * ay) * t + Jet2::from_f32(by);
             let dir_mask = dy_dt.gt(Jet2::from_f32(0.0));
             let dir = (dir_mask & Jet2::from_f32(1.0)) | (!dir_mask & Jet2::from_f32(-1.0));
+            // dist > 0 when query is LEFT of crossing (x < x_int)
             let dist = x_int - x;
             let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy).sqrt().max(Field::from(1e-6));
             let coverage = (dist.val / grad_mag + Field::from(0.5)).max(Field::from(0.0)).min(Field::from(1.0));
@@ -799,7 +803,8 @@ impl<'a> Font<'a> {
 
         // The restore transform maps [0, 1] back to font units
         // x_world = x_local * max_dim + x_min
-        let restore = [max_dim, 0.0, 0.0, max_dim, x_min as f32, y_min as f32];
+        // y_world = -max_dim * y_local + y_max (flip Y: normalized Y-down → font Y-up)
+        let restore = [max_dim, 0.0, 0.0, -max_dim, x_min as f32, y_max as f32];
 
         if n >= 0 {
             // Parse segments in normalized [0,1] space
@@ -855,11 +860,11 @@ impl<'a> Font<'a> {
         };
 
         let (xs, ys) = (dec(r, 2, 16)?, dec(r, 4, 32)?);
-        
+
         // Normalize points immediately
         let pts: Vec<_> = (0..np).map(|i| (
-            (xs[i] as f32) * scale + tx, 
-            (ys[i] as f32) * scale + ty, 
+            (xs[i] as f32) * scale + tx,
+            (ys[i] as f32) * scale + ty,
             fl[i] & 1 != 0
         )).collect();
 
