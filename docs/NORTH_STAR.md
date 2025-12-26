@@ -12,7 +12,7 @@
 3. [The Problem](#the-problem) — What we're solving
 4. [The Algebra](#the-algebra) — Field, Surface, Volume, Manifold, dimensional collapse
 5. [The Fixed Observer](#the-fixed-observer) — Warp the world, not the camera; it is always now
-6. [The Six Eigenshaders](#the-six-eigenshaders) — Warp, Grade, Lerp, Select, Fix, Compute
+6. [Common Composition Patterns](#common-composition-patterns) — Warp, Grade, Lerp, Select, Fix, Compute
 7. [Optimization is Composition](#optimization-is-composition) — Bounds are masks, clip is Select
 8. [Type-Level Compilation](#type-level-compilation) — Types are shader programs
 9. [Crate Architecture](#crate-architecture) — Core, Graphics, Engine
@@ -204,9 +204,9 @@ This simplifies composition. Everything shares the same coordinate system—your
 
 ---
 
-## The Six Eigenshaders
+## Common Composition Patterns
 
-Any shader is expressible as composition of six orthogonal primitives:
+In practice, most PixelFlow manifolds compose from the following recurrent patterns (though the system is not limited to them):
 
 | Combinator | Signature | Purpose |
 |------------|-----------|---------|
@@ -217,7 +217,7 @@ Any shader is expressible as composition of six orthogonal primitives:
 | **Fix** | `(seed, step) → V` | Iteration as a dimension (see below) |
 | **Compute** | `Fn(x,y) → T` | Escape hatch (any closure is a Surface) |
 
-Warp, Grade, Lerp, Select, Compute work in any dimension. Fix is special: it *constructs* a Volume.
+These patterns compose freely. Most manifolds are built by nesting them. Fix is special: it treats iteration count as a coordinate dimension, allowing you to describe time-based or iterative systems declaratively.
 
 ### Fix: Iteration is a Dimension
 
