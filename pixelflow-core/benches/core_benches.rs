@@ -4,7 +4,11 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use pixelflow_core::{
-    combinators::Fix, Field, Jet2, Manifold, ManifoldExt, PARALLELISM, X, Y, Z,
+    combinators::{
+        ambient_light_sh, cosine_lobe_sh, directional_light_sh, irradiance, Basis,
+        Coefficients, CompressedManifold, Fix, ShBasis,
+    },
+    Field, Jet2, Manifold, ManifoldExt, PARALLELISM, X, Y, Z,
 };
 
 // ============================================================================
@@ -516,8 +520,207 @@ fn bench_evaluation_throughput(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Kernel Algebra Benchmarks (Spherical Harmonics Lighting)
+// ============================================================================
+
+fn bench_sh_basis_eval(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sh_basis_eval");
+
+    group.bench_function("eval_at_scalar_9coeff", |bencher| {
+        // Normalized direction
+        let (x, y, z) = (0.577f32, 0.577f32, 0.577f32);
+        bencher.iter(|| {
+            black_box(<ShBasis<9> as Basis>::eval_at_scalar(
+                black_box(x),
+                black_box(y),
+                black_box(z),
+            ))
+        })
+    });
+
+    group.throughput(Throughput::Elements(PARALLELISM as u64));
+    group.bench_function("eval_at_vectorized_9coeff", |bencher| {
+        let x = Field::sequential(0.0) * Field::from(0.1);
+        let y = Field::from(0.577);
+        let z = Field::from(0.577);
+        bencher.iter(|| {
+            black_box(<ShBasis<9> as Basis>::eval_at(
+                black_box(x),
+                black_box(y),
+                black_box(z),
+            ))
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_sh_coefficients(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sh_coefficients");
+
+    // Create two SH coefficient sets
+    let cosine = cosine_lobe_sh((0.0, 1.0, 0.0));
+    let light = directional_light_sh((0.577, 0.577, 0.577), 1.0);
+
+    group.bench_function("dot_product_9coeff", |bencher| {
+        bencher.iter(|| black_box(black_box(&cosine.coeffs).dot(black_box(&light.coeffs))))
+    });
+
+    group.bench_function("clebsch_gordan_multiply_9coeff", |bencher| {
+        use pixelflow_core::combinators::CG_ORDER_2;
+        bencher.iter(|| {
+            black_box(
+                black_box(&cosine.coeffs).multiply(black_box(&light.coeffs), CG_ORDER_2),
+            )
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_compressed_creation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compressed_creation");
+
+    group.bench_function("cosine_lobe_sh", |bencher| {
+        let normal = (0.0f32, 1.0f32, 0.0f32);
+        bencher.iter(|| black_box(cosine_lobe_sh(black_box(normal))))
+    });
+
+    group.bench_function("directional_light_sh", |bencher| {
+        let dir = (0.577f32, 0.577f32, 0.577f32);
+        bencher.iter(|| black_box(directional_light_sh(black_box(dir), 1.0)))
+    });
+
+    group.bench_function("ambient_light_sh", |bencher| {
+        bencher.iter(|| black_box(ambient_light_sh(black_box(1.0))))
+    });
+
+    group.finish();
+}
+
+fn bench_irradiance_computation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("irradiance");
+
+    // Pre-create environment light
+    let env = directional_light_sh((0.577, 0.577, 0.577), 1.0);
+
+    group.bench_function("single_normal", |bencher| {
+        let normal = (0.0f32, 1.0f32, 0.0f32);
+        bencher.iter(|| black_box(irradiance(black_box(&env), black_box(normal))))
+    });
+
+    group.bench_function("full_pipeline_diffuse", |bencher| {
+        // Full diffuse lighting: create cosine lobe, multiply with env, extract DC
+        let normal = (0.0f32, 1.0f32, 0.0f32);
+        bencher.iter(|| {
+            let cosine = cosine_lobe_sh(black_box(normal));
+            let lit = cosine.coeffs.dot(&env.coeffs);
+            black_box(lit)
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_compressed_manifold(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compressed_manifold");
+    group.throughput(Throughput::Elements(PARALLELISM as u64));
+
+    // Create a directional light as CompressedManifold
+    let light = directional_light_sh((0.577, 0.577, 0.577), 1.0);
+    let manifold = CompressedManifold::new(light);
+
+    let w = Field::from(0.0);
+
+    group.bench_function("eval_vectorized", |bencher| {
+        // Sample at multiple directions (hemisphere-ish)
+        let x = Field::sequential(0.0) * Field::from(0.1);
+        let y = Field::from(0.5);
+        let z = Field::from(0.5);
+        bencher.iter(|| {
+            black_box(manifold.eval_raw(black_box(x), black_box(y), black_box(z), w))
+        })
+    });
+
+    group.bench_function("eval_batch_16_directions", |bencher| {
+        // More realistic: sample 16 directions (simulating hemisphere sampling)
+        bencher.iter(|| {
+            let mut total = Field::from(0.0);
+            for i in 0..16 {
+                let angle = (i as f32) * 0.392699; // π/8
+                let x = Field::from(angle.cos());
+                let y = Field::from(0.5);
+                let z = Field::from(angle.sin());
+                total = total + manifold.eval_raw(x, y, z, w);
+            }
+            black_box(total)
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_lighting_scenarios(c: &mut Criterion) {
+    let mut group = c.benchmark_group("lighting_scenarios");
+
+    group.bench_function("sky_dome_3_lights", |bencher| {
+        // Realistic: sun + sky + ground bounce
+        bencher.iter(|| {
+            let sun = directional_light_sh((0.2, 0.9, 0.4), 2.0);
+            let sky = ambient_light_sh(0.3);
+            let ground = directional_light_sh((0.0, -1.0, 0.0), 0.1);
+
+            // Combine lights (add coefficients)
+            let combined = sun.add(&sky).add(&ground);
+
+            // Sample at normal pointing up
+            let normal = (0.0f32, 1.0f32, 0.0f32);
+            black_box(irradiance(&combined, normal))
+        })
+    });
+
+    group.bench_function("irradiance_grid_8x8", |bencher| {
+        // Pre-bake environment
+        let env = {
+            let sun = directional_light_sh((0.2, 0.9, 0.4), 2.0);
+            let sky = ambient_light_sh(0.3);
+            sun.add(&sky)
+        };
+
+        bencher.iter(|| {
+            let mut total = 0.0f32;
+            // 8x8 grid of varying normals
+            for i in 0..8 {
+                for j in 0..8 {
+                    let nx = (i as f32 - 3.5) * 0.2;
+                    let ny = 0.8f32;
+                    let nz = (j as f32 - 3.5) * 0.2;
+                    // Normalize
+                    let len = libm::sqrtf(nx * nx + ny * ny + nz * nz);
+                    let normal = (nx / len, ny / len, nz / len);
+                    total += irradiance(&env, normal);
+                }
+            }
+            black_box(total)
+        })
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Groups
 // ============================================================================
+
+criterion_group!(
+    kernel_benches,
+    bench_sh_basis_eval,
+    bench_sh_coefficients,
+    bench_compressed_creation,
+    bench_irradiance_computation,
+    bench_compressed_manifold,
+    bench_lighting_scenarios,
+);
 
 criterion_group!(
     field_benches,
@@ -555,5 +758,6 @@ criterion_main!(
     manifold_benches,
     jet2_benches,
     fix_benches,
-    throughput_benches
+    throughput_benches,
+    kernel_benches
 );

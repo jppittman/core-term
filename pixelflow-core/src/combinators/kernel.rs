@@ -35,7 +35,6 @@
 //! ```
 
 use crate::manifold::Manifold;
-use crate::numeric::Numeric;
 use crate::Field;
 use alloc::sync::Arc;
 use core::marker::PhantomData;
