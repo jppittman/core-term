@@ -35,18 +35,9 @@ impl TerminalEmulator {
 
     pub(super) fn cursor_down(&mut self, n: usize) {
         self.cursor_wrap_next = false;
-        // The original cursor_down in ansi_handler called index().
-        // Here, we assume index() is a method on TerminalEmulator or will be handled by the caller.
-        // For now, let's replicate the direct effect or call index if it's available.
-        // This might need adjustment based on where index() is finally located.
-        // For now, let's assume `index` is a method on `TerminalEmulator`
-        // that can be called from here if needed, or this method's body will be
-        // adjusted based on how `ansi_handler` calls it.
-        // The subtask is to move the CSI helpers. The original `cursor_down` in ansi_handler
-        // called `index(emulator)`. If `index` is a method on `TerminalEmulator`, this becomes `self.index()`.
         log::trace!("cursor_handler::cursor_down: n = {}", n);
         for _i in 0..n {
-            self.index(); // Assuming index is a pub(super) method in methods.rs or similar
+            self.index();
         }
     }
 
