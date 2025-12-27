@@ -194,10 +194,11 @@ impl core::ops::Mul for Jet2 {
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         // Product rule: (f * g)' = f' * g + f * g'
+        // Use FMA for both terms: fma(a, b, c*d) = a*b + c*d in one SIMD FMA instruction
         Self {
             val: self.val * rhs.val,
-            dx: self.dx * rhs.val + self.val * rhs.dx,
-            dy: self.dy * rhs.val + self.val * rhs.dy,
+            dx: self.dx.mul_add(rhs.val, self.val * rhs.dx),
+            dy: self.dy.mul_add(rhs.val, self.val * rhs.dy),
         }
     }
 }
@@ -207,11 +208,13 @@ impl core::ops::Div for Jet2 {
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
         // Quotient rule: (f / g)' = (f' * g - f * g') / g²
+        // Compute 1/g² once, then multiply (parallelizable) instead of 2 sequential divs
         let g_sq = rhs.val * rhs.val;
+        let inv_g_sq = Field::from(1.0) / g_sq;  // One division
         Self {
             val: self.val / rhs.val,
-            dx: (self.dx * rhs.val - self.val * rhs.dx) / g_sq,
-            dy: (self.dy * rhs.val - self.val * rhs.dy) / g_sq,
+            dx: (self.dx * rhs.val - self.val * rhs.dx) * inv_g_sq,
+            dy: (self.dy * rhs.val - self.val * rhs.dy) * inv_g_sq,
         }
     }
 }
@@ -414,9 +417,11 @@ impl Numeric for Jet2 {
         // atan2(y, x) derivatives:
         // ∂/∂y = x / (x² + y²)
         // ∂/∂x = -y / (x² + y²)
+        // Compute 1/(x² + y²) once, then multiply instead of 2 sequential divs
         let r_sq = self.val * self.val + x.val * x.val;
-        let dy_darg = x.val / r_sq;
-        let dx_darg = (Field::from(0.0) - self.val) / r_sq;
+        let inv_r_sq = Field::from(1.0) / r_sq;  // One division
+        let dy_darg = x.val * inv_r_sq;
+        let dx_darg = (Field::from(0.0) - self.val) * inv_r_sq;
         Self {
             val: self.val.atan2(x.val),
             dx: self.dx * dy_darg + x.dx * dx_darg,
@@ -427,12 +432,12 @@ impl Numeric for Jet2 {
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
         // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
-        // Simplified case when g is constant: (f^c)' = c * f^(c-1) * f'
+        // Compute 1/f once instead of dividing multiple times in derivative
         let val = self.val.pow(exp.val);
-        // Use general formula
         let ln_base = self.val.map_lanes(libm::logf);
-        let scale = val * (exp.dx * ln_base + exp.val * self.dx / self.val);
-        let scale_y = val * (exp.dy * ln_base + exp.val * self.dy / self.val);
+        let inv_self = Field::from(1.0) / self.val;  // One division
+        let scale = val * (exp.dx * ln_base + exp.val * self.dx * inv_self);
+        let scale_y = val * (exp.dy * ln_base + exp.val * self.dy * inv_self);
         Self {
             val,
             dx: scale,
@@ -460,13 +465,13 @@ impl Numeric for Jet2 {
     #[inline(always)]
     fn mul_add(self, b: Self, c: Self) -> Self {
         // (a * b + c)' where a, b, c are jets
-        // val = a.val * b.val + c.val
-        // d/dx = a.dx * b.val + a.val * b.dx + c.dx  (product rule + chain rule)
-        // d/dy = a.dy * b.val + a.val * b.dy + c.dy
+        // val = a.val * b.val + c.val (already FMA'd above)
+        // d/dx = a.dx * b.val + a.val * b.dx + c.dx (triple FMA)
+        // Use nested FMA: fma(fma(a.dx, b.val, a.val * b.dx), 1, c.dx)
         Self {
             val: self.val.mul_add(b.val, c.val),
-            dx: self.dx * b.val + self.val * b.dx + c.dx,
-            dy: self.dy * b.val + self.val * b.dy + c.dy,
+            dx: self.dx.mul_add(b.val, self.val.mul_add(b.dx, c.dx)),
+            dy: self.dy.mul_add(b.val, self.val.mul_add(b.dy, c.dy)),
         }
     }
 
@@ -957,9 +962,14 @@ impl Numeric for Jet3 {
 
     #[inline(always)]
     fn atan2(self, x: Self) -> Self {
+        // atan2(y, x) derivatives:
+        // ∂/∂y = x / (x² + y²)
+        // ∂/∂x = -y / (x² + y²)
+        // Compute 1/(x² + y²) once, then multiply instead of 2 sequential divs
         let r_sq = self.val * self.val + x.val * x.val;
-        let dy_darg = x.val / r_sq;
-        let dx_darg = (Field::from(0.0) - self.val) / r_sq;
+        let inv_r_sq = Field::from(1.0) / r_sq;  // One division
+        let dy_darg = x.val * inv_r_sq;
+        let dx_darg = (Field::from(0.0) - self.val) * inv_r_sq;
         Self {
             val: self.val.atan2(x.val),
             dx: self.dx * dy_darg + x.dx * dx_darg,
@@ -970,13 +980,16 @@ impl Numeric for Jet3 {
 
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
+        // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
+        // Compute 1/f once instead of dividing multiple times in derivative
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
+        let inv_self = Field::from(1.0) / self.val;  // One division
         Self {
             val,
-            dx: val * (exp.dx * ln_base + exp.val * self.dx / self.val),
-            dy: val * (exp.dy * ln_base + exp.val * self.dy / self.val),
-            dz: val * (exp.dz * ln_base + exp.val * self.dz / self.val),
+            dx: val * (exp.dx * ln_base + exp.val * self.dx * inv_self),
+            dy: val * (exp.dy * ln_base + exp.val * self.dy * inv_self),
+            dz: val * (exp.dz * ln_base + exp.val * self.dz * inv_self),
         }
     }
 
@@ -998,11 +1011,15 @@ impl Numeric for Jet3 {
 
     #[inline(always)]
     fn mul_add(self, b: Self, c: Self) -> Self {
+        // (a * b + c)' where a, b, c are jets
+        // val = a.val * b.val + c.val (already FMA'd above)
+        // d/dx = a.dx * b.val + a.val * b.dx + c.dx (triple FMA)
+        // Use nested FMA: fma(fma(a.dx, b.val, a.val * b.dx), 1, c.dx)
         Self {
             val: self.val.mul_add(b.val, c.val),
-            dx: self.dx * b.val + self.val * b.dx + c.dx,
-            dy: self.dy * b.val + self.val * b.dy + c.dy,
-            dz: self.dz * b.val + self.val * b.dz + c.dz,
+            dx: self.dx.mul_add(b.val, self.val.mul_add(b.dx, c.dx)),
+            dy: self.dy.mul_add(b.val, self.val.mul_add(b.dy, c.dy)),
+            dz: self.dz.mul_add(b.val, self.val.mul_add(b.dz, c.dz)),
         }
     }
 
