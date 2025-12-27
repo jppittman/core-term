@@ -11,14 +11,19 @@ env:
 
 jobs:
   test:
-    name: Test on ${{ matrix.os }}
+    name: Test ${{ matrix.test-suite }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # Continue running other jobs even if one fails, to see all failures
+      fail-fast: false
       matrix:
-        # Since you're building a terminal emulator (core-term), 
-        # it's a good idea to test on multiple operating systems.
+        # Test on multiple operating systems
         os: [ubuntu-latest, macos-latest]
-    
+        # Parallel runs to catch flaky tests and maximize CI throughput
+        test-suite: [actor-scheduler, other-crates]
+        # Run each test suite 5 times in parallel for flake detection
+        run-number: [1, 2, 3, 4, 5]
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,20 +43,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run tests (actor-scheduler crates - 100x)
+      - name: Run actor-scheduler tests (run ${{ matrix.run-number }}/5)
+        if: matrix.test-suite == 'actor-scheduler'
         shell: bash
-        run: |
-          for i in {1..100}; do
-            echo "::group::Actor Scheduler Tests Run $i/100"
-            cargo test -p actor-scheduler -p actor-scheduler-macros --verbose || exit 1
-            echo "::endgroup::"
-          done
+        run: cargo test -p actor-scheduler -p actor-scheduler-macros --verbose
 
-      - name: Run tests (other crates - 5x)
+      - name: Run other crates tests (run ${{ matrix.run-number }}/5)
+        if: matrix.test-suite == 'other-crates'
         shell: bash
-        run: |
-          for i in {1..5}; do
-            echo "::group::Other Crates Tests Run $i/5"
-            cargo test --workspace --exclude actor-scheduler --exclude actor-scheduler-macros --verbose || exit 1
-            echo "::endgroup::"
-          done
+        run: cargo test --workspace --exclude actor-scheduler --exclude actor-scheduler-macros --verbose

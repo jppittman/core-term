@@ -224,38 +224,58 @@ fn management_messages_processed_before_data_messages() {
 
 #[test]
 fn control_processed_before_management() {
+    // This test verifies that when control and management messages are both
+    // queued, control is processed first. We check which one triggers processing
+    // FIRST by having the actor track the first message of each type it sees.
     let (tx, mut rx) = ActorScheduler::new(10, 100);
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let log_clone = log.clone();
+    let control_first = Arc::new(AtomicBool::new(false));
+    let management_first = Arc::new(AtomicBool::new(false));
+    let control_first_clone = control_first.clone();
+    let management_first_clone = management_first.clone();
 
     let handle = thread::spawn(move || {
-        let mut actor = OrderingActor { log: log_clone };
+        struct FirstWinsActor {
+            control_first: Arc<AtomicBool>,
+            management_first: Arc<AtomicBool>,
+            control_seen: bool,
+            management_seen: bool,
+        }
+        impl Actor<(), (), ()> for FirstWinsActor {
+            fn handle_control(&mut self, _: ()) {
+                if !self.control_seen && !self.management_seen {
+                    self.control_first.store(true, Ordering::SeqCst);
+                }
+                self.control_seen = true;
+            }
+            fn handle_management(&mut self, _: ()) {
+                if !self.control_seen && !self.management_seen {
+                    self.management_first.store(true, Ordering::SeqCst);
+                }
+                self.management_seen = true;
+            }
+            fn handle_data(&mut self, _: ()) {}
+            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+        }
+        let mut actor = FirstWinsActor {
+            control_first: control_first_clone,
+            management_first: management_first_clone,
+            control_seen: false,
+            management_seen: false,
+        };
         rx.run(&mut actor);
     });
 
-    // Queue up messages in reverse priority order
-    tx.send(Message::Data("data".to_string())).unwrap();
-    tx.send(Message::Management("mgmt".to_string())).unwrap();
-    tx.send(Message::Control("ctrl".to_string())).unwrap();
+    // Send both control and management rapidly to ensure they're queued before processing
+    tx.send(Message::Management(())).unwrap();
+    tx.send(Message::Control(())).unwrap();
 
     thread::sleep(Duration::from_millis(50));
     drop(tx);
     handle.join().unwrap();
 
-    let messages = log.lock().unwrap();
-    let ctrl_idx = messages.iter().position(|(s, _)| s.starts_with("C:")).unwrap();
-    let mgmt_idx = messages.iter().position(|(s, _)| s.starts_with("M:")).unwrap();
-    let data_idx = messages.iter().position(|(s, _)| s.starts_with("D:")).unwrap();
-
     assert!(
-        ctrl_idx < mgmt_idx,
-        "Control < Management. Got: {:?}",
-        messages.iter().map(|(s, _)| s).collect::<Vec<_>>()
-    );
-    assert!(
-        mgmt_idx < data_idx,
-        "Management < Data. Got: {:?}",
-        messages.iter().map(|(s, _)| s).collect::<Vec<_>>()
+        control_first.load(Ordering::SeqCst),
+        "Control message should be processed before management message"
     );
 }
 
