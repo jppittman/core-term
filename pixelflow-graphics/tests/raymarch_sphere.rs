@@ -1,130 +1,271 @@
-//! Test: Render a 3D sphere using Jet2-based raymarching
+//! Test: Algebraic raymarching with sphere + floor using coherent optics model
 
-use pixelflow_graphics::raymarch::{MarchConfig, Raymarch};
+use pixelflow_core::{Discrete, Field, Gt, Manifold, Min, Select, W};
+use pixelflow_graphics::raymarch::{
+    chrome, matte, CheckerMask, Environment, MarchConfig, Raymarch, Response, Scale, Translate,
+    GroundPlane, UnitSphere,
+};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
-use pixelflow_core::{Field, Jet2, Manifold};
 use std::fs::File;
 use std::io::Write;
 
-/// Sphere as implicit surface: x² + y² + z² - r² = 0
-#[derive(Clone, Copy)]
-struct Sphere {
-    cx: f32,
-    cy: f32,
-    cz: f32,
-    radius: f32,
+/// Remap pixel coordinates to normalized screen coordinates.
+/// Transforms [0, width] × [0, height] → [-aspect, aspect] × [-1, 1]
+struct ScreenRemap<M> {
+    inner: M,
+    width: f32,
+    height: f32,
 }
 
-impl Manifold<Jet2> for Sphere {
-    type Output = Jet2;
+impl<M: Manifold<Output = Discrete>> Manifold for ScreenRemap<M> {
+    type Output = Discrete;
 
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, _w: Jet2) -> Jet2 {
-        let dx = x - Jet2::constant(Field::from(self.cx));
-        let dy = y - Jet2::constant(Field::from(self.cy));
-        let dz = z - Jet2::constant(Field::from(self.cz));
-        let r2 = Jet2::constant(Field::from(self.radius * self.radius));
-        dx * dx + dy * dy + dz * dz - r2
+    fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
+        let width = Field::from(self.width);
+        let height = Field::from(self.height);
+        let aspect = width / height;
+
+        // Map pixel coords to normalized: [-aspect, aspect] × [1, -1] (flip y)
+        let x = (px / width - Field::from(0.5)) * Field::from(2.0) * aspect;
+        let y = (Field::from(0.5) - py / height) * Field::from(2.0);
+
+        self.inner.eval_raw(x, y, z, w)
     }
 }
 
 #[test]
-fn test_sphere_implicit() {
-    // Test the implicit surface directly
-    let sphere = Sphere {
-        cx: 0.0,
-        cy: 0.0,
-        cz: 0.0,
-        radius: 2.0,
+fn test_sphere_on_floor() {
+    const W: usize = 400;
+    const H: usize = 300;
+
+    // Scene: sphere + floor via manifold composition
+    let sphere = Translate {
+        inner: Scale {
+            inner: UnitSphere,
+            factor: 1.0,
+        },
+        offset: (0.0, 0.5, 4.0),
     };
 
-    // At (0, 0, -5): 0 + 0 + 25 - 4 = 21 (positive, outside)
-    let v1 = sphere.eval_raw(
-        Jet2::x(Field::from(0.0)),
-        Jet2::y(Field::from(0.0)),
-        Jet2::constant(Field::from(-5.0)),
-        Jet2::constant(Field::from(0.0)),
-    );
-    println!("f(0,0,-5) = {:?} (expect ~21)", v1.val);
-
-    // At (0, 0, -2): 0 + 0 + 4 - 4 = 0 (on surface)
-    let v2 = sphere.eval_raw(
-        Jet2::x(Field::from(0.0)),
-        Jet2::y(Field::from(0.0)),
-        Jet2::constant(Field::from(-2.0)),
-        Jet2::constant(Field::from(0.0)),
-    );
-    println!("f(0,0,-2) = {:?} (expect ~0)", v2.val);
-
-    // At (0, 0, 0): 0 + 0 + 0 - 4 = -4 (negative, inside)
-    let v3 = sphere.eval_raw(
-        Jet2::x(Field::from(0.0)),
-        Jet2::y(Field::from(0.0)),
-        Jet2::constant(Field::from(0.0)),
-        Jet2::constant(Field::from(0.0)),
-    );
-    println!("f(0,0,0) = {:?} (expect ~-4)", v3.val);
-}
-
-#[test]
-fn test_raymarch_sphere() {
-    const WIDTH: usize = 200;
-    const HEIGHT: usize = 200;
-
-    let sphere = Sphere {
-        cx: 0.0,
-        cy: 0.0,
-        cz: 2.0,  // Move sphere forward
-        radius: 1.2,
+    let floor = Translate {
+        inner: GroundPlane,
+        offset: (0.0, -0.5, 0.0),
     };
 
+    let scene = Min(sphere, floor);
+
+    // Chrome material (will reflect environment)
+    let material = chrome();
+
+    // Environment lighting via spherical harmonics
+    let env = Environment::sky_gradient();
+
+    // Raymarch in normalized coords, wrapped with pixel→normalized transform
     let raymarch = Raymarch {
-        scene: sphere,
+        scene,
+        material,
+        env,
         config: MarchConfig {
-            max_steps: 200,
-            step_size: 0.02,
-            max_distance: 20.0,
-            camera_z: -2.0,  // Move camera closer
+            max_step: 0.1,
+            max_t: 20.0,
+            epsilon: 0.001,
         },
     };
 
+    let screen = ScreenRemap {
+        inner: raymarch,
+        width: W as f32,
+        height: H as f32,
+    };
 
-    let mut frame = Frame::<Rgba8>::new(WIDTH as u32, HEIGHT as u32);
+    let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
+    execute(
+        &screen,
+        frame.as_slice_mut(),
+        TensorShape {
+            width: W,
+            height: H,
+        },
+    );
 
-    // Map from pixel coords to normalized [-1, 1]
-    struct PixelToNorm<M> {
-        inner: M,
-        width: f32,
-        height: f32,
+    // Save PPM
+    let path = std::env::temp_dir().join("pixelflow_raymarch_sh.ppm");
+    let mut file = File::create(&path).unwrap();
+    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    for p in &frame.data {
+        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
     }
+    println!("Saved: {}", path.display());
 
-    impl<M> Manifold for PixelToNorm<M>
-    where
-        M: Manifold<Output = pixelflow_core::Discrete>,
-    {
-        type Output = pixelflow_core::Discrete;
+    // Basic sanity: center should hit something (not pure sky blue)
+    let center = &frame.data[(H / 2) * W + (W / 2)];
+    assert!(
+        center.r() != 128 || center.g() != 179 || center.b() != 255,
+        "Center pixel should hit geometry, not sky"
+    );
+}
 
-        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
-            let nx = (x / Field::from(self.width)) * Field::from(2.0) - Field::from(1.0);
-            let ny = (y / Field::from(self.height)) * Field::from(2.0) - Field::from(1.0);
-            self.inner.eval_raw(nx, ny, z, w)
-        }
+/// Test with matte gray material
+#[test]
+fn test_sphere_on_matte_floor() {
+    const W: usize = 400;
+    const H: usize = 300;
+
+    let sphere = Translate {
+        inner: Scale {
+            inner: UnitSphere,
+            factor: 1.0,
+        },
+        offset: (0.0, 0.5, 4.0),
+    };
+
+    let floor = Translate {
+        inner: GroundPlane,
+        offset: (0.0, -0.5, 0.0),
+    };
+
+    let scene = Min(sphere, floor);
+
+    // Matte gray material (pure diffuse)
+    let material = matte(0.5, 0.5, 0.5);
+
+    let env = Environment::sky_gradient();
+
+    let raymarch = Raymarch {
+        scene,
+        material,
+        env,
+        config: MarchConfig {
+            max_step: 0.1,
+            max_t: 20.0,
+            epsilon: 0.001,
+        },
+    };
+
+    let screen = ScreenRemap {
+        inner: raymarch,
+        width: W as f32,
+        height: H as f32,
+    };
+
+    let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
+    execute(
+        &screen,
+        frame.as_slice_mut(),
+        TensorShape {
+            width: W,
+            height: H,
+        },
+    );
+
+    // Save PPM
+    let path = std::env::temp_dir().join("pixelflow_raymarch_matte.ppm");
+    let mut file = File::create(&path).unwrap();
+    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    for p in &frame.data {
+        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
     }
+    println!("Saved: {}", path.display());
 
-    let pixel_raymarch = PixelToNorm {
+    // Center should hit geometry
+    let center = &frame.data[(H / 2) * W + (W / 2)];
+    assert!(
+        center.r() != 128 || center.g() != 179 || center.b() != 255,
+        "Center pixel should hit geometry, not sky"
+    );
+}
+
+/// Chrome sphere on checkerboard floor - material selection via manifold composition
+#[test]
+fn test_chrome_sphere_on_checkerboard() {
+    const WIDTH: usize = 400;
+    const HEIGHT: usize = 300;
+
+    let sphere = Translate {
+        inner: Scale {
+            inner: UnitSphere,
+            factor: 1.0,
+        },
+        offset: (0.0, 0.5, 4.0),
+    };
+
+    let floor = Translate {
+        inner: GroundPlane,
+        offset: (0.0, -0.5, 0.0),
+    };
+
+    let scene = Min(sphere, floor);
+
+    // Condition: w > 0.9 means floor (normal.y ≈ 1.0), else sphere
+    // w coordinate receives ny from the raymarch shading
+    let is_floor = Gt(W, 0.9f32);
+
+    // Checker pattern for the floor's diffuse
+    let checker = CheckerMask { scale: 1.0 };
+
+    // Material: Response with Select on each coefficient
+    // When is_floor: checkerboard matte (absorption=0.1, reflection=0.0, scatter varies)
+    // When sphere: chrome (absorption=0.0, reflection=0.95, scatter=0.05)
+    //
+    // Select(cond, if_true, if_false) - so is_floor=true → floor values
+    let material = Response::new(
+        // absorption: floor=0.1, sphere=0.0
+        Select { cond: is_floor, if_true: 0.1f32, if_false: 0.0f32 },
+        // reflection: floor=0.0, sphere=0.95
+        Select { cond: is_floor, if_true: 0.0f32, if_false: 0.95f32 },
+        // scatter_r: floor=checker pattern, sphere=0.05
+        Select {
+            cond: is_floor,
+            if_true: Select { cond: Gt(checker, 0.5f32), if_true: 0.7f32, if_false: 0.3f32 },
+            if_false: 0.05f32,
+        },
+        // scatter_g: same pattern
+        Select {
+            cond: is_floor,
+            if_true: Select { cond: Gt(checker, 0.5f32), if_true: 0.7f32, if_false: 0.3f32 },
+            if_false: 0.05f32,
+        },
+        // scatter_b: same pattern
+        Select {
+            cond: is_floor,
+            if_true: Select { cond: Gt(checker, 0.5f32), if_true: 0.7f32, if_false: 0.3f32 },
+            if_false: 0.05f32,
+        },
+    );
+
+    let env = Environment::sky_gradient();
+
+    let raymarch = Raymarch {
+        scene,
+        material,
+        env,
+        config: MarchConfig {
+            max_step: 0.1,
+            max_t: 20.0,
+            epsilon: 0.001,
+        },
+    };
+
+    let screen = ScreenRemap {
         inner: raymarch,
         width: WIDTH as f32,
         height: HEIGHT as f32,
     };
 
-    execute(&pixel_raymarch, frame.as_slice_mut(), TensorShape {
-        width: WIDTH,
-        height: HEIGHT,
-    });
+    let mut frame = Frame::<Rgba8>::new(WIDTH as u32, HEIGHT as u32);
+    execute(
+        &screen,
+        frame.as_slice_mut(),
+        TensorShape {
+            width: WIDTH,
+            height: HEIGHT,
+        },
+    );
 
-    // Write PPM
-    let path = std::env::temp_dir().join("pixelflow_raymarch_sphere.ppm");
+    // Save PPM
+    let path = std::env::temp_dir().join("pixelflow_chrome_checker.ppm");
     let mut file = File::create(&path).unwrap();
     writeln!(file, "P6\n{} {}\n255", WIDTH, HEIGHT).unwrap();
     for p in &frame.data {
@@ -132,11 +273,25 @@ fn test_raymarch_sphere() {
     }
     println!("Saved: {}", path.display());
 
-    // Verify hit - center pixel should be sphere surface (not background)
-    let center_px = &frame.data[(HEIGHT / 2) * WIDTH + (WIDTH / 2)];
-    println!("Center: ({}, {}, {})", center_px.r(), center_px.g(), center_px.b());
+    // Debug: print some pixel values
+    let center = &frame.data[(HEIGHT / 2) * WIDTH + (WIDTH / 2)];
+    println!("Center pixel (sphere): r={} g={} b={}", center.r(), center.g(), center.b());
+    let bottom = &frame.data[(HEIGHT * 3 / 4) * WIDTH + (WIDTH / 2)];
+    println!("Bottom pixel (floor): r={} g={} b={}", bottom.r(), bottom.g(), bottom.b());
+    let top = &frame.data[(HEIGHT / 4) * WIDTH + (WIDTH / 2)];
+    println!("Top pixel (sky): r={} g={} b={}", top.r(), top.g(), top.b());
 
-    // Background is (20, 20, 40), sphere surface should be different (normal-mapped)
-    assert_ne!(center_px.r(), 20, "Center should hit sphere, not background");
-    assert_ne!(center_px.g(), 20, "Center should hit sphere, not background");
+    // Verify: center should be chrome sphere (reflective, grayish from sky)
+    let center = &frame.data[(HEIGHT / 2) * WIDTH + (WIDTH / 2)];
+    assert!(
+        center.r() != 128 || center.g() != 179 || center.b() != 255,
+        "Center pixel should hit chrome sphere, not sky"
+    );
+
+    // Verify: bottom should be checkerboard floor (alternating gray)
+    let bottom = &frame.data[(HEIGHT * 3 / 4) * WIDTH + (WIDTH / 2)];
+    assert!(
+        bottom.r() != 128 || bottom.g() != 179 || bottom.b() != 255,
+        "Bottom pixel should hit floor, not sky"
+    );
 }
