@@ -5,6 +5,7 @@ use crate::io::pty::NixPty;
 use actor_scheduler::{ActorHandle, Message};
 use log::*;
 use std::io::Read;
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 pub struct ReadThread {
@@ -18,9 +19,11 @@ impl ReadThread {
     ///
     /// * `mut pty` - Clone of the PTY for reading
     /// * `parser_tx` - Actor handle to send raw bytes to parser thread
+    /// * `recycler_rx` - Receiver for recycled buffers from parser thread
     pub fn spawn(
         mut pty: NixPty,
         parser_tx: ActorHandle<Vec<u8>, NoControl, NoManagement>,
+        recycler_rx: Receiver<Vec<u8>>,
     ) -> anyhow::Result<Self> {
         let handle = std::thread::Builder::new()
             .name("pty-reader".to_string())
@@ -28,6 +31,7 @@ impl ReadThread {
                 debug!("Read thread started");
                 eprintln!("DEBUG: Read thread started!");
                 let mut buf = [0u8; 4096];
+                let mut recycled_bufs: Vec<Vec<u8>> = Vec::with_capacity(8);
 
                 // Create EventMonitor
                 let monitor = match crate::io::event::EventMonitor::new() {
@@ -80,7 +84,16 @@ impl ReadThread {
                             break;
                         }
                         Ok(n) => {
-                            let data = buf[..n].to_vec();
+                            // Check for recycled buffers
+                            while let Ok(v) = recycler_rx.try_recv() {
+                                recycled_bufs.push(v);
+                            }
+
+                            // Reuse buffer if available, otherwise allocate new
+                            let mut data = recycled_bufs.pop().unwrap_or_else(|| Vec::with_capacity(n));
+                            data.clear();
+                            data.extend_from_slice(&buf[..n]);
+
                             // Send to parser actor
                             if let Err(e) = parser_tx.send(Message::Data(data)) {
                                 warn!("Failed to send bytes to parser (channel closed): {}", e);

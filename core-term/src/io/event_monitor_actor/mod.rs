@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use log::*;
 use parser_thread::ParserThread;
 use read_thread::ReadThread;
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::{channel, Receiver, SyncSender};
 use write_thread::WriteThread;
 
 /// EventMonitor actor that manages PTY I/O across three dedicated threads.
@@ -72,12 +72,18 @@ impl EventMonitorActor {
             .try_clone()
             .context("Failed to clone PTY for read thread")?;
 
+        // Create buffer recycling channel (Parser -> Read)
+        // Unbounded channel is safe because it's a closed loop:
+        // ReadThread allocates -> ParserThread consumes -> ParserThread returns
+        // The number of buffers in flight is limited by ReadThread's initial allocations
+        let (recycler_tx, recycler_rx) = channel();
+
         // Spawn read thread: PTY → sends raw bytes to parser via ActorHandle
         let read_thread =
-            ReadThread::spawn(pty_read, parser_tx).context("Failed to spawn PTY read thread")?;
+            ReadThread::spawn(pty_read, parser_tx, recycler_rx).context("Failed to spawn PTY read thread")?;
 
         // Spawn parser thread: receives raw bytes via ActorScheduler, sends ANSI commands to app
-        let parser_thread = ParserThread::spawn(parser_rx, cmd_tx)
+        let parser_thread = ParserThread::spawn(parser_rx, cmd_tx, recycler_tx)
             .context("Failed to spawn PTY parser thread")?;
 
         // Spawn write thread (owns primary PTY for writes and lifecycle management)
