@@ -208,13 +208,14 @@ impl core::ops::Div for Jet2 {
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
         // Quotient rule: (f / g)' = (f' * g - f * g') / g²
-        // Compute 1/g² once, then multiply (parallelizable) instead of 2 sequential divs
+        // Restructure to use FMA: f'*(g/g²) - f*(g'/g²) = f'*(1/g) - f*g'*(1/g²)
         let g_sq = rhs.val * rhs.val;
         let inv_g_sq = Field::from(1.0) / g_sq;  // One division
+        let scale = rhs.val * inv_g_sq;          // Pre-compute rhs.val/g_sq
         Self {
             val: self.val / rhs.val,
-            dx: (self.dx * rhs.val - self.val * rhs.dx) * inv_g_sq,
-            dy: (self.dy * rhs.val - self.val * rhs.dy) * inv_g_sq,
+            dx: self.dx.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dx * inv_g_sq),  // FMA: f'*(g/g²) - f*(g'/g²)
+            dy: self.dy.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dy * inv_g_sq),
         }
     }
 }
@@ -767,14 +768,15 @@ impl core::ops::Div for Jet3 {
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
         // Quotient rule: (f / g)' = (f' * g - f * g') / g²
-        // Compute 1/g² once, then multiply (parallelizable) instead of 3 sequential divs
+        // Restructure to use FMA: f'*(g/g²) - f*(g'/g²) = f'*(1/g) - f*g'*(1/g²)
         let g_sq = rhs.val * rhs.val;
         let inv_g_sq = Field::from(1.0) / g_sq;  // One division
+        let scale = rhs.val * inv_g_sq;          // Pre-compute rhs.val/g_sq
         Self {
             val: self.val / rhs.val,
-            dx: (self.dx * rhs.val - self.val * rhs.dx) * inv_g_sq,
-            dy: (self.dy * rhs.val - self.val * rhs.dy) * inv_g_sq,
-            dz: (self.dz * rhs.val - self.val * rhs.dz) * inv_g_sq,
+            dx: self.dx.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dx * inv_g_sq),  // FMA: f'*(g/g²) - f*(g'/g²)
+            dy: self.dy.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dy * inv_g_sq),
+            dz: self.dz.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dz * inv_g_sq),
         }
     }
 }
