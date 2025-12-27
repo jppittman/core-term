@@ -271,12 +271,15 @@ impl Numeric for Jet2 {
     #[inline(always)]
     fn sqrt(self) -> Self {
         // Chain rule: (√f)' = f' / (2√f)
-        let sqrt_val = self.val.sqrt();
-        let two_sqrt = Field::from(2.0) * sqrt_val;
+        // Use rsqrt (4 cycles) instead of sqrt (20-30 cycles)
+        // sqrt(x) = x * rsqrt(x), derivative = rsqrt(x) / 2
+        let rsqrt_val = self.val.rsqrt();
+        let sqrt_val = self.val * rsqrt_val;
+        let half_rsqrt = rsqrt_val * Field::from(0.5);
         Self {
             val: sqrt_val,
-            dx: self.dx / two_sqrt,
-            dy: self.dy / two_sqrt,
+            dx: self.dx * half_rsqrt,
+            dy: self.dy * half_rsqrt,
         }
     }
 
@@ -824,14 +827,17 @@ impl Computational for Jet3 {
 impl Numeric for Jet3 {
     #[inline(always)]
     fn sqrt(self) -> Self {
-        let sqrt_val = self.val.sqrt();
-        // Compute reciprocal once, then multiply (parallelizable) instead of 3 sequential divs
-        let inv_two_sqrt = Field::from(1.0) / (Field::from(2.0) * sqrt_val);
+        // Use rsqrt (4 cycles) instead of sqrt (20-30 cycles)
+        // sqrt(x) = x * rsqrt(x)
+        // d(sqrt(x))/dx = rsqrt(x) / 2
+        let rsqrt_val = self.val.rsqrt();
+        let sqrt_val = self.val * rsqrt_val;
+        let half_rsqrt = rsqrt_val * Field::from(0.5);
         Self {
             val: sqrt_val,
-            dx: self.dx * inv_two_sqrt,
-            dy: self.dy * inv_two_sqrt,
-            dz: self.dz * inv_two_sqrt,
+            dx: self.dx * half_rsqrt,
+            dy: self.dy * half_rsqrt,
+            dz: self.dz * half_rsqrt,
         }
     }
 
