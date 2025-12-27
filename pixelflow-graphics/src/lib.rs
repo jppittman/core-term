@@ -7,6 +7,7 @@ pub mod fonts;
 pub mod image;
 pub mod raymarch;
 pub mod render;
+pub mod scene3d;
 pub mod shapes;
 pub mod transform;
 

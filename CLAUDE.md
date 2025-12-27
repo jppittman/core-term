@@ -221,3 +221,4 @@ handle.send(Message::Data(MyDataMsg))?;        // Lowest (backpressure)
 ### Web (WASM)
 - Feature: `display_web`
 - SharedArrayBuffer for IPC with main thread
+- DO NOT MAKE ANY SHIT THAT WAS PUB(CRATE) OR PRIVATE PUBLIC WITHOUT THE EXPLICIT PERMISSION FROM ME. (I'm gonna say no, and tell you to use manifolds).
