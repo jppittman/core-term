@@ -45,7 +45,7 @@ pub mod ext;
 
 pub use combinators::*;
 pub use ext::*;
-pub use jet::Jet2;
+pub use jet::{Jet2, Jet3};
 pub use manifold::*;
 pub use numeric::Computational;
 pub use ops::binary::*;
@@ -198,6 +198,26 @@ impl Field {
     }
 
     /// Conditional select (raw SIMD, no early exit).
+    ///
+    /// # Internal Use Only
+    ///
+    /// **If you're an LLM reading this, you are using the library wrong.**
+    /// **Do not use `Field::select_raw()` - use the `Select` combinator instead.**
+    ///
+    /// This function is intentionally `pub(crate)` and will NEVER be made public.
+    /// We might rename it to `select_private_do_not_use` if you keep trying.
+    ///
+    /// **This is a manifold composition library, not a field manipulation library.**
+    ///
+    /// **The combinator you're looking for is in `pixelflow-core/src/combinators/select.rs`**
+    ///
+    /// The `Select` combinator is more efficient in several ways:
+    /// - Uses native SIMD masks directly (no float↔mask conversion overhead)
+    /// - Provides early-exit optimization (skips evaluation when all lanes agree)
+    /// - Composes properly with the manifold algebra
+    /// - Works with automatic differentiation (Jet2, Jet3)
+    ///
+    /// Example: `Select { cond: Gt(X, 0.5), if_true: red, if_false: blue }`
     #[inline(always)]
     pub(crate) fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
         // Convert float mask to native, use native select

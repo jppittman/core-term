@@ -776,6 +776,140 @@ criterion_group!(shape_benches, bench_shapes,);
 
 criterion_group!(text_benches, bench_text_rendering,);
 
+// ============================================================================
+// Scene3D Benchmarks (Chrome Sphere, etc.)
+// ============================================================================
+
+fn bench_scene3d(c: &mut Criterion) {
+    use pixelflow_graphics::render::frame::Frame;
+    use pixelflow_graphics::scene3d::{
+        Checker, PlaneGeometry, Reflect, ScreenToDir, Sky, SphereAt, Surface,
+    };
+
+    // Helper: grayscale Field -> Discrete RGBA
+    #[derive(Copy, Clone)]
+    struct GrayToRgba<M> {
+        inner: M,
+    }
+
+    impl<M: Manifold<Output = Field>> Manifold for GrayToRgba<M> {
+        type Output = Discrete;
+        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+            let gray = self.inner.eval_raw(x, y, z, w);
+            Discrete::pack(gray, gray, gray, Field::from(1.0))
+        }
+    }
+
+    // Helper: remap pixel coords to normalized screen coords
+    #[derive(Copy, Clone)]
+    struct ScreenRemap<M> {
+        inner: M,
+        width: f32,
+        height: f32,
+    }
+
+    impl<M: Manifold<Output = Field>> Manifold for ScreenRemap<M> {
+        type Output = Field;
+        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+            let scale = 2.0 / self.height;
+            let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
+            let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
+            self.inner.eval_raw(sx, sy, z, w)
+        }
+    }
+
+    let mut group = c.benchmark_group("scene3d");
+
+    // Chrome sphere: 400x300
+    let w = 400usize;
+    let h = 300usize;
+    group.throughput(Throughput::Elements((w * h) as u64));
+
+    group.bench_function("chrome_sphere_400x300", |bencher| {
+        let world = Surface {
+            geometry: PlaneGeometry { height: -1.0 },
+            material: Checker,
+            background: Sky,
+        };
+
+        let scene = Surface {
+            geometry: SphereAt {
+                center: (0.0, 0.0, 4.0),
+                radius: 1.0,
+            },
+            material: Reflect { inner: world },
+            background: world,
+        };
+
+        let screen = ScreenRemap {
+            inner: ScreenToDir { inner: scene },
+            width: w as f32,
+            height: h as f32,
+        };
+
+        let renderable = GrayToRgba { inner: screen };
+        let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+        let shape = TensorShape::new(w, h);
+
+        bencher.iter(|| {
+            execute(&renderable, frame.as_slice_mut(), shape);
+            black_box(&frame);
+        })
+    });
+
+    // Sky only (baseline)
+    group.bench_function("sky_only_400x300", |bencher| {
+        let scene = Surface {
+            geometry: PlaneGeometry { height: -1000.0 }, // Never hits
+            material: Checker,
+            background: Sky,
+        };
+
+        let screen = ScreenRemap {
+            inner: ScreenToDir { inner: scene },
+            width: w as f32,
+            height: h as f32,
+        };
+
+        let renderable = GrayToRgba { inner: screen };
+        let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+        let shape = TensorShape::new(w, h);
+
+        bencher.iter(|| {
+            execute(&renderable, frame.as_slice_mut(), shape);
+            black_box(&frame);
+        })
+    });
+
+    // Floor only (no reflection)
+    group.bench_function("floor_only_400x300", |bencher| {
+        let scene = Surface {
+            geometry: PlaneGeometry { height: -1.0 },
+            material: Checker,
+            background: Sky,
+        };
+
+        let screen = ScreenRemap {
+            inner: ScreenToDir { inner: scene },
+            width: w as f32,
+            height: h as f32,
+        };
+
+        let renderable = GrayToRgba { inner: screen };
+        let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+        let shape = TensorShape::new(w, h);
+
+        bencher.iter(|| {
+            execute(&renderable, frame.as_slice_mut(), shape);
+            black_box(&frame);
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(scene3d_benches, bench_scene3d,);
+
 criterion_group!(
     cache_benches,
     bench_glyph_cache,
@@ -791,5 +925,6 @@ criterion_main!(
     color_benches,
     shape_benches,
     text_benches,
-    cache_benches
+    cache_benches,
+    scene3d_benches
 );

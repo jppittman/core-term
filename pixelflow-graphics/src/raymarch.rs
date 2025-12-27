@@ -24,7 +24,10 @@
 //!                 Shade via material manifold
 //! ```
 
-use pixelflow_core::combinators::spherical::{Sh2, ShCoeffs};
+use pixelflow_core::combinators::spherical::{
+    cosine_lobe_sh2, sh2_basis_at, sh2_multiply_field, sh2_multiply_static_field, Sh2, Sh2Field,
+    ShCoeffs,
+};
 use pixelflow_core::ops::{Max, Min};
 use pixelflow_core::{Computational, Discrete, Field, Jet2, Manifold};
 
@@ -227,6 +230,135 @@ pub type Intersect<A, B> = Max<A, B>;
 // Note: Subtract would need a Negate combinator composed with Max.
 // For now, not implementing it since the test doesn't use it.
 
+// ============================================================================
+// Visibility Field (S² → [0,1])
+// ============================================================================
+
+/// Sphere sample directions for SH projection (Fibonacci spiral).
+/// 32 samples with integration weights for uniform sphere coverage.
+/// Each entry: (x, y, z, weight)
+pub static SPHERE_SAMPLES: &[(f32, f32, f32, f32)] = &[
+    // Fibonacci spiral on unit sphere - good uniform distribution
+    // Weight = 4π / N for uniform integration
+    (0.0000, 1.0000, 0.0000, 0.3927),
+    (0.3568, 0.9239, 0.1388, 0.3927),
+    (-0.1045, 0.8090, 0.5787, 0.3927),
+    (-0.4755, 0.6691, -0.5708, 0.3927),
+    (0.5878, 0.5000, -0.6366, 0.3927),
+    (0.0612, 0.3090, 0.9490, 0.3927),
+    (-0.7071, 0.1045, 0.6995, 0.3927),
+    (0.7660, -0.0980, -0.6352, 0.3927),
+    (-0.2225, -0.3090, -0.9245, 0.3927),
+    (-0.4540, -0.5000, 0.7374, 0.3927),
+    (0.8660, -0.6691, 0.0000, 0.3927),
+    (-0.6428, -0.8090, -0.6428, 0.3927),
+    (-0.0000, -0.9239, 0.3827, 0.3927),
+    (0.5878, -1.0000, 0.0000, 0.3927),
+    (-0.9511, 0.0000, 0.3090, 0.3927),
+    (0.5878, 0.0000, -0.8090, 0.3927),
+    // Additional samples for better coverage
+    (0.8090, 0.5878, 0.0000, 0.3927),
+    (-0.8090, 0.5878, 0.0000, 0.3927),
+    (0.0000, 0.5878, 0.8090, 0.3927),
+    (0.0000, 0.5878, -0.8090, 0.3927),
+    (0.5878, 0.0000, 0.8090, 0.3927),
+    (-0.5878, 0.0000, 0.8090, 0.3927),
+    (0.5878, 0.0000, -0.8090, 0.3927),
+    (-0.5878, 0.0000, -0.8090, 0.3927),
+    (0.8090, -0.5878, 0.0000, 0.3927),
+    (-0.8090, -0.5878, 0.0000, 0.3927),
+    (0.0000, -0.5878, 0.8090, 0.3927),
+    (0.0000, -0.5878, -0.8090, 0.3927),
+    (0.4472, 0.8944, 0.0000, 0.3927),
+    (-0.4472, 0.8944, 0.0000, 0.3927),
+    (0.4472, -0.8944, 0.0000, 0.3927),
+    (-0.4472, -0.8944, 0.0000, 0.3927),
+];
+
+/// Compute visibility from a point toward a direction.
+///
+/// Returns 1.0 if clear, 0.0 if blocked.
+/// This is a function rather than a manifold because we need to pass the origin point.
+fn trace_visibility<S>(
+    scene: &S,
+    origin: (Field, Field, Field),
+    dir: (Field, Field, Field),
+    max_dist: f32,
+    bias: f32,
+) -> Field
+where
+    S: Manifold<Output = Field>,
+{
+    let (dx, dy, dz) = dir;
+    let (ox, oy, oz) = origin;
+
+    // Normalize direction
+    let len = (dx * dx + dy * dy + dz * dz).sqrt() + Field::from(1e-6);
+    let dx = dx / len;
+    let dy = dy / len;
+    let dz = dz / len;
+
+    let max_t = Field::from(max_dist);
+    let step = Field::from(max_dist / 16.0);
+    let bias_f = Field::from(bias);
+    let epsilon = Field::from(0.05);
+
+    let mut t = bias_f;
+    let mut visible = Field::from(1.0);
+
+    for _ in 0..16 {
+        let px = ox + dx * t;
+        let py = oy + dy * t;
+        let pz = oz + dz * t;
+
+        let f = scene.eval_raw(px, py, pz, Field::from(0.0));
+
+        // Hit surface? Mark occluded.
+        let hit = f.abs().lt(epsilon);
+        let still_marching = t.lt(max_t);
+
+        // Where hit && still_marching, visibility becomes 0
+        visible = select(hit & still_marching, Field::from(0.0), visible);
+
+        t = t + step;
+    }
+
+    visible
+}
+
+/// Project visibility onto SH2 basis by sampling directions from a point.
+///
+/// Integrates visibility over the sphere using fixed sample directions.
+pub fn project_visibility_sh2<S>(
+    scene: &S,
+    origin: (Field, Field, Field),
+    max_dist: f32,
+    bias: f32,
+) -> Sh2Field
+where
+    S: Manifold<Output = Field>,
+{
+    let mut coeffs = [Field::from(0.0); 9];
+
+    for &(dx, dy, dz, weight) in SPHERE_SAMPLES {
+        let vis = trace_visibility(
+            scene,
+            origin,
+            (Field::from(dx), Field::from(dy), Field::from(dz)),
+            max_dist,
+            bias,
+        );
+
+        // SH basis at this direction
+        let basis = sh2_basis_at((Field::from(dx), Field::from(dy), Field::from(dz)));
+
+        for i in 0..9 {
+            coeffs[i] = coeffs[i] + vis * basis[i] * Field::from(weight);
+        }
+    }
+
+    Sh2Field { coeffs }
+}
 
 // ============================================================================
 // Lighting via Spherical Harmonics
@@ -339,21 +471,29 @@ fn reflect(d: (Field, Field, Field), n: (Field, Field, Field)) -> (Field, Field,
     )
 }
 
-/// Shade a surface point given material response and environment.
+/// Shade a surface point given material response, environment, and visibility.
 ///
 /// Combines specular (reflection) and diffuse (scattering) contributions.
-fn shade(
+/// Visibility (in SH basis) modulates the environment lighting to create shadows.
+fn shade_with_visibility(
     env: &Environment,
+    vis_sh: &Sh2Field,
     response: EvaluatedResponse,
     normal: (Field, Field, Field),
     ray_dir: (Field, Field, Field),
 ) -> (Field, Field, Field) {
-    // Diffuse: irradiance from environment weighted by normal
-    let diffuse = env.irradiance(normal.0, normal.1, normal.2);
+    // Multiply environment by visibility in SH basis
+    // lit_sh = env × visibility (what light actually arrives)
+    let lit_sh = sh2_multiply_static_field(&env.coeffs, vis_sh);
 
-    // Specular: environment sampled at reflection direction
+    // Diffuse: lit environment convolved with cosine lobe
+    let cosine_sh = cosine_lobe_sh2(normal);
+    let diffuse_sh = sh2_multiply_field(&lit_sh, &cosine_sh);
+    let diffuse = diffuse_sh.l0(); // L0 = hemisphere integral
+
+    // Specular: lit environment sampled at reflection direction
     let reflect_dir = reflect(ray_dir, normal);
-    let specular = env.eval(reflect_dir);
+    let specular = lit_sh.eval(reflect_dir);
 
     // Combine via response coefficients
     let r = response.reflection * specular + response.scatter_r * diffuse;
@@ -362,7 +502,6 @@ fn shade(
 
     (r, g, b)
 }
-
 
 // ============================================================================
 // The Raymarch Combinator
@@ -505,8 +644,12 @@ where
         // Evaluate material response at hit point
         let response = self.material.eval_at(hx, hy, hz, ny);
 
-        // Shade: combine specular and diffuse via material response
-        let (r, g, b) = shade(&self.env, response, (nx, ny, nz), (dx, dy, dz));
+        // Compute visibility from hit point (projects onto SH basis)
+        // This traces rays in all sample directions to find occlusions
+        let vis_sh = project_visibility_sh2(&self.scene, (hx, hy, hz), 10.0, 0.05);
+
+        // Shade with visibility: combine specular and diffuse via material response
+        let (r, g, b) = shade_with_visibility(&self.env, &vis_sh, response, (nx, ny, nz), (dx, dy, dz));
 
         // Sky gradient background
         let sky_t = (y + one) * Field::from(0.5);
