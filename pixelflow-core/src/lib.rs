@@ -263,9 +263,8 @@ impl Field {
     pub fn floor(self) -> Self {
         Self(self.0.floor())
     }
-
-    /// Fused multiply-add: self * b + c
-    /// Uses FMA instruction when available (single rounding).
+    /// Fused multiply-add: `self * b + c` in a single operation.
+    /// Uses hardware FMA instruction when available.
     #[inline(always)]
     pub(crate) fn mul_add(self, b: Self, c: Self) -> Self {
         Self(self.0.mul_add(b.0, c.0))

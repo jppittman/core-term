@@ -745,11 +745,12 @@ impl core::ops::Mul for Jet3 {
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         // Product rule: (f * g)' = f' * g + f * g'
+        // Use FMA for both terms: fma(a, b, c*d) = a*b + c*d in one SIMD FMA instruction
         Self {
             val: self.val * rhs.val,
-            dx: self.dx * rhs.val + self.val * rhs.dx,
-            dy: self.dy * rhs.val + self.val * rhs.dy,
-            dz: self.dz * rhs.val + self.val * rhs.dz,
+            dx: self.dx.mul_add(rhs.val, self.val * rhs.dx),
+            dy: self.dy.mul_add(rhs.val, self.val * rhs.dy),
+            dz: self.dz.mul_add(rhs.val, self.val * rhs.dz),
         }
     }
 }
@@ -759,12 +760,14 @@ impl core::ops::Div for Jet3 {
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
         // Quotient rule: (f / g)' = (f' * g - f * g') / g²
+        // Compute 1/g² once, then multiply (parallelizable) instead of 3 sequential divs
         let g_sq = rhs.val * rhs.val;
+        let inv_g_sq = Field::from(1.0) / g_sq;  // One division
         Self {
             val: self.val / rhs.val,
-            dx: (self.dx * rhs.val - self.val * rhs.dx) / g_sq,
-            dy: (self.dy * rhs.val - self.val * rhs.dy) / g_sq,
-            dz: (self.dz * rhs.val - self.val * rhs.dz) / g_sq,
+            dx: (self.dx * rhs.val - self.val * rhs.dx) * inv_g_sq,
+            dy: (self.dy * rhs.val - self.val * rhs.dy) * inv_g_sq,
+            dz: (self.dz * rhs.val - self.val * rhs.dz) * inv_g_sq,
         }
     }
 }
@@ -822,12 +825,13 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn sqrt(self) -> Self {
         let sqrt_val = self.val.sqrt();
-        let two_sqrt = Field::from(2.0) * sqrt_val;
+        // Compute reciprocal once, then multiply (parallelizable) instead of 3 sequential divs
+        let inv_two_sqrt = Field::from(1.0) / (Field::from(2.0) * sqrt_val);
         Self {
             val: sqrt_val,
-            dx: self.dx / two_sqrt,
-            dy: self.dy / two_sqrt,
-            dz: self.dz / two_sqrt,
+            dx: self.dx * inv_two_sqrt,
+            dy: self.dy * inv_two_sqrt,
+            dz: self.dz * inv_two_sqrt,
         }
     }
 
