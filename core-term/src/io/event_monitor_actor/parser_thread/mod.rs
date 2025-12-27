@@ -3,7 +3,7 @@
 use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use actor_scheduler::{Actor, ActorScheduler, ParkHint};
 use log::*;
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{Sender, SyncSender};
 use std::thread::JoinHandle;
 
 /// Control message for parser thread (unused)
@@ -25,9 +25,11 @@ impl ParserThread {
     ///
     /// * `rx` - Receiver for raw byte batches
     /// * `cmd_tx` - Sender for parsed ANSI command batches
+    /// * `recycler_tx` - Sender for recycling buffers back to read thread
     pub fn spawn(
         mut rx: ActorScheduler<Vec<u8>, NoControl, NoManagement>,
         cmd_tx: SyncSender<Vec<AnsiCommand>>,
+        recycler_tx: Sender<Vec<u8>>,
     ) -> anyhow::Result<Self> {
         let handle = std::thread::Builder::new()
             .name("pty-parser".to_string())
@@ -36,6 +38,7 @@ impl ParserThread {
                 let mut parser_actor = ParserActor {
                     parser: AnsiProcessor::new(),
                     cmd_tx,
+                    recycler_tx,
                 };
                 rx.run(&mut parser_actor);
                 debug!("Parser thread exited");
@@ -60,17 +63,24 @@ impl Drop for ParserThread {
 struct ParserActor {
     parser: AnsiProcessor,
     cmd_tx: SyncSender<Vec<AnsiCommand>>,
+    recycler_tx: Sender<Vec<u8>>,
 }
 
 impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
     fn handle_data(&mut self, data: Vec<u8>) {
         if data.is_empty() {
+            // Even if empty, recycle it
+            let _ = self.recycler_tx.send(data);
             return;
         }
 
         // Process raw bytes through ANSI parser (AnsiProcessor implements AnsiParser trait)
         // process_bytes returns Vec<AnsiCommand>
         let commands = self.parser.process_bytes(&data);
+
+        // Recycle buffer
+        // We ignore the error because the read thread might have exited
+        let _ = self.recycler_tx.send(data);
 
         if !commands.is_empty() {
             // Send batch of parsed commands to app
