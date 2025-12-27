@@ -321,6 +321,261 @@ pub type Sh2 = ShCoeffs<9>;
 pub type Sh3 = ShCoeffs<16>;
 
 // ============================================================================
+// SH Multiplication (Clebsch-Gordan)
+// ============================================================================
+
+/// Clebsch-Gordan coefficients for SH L2 × L2 → L2 product.
+///
+/// These are mathematical constants - the "multiplication table" for spherical harmonics.
+/// Entry (i, j, k, w) means: a[i] × b[j] contributes weight w to result[k].
+///
+/// For band L=2, we have 9×9=81 possible products, but selection rules eliminate many.
+/// Only products where |m1+m2| ≤ 2 contribute to band L≤2 output.
+///
+/// Reference: Green, "Spherical Harmonic Lighting: The Gritty Details"
+pub static SH2_PRODUCT_TABLE: &[(usize, usize, usize, f32)] = &[
+    // L0 × L0 → L0 (DC × DC = DC)
+    // Y00 × Y00 → Y00 with weight = 1/(2√π) ≈ 0.282
+    (0, 0, 0, 0.282_095),
+    // L0 × L1 → L1 (DC scales L1)
+    (0, 1, 1, 0.282_095),
+    (1, 0, 1, 0.282_095),
+    (0, 2, 2, 0.282_095),
+    (2, 0, 2, 0.282_095),
+    (0, 3, 3, 0.282_095),
+    (3, 0, 3, 0.282_095),
+    // L0 × L2 → L2 (DC scales L2)
+    (0, 4, 4, 0.282_095),
+    (4, 0, 4, 0.282_095),
+    (0, 5, 5, 0.282_095),
+    (5, 0, 5, 0.282_095),
+    (0, 6, 6, 0.282_095),
+    (6, 0, 6, 0.282_095),
+    (0, 7, 7, 0.282_095),
+    (7, 0, 7, 0.282_095),
+    (0, 8, 8, 0.282_095),
+    (8, 0, 8, 0.282_095),
+    // L1 × L1 → L0, L2
+    // Y1m × Y1m' contributions (selection rules: m+m' = output m)
+    (1, 1, 0, 0.282_095),
+    (2, 2, 0, 0.282_095),
+    (3, 3, 0, 0.282_095),
+    // L1 × L1 → L2 (various m combinations)
+    (1, 2, 5, 0.126_157),
+    (2, 1, 5, 0.126_157),
+    (1, 3, 7, 0.126_157),
+    (3, 1, 7, 0.126_157),
+    (2, 3, 4, 0.126_157),
+    (3, 2, 4, 0.126_157),
+    (1, 1, 6, 0.218_509),
+    (2, 2, 6, -0.218_509),
+    (3, 3, 6, 0.218_509),
+    (2, 2, 8, 0.126_157),
+    (3, 3, 8, -0.126_157),
+    // Higher-order products (L1×L2, L2×L1, L2×L2) truncate to band 2
+    // These contribute to output but are band-limited
+    // L1 × L2 → L1 (backprojection)
+    (1, 6, 1, 0.218_509),
+    (6, 1, 1, 0.218_509),
+    (2, 6, 2, -0.218_509),
+    (6, 2, 2, -0.218_509),
+    (3, 6, 3, 0.218_509),
+    (6, 3, 3, 0.218_509),
+    // Additional cross terms
+    (1, 5, 2, 0.126_157),
+    (5, 1, 2, 0.126_157),
+    (2, 5, 1, 0.126_157),
+    (5, 2, 1, 0.126_157),
+    (1, 7, 3, 0.126_157),
+    (7, 1, 3, 0.126_157),
+    (3, 7, 1, 0.126_157),
+    (7, 3, 1, 0.126_157),
+    (2, 4, 3, 0.126_157),
+    (4, 2, 3, 0.126_157),
+    (3, 4, 2, 0.126_157),
+    (4, 3, 2, 0.126_157),
+];
+
+/// Multiply two SH2 coefficient vectors via Clebsch-Gordan product.
+///
+/// This computes the product of two spherical harmonic representations,
+/// giving the SH coefficients of the pointwise product of the two functions.
+///
+/// # Mathematical Background
+///
+/// For two functions f, g on S² represented in SH:
+///   f(ω) = Σ f_i Y_i(ω)
+///   g(ω) = Σ g_j Y_j(ω)
+///
+/// Their product (f·g)(ω) has SH coefficients:
+///   (f·g)_k = Σ_{i,j} C_{ijk} f_i g_j
+///
+/// where C_{ijk} are the Clebsch-Gordan coefficients (or Gaunt coefficients).
+pub fn sh2_multiply(a: &Sh2, b: &Sh2) -> Sh2 {
+    let mut result = [0.0f32; 9];
+    for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
+        result[k] += a.coeffs[i] * b.coeffs[j] * weight;
+    }
+    ShCoeffs { coeffs: result }
+}
+
+/// Evaluate SH2 coefficients at a direction.
+///
+/// Reconstructs the function value from SH coefficients by computing
+/// Σ c_i Y_i(direction).
+impl Sh2 {
+    /// Evaluate the SH representation at a direction.
+    pub fn eval(&self, dir: (Field, Field, Field)) -> Field {
+        let basis = sh2_basis_at(dir);
+        let mut result = Field::from(0.0);
+        for i in 0..9 {
+            result = result + Field::from(self.coeffs[i]) * basis[i];
+        }
+        result
+    }
+}
+
+/// Evaluate all 9 SH2 basis functions at a direction.
+///
+/// Returns [Y00, Y1-1, Y10, Y11, Y2-2, Y2-1, Y20, Y21, Y22] evaluated at dir.
+pub fn sh2_basis_at(dir: (Field, Field, Field)) -> [Field; 9] {
+    let (x, y, z) = dir;
+
+    // Normalize direction
+    let r2 = x * x + y * y + z * z;
+    let inv_r = r2.rsqrt();
+    let nx = x * inv_r;
+    let ny = y * inv_r;
+    let nz = z * inv_r;
+
+    // SH basis functions (real, orthonormalized)
+    // Using standard conventions from computer graphics
+    [
+        // L=0
+        Field::from(SH_NORM[0][0]), // Y00 = 0.282...
+        // L=1
+        Field::from(SH_NORM[1][1]) * ny, // Y1-1
+        Field::from(SH_NORM[1][0]) * nz, // Y10
+        Field::from(SH_NORM[1][1]) * nx, // Y11
+        // L=2
+        Field::from(SH_NORM[2][2]) * nx * ny,                                        // Y2-2
+        Field::from(SH_NORM[2][1]) * ny * nz,                                        // Y2-1
+        Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)), // Y20
+        Field::from(SH_NORM[2][1]) * nx * nz,                                        // Y21
+        Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny),                             // Y22
+    ]
+}
+
+// ============================================================================
+// Field-Based SH (Runtime Computations)
+// ============================================================================
+
+/// SH2 coefficients in Field space (for per-pixel varying SH).
+///
+/// Unlike `Sh2` which stores f32 coefficients (for static environment lighting),
+/// `Sh2Field` stores Field coefficients that vary per SIMD lane.
+///
+/// Used for visibility projection and other runtime SH computations.
+#[derive(Clone)]
+pub struct Sh2Field {
+    /// The 9 SH coefficients as Field values.
+    pub coeffs: [Field; 9],
+}
+
+impl Sh2Field {
+    /// Create from constant coefficients.
+    pub fn from_sh2(sh: &Sh2) -> Self {
+        Self {
+            coeffs: [
+                Field::from(sh.coeffs[0]),
+                Field::from(sh.coeffs[1]),
+                Field::from(sh.coeffs[2]),
+                Field::from(sh.coeffs[3]),
+                Field::from(sh.coeffs[4]),
+                Field::from(sh.coeffs[5]),
+                Field::from(sh.coeffs[6]),
+                Field::from(sh.coeffs[7]),
+                Field::from(sh.coeffs[8]),
+            ],
+        }
+    }
+
+    /// Create zeroed SH2Field.
+    pub fn zero() -> Self {
+        Self {
+            coeffs: [Field::from(0.0); 9],
+        }
+    }
+
+    /// Evaluate at a direction.
+    pub fn eval(&self, dir: (Field, Field, Field)) -> Field {
+        let basis = sh2_basis_at(dir);
+        let mut result = Field::from(0.0);
+        for i in 0..9 {
+            result = result + self.coeffs[i] * basis[i];
+        }
+        result
+    }
+
+    /// Extract L0 coefficient (the "DC term" / hemisphere average).
+    pub fn l0(&self) -> Field {
+        self.coeffs[0]
+    }
+}
+
+/// Multiply Sh2 (static) × Sh2Field (runtime) → Sh2Field.
+///
+/// Used when multiplying static environment lighting by per-pixel visibility.
+pub fn sh2_multiply_static_field(a: &Sh2, b: &Sh2Field) -> Sh2Field {
+    let mut result = [Field::from(0.0); 9];
+    for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
+        result[k] = result[k] + Field::from(a.coeffs[i]) * b.coeffs[j] * Field::from(weight);
+    }
+    Sh2Field { coeffs: result }
+}
+
+/// Multiply two Sh2Field (both runtime) → Sh2Field.
+///
+/// Used when both SH representations vary per-pixel.
+pub fn sh2_multiply_field(a: &Sh2Field, b: &Sh2Field) -> Sh2Field {
+    let mut result = [Field::from(0.0); 9];
+    for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
+        result[k] = result[k] + a.coeffs[i] * b.coeffs[j] * Field::from(weight);
+    }
+    Sh2Field { coeffs: result }
+}
+
+/// Cosine lobe in SH2 basis (analytic, for Lambertian diffuse).
+///
+/// Given a surface normal, returns the SH coefficients of the cosine-weighted
+/// hemisphere integral kernel. Dot product with environment SH gives irradiance.
+pub fn cosine_lobe_sh2(n: (Field, Field, Field)) -> Sh2Field {
+    // Zonal harmonics coefficients for clamped cosine lobe
+    // From Ramamoorthi & Hanrahan "An Efficient Representation for Irradiance..."
+    //
+    // L0: π (integrated over hemisphere)
+    // L1: 2π/3 × normal components
+    // L2: π/4 × quadratic (small for Lambertian)
+
+    let l0 = Field::from(0.886_227); // √π
+    let l1_scale = Field::from(1.023_327); // 2√(π/3)
+
+    Sh2Field {
+        coeffs: [
+            l0,
+            l1_scale * n.1, // Y1-1 (y direction)
+            l1_scale * n.2, // Y10  (z direction)
+            l1_scale * n.0, // Y11  (x direction)
+            Field::from(0.0), // L2 terms small for Lambertian
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        ],
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
