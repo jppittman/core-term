@@ -432,16 +432,15 @@ impl Numeric for Jet2 {
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
         // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
-        // Compute 1/f once instead of dividing multiple times in derivative
+        // Compute 1/f once, then use FMA for each derivative
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
         let inv_self = Field::from(1.0) / self.val;  // One division
-        let scale = val * (exp.dx * ln_base + exp.val * self.dx * inv_self);
-        let scale_y = val * (exp.dy * ln_base + exp.val * self.dy * inv_self);
+        let coeff = exp.val * inv_self;               // Common coefficient g/f
         Self {
             val,
-            dx: scale,
-            dy: scale_y,
+            dx: val * exp.dx.mul_add(ln_base, coeff * self.dx),  // FMA: g*ln(f) + g/f*f'
+            dy: val * exp.dy.mul_add(ln_base, coeff * self.dy),
         }
     }
 
@@ -981,15 +980,16 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
         // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
-        // Compute 1/f once instead of dividing multiple times in derivative
+        // Compute 1/f once, then use FMA for each derivative
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
         let inv_self = Field::from(1.0) / self.val;  // One division
+        let coeff = exp.val * inv_self;               // Common coefficient g/f
         Self {
             val,
-            dx: val * (exp.dx * ln_base + exp.val * self.dx * inv_self),
-            dy: val * (exp.dy * ln_base + exp.val * self.dy * inv_self),
-            dz: val * (exp.dz * ln_base + exp.val * self.dz * inv_self),
+            dx: val * exp.dx.mul_add(ln_base, coeff * self.dx),  // FMA: g*ln(f) + g/f*f'
+            dy: val * exp.dy.mul_add(ln_base, coeff * self.dy),
+            dz: val * exp.dz.mul_add(ln_base, coeff * self.dz),
         }
     }
 
