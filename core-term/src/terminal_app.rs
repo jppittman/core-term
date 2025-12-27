@@ -1,17 +1,14 @@
 //! Terminal application Actor implementation.
 //!
-//! NOTE: This module is temporarily stubbed during the pixelflow-core color system refactoring.
-//! The previous implementation depended on APIs (Batch, surfaces::Baked, traits::Surface)
-//! that have been replaced with the new Field-based Manifold system.
-//!
-//! TODO: Reimplement using the new pixelflow-core API.
+//! Handles engine events (keyboard, mouse, resize) and produces render surfaces.
 
 use crate::ansi::commands::AnsiCommand;
 use crate::config::Config;
 use crate::term::TerminalEmulator;
-use actor_scheduler::{Actor, ActorScheduler, ParkHint};
+use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
 use core::marker::PhantomData;
 use pixelflow_graphics::render::Pixel;
+use pixelflow_runtime::api::public::AppData;
 use pixelflow_runtime::{
     EngineActorHandle, EngineEventControl, EngineEventData, EngineEventManagement,
 };
@@ -19,13 +16,12 @@ use pixelflow_runtime::{
 use std::sync::mpsc::{Receiver, SyncSender};
 
 /// Terminal application implementing Actor trait.
-///
-/// Placeholder implementation - needs to be updated for new pixelflow-core API.
 pub struct TerminalApp<P: Pixel> {
     _emulator: TerminalEmulator,
-    _pty_tx: SyncSender<Vec<u8>>,
+    pty_tx: SyncSender<Vec<u8>>,
     _pty_rx: Receiver<Vec<AnsiCommand>>,
     _config: Config,
+    engine_tx: EngineActorHandle<P>,
     _pixel: PhantomData<P>,
 }
 
@@ -36,14 +32,22 @@ impl<P: Pixel> TerminalApp<P> {
         pty_tx: SyncSender<Vec<u8>>,
         pty_rx: Receiver<Vec<AnsiCommand>>,
         config: Config,
-        _engine_tx: EngineActorHandle<P>,
+        engine_tx: EngineActorHandle<P>,
     ) -> Self {
         Self {
             _emulator: emulator,
-            _pty_tx: pty_tx,
+            pty_tx,
             _pty_rx: pty_rx,
             _config: config,
+            engine_tx,
             _pixel: PhantomData,
+        }
+    }
+
+    /// Write bytes to the PTY.
+    fn write_to_pty(&self, data: &[u8]) {
+        if !data.is_empty() {
+            let _ = self.pty_tx.send(data.to_vec());
         }
     }
 }
