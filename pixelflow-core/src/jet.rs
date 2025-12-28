@@ -94,12 +94,15 @@ impl Jet2 {
     #[inline(always)]
     pub fn sqrt(self) -> Self {
         // Chain rule: (√f)' = f' / (2√f)
-        let sqrt_val = self.val.sqrt();
-        let two_sqrt = Field::from(2.0) * sqrt_val;
+        // Use rsqrt (4 cycles) instead of sqrt (20-30 cycles)
+        // sqrt(x) = x * rsqrt(x), derivative = rsqrt(x) / 2
+        let rsqrt_val = self.val.rsqrt();
+        let sqrt_val = self.val * rsqrt_val;
+        let half_rsqrt = rsqrt_val * Field::from(0.5);
         Self {
             val: sqrt_val,
-            dx: self.dx / two_sqrt,
-            dy: self.dy / two_sqrt,
+            dx: self.dx * half_rsqrt,
+            dy: self.dy * half_rsqrt,
         }
     }
 
@@ -665,13 +668,16 @@ impl Jet3 {
     #[inline(always)]
     pub fn sqrt(self) -> Self {
         // Chain rule: (√f)' = f' / (2√f)
-        let sqrt_val = self.val.sqrt();
-        let two_sqrt = Field::from(2.0) * sqrt_val;
+        // Use rsqrt (4 cycles) instead of sqrt (20-30 cycles)
+        // sqrt(x) = x * rsqrt(x), derivative = rsqrt(x) / 2
+        let rsqrt_val = self.val.rsqrt();
+        let sqrt_val = self.val * rsqrt_val;
+        let half_rsqrt = rsqrt_val * Field::from(0.5);
         Self {
             val: sqrt_val,
-            dx: self.dx / two_sqrt,
-            dy: self.dy / two_sqrt,
-            dz: self.dz / two_sqrt,
+            dx: self.dx * half_rsqrt,
+            dy: self.dy * half_rsqrt,
+            dz: self.dz * half_rsqrt,
         }
     }
 
