@@ -740,8 +740,23 @@ impl<'a> Font<'a> {
             })
     }
 
+    /// Lookup a glyph ID from a codepoint (single CMAP lookup).
+    ///
+    /// Use this when you need the glyph ID to batch multiple operations,
+    /// avoiding redundant CMAP lookups in tight loops.
+    #[inline]
+    pub fn cmap_lookup(&self, ch: char) -> Option<u16> {
+        self.cmap.lookup(ch as u32)
+    }
+
     pub fn glyph(&self, ch: char) -> Option<Glyph> {
         self.compile(self.cmap.lookup(ch as u32)?)
+    }
+
+    /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
+    #[inline]
+    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph> {
+        self.compile(id)
     }
 
     pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph> {
@@ -757,6 +772,14 @@ impl<'a> Font<'a> {
 
     pub fn advance(&self, ch: char) -> Option<f32> {
         let id = self.cmap.lookup(ch as u32)?;
+        self.advance_by_id(id)
+    }
+
+    /// Get advance width in font units by pre-looked-up glyph ID.
+    ///
+    /// Avoids redundant CMAP lookup when you already have the glyph ID.
+    #[inline]
+    pub fn advance_by_id(&self, id: u16) -> Option<f32> {
         let i = (id as usize).min(self.num_hm.saturating_sub(1));
         Some(R(self.data, self.hmtx + i * 4).u16()? as f32)
     }
@@ -769,6 +792,14 @@ impl<'a> Font<'a> {
     pub fn kern(&self, left: char, right: char) -> f32 {
         let left_id = self.cmap.lookup(left as u32).unwrap_or(0);
         let right_id = self.cmap.lookup(right as u32).unwrap_or(0);
+        self.kern_by_ids(left_id, right_id)
+    }
+
+    /// Get kerning adjustment between two pre-looked-up glyph IDs in font units.
+    ///
+    /// Avoids redundant CMAP lookups when you already have both glyph IDs.
+    #[inline]
+    pub fn kern_by_ids(&self, left_id: u16, right_id: u16) -> f32 {
         self.kern.get(left_id, right_id) as f32
     }
 
