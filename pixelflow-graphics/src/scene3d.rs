@@ -5,20 +5,17 @@
 //! 2. Surface: Warps `P = ray * t` (Creates tangent frame via Chain Rule)
 //! 3. Material: Reconstructs Normal from `P` derivatives
 //!
-//! ## Idiomatic Unification
+//! ## Architecture
 //!
-//! This module uses the `Selectable` trait to unify Field and Discrete pipelines:
-//! - Single `Surface<G, M, B, O>` generic over output type
-//! - Single `ScreenToDir<M>` works with any Selectable output
-//! - Single `Reflect<M>` works with any Selectable output
-//! - Materials like `Checker` and `Sky` are polymorphic
+//! The "mullet" approach for full-color rendering:
+//! - **Front (serious)**: Geometry computed ONCE per pixel via Jet3
+//! - **Back (party)**: Colors flow as opaque `Discrete` (packed RGBA)
 //!
-//! The "mullet" architecture still applies: geometry computed ONCE per pixel via Jet3,
-//! colors flow as opaque `Discrete`. 3x speedup vs computing geometry per channel.
+//! This gives 3x speedup vs running geometry 3x (once per R,G,B channel).
 //!
 //! No iteration. Nesting is occlusion.
 
-use pixelflow_core::{Discrete, Field, Jet3, Manifold, Selectable};
+use pixelflow_core::{Discrete, Field, Jet3, Manifold, ManifoldExt};
 
 // ============================================================================
 // ROOT: ScreenToDir
@@ -33,22 +30,16 @@ use pixelflow_core::{Discrete, Field, Jet3, Manifold, Selectable};
 ///
 /// The Chain Rule propagates these derivatives into the ray direction,
 /// allowing Materials to know "how the ray changes" across the pixel.
-///
-/// Works with any output type supporting `Selectable`.
 #[derive(Clone, Copy)]
 pub struct ScreenToDir<M> {
     pub inner: M,
 }
 
-impl<M, O> Manifold for ScreenToDir<M>
-where
-    M: Manifold<Jet3, Output = O>,
-    O: Selectable,
-{
-    type Output = O;
+impl<M: Manifold<Jet3, Output = Field>> Manifold for ScreenToDir<M> {
+    type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, w: Field) -> O {
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, w: Field) -> Field {
         // 1. Seed Jets from Screen Coords
         // x: varies with screen x (dx=1, dy=0, dz=0)
         let sx = Jet3::x(x);
@@ -67,6 +58,34 @@ where
         let dz = sz / len;
 
         // 3. Pass pure direction Jets to the scene
+        self.inner.eval_raw(dx, dy, dz, Jet3::constant(w))
+    }
+}
+
+/// Converts screen coordinates to ray direction jets, outputting Discrete.
+///
+/// Same as ScreenToDir but for color (Discrete) pipelines.
+#[derive(Clone, Copy)]
+pub struct ColorScreenToDir<M> {
+    pub inner: M,
+}
+
+impl<M: Manifold<Jet3, Output = Discrete>> Manifold for ColorScreenToDir<M> {
+    type Output = Discrete;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, w: Field) -> Discrete {
+        let sx = Jet3::x(x);
+        let sy = Jet3::y(y);
+        let sz = Jet3::constant(Field::from(1.0));
+
+        let len_sq = sx * sx + sy * sy + sz * sz;
+        let len = len_sq.sqrt();
+
+        let dx = sx / len;
+        let dy = sy / len;
+        let dz = sz / len;
+
         self.inner.eval_raw(dx, dy, dz, Jet3::constant(w))
     }
 }
@@ -162,7 +181,7 @@ impl Manifold<Jet3> for PlaneGeometry {
 }
 
 // ============================================================================
-// LAYER 2: Surface (The Warp) - UNIFIED for all Selectable types
+// LAYER 2: Surface (The Warp)
 // ============================================================================
 
 /// The Glue. Combines Geometry, Material, and Background.
@@ -170,8 +189,6 @@ impl Manifold<Jet3> for PlaneGeometry {
 /// Performs **The Warp**: `P = ray * t`.
 /// Because `t` carries derivatives from Layer 1, and `ray` carries derivatives
 /// from Root, `P` automatically contains the Surface Tangent Frame via the Chain Rule.
-///
-/// Generic over output type `O` via `Selectable` trait.
 #[derive(Clone, Copy)]
 pub struct Surface<G, M, B> {
     pub geometry: G,     // Returns t
@@ -179,17 +196,16 @@ pub struct Surface<G, M, B> {
     pub background: B,   // Evaluates at Ray Direction D (if miss)
 }
 
-impl<G, M, B, O> Manifold<Jet3> for Surface<G, M, B>
+impl<G, M, B> Manifold<Jet3> for Surface<G, M, B>
 where
     G: Manifold<Jet3, Output = Jet3>,
-    M: Manifold<Jet3, Output = O>,
-    B: Manifold<Jet3, Output = O>,
-    O: Selectable,
+    M: Manifold<Jet3, Output = Field>,
+    B: Manifold<Jet3, Output = Field>,
 {
-    type Output = O;
+    type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> O {
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Field {
         // 1. Ask Geometry for distance t
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
@@ -224,55 +240,81 @@ where
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
-        // 4. Branch Execution with early-exit optimization
-        // If all pixels hit, skip background evaluation (30-50% speedup in common case)
-        if mask.all() {
-            // All hit: only evaluate material
-            return self.material.eval_raw(hx, hy, hz, w);
-        }
-
-        // If no pixels hit, skip material evaluation (rare case)
-        if !mask.any() {
-            return self.background.eval_raw(rx, ry, rz, w);
-        }
-
-        // Mixed hit/miss: evaluate both and blend via Selectable
-        // NOTE: We use O::select_raw directly instead of the Select combinator because:
-        // 1. We have a pre-computed Field mask (from validity check)
-        // 2. Select is designed for manifold-based conditions that evaluate per-pixel
-        // 3. Here we want to skip entire branch evaluation if possible (early-exit)
-        // 4. Direct O::select_raw gives us control over when material/background are called
-        //
-        // If we used Select combinator, the condition would re-evaluate per-pixel,
-        // and we'd lose the all/any shortcut optimization (30-50% speedup in practice).
+        // 4. Blend material and background via conditional arithmetic.
+        // Since both values are already evaluated, we use Field's bitwise operators
+        // which implement the select pattern with SIMD-level all/any optimization:
+        // result = (mask & fg) | ((!mask) & bg)
         let fg = self.material.eval_raw(hx, hy, hz, w);
         let bg = self.background.eval_raw(rx, ry, rz, w);
 
-        O::select_raw(mask, fg, bg)
+        (mask & fg) | ((!mask) & bg)
+    }
+}
+
+/// Color Surface: geometry + material + background, outputs Discrete.
+#[derive(Clone, Copy)]
+pub struct ColorSurface<G, M, B> {
+    pub geometry: G,
+    pub material: M,
+    pub background: B,
+}
+
+impl<G, M, B> Manifold<Jet3> for ColorSurface<G, M, B>
+where
+    G: Manifold<Jet3, Output = Jet3>,
+    M: Manifold<Jet3, Output = Discrete>,
+    B: Manifold<Jet3, Output = Discrete>,
+{
+    type Output = Discrete;
+
+    #[inline(always)]
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
+        let t = self.geometry.eval_raw(rx, ry, rz, w);
+
+        let zero = Field::from(0.0);
+        let t_max = Field::from(1e6);
+        let deriv_max = Field::from(1e4);
+
+        let valid_t = t.val.gt(zero) & t.val.lt(t_max);
+        let deriv_mag_sq = t.dx * t.dx + t.dy * t.dy + t.dz * t.dz;
+        let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max);
+        let mask = valid_t & valid_deriv;
+
+        let one = mask & Field::from(1.0);
+        let safe_t = Jet3 {
+            val: t.val * one,
+            dx: t.dx * one,
+            dy: t.dy * one,
+            dz: t.dz * one,
+        };
+
+        let hx = rx * safe_t;
+        let hy = ry * safe_t;
+        let hz = rz * safe_t;
+
+        let fg = self.material.eval_raw(hx, hy, hz, w);
+        let bg = self.background.eval_raw(rx, ry, rz, w);
+
+        Discrete::select(mask, fg, bg)
     }
 }
 
 // ============================================================================
-// LAYER 3: Materials - UNIFIED implementations
+// LAYER 3: Materials
 // ============================================================================
 
 /// Reflect: The Crown Jewel.
 /// Reconstructs surface normal from the Tangent Frame implied by the Jet derivatives.
-/// Generic over output type via `Selectable`.
 #[derive(Clone, Copy)]
 pub struct Reflect<M> {
     pub inner: M,
 }
 
-impl<M, O> Manifold<Jet3> for Reflect<M>
-where
-    M: Manifold<Jet3, Output = O>,
-    O: Selectable,
-{
-    type Output = O;
+impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
+    type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> O {
+    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Field {
         // The input (x, y, z) is the hit point P with derivatives dP/dscreen.
         // We need to compute the reflected direction R with derivatives dR/dscreen.
         //
@@ -351,9 +393,75 @@ where
     }
 }
 
+/// Color Reflect: Householder reflection, wraps Discrete material.
+#[derive(Clone, Copy)]
+pub struct ColorReflect<M> {
+    pub inner: M,
+}
+
+impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
+    type Output = Discrete;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Discrete {
+        let p_len_sq = x * x + y * y + z * z;
+        let p_len = p_len_sq.sqrt();
+        let one = Jet3::constant(Field::from(1.0));
+        let inv_p_len = one / p_len;
+
+        let tu = (x.dx, y.dx, z.dx);
+        let tv = (x.dy, y.dy, z.dy);
+
+        let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
+        let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
+        let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
+
+        let n_len_sq_scalar = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+        let epsilon = Field::from(1e-10);
+        let inv_n_len = Field::from(1.0) / (n_len_sq_scalar.max(epsilon)).sqrt();
+
+        let nx = cross_x * inv_n_len;
+        let ny = cross_y * inv_n_len;
+        let nz = cross_z * inv_n_len;
+
+        let curvature_scale = inv_p_len.val;
+        let n_jet_x = Jet3 {
+            val: nx,
+            dx: x.dx * curvature_scale,
+            dy: x.dy * curvature_scale,
+            dz: Field::from(0.0),
+        };
+        let n_jet_y = Jet3 {
+            val: ny,
+            dx: y.dx * curvature_scale,
+            dy: y.dy * curvature_scale,
+            dz: Field::from(0.0),
+        };
+        let n_jet_z = Jet3 {
+            val: nz,
+            dx: z.dx * curvature_scale,
+            dy: z.dy * curvature_scale,
+            dz: Field::from(0.0),
+        };
+
+        let d_jet_x = x * inv_p_len;
+        let d_jet_y = y * inv_p_len;
+        let d_jet_z = z * inv_p_len;
+
+        let d_dot_n = d_jet_x * n_jet_x + d_jet_y * n_jet_y + d_jet_z * n_jet_z;
+        let two = Jet3::constant(Field::from(2.0));
+        let k = two * d_dot_n;
+
+        let r_x = d_jet_x - k * n_jet_x;
+        let r_y = d_jet_y - k * n_jet_y;
+        let r_z = d_jet_z - k * n_jet_z;
+
+        self.inner.eval_raw(r_x, r_y, r_z, w)
+    }
+}
+
 /// Checkerboard pattern based on X/Z coordinates.
 /// Uses Jet3 derivatives for automatic antialiasing at edges.
-/// Outputs Field (grayscale).
 #[derive(Clone, Copy)]
 pub struct Checker;
 
@@ -400,7 +508,6 @@ impl Manifold<Jet3> for Checker {
 }
 
 /// Simple Sky Gradient based on Y direction.
-/// Outputs Field (grayscale).
 #[derive(Clone, Copy)]
 pub struct Sky;
 
@@ -418,8 +525,7 @@ impl Manifold<Jet3> for Sky {
     }
 }
 
-/// Color variant: Sky gradient with packed RGBA output.
-/// For use with the "mullet" architecture where geometry is computed once.
+/// Color Sky: Blue gradient, outputs packed RGBA.
 #[derive(Clone, Copy)]
 pub struct ColorSky;
 
@@ -440,8 +546,7 @@ impl Manifold<Jet3> for ColorSky {
     }
 }
 
-/// Color variant: Warm/cool checkerboard with packed RGBA output.
-/// For use with the "mullet" architecture where geometry is computed once.
+/// Color Checker: Warm/cool checker with AA, outputs packed RGBA.
 #[derive(Clone, Copy)]
 pub struct ColorChecker;
 
