@@ -401,6 +401,18 @@ impl BitOr for U32x4 {
     }
 }
 
+impl Not for U32x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        // XOR with all 1s
+        unsafe {
+            let ones = _mm_set1_epi32(-1);
+            Self(_mm_xor_si128(self.0, ones))
+        }
+    }
+}
+
 impl Shl<u32> for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -882,6 +894,19 @@ impl BitOr for U32x16 {
     #[inline(always)]
     fn bitor(self, rhs: Self) -> Self {
         unsafe { Self(_mm512_or_si512(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl Not for U32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        // XOR with all 1s
+        unsafe {
+            let ones = _mm512_set1_epi32(-1);
+            Self(_mm512_xor_si512(self.0, ones))
+        }
     }
 }
 

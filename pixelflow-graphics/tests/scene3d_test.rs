@@ -10,7 +10,8 @@ use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
 use pixelflow_graphics::scene3d::{
-    BlueSky, Checker, ColorChecker, PlaneGeometry, Reflect, ScreenToDir, Sky, SphereAt, Surface,
+    Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
+    Reflect, ScreenToDir, Sky, SphereAt, Surface,
 };
 use std::fs::File;
 use std::io::Write;
@@ -247,66 +248,54 @@ fn test_floor_only() {
     );
 }
 
-/// Test: Color chrome sphere with blue sky
-/// Runs the pipeline 3 times (R, G, B) and packs into Discrete.
+/// Test: Color chrome sphere with blue sky (MULLET ARCHITECTURE)
+/// Geometry runs ONCE, colors flow as packed RGBA. 3x speedup!
 #[test]
 fn test_color_chrome_sphere() {
     const W: usize = 1920;
     const H: usize = 1080;
 
-    // Build scene for each channel
-    fn build_scene(
-        channel: u8,
-    ) -> impl Manifold<Output = Field> {
-        let world = Surface {
-            geometry: PlaneGeometry { height: -1.0 },
-            material: ColorChecker { channel },
-            background: BlueSky { channel },
-        };
+    // World = floor + sky (using Color* types that output Discrete)
+    let world = ColorSurface {
+        geometry: PlaneGeometry { height: -1.0 },
+        material: ColorChecker,
+        background: ColorSky,
+    };
 
-        let scene = Surface {
-            geometry: SphereAt {
-                center: (0.0, 0.0, 4.0),
-                radius: 1.0,
-            },
-            material: Reflect { inner: world },
-            background: world,
-        };
+    // Scene = chrome sphere reflecting world
+    let scene = ColorSurface {
+        geometry: SphereAt {
+            center: (0.0, 0.0, 4.0),
+            radius: 1.0,
+        },
+        material: ColorReflect { inner: world },
+        background: world,
+    };
 
-        ScreenRemap {
-            inner: ScreenToDir { inner: scene },
-            width: W as f32,
-            height: H as f32,
-        }
+    // ScreenRemap but for Discrete output
+    struct ColorScreenRemap<M> {
+        inner: M,
+        width: f32,
+        height: f32,
     }
 
-    // Three-channel renderer
-    struct ColorRenderer<R, G, B> {
-        r: R,
-        g: G,
-        b: B,
-    }
-
-    impl<R, G, B> Manifold for ColorRenderer<R, G, B>
-    where
-        R: Manifold<Output = Field>,
-        G: Manifold<Output = Field>,
-        B: Manifold<Output = Field>,
-    {
+    impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         type Output = Discrete;
 
-        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-            let r = self.r.eval_raw(x, y, z, w);
-            let g = self.g.eval_raw(x, y, z, w);
-            let b = self.b.eval_raw(x, y, z, w);
-            Discrete::pack(r, g, b, Field::from(1.0))
+        fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
+            let width = Field::from(self.width);
+            let height = Field::from(self.height);
+            let scale = Field::from(2.0) / height;
+            let x = (px - width * Field::from(0.5)) * scale;
+            let y = (height * Field::from(0.5) - py) * scale;
+            self.inner.eval_raw(x, y, z, w)
         }
     }
 
-    let renderable = ColorRenderer {
-        r: build_scene(0),
-        g: build_scene(1),
-        b: build_scene(2),
+    let renderable = ColorScreenRemap {
+        inner: ColorScreenToDir { inner: scene },
+        width: W as f32,
+        height: H as f32,
     };
 
     // Render
@@ -322,7 +311,7 @@ fn test_color_chrome_sphere() {
     );
     let elapsed = start.elapsed();
     let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
-    println!("Color render: {:?} ({:.2} Mpix/s)", elapsed, mpps);
+    println!("Color render (mullet): {:?} ({:.2} Mpix/s)", elapsed, mpps);
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_color_chrome.ppm");
@@ -341,4 +330,189 @@ fn test_color_chrome_sphere() {
 
     // Sky should be blue-ish (B > R)
     assert!(sky.b() > sky.r(), "Sky should be blue: r={} b={}", sky.r(), sky.b());
+}
+
+/// Test: Compare 3-channel vs mullet rendering to ensure they match.
+/// This verifies the mullet architecture produces identical results.
+#[test]
+fn test_mullet_vs_3channel_comparison() {
+    const W: usize = 200;
+    const H: usize = 150;
+
+    // ============================================================
+    // OLD APPROACH: Run geometry 3 times (once per channel)
+    // ============================================================
+
+    /// Per-channel sky (inline version since we deleted BlueSky)
+    #[derive(Clone, Copy)]
+    struct ChannelSky { channel: u8 }
+    impl Manifold<Jet3> for ChannelSky {
+        type Output = Field;
+        fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Field {
+            let t = y.val * Field::from(0.5) + Field::from(0.5);
+            let t = t.max(Field::from(0.0)).min(Field::from(1.0));
+            match self.channel {
+                0 => Field::from(0.7) - t * Field::from(0.5),
+                1 => Field::from(0.85) - t * Field::from(0.45),
+                _ => Field::from(1.0) - t * Field::from(0.2),
+            }
+        }
+    }
+
+    /// Per-channel checker (inline version)
+    #[derive(Clone, Copy)]
+    struct ChannelChecker { channel: u8 }
+    impl Manifold<Jet3> for ChannelChecker {
+        type Output = Field;
+        fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Field {
+            let cell_x = x.val.floor();
+            let cell_z = z.val.floor();
+            let sum = cell_x + cell_z;
+            let half = sum * Field::from(0.5);
+            let fract_half = half - half.floor();
+            let is_even = fract_half.abs().lt(Field::from(0.25));
+
+            let (a, b) = match self.channel {
+                0 => (0.95, 0.2),
+                1 => (0.9, 0.25),
+                _ => (0.8, 0.3),
+            };
+
+            let color_a = Field::from(a);
+            let color_b = Field::from(b);
+            let base_color = (is_even & color_a) | ((!is_even) & color_b);
+
+            let fx = x.val - cell_x;
+            let fz = z.val - cell_z;
+            let dx_edge = (fx - Field::from(0.5)).abs();
+            let dz_edge = (fz - Field::from(0.5)).abs();
+            let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
+
+            let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt();
+            let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
+            let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
+
+            let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
+            let neighbor_color = (is_even & color_b) | ((!is_even) & color_a);
+            base_color * coverage + neighbor_color * (Field::from(1.0) - coverage)
+        }
+    }
+
+    fn build_channel_scene(channel: u8) -> impl Manifold<Output = Field> {
+        let world = Surface {
+            geometry: PlaneGeometry { height: -1.0 },
+            material: ChannelChecker { channel },
+            background: ChannelSky { channel },
+        };
+
+        ScreenRemap {
+            inner: ScreenToDir {
+                inner: Surface {
+                    geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+                    material: Reflect { inner: world },
+                    background: world,
+                }
+            },
+            width: W as f32,
+            height: H as f32,
+        }
+    }
+
+    struct ThreeChannelRenderer<R, G, B> { r: R, g: G, b: B }
+    impl<R, G, B> Manifold for ThreeChannelRenderer<R, G, B>
+    where R: Manifold<Output = Field>, G: Manifold<Output = Field>, B: Manifold<Output = Field>
+    {
+        type Output = Discrete;
+        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+            let r = self.r.eval_raw(x, y, z, w);
+            let g = self.g.eval_raw(x, y, z, w);
+            let b = self.b.eval_raw(x, y, z, w);
+            Discrete::pack(r, g, b, Field::from(1.0))
+        }
+    }
+
+    let old_renderer = ThreeChannelRenderer {
+        r: build_channel_scene(0),
+        g: build_channel_scene(1),
+        b: build_channel_scene(2),
+    };
+
+    let mut old_frame = Frame::<Rgba8>::new(W as u32, H as u32);
+    let old_start = std::time::Instant::now();
+    execute(&old_renderer, old_frame.as_slice_mut(), TensorShape { width: W, height: H });
+    let old_elapsed = old_start.elapsed();
+
+    // ============================================================
+    // NEW APPROACH: Mullet architecture (geometry once, Discrete colors)
+    // ============================================================
+
+    struct ColorScreenRemap<M> { inner: M, width: f32, height: f32 }
+    impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+        type Output = Discrete;
+        fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
+            let width = Field::from(self.width);
+            let height = Field::from(self.height);
+            let scale = Field::from(2.0) / height;
+            let x = (px - width * Field::from(0.5)) * scale;
+            let y = (height * Field::from(0.5) - py) * scale;
+            self.inner.eval_raw(x, y, z, w)
+        }
+    }
+
+    let world = ColorSurface {
+        geometry: PlaneGeometry { height: -1.0 },
+        material: ColorChecker,
+        background: ColorSky,
+    };
+
+    let new_renderer = ColorScreenRemap {
+        inner: ColorScreenToDir {
+            inner: ColorSurface {
+                geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+                material: ColorReflect { inner: world },
+                background: world,
+            }
+        },
+        width: W as f32,
+        height: H as f32,
+    };
+
+    let mut new_frame = Frame::<Rgba8>::new(W as u32, H as u32);
+    let new_start = std::time::Instant::now();
+    execute(&new_renderer, new_frame.as_slice_mut(), TensorShape { width: W, height: H });
+    let new_elapsed = new_start.elapsed();
+
+    // ============================================================
+    // COMPARE
+    // ============================================================
+
+    println!("3-channel: {:?}", old_elapsed);
+    println!("Mullet:    {:?}", new_elapsed);
+    println!("Speedup:   {:.2}x", old_elapsed.as_secs_f64() / new_elapsed.as_secs_f64());
+
+    // Compare all pixels
+    let mut max_diff = 0i32;
+    let mut diff_count = 0usize;
+    for (i, (old_p, new_p)) in old_frame.data.iter().zip(new_frame.data.iter()).enumerate() {
+        let dr = (old_p.r() as i32 - new_p.r() as i32).abs();
+        let dg = (old_p.g() as i32 - new_p.g() as i32).abs();
+        let db = (old_p.b() as i32 - new_p.b() as i32).abs();
+        let d = dr.max(dg).max(db);
+        if d > max_diff {
+            max_diff = d;
+            let x = i % W;
+            let y = i / W;
+            println!("New max diff {} at ({}, {}): old=({},{},{}) new=({},{},{})",
+                d, x, y, old_p.r(), old_p.g(), old_p.b(), new_p.r(), new_p.g(), new_p.b());
+        }
+        if d > 0 {
+            diff_count += 1;
+        }
+    }
+
+    println!("Max diff: {} (out of 255)", max_diff);
+    println!("Pixels with diff: {} / {}", diff_count, W * H);
+
+    // Allow small differences due to FP ordering, but they should be identical
+    assert!(max_diff <= 1, "Max diff too large: {} (expected 0-1 for FP rounding)", max_diff);
 }

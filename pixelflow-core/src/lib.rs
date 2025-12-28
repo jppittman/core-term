@@ -417,6 +417,18 @@ impl Discrete {
 
         Self(backend::scalar::ScalarU32::splat(packed))
     }
+
+    /// Branchless select: returns `if_true` where mask is set, `if_false` elsewhere.
+    ///
+    /// The mask is interpreted bitwise from the Field representation.
+    #[inline(always)]
+    pub fn select(mask: Field, if_true: Self, if_false: Self) -> Self {
+        use core::ops::{BitAnd, BitOr, Not};
+        let mask_bits: NativeU32Simd = unsafe { core::mem::transmute(mask.0) };
+        let t = if_true.0.bitand(mask_bits);
+        let f = if_false.0.bitand(mask_bits.not());
+        Self(t.bitor(f))
+    }
 }
 
 // ============================================================================
@@ -432,6 +444,36 @@ impl numeric::Computational for Field {
     #[inline(always)]
     fn sequential(start: f32) -> Self {
         Self(NativeSimd::sequential(start))
+    }
+}
+
+// ============================================================================
+// Selectable Implementation for Field (Internal)
+// ============================================================================
+
+impl numeric::Selectable for Field {
+    #[inline(always)]
+    fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
+        Self(NativeSimd::select(mask.0.float_to_mask(), if_true.0, if_false.0))
+    }
+}
+
+// ============================================================================
+// Selectable Implementation for Discrete (Internal)
+// ============================================================================
+
+impl numeric::Selectable for Discrete {
+    #[inline(always)]
+    fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
+        // Reinterpret the float mask bits as u32 for bitwise ops
+        // mask lanes are either 0xFFFFFFFF (true) or 0x00000000 (false)
+        let mask_bits: NativeU32Simd = unsafe { core::mem::transmute(mask.0) };
+
+        // (mask & if_true) | (!mask & if_false)
+        use core::ops::{BitAnd, BitOr, Not};
+        let t = if_true.0.bitand(mask_bits);
+        let f = if_false.0.bitand(mask_bits.not());
+        Self(t.bitor(f))
     }
 }
 

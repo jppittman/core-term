@@ -403,6 +403,14 @@ impl BitOr for U32x4 {
     }
 }
 
+impl Not for U32x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe { Self(vmvnq_u32(self.0)) }
+    }
+}
+
 impl Shl<u32> for U32x4 {
     type Output = Self;
     #[inline(always)]

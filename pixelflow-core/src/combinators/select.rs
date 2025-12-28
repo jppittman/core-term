@@ -235,3 +235,34 @@ where
         O::select_raw(mask, true_val, false_val)
     }
 }
+
+// ============================================================================
+// Jet3 with Selectable output (for Discrete in the mullet architecture)
+// ============================================================================
+
+impl<C, T, F, O> Manifold<crate::Jet3> for Select<C, T, F>
+where
+    O: crate::numeric::Selectable,
+    C: Manifold<crate::Jet3, Output = crate::Jet3>,
+    T: Manifold<crate::Jet3, Output = O>,
+    F: Manifold<crate::Jet3, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval_raw(&self, x: crate::Jet3, y: crate::Jet3, z: crate::Jet3, w: crate::Jet3) -> O {
+        let cond_jet = self.cond.eval_raw(x, y, z, w);
+        let mask = cond_jet.val; // Extract Field mask from Jet3
+
+        // Early exit using Field's any/all
+        if mask.all() {
+            return self.if_true.eval_raw(x, y, z, w);
+        }
+        if !mask.any() {
+            return self.if_false.eval_raw(x, y, z, w);
+        }
+
+        let true_val = self.if_true.eval_raw(x, y, z, w);
+        let false_val = self.if_false.eval_raw(x, y, z, w);
+        O::select_raw(mask, true_val, false_val)
+    }
+}

@@ -5,9 +5,17 @@
 //! 2. Surface: Warps `P = ray * t` (Creates tangent frame via Chain Rule)
 //! 3. Material: Reconstructs Normal from `P` derivatives
 //!
+//! ## Mullet Architecture
+//!
+//! For full-color rendering, we use the "mullet" approach:
+//! - **Front (serious)**: Geometry is computed ONCE per pixel via Jet3
+//! - **Back (party)**: Colors flow as opaque `Discrete` (packed RGBA)
+//!
+//! This gives 3x speedup vs running geometry 3x (once per R,G,B channel).
+//!
 //! No iteration. Nesting is occlusion.
 
-use pixelflow_core::{Field, Jet3, Manifold};
+use pixelflow_core::{Discrete, Field, Jet3, Manifold};
 
 // ============================================================================
 // ROOT: ScreenToDir
@@ -22,6 +30,7 @@ use pixelflow_core::{Field, Jet3, Manifold};
 ///
 /// The Chain Rule propagates these derivatives into the ray direction,
 /// allowing Materials to know "how the ray changes" across the pixel.
+#[derive(Clone, Copy)]
 pub struct ScreenToDir<M> {
     pub inner: M,
 }
@@ -286,9 +295,9 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
 
         // 2. Incident direction D = normalize(P) (same as N for sphere, but conceptually different)
         // Actually D should be the ray direction, which is also normalize(P) since P = t * D
-        let d_x = n_x;
-        let d_y = n_y;
-        let d_z = n_z;
+        let _d_x = n_x;
+        let _d_y = n_y;
+        let _d_z = n_z;
 
         // 3. For sphere: we need normal pointing OUTWARD from sphere center
         // Hit point P is at distance t from origin along ray D.
@@ -434,48 +443,175 @@ impl Manifold<Jet3> for Sky {
 }
 
 // ============================================================================
-// COLOR MATERIALS (per-channel evaluation)
+// MULLET ARCHITECTURE: Color Pipeline (Discrete output)
 // ============================================================================
+//
+// Geometry runs ONCE per pixel, colors flow as packed RGBA.
+// 3x speedup vs running geometry once per channel.
 
-/// Blue sky gradient - returns color per channel.
-/// Channel 0=R, 1=G, 2=B
+/// Root for color pipeline - converts screen to ray, outputs Discrete.
 #[derive(Clone, Copy)]
-pub struct BlueSky {
-    pub channel: u8,
+pub struct ColorScreenToDir<M> {
+    pub inner: M,
 }
 
-impl Manifold<Jet3> for BlueSky {
-    type Output = Field;
+impl<M: Manifold<Jet3, Output = Discrete>> Manifold for ColorScreenToDir<M> {
+    type Output = Discrete;
 
     #[inline(always)]
-    fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Field {
-        // y is the Y component of the direction vector [-1, 1]
-        let t = y.val * Field::from(0.5) + Field::from(0.5);
-        let t = t.max(Field::from(0.0)).min(Field::from(1.0));
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, w: Field) -> Discrete {
+        let sx = Jet3::x(x);
+        let sy = Jet3::y(y);
+        let sz = Jet3::constant(Field::from(1.0));
 
-        // Sky colors: horizon (t=0) to zenith (t=1)
-        // Horizon: light blue (0.7, 0.85, 1.0)
-        // Zenith: deep blue (0.2, 0.4, 0.8)
-        match self.channel {
-            0 => Field::from(0.7) - t * Field::from(0.5),  // R: 0.7 -> 0.2
-            1 => Field::from(0.85) - t * Field::from(0.45), // G: 0.85 -> 0.4
-            _ => Field::from(1.0) - t * Field::from(0.2),  // B: 1.0 -> 0.8
-        }
+        let len_sq = sx * sx + sy * sy + sz * sz;
+        let len = len_sq.sqrt();
+
+        let dx = sx / len;
+        let dy = sy / len;
+        let dz = sz / len;
+
+        self.inner.eval_raw(dx, dy, dz, Jet3::constant(w))
     }
 }
 
-/// Colored checkerboard - warm/cool checker pattern with AA.
+/// Color Surface: geometry + material + background, outputs Discrete.
 #[derive(Clone, Copy)]
-pub struct ColorChecker {
-    pub channel: u8,
+pub struct ColorSurface<G, M, B> {
+    pub geometry: G,
+    pub material: M,
+    pub background: B,
 }
 
-impl Manifold<Jet3> for ColorChecker {
-    type Output = Field;
+impl<G, M, B> Manifold<Jet3> for ColorSurface<G, M, B>
+where
+    G: Manifold<Jet3, Output = Jet3>,
+    M: Manifold<Jet3, Output = Discrete>,
+    B: Manifold<Jet3, Output = Discrete>,
+{
+    type Output = Discrete;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Field {
-        // Which checker cell?
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
+        let t = self.geometry.eval_raw(rx, ry, rz, w);
+
+        let zero = Field::from(0.0);
+        let t_max = Field::from(1e6);
+        let deriv_max = Field::from(1e4);
+
+        let valid_t = t.val.gt(zero) & t.val.lt(t_max);
+        let deriv_mag_sq = t.dx * t.dx + t.dy * t.dy + t.dz * t.dz;
+        let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max);
+        let mask = valid_t & valid_deriv;
+
+        let one = mask & Field::from(1.0);
+        let safe_t = Jet3 {
+            val: t.val * one,
+            dx: t.dx * one,
+            dy: t.dy * one,
+            dz: t.dz * one,
+        };
+
+        let hx = rx * safe_t;
+        let hy = ry * safe_t;
+        let hz = rz * safe_t;
+
+        if mask.all() {
+            return self.material.eval_raw(hx, hy, hz, w);
+        }
+        if !mask.any() {
+            return self.background.eval_raw(rx, ry, rz, w);
+        }
+
+        let fg = self.material.eval_raw(hx, hy, hz, w);
+        let bg = self.background.eval_raw(rx, ry, rz, w);
+
+        Discrete::select(mask, fg, bg)
+    }
+}
+
+/// Color Reflect: Householder reflection, wraps Discrete material.
+#[derive(Clone, Copy)]
+pub struct ColorReflect<M> {
+    pub inner: M,
+}
+
+impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
+    type Output = Discrete;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Discrete {
+        let p_len_sq = x * x + y * y + z * z;
+        let p_len = p_len_sq.sqrt();
+        let one = Jet3::constant(Field::from(1.0));
+        let inv_p_len = one / p_len;
+
+        let tu = (x.dx, y.dx, z.dx);
+        let tv = (x.dy, y.dy, z.dy);
+
+        let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
+        let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
+        let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
+
+        let n_len_sq_scalar = cross_x*cross_x + cross_y*cross_y + cross_z*cross_z;
+        let epsilon = Field::from(1e-10);
+        let inv_n_len = Field::from(1.0) / (n_len_sq_scalar.max(epsilon)).sqrt();
+
+        let nx = cross_x * inv_n_len;
+        let ny = cross_y * inv_n_len;
+        let nz = cross_z * inv_n_len;
+
+        let curvature_scale = inv_p_len.val;
+        let n_jet_x = Jet3 { val: nx, dx: x.dx * curvature_scale, dy: x.dy * curvature_scale, dz: Field::from(0.0) };
+        let n_jet_y = Jet3 { val: ny, dx: y.dx * curvature_scale, dy: y.dy * curvature_scale, dz: Field::from(0.0) };
+        let n_jet_z = Jet3 { val: nz, dx: z.dx * curvature_scale, dy: z.dy * curvature_scale, dz: Field::from(0.0) };
+
+        let d_jet_x = x * inv_p_len;
+        let d_jet_y = y * inv_p_len;
+        let d_jet_z = z * inv_p_len;
+
+        let d_dot_n = d_jet_x * n_jet_x + d_jet_y * n_jet_y + d_jet_z * n_jet_z;
+        let two = Jet3::constant(Field::from(2.0));
+        let k = two * d_dot_n;
+
+        let r_x = d_jet_x - k * n_jet_x;
+        let r_y = d_jet_y - k * n_jet_y;
+        let r_z = d_jet_z - k * n_jet_z;
+
+        self.inner.eval_raw(r_x, r_y, r_z, w)
+    }
+}
+
+/// Color Sky: Blue gradient, outputs packed RGBA.
+#[derive(Clone, Copy)]
+pub struct ColorSky;
+
+impl Manifold<Jet3> for ColorSky {
+    type Output = Discrete;
+
+    #[inline(always)]
+    fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
+        let t = y.val * Field::from(0.5) + Field::from(0.5);
+        let t = t.max(Field::from(0.0)).min(Field::from(1.0));
+
+        let r = Field::from(0.7) - t * Field::from(0.5);
+        let g = Field::from(0.85) - t * Field::from(0.45);
+        let b = Field::from(1.0) - t * Field::from(0.2);
+        let a = Field::from(1.0);
+
+        Discrete::pack(r, g, b, a)
+    }
+}
+
+/// Color Checker: Warm/cool checker with AA, outputs packed RGBA.
+#[derive(Clone, Copy)]
+pub struct ColorChecker;
+
+impl Manifold<Jet3> for ColorChecker {
+    type Output = Discrete;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Discrete {
         let cell_x = x.val.floor();
         let cell_z = z.val.floor();
         let sum = cell_x + cell_z;
@@ -483,33 +619,35 @@ impl Manifold<Jet3> for ColorChecker {
         let fract_half = half - half.floor();
         let is_even = fract_half.abs().lt(Field::from(0.25));
 
-        // Color A: warm cream (0.95, 0.9, 0.8)
-        // Color B: cool gray (0.2, 0.25, 0.3)
-        let (a, b) = match self.channel {
-            0 => (0.95, 0.2),   // R
-            1 => (0.9, 0.25),   // G
-            _ => (0.8, 0.3),    // B
-        };
+        let ra = Field::from(0.95); let ga = Field::from(0.9); let ba = Field::from(0.8);
+        let rb = Field::from(0.2);  let gb = Field::from(0.25); let bb = Field::from(0.3);
 
-        let color_a = Field::from(a);
-        let color_b = Field::from(b);
-        let base_color = (is_even & color_a) | ((!is_even) & color_b);
-
-        // AA: distance to nearest grid line
         let fx = x.val - cell_x;
         let fz = z.val - cell_z;
         let dx_edge = (fx - Field::from(0.5)).abs();
         let dz_edge = (fz - Field::from(0.5)).abs();
         let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
 
-        // Pixel size from derivatives
         let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt();
         let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
 
-        // Blend at edges
         let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
-        let neighbor_color = (is_even & color_b) | ((!is_even) & color_a);
-        base_color * coverage + neighbor_color * (Field::from(1.0) - coverage)
+        let one_minus_cov = Field::from(1.0) - coverage;
+
+        let r_base = (is_even & ra) | ((!is_even) & rb);
+        let g_base = (is_even & ga) | ((!is_even) & gb);
+        let b_base = (is_even & ba) | ((!is_even) & bb);
+
+        let r_neighbor = (is_even & rb) | ((!is_even) & ra);
+        let g_neighbor = (is_even & gb) | ((!is_even) & ga);
+        let b_neighbor = (is_even & bb) | ((!is_even) & ba);
+
+        let r = r_base * coverage + r_neighbor * one_minus_cov;
+        let g = g_base * coverage + g_neighbor * one_minus_cov;
+        let b = b_base * coverage + b_neighbor * one_minus_cov;
+        let a = Field::from(1.0);
+
+        Discrete::pack(r, g, b, a)
     }
 }

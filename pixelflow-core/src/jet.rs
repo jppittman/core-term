@@ -4,7 +4,7 @@
 //! - Jet3: value + 3D gradient (∂f/∂x, ∂f/∂y, ∂f/∂z) for surface normals
 
 use crate::Field;
-use crate::numeric::{Computational, Numeric};
+use crate::numeric::{Computational, Numeric, Selectable};
 
 /// A 2-jet: value and first derivatives.
 ///
@@ -264,6 +264,21 @@ impl Computational for Jet2 {
     fn sequential(start: f32) -> Self {
         // Zero derivatives - users wrap with Jet2::x() to seed X-differentiation
         Self::constant(Field::sequential(start))
+    }
+}
+
+// ============================================================================
+// Selectable trait implementation (Jet2)
+// ============================================================================
+
+impl Selectable for Jet2 {
+    #[inline(always)]
+    fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
+        Self {
+            val: <Field as Selectable>::select_raw(mask, if_true.val, if_false.val),
+            dx: <Field as Selectable>::select_raw(mask, if_true.dx, if_false.dx),
+            dy: <Field as Selectable>::select_raw(mask, if_true.dy, if_false.dy),
+        }
     }
 }
 
@@ -823,6 +838,22 @@ impl Computational for Jet3 {
     #[inline(always)]
     fn sequential(start: f32) -> Self {
         Self::constant(Field::sequential(start))
+    }
+}
+
+// ============================================================================
+// Selectable trait implementation (Jet3)
+// ============================================================================
+
+impl Selectable for Jet3 {
+    #[inline(always)]
+    fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
+        Self {
+            val: <Field as Selectable>::select_raw(mask, if_true.val, if_false.val),
+            dx: <Field as Selectable>::select_raw(mask, if_true.dx, if_false.dx),
+            dy: <Field as Selectable>::select_raw(mask, if_true.dy, if_false.dy),
+            dz: <Field as Selectable>::select_raw(mask, if_true.dz, if_false.dz),
+        }
     }
 }
 

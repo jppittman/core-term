@@ -5,7 +5,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use pixelflow_core::{Discrete, Field, Jet2, Manifold, PARALLELISM};
 use pixelflow_graphics::{
-    render::rasterizer::{execute, TensorShape},
+    render::rasterizer::{execute, parallel::render_parallel_pooled, TensorShape, ThreadPool},
     CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
 };
 
@@ -783,7 +783,8 @@ criterion_group!(text_benches, bench_text_rendering,);
 fn bench_scene3d(c: &mut Criterion) {
     use pixelflow_graphics::render::frame::Frame;
     use pixelflow_graphics::scene3d::{
-        Checker, PlaneGeometry, Reflect, ScreenToDir, Sky, SphereAt, Surface,
+        Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
+        PlaneGeometry, Reflect, ScreenToDir, Sky, SphereAt, Surface,
     };
 
     // Helper: grayscale Field -> Discrete RGBA
@@ -904,6 +905,135 @@ fn bench_scene3d(c: &mut Criterion) {
             black_box(&frame);
         })
     });
+
+    // ========================================================================
+    // MULLET ARCHITECTURE: Color rendering (geometry once, colors as Discrete)
+    // ========================================================================
+
+    // Helper: remap for Discrete output
+    #[derive(Copy, Clone)]
+    struct ColorScreenRemap<M> {
+        inner: M,
+        width: f32,
+        height: f32,
+    }
+
+    impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+        type Output = Discrete;
+        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+            let scale = 2.0 / self.height;
+            let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
+            let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
+            self.inner.eval_raw(sx, sy, z, w)
+        }
+    }
+
+    // Color chrome sphere (mullet architecture) - 1080p
+    let w_hd = 1920usize;
+    let h_hd = 1080usize;
+    group.throughput(Throughput::Elements((w_hd * h_hd) as u64));
+
+    group.bench_function("color_chrome_1920x1080_mullet", |bencher| {
+        let world = ColorSurface {
+            geometry: PlaneGeometry { height: -1.0 },
+            material: ColorChecker,
+            background: ColorSky,
+        };
+
+        let scene = ColorSurface {
+            geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+            material: ColorReflect { inner: world },
+            background: world,
+        };
+
+        let renderable = ColorScreenRemap {
+            inner: ColorScreenToDir { inner: scene },
+            width: w_hd as f32,
+            height: h_hd as f32,
+        };
+
+        let mut frame = Frame::<Rgba8>::new(w_hd as u32, h_hd as u32);
+        let shape = TensorShape::new(w_hd, h_hd);
+
+        bencher.iter(|| {
+            execute(&renderable, frame.as_slice_mut(), shape);
+            black_box(&frame);
+        })
+    });
+
+    // Color chrome sphere at 400x300 for comparison
+    group.throughput(Throughput::Elements((w * h) as u64));
+
+    group.bench_function("color_chrome_400x300_mullet", |bencher| {
+        let world = ColorSurface {
+            geometry: PlaneGeometry { height: -1.0 },
+            material: ColorChecker,
+            background: ColorSky,
+        };
+
+        let scene = ColorSurface {
+            geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+            material: ColorReflect { inner: world },
+            background: world,
+        };
+
+        let renderable = ColorScreenRemap {
+            inner: ColorScreenToDir { inner: scene },
+            width: w as f32,
+            height: h as f32,
+        };
+
+        let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+        let shape = TensorShape::new(w, h);
+
+        bencher.iter(|| {
+            execute(&renderable, frame.as_slice_mut(), shape);
+            black_box(&frame);
+        })
+    });
+
+    // ========================================================================
+    // PARALLEL RENDERING
+    // ========================================================================
+
+    // Parallel 1080p chrome sphere (mullet) with thread pool
+    let num_threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
+    let pool = ThreadPool::new(num_threads);
+
+    group.throughput(Throughput::Elements((w_hd * h_hd) as u64));
+
+    group.bench_function(
+        &format!("color_chrome_1920x1080_parallel_{}t", num_threads),
+        |bencher| {
+            let world = ColorSurface {
+                geometry: PlaneGeometry { height: -1.0 },
+                material: ColorChecker,
+                background: ColorSky,
+            };
+
+            let scene = ColorSurface {
+                geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+                material: ColorReflect { inner: world },
+                background: world,
+            };
+
+            let renderable = ColorScreenRemap {
+                inner: ColorScreenToDir { inner: scene },
+                width: w_hd as f32,
+                height: h_hd as f32,
+            };
+
+            let mut frame = Frame::<Rgba8>::new(w_hd as u32, h_hd as u32);
+            let shape = TensorShape::new(w_hd, h_hd);
+
+            bencher.iter(|| {
+                render_parallel_pooled(&pool, &renderable, frame.as_slice_mut(), shape);
+                black_box(&frame);
+            })
+        },
+    );
 
     group.finish();
 }

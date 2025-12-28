@@ -1,7 +1,8 @@
 //! # Numeric Traits
 //!
-//! Two-tier trait design:
+//! Three-tier trait design:
 //! - `Computational`: Public trait for user-facing manifold bounds
+//! - `Selectable`: Internal trait for types that support branchless selection
 //! - `Numeric`: Internal trait with full SIMD operations
 
 /// Public trait for user-facing manifold bounds.
@@ -33,6 +34,19 @@ pub trait Computational:
     /// For SIMD types, creates a vector with lane values:
     /// `[start, start+1, start+2, ..., start+(LANES-1)]`
     fn sequential(start: f32) -> Self;
+}
+
+/// Internal trait for types that support branchless selection.
+///
+/// Much weaker than `Numeric` - only requires bitwise blending capability.
+/// This allows `Discrete` (packed RGBA) to participate in Select combinators
+/// without implementing nonsensical math operations.
+pub(crate) trait Selectable: Copy + Send + Sync {
+    /// Raw conditional select - always blends both values.
+    ///
+    /// For each SIMD lane, picks `if_true` or `if_false` based on mask.
+    /// The mask is a `Field` where each lane is either all-1s (true) or all-0s (false).
+    fn select_raw(mask: crate::Field, if_true: Self, if_false: Self) -> Self;
 }
 
 /// Internal trait with full SIMD operations.
