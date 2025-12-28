@@ -5,7 +5,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use pixelflow_core::{Discrete, Field, Jet2, Manifold, PARALLELISM};
 use pixelflow_graphics::{
-    render::rasterizer::{execute, parallel::render_parallel_pooled, TensorShape, ThreadPool},
+    render::rasterizer::{execute, parallel::render_parallel_pooled, render_work_stealing, TensorShape, ThreadPool},
     CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
 };
 
@@ -1040,6 +1040,106 @@ fn bench_scene3d(c: &mut Criterion) {
 
 criterion_group!(scene3d_benches, bench_scene3d,);
 
+// ============================================================================
+// Scheduler Comparison Benchmarks
+// ============================================================================
+
+fn bench_scheduler_comparison(c: &mut Criterion) {
+    use pixelflow_graphics::render::frame::Frame;
+    use pixelflow_graphics::scene3d::{
+        ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
+        PlaneGeometry, SphereAt,
+    };
+
+    // Helper: remap for Discrete output
+    #[derive(Copy, Clone)]
+    struct ColorScreenRemap<M> {
+        inner: M,
+        width: f32,
+        height: f32,
+    }
+
+    impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+        type Output = Discrete;
+        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+            let scale = 2.0 / self.height;
+            let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
+            let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
+            self.inner.eval_raw(sx, sy, z, w)
+        }
+    }
+
+    let mut group = c.benchmark_group("scheduler_comparison");
+
+    let num_threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
+
+    // Test at 1080p - most realistic workload
+    let w = 1920usize;
+    let h = 1080usize;
+    group.throughput(Throughput::Elements((w * h) as u64));
+
+    // Build the scene once
+    let world = ColorSurface {
+        geometry: PlaneGeometry { height: -1.0 },
+        material: ColorChecker,
+        background: ColorSky,
+    };
+
+    let scene = ColorSurface {
+        geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+        material: ColorReflect { inner: world },
+        background: world,
+    };
+
+    let renderable = ColorScreenRemap {
+        inner: ColorScreenToDir { inner: scene },
+        width: w as f32,
+        height: h as f32,
+    };
+
+    let shape = TensorShape::new(w, h);
+
+    // Benchmark 1: ThreadPool with spinning MPMC
+    let pool = ThreadPool::new(num_threads);
+    group.bench_function(
+        &format!("pool_spin_mpmc_{}t", num_threads),
+        |bencher| {
+            let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+            bencher.iter(|| {
+                render_parallel_pooled(&pool, &renderable, frame.as_slice_mut(), shape);
+                black_box(&frame);
+            })
+        },
+    );
+
+    // Benchmark 2: Work-stealing with atomic counter (scoped threads)
+    group.bench_function(
+        &format!("work_stealing_atomic_{}t", num_threads),
+        |bencher| {
+            let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+            bencher.iter(|| {
+                render_work_stealing(&renderable, frame.as_slice_mut(), shape, num_threads);
+                black_box(&frame);
+            })
+        },
+    );
+
+    // Benchmark 3: Single-threaded (baseline)
+    group.bench_function("single_threaded", |bencher| {
+        let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+        bencher.iter(|| {
+            execute(&renderable, frame.as_slice_mut(), shape);
+            black_box(&frame);
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(scheduler_benches, bench_scheduler_comparison,);
+
 criterion_group!(
     cache_benches,
     bench_glyph_cache,
@@ -1056,5 +1156,6 @@ criterion_main!(
     shape_benches,
     text_benches,
     cache_benches,
-    scene3d_benches
+    scene3d_benches,
+    scheduler_benches
 );
