@@ -53,6 +53,9 @@ impl MacWindow {
             // [layer setFramebufferOnly: YES] - optimization
             sys::send_1::<(), BOOL>(layer, sys::sel(b"setFramebufferOnly:\0"), YES);
 
+            // Enable display sync - hardware VSync handles frame pacing
+            sys::send_1::<(), BOOL>(layer, sys::sel(b"setDisplaySyncEnabled:\0"), YES);
+
             // [view setLayer: layer]
             sys::send_1::<(), Id>(view.0, sys::sel(b"setLayer:\0"), layer);
 
@@ -135,10 +138,11 @@ impl MacWindow {
         }
     }
 
+    /// Present a frame to the window and return it for reuse.
     pub fn present(
         &mut self,
         frame: pixelflow_graphics::render::Frame<pixelflow_graphics::render::color::Rgba8>,
-    ) {
+    ) -> pixelflow_graphics::render::Frame<pixelflow_graphics::render::color::Rgba8> {
         // Metal presentation logic.
         unsafe {
             // Ensure drawable size matches frame
@@ -170,6 +174,8 @@ impl MacWindow {
                 sys::send::<()>(drawable, sys::sel(b"present\0"));
             }
         }
+        // Return the frame for reuse
+        frame
     }
 
     pub fn poll_resize(&mut self) -> Option<(u32, u32)> {

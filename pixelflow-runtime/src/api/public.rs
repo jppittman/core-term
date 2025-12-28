@@ -120,6 +120,8 @@ impl Application
 /// Application management commands (change title, etc.)
 #[derive(Debug, Clone)]
 pub enum AppManagement {
+    /// Configure the engine with initial settings (sent on startup).
+    Configure(crate::config::EngineConfig),
     SetTitle(String),
     ResizeRequest(u32, u32),
     CopyToClipboard(String),

@@ -283,15 +283,17 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .join("\n");
 
     // Generate handle/scheduler creation in new()
+    // Main actor gets the wake_handler parameter, others get None
     let create_actors: String = actors
         .iter()
-        .map(|(name, ty, _, _)| {
+        .map(|(name, ty, is_main, _)| {
+            let waker = if *is_main { "main_waker" } else { "None" };
             format!(
                 "let ({name}_h, {name}_s) = ::actor_scheduler::create_actor::<
                     <{ty} as ::actor_scheduler::ActorTypes>::Data,
                     <{ty} as ::actor_scheduler::ActorTypes>::Control,
                     <{ty} as ::actor_scheduler::ActorTypes>::Management,
-                >(1024, None);"
+                >(1024, {waker});"
             )
         })
         .collect::<Vec<_>>()
@@ -389,7 +391,10 @@ pub fn troupe(input: TokenStream) -> TokenStream {
             /// This is phase 1 of two-phase initialization:
             /// 1. `new()` - create channels, parent can grab exposed handles
             /// 2. `play()` - spawn threads, run actors
-            pub fn new() -> Self {{
+            ///
+            /// The `main_waker` is passed to the `[main]` actor's scheduler to wake
+            /// the event loop when messages arrive (e.g., `CocoaWaker` on macOS).
+            pub fn new_with_waker(main_waker: Option<::std::sync::Arc<dyn ::actor_scheduler::WakeHandler>>) -> Self {{
                 {create_actors}
 
                 let directory = Directory {{
@@ -400,6 +405,13 @@ pub fn troupe(input: TokenStream) -> TokenStream {
                     directory,
                     {scheduler_init}
                 }}
+            }}
+
+            /// Create a new troupe without a wake handler.
+            ///
+            /// Equivalent to `new_with_waker(None)`.
+            pub fn new() -> Self {{
+                Self::new_with_waker(None)
             }}
 
             /// Get handles to exposed actors.
