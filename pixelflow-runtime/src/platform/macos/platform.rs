@@ -1,12 +1,12 @@
-use crate::api::private::{EngineActorHandle, EngineData, WindowId};
+use crate::api::private::{EngineActorHandle, EngineControl, EngineData, WindowId};
 use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt};
 use crate::display::ops::PlatformOps;
+use crate::error::RuntimeError;
 use crate::platform::macos::cocoa::{self, event_type, NSApplication, NSPasteboard};
 use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
 use crate::platform::PlatformPixel;
-use crate::error::RuntimeError;
 use actor_scheduler::{Message, ParkHint};
 
 use std::collections::HashMap;
@@ -66,7 +66,12 @@ impl PlatformOps for MetalOps {
             DisplayData::Present { id, frame } => {
                 log::trace!("MetalOps: Presenting frame for window {:?}", id);
                 if let Some(win) = self.windows.get_mut(&id) {
-                    win.present(frame);
+                    // Present returns the frame after blitting
+                    let returned_frame = win.present(frame);
+                    // Return the frame to the engine for reuse
+                    let _ = self.event_tx.send(Message::Control(
+                        EngineControl::PresentComplete(returned_frame),
+                    ));
                 }
             }
         }
@@ -166,15 +171,16 @@ impl PlatformOps for MetalOps {
 
     fn park(&mut self, hint: ParkHint) -> ParkHint {
         // Logic for event loop interaction
+        // The CocoaWaker posts an NSEvent when messages arrive, so distantFuture is safe.
         unsafe {
             let until_date = match hint {
                 ParkHint::Wait => {
-                    // Distant Future
+                    // Block until an event arrives (waker will post NSEvent when messages come)
                     let cls = sys::class(b"NSDate\0");
                     sys::send(cls, sys::sel(b"distantFuture\0"))
                 }
                 ParkHint::Poll => {
-                    // Distant Past (return immediately)
+                    // Immediate return
                     let cls = sys::class(b"NSDate\0");
                     sys::send(cls, sys::sel(b"distantPast\0"))
                 }

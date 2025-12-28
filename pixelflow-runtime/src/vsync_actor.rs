@@ -222,7 +222,6 @@ impl VsyncActor {
         {
             // Consume token after successful send
             self.tokens -= 1;
-            self.frame_count += 1;
             log::trace!(
                 "VsyncActor: VSync sent, token consumed, {} remaining",
                 self.tokens
@@ -254,7 +253,6 @@ impl VsyncActor {
             // With clock thread, we are roughly at the right time.
             if now >= self.next_vsync {
                 self.send_vsync();
-                self.update_fps();
             }
         }
     }
@@ -271,6 +269,9 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self.tokens
             );
         }
+        // Count actual rendered frames for accurate FPS
+        self.frame_count += 1;
+        self.update_fps();
     }
 
     fn handle_control(&mut self, cmd: VsyncCommand) {
@@ -325,13 +326,14 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self_handle,
             } => {
                 // Configure the vsync actor (called via Management after construction)
+                // Note: We don't auto-start - wait for explicit Start command from engine
                 self.engine_handle = Some(engine_handle);
                 self.refresh_rate = config.refresh_rate;
                 self.interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
-                self.running = true;
+                self.running = false; // Don't auto-start
 
                 info!(
-                    "VsyncActor: Configured with {:.2} Hz, auto-started",
+                    "VsyncActor: Configured with {:.2} Hz (waiting for Start)",
                     config.refresh_rate
                 );
 

@@ -67,3 +67,7 @@ display_web = []
 
 # No default - let the consuming crate pick based on platform
 default = []
+
+[dev-dependencies]
+anyhow = "1.0"
+env_logger = "0.11"
