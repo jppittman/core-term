@@ -47,7 +47,7 @@ pub use combinators::*;
 pub use ext::*;
 pub use jet::{Jet2, Jet3};
 pub use manifold::*;
-pub use numeric::{Computational, Selectable};
+pub use numeric::Computational;
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
