@@ -284,15 +284,21 @@ impl CachedText {
     pub fn new(font: &Font, cache: &mut GlyphCache, text: &str, size: f32) -> Self {
         let mut glyphs = Vec::new();
         let mut cursor_x = 0.0f32;
-        let mut prev_char = None;
+        let mut prev_id = None;
 
         let bucket = size_bucket(size);
         let scale = size / bucket as f32;
+        let inv_em = size / font.units_per_em as f32;
 
         for ch in text.chars() {
-            // Apply kerning
-            if let Some(prev) = prev_char {
-                cursor_x += font.kern_scaled(prev, ch, size);
+            // Single CMAP lookup per character, reused for all operations
+            let Some(id) = font.cmap_lookup(ch) else {
+                continue;
+            };
+
+            // Apply kerning using pre-looked-up glyph IDs
+            if let Some(prev) = prev_id {
+                cursor_x += font.kern_by_ids(prev, id) * inv_em;
             }
 
             // Get cached glyph
@@ -303,12 +309,12 @@ impl CachedText {
                 glyphs.push(Affine::new(cached, transform));
             }
 
-            // Advance cursor
-            if let Some(adv) = font.advance_scaled(ch, size) {
-                cursor_x += adv;
+            // Advance cursor using pre-looked-up glyph ID
+            if let Some(adv) = font.advance_by_id(id) {
+                cursor_x += adv * inv_em;
             }
 
-            prev_char = Some(ch);
+            prev_id = Some(id);
         }
 
         Self {
