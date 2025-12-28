@@ -697,15 +697,14 @@ impl SimdOps for F32x16 {
 
     #[inline(always)]
     fn gather(slice: &[f32], indices: Self) -> Self {
-        // Scalar fallback - could use _mm512_i32gather_ps for perf
-        let idx = indices.to_array();
-        let len = slice.len();
-        let mut out = [0.0f32; 16];
-        for i in 0..16 {
-            let ix = (libm::floorf(idx[i]) as isize).clamp(0, len as isize - 1) as usize;
-            out[i] = slice[ix];
+        // Native AVX-512 gather - 16 floats in one instruction
+        // Precondition: indices must be valid (0..slice.len()), already ensured by Texture::eval_raw
+        unsafe {
+            // Convert float indices to i32 (truncate - indices are already integral from floor)
+            let idx_i32 = _mm512_cvttps_epi32(indices.0);
+            // Gather 16 f32 values; scale=4 bytes per element
+            Self(_mm512_i32gather_ps::<4>(idx_i32, slice.as_ptr()))
         }
-        Self::from_slice(&out)
     }
 
     #[inline(always)]
