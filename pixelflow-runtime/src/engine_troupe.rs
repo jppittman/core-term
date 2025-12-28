@@ -67,21 +67,24 @@ actor_scheduler::troupe! {
 impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
     for EngineHandler
 {
-    fn handle_data(&mut self, data: EngineData<PlatformPixel>) {
+    type Error = RuntimeError;
+
+    fn handle_data(&mut self, data: EngineData<PlatformPixel>) -> Result<(), RuntimeError> {
         match data {
             EngineData::FromDriver(evt) => {
                 self.handle_driver_event(evt);
             }
             EngineData::FromApp(app_data) => {
-                self.handle_app_data(app_data);
+                self.handle_app_data(app_data)?;
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: EngineControl<PlatformPixel>) {
+    fn handle_control(&mut self, ctrl: EngineControl<PlatformPixel>) -> Result<(), RuntimeError> {
         match ctrl {
             EngineControl::VSync { timestamp, target_timestamp, refresh_interval } => {
-                self.handle_vsync(timestamp, target_timestamp, refresh_interval);
+                self.handle_vsync(timestamp, target_timestamp, refresh_interval)?;
             }
             EngineControl::PresentComplete(frame) => {
                 self.handle_present_complete(frame);
@@ -93,55 +96,59 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
                 // TODO: Handle vsync ready
             }
             EngineControl::Quit => {
-                self.handle_quit();
+                self.handle_quit()?;
             }
             EngineControl::DriverAck => {
                 // Acknowledge driver message
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: AppManagement) {
+    fn handle_management(&mut self, mgmt: AppManagement) -> Result<(), RuntimeError> {
         match mgmt {
             AppManagement::SetTitle(title) => {
-                let _ = self.driver_handle.send(Message::Control(DisplayControl::SetTitle {
+                self.driver_handle.send(Message::Control(DisplayControl::SetTitle {
                     id: self.state.window_id,
                     title,
-                }));
+                })).map_err(|e| RuntimeError::ActorError(format!("Failed to send SetTitle: {}", e)))?;
             }
             AppManagement::ResizeRequest(width, height) => {
-                let _ = self.driver_handle.send(Message::Control(DisplayControl::SetSize {
+                self.driver_handle.send(Message::Control(DisplayControl::SetSize {
                     id: self.state.window_id,
                     width,
                     height,
-                }));
+                })).map_err(|e| RuntimeError::ActorError(format!("Failed to send SetSize: {}", e)))?;
             }
             AppManagement::CopyToClipboard(text) => {
-                let _ = self.driver_handle.send(Message::Control(DisplayControl::Copy { text }));
+                self.driver_handle.send(Message::Control(DisplayControl::Copy { text }))
+                    .map_err(|e| RuntimeError::ActorError(format!("Failed to send Copy: {}", e)))?;
             }
             AppManagement::RequestPaste => {
-                let _ = self.driver_handle.send(Message::Control(DisplayControl::RequestPaste));
+                self.driver_handle.send(Message::Control(DisplayControl::RequestPaste))
+                    .map_err(|e| RuntimeError::ActorError(format!("Failed to send RequestPaste: {}", e)))?;
             }
             AppManagement::SetCursorIcon(icon) => {
-                let _ = self.driver_handle.send(Message::Control(DisplayControl::SetCursor {
+                self.driver_handle.send(Message::Control(DisplayControl::SetCursor {
                     id: self.state.window_id,
                     cursor: icon,
-                }));
+                })).map_err(|e| RuntimeError::ActorError(format!("Failed to send SetCursor: {}", e)))?;
             }
             AppManagement::Quit => {
-                self.handle_quit();
+                self.handle_quit()?;
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
-        hint
+    fn park(&mut self, hint: ParkHint) -> Result<ParkHint, RuntimeError> {
+        Ok(hint)
     }
 }
 
 impl EngineHandler {
     /// Handle VSync control message - initialize window and signal frame request
-    fn handle_vsync(&mut self, _timestamp: Instant, _target_timestamp: Instant, _refresh_interval: std::time::Duration) {
+    fn handle_vsync(&mut self, _timestamp: Instant, _target_timestamp: Instant, _refresh_interval: std::time::Duration) -> Result<(), RuntimeError> {
         // Initialize window on first VSync
         if !self.state.initialized {
             let descriptor = crate::api::public::WindowDescriptor {
@@ -150,10 +157,10 @@ impl EngineHandler {
                 title: "Terminal".to_string(),
                 resizable: true,
             };
-            let _ = self.driver_handle.send(Message::Management(DisplayMgmt::Create {
+            self.driver_handle.send(Message::Management(DisplayMgmt::Create {
                 id: self.state.window_id,
                 settings: descriptor,
-            }));
+            })).map_err(|e| RuntimeError::ActorError(format!("Failed to send DisplayMgmt::Create: {}", e)))?;
             self.state.initialized = true;
         }
 
@@ -162,10 +169,11 @@ impl EngineHandler {
         self.state.waiting_for_frame = false;
 
         self.state.last_vsync = Some(Instant::now());
+        Ok(())
     }
 
     /// Handle app data - render manifold to frame and present to driver
-    fn handle_app_data(&mut self, app_data: crate::api::public::AppData<PlatformPixel>) {
+    fn handle_app_data(&mut self, app_data: crate::api::public::AppData<PlatformPixel>) -> Result<(), RuntimeError> {
         self.state.waiting_for_frame = false;
 
         match app_data {
@@ -176,10 +184,10 @@ impl EngineHandler {
                 execute(&*manifold, frame.as_slice_mut(), shape);
 
                 // Send to driver
-                let _ = self.driver_handle.send(Message::Data(DisplayData::Present {
+                self.driver_handle.send(Message::Data(DisplayData::Present {
                     id: self.state.window_id,
                     frame,
-                }));
+                })).map_err(|e| RuntimeError::ActorError(format!("Failed to send DisplayData::Present: {}", e)))?;
             }
             crate::api::public::AppData::RenderSurfaceU32(manifold) => {
                 // Same as RenderSurface but with u32 coordinates
@@ -187,10 +195,10 @@ impl EngineHandler {
                 let shape = TensorShape::new(self.state.window_width as usize, self.state.window_height as usize);
                 execute(&*manifold, frame.as_slice_mut(), shape);
 
-                let _ = self.driver_handle.send(Message::Data(DisplayData::Present {
+                self.driver_handle.send(Message::Data(DisplayData::Present {
                     id: self.state.window_id,
                     frame,
-                }));
+                })).map_err(|e| RuntimeError::ActorError(format!("Failed to send DisplayData::Present: {}", e)))?;
             }
             crate::api::public::AppData::Skipped => {
                 // No rendering needed
@@ -199,6 +207,7 @@ impl EngineHandler {
                 // Phantom data
             }
         }
+        Ok(())
     }
 
     /// Handle driver events - process window/input events
@@ -258,8 +267,9 @@ impl EngineHandler {
     }
 
     /// Handle shutdown
-    fn handle_quit(&mut self) {
-        let _ = self.driver_handle.send(Message::Control(DisplayControl::Shutdown));
+    fn handle_quit(&mut self) -> Result<(), RuntimeError> {
+        self.driver_handle.send(Message::Control(DisplayControl::Shutdown))
+            .map_err(|e| RuntimeError::ActorError(format!("Failed to send DisplayControl::Shutdown: {}", e)))
     }
 }
 
@@ -374,15 +384,18 @@ mod tests {
                 }
 
                 impl Actor<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt> for InternalMockDriver {
-                    fn handle_data(&mut self, msg: DisplayData<PlatformPixel>) {
+                    type Error = ();
+
+                    fn handle_data(&mut self, msg: DisplayData<PlatformPixel>) -> Result<(), ()> {
                         match msg {
                             DisplayData::Present { id, frame: _ } => {
                                 self.messages.lock().unwrap().push(DriverMessage::Present { id });
                             }
                         }
+                        Ok(())
                     }
 
-                    fn handle_control(&mut self, msg: DisplayControl) {
+                    fn handle_control(&mut self, msg: DisplayControl) -> Result<(), ()> {
                         match msg {
                             DisplayControl::SetTitle { id, title } => {
                                 self.messages.lock().unwrap().push(DriverMessage::SetTitle { id, title });
@@ -410,9 +423,10 @@ mod tests {
                                 self.messages.lock().unwrap().push(DriverMessage::Shutdown);
                             }
                         }
+                        Ok(())
                     }
 
-                    fn handle_management(&mut self, msg: DisplayMgmt) {
+                    fn handle_management(&mut self, msg: DisplayMgmt) -> Result<(), ()> {
                         match msg {
                             DisplayMgmt::Create { id, settings } => {
                                 self.messages.lock().unwrap().push(DriverMessage::Create {
@@ -422,10 +436,11 @@ mod tests {
                             }
                             DisplayMgmt::Destroy { id: _ } => {}
                         }
+                        Ok(())
                     }
 
-                    fn park(&mut self, hint: ParkHint) -> ParkHint {
-                        hint
+                    fn park(&mut self, hint: ParkHint) -> Result<ParkHint, ()> {
+                        Ok(hint)
                     }
                 }
 
@@ -716,7 +731,7 @@ mod tests {
             driver_handle,
         };
 
-        engine.handle_management(AppManagement::ResizeRequest(1024, 768));
+        let _ = engine.handle_management(AppManagement::ResizeRequest(1024, 768));
         std::thread::sleep(Duration::from_millis(50));
 
         let messages = mock_driver.captured_messages();
@@ -734,7 +749,7 @@ mod tests {
             driver_handle,
         };
 
-        engine.handle_management(AppManagement::RequestPaste);
+        let _ = engine.handle_management(AppManagement::RequestPaste);
         std::thread::sleep(Duration::from_millis(50));
 
         let messages = mock_driver.captured_messages();

@@ -21,6 +21,7 @@ pub enum RuntimeError {
     MetalDeviceError,
     EventSendError(String),
     InitError(String),
+    ActorError(String),
 }
 
 impl fmt::Display for RuntimeError {
@@ -48,6 +49,7 @@ impl fmt::Display for RuntimeError {
             Self::MetalDeviceError => write!(f, "Failed to create Metal device"),
             Self::EventSendError(s) => write!(f, "Failed to send event to application: {}", s),
             Self::InitError(s) => write!(f, "Failed to init: {}", s),
+            Self::ActorError(s) => write!(f, "Actor error: {}", s),
         }
     }
 }

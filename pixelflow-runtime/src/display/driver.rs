@@ -38,19 +38,21 @@ impl<P: Platform> DriverActor<P> {
 }
 
 impl<P: Platform> Actor<DisplayData<P::Pixel>, DisplayControl, DisplayMgmt> for DriverActor<P> {
-    fn handle_data(&mut self, data: DisplayData<P::Pixel>) {
-        self.platform.handle_data(data);
+    type Error = RuntimeError;
+
+    fn handle_data(&mut self, data: DisplayData<P::Pixel>) -> Result<(), RuntimeError> {
+        self.platform.handle_data(data)
     }
 
-    fn handle_control(&mut self, ctrl: DisplayControl) {
-        self.platform.handle_control(ctrl);
+    fn handle_control(&mut self, ctrl: DisplayControl) -> Result<(), RuntimeError> {
+        self.platform.handle_control(ctrl)
     }
 
-    fn handle_management(&mut self, mgmt: DisplayMgmt) {
-        self.platform.handle_management(mgmt);
+    fn handle_management(&mut self, mgmt: DisplayMgmt) -> Result<(), RuntimeError> {
+        self.platform.handle_management(mgmt)
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ParkHint) -> Result<ParkHint, RuntimeError> {
         // Delegate to platform's park - this is where OS event loop integration happens
         self.platform.park(hint)
     }

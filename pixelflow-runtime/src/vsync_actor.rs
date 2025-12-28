@@ -261,7 +261,9 @@ impl VsyncActor {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
-    fn handle_data(&mut self, response: RenderedResponse) {
+    type Error = ();
+
+    fn handle_data(&mut self, response: RenderedResponse) -> Result<(), ()> {
         // Received frame rendered feedback - add token
         if self.tokens < MAX_TOKENS {
             self.tokens += 1;
@@ -271,9 +273,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self.tokens
             );
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, cmd: VsyncCommand) {
+    fn handle_control(&mut self, cmd: VsyncCommand) -> Result<(), ()> {
         match cmd {
             VsyncCommand::Start => {
                 self.running = true;
@@ -314,9 +317,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 // But we don't hold loopback handles in struct, only for clock thread.
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> Result<(), ()> {
         match msg {
             VsyncManagement::Tick => self.handle_tick(),
             VsyncManagement::SetConfig {
@@ -361,12 +365,13 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self.clock_control = Some(clock_tx);
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _hint: actor_scheduler::ParkHint) -> actor_scheduler::ParkHint {
+    fn park(&mut self, _hint: actor_scheduler::ParkHint) -> Result<actor_scheduler::ParkHint, ()> {
         // No-op. We are driven by the clock thread messages.
         // The scheduler will block on the mailbox (doorbell) automatically.
-        actor_scheduler::ParkHint::Wait
+        Ok(actor_scheduler::ParkHint::Wait)
     }
 }
 

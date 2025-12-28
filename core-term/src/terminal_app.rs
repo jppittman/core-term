@@ -51,9 +51,13 @@ impl<P: Pixel> TerminalApp<P> {
 impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
     for TerminalApp<P>
 {
-    fn handle_data(&mut self, _data: EngineEventData) {}
+    type Error = ();
 
-    fn handle_control(&mut self, ctrl: EngineEventControl) {
+    fn handle_data(&mut self, _data: EngineEventData) -> Result<(), ()> {
+        Ok(())
+    }
+
+    fn handle_control(&mut self, ctrl: EngineEventControl) -> Result<(), ()> {
         match ctrl {
             EngineEventControl::Resize(width_px, height_px) => {
                 use crate::term::{ControlEvent, EmulatorInput, TerminalInterface};
@@ -76,12 +80,13 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                 // Handle scale change
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: EngineEventManagement) {
+    fn handle_management(&mut self, mgmt: EngineEventManagement) -> Result<(), ()> {
         match mgmt {
             EngineEventManagement::KeyDown { key, mods, text } => {
-                use crate::term::{EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction};
+                use crate::term::{EmulatorAction, EmulatorInput, UserInputAction};
 
                 let input = EmulatorInput::User(UserInputAction::KeyInput {
                     symbol: key,
@@ -109,10 +114,11 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
             // Add other event handling as needed
             _ => {}
         }
+        Ok(())
     }
 
-    fn park(&mut self, _hint: ParkHint) -> ParkHint {
-        ParkHint::Wait
+    fn park(&mut self, _hint: ParkHint) -> Result<ParkHint, ()> {
+        Ok(ParkHint::Wait)
     }
 }
 

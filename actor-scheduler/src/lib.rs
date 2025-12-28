@@ -162,22 +162,36 @@ pub enum ParkHint {
 /// - **Data** (D): High-throughput data messages
 /// - **Control** (C): Time-critical control messages
 /// - **Management** (M): Lifecycle and configuration messages
+///
+/// # Error Handling
+///
+/// Handlers are fallible - they return `Result<(), Self::Error>`.
+/// Set `type Error = ()` for actors that don't fail, or use a custom error type for graceful degradation.
+///
+/// When a handler returns `Err`, the scheduler exits immediately. The principal actor (Phase 2)
+/// can monitor for these failures and decide on recovery strategy.
 pub trait Actor<D, C, M> {
+    /// Error type for this actor.
+    /// Use `type Error = ();` for actors that don't fail.
+    /// Use `type Error = CustomError;` to enable error handling.
+    type Error: Send + Sync;
+
     /// Handle a data message.
-    fn handle_data(&mut self, msg: D);
+    fn handle_data(&mut self, msg: D) -> Result<(), Self::Error>;
 
     /// Handle a control message.
     /// The scheduler will exit when all senders are dropped.
-    fn handle_control(&mut self, msg: C);
+    fn handle_control(&mut self, msg: C) -> Result<(), Self::Error>;
 
     /// Handle a management message.
-    fn handle_management(&mut self, msg: M);
+    fn handle_management(&mut self, msg: M) -> Result<(), Self::Error>;
 
     /// The "Hook" where the Actor creates the bridge to the OS.
     /// Called when the scheduler has drained available messages (or hit burst limits).
     ///
     /// Returns a hint about whether the scheduler should block or poll.
-    fn park(&mut self, hint: ParkHint) -> ParkHint;
+    /// Can also return an error to signal the scheduler to exit.
+    fn park(&mut self, hint: ParkHint) -> Result<ParkHint, Self::Error>;
 }
 
 /// Legacy alias for backward compatibility
@@ -562,6 +576,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// This method runs until:
     /// - A `Shutdown` message is received (immediate exit, actor never sees it)
     /// - All senders are dropped (channel disconnected)
+    /// - A handler returns an error (actor-defined failure)
     pub fn run<A>(&mut self, actor: &mut A)
     where
         A: Actor<D, C, M>,
@@ -583,7 +598,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 }
 
                 while let Ok(ctrl_msg) = self.rx_control.try_recv() {
-                    actor.handle_control(ctrl_msg);
+                    if actor.handle_control(ctrl_msg).is_err() {
+                        return;  // Handler error - exit scheduler
+                    }
                     keep_working = true;
                 }
 
@@ -591,7 +608,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 while mgmt_count < self.management_burst_limit {
                     match self.rx_mgmt.try_recv() {
                         Ok(msg) => {
-                            actor.handle_management(msg);
+                            if actor.handle_management(msg).is_err() {
+                                return;  // Handler error - exit scheduler
+                            }
                             mgmt_count += 1;
                         }
                         Err(TryRecvError::Empty) => break,
@@ -604,7 +623,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
                 // Check control between management and data for rough priority
                 while let Ok(ctrl_msg) = self.rx_control.try_recv() {
-                    actor.handle_control(ctrl_msg);
+                    if actor.handle_control(ctrl_msg).is_err() {
+                        return;  // Handler error - exit scheduler
+                    }
                     keep_working = true;
                 }
 
@@ -612,7 +633,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 while data_count < self.data_burst_limit {
                     match self.rx_data.try_recv() {
                         Ok(msg) => {
-                            actor.handle_data(msg);
+                            if actor.handle_data(msg).is_err() {
+                                return;  // Handler error - exit scheduler
+                            }
                             data_count += 1;
                         }
                         Err(TryRecvError::Empty) => break,
@@ -630,11 +653,17 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 } else {
                     ParkHint::Wait // Queues drained, can block
                 };
-                let returned_hint = actor.park(hint);
 
                 // Actor can override and request to keep looping
-                if returned_hint == ParkHint::Poll {
-                    keep_working = true;
+                match actor.park(hint) {
+                    Ok(returned_hint) => {
+                        if returned_hint == ParkHint::Poll {
+                            keep_working = true;
+                        }
+                    }
+                    Err(_) => {
+                        return;  // Handler error in park - exit scheduler
+                    }
                 }
             }
         }
@@ -652,20 +681,25 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
     }
 
-    impl SchedulerHandler<String, String, String> for TestHandler {
-        fn handle_data(&mut self, msg: String) {
+    impl Actor<String, String, String> for TestHandler {
+        type Error = ();
+
+        fn handle_data(&mut self, msg: String) -> Result<(), ()> {
             self.log.lock().unwrap().push(format!("Data: {}", msg));
+            Ok(())
         }
-        fn handle_control(&mut self, msg: String) {
+        fn handle_control(&mut self, msg: String) -> Result<(), ()> {
             self.log.lock().unwrap().push(format!("Ctrl: {}", msg));
+            Ok(())
         }
-        fn handle_management(&mut self, msg: String) {
+        fn handle_management(&mut self, msg: String) -> Result<(), ()> {
             self.log.lock().unwrap().push(format!("Mgmt: {}", msg));
+            Ok(())
         }
 
-        fn park(&mut self, _hint: ParkHint) -> ParkHint {
+        fn park(&mut self, _hint: ParkHint) -> Result<ParkHint, ()> {
             // No-op for test
-            ParkHint::Wait
+            Ok(ParkHint::Wait)
         }
     }
 
@@ -705,17 +739,22 @@ mod tests {
         }
 
         impl SchedulerHandler<i32, String, bool> for CountingHandler {
-            fn handle_data(&mut self, _: i32) {
+            type Error = ();
+
+            fn handle_data(&mut self, _: i32) -> Result<(), ()> {
                 self.data_count += 1;
+                Ok(())
             }
-            fn handle_control(&mut self, _: String) {
+            fn handle_control(&mut self, _: String) -> Result<(), ()> {
                 self.ctrl_count += 1;
+                Ok(())
             }
-            fn handle_management(&mut self, _: bool) {
+            fn handle_management(&mut self, _: bool) -> Result<(), ()> {
                 self.mgmt_count += 1;
+                Ok(())
             }
-            fn park(&mut self, _hint: ParkHint) -> ParkHint {
-                ParkHint::Wait
+            fn park(&mut self, _hint: ParkHint) -> Result<ParkHint, ()> {
+                Ok(ParkHint::Wait)
             }
         }
 
@@ -757,10 +796,11 @@ mod tests {
         let handle = thread::spawn(move || {
             struct NoopActor;
             impl Actor<(), (), ()> for NoopActor {
-                fn handle_data(&mut self, _: ()) {}
-                fn handle_control(&mut self, _: ()) {}
-                fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: ParkHint) -> ParkHint { h }
+                type Error = ();
+                fn handle_data(&mut self, _: ()) -> Result<(), ()> { Ok(()) }
+                fn handle_control(&mut self, _: ()) -> Result<(), ()> { Ok(()) }
+                fn handle_management(&mut self, _: ()) -> Result<(), ()> { Ok(()) }
+                fn park(&mut self, h: ParkHint) -> Result<ParkHint, ()> { Ok(h) }
             }
             rx.run(&mut NoopActor);
             exited_clone.store(true, Ordering::SeqCst);
@@ -797,12 +837,14 @@ mod tests {
         let handle = thread::spawn(move || {
             struct CountActor(Arc<AtomicUsize>);
             impl Actor<i32, (), ()> for CountActor {
-                fn handle_data(&mut self, _: i32) {
+                type Error = ();
+                fn handle_data(&mut self, _: i32) -> Result<(), ()> {
                     self.0.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
                 }
-                fn handle_control(&mut self, _: ()) {}
-                fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: ParkHint) -> ParkHint { h }
+                fn handle_control(&mut self, _: ()) -> Result<(), ()> { Ok(()) }
+                fn handle_management(&mut self, _: ()) -> Result<(), ()> { Ok(()) }
+                fn park(&mut self, h: ParkHint) -> Result<ParkHint, ()> { Ok(h) }
             }
             rx.run(&mut CountActor(processed_clone));
         });
@@ -850,8 +892,10 @@ mod troupe_tests {
     }
 
     impl Actor<EngineData, EngineControl, EngineManagement> for EngineActor<'_> {
-        fn handle_data(&mut self, _msg: EngineData) {}
-        fn handle_control(&mut self, msg: EngineControl) {
+        type Error = ();
+
+        fn handle_data(&mut self, _msg: EngineData) -> Result<(), ()> { Ok(()) }
+        fn handle_control(&mut self, msg: EngineControl) -> Result<(), ()> {
             match msg {
                 EngineControl::Tick => {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
@@ -863,10 +907,11 @@ mod troupe_tests {
                 }
                 EngineControl::Shutdown => {}
             }
+            Ok(())
         }
-        fn handle_management(&mut self, _msg: EngineManagement) {}
-        fn park(&mut self, _hint: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        fn handle_management(&mut self, _msg: EngineManagement) -> Result<(), ()> { Ok(()) }
+        fn park(&mut self, _hint: ParkHint) -> Result<ParkHint, ()> {
+            Ok(ParkHint::Wait)
         }
     }
 
@@ -890,8 +935,10 @@ mod troupe_tests {
     }
 
     impl Actor<DisplayData, DisplayControl, DisplayManagement> for DisplayActor<'_> {
-        fn handle_data(&mut self, _msg: DisplayData) {}
-        fn handle_control(&mut self, msg: DisplayControl) {
+        type Error = ();
+
+        fn handle_data(&mut self, _msg: DisplayData) -> Result<(), ()> { Ok(()) }
+        fn handle_control(&mut self, msg: DisplayControl) -> Result<(), ()> {
             match msg {
                 DisplayControl::Render => {
                     let count = self.render_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -905,10 +952,11 @@ mod troupe_tests {
                 }
                 DisplayControl::Shutdown => {}
             }
+            Ok(())
         }
-        fn handle_management(&mut self, _msg: DisplayManagement) {}
-        fn park(&mut self, _hint: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        fn handle_management(&mut self, _msg: DisplayManagement) -> Result<(), ()> { Ok(()) }
+        fn park(&mut self, _hint: ParkHint) -> Result<ParkHint, ()> {
+            Ok(ParkHint::Wait)
         }
     }
 
@@ -991,11 +1039,13 @@ mod troupe_nesting_tests {
     }
 
     impl Actor<WorkerData, WorkerControl, WorkerManagement> for WorkerActor<'_> {
-        fn handle_data(&mut self, _msg: WorkerData) {}
-        fn handle_control(&mut self, _msg: WorkerControl) {}
-        fn handle_management(&mut self, _msg: WorkerManagement) {}
-        fn park(&mut self, _hint: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        type Error = ();
+
+        fn handle_data(&mut self, _msg: WorkerData) -> Result<(), ()> { Ok(()) }
+        fn handle_control(&mut self, _msg: WorkerControl) -> Result<(), ()> { Ok(()) }
+        fn handle_management(&mut self, _msg: WorkerManagement) -> Result<(), ()> { Ok(()) }
+        fn park(&mut self, _hint: ParkHint) -> Result<ParkHint, ()> {
+            Ok(ParkHint::Wait)
         }
     }
 

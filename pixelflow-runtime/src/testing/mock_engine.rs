@@ -65,28 +65,33 @@ struct MessageCollector {
 impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
     for MessageCollector
 {
-    fn handle_data(&mut self, msg: EngineData<PlatformPixel>) {
+    type Error = ();
+
+    fn handle_data(&mut self, msg: EngineData<PlatformPixel>) -> Result<(), ()> {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Data(msg));
+        Ok(())
     }
 
-    fn handle_control(&mut self, msg: EngineControl<PlatformPixel>) {
+    fn handle_control(&mut self, msg: EngineControl<PlatformPixel>) -> Result<(), ()> {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Control(msg));
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: AppManagement) {
+    fn handle_management(&mut self, msg: AppManagement) -> Result<(), ()> {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Management(msg));
+        Ok(())
     }
 
-    fn park(&mut self, _hint: ParkHint) -> ParkHint {
-        ParkHint::Wait
+    fn park(&mut self, _hint: ParkHint) -> Result<ParkHint, ()> {
+        Ok(ParkHint::Wait)
     }
 }
