@@ -438,6 +438,95 @@ PixelFlow's color rendering achieves **18.92 Mpix/s** with significant optimizat
 
 ---
 
+# SIMD Backend Performance Issues (pixelflow-core)
+
+**Date:** 2025-12-28
+**Evidence:** Benchmark results show cached glyphs are **9-12% slower** than uncached
+
+---
+
+## Critical: Gather Operations are Scalar Fallbacks
+
+### Benchmark Evidence
+
+```
+cached_vs_uncached_raster/uncached_glyph_A/64x64:  17.6 µs (233 Melem/s)
+cached_vs_uncached_raster/cached_glyph_A/64x64:   19.6 µs (208 Melem/s)  ← 12% SLOWER
+
+cached_vs_uncached_raster/uncached_glyph_A/128x128: 70.5 µs (232 Melem/s)
+cached_vs_uncached_raster/cached_glyph_A/128x128:   76.6 µs (213 Melem/s)  ← 9% SLOWER
+```
+
+**This is backwards!** Cached glyphs should be faster, not slower.
+
+### Root Cause: Gather is Not Vectorized
+
+**Location:** `pixelflow-core/src/backend/x86.rs:199-209`, `x86.rs:699-709`, `arm.rs:201-211`
+
+All SIMD backends use scalar fallbacks for gather:
+
+```rust
+// SSE2 (x86.rs:199-209)
+fn gather(slice: &[f32], indices: Self) -> Self {
+    // SSE2 doesn't have gather - do scalar loads
+    let idx = indices.to_array();
+    let len = slice.len();
+    let mut out = [0.0f32; 4];
+    for i in 0..4 {
+        let ix = (libm::floorf(idx[i]) as isize).clamp(0, len as isize - 1) as usize;
+        out[i] = slice[ix];  // SCALAR LOAD
+    }
+    Self::from_slice(&out)
+}
+
+// AVX-512 (x86.rs:699-709) - SAME SCALAR PATTERN
+fn gather(slice: &[f32], indices: Self) -> Self {
+    // Scalar fallback - could use _mm512_i32gather_ps for perf  ← COMMENT ACKNOWLEDGES IT!
+    let idx = indices.to_array();
+    // ... 16 scalar loads ...
+}
+```
+
+**Why this matters:**
+- Uncached glyph evaluation: Pure SIMD math (line/quad winding) - vectorizes perfectly
+- Cached glyph evaluation: Texture gather (4-16 scalar memory loads) - no vectorization
+
+### Secondary Issue: Redundant floor() in Gather
+
+**Location:** Same files, same functions
+
+```rust
+// Texture::eval_raw (texture.rs:104-108)
+let x_idx = x.floor().max(zero).min(max_x);  // FLOOR HERE
+let y_idx = y.floor().max(zero).min(max_y);
+let indices = y_idx * w + x_idx;
+Field::gather(&self.data, indices);  // indices are ALREADY integers
+
+// Field::gather (x86.rs:205)
+let ix = (libm::floorf(idx[i]) as isize)...  // REDUNDANT FLOOR
+```
+
+### Recommendations
+
+1. **Implement native gather for AVX2/AVX-512:**
+   ```rust
+   // AVX2 has vpgatherd
+   unsafe { _mm256_i32gather_ps(ptr, indices.0, 4) }
+
+   // AVX-512 has _mm512_i32gather_ps
+   unsafe { _mm512_i32gather_ps(indices.0, ptr, 4) }
+   ```
+
+2. **Remove redundant floor from gather:**
+   - Either trust that indices are pre-floored, OR
+   - Use integer indices directly (add `gather_int` variant)
+
+3. **Consider: Keep uncached for small glyphs:**
+   - For 32x32 and smaller, uncached SDF evaluation may be faster
+   - Only cache larger glyphs (64px+) where gather amortizes
+
+---
+
 # General Performance Anti-Patterns Analysis
 
 **Date:** 2025-12-28
@@ -448,8 +537,8 @@ PixelFlow's color rendering achieves **18.92 Mpix/s** with significant optimizat
 ## Executive Summary (Anti-Patterns)
 
 Analysis identified **8 additional performance anti-patterns** beyond the color rendering pipeline. The most impactful issues are:
-1. N+1 CMAP lookups in `Text::new()` (doubles font table traversals)
-2. Linear keybinding search (O(n) per keypress)
+1. **Gather is scalar fallback** - cached glyphs 9-12% slower than uncached
+2. N+1 CMAP lookups in `Text::new()` (already fixed in CachedText)
 3. Range allocations in UTF-8 decoder (6 allocations per byte)
 
 ---
