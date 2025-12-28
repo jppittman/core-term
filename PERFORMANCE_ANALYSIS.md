@@ -435,3 +435,241 @@ d_dot_c - sqrt_result (1 add)
 PixelFlow's color rendering achieves **18.92 Mpix/s** with significant optimization potential. The **three-fold geometry evaluation** combined with **expensive sqrt operations** accounts for ~60% of the latency budget.
 
 **Recommended action**: Implement Tier 1 fixes (unify geometry + rsqrt) within this development cycle for **40-50% speedup to ~55-65ms**. This positions the architecture for Tier 2 improvements and eventual GPU acceleration to reach the 155 Mpix/s goal.
+
+---
+
+# General Performance Anti-Patterns Analysis
+
+**Date:** 2025-12-28
+**Scope:** Font rendering, input handling, terminal processing, color conversion
+
+---
+
+## Executive Summary (Anti-Patterns)
+
+Analysis identified **8 additional performance anti-patterns** beyond the color rendering pipeline. The most impactful issues are:
+1. N+1 CMAP lookups in `Text::new()` (doubles font table traversals)
+2. Linear keybinding search (O(n) per keypress)
+3. Range allocations in UTF-8 decoder (6 allocations per byte)
+
+---
+
+## Critical Issues
+
+### 1. N+1 CMAP Lookups in Text Rendering
+
+**Location:** `pixelflow-graphics/src/fonts/text.rs:30-35`
+**Severity:** HIGH
+**Impact:** 2x CMAP table traversals per text line
+
+```rust
+// CURRENT: Two CMAP lookups per character
+let stream = text.chars().map(|ch| {
+    (
+        font.glyph_scaled(ch, size).unwrap_or(Glyph::Empty),  // CMAP lookup #1
+        font.advance_scaled(ch, size).unwrap_or(0.0),         // CMAP lookup #2
+    )
+});
+```
+
+The `glyph_scaled()` and `advance_scaled()` methods each perform an independent CMAP lookup:
+- `glyph_scaled()` → `glyph()` → `cmap.lookup(ch as u32)` (ttf.rs:753)
+- `advance_scaled()` → `advance()` → `cmap.lookup(ch as u32)` (ttf.rs:774)
+
+**Optimized pattern exists:** `CachedText::new()` in `cache.rs:293-317` demonstrates the correct approach:
+```rust
+for ch in text.chars() {
+    let Some(id) = font.cmap_lookup(ch) else { continue; };  // Single lookup
+    // Reuse 'id' for kerning, advance, etc.
+}
+```
+
+**Recommendation:** Refactor `Text::new()` to use `cmap_lookup()` once per character, then call `glyph_by_id()` and `advance_by_id()` (both already exist in ttf.rs:758, 782).
+
+---
+
+### 2. Linear Keybinding Search
+
+**Location:** `core-term/src/keys.rs:18-28`
+**Severity:** MEDIUM
+**Impact:** O(n) lookup per keypress
+
+```rust
+pub fn map_key_event_to_action(...) -> Option<UserInputAction> {
+    config.keybindings.bindings.iter().find_map(|binding| {  // O(n) search
+        if binding.key == key_symbol && binding.mods == modifiers {
+            return Some(binding.action.clone());
+        }
+        None
+    })
+}
+```
+
+**Problem:** Every keypress iterates through all keybindings (typically 20-100 entries).
+
+**Recommendation:** Use `HashMap<(KeySymbol, Modifiers), UserInputAction>` for O(1) lookup. Build the map once at config load time.
+
+---
+
+### 3. Range Allocations in UTF-8 Decoder
+
+**Location:** `core-term/src/ansi/lexer.rs:85-94`
+**Severity:** MEDIUM
+**Impact:** 6 range allocations per byte in hot ANSI parsing loop
+
+```rust
+fn decode_first_byte(&mut self, byte: u8) -> Utf8DecodeResult {
+    // These are created on EVERY byte:
+    let utf8_ascii_range: RangeInclusive<u8> = 0x00..=UTF8_ASCII_MAX;
+    let utf8_2_byte_start_range: RangeInclusive<u8> = UTF8_2_BYTE_MIN..=0xDF;
+    let utf8_3_byte_start_range: RangeInclusive<u8> = UTF8_3_BYTE_MIN..=0xEF;
+    // ... more ranges
+}
+```
+
+**Recommendation:** Define ranges as `const` at module level:
+```rust
+const UTF8_ASCII_RANGE: RangeInclusive<u8> = 0x00..=0x7F;
+const UTF8_2_BYTE_RANGE: RangeInclusive<u8> = 0xC2..=0xDF;
+// etc.
+```
+
+---
+
+## High Priority Issues
+
+### 4. 256-Color Palette Computed Per Conversion
+
+**Location:** `pixelflow-graphics/src/render/color.rs:194-209`
+**Severity:** MEDIUM
+**Impact:** Arithmetic per color cell (4,800+ times per frame for colored text)
+
+```rust
+} else if idx < GRAYSCALE_OFFSET {
+    // 6x6x6 Color Cube - computed each time
+    let cube_idx = idx - COLOR_CUBE_OFFSET;
+    let r_comp = (cube_idx / (COLOR_CUBE_SIZE * COLOR_CUBE_SIZE)) % COLOR_CUBE_SIZE;
+    let g_comp = (cube_idx / COLOR_CUBE_SIZE) % COLOR_CUBE_SIZE;
+    let b_comp = cube_idx % COLOR_CUBE_SIZE;
+    // ... more arithmetic
+}
+```
+
+**Recommendation:** Create a static lookup table:
+```rust
+static PALETTE_256: [(u8, u8, u8); 256] = /* precomputed */;
+```
+
+This trades ~768 bytes of memory for eliminating division/modulo operations per pixel.
+
+---
+
+### 5. NamedColor Match in Manifold Evaluation
+
+**Location:** `pixelflow-graphics/src/render/color.rs:105`
+**Severity:** MEDIUM
+**Impact:** 16-way match per named color cell during rendering
+
+```rust
+fn eval_raw(&self, ...) -> Discrete {
+    let (r, g, b) = self.to_rgb();  // 16-way match inside
+    // ...
+}
+```
+
+**Recommendation:** Cache RGB values in a static array indexed by enum discriminant:
+```rust
+static NAMED_RGB: [(u8, u8, u8); 16] = [
+    (0, 0, 0),       // Black
+    (205, 0, 0),     // Red
+    // ...
+];
+```
+
+---
+
+### 6. Glyph Clone on Cache Hit
+
+**Location:** `pixelflow-graphics/src/fonts/cache.rs:192`
+**Severity:** LOW-MEDIUM
+**Impact:** Arc reference count bump per cache lookup
+
+```rust
+if let Some(cached) = self.entries.get(&key) {
+    return Some(cached.clone());  // Clones Arc every time
+}
+```
+
+While Arc cloning is cheap, at 155 FPS with ~100 glyphs per frame, this is ~15,000 atomic increments/second.
+
+**Recommendation:** Consider returning `&CachedGlyph` with lifetime, or use `Rc` for single-threaded paths.
+
+---
+
+## Lower Priority Issues
+
+### 7. String Allocations in Key Translation
+
+**Location:** `core-term/src/term/emulator/key_translator.rs:270-303`
+**Severity:** LOW
+**Impact:** Heap allocation per special key press
+
+```rust
+KeySymbol::Up => Some("\u{F700}".to_string()),    // Allocates
+KeySymbol::Down => Some("\u{F701}".to_string()),  // Allocates
+```
+
+**Recommendation:** Return `&'static str` or `Cow<'static, str>`:
+```rust
+KeySymbol::Up => Some(Cow::Borrowed("\u{F700}")),
+```
+
+---
+
+### 8. ANSI Response String Allocation
+
+**Location:** `core-term/src/term/emulator/ansi_handler.rs:253`
+**Severity:** LOW
+**Impact:** Minor allocation per device attribute query
+
+```rust
+let response = "\x1b[?6c".to_string().into_bytes();  // Unnecessary String
+```
+
+**Recommendation:** Use byte literal directly:
+```rust
+let response = b"\x1b[?6c".to_vec();
+```
+
+---
+
+## Anti-Patterns Summary Table
+
+| # | Issue | Location | Severity | Fix Complexity |
+|---|-------|----------|----------|----------------|
+| 1 | N+1 CMAP lookups | fonts/text.rs:30-35 | HIGH | Low (refactor) |
+| 2 | Linear keybinding search | keys.rs:18-28 | MEDIUM | Low (HashMap) |
+| 3 | Range allocations in lexer | ansi/lexer.rs:85-94 | MEDIUM | Low (const) |
+| 4 | 256-color palette math | render/color.rs:194-209 | MEDIUM | Low (LUT) |
+| 5 | NamedColor match overhead | render/color.rs:105 | MEDIUM | Low (LUT) |
+| 6 | Glyph cache cloning | fonts/cache.rs:192 | LOW-MED | Medium |
+| 7 | Key translation strings | key_translator.rs:270+ | LOW | Low (Cow) |
+| 8 | ANSI response string | ansi_handler.rs:253 | LOW | Trivial |
+
+---
+
+## Recommended Fix Order (Anti-Patterns)
+
+1. **Issue #1** (N+1 CMAP) - Highest ROI, affects every text render
+2. **Issue #3** (Range allocs) - Simple const refactor, high frequency path
+3. **Issues #4 + #5** (Color LUTs) - Combined fix, one static array each
+4. **Issue #2** (Keybinding HashMap) - O(1) vs O(n), affects responsiveness
+5. Remaining issues as time permits
+
+---
+
+## Already Optimized (Not Issues)
+
+- **CachedText::new()** in `cache.rs:293-317` - Correctly uses single CMAP lookup pattern
+- **Font glyph_by_id()/advance_by_id()** - API exists for avoiding redundant lookups
+- **Frame buffer** - Appears to be reused (not allocated per-frame in the render loop)
