@@ -3,6 +3,7 @@
 use crate::render::color::Pixel;
 use crate::render::rasterizer::{execute, execute_stripe, Stripe, TensorShape, ThreadPool};
 use pixelflow_core::{Discrete, Manifold};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 
 /// Parallel rendering options.
@@ -142,6 +143,63 @@ pub fn render_parallel<P, M>(
             s.spawn(move || {
                 execute_stripe(manifold, chunk, shape.width, Stripe { start_y, end_y });
             });
+        }
+    });
+}
+
+/// Render with work-stealing parallelism (GCD-style).
+///
+/// Threads race to grab rows via atomic fetch_add. No channels, no barriers,
+/// no allocations. Just raw atomics and scoped threads.
+pub fn render_work_stealing<P, M>(
+    manifold: &M,
+    buffer: &mut [P],
+    shape: TensorShape,
+    num_threads: usize,
+) where
+    P: Pixel + Send,
+    M: Manifold<Output = Discrete> + Sync,
+{
+    if num_threads <= 1 || shape.height <= 1 {
+        execute(manifold, buffer, shape);
+        return;
+    }
+
+    // Atomic counter - threads race to grab rows
+    let next_row = AtomicUsize::new(0);
+    let width = shape.width;
+    let height = shape.height;
+
+    // Wrap raw pointer for Send
+    let buffer_ptr = SendPtr(buffer.as_mut_ptr());
+
+    // 64KB stack per thread (default is 2-8MB)
+    const STACK_SIZE: usize = 64 * 1024;
+
+    std::thread::scope(|s| {
+        for _ in 0..num_threads {
+            std::thread::Builder::new()
+                .stack_size(STACK_SIZE)
+                .spawn_scoped(s, || {
+                    let ptr = buffer_ptr; // capture the wrapper
+                    loop {
+                        // Grab next row atomically
+                        let row = next_row.fetch_add(1, Ordering::Relaxed);
+                        if row >= height {
+                            break;
+                        }
+
+                        // Calculate row slice
+                        let offset = row * width;
+                        let row_slice = unsafe {
+                            std::slice::from_raw_parts_mut(ptr.0.add(offset), width)
+                        };
+
+                        // Render single row
+                        execute_stripe(manifold, row_slice, width, Stripe { start_y: row, end_y: row + 1 });
+                    }
+                })
+                .expect("Failed to spawn render thread");
         }
     });
 }
