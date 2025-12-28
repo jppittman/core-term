@@ -1,11 +1,12 @@
 //! Engine Troupe - Render pipeline actor coordination using troupe! macro.
 
 use crate::api::private::{EngineControl, EngineData, WindowId};
-use crate::api::public::AppManagement;
+use crate::api::public::{AppManagement, EngineEvent, EngineEventControl, EngineEventManagement, Application};
 use crate::config::EngineConfig;
 use crate::display::driver::DriverActor;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt};
 use crate::display::platform::PlatformActor;
+use crate::input::MouseButton;
 use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{VsyncActor, VsyncConfig, VsyncManagement};
 use crate::error::RuntimeError;
@@ -41,6 +42,7 @@ impl Default for EngineState {
 pub struct EngineHandler {
     state: EngineState,
     driver_handle: ActorHandle<DisplayData<PlatformPixel>, DisplayControl, DisplayMgmt>,
+    app_handle: Option<Box<dyn Application>>,
 }
 
 // ActorTypes impls - required for troupe! macro
@@ -211,36 +213,107 @@ impl EngineHandler {
             DisplayEvent::Resized { width_px, height_px, .. } => {
                 self.state.window_width = width_px;
                 self.state.window_height = height_px;
+
+                // Forward resize event to app
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Control(
+                        EngineEventControl::Resize(width_px, height_px)
+                    ));
+                }
             }
-            DisplayEvent::Key { .. } => {
-                // Forward to app (TODO: implement when app handle is available)
+            DisplayEvent::Key { symbol, modifiers, text, .. } => {
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::KeyDown {
+                            key: symbol,
+                            mods: modifiers,
+                            text,
+                        }
+                    ));
+                }
             }
-            DisplayEvent::MouseButtonPress { .. } => {
-                // Forward to app (TODO: implement when app handle is available)
+            DisplayEvent::MouseButtonPress { button, x, y, .. } => {
+                if let Some(app) = &self.app_handle {
+                    let button = convert_mouse_button(button);
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::MouseClick {
+                            x: x as u32,
+                            y: y as u32,
+                            button,
+                        }
+                    ));
+                }
             }
-            DisplayEvent::MouseButtonRelease { .. } => {
-                // Forward to app (TODO: implement when app handle is available)
+            DisplayEvent::MouseButtonRelease { button, x, y, .. } => {
+                if let Some(app) = &self.app_handle {
+                    let button = convert_mouse_button(button);
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::MouseRelease {
+                            x: x as u32,
+                            y: y as u32,
+                            button,
+                        }
+                    ));
+                }
             }
-            DisplayEvent::MouseMove { .. } => {
-                // Forward to app (TODO: implement when app handle is available)
+            DisplayEvent::MouseMove { x, y, modifiers, .. } => {
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::MouseMove {
+                            x: x as u32,
+                            y: y as u32,
+                            mods: modifiers,
+                        }
+                    ));
+                }
             }
-            DisplayEvent::MouseScroll { .. } => {
-                // Forward to app (TODO: implement when app handle is available)
+            DisplayEvent::MouseScroll { dx, dy, x, y, modifiers, .. } => {
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::MouseScroll {
+                            x: x as u32,
+                            y: y as u32,
+                            dx,
+                            dy,
+                            mods: modifiers,
+                        }
+                    ));
+                }
             }
             DisplayEvent::CloseRequested { .. } => {
-                // Notify app of close request (TODO: implement when app handle is available)
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Control(
+                        EngineEventControl::CloseRequested
+                    ));
+                }
             }
             DisplayEvent::FocusGained { .. } => {
-                // Notify app (TODO: implement when app handle is available)
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::FocusGained
+                    ));
+                }
             }
             DisplayEvent::FocusLost { .. } => {
-                // Notify app (TODO: implement when app handle is available)
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::FocusLost
+                    ));
+                }
             }
-            DisplayEvent::PasteData { .. } => {
-                // Forward paste data to app (TODO: implement when app handle is available)
+            DisplayEvent::PasteData { text } => {
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::Paste(text)
+                    ));
+                }
             }
-            DisplayEvent::ScaleChanged { .. } => {
-                // Notify app of scale change (TODO: implement when app handle is available)
+            DisplayEvent::ScaleChanged { scale, .. } => {
+                if let Some(app) = &self.app_handle {
+                    let _ = app.send(EngineEvent::Control(
+                        EngineEventControl::ScaleChanged(scale)
+                    ));
+                }
             }
             DisplayEvent::ClipboardDataRequested => {
                 // Ignore - driver is asking for clipboard data
@@ -263,12 +336,23 @@ impl EngineHandler {
     }
 }
 
+/// Convert raw mouse button code to MouseButton enum
+fn convert_mouse_button(button: u8) -> MouseButton {
+    match button {
+        0 => MouseButton::Left,
+        1 => MouseButton::Middle,
+        2 => MouseButton::Right,
+        _ => MouseButton::Other(button),
+    }
+}
+
 // Implement TroupeActor for EngineHandler
 impl<'a> TroupeActor<'a, Directory> for EngineHandler {
     fn new(dir: &'a Directory) -> Self {
         Self {
             state: EngineState::default(),
             driver_handle: dir.driver.clone(),
+            app_handle: None,
         }
     }
 }
@@ -333,7 +417,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
-    use pixelflow_graphics::render::Frame;
+    use crate::input::KeySymbol;
 
     /// Message received by mock driver.
     #[derive(Debug, Clone)]
@@ -448,6 +532,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         // Trigger first VSync
@@ -469,6 +554,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         // Trigger multiple VSyncs
@@ -491,6 +577,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         assert!(engine.state.last_vsync.is_none());
@@ -508,6 +595,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         // Initial size
@@ -533,6 +621,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         engine.handle_driver_event(DisplayEvent::WindowCreated {
@@ -553,6 +642,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         engine.handle_quit();
@@ -569,6 +659,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         engine.handle_management(AppManagement::SetTitle("New Title".to_string()));
@@ -587,6 +678,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         engine.handle_management(AppManagement::CopyToClipboard("copied text".to_string()));
@@ -615,6 +707,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         // Create a simple manifold that always returns black
@@ -656,6 +749,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         use pixelflow_core::{Discrete, Field, Manifold};
@@ -696,6 +790,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         // Send skipped frame
@@ -714,6 +809,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         engine.handle_management(AppManagement::ResizeRequest(1024, 768));
@@ -732,6 +828,7 @@ mod tests {
         let mut engine = EngineHandler {
             state: EngineState::default(),
             driver_handle,
+            app_handle: None,
         };
 
         engine.handle_management(AppManagement::RequestPaste);
@@ -739,5 +836,381 @@ mod tests {
 
         let messages = mock_driver.captured_messages();
         assert!(messages.iter().any(|m| matches!(m, DriverMessage::RequestPaste)));
+    }
+
+    /// Mock app that captures events sent by engine
+    struct MockApp {
+        events: Arc<Mutex<Vec<EngineEvent>>>,
+    }
+
+    impl MockApp {
+        fn new() -> Self {
+            MockApp {
+                events: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn captured_events(&self) -> std::sync::MutexGuard<'_, Vec<EngineEvent>> {
+            self.events.lock().unwrap()
+        }
+    }
+
+    impl Application for MockApp {
+        fn send(&self, event: EngineEvent) -> Result<(), RuntimeError> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_key_event_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        use crate::input::{KeySymbol, Modifiers};
+
+        engine.handle_driver_event(DisplayEvent::Key {
+            id: WindowId::PRIMARY,
+            symbol: KeySymbol::Char('a'),
+            modifiers: Modifiers::empty(),
+            text: Some("a".to_string()),
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            EngineEvent::Management(EngineEventManagement::KeyDown { key, mods: _, text }) => {
+                assert!(matches!(key, KeySymbol::Char('a')));
+                assert_eq!(text, &Some("a".to_string()));
+            }
+            _ => panic!("Expected KeyDown event"),
+        }
+    }
+
+    #[test]
+    fn test_resize_event_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        engine.handle_driver_event(DisplayEvent::Resized {
+            id: WindowId::PRIMARY,
+            width_px: 1024,
+            height_px: 768,
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            EngineEvent::Control(EngineEventControl::Resize(w, h)) => {
+                assert_eq!(*w, 1024);
+                assert_eq!(*h, 768);
+            }
+            _ => panic!("Expected Resize control event"),
+        }
+    }
+
+    #[test]
+    fn test_mouse_click_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        use crate::input::Modifiers;
+
+        engine.handle_driver_event(DisplayEvent::MouseButtonPress {
+            id: WindowId::PRIMARY,
+            button: 0, // Left button
+            x: 100,
+            y: 200,
+            modifiers: Modifiers::empty(),
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            EngineEvent::Management(EngineEventManagement::MouseClick { x, y, button }) => {
+                assert_eq!(*x, 100);
+                assert_eq!(*y, 200);
+                assert!(matches!(button, MouseButton::Left));
+            }
+            _ => panic!("Expected MouseClick event"),
+        }
+    }
+
+    #[test]
+    fn test_mouse_release_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        use crate::input::Modifiers;
+
+        engine.handle_driver_event(DisplayEvent::MouseButtonRelease {
+            id: WindowId::PRIMARY,
+            button: 0,
+            x: 100,
+            y: 200,
+            modifiers: Modifiers::empty(),
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            EngineEvent::Management(EngineEventManagement::MouseRelease { x, y, button }) => {
+                assert_eq!(*x, 100);
+                assert_eq!(*y, 200);
+                assert!(matches!(button, MouseButton::Left));
+            }
+            _ => panic!("Expected MouseRelease event"),
+        }
+    }
+
+    #[test]
+    fn test_mouse_move_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        use crate::input::Modifiers;
+
+        engine.handle_driver_event(DisplayEvent::MouseMove {
+            id: WindowId::PRIMARY,
+            x: 150,
+            y: 250,
+            modifiers: Modifiers::empty(),
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            EngineEvent::Management(EngineEventManagement::MouseMove { x, y, mods: _ }) => {
+                assert_eq!(*x, 150);
+                assert_eq!(*y, 250);
+            }
+            _ => panic!("Expected MouseMove event"),
+        }
+    }
+
+    #[test]
+    fn test_mouse_scroll_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        use crate::input::Modifiers;
+
+        engine.handle_driver_event(DisplayEvent::MouseScroll {
+            id: WindowId::PRIMARY,
+            dx: 1.5,
+            dy: -2.5,
+            x: 100,
+            y: 100,
+            modifiers: Modifiers::empty(),
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            EngineEvent::Management(EngineEventManagement::MouseScroll { dx, dy, x, y, .. }) => {
+                assert_eq!(*dx, 1.5);
+                assert_eq!(*dy, -2.5);
+                assert_eq!(*x, 100);
+                assert_eq!(*y, 100);
+            }
+            _ => panic!("Expected MouseScroll event"),
+        }
+    }
+
+    #[test]
+    fn test_focus_gained_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        engine.handle_driver_event(DisplayEvent::FocusGained {
+            id: WindowId::PRIMARY,
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            EngineEvent::Management(EngineEventManagement::FocusGained)
+        ));
+    }
+
+    #[test]
+    fn test_focus_lost_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        engine.handle_driver_event(DisplayEvent::FocusLost {
+            id: WindowId::PRIMARY,
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            EngineEvent::Management(EngineEventManagement::FocusLost)
+        ));
+    }
+
+    #[test]
+    fn test_paste_data_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        engine.handle_driver_event(DisplayEvent::PasteData {
+            text: "pasted text".to_string(),
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            EngineEvent::Management(EngineEventManagement::Paste(text)) => {
+                assert_eq!(text, "pasted text");
+            }
+            _ => panic!("Expected Paste event"),
+        }
+    }
+
+    #[test]
+    fn test_scale_changed_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        engine.handle_driver_event(DisplayEvent::ScaleChanged {
+            id: WindowId::PRIMARY,
+            scale: 2.0,
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            EngineEvent::Control(EngineEventControl::ScaleChanged(scale)) => {
+                assert_eq!(*scale, 2.0);
+            }
+            _ => panic!("Expected ScaleChanged event"),
+        }
+    }
+
+    #[test]
+    fn test_close_requested_forwarded_to_app() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+        let mock_app = Box::new(MockApp::new());
+        let app_events = mock_app.events.clone();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: Some(mock_app),
+        };
+
+        engine.handle_driver_event(DisplayEvent::CloseRequested {
+            id: WindowId::PRIMARY,
+        });
+
+        let events = app_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            EngineEvent::Control(EngineEventControl::CloseRequested)
+        ));
+    }
+
+    #[test]
+    fn test_events_not_sent_when_no_app_handle() {
+        let (_mock_driver, driver_handle) = MockDriver::new();
+
+        let mut engine = EngineHandler {
+            state: EngineState::default(),
+            driver_handle,
+            app_handle: None,
+        };
+
+        use crate::input::Modifiers;
+
+        // These should not panic even though there's no app to receive events
+        engine.handle_driver_event(DisplayEvent::Key {
+            id: WindowId::PRIMARY,
+            symbol: KeySymbol::Char('a'),
+            modifiers: Modifiers::empty(),
+            text: None,
+        });
+
+        engine.handle_driver_event(DisplayEvent::Resized {
+            id: WindowId::PRIMARY,
+            width_px: 800,
+            height_px: 600,
+        });
+
+        // If we get here without panicking, the test passes
+        assert!(true);
     }
 }
