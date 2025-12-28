@@ -180,12 +180,8 @@ fn main() -> anyhow::Result<()> {
     let engine_config = EngineConfig {
         window: WindowConfig {
             title: CONFIG.appearance.default_title.clone(),
-            columns: CONFIG.appearance.columns,
-            rows: CONFIG.appearance.rows,
-            cell_width_px: CONFIG.appearance.cell_width_px,
-            cell_height_px: CONFIG.appearance.cell_height_px,
-            initial_x: 100.0,
-            initial_y: 100.0,
+            width: CONFIG.appearance.columns as u32 * CONFIG.appearance.cell_width_px as u32,
+            height: CONFIG.appearance.rows as u32 * CONFIG.appearance.cell_height_px as u32,
         },
         performance: CONFIG.performance.clone(),
     };
