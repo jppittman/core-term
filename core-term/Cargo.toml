@@ -46,6 +46,11 @@ pkg-config = "0.3"
 [dev-dependencies]
 test-log = "0.2"
 rexpect = "0.6"
+criterion = "0.5"
+
+[[bench]]
+name = "ansi_parser"
+harness = false
 
 [features]
 # Manual override features (optional - platform auto-detects)

@@ -286,6 +286,7 @@ dependencies = [
  "actor-scheduler",
  "anyhow",
  "bitflags 2.9.1",
+ "criterion",
  "env_logger",
  "libc",
  "log",
