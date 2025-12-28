@@ -286,6 +286,14 @@ impl BitOr for ScalarU32 {
     }
 }
 
+impl Not for ScalarU32 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(!self.0)
+    }
+}
+
 impl Shl<u32> for ScalarU32 {
     type Output = Self;
     #[inline(always)]
