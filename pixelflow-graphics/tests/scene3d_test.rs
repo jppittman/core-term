@@ -516,3 +516,72 @@ fn test_mullet_vs_3channel_comparison() {
     // Allow small differences due to FP ordering, but they should be identical
     assert!(max_diff <= 1, "Max diff too large: {} (expected 0-1 for FP rounding)", max_diff);
 }
+
+/// Benchmark: Compare work-stealing vs single-threaded at 1080p
+#[test]
+fn test_work_stealing_benchmark() {
+    use pixelflow_graphics::render::rasterizer::render_work_stealing;
+
+    const W: usize = 1920;
+    const H: usize = 1080;
+
+    // Build scene
+    let world = ColorSurface {
+        geometry: PlaneGeometry { height: -1.0 },
+        material: ColorChecker,
+        background: ColorSky,
+    };
+
+    let scene = ColorSurface {
+        geometry: SphereAt {
+            center: (0.0, 0.0, 4.0),
+            radius: 1.0,
+        },
+        material: ColorReflect { inner: world },
+        background: world,
+    };
+
+    struct ColorScreenRemap<M> { inner: M, width: f32, height: f32 }
+    impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+        type Output = Discrete;
+        fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
+            let width = Field::from(self.width);
+            let height = Field::from(self.height);
+            let scale = Field::from(2.0) / height;
+            let x = (px - width * Field::from(0.5)) * scale;
+            let y = (height * Field::from(0.5) - py) * scale;
+            self.inner.eval_raw(x, y, z, w)
+        }
+    }
+
+    let renderable = ColorScreenRemap {
+        inner: ColorScreenToDir { inner: scene },
+        width: W as f32,
+        height: H as f32,
+    };
+
+    let shape = TensorShape { width: W, height: H };
+
+    // Single-threaded baseline
+    let mut frame1 = Frame::<Rgba8>::new(W as u32, H as u32);
+    let start1 = std::time::Instant::now();
+    execute(&renderable, frame1.as_slice_mut(), shape);
+    let single = start1.elapsed();
+
+    // Work-stealing with 12 threads
+    let mut frame2 = Frame::<Rgba8>::new(W as u32, H as u32);
+    let start2 = std::time::Instant::now();
+    render_work_stealing(&renderable, frame2.as_slice_mut(), shape, 12);
+    let parallel = start2.elapsed();
+
+    let speedup = single.as_secs_f64() / parallel.as_secs_f64();
+    let mpps = (W * H) as f64 / parallel.as_secs_f64() / 1_000_000.0;
+
+    println!("Single-threaded: {:?}", single);
+    println!("Work-stealing (12 threads): {:?}", parallel);
+    println!("Speedup: {:.2}x", speedup);
+    println!("Throughput: {:.2} Mpix/s", mpps);
+
+    // Verify correctness
+    assert_eq!(frame1.data, frame2.data, "Parallel output must match single-threaded");
+}
