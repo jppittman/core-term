@@ -1,46 +1,146 @@
-//! Simple thread pool for persistent worker threads.
+//! Thread pool with spin-before-block workers.
+//! No external dependencies - uses std atomics and Mutex.
 
-use std::sync::mpsc::{channel, Sender};
-use std::thread;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::thread::{self, JoinHandle};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
-/// A fixed-size thread pool.
+/// Number of spin iterations before blocking.
+const SPIN_COUNT: u32 = 1000;
+
+/// Shared job queue with condition variable for wake/sleep.
+struct JobQueue {
+    jobs: Mutex<VecDeque<Job>>,
+    available: Condvar,
+    pending: AtomicUsize,
+    shutdown: AtomicBool,
+}
+
+impl JobQueue {
+    fn new() -> Self {
+        Self {
+            jobs: Mutex::new(VecDeque::new()),
+            available: Condvar::new(),
+            pending: AtomicUsize::new(0),
+            shutdown: AtomicBool::new(false),
+        }
+    }
+
+    fn push(&self, job: Job) {
+        {
+            let mut queue = self.jobs.lock().unwrap();
+            queue.push_back(job);
+        }
+        self.pending.fetch_add(1, Ordering::Release);
+        self.available.notify_one();
+    }
+
+    fn try_pop(&self) -> Option<Job> {
+        // Fast path: check pending count first (no lock)
+        if self.pending.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+
+        let mut queue = self.jobs.lock().unwrap();
+        if let Some(job) = queue.pop_front() {
+            self.pending.fetch_sub(1, Ordering::Release);
+            Some(job)
+        } else {
+            None
+        }
+    }
+
+    fn pop_blocking(&self) -> Option<Job> {
+        let mut queue = self.jobs.lock().unwrap();
+        loop {
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
+            if let Some(job) = queue.pop_front() {
+                self.pending.fetch_sub(1, Ordering::Release);
+                return Some(job);
+            }
+            queue = self.available.wait(queue).unwrap();
+        }
+    }
+
+    fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        self.available.notify_all();
+    }
+}
+
+/// A fixed-size thread pool with shared job queue.
+/// Workers spin briefly before blocking, reducing latency for bursty workloads.
 pub struct ThreadPool {
-    workers: Vec<Sender<Job>>,
+    queue: std::sync::Arc<JobQueue>,
+    _workers: Vec<JoinHandle<()>>,
 }
 
 impl ThreadPool {
     /// Create a new thread pool with the specified number of threads.
     pub fn new(size: usize) -> Self {
+        let queue = std::sync::Arc::new(JobQueue::new());
         let mut workers = Vec::with_capacity(size);
+
         for _ in 0..size {
-            let (tx, rx) = channel::<Job>();
-            thread::spawn(move || {
-                while let Ok(job) = rx.recv() {
-                    job();
-                }
-            });
-            workers.push(tx);
+            let q = std::sync::Arc::clone(&queue);
+            let handle = thread::spawn(move || worker_loop(&q));
+            workers.push(handle);
         }
-        Self { workers }
+
+        Self {
+            queue,
+            _workers: workers,
+        }
     }
 
-    /// Dispatch a list of jobs to workers 1:1.
-    ///
-    /// # Panics
-    /// Panics if `jobs.len()` > number of workers.
+    /// Submit a single job.
+    pub fn submit(&self, job: Job) {
+        self.queue.push(job);
+    }
+
+    /// Dispatch a list of jobs.
     pub fn dispatch(&self, jobs: Vec<Job>) {
-        if jobs.len() > self.workers.len() {
-            panic!("ThreadPool: more jobs than workers");
-        }
-        for (i, job) in jobs.into_iter().enumerate() {
-            self.workers[i].send(job).expect("Worker thread died");
+        for job in jobs {
+            self.queue.push(job);
         }
     }
 
     /// Get the number of threads in the pool.
     pub fn size(&self) -> usize {
-        self.workers.len()
+        self._workers.len()
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        self.queue.shutdown();
+    }
+}
+
+/// Worker loop: spin before blocking.
+fn worker_loop(queue: &JobQueue) {
+    loop {
+        // Phase 1: Spin - try_pop is fast (just atomic check + possible lock)
+        for _ in 0..SPIN_COUNT {
+            if let Some(job) = queue.try_pop() {
+                job();
+                continue;
+            }
+            if queue.shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            std::hint::spin_loop();
+        }
+
+        // Phase 2: Block - no work after spinning, wait on condvar
+        match queue.pop_blocking() {
+            Some(job) => job(),
+            None => return, // Shutdown
+        }
     }
 }

@@ -2,3 +2,16 @@
 members = ["core-term", "pixelflow-core", "pixelflow-graphics", "pixelflow-ml", "xtask", "pixelflow-runtime", "actor-scheduler", "actor-scheduler-macros"]
 exclude = ["pixelflow-core/fuzz"]
 resolver = "2"
+
+# Normal release - fast compile, good perf
+[profile.release]
+opt-level = 3
+
+# Distribution build - maximum optimization, slow compile
+# Usage: cargo build --profile dist
+[profile.dist]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
