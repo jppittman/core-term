@@ -448,6 +448,13 @@ impl Manifold<Jet3> for Sky {
 //
 // Geometry runs ONCE per pixel, colors flow as packed RGBA.
 // 3x speedup vs running geometry once per channel.
+//
+// NOTE: The `Color*` variants (ColorScreenToDir, ColorSurface, ColorReflect,
+// ColorSky, ColorChecker) duplicate the logic of their `Field`-based counterparts.
+// Future refactoring can unify these by introducing a `Conditional` trait
+// that both `Field` and `Discrete` satisfy, with a single `select(mask, if_true, if_false)`
+// method. This would eliminate the duplication while maintaining type safety.
+// See REFACTORING_PLAN.md for details on the unification strategy.
 
 /// Root for color pipeline - converts screen to ray, outputs Discrete.
 #[derive(Clone, Copy)]

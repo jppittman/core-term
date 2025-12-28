@@ -2,6 +2,7 @@
 //!
 //! Consolidated graphics crate merging rendering and font logic.
 
+pub mod animation;
 pub mod baked;
 pub mod fonts;
 pub mod image;

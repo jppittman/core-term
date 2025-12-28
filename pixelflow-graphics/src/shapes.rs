@@ -5,6 +5,10 @@
 //! - Natural composition via nesting
 //! - Automatic bounds checking (outer shapes clip inner)
 //! - Short-circuit evaluation via Select's all/any checks
+//!
+//! All shapes follow the idiomatic PixelFlow pattern: compose manifolds,
+//! don't compute fields directly. Shapes use coordinate variables (X, Y)
+//! and comparison operators to build conditional evaluation trees.
 
 use pixelflow_core::{And, Field, Ge, Le, Manifold, ManifoldExt, Select, X, Y};
 
@@ -72,6 +76,56 @@ pub fn half_plane_y<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
     bg: B,
 ) -> impl Manifold<Output = Field> {
     Y.ge(0.0f32).select(fg, bg)
+}
+
+// ============================================================================
+// Extended Shapes
+// ============================================================================
+
+/// Rectangle from [0, 0] to [width, height].
+///
+/// Returns fg where 0 ≤ x ≤ width and 0 ≤ y ≤ height, bg elsewhere.
+pub fn rectangle<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
+    width: f32,
+    height: f32,
+    fg: F,
+    bg: B,
+) -> impl Manifold<Output = Field> {
+    let w_check = Ge(X, 0.0f32) & Le(X, width);
+    let h_check = Ge(Y, 0.0f32) & Le(Y, height);
+    (w_check & h_check).select(fg, bg)
+}
+
+/// Ellipse centered at origin with semi-axes rx, ry.
+///
+/// Returns fg where (x/rx)² + (y/ry)² < 1, bg elsewhere.
+pub fn ellipse<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
+    rx: f32,
+    ry: f32,
+    fg: F,
+    bg: B,
+) -> impl Manifold<Output = Field> {
+    let rx_sq = rx * rx;
+    let ry_sq = ry * ry;
+    let normalized = (X * X) / Field::from(rx_sq) + (Y * Y) / Field::from(ry_sq);
+    normalized.lt(1.0f32).select(fg, bg)
+}
+
+/// Annulus (ring) centered at origin with inner and outer radius.
+///
+/// Returns fg where r_inner ≤ sqrt(x² + y²) ≤ r_outer, bg elsewhere.
+pub fn annulus<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
+    r_inner: f32,
+    r_outer: f32,
+    fg: F,
+    bg: B,
+) -> impl Manifold<Output = Field> {
+    let r_sq = X * X + Y * Y;
+    let r_inner_sq = r_inner * r_inner;
+    let r_outer_sq = r_outer * r_outer;
+    let inside_outer = r_sq.le(r_outer_sq);
+    let outside_inner = r_sq.ge(r_inner_sq);
+    (inside_outer & outside_inner).select(fg, bg)
 }
 
 #[cfg(test)]
