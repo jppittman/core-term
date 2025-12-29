@@ -1,14 +1,14 @@
 //! Chrome Sphere Parallel Rendering Demo
 //!
 //! Compares single-threaded vs parallel rasterization of the 3D chrome sphere scene.
-//! Uses the same scene3d architecture from the tests.
+//! Uses the mullet architecture: geometry once, colors as packed Discrete.
 
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, render_parallel, RenderOptions, TensorShape};
 use pixelflow_graphics::scene3d::{
-    BlueSky, ColorChecker, PlaneGeometry, Reflect, ScreenToDir, SphereAt, Surface,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry, SphereAt,
 };
 use std::fs::File;
 use std::io::Write;
@@ -19,16 +19,16 @@ const H: usize = 1080;
 
 /// Remap pixel coordinates to normalized screen coordinates for ~60° FOV.
 #[derive(Clone)]
-struct ScreenRemap<M> {
+struct ColorScreenRemap<M> {
     inner: M,
     width: f32,
     height: f32,
 }
 
-impl<M: Manifold<Output = Field>> Manifold for ScreenRemap<M> {
-    type Output = Field;
+impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+    type Output = Discrete;
 
-    fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
         let width = Field::from(self.width);
         let height = Field::from(self.height);
 
@@ -40,51 +40,28 @@ impl<M: Manifold<Output = Field>> Manifold for ScreenRemap<M> {
     }
 }
 
-/// Build the scene for a single color channel.
-fn build_scene(channel: u8) -> impl Manifold<Output = Field> + Clone + Sync {
-    let world = Surface {
+/// Build the color scene using the mullet architecture.
+/// Geometry runs once, colors flow as packed RGBA.
+fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync {
+    let world = ColorSurface {
         geometry: PlaneGeometry { height: -1.0 },
-        material: ColorChecker { channel },
-        background: BlueSky { channel },
+        material: ColorChecker,
+        background: ColorSky,
     };
 
-    let scene = Surface {
+    let scene = ColorSurface {
         geometry: SphereAt {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: Reflect { inner: world },
+        material: ColorReflect { inner: world },
         background: world,
     };
 
-    ScreenRemap {
-        inner: ScreenToDir { inner: scene },
+    ColorScreenRemap {
+        inner: ColorScreenToDir { inner: scene },
         width: W as f32,
         height: H as f32,
-    }
-}
-
-/// Three-channel color renderer.
-#[derive(Clone)]
-struct ColorRenderer<R, G, B> {
-    r: R,
-    g: G,
-    b: B,
-}
-
-impl<R, G, B> Manifold for ColorRenderer<R, G, B>
-where
-    R: Manifold<Output = Field>,
-    G: Manifold<Output = Field>,
-    B: Manifold<Output = Field>,
-{
-    type Output = Discrete;
-
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        let r = self.r.eval_raw(x, y, z, w);
-        let g = self.g.eval_raw(x, y, z, w);
-        let b = self.b.eval_raw(x, y, z, w);
-        Discrete::pack(r, g, b, Field::from(1.0))
     }
 }
 
@@ -94,12 +71,8 @@ fn main() {
     println!("Resolution: {}x{} ({:.1}M pixels)", W, H, (W * H) as f64 / 1_000_000.0);
     println!();
 
-    // Build the scene
-    let scene = ColorRenderer {
-        r: build_scene(0),
-        g: build_scene(1),
-        b: build_scene(2),
-    };
+    // Build the scene using mullet architecture (geometry once, colors as packed Discrete)
+    let scene = build_scene();
 
     let shape = TensorShape { width: W, height: H };
     let num_cpus = std::thread::available_parallelism()
