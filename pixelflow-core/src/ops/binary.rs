@@ -36,6 +36,13 @@ pub struct Mul<L, R>(pub L, pub R);
 #[derive(Clone, Copy, Debug)]
 pub struct Div<L, R>(pub L, pub R);
 
+/// Arctangent of two arguments: atan2(L, R)
+///
+/// Computes the arc tangent of L/R, using the signs of both arguments
+/// to determine the correct quadrant.
+#[derive(Clone, Copy, Debug)]
+pub struct Atan2<L, R>(pub L, pub R);
+
 /// Fused Multiply-Add: A * B + C
 ///
 /// Uses FMA instruction when available (single rounding).
@@ -124,6 +131,21 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w) / self.1.eval_raw(x, y, z, w)
+    }
+}
+
+impl<L, R, I> Manifold<I> for Atan2<L, R>
+where
+    I: crate::numeric::Numeric,
+    L: Manifold<I, Output = I>,
+    R: Manifold<I, Output = I>,
+{
+    type Output = I;
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        let l = self.0.eval_raw(x, y, z, w);
+        let r = self.1.eval_raw(x, y, z, w);
+        l.atan2(r)
     }
 }
 
