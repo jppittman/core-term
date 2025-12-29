@@ -335,6 +335,19 @@ impl Not for F32x4 {
     }
 }
 
+impl core::ops::Neg for F32x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        unsafe {
+            // Flip sign bit via XOR with -0.0 (0x80000000 in each lane)
+            let neg_zero_u32 = vdupq_n_u32(0x80000000u32);
+            let self_u32 = vreinterpretq_u32_f32(self.0);
+            Self(vreinterpretq_f32_u32(veorq_u32(self_u32, neg_zero_u32)))
+        }
+    }
+}
+
 // ============================================================================
 // U32x4 - 4-lane u32 SIMD for packed RGBA pixels
 // ============================================================================
