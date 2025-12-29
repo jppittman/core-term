@@ -420,7 +420,7 @@ impl Numeric for Jet2 {
     fn cos(self) -> Self {
         // Chain rule: (cos f)' = -sin(f) * f'
         let cos_val = self.val.cos();
-        let neg_sin = Field::from(0.0) - self.val.sin();
+        let neg_sin = -self.val.sin();
         Self {
             val: cos_val,
             dx: self.dx * neg_sin,
@@ -437,7 +437,7 @@ impl Numeric for Jet2 {
         let r_sq = self.val * self.val + x.val * x.val;
         let inv_r_sq = Field::from(1.0) / r_sq;  // One division
         let dy_darg = x.val * inv_r_sq;
-        let dx_darg = (Field::from(0.0) - self.val) * inv_r_sq;
+        let dx_darg = (-self.val) * inv_r_sq;
         Self {
             val: self.val.atan2(x.val),
             dx: self.dx.mul_add(dy_darg, x.dx * dx_darg),
@@ -983,7 +983,7 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn cos(self) -> Self {
         let cos_val = self.val.cos();
-        let neg_sin = Field::from(0.0) - self.val.sin();
+        let neg_sin = -self.val.sin();
         Self {
             val: cos_val,
             dx: self.dx * neg_sin,
@@ -1001,7 +1001,7 @@ impl Numeric for Jet3 {
         let r_sq = self.val * self.val + x.val * x.val;
         let inv_r_sq = Field::from(1.0) / r_sq;  // One division
         let dy_darg = x.val * inv_r_sq;
-        let dx_darg = (Field::from(0.0) - self.val) * inv_r_sq;
+        let dx_darg = (-self.val) * inv_r_sq;
         Self {
             val: self.val.atan2(x.val),
             dx: self.dx.mul_add(dy_darg, x.dx * dx_darg),

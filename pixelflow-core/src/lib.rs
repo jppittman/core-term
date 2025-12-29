@@ -684,6 +684,14 @@ impl core::ops::Not for Field {
     }
 }
 
+impl core::ops::Neg for Field {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        Self(-self.0)
+    }
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
