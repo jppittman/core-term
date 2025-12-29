@@ -842,6 +842,7 @@ impl Not for F32x16 {
     }
 }
 
+#[cfg(target_feature = "avx512f")]
 impl core::ops::Neg for F32x16 {
     type Output = Self;
     #[inline(always)]

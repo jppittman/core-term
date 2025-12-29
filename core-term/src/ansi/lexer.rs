@@ -48,6 +48,19 @@ const UTF8_INVALID_AS_START_MIN_RANGE1: u8 = UTF8_CONT_MIN; // 0x80 (can't start
 const UTF8_INVALID_AS_START_MAX_RANGE1: u8 = 0xC1; // Up to (and including) overlong 0xC1
 const UTF8_INVALID_AS_START_MIN_RANGE2: u8 = 0xF5; // Invalid byte, per RFC 3629 (can't be > F4)
 
+// --- Const Ranges for Utf8Decoder to avoid runtime allocation ---
+const UTF8_ASCII_RANGE: std::ops::RangeInclusive<u8> = 0x00..=UTF8_ASCII_MAX;
+const UTF8_INVALID_EARLY_START_RANGE: std::ops::RangeInclusive<u8> =
+    UTF8_INVALID_AS_START_MIN_RANGE1..=UTF8_INVALID_AS_START_MAX_RANGE1; // 0x80..=0xC1
+const UTF8_2_BYTE_START_RANGE: std::ops::RangeInclusive<u8> = UTF8_2_BYTE_MIN..=0xDF;
+const UTF8_3_BYTE_START_RANGE: std::ops::RangeInclusive<u8> = UTF8_3_BYTE_MIN..=0xEF;
+const UTF8_4_BYTE_START_RANGE: std::ops::RangeInclusive<u8> =
+    UTF8_4_BYTE_MIN..=UTF8_4_BYTE_MAX; // 0xF0..=0xF4
+const UTF8_INVALID_LATE_START_RANGE: std::ops::RangeInclusive<u8> =
+    UTF8_INVALID_AS_START_MIN_RANGE2..=0xFF; // 0xF5..=0xFF
+const UTF8_CONTINUATION_RANGE: std::ops::RangeInclusive<u8> = UTF8_CONT_MIN..=UTF8_CONT_MAX; // 0x80..=0xBF
+
+
 /// Represents a single token identified by the lexer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnsiToken {
@@ -83,39 +96,29 @@ impl Utf8Decoder {
 
     #[inline]
     fn decode_first_byte(&mut self, byte: u8) -> Utf8DecodeResult {
-        let utf8_ascii_range: std::ops::RangeInclusive<u8> = 0x00..=UTF8_ASCII_MAX;
-        let utf8_invalid_early_start_range: std::ops::RangeInclusive<u8> =
-            UTF8_INVALID_AS_START_MIN_RANGE1..=UTF8_INVALID_AS_START_MAX_RANGE1; // 0x80..=0xC1
-        let utf8_2_byte_start_range: std::ops::RangeInclusive<u8> = UTF8_2_BYTE_MIN..=0xDF;
-        let utf8_3_byte_start_range: std::ops::RangeInclusive<u8> = UTF8_3_BYTE_MIN..=0xEF;
-        let utf8_4_byte_start_range: std::ops::RangeInclusive<u8> =
-            UTF8_4_BYTE_MIN..=UTF8_4_BYTE_MAX; // 0xF0..=0xF4
-        let utf8_invalid_late_start_range: std::ops::RangeInclusive<u8> =
-            UTF8_INVALID_AS_START_MIN_RANGE2..=0xFF; // 0xF5..=0xFF
-
         match byte {
-            b if utf8_ascii_range.contains(&b) => Utf8DecodeResult::Decoded(b as char),
-            b if utf8_2_byte_start_range.contains(&b) => {
+            b if UTF8_ASCII_RANGE.contains(&b) => Utf8DecodeResult::Decoded(b as char),
+            b if UTF8_2_BYTE_START_RANGE.contains(&b) => {
                 self.expected = 2;
                 self.buffer[0] = b;
                 self.len = 1;
                 Utf8DecodeResult::NeedsMoreBytes
             }
-            b if utf8_3_byte_start_range.contains(&b) => {
+            b if UTF8_3_BYTE_START_RANGE.contains(&b) => {
                 self.expected = 3;
                 self.buffer[0] = b;
                 self.len = 1;
                 Utf8DecodeResult::NeedsMoreBytes
             }
-            b if utf8_4_byte_start_range.contains(&b) => {
+            b if UTF8_4_BYTE_START_RANGE.contains(&b) => {
                 self.expected = 4;
                 self.buffer[0] = b;
                 self.len = 1;
                 Utf8DecodeResult::NeedsMoreBytes
             }
             // Catches invalid start bytes: 0x80-0xC1 (continuation / overlong C0/C1) and 0xF5-0xFF
-            b if utf8_invalid_early_start_range.contains(&b)
-                || utf8_invalid_late_start_range.contains(&b) =>
+            b if UTF8_INVALID_EARLY_START_RANGE.contains(&b)
+                || UTF8_INVALID_LATE_START_RANGE.contains(&b) =>
             {
                 warn!("invalid utf8 sequence byte: {:X?}", b);
                 self.reset();
@@ -131,9 +134,7 @@ impl Utf8Decoder {
 
     #[inline]
     fn decode_continuation_byte(&mut self, byte: u8) -> Utf8DecodeResult {
-        let utf8_continuation_range: std::ops::RangeInclusive<u8> = UTF8_CONT_MIN..=UTF8_CONT_MAX; // 0x80..=0xBF
-
-        if !utf8_continuation_range.contains(&byte) {
+        if !UTF8_CONTINUATION_RANGE.contains(&byte) {
             // Current `byte` is not a valid UTF-8 continuation.
             // The previously buffered sequence is now considered invalid.
             self.reset();
@@ -234,7 +235,7 @@ impl AnsiLexer {
             Utf8DecodeResult::InvalidSequence => {
                 // This means 'byte' itself was an invalid UTF-8 start (e.g., 0xC0, 0xF5).
                 warn!(
-                    "invalid utf8 byte: {:X?} printing replacment character",
+                    "invalid utf8 byte: {:X?}",
                     byte
                 );
                 self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER));
