@@ -128,12 +128,18 @@ pub fn render_parallel<P, M>(
         start_y = end_y;
     }
 
+    // 2MB stack per thread (needed for deep 3D scene recursion)
+    const STACK_SIZE: usize = 2 * 1024 * 1024;
+
     // Use scope to spawn threads with borrowed data
     std::thread::scope(|s| {
         for (chunk, start_y, end_y) in buffer_chunks {
-            s.spawn(move || {
-                execute_stripe(manifold, chunk, shape.width, Stripe { start_y, end_y });
-            });
+            std::thread::Builder::new()
+                .stack_size(STACK_SIZE)
+                .spawn_scoped(s, move || {
+                    execute_stripe(manifold, chunk, shape.width, Stripe { start_y, end_y });
+                })
+                .expect("Failed to spawn render thread");
         }
     });
 }
@@ -164,8 +170,8 @@ pub fn render_work_stealing<P, M>(
     // Wrap raw pointer for Send
     let buffer_ptr = SendPtr(buffer.as_mut_ptr());
 
-    // 64KB stack per thread (default is 2-8MB)
-    const STACK_SIZE: usize = 64 * 1024;
+    // 2MB stack per thread (needed for deep 3D scene recursion)
+    const STACK_SIZE: usize = 2 * 1024 * 1024;
 
     std::thread::scope(|s| {
         for _ in 0..num_threads {
