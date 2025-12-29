@@ -1,6 +1,184 @@
-//! # Software Rasterizer
+//! # Software Rasterizer: Manifold → Framebuffer
 //!
-//! Bridges Manifolds (continuous) to Framebuffers (discrete).
+//! The final stage of the graphics pipeline: converts continuous algebraic manifolds into discrete pixel buffers.
+//!
+//! ## Architecture: Pull-Based Rendering
+//!
+//! ```text
+//! Manifold (pure function)        PixelBuffer (concrete data)
+//!      ↓                                   ↓
+//!      │ Rasterizer pulls                 │
+//!      │ at pixel coordinates             │
+//!      ↓                                   ↓
+//! eval(x, y) → Discrete(u32)    pixel[y*w + x] ← u32
+//! ```
+//!
+//! Unlike immediate-mode renderers that "push" pixels to a buffer, the rasterizer **pulls** from the manifold.
+//! For each pixel coordinate, it calls `manifold.eval_raw(x, y, z, w)` and stores the result.
+//!
+//! ## The Two Functions
+//!
+//! ### execute()
+//! **Full framebuffer rendering** - rasterizes the entire buffer in one call.
+//!
+//! ```ignore
+//! use pixelflow_graphics::render::{execute, TensorShape};
+//!
+//! let manifold = /* your color manifold */;
+//! let mut framebuffer = vec![Rgba8(0); 800 * 600];
+//!
+//! execute(&manifold, &mut framebuffer, TensorShape::new(800, 600));
+//! // Framebuffer is now filled with rendered pixels
+//! ```
+//!
+//! **Contract:**
+//! - **Precondition**: `target.len() >= shape.width * shape.height`
+//! - **Action**: Evaluates manifold at every pixel coordinate (x, y)
+//! - **Postcondition**: `target` is fully populated with pixels
+//! - **Complexity**: O(width × height × eval_time)
+//!
+//! ### execute_stripe()
+//! **Partial rendering** - rasterizes a horizontal band (row range).
+//!
+//! ```ignore
+//! use pixelflow_graphics::render::{execute_stripe, Stripe};
+//!
+//! // Render rows 100-200
+//! let stripe = Stripe { start_y: 100, end_y: 200 };
+//! execute_stripe(&manifold, &mut framebuffer, 800, stripe);
+//! ```
+//!
+//! **Contract:**
+//! - **Precondition**: `target.len() >= stripe.end_y * width - stripe.start_y * width`
+//! - **Action**: Evaluates manifold for rows [start_y, end_y)
+//! - **Postcondition**: Target rows are updated; other rows unchanged
+//! - **Use case**: Parallel rendering (different threads render different stripes)
+//!
+//! ## Sampling Strategy: Pixel Centers
+//!
+//! The rasterizer samples manifolds at **pixel center** coordinates:
+//!
+//! ```text
+//! Pixel (x, y) is sampled at coordinates (x + 0.5, y + 0.5)
+//!
+//! Example:
+//! │ Pixel (0, 0) sampled at (0.5, 0.5)
+//! │ Pixel (1, 0) sampled at (1.5, 0.5)
+//! │ Pixel (0, 1) sampled at (0.5, 1.5)
+//! ```
+//!
+//! Why pixel centers?
+//! - **Antialiasing**: Continuous sampling (e.g., with Jet2 for gradients) can benefit from offsets
+//! - **Consistency**: Matches standard graphics conventions (OpenGL, WebGL, etc.)
+//! - **Numerical stability**: Avoids integer grid artifacts
+//!
+//! ## SIMD Hot Path
+//!
+//! The core loop uses **vectorized evaluation**:
+//!
+//! ```text
+//! Normal execution (pseudo-code):
+//!
+//! for y in 0..height {
+//!     for x in (0..width).step_by(PARALLELISM) {
+//!         // Evaluate PARALLELISM pixels at once
+//!         xs = [x+0.5, x+1.5, x+2.5, ..., x+PARALLELISM-0.5]  (as Field)
+//!         ys = y + 0.5                                         (as Field)
+//!
+//!         colors = manifold.eval_raw(xs, ys, 0.0, 0.0)  // SIMD!
+//!         target[y*width + x..][0..PARALLELISM] = colors
+//!     }
+//! }
+//! ```
+//!
+//! - **PARALLELISM**: Number of simultaneous SIMD lanes (16-64 depending on CPU)
+//! - **Sequential generation**: `Field::sequential(x)` creates `[x, x+1, x+2, ..., x+PARALLELISM-1]` for batch evaluation
+//! - **Fused evaluation**: Manifold is compiled into a single SIMD kernel per expression
+//!
+//! ### Why This Works
+//!
+//! The manifold's type encodes the computation graph. When you call `eval_raw(xs, ys, ...)`:
+//! 1. `xs` and `ys` are SIMD vectors (e.g., `[x₀, x₁, ..., x₁₅]` on AVX-512)
+//! 2. All arithmetic (`+`, `-`, `*`, `/`) operates element-wise on SIMD vectors
+//! 3. The compiler inlines and vectorizes the entire expression
+//! 4. Result: A single CPU-efficient SIMD loop with zero branches
+//!
+//! ## Scalar Fallback (Tail)
+//!
+//! For pixels that don't fit evenly into SIMD lanes:
+//!
+//! ```text
+//! If width = 100 and PARALLELISM = 16:
+//! - Main loop: process pixels 0-79 (5 iterations of 16)
+//! - Tail loop: process pixels 80-99 (one by one)
+//! ```
+//!
+//! The tail loop evaluates pixels individually, storing them in a 1-element array.
+//! For most cases, the tail is < 10% of the buffer and negligible in performance.
+//!
+//! ## Memory Layout: Row-Major Order
+//!
+//! Pixels are stored in **row-major** (C-style) order:
+//!
+//! ```text
+//! Index (y, x) maps to offset: y * width + x
+//!
+//! Example (4×3 framebuffer):
+//! Pixel (0,0) → index 0
+//! Pixel (1,0) → index 1
+//! Pixel (2,0) → index 2
+//! Pixel (3,0) → index 3
+//! Pixel (0,1) → index 4   (next row)
+//! ...
+//! ```
+//!
+//! This matches the standard raster graphics convention and is cache-efficient (sequential memory access).
+//!
+//! ## Pixel Format Conversion
+//!
+//! The manifold produces `Discrete` (packed u32 RGBA), but the framebuffer may use a different format:
+//!
+//! ```text
+//! Manifold Output: Discrete (always RGBA)
+//!      ↓
+//! Pixel Trait: Converts to target format
+//!      ↓
+//! Framebuffer: Rgba8, Bgra8, or other format
+//! ```
+//!
+//! The `Pixel` trait handles:
+//! - **Rgba8** (macOS, Web): Direct passthrough
+//! - **Bgra8** (Linux X11): Byte swizzle (R and B channels)
+//! - **Custom formats**: User-defined impl
+//!
+//! ```ignore
+//! pub trait Pixel: Clone + Copy {
+//!     fn from_u32(v: u32) -> Self;           // From Discrete
+//!     fn to_u32(self) -> u32;                // To Discrete
+//!     fn from_rgba(r: f32, g: f32, b: f32, a: f32) -> Self;
+//! }
+//! ```
+//!
+//! ## Error Handling
+//!
+//! - **Empty framebuffer** (width or height = 0): Early return (no-op)
+//! - **Buffer too small**: Undefined behavior (writes past end) — caller responsible
+//! - **Invalid coordinates**: Not possible (rasterizer always uses valid (x, y) pairs)
+//!
+//! ## Caching and Frame Reuse
+//!
+//! The rasterizer **does not cache** manifold evaluation. However:
+//! - The manifold **may cache internally** (e.g., glyph caches in `CachedText`)
+//! - Between frames with **identical size**, manifold evaluation is deterministic (no state)
+//! - Platform rendering loop (cocoa, x11, web) typically caches and reuses results when possible
+//!
+//! ## Integration with Parallel Rendering
+//!
+//! See `parallel.rs` for multi-threaded rendering. The key insight:
+//! - `execute()` is a convenience for single-threaded rendering
+//! - `execute_stripe()` enables work-stealing: each thread renders a different vertical band
+//! - No synchronization needed (stripes don't overlap)
+//!
 //! Color manifolds output `Discrete` (packed u32 pixels) directly.
 
 use crate::render::color::Pixel;
