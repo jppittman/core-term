@@ -1,9 +1,11 @@
-[target.'cfg(all())']
-rustflags = ["-C", "target-cpu=native"]
-
 [alias]
 # Build and run the bundled macOS app (required for keyboard input on macOS)
 bundle-run = "run --package xtask --release -- bundle-run"
 
 [build]
-rustflags = ["-C", "target-cpu=native"]
+# Relaxed FP math for faster SIMD - allows FMA contraction and unsafe FP opts
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "llvm-args=-enable-unsafe-fp-math",
+    "-C", "llvm-args=-fp-contract=fast",
+]
