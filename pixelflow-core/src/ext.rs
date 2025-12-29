@@ -1,36 +1,86 @@
-//! # DSL Extension Trait
+//! # DSL Extension Trait: Fluent Manifold Building
 //!
-//! Provides fluent method-chaining API for manifolds.
+//! Provides a fluent method-chaining API for composing manifold expressions.
 //!
-//! `ManifoldExt` enables building expressions via method chaining. While the
-//! trait uses `Field` for type inference during expression construction, the
-//! resulting expression trees are **fully generic** over the `Numeric` type
-//! and can be evaluated with either `Field` (for concrete SIMD computation)
-//! or `Jet2` (for automatic differentiation).
+//! ## Overview
 //!
-//! # Expression Building vs. Evaluation
+//! `ManifoldExt` is the primary way users build manifold expressions. It provides:
 //!
-//! - **Building**: Uses `ManifoldExt` methods with implicit `Field` type inference
-//! - **Evaluation**: The resulting expression implements `Manifold<N>` for any `N: Numeric`
+//! - **Method-chaining API**: `x.sqrt().abs().max(y)`
+//! - **Operator overloading**: `x * x + y * y`
+//! - **Polymorphic evaluation**: Build once, evaluate with `Field` or `Jet2`
+//! - **Type-safe composition**: Expression types are capture compute graphs
 //!
-//! # Example
+//! While `ManifoldExt` methods use `Field` for **type inference during construction**,
+//! the resulting expression trees are **fully generic** over any `Computational` input type
+//! (`Field`, `Jet2`, `Jet3`). This allows the same expression to evaluate both:
+//!
+//! - As concrete SIMD values (for rendering)
+//! - As automatic derivatives (for gradients, antialiasing)
+//!
+//! ## Expression Building vs. Evaluation
+//!
+//! PixelFlow separates these two phases:
+//!
+//! ### Building Phase
+//! ```ignore
+//! let circle = (X * X + Y * Y).sqrt() - 1.0;  // Just builds a type tree
+//! ```
+//!
+//! **No computation happens.** The type `Sqrt<Sub<Add<Mul<X,X>, Mul<Y,Y>>, f32>>` is
+//! the abstract syntax tree (AST) that represents the computation. The expression tree
+//! is a first-class value you can pass around.
+//!
+//! ### Evaluation Phase
+//! ```ignore
+//! // Concrete SIMD evaluation
+//! let distance = circle.eval(3.0, 4.0, 0.0, 0.0);  // Returns Field (SIMD batch)
+//!
+//! // Automatic differentiation
+//! let x = Jet2::x(3.0);
+//! let y = Jet2::y(4.0);
+//! let result = circle.eval_raw(x, y, Jet2::constant(0.0), ...);
+//! // result contains: value, ∂/∂x, ∂/∂y
+//! ```
+//!
+//! ## Key Design Principles
+//!
+//! 1. **Static Typing**: Expression structure is known at compile time
+//! 2. **Zero-Cost Abstractions**: All composition overhead erased by monomorphization
+//! 3. **Polymorphic by Default**: Same code works with any `Computational` type
+//! 4. **Declarative**: Express *what* to compute, not *how*
+//!
+//! ## Example: Building a Circle Signed Distance Field
 //!
 //! ```ignore
 //! use pixelflow_core::{ManifoldExt, X, Y, Jet2, Field, Manifold};
 //!
-//! // Build expression using ManifoldExt
-//! let circle = (X * X + Y * Y).sqrt();
+//! // Build expression
+//! let circle = (X * X + Y * Y).sqrt() - 1.0;
 //!
-//! // Evaluate with Field (concrete values)
-//! let val = circle.eval(3.0, 4.0, 0.0, 0.0); // Returns 5.0
+//! // Evaluate with Field (normal rendering)
+//! let val = circle.eval(3.0, 4.0, 0.0, 0.0);  // Returns Field ~= 4.0
 //!
 //! // Evaluate with Jet2 (automatic differentiation)
-//! let x_jet = Jet2::x(3.0.into());
-//! let y_jet = Jet2::y(4.0.into());
-//! let zero = Jet2::constant(0.0.into());
+//! let x_jet = Jet2::x(3.0);
+//! let y_jet = Jet2::y(4.0);
+//! let zero = Jet2::constant(0.0);
 //! let result = circle.eval_raw(x_jet, y_jet, zero, zero);
-//! // result.val = 5.0, result.dx = 0.6, result.dy = 0.8 (normalized gradient)
+//! // result.val = 4.0 (distance)
+//! // result.dx ≈ 0.6 (∂/∂x gradient)
+//! // result.dy ≈ 0.8 (∂/∂y gradient)
 //! ```
+//!
+//! ## Method Organization
+//!
+//! `ManifoldExt` methods fall into three categories:
+//!
+//! 1. **Evaluation**: `eval`, `eval_at`, `eval_raw`, `constant`
+//! 2. **Unary Operations**: `sqrt`, `abs`, `sin`, `cos`, `floor`, `rsqrt`
+//! 3. **Binary Operations**: `add`, `sub`, `mul`, `div`, `min`, `max`
+//! 4. **Comparisons**: `lt`, `le`, `gt`, `ge`, `select`
+//! 5. **Coordinate Transform**: `at` (remap coordinate space)
+//! 6. **Functor Operations**: `map` (apply a function to output)
 
 use crate::Manifold;
 use crate::combinators::{At, Map, Select};
@@ -188,7 +238,35 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         self.eval_raw(zero, zero, zero, zero)
     }
 
-    /// Map a function over this manifold's output (functor fmap).
+    /// Apply a function to the output of this manifold (functor `fmap`).
+    ///
+    /// This is a general-purpose escape hatch for applying arbitrary functions
+    /// to manifold outputs. The function is applied during evaluation.
+    ///
+    /// # Arguments
+    ///
+    /// - `func`: A pure function `Field → Field`. Must be `Send + Sync` for thread safety.
+    ///
+    /// # Returns
+    ///
+    /// A new manifold that first evaluates `self`, then passes the result through `func`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pixelflow_core::{ManifoldExt, X};
+    ///
+    /// // Threshold: values > 0.5 become 1.0, else 0.0
+    /// let thresholded = (X * 0.5).map(|v| {
+    ///     if (v - 0.5).any() { 1.0.into() } else { 0.0.into() }
+    /// });
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// `map` works with the IR (`Field`) directly. For high-level transformations,
+    /// prefer composing manifolds instead: `(X * 0.5).abs()` is more idiomatic
+    /// than `X.mul(0.5).map(|v| v.abs())`.
     fn map<F>(self, func: F) -> Map<Self, F>
     where
         F: Fn(crate::Field) -> crate::Field + Send + Sync,
@@ -276,7 +354,36 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         Ge(self, rhs)
     }
 
-    /// Conditional select: if self is non-zero, return if_true, else if_false.
+    /// Branchless conditional select between two manifolds.
+    ///
+    /// Returns `if_true` where `self` is non-zero (treats as true), `if_false` elsewhere.
+    /// This is a **branchless** operation—both branches are evaluated, then one is selected
+    /// per SIMD lane. No control flow.
+    ///
+    /// # Arguments
+    ///
+    /// - `if_true`: Manifold to use where condition is true
+    /// - `if_false`: Manifold to use where condition is false
+    ///
+    /// # Returns
+    ///
+    /// A new manifold that computes the conditional selection.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pixelflow_core::{ManifoldExt, X, Y};
+    ///
+    /// // Checkerboard pattern
+    /// let inside_circle = ((X * X + Y * Y) - 1.0).sqrt().lt(0.1);
+    /// let pattern = inside_circle.select(0.0, 1.0);
+    /// ```
+    ///
+    /// # Performance
+    ///
+    /// Both branches are always evaluated. For complex branches, this is more expensive
+    /// than a scalar `if` statement, but matches typical shader execution models where
+    /// lanes follow independent code paths.
     fn select<T: Manifold, F: Manifold>(self, if_true: T, if_false: F) -> Select<Self, T, F> {
         Select {
             cond: self,
@@ -285,21 +392,55 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         }
     }
 
-    /// Pin this manifold to manifold-computed coordinates.
+    /// Remap coordinate space before evaluating this manifold.
     ///
-    /// Returns a new manifold that evaluates the inner manifold at the given
-    /// coordinate manifolds (which can be constants or expressions).
+    /// Creates a new manifold that first remaps the input coordinates, then evaluates
+    /// `self` at the remapped coordinates. This is the mechanism for coordinate transforms
+    /// like scaling, translation, and rotation.
     ///
-    /// # Example
+    /// # Arguments
+    ///
+    /// The coordinate arguments can be:
+    /// - **Constants**: `0.0`, `1.5`
+    /// - **Coordinate variables**: `X`, `Y`, `Z`, `W`
+    /// - **Expressions**: `X / scale`, `X - offset`, `sqrt(X * X + Y * Y)`
+    ///
+    /// # Returns
+    ///
+    /// A new manifold that first computes the coordinate transforms, then evaluates
+    /// the inner manifold at those coordinates.
+    ///
+    /// # Example: Scale
     ///
     /// ```ignore
-    /// // Evaluate at constant field coordinates
-    /// let at_origin = manifold.at(0.0.into(), 0.0.into(), 0.0.into(), 0.0.into());
-    /// let result = at_origin.eval();
+    /// use pixelflow_core::{ManifoldExt, X, Y};
     ///
-    /// // Evaluate at transformed coordinates (e.g., for Scale/Translate)
-    /// let scaled = manifold.at(x / s, y / s, z, w).eval();
+    /// let circle = (X * X + Y * Y).sqrt() - 1.0;
+    ///
+    /// // Scale by 2: sample at (x/2, y/2) instead of (x, y)
+    /// let scale_factor = 2.0;
+    /// let scaled = circle.at(
+    ///     X / scale_factor,
+    ///     Y / scale_factor,
+    ///     Z,
+    ///     W,
+    /// );
     /// ```
+    ///
+    /// # Example: Polar Coordinates
+    ///
+    /// ```ignore
+    /// // Convert to polar, then evaluate manifold in polar space
+    /// let radius = (X * X + Y * Y).sqrt();
+    /// let angle = (Y.atan2(X)) / std::f32::consts::TAU;
+    /// let warped = manifold.at(radius, angle, Z, W);
+    /// ```
+    ///
+    /// # Implementation Note
+    ///
+    /// The coordinate transforms are themselves manifolds (expressions built from operators).
+    /// When you call `at`, you're composing two manifolds: the coordinate transform and
+    /// the inner manifold. The resulting type captures both.
     fn at<Cx, Cy, Cz, Cw>(self, x: Cx, y: Cy, z: Cz, w: Cw) -> At<Cx, Cy, Cz, Cw, Self>
     where
         Cx: Manifold,

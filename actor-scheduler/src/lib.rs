@@ -103,13 +103,168 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 /// The types of messages supported by the scheduler.
+///
+/// Messages are organized into three priority lanes, with different guarantees and semantics.
+///
+/// # Message Lanes
+///
+/// | Lane | Priority | Throughput | Blocking | Use Case |
+/// |------|----------|-----------|----------|----------|
+/// | **Data** (D) | Lowest | High | Yes (backpressure) | Continuous, high-volume data |
+/// | **Control** (C) | High | Medium | Unlimited | Time-critical state changes |
+/// | **Management** (M) | Medium | Low | Unlimited | Lifecycle, configuration |
+///
+/// ## Data Lane (D)
+///
+/// **Purpose**: High-throughput, low-latency data messages.
+///
+/// **Contract**:
+/// - **Sender**: Sends data continuously; may block on full buffer
+/// - **Receiver**: Drains after Control and Management, subject to burst limiting
+/// - **Guarantee**: Best-effort delivery; may drop if buffer overflows
+/// - **Ordering**: FIFO within lane
+///
+/// **Example**: Frame data, sensor readings, streaming events
+///
+/// ## Control Lane (C)
+///
+/// **Purpose**: Time-critical control messages that need immediate attention.
+///
+/// **Contract**:
+/// - **Sender**: Never blocks; has unlimited buffer
+/// - **Receiver**: Drains before Management and Data messages
+/// - **Guarantee**: Guaranteed delivery (unlimited queue)
+/// - **Ordering**: FIFO within lane, always processed before Data/Management
+///
+/// **Example**: User input (keypresses, mouse), window resize, close requests
+///
+/// ## Management Lane (M)
+///
+/// **Purpose**: Configuration and lifecycle messages.
+///
+/// **Contract**:
+/// - **Sender**: Never blocks; has unlimited buffer
+/// - **Receiver**: Drains between Control and Data
+/// - **Guarantee**: Guaranteed delivery (unlimited queue)
+/// - **Ordering**: FIFO within lane
+///
+/// **Example**: Configuration changes, resource allocation, subscription/unsubscription
+///
+/// # Scheduling Strategy
+///
+/// The scheduler drains messages in priority order:
+///
+/// ```text
+/// Loop:
+///   1. Drain all Control messages (may block or spin until all drained)
+///   2. Drain all Management messages
+///   3. Drain up to N Data messages (burst limit to prevent starvation)
+///   4. Call park() - let actor/OS do other work
+///   5. Repeat
+/// ```
+///
+/// This ensures:
+/// - Control messages are NEVER delayed by data processing
+/// - Management messages get attention even if data is continuously flowing
+/// - Data can't starve other lanes (burst limit)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message<D, C, M> {
+    /// A data message (lowest priority, high throughput).
+    ///
+    /// # Contract
+    ///
+    /// **Sender**:
+    /// - May block if buffer is full (backpressure)
+    /// - Should not send Control/Management equivalent if Data suffices
+    ///
+    /// **Receiver** (Actor):
+    /// - Will receive via `handle_data()`
+    /// - Processing is deferred behind Control and Management
+    /// - May be burst-limited (batches processed per iteration)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// tx.send(Message::Data(PixelData { x: 100, y: 50, color: red }))?;
+    /// // May block if the 10-message buffer is full
+    /// ```
     Data(D),
+
+    /// A control message (highest priority, time-critical).
+    ///
+    /// # Contract
+    ///
+    /// **Sender**:
+    /// - NEVER blocks (unlimited buffer)
+    /// - Use for messages that can't wait (user input, resize events)
+    /// - Should not over-use; reserve for truly time-critical operations
+    ///
+    /// **Receiver** (Actor):
+    /// - Will receive via `handle_control()`
+    /// - Guaranteed to be processed before Data/Management messages
+    /// - If the actor isn't running, message queues indefinitely (unbounded buffer)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // User clicked the close button - this must be processed immediately
+    /// tx.send(Message::Control(CloseRequested))?;
+    /// // Never blocks; queues if actor is busy
+    /// ```
+    ///
+    /// # Warning: Unbounded Queue
+    ///
+    /// Control messages have unlimited buffer. If the actor is slow, Control messages
+    /// can pile up indefinitely, consuming memory. Use Control sparingly and only for
+    /// messages that truly can't be delayed.
     Control(C),
+
+    /// A management message (medium priority, configuration/lifecycle).
+    ///
+    /// # Contract
+    ///
+    /// **Sender**:
+    /// - NEVER blocks (unlimited buffer)
+    /// - Use for lifecycle and configuration (create, destroy, configure)
+    /// - Lower priority than Control but higher than Data
+    ///
+    /// **Receiver** (Actor):
+    /// - Will receive via `handle_management()`
+    /// - Guaranteed delivery (unbounded queue)
+    /// - Processed after Control but before Data messages
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Allocate a new resource - this doesn't need to be super-urgent
+    /// // but it's more important than continuous data stream
+    /// tx.send(Message::Management(AllocateBuffer { size: 1024 }))?;
+    /// ```
     Management(M),
-    /// Shutdown signal. Handled directly by the scheduler - actor never sees it.
-    /// When received, the scheduler exits its run loop immediately.
+
+    /// Shutdown signal.
+    ///
+    /// # Contract
+    ///
+    /// **Sender**: Signals that the actor should shut down cleanly.
+    ///
+    /// **Receiver**: The scheduler handles this directly—the actor never sees it.
+    /// When the scheduler receives `Shutdown`, it exits the run loop immediately
+    /// and `rx.run()` returns.
+    ///
+    /// # Implementation Details
+    ///
+    /// - This is never delivered to the actor's `handle_*` methods
+    /// - It's a special signal interpreted by the scheduler itself
+    /// - Useful for graceful shutdown of the actor system
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Shut down the actor
+    /// tx.send(Message::Shutdown)?;
+    /// // rx.run() will exit and return
+    /// ```
     Shutdown,
 }
 
