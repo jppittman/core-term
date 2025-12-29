@@ -251,8 +251,8 @@ where
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
-        // 4. Blend via manifold composition using Select combinator
-        // Pin material to warped coords, background to original ray coords
+        // 4. Blend via manifold composition using At + Select
+        // At takes Jet3 values as constant manifolds (Jet3 implements Manifold)
         let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
         let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
 
@@ -303,8 +303,8 @@ where
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
-        // 4. Blend via manifold composition using Select combinator
-        // Pin material to warped coords, background to original ray coords
+        // 4. Blend via manifold composition using At + Select
+        // At takes Jet3 values as constant manifolds (Jet3 implements Manifold)
         let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
         let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
 
