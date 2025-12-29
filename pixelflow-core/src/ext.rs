@@ -34,7 +34,7 @@
 
 use crate::Manifold;
 use crate::combinators::{At, Map, Select};
-use crate::ops::{Abs, Add, Atan2, Cos, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Sin, Sqrt, Sub};
+use crate::ops::{Abs, Add, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Sin, Sqrt, Sub};
 
 use alloc::sync::Arc;
 
@@ -191,19 +191,6 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     /// Sine function.
     fn sin(self) -> Sin<Self> {
         Sin(self)
-    }
-
-    /// Cosine function.
-    fn cos(self) -> Cos<Self> {
-        Cos(self)
-    }
-
-    /// Arctangent of two arguments: atan2(self, rhs).
-    ///
-    /// Computes the arc tangent of self/rhs, using the signs of both arguments
-    /// to determine the correct quadrant.
-    fn atan2<R: Manifold>(self, rhs: R) -> Atan2<Self, R> {
-        Atan2(self, rhs)
     }
 
     /// Element-wise maximum.
