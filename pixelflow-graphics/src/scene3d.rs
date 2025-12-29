@@ -30,7 +30,7 @@ struct FieldMask(Field);
 impl Manifold<Jet3> for FieldMask {
     type Output = Jet3;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Jet3 {
         // Convert Field mask to Jet3 with zero derivatives
         Jet3::constant(self.0)
@@ -58,7 +58,7 @@ pub struct ScreenToDir<M> {
 impl<M: Manifold<Jet3, Output = Field>> Manifold for ScreenToDir<M> {
     type Output = Field;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, x: Field, y: Field, _z: Field, w: Field) -> Field {
         // 1. Seed Jets from Screen Coords
         // x: varies with screen x (dx=1, dy=0, dz=0)
@@ -93,7 +93,7 @@ pub struct ColorScreenToDir<M> {
 impl<M: Manifold<Jet3, Output = Discrete>> Manifold for ColorScreenToDir<M> {
     type Output = Discrete;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, x: Field, y: Field, _z: Field, w: Field) -> Discrete {
         let sx = Jet3::x(x);
         let sy = Jet3::y(y);
@@ -122,7 +122,7 @@ pub struct UnitSphere;
 impl Manifold<Jet3> for UnitSphere {
     type Output = Jet3;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
         // Ray is normalized, so |ray| = 1 usually, but let's be robust.
         // t = 1.0 / sqrt(rx^2 + ry^2 + rz^2)
@@ -143,7 +143,7 @@ pub struct SphereAt {
 impl Manifold<Jet3> for SphereAt {
     type Output = Jet3;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
         // Ray: P = t * (rx, ry, rz) from origin
         // Sphere: |P - C|² = r²
@@ -194,7 +194,7 @@ pub struct PlaneGeometry {
 impl Manifold<Jet3> for PlaneGeometry {
     type Output = Jet3;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, _rx: Jet3, ry: Jet3, _rz: Jet3, _w: Jet3) -> Jet3 {
         Jet3::constant(Field::from(self.height)) / ry
     }
@@ -224,7 +224,7 @@ where
 {
     type Output = Field;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Field {
         // 1. Ask Geometry for distance t
         let t = self.geometry.eval_raw(rx, ry, rz, w);
@@ -279,7 +279,7 @@ where
 {
     type Output = Discrete;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
@@ -328,7 +328,7 @@ pub struct Reflect<M> {
 impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
     type Output = Field;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Field {
         // The input (x, y, z) is the hit point P with derivatives dP/dscreen.
         // We need to compute the reflected direction R with derivatives dR/dscreen.
@@ -420,7 +420,7 @@ pub struct ColorReflect<M> {
 impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
     type Output = Discrete;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Discrete {
         let p_len_sq = x * x + y * y + z * z;
         let p_len = p_len_sq.sqrt();
@@ -489,7 +489,7 @@ pub struct Checker;
 impl Manifold<Jet3> for Checker {
     type Output = Field;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Field {
         // Which checker cell are we in?
         let cell_x = x.val.floor();
@@ -539,7 +539,7 @@ pub struct Sky;
 impl Manifold<Jet3> for Sky {
     type Output = Field;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Field {
         // y is the Y component of the direction vector
         let t = y.val * Field::from(0.5) + Field::from(0.5);
@@ -558,7 +558,7 @@ pub struct ColorSky;
 impl Manifold<Jet3> for ColorSky {
     type Output = Discrete;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
         let fzero = Field::from(0.0);
         let t = y.val * Field::from(0.5) + Field::from(0.5);
@@ -580,7 +580,7 @@ pub struct ColorChecker;
 impl Manifold<Jet3> for ColorChecker {
     type Output = Discrete;
 
-    #[inline(always)]
+    #[inline]
     fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Discrete {
         let fzero = Field::from(0.0);
         let cell_x = x.val.floor();

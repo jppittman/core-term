@@ -903,7 +903,7 @@ mod jet2_tests {
     #[test]
     fn test_jet2_numeric_sqrt() {
         let jet = Jet2::x(Field::from(16.0));
-        let sqrt_jet = jet.sqrt();
+        let sqrt_jet = jet.sqrt().eval(); // sqrt() returns Jet2Sqrt, eval() to get Jet2
         // Chain rule: (√f)' = f' / (2√f)
         let _ = sqrt_jet.val;
         let _ = sqrt_jet.dx;

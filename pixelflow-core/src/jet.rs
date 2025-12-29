@@ -114,15 +114,12 @@ impl Jet2 {
     }
 
     /// Square root with derivative.
+    ///
+    /// Returns `Jet2Sqrt` which enables automatic rsqrt fusion when divided.
+    /// Example: `a / b.sqrt()` computes `a * rsqrt(b)` (faster than `a / sqrt(b)`).
     #[inline(always)]
-    pub fn sqrt(self) -> Self {
-        // Chain rule: (√f)' = f' / (2√f)
-        // Use rsqrt (4 cycles) instead of sqrt (20-30 cycles)
-        // sqrt(x) = x * rsqrt(x), derivative = rsqrt(x) / 2
-        let rsqrt_val = self.val.rsqrt();
-        let sqrt_val = self.val * rsqrt_val;
-        let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt)
+    pub fn sqrt(self) -> Jet2Sqrt {
+        Jet2Sqrt(self)
     }
 
     /// Absolute value with derivative.
@@ -175,6 +172,96 @@ impl Jet2 {
         if !mask.any() { return if_false; }
         Self::select_raw(mask, if_true, if_false)
     }
+}
+
+// ============================================================================
+// Jet2Sqrt: Enables rsqrt fusion for Jet2
+// ============================================================================
+
+/// Wrapper for sqrt(Jet2) that enables automatic rsqrt fusion.
+///
+/// When `Jet2 / Jet2Sqrt` is computed, this automatically uses the faster
+/// `rsqrt` path: `a / sqrt(b)` becomes `a * rsqrt(b)`.
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug)]
+pub struct Jet2Sqrt(Jet2);
+
+impl Jet2Sqrt {
+    /// Evaluate to get the actual sqrt result as Jet2.
+    #[inline(always)]
+    pub fn eval(self) -> Jet2 {
+        let rsqrt_val = self.0.val.rsqrt();
+        let sqrt_val = self.0.val * rsqrt_val;
+        let half_rsqrt = rsqrt_val * Field::from(0.5);
+        Jet2::new(sqrt_val, self.0.dx * half_rsqrt, self.0.dy * half_rsqrt)
+    }
+}
+
+impl From<Jet2Sqrt> for Jet2 {
+    #[inline(always)]
+    fn from(s: Jet2Sqrt) -> Jet2 {
+        s.eval()
+    }
+}
+
+/// Rsqrt fusion: `Jet2 / Jet2Sqrt` computes `a * rsqrt(b)` directly.
+impl core::ops::Div<Jet2Sqrt> for Jet2 {
+    type Output = Jet2;
+    #[inline(always)]
+    fn div(self, rhs: Jet2Sqrt) -> Jet2 {
+        let b = rhs.0;
+        let rsqrt_b = b.val.rsqrt();
+        let result_val = self.val * rsqrt_b;
+        let rsqrt_cubed = rsqrt_b * rsqrt_b * rsqrt_b;
+        let half_rsqrt_cubed = rsqrt_cubed * Field::from(0.5);
+        Jet2::new(
+            result_val,
+            self.dx * rsqrt_b - self.val * b.dx * half_rsqrt_cubed,
+            self.dy * rsqrt_b - self.val * b.dy * half_rsqrt_cubed,
+        )
+    }
+}
+
+impl core::ops::Add<Jet2> for Jet2Sqrt {
+    type Output = Jet2;
+    #[inline(always)]
+    fn add(self, rhs: Jet2) -> Jet2 { self.eval() + rhs }
+}
+
+impl core::ops::Sub<Jet2> for Jet2Sqrt {
+    type Output = Jet2;
+    #[inline(always)]
+    fn sub(self, rhs: Jet2) -> Jet2 { self.eval() - rhs }
+}
+
+impl core::ops::Mul<Jet2> for Jet2Sqrt {
+    type Output = Jet2;
+    #[inline(always)]
+    fn mul(self, rhs: Jet2) -> Jet2 { self.eval() * rhs }
+}
+
+impl core::ops::Div<Jet2> for Jet2Sqrt {
+    type Output = Jet2;
+    #[inline(always)]
+    fn div(self, rhs: Jet2) -> Jet2 { self.eval() / rhs }
+}
+
+impl core::ops::Add<Jet2Sqrt> for Jet2 {
+    type Output = Jet2;
+    #[inline(always)]
+    fn add(self, rhs: Jet2Sqrt) -> Jet2 { self + rhs.eval() }
+}
+
+impl core::ops::Sub<Jet2Sqrt> for Jet2 {
+    type Output = Jet2;
+    #[inline(always)]
+    fn sub(self, rhs: Jet2Sqrt) -> Jet2 { self - rhs.eval() }
+}
+
+impl core::ops::Mul<Jet2Sqrt> for Jet2 {
+    type Output = Jet2;
+    #[inline(always)]
+    fn mul(self, rhs: Jet2Sqrt) -> Jet2 { self * rhs.eval() }
 }
 
 // ============================================================================
@@ -676,15 +763,12 @@ impl Jet3 {
     }
 
     /// Square root with derivative.
+    ///
+    /// Returns `Jet3Sqrt` which enables automatic rsqrt fusion when divided.
+    /// Example: `a / b.sqrt()` computes `a * rsqrt(b)` (faster than `a / sqrt(b)`).
     #[inline(always)]
-    pub fn sqrt(self) -> Self {
-        // Chain rule: (√f)' = f' / (2√f)
-        // Use rsqrt (4 cycles) instead of sqrt (20-30 cycles)
-        // sqrt(x) = x * rsqrt(x), derivative = rsqrt(x) / 2
-        let rsqrt_val = self.val.rsqrt();
-        let sqrt_val = self.val * rsqrt_val;
-        let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt, self.dz * half_rsqrt)
+    pub fn sqrt(self) -> Jet3Sqrt {
+        Jet3Sqrt(self)
     }
 
     /// Absolute value with derivative.
@@ -739,6 +823,122 @@ impl Jet3 {
         Self::select_raw(mask, if_true, if_false)
     }
 }
+
+// ============================================================================
+// Jet3Sqrt: Enables rsqrt fusion for Jet3
+// ============================================================================
+
+/// Wrapper for sqrt(Jet3) that enables automatic rsqrt fusion.
+///
+/// When `Jet3 / Jet3Sqrt` is computed, this automatically uses the faster
+/// `rsqrt` path: `a / sqrt(b)` becomes `a * rsqrt(b)`.
+///
+/// Converts to `Jet3` via `Into` when used in other contexts.
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug)]
+pub struct Jet3Sqrt(Jet3);
+
+impl Jet3Sqrt {
+    /// Evaluate to get the actual sqrt result as Jet3.
+    #[inline(always)]
+    pub fn eval(self) -> Jet3 {
+        // Chain rule: (√f)' = f' / (2√f) = f' * rsqrt(f) / 2
+        let rsqrt_val = self.0.val.rsqrt();
+        let sqrt_val = self.0.val * rsqrt_val;
+        let half_rsqrt = rsqrt_val * Field::from(0.5);
+        Jet3::new(sqrt_val, self.0.dx * half_rsqrt, self.0.dy * half_rsqrt, self.0.dz * half_rsqrt)
+    }
+}
+
+impl From<Jet3Sqrt> for Jet3 {
+    #[inline(always)]
+    fn from(s: Jet3Sqrt) -> Jet3 {
+        s.eval()
+    }
+}
+
+/// Rsqrt fusion: `Jet3 / Jet3Sqrt` computes `a * rsqrt(b)` directly.
+impl core::ops::Div<Jet3Sqrt> for Jet3 {
+    type Output = Jet3;
+    #[inline(always)]
+    fn div(self, rhs: Jet3Sqrt) -> Jet3 {
+        // a / sqrt(b) = a * rsqrt(b)
+        // Derivative: d/dx[a * b^(-1/2)] = a' * rsqrt(b) - a * b' * rsqrt(b)³ / 2
+        let b = rhs.0;
+        let rsqrt_b = b.val.rsqrt();
+        let result_val = self.val * rsqrt_b;
+
+        // Derivative scaling factors
+        let rsqrt_cubed = rsqrt_b * rsqrt_b * rsqrt_b;
+        let half_rsqrt_cubed = rsqrt_cubed * Field::from(0.5);
+
+        Jet3::new(
+            result_val,
+            self.dx * rsqrt_b - self.val * b.dx * half_rsqrt_cubed,
+            self.dy * rsqrt_b - self.val * b.dy * half_rsqrt_cubed,
+            self.dz * rsqrt_b - self.val * b.dz * half_rsqrt_cubed,
+        )
+    }
+}
+
+/// Jet3Sqrt arithmetic: forward to Jet3 after evaluation
+impl core::ops::Add<Jet3> for Jet3Sqrt {
+    type Output = Jet3;
+    #[inline(always)]
+    fn add(self, rhs: Jet3) -> Jet3 {
+        self.eval() + rhs
+    }
+}
+
+impl core::ops::Sub<Jet3> for Jet3Sqrt {
+    type Output = Jet3;
+    #[inline(always)]
+    fn sub(self, rhs: Jet3) -> Jet3 {
+        self.eval() - rhs
+    }
+}
+
+impl core::ops::Mul<Jet3> for Jet3Sqrt {
+    type Output = Jet3;
+    #[inline(always)]
+    fn mul(self, rhs: Jet3) -> Jet3 {
+        self.eval() * rhs
+    }
+}
+
+impl core::ops::Div<Jet3> for Jet3Sqrt {
+    type Output = Jet3;
+    #[inline(always)]
+    fn div(self, rhs: Jet3) -> Jet3 {
+        self.eval() / rhs
+    }
+}
+
+impl core::ops::Add<Jet3Sqrt> for Jet3 {
+    type Output = Jet3;
+    #[inline(always)]
+    fn add(self, rhs: Jet3Sqrt) -> Jet3 {
+        self + rhs.eval()
+    }
+}
+
+impl core::ops::Sub<Jet3Sqrt> for Jet3 {
+    type Output = Jet3;
+    #[inline(always)]
+    fn sub(self, rhs: Jet3Sqrt) -> Jet3 {
+        self - rhs.eval()
+    }
+}
+
+impl core::ops::Mul<Jet3Sqrt> for Jet3 {
+    type Output = Jet3;
+    #[inline(always)]
+    fn mul(self, rhs: Jet3Sqrt) -> Jet3 {
+        self * rhs.eval()
+    }
+}
+
+// Note: Div<Jet3Sqrt> for Jet3 is the rsqrt fusion above
 
 // ============================================================================
 // Arithmetic via chain rule (Jet3)
