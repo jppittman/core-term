@@ -333,6 +333,18 @@ impl Not for F32x4 {
     }
 }
 
+impl core::ops::Neg for F32x4 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        unsafe {
+            // Flip sign bit via XOR with -0.0 (0x80000000 = min i32 value)
+            let neg_zero = _mm_castsi128_ps(_mm_set1_epi32(i32::MIN));
+            Self(_mm_xor_ps(self.0, neg_zero))
+        }
+    }
+}
+
 // ============================================================================
 // U32x4 - 4-lane u32 SIMD for packed RGBA pixels (SSE2)
 // ============================================================================
@@ -826,6 +838,18 @@ impl Not for F32x16 {
         unsafe {
             let all_ones = _mm512_castsi512_ps(_mm512_set1_epi32(-1));
             Self(_mm512_xor_ps(self.0, all_ones))
+        }
+    }
+}
+
+impl core::ops::Neg for F32x16 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        unsafe {
+            // Flip sign bit via XOR with -0.0 (0x80000000 = min i32 value)
+            let neg_zero = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MIN));
+            Self(_mm512_xor_ps(self.0, neg_zero))
         }
     }
 }

@@ -242,6 +242,14 @@ impl Not for ScalarF32 {
     }
 }
 
+impl core::ops::Neg for ScalarF32 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        Self(-self.0)
+    }
+}
+
 // ============================================================================
 // ScalarU32 - Scalar u32 for Discrete fallback
 // ============================================================================
