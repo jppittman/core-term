@@ -800,8 +800,7 @@ pub fn materialize_scalar<M>(m: &M, x: f32, y: f32, out: &mut [f32])
 where
     M: Manifold<Output = Field> + ?Sized,
 {
-    // Evaluate manifold at x, x+1, x+2, ..., x+15 in parallel (16 different points)
-    let xs = Field::sequential(x);
+    let xs = Field::from(x);
     let val = m.eval_raw(xs, Field::from(y), Field::from(0.0), Field::from(0.0));
     let len = PARALLELISM.min(out.len());
     val.store(&mut out[..len]);
