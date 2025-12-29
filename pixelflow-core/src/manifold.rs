@@ -2,7 +2,7 @@
 //!
 //! The core abstraction: a function from 4D coordinates to values.
 
-use crate::Field;
+use crate::{Discrete, Field};
 
 /// A manifold is a function from coordinates to a value.
 ///
@@ -47,6 +47,15 @@ impl<I: crate::numeric::Numeric> Manifold<I> for Field {
     fn eval_raw(&self, _x: I, _y: I, _z: I, _w: I) -> I {
         // Zero-cost conversion: identity for Field, constant jet for Jet2
         I::from_field(*self)
+    }
+}
+
+// Discrete is a constant manifold - always returns itself regardless of coordinates
+impl Manifold for Discrete {
+    type Output = Discrete;
+    #[inline(always)]
+    fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
+        *self
     }
 }
 
