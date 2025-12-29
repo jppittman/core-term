@@ -1,9 +1,128 @@
-//! # PixelFlow Core
+//! # PixelFlow Core: An Algebraic Graphics Engine
 //!
-//! A minimal lambda calculus EDSL over SIMD fields.
+//! **A minimal lambda calculus (eDSL) for composing pull-based graphics computations.**
 //!
-//! The type system IS the AST. `Field` is the computational substrate.
-//! `Manifold` is the core abstraction: a function from coordinates to values.
+//! PixelFlow Core is a GPU-free graphics library that turns algebraic expressions
+//! into fused SIMD kernels. It powers elegant, high-performance CPU rendering by
+//! leveraging the type system as a compile-time compute graph.
+//!
+//! ## Philosophy
+//!
+//! ### Pull-Based, Not Push-Based
+//! Pixels are **sampled**, not computed. You define *what* each pixel is at a given
+//! coordinate—the library handles the rest. No imperative rendering loops, no state
+//! mutation.
+//!
+//! ### The Type System IS the Compute Graph
+//! Every operator (`+`, `*`, `/`, `sqrt`) creates a type. The type tree is the
+//! abstract syntax tree (AST) of your computation. The compiler monomorphizes and
+//! inlines it into a single fused kernel with zero runtime dispatch.
+//!
+//! ### SIMD as Algebra
+//! `Field` is a transparent wrapper over SIMD vectors. You write algebraic equations,
+//! and the compiler emits assembly with 4–16 lanes of parallelism (depending on target).
+//!
+//! ### Zero-Cost Abstractions
+//! All composition overhead is erased at compile time. A complex manifold expression
+//! becomes a single tight loop in the final binary—no vtable, no intermediate vectors,
+//! no memory allocation.
+//!
+//! ## Core Concepts
+//!
+//! ### Manifolds
+//! A **manifold** is a function from 4D coordinates (typically x, y, z, w) to a value.
+//! It's the central abstraction. You build manifolds by composing operators:
+//!
+//! ```text
+//! let circle = (X * X + Y * Y).sqrt() - 1.0;
+//! //          Type: Sqrt<Sub<Add<Mul<X,X>, Mul<Y,Y>>, f32>>
+//! //          Graph: A compose tree, evaluated lazily
+//! ```
+//!
+//! Manifolds are **generic over the numeric type**, so the same expression works
+//! with concrete values (`Field`) or automatic differentiation (`Jet2`).
+//!
+//! ### Fields and Jets
+//! `Field` and `Jet2` are the **intermediate representation (IR)**. Users should
+//! not manipulate them directly. Instead, you compose manifolds at the high level,
+//! and the library handles IR internally.
+//!
+//! - **`Field`**: A SIMD batch of f32 values (4–16 lanes)
+//! - **`Jet2`**: A value with 2 automatic derivatives (value, ∂/∂x, ∂/∂y)
+//! - **`Discrete`**: A SIMD batch of packed RGBA u32 pixels
+//!
+//! ### The Type System as AST
+//! Every manifold expression is a static type that captures its structure:
+//!
+//! ```ignore
+//! // Type: Add<Mul<X, Y>, f32>
+//! let expr1 = X * Y + 1.0;
+//!
+//! // Type: Mul<Add<X, Y>, X>
+//! let expr2 = (X + Y) * X;
+//! ```
+//!
+//! The compiler sees the full AST, inlines all operators, and produces a single
+//! monomorphic kernel. No dynamic dispatch. No vtable overhead.
+//!
+//! ## Architecture
+//!
+//! ```
+//! manifold.rs    ← Manifold trait (function from coords to value)
+//! ext.rs         ← ManifoldExt (fluent API for building expressions)
+//! ops/           ← Operators (Add, Mul, Sqrt, etc.)
+//! combinators/   ← Select, Fix, Map (control flow as types)
+//! variables.rs   ← X, Y, Z, W (coordinate variables)
+//! jet.rs         ← Jet2, Jet3 (automatic differentiation)
+//! backend/       ← SIMD abstraction (x86, ARM, scalar)
+//! ```
+//!
+//! ## Quick Start: Building a Circle
+//!
+//! ```ignore
+//! use pixelflow_core::{ManifoldExt, X, Y, materialize_discrete};
+//! use pixelflow_graphics::Color;
+//!
+//! // Define a circle signed distance field
+//! let circle = (X * X + Y * Y).sqrt() - 1.0;
+//!
+//! // Evaluate with Field (concrete SIMD values)
+//! let field_value = circle.eval(3.0, 4.0, 0.0, 0.0);
+//! // field_value ≈ 4.0 (distance from origin)
+//!
+//! // Evaluate with Jet2 (get gradients for antialiasing)
+//! let x_jet = Jet2::x(3.0);
+//! let y_jet = Jet2::y(4.0);
+//! let jet_result = circle.eval_raw(x_jet, y_jet, ...);
+//! // jet_result.val ≈ 4.0
+//! // jet_result.dx ≈ 0.6  (∂/∂x)
+//! // jet_result.dy ≈ 0.8  (∂/∂y)
+//! ```
+//!
+//! ## Key Modules
+//!
+//! - **[`manifold`]** — `Manifold` trait and implementations
+//! - **[`ext`]** — `ManifoldExt` extension trait (fluent API)
+//! - **[`ops`]** — Binary operators (Add, Mul, Div, etc.)
+//! - **[`combinators`]** — Control flow (Select, Fix)
+//! - **[`variables`]** — Coordinate variables (X, Y, Z, W)
+//! - **[`jet`]** — Automatic differentiation (Jet2, Jet3)
+//! - **[`backend`]** — SIMD abstraction layer
+//!
+//! ## Further Reading
+//!
+//! For detailed documentation on specific topics:
+//! - **Manifold Philosophy**: See [`manifold`] for the design rationale
+//! - **Building Expressions**: See [`ext`] for the fluent API
+//! - **Why Fields Are Hidden**: See [`Field`] documentation
+//! - **Automatic Differentiation**: See [`jet`] module
+//!
+//! ## Performance Notes
+//!
+//! - **Target**: ~5 ns per pixel (155 FPS at 1080p on modern CPUs)
+//! - **Parallelism**: 4–16 SIMD lanes (depending on CPU target: AVX-512, AVX2, SSE, NEON, or scalar)
+//! - **Optimization**: All composition overhead erased by monomorphization and inlining
+//! - **No Allocation**: Manifolds are typically zero-sized types
 
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -80,25 +199,152 @@ type NativeSimd = <backend::scalar::Scalar as Backend>::F32;
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
 
-/// The computational substrate for continuous values.
+/// The computational substrate for continuous values (intermediate representation).
 ///
-/// `Field` represents a SIMD batch of floating-point values.
-/// This is the concrete type that manifolds evaluate to.
+/// `Field` represents a SIMD batch of floating-point values at the IR level.
+/// It's what manifolds evaluate to at runtime, but users should NOT construct or
+/// manipulate `Field` values directly.
 ///
-/// **Internal type.** Users should work with manifolds, not fields directly.
-/// The library is designed around declarative manifold composition.
+/// # What is Field?
+///
+/// Think of `Field` as "LLVM IR for floating-point math." Just as you wouldn't
+/// write LLVM IR directly in your source code, you shouldn't write `Field` directly.
+///
+/// - **Level of abstraction**: SIMD vectors (16 f32 values on AVX-512)
+/// - **Parallelism**: Fixed-width SIMD lanes (4, 8, 16, or scalar depending on target)
+/// - **Operations**: Low-level SIMD operations (`add`, `mul`, `sqrt`, etc.)
+/// - **Evaluation semantics**: Batch evaluation with no control flow
+///
+/// # Why Is Field Hidden?
+///
+/// The library separates two levels:
+///
+/// | Level | How | What | Example |
+/// |-------|-----|------|---------|
+/// | **High-level** | Manifold composition | *What* to compute | `(X * X + Y * Y).sqrt()` |
+/// | **Low-level (IR)** | Field operations | *How* to compute it | `Field::raw_mul(...)` |
+///
+/// **Users should work at the high level.** The manifold level is:
+/// - Declarative (you express the computation, not the steps)
+/// - Type-safe (the type system captures the compute graph)
+/// - Polymorphic (same code works with `Field`, `Jet2`, `Jet3`)
+///
+/// The `Field` level is:
+/// - Imperative (step-by-step SIMD operations)
+/// - Type-restricted (specific to `Field`, not `Jet2`)
+/// - A leaky abstraction (you have to know about SIMD widths and semantics)
+///
+/// # When Would You Use Field Directly?
+///
+/// Almost never. If you're tempted to:
+/// - ❌ Call `Field::...` methods directly
+/// - ❌ Use `map_lanes`, `zip_lanes`, `gather`
+/// - ❌ Write custom loops over SIMD lanes
+///
+/// **Instead:**
+/// - ✅ Compose manifolds: `X.sqrt().abs().max(Y)`
+/// - ✅ Use `map` on manifolds: `my_manifold.map(|f| ...)`
+/// - ✅ Implement manifolds: Define a custom `Manifold<Output = T>` type
+///
+/// # The Exception: Custom Manifold Implementation
+///
+/// If you're implementing a custom `Manifold`, you'll receive `Field` (and `Jet2`)
+/// values inside `eval_raw`. However, you **must compose these values using manifold
+/// operators**, not call low-level Field methods.
+///
+/// Example (inside the crate):
+/// ```ignore
+/// struct MyManifold;
+/// impl Manifold for MyManifold {
+///     type Output = Field;
+///     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+///         // Compose values using operators - these work polymorphically
+///         // and work with any Computational type (Field, Jet2, Jet3)
+///         (x * x + y * y).sqrt()
+///     }
+/// }
+/// ```
+///
+/// External users implementing manifolds **cannot** call `Field::...` methods
+/// directly. Instead, use operators (`+`, `-`, `*`, `/`, `sqrt`, `abs`, etc.)
+/// which are polymorphic and work with all computational types.
+///
+/// # Marked `#[doc(hidden)]`
+///
+/// This is intentional. The docs you're reading now explain why `Field` exists
+/// (as IR), but the daily API shouldn't expose it. If you're seeing `Field` docs,
+/// you're either:
+/// 1. Implementing a custom manifold (legitimate)
+/// 2. Trying to use the library wrong (please use manifold operators instead)
 #[doc(hidden)]
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct Field(NativeSimd);
 
-/// SIMD batch of packed RGBA pixels.
+/// SIMD batch of packed RGBA pixels (intermediate representation).
 ///
 /// `Discrete` represents a SIMD batch of u32 values, each containing
-/// a packed RGBA pixel (R | G<<8 | B<<16 | A<<24).
+/// a packed RGBA pixel: `(R | (G << 8) | (B << 16) | (A << 24))`.
 ///
-/// **Internal type.** Use color manifolds instead of constructing directly.
-/// This is the output type for color manifolds, ready for framebuffer writes.
+/// This is the output type for **color manifolds**—manifolds that produce
+/// `Manifold<Output = Discrete>`. Like `Field`, this is an IR type and users
+/// should not construct it directly.
+///
+/// # What Is Discrete?
+///
+/// Just as `Field` is the IR for floating-point SIMD vectors, `Discrete` is the IR
+/// for packed pixel data.
+///
+/// - **Content**: SIMD batch of packed u32 pixels (4, 8, 16, or scalar)
+/// - **Format**: RGBA8 with 8 bits per channel (0–255)
+/// - **Packing**: `r | (g << 8) | (b << 16) | (a << 24)`
+/// - **Target**: Direct framebuffer write (no unpacking needed)
+///
+/// # How to Use Discrete Manifolds
+///
+/// **Build color manifolds compositionally:**
+///
+/// ```ignore
+/// use pixelflow_graphics::{Color, NamedColor, Rgba8};
+/// use pixelflow_core::ManifoldExt;
+///
+/// // Wrong: Don't construct Discrete directly
+/// // let pixels = Discrete::splat(0xFF0000FF);  // ❌
+///
+/// // Right: Use color combinators
+/// let red = Color::Named(NamedColor::Red);  // ✅
+/// ```
+///
+/// **Evaluate and materialize:**
+///
+/// ```ignore
+/// use pixelflow_core::materialize_discrete;
+///
+/// let mut pixels = [0u32; PARALLELISM];
+/// materialize_discrete(&red, x, y, &mut pixels);
+/// ```
+///
+/// # Why Is Discrete Hidden?
+///
+/// Like `Field`, `Discrete` is a low-level IR. The public API is:
+/// - Color manifolds (built from combinators)
+/// - `materialize_discrete` for evaluation
+/// - Color operators from `pixelflow-graphics`
+///
+/// Users should not:
+/// - ❌ Construct `Discrete` values directly
+/// - ❌ Call `Discrete::pack` manually
+/// - ❌ Work with packed pixel data at the SIMD level
+///
+/// Instead:
+/// - ✅ Compose color manifolds
+/// - ✅ Use `materialize_discrete` to evaluate
+/// - ✅ Work with the output buffer (already packed u32 pixels)
+///
+/// # Marked `#[doc(hidden)]`
+///
+/// This documentation is for those implementing custom color manifolds or using
+/// the library at advanced levels. For normal use, work with the high-level API.
 #[doc(hidden)]
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
