@@ -39,6 +39,23 @@ pub enum SelectionMode {
     Block, // Rectangular block selection
 }
 
+/// Represents the dirty state of a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineState {
+    Clean,
+    Dirty,
+}
+
+impl From<bool> for LineState {
+    fn from(is_dirty: bool) -> Self {
+        if is_dirty {
+            LineState::Dirty
+        } else {
+            LineState::Clean
+        }
+    }
+}
+
 /// A snapshot of a single line in the terminal grid.
 ///
 /// Uses `Arc<Vec<Glyph>>` for Copy-on-Write semantics - cloning a line just
@@ -59,8 +76,11 @@ impl Index<usize> for SnapshotLine {
 
 impl SnapshotLine {
     /// Creates a new SnapshotLine from an existing Arc (cheap clone).
-    pub fn from_arc(cells: Arc<Vec<Glyph>>, is_dirty: bool) -> Self {
-        Self { is_dirty, cells }
+    pub fn from_arc(cells: Arc<Vec<Glyph>>, state: LineState) -> Self {
+        Self {
+            is_dirty: state == LineState::Dirty,
+            cells,
+        }
     }
 }
 
