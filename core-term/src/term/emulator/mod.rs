@@ -170,7 +170,7 @@ impl TerminalEmulator {
         let lines: Vec<SnapshotLine> = (0..height)
             .map(|y_idx| {
                 let is_dirty = self.screen.dirty.get(y_idx).is_none_or(|&d| d != 0);
-                SnapshotLine::from_arc(active_grid[y_idx].clone(), is_dirty)
+                SnapshotLine::from_arc(active_grid[y_idx].clone(), is_dirty.into())
             })
             .collect();
 
