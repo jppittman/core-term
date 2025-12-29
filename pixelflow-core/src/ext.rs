@@ -232,19 +232,20 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         }
     }
 
-    /// Pin this manifold to fixed coordinates.
+    /// Pin this manifold to manifold-computed coordinates.
     ///
-    /// Returns a new manifold that ignores its input coordinates and
-    /// always evaluates the inner manifold at the specified coordinates.
+    /// Returns a new manifold that evaluates the inner manifold at the given
+    /// coordinate manifolds (which can be constants or expressions).
     ///
     /// # Example
     ///
     /// ```ignore
+    /// // Evaluate at constant field coordinates
     /// let at_origin = manifold.at(0.0.into(), 0.0.into(), 0.0.into(), 0.0.into());
-    /// let result = at_origin.eval_raw(100.0.into(), 100.0.into(), 100.0.into(), 100.0.into());
+    /// let result = at_origin.eval_raw(Field::from(100.0), Field::from(100.0), Field::from(100.0), Field::from(100.0));
     /// // result is the same as manifold.eval_raw(0.0, 0.0, 0.0, 0.0)
     /// ```
-    fn at(self, x: crate::Field, y: crate::Field, z: crate::Field, w: crate::Field) -> At<crate::Field, Self> {
+    fn at(self, x: crate::Field, y: crate::Field, z: crate::Field, w: crate::Field) -> At<crate::Field, crate::Field, crate::Field, crate::Field, Self> {
         At { inner: self, x, y, z, w }
     }
 
