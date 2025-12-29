@@ -15,7 +15,26 @@
 //!
 //! No iteration. Nesting is occlusion.
 
-use pixelflow_core::{Discrete, Field, Jet3, Manifold, ManifoldExt, Select};
+use pixelflow_core::{At, Discrete, Field, Jet3, Manifold, Select};
+
+// ============================================================================
+// HELPER: Lift Field mask to Jet3 manifold for Select conditions
+// ============================================================================
+
+/// Wraps a Field mask to implement Manifold<Jet3> for use as a Select condition.
+/// This is needed because Select<C, T, F> for Jet3 requires C: Manifold<Jet3, Output = Jet3>.
+#[derive(Clone, Copy)]
+struct FieldMask(Field);
+
+impl Manifold<Jet3> for FieldMask {
+    type Output = Jet3;
+
+    #[inline(always)]
+    fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Jet3 {
+        // Convert Field mask to Jet3 with zero derivatives
+        Jet3::constant(self.0)
+    }
+}
 
 // ============================================================================
 // ROOT: ScreenToDir
@@ -233,44 +252,12 @@ where
         let hz = rz * safe_t;
 
         // 4. Blend via manifold composition using Select combinator
-        // Create wrappers that capture the warped/original coordinates
-        struct MaterialWrap<'a, M> {
-            material: &'a M,
-            hx: Jet3,
-            hy: Jet3,
-            hz: Jet3,
-            w: Jet3,
-        }
+        // Pin material to warped coords, background to original ray coords
+        let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
+        let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
 
-        impl<'a, M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for MaterialWrap<'a, M> {
-            type Output = Field;
-            #[inline(always)]
-            fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Field {
-                self.material.eval_raw(self.hx, self.hy, self.hz, self.w)
-            }
-        }
-
-        struct BackgroundWrap<'a, B> {
-            background: &'a B,
-            rx: Jet3,
-            ry: Jet3,
-            rz: Jet3,
-            w: Jet3,
-        }
-
-        impl<'a, B: Manifold<Jet3, Output = Field>> Manifold<Jet3> for BackgroundWrap<'a, B> {
-            type Output = Field;
-            #[inline(always)]
-            fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Field {
-                self.background.eval_raw(self.rx, self.ry, self.rz, self.w)
-            }
-        }
-
-        let mat = MaterialWrap { material: &self.material, hx, hy, hz, w };
-        let bg = BackgroundWrap { background: &self.background, rx, ry, rz, w };
-
-        // Compose fully: mask is a Field manifold, select between material and background manifolds
-        Select { cond: mask, if_true: mat, if_false: bg }
+        // Compose fully: mask selects between material and background manifolds
+        Select { cond: FieldMask(mask), if_true: mat, if_false: bg }
             .eval_raw(rx, ry, rz, w)
     }
 }
@@ -317,43 +304,12 @@ where
         let hz = rz * safe_t;
 
         // 4. Blend via manifold composition using Select combinator
-        struct MaterialWrap<'a, M> {
-            material: &'a M,
-            hx: Jet3,
-            hy: Jet3,
-            hz: Jet3,
-            w: Jet3,
-        }
+        // Pin material to warped coords, background to original ray coords
+        let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
+        let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
 
-        impl<'a, M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for MaterialWrap<'a, M> {
-            type Output = Discrete;
-            #[inline(always)]
-            fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
-                self.material.eval_raw(self.hx, self.hy, self.hz, self.w)
-            }
-        }
-
-        struct BackgroundWrap<'a, B> {
-            background: &'a B,
-            rx: Jet3,
-            ry: Jet3,
-            rz: Jet3,
-            w: Jet3,
-        }
-
-        impl<'a, B: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for BackgroundWrap<'a, B> {
-            type Output = Discrete;
-            #[inline(always)]
-            fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
-                self.background.eval_raw(self.rx, self.ry, self.rz, self.w)
-            }
-        }
-
-        let mat = MaterialWrap { material: &self.material, hx, hy, hz, w };
-        let bg = BackgroundWrap { background: &self.background, rx, ry, rz, w };
-
-        // Compose fully: mask is a Field manifold, select between material and background manifolds
-        Select { cond: mask, if_true: mat, if_false: bg }
+        // Compose fully: mask selects between material and background manifolds
+        Select { cond: FieldMask(mask), if_true: mat, if_false: bg }
             .eval_raw(rx, ry, rz, w)
     }
 }
