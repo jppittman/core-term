@@ -201,17 +201,18 @@ fn main() -> anyhow::Result<()> {
     {
         use core_term::io::event_monitor_actor::EventMonitorActor;
         use core_term::io::pty::{NixPty, PtyConfig};
-        use core_term::terminal_app::spawn_terminal_app;
+        use core_term::terminal_app::{spawn_terminal_app, TerminalAppParams};
 
         // Spawn terminal app with engine handle
-        let (app_handle, _app_thread_handle) = spawn_terminal_app(
-            term_emulator,
-            pty_write_tx,
-            pty_cmd_rx,
-            core_term::config::Config::default(),
-            engine_handle,
-        )
-        .context("Failed to spawn terminal app")?;
+        let params = TerminalAppParams {
+            emulator: term_emulator,
+            pty_tx: pty_write_tx,
+            pty_rx: pty_cmd_rx,
+            config: core_term::config::Config::default(),
+            engine_tx: engine_handle,
+        };
+        let (app_handle, _app_thread_handle) =
+            spawn_terminal_app(params).context("Failed to spawn terminal app")?;
 
         // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
