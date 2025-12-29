@@ -50,6 +50,24 @@ impl<I: crate::numeric::Numeric> Manifold<I> for Field {
     }
 }
 
+// Jet2 is a constant manifold - ignores input, always returns itself
+impl Manifold<crate::Jet2> for crate::Jet2 {
+    type Output = crate::Jet2;
+    #[inline(always)]
+    fn eval_raw(&self, _x: crate::Jet2, _y: crate::Jet2, _z: crate::Jet2, _w: crate::Jet2) -> crate::Jet2 {
+        *self
+    }
+}
+
+// Jet3 is a constant manifold - ignores input, always returns itself
+impl Manifold<crate::Jet3> for crate::Jet3 {
+    type Output = crate::Jet3;
+    #[inline(always)]
+    fn eval_raw(&self, _x: crate::Jet3, _y: crate::Jet3, _z: crate::Jet3, _w: crate::Jet3) -> crate::Jet3 {
+        *self
+    }
+}
+
 // Arc<M> is a manifold if M is (allows Arc<dyn Manifold> to work)
 impl<M: Manifold + ?Sized> Manifold for alloc::sync::Arc<M> {
     type Output = M::Output;
