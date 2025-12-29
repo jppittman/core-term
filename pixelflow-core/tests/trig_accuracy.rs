@@ -8,23 +8,22 @@ use std::f32::consts::PI;
 
 #[test]
 fn test_sin_basic() {
-    // Basic test: sin(0) should be ~0, sin(π/2) should be ~1
+    // Evaluate sin at 16 points: [0, 1, 2, ..., 15]
     let sin_x = X.sin();
+    let mut out = [0.0f32; 16];
+    pixelflow_core::materialize_scalar(&sin_x, 0.0, 0.0, &mut out);
 
-    // sin(0) ≈ 0
-    let mut zero_out = [0.0f32; 16];
-    pixelflow_core::materialize_scalar(&sin_x, 0.0, 0.0, &mut zero_out);
-    println!("sin(0) = {}", zero_out[0]);
-    assert!(zero_out[0].abs() < 0.001, "sin(0) should be ~0, got {}", zero_out[0]);
+    // out[0] = sin(0) ≈ 0
+    println!("sin(0) = {}", out[0]);
+    assert!(out[0].abs() < 0.001, "sin(0) should be ~0, got {}", out[0]);
 
-    // sin(π/2) ≈ 1
-    let mut half_pi_out = [0.0f32; 16];
-    pixelflow_core::materialize_scalar(&sin_x, PI / 2.0, 0.0, &mut half_pi_out);
-    println!("sin(π/2) = {}", half_pi_out[0]);
+    // Evaluate sin at π/2 to verify sin(π/2) ≈ 1
+    pixelflow_core::materialize_scalar(&sin_x, PI / 2.0, 0.0, &mut out);
+    println!("sin(π/2) = {}", out[0]);
     assert!(
-        (half_pi_out[0] - 1.0).abs() < 0.001,
+        (out[0] - 1.0).abs() < 0.001,
         "sin(π/2) should be ~1, got {}",
-        half_pi_out[0]
+        out[0]
     );
 }
 
