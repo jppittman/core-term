@@ -68,11 +68,11 @@ impl<M: Manifold + ?Sized> Manifold for alloc::boxed::Box<M> {
     }
 }
 
-// &M is a manifold if M is
-impl<M: Manifold + ?Sized> Manifold for &M {
+// &M is a manifold if M is (works for any Computational input type)
+impl<I: crate::numeric::Computational, M: Manifold<I> + ?Sized> Manifold<I> for &M {
     type Output = M::Output;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         (**self).eval_raw(x, y, z, w)
     }
 }

@@ -33,7 +33,7 @@
 //! ```
 
 use crate::Manifold;
-use crate::combinators::{Map, Select};
+use crate::combinators::{At, Map, Select};
 use crate::ops::{Abs, Add, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Sin, Sqrt, Sub};
 
 use alloc::sync::Arc;
@@ -230,6 +230,22 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
             if_true,
             if_false,
         }
+    }
+
+    /// Pin this manifold to fixed coordinates.
+    ///
+    /// Returns a new manifold that ignores its input coordinates and
+    /// always evaluates the inner manifold at the specified coordinates.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let at_origin = manifold.at(0.0.into(), 0.0.into(), 0.0.into(), 0.0.into());
+    /// let result = at_origin.eval_raw(100.0.into(), 100.0.into(), 100.0.into(), 100.0.into());
+    /// // result is the same as manifold.eval_raw(0.0, 0.0, 0.0, 0.0)
+    /// ```
+    fn at(self, x: crate::Field, y: crate::Field, z: crate::Field, w: crate::Field) -> At<crate::Field, Self> {
+        At { inner: self, x, y, z, w }
     }
 
     /// Type-erase this manifold into a boxed trait object.
