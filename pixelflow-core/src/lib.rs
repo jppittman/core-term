@@ -228,22 +228,28 @@ impl Field {
     // Trigonometric Operations (for Spherical Harmonics)
     // ========================================================================
 
-    /// Sine (per-lane via libm).
+    /// Sine using SIMD Chebyshev approximation.
+    /// Vectorized across all lanes (not per-lane scalar).
+    /// Accuracy: ~7-8 significant digits.
     #[inline(always)]
     pub(crate) fn sin(self) -> Self {
-        self.map_lanes(libm::sinf)
+        ops::trig::cheby_sin(self)
     }
 
-    /// Cosine (per-lane via libm).
+    /// Cosine using SIMD Chebyshev approximation.
+    /// Vectorized across all lanes (not per-lane scalar).
+    /// Accuracy: ~7-8 significant digits.
     #[inline(always)]
     pub(crate) fn cos(self) -> Self {
-        self.map_lanes(libm::cosf)
+        ops::trig::cheby_cos(self)
     }
 
-    /// Two-argument arctangent (per-lane via libm).
+    /// Two-argument arctangent using SIMD Chebyshev approximation.
+    /// Vectorized across all lanes (not per-lane scalar).
+    /// Accuracy: ~7-8 significant digits.
     #[inline(always)]
     pub(crate) fn atan2(self, x: Self) -> Self {
-        self.zip_lanes(x, libm::atan2f)
+        ops::trig::cheby_atan2(self, x)
     }
 
     /// Power function (per-lane via libm).

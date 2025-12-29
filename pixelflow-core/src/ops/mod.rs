@@ -6,6 +6,7 @@ pub mod vector;
 
 mod base;
 mod chained;
+pub(crate) mod trig;
 
 pub use binary::*;
 pub use compare::*;
