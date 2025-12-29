@@ -210,16 +210,24 @@ where
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
         // 2. Check Hit Validity (Mask)
+        // Must be positive and finite, and derivatives must be reasonable
         let zero = Field::from(0.0);
         let t_max = Field::from(1e6);
         let deriv_max = Field::from(1e4);
 
+        // Basic validity: positive and not too large
         let valid_t = t.val.gt(zero) & t.val.lt(t_max);
+
+        // Derivative sanity: reject if derivatives are extreme (grazing angle)
         let deriv_mag_sq = t.dx * t.dx + t.dy * t.dy + t.dz * t.dz;
         let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max);
+
         let mask = valid_t & valid_deriv;
 
-        // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
+        // 3. THE SAFE WARP
+        // If we missed, t might be NaN or Inf. Multiplying rx * NaN = NaN.
+        // We must sanitize t before the warp to protect the Material arithmetic.
+        // (We mask the color later, but we need the math to be valid now).
         let one = mask & Field::from(1.0);
         let safe_t = Jet3 {
             val: t.val * one,
@@ -232,12 +240,13 @@ where
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
-        // 4. Compose material and background via manifold evaluation
+        // 4. Blend material and background via conditional arithmetic.
+        // Since both values are already evaluated, we use Field's bitwise operators
+        // which implement the select pattern with SIMD-level all/any optimization:
+        // result = (mask & fg) | ((!mask) & bg)
         let fg = self.material.eval_raw(hx, hy, hz, w);
         let bg = self.background.eval_raw(rx, ry, rz, w);
 
-        // Idiomatic PixelFlow: use Field operators for conditional blend
-        // This implements (mask & fg) | ((!mask) & bg) with SIMD optimization
         (mask & fg) | ((!mask) & bg)
     }
 }
@@ -283,11 +292,9 @@ where
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
-        // 4. Compose material and background via manifold evaluation
         let fg = self.material.eval_raw(hx, hy, hz, w);
         let bg = self.background.eval_raw(rx, ry, rz, w);
 
-        // Idiomatic PixelFlow: Discrete implements Manifold and has proper select
         Discrete::select(mask, fg, bg)
     }
 }
