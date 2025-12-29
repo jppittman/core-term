@@ -15,7 +15,7 @@
 //!
 //! No iteration. Nesting is occlusion.
 
-use pixelflow_core::{Discrete, Field, Jet3, Manifold, ManifoldExt};
+use pixelflow_core::{Discrete, Field, Jet3, Manifold, ManifoldExt, Select};
 
 // ============================================================================
 // ROOT: ScreenToDir
@@ -209,25 +209,17 @@ where
         // 1. Ask Geometry for distance t
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
-        // 2. Check Hit Validity (Mask)
-        // Must be positive and finite, and derivatives must be reasonable
+        // 2. Check Hit Validity (Mask) - is t a valid hit?
         let zero = Field::from(0.0);
         let t_max = Field::from(1e6);
         let deriv_max = Field::from(1e4);
 
-        // Basic validity: positive and not too large
         let valid_t = t.val.gt(zero) & t.val.lt(t_max);
-
-        // Derivative sanity: reject if derivatives are extreme (grazing angle)
         let deriv_mag_sq = t.dx * t.dx + t.dy * t.dy + t.dz * t.dz;
         let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max);
-
         let mask = valid_t & valid_deriv;
 
-        // 3. THE SAFE WARP
-        // If we missed, t might be NaN or Inf. Multiplying rx * NaN = NaN.
-        // We must sanitize t before the warp to protect the Material arithmetic.
-        // (We mask the color later, but we need the math to be valid now).
+        // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
         let one = mask & Field::from(1.0);
         let safe_t = Jet3 {
             val: t.val * one,
@@ -240,14 +232,46 @@ where
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
-        // 4. Blend material and background via conditional arithmetic.
-        // Since both values are already evaluated, we use Field's bitwise operators
-        // which implement the select pattern with SIMD-level all/any optimization:
-        // result = (mask & fg) | ((!mask) & bg)
-        let fg = self.material.eval_raw(hx, hy, hz, w);
-        let bg = self.background.eval_raw(rx, ry, rz, w);
+        // 4. Blend via manifold composition using Select combinator
+        // Create wrappers that capture the warped/original coordinates
+        struct MaterialWrap<'a, M> {
+            material: &'a M,
+            hx: Jet3,
+            hy: Jet3,
+            hz: Jet3,
+            w: Jet3,
+        }
 
-        (mask & fg) | ((!mask) & bg)
+        impl<'a, M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for MaterialWrap<'a, M> {
+            type Output = Field;
+            #[inline(always)]
+            fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Field {
+                self.material.eval_raw(self.hx, self.hy, self.hz, self.w)
+            }
+        }
+
+        struct BackgroundWrap<'a, B> {
+            background: &'a B,
+            rx: Jet3,
+            ry: Jet3,
+            rz: Jet3,
+            w: Jet3,
+        }
+
+        impl<'a, B: Manifold<Jet3, Output = Field>> Manifold<Jet3> for BackgroundWrap<'a, B> {
+            type Output = Field;
+            #[inline(always)]
+            fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Field {
+                self.background.eval_raw(self.rx, self.ry, self.rz, self.w)
+            }
+        }
+
+        let mat = MaterialWrap { material: &self.material, hx, hy, hz, w };
+        let bg = BackgroundWrap { background: &self.background, rx, ry, rz, w };
+
+        // Compose fully: mask is a Field manifold, select between material and background manifolds
+        Select { cond: mask, if_true: mat, if_false: bg }
+            .eval_raw(rx, ry, rz, w)
     }
 }
 
@@ -292,10 +316,45 @@ where
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
-        let fg = self.material.eval_raw(hx, hy, hz, w);
-        let bg = self.background.eval_raw(rx, ry, rz, w);
+        // 4. Blend via manifold composition using Select combinator
+        struct MaterialWrap<'a, M> {
+            material: &'a M,
+            hx: Jet3,
+            hy: Jet3,
+            hz: Jet3,
+            w: Jet3,
+        }
 
-        Discrete::select(mask, fg, bg)
+        impl<'a, M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for MaterialWrap<'a, M> {
+            type Output = Discrete;
+            #[inline(always)]
+            fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
+                self.material.eval_raw(self.hx, self.hy, self.hz, self.w)
+            }
+        }
+
+        struct BackgroundWrap<'a, B> {
+            background: &'a B,
+            rx: Jet3,
+            ry: Jet3,
+            rz: Jet3,
+            w: Jet3,
+        }
+
+        impl<'a, B: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for BackgroundWrap<'a, B> {
+            type Output = Discrete;
+            #[inline(always)]
+            fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
+                self.background.eval_raw(self.rx, self.ry, self.rz, self.w)
+            }
+        }
+
+        let mat = MaterialWrap { material: &self.material, hx, hy, hz, w };
+        let bg = BackgroundWrap { background: &self.background, rx, ry, rz, w };
+
+        // Compose fully: mask is a Field manifold, select between material and background manifolds
+        Select { cond: mask, if_true: mat, if_false: bg }
+            .eval_raw(rx, ry, rz, w)
     }
 }
 
