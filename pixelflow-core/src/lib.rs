@@ -129,6 +129,7 @@ impl Field {
     ///
     /// `materialize` properly evaluates a manifold at coordinates and handles
     /// the SoA-to-AoS transpose required for interleaved output buffers.
+    #[inline(always)]
     pub(crate) fn store(&self, out: &mut [f32]) {
         self.0.store(out)
     }
@@ -786,24 +787,6 @@ where
             out[base + 3] = buf_w[i];
         }
     }
-}
-
-/// Materialize a scalar Field manifold into an f32 buffer.
-///
-/// Evaluates the manifold at sequential x coordinates and stores the results
-/// as f32 values in the output buffer, one per SIMD lane.
-///
-/// This is the standard way to extract values from scalar manifolds without
-/// exposing the internal `store()` method, maintaining the principle that
-/// manifolds should be used compositionally rather than lane-by-lane.
-pub fn materialize_scalar<M>(m: &M, x: f32, y: f32, out: &mut [f32])
-where
-    M: Manifold<Output = Field> + ?Sized,
-{
-    let xs = Field::from(x);
-    let val = m.eval_raw(xs, Field::from(y), Field::from(0.0), Field::from(0.0));
-    let len = PARALLELISM.min(out.len());
-    val.store(&mut out[..len]);
 }
 
 /// Parallelism width (number of lanes).
