@@ -45,7 +45,7 @@ pub mod ext;
 
 pub use combinators::*;
 pub use ext::*;
-pub use jet::{Jet2, Jet3};
+// Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
 pub use numeric::Computational;
 pub use ops::binary::*;
@@ -85,8 +85,9 @@ type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
 /// `Field` represents a SIMD batch of floating-point values.
 /// This is the concrete type that manifolds evaluate to.
 ///
-/// Users never see the internal SIMD representation.
-/// Create Fields via `From<f32>` or `From<i32>`.
+/// **Internal type.** Users should work with manifolds, not fields directly.
+/// The library is designed around declarative manifold composition.
+#[doc(hidden)]
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct Field(NativeSimd);
@@ -96,7 +97,9 @@ pub struct Field(NativeSimd);
 /// `Discrete` represents a SIMD batch of u32 values, each containing
 /// a packed RGBA pixel (R | G<<8 | B<<16 | A<<24).
 ///
+/// **Internal type.** Use color manifolds instead of constructing directly.
 /// This is the output type for color manifolds, ready for framebuffer writes.
+#[doc(hidden)]
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct Discrete(NativeU32Simd);

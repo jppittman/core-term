@@ -212,16 +212,16 @@ where
 // Generic implementation for non-Field types (Jet2, etc.)
 // ============================================================================
 
-impl<C, T, F, O> Manifold<crate::Jet2> for Select<C, T, F>
+impl<C, T, F, O> Manifold<crate::jet::Jet2> for Select<C, T, F>
 where
     O: Numeric,
-    C: Manifold<crate::Jet2, Output = O>,
-    T: Manifold<crate::Jet2, Output = O>,
-    F: Manifold<crate::Jet2, Output = O>,
+    C: Manifold<crate::jet::Jet2, Output = O>,
+    T: Manifold<crate::jet::Jet2, Output = O>,
+    F: Manifold<crate::jet::Jet2, Output = O>,
 {
     type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: crate::Jet2, y: crate::Jet2, z: crate::Jet2, w: crate::Jet2) -> O {
+    fn eval_raw(&self, x: crate::jet::Jet2, y: crate::jet::Jet2, z: crate::jet::Jet2, w: crate::jet::Jet2) -> O {
         let mask = self.cond.eval_raw(x, y, z, w);
         if mask.all() {
             return self.if_true.eval_raw(x, y, z, w);
@@ -240,16 +240,16 @@ where
 // Jet3 with Selectable output (for Discrete in the mullet architecture)
 // ============================================================================
 
-impl<C, T, F, O> Manifold<crate::Jet3> for Select<C, T, F>
+impl<C, T, F, O> Manifold<crate::jet::Jet3> for Select<C, T, F>
 where
     O: crate::numeric::Selectable,
-    C: Manifold<crate::Jet3, Output = crate::Jet3>,
-    T: Manifold<crate::Jet3, Output = O>,
-    F: Manifold<crate::Jet3, Output = O>,
+    C: Manifold<crate::jet::Jet3, Output = crate::jet::Jet3>,
+    T: Manifold<crate::jet::Jet3, Output = O>,
+    F: Manifold<crate::jet::Jet3, Output = O>,
 {
     type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: crate::Jet3, y: crate::Jet3, z: crate::Jet3, w: crate::Jet3) -> O {
+    fn eval_raw(&self, x: crate::jet::Jet3, y: crate::jet::Jet3, z: crate::jet::Jet3, w: crate::jet::Jet3) -> O {
         let cond_jet = self.cond.eval_raw(x, y, z, w);
         let mask = cond_jet.val; // Extract Field mask from Jet3
 

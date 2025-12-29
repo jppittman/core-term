@@ -71,14 +71,14 @@ pub enum AppData<P: pixelflow_graphics::Pixel> {
     /// The manifold should produce Discrete values.
     RenderSurface(
         std::sync::Arc<
-            dyn pixelflow_core::Manifold<Output = pixelflow_graphics::Discrete> + Send + Sync,
+            dyn pixelflow_core::Manifold<Output = pixelflow_core::Discrete> + Send + Sync,
         >,
     ),
     /// A discrete surface rendered at u32 coordinates.
     /// Uses the same manifold interface but intended for pixel-aligned rendering.
     RenderSurfaceU32(
         std::sync::Arc<
-            dyn pixelflow_core::Manifold<Output = pixelflow_graphics::Discrete> + Send + Sync,
+            dyn pixelflow_core::Manifold<Output = pixelflow_core::Discrete> + Send + Sync,
         >,
     ),
     /// Frame was skipped (no rendering needed).

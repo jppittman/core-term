@@ -51,19 +51,19 @@ impl<I: crate::numeric::Numeric> Manifold<I> for Field {
 }
 
 // Jet2 is a constant manifold - ignores input, always returns itself
-impl Manifold<crate::Jet2> for crate::Jet2 {
-    type Output = crate::Jet2;
+impl Manifold<crate::jet::Jet2> for crate::jet::Jet2 {
+    type Output = crate::jet::Jet2;
     #[inline(always)]
-    fn eval_raw(&self, _x: crate::Jet2, _y: crate::Jet2, _z: crate::Jet2, _w: crate::Jet2) -> crate::Jet2 {
+    fn eval_raw(&self, _x: crate::jet::Jet2, _y: crate::jet::Jet2, _z: crate::jet::Jet2, _w: crate::jet::Jet2) -> crate::jet::Jet2 {
         *self
     }
 }
 
 // Jet3 is a constant manifold - ignores input, always returns itself
-impl Manifold<crate::Jet3> for crate::Jet3 {
-    type Output = crate::Jet3;
+impl Manifold<crate::jet::Jet3> for crate::jet::Jet3 {
+    type Output = crate::jet::Jet3;
     #[inline(always)]
-    fn eval_raw(&self, _x: crate::Jet3, _y: crate::Jet3, _z: crate::Jet3, _w: crate::Jet3) -> crate::Jet3 {
+    fn eval_raw(&self, _x: crate::jet::Jet3, _y: crate::jet::Jet3, _z: crate::jet::Jet3, _w: crate::jet::Jet3) -> crate::jet::Jet3 {
         *self
     }
 }

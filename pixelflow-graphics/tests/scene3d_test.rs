@@ -5,7 +5,8 @@
 //! 2. Surface: Warps `P = ray * t` - creates tangent frame via chain rule
 //! 3. Material: Reconstructs normal from derivatives - Reflect, Checker, Sky
 
-use pixelflow_core::{Discrete, Field, Jet3, Manifold};
+use pixelflow_core::jet::Jet3;
+use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};

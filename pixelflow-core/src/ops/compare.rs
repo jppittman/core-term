@@ -14,7 +14,8 @@
 //! ```
 
 use crate::numeric::Computational;
-use crate::{Jet2, Manifold};
+use crate::jet::Jet2;
+use crate::Manifold;
 
 // ============================================================================
 // Hard Comparisons (generic over Numeric)

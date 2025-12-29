@@ -120,7 +120,7 @@ mod tests {
     use super::*;
     use pixelflow_core::Field;
     use pixelflow_core::Manifold;
-    use pixelflow_graphics::Discrete;
+    use pixelflow_core::Discrete;
 
     // A minimal test surface
     #[derive(Clone, Copy)]

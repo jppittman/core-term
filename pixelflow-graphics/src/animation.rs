@@ -3,7 +3,8 @@
 //! Build animations by composing manifolds with time-varying transformations.
 //! Time flows through the W dimension - wrap any manifold to modify how it evolves.
 
-use pixelflow_core::{Field, Jet3, Manifold};
+use pixelflow_core::jet::Jet3;
+use pixelflow_core::{Field, Manifold};
 
 // ============================================================================
 // Time Shifting

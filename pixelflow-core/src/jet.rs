@@ -11,6 +11,9 @@ use crate::numeric::{Computational, Numeric, Selectable};
 /// Represents f(x,y) along with ∂f/∂x and ∂f/∂y.
 /// When manifolds are evaluated with Jet2 inputs, derivatives
 /// propagate automatically via the chain rule.
+///
+/// **Internal type.** Used for antialiasing via automatic differentiation.
+#[doc(hidden)]
 #[derive(Copy, Clone, Debug)]
 pub struct Jet2 {
     /// The function value f(x,y)
@@ -537,17 +540,8 @@ impl Numeric for Jet2 {
 /// Represents f(x,y,z) along with ∂f/∂x, ∂f/∂y, and ∂f/∂z.
 /// Essential for computing surface normals from SDF gradients.
 ///
-/// # Example: Getting normal from SDF
-/// ```ignore
-/// // Evaluate SDF with seeded jets at hit point
-/// let jx = Jet3::x(hit_x);
-/// let jy = Jet3::y(hit_y);
-/// let jz = Jet3::z(hit_z);
-/// let result = sdf.eval_raw(jx, jy, jz, w);
-///
-/// // Normal is the normalized gradient
-/// let (nx, ny, nz) = result.normal();
-/// ```
+/// **Internal type.** Used for 3D rendering via automatic differentiation.
+#[doc(hidden)]
 #[derive(Copy, Clone, Debug)]
 pub struct Jet3 {
     /// The function value f(x,y,z)

@@ -26,4 +26,5 @@ pub use render::frame::Frame;
 pub use render::rasterizer::TensorShape;
 
 // Re-export core types for convenience
-pub use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, Map, W, X, Y, Z};
+// Field/Discrete are doc(hidden) - use manifolds instead of direct field manipulation
+pub use pixelflow_core::{Manifold, ManifoldExt, Map, W, X, Y, Z};

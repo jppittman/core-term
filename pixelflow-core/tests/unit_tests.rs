@@ -20,13 +20,12 @@ use pixelflow_core::{
     // Combinators
     combinators::{Select, Map, Fix},
     manifold::Scale,
-    // Jet2
-    Jet2,
     // Computational trait (needed for from_f32)
     Computational,
     // Materialize
     materialize,
 };
+use pixelflow_core::jet::Jet2;
 
 // ============================================================================
 // Field Tests

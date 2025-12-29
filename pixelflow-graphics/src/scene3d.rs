@@ -15,7 +15,8 @@
 //!
 //! No iteration. Nesting is occlusion.
 
-use pixelflow_core::{At, Discrete, Field, Jet3, Manifold, Select};
+use pixelflow_core::jet::Jet3;
+use pixelflow_core::{At, Discrete, Field, Manifold, Select};
 
 // ============================================================================
 // HELPER: Lift Field mask to Jet3 manifold for Select conditions

@@ -7,7 +7,7 @@ use pixelflow_graphics::render::color::{Lift, NamedColor, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
 use pixelflow_graphics::transform::{Scale, Translate};
-use pixelflow_graphics::{Discrete, Field, Manifold, ManifoldExt, X, Y};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, X, Y};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
