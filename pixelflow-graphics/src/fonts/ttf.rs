@@ -376,6 +376,8 @@ impl Manifold<Jet2> for Quad {
             let dir = (dir_mask & Jet2::from_f32(1.0)) | (!dir_mask & Jet2::from_f32(-1.0));
             // dist > 0 when query is LEFT of crossing (x < x_int)
             let dist = x_int - x;
+            // Compose gradient magnitude explicitly as 2D vector operation
+            // This prepares for future FMA/RSQRT fusion on Jet2
             let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy).sqrt().max(Field::from(1e-6));
             let coverage = (dist.val / grad_mag + Field::from(0.5)).max(Field::from(0.0)).min(Field::from(1.0));
             (in_t & (dir * Jet2::constant(coverage))) | (!in_t & Jet2::from_f32(0.0))

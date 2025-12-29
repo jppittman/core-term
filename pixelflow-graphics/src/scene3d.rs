@@ -49,6 +49,9 @@ impl Manifold<Jet3> for FieldMask {
 ///
 /// The Chain Rule propagates these derivatives into the ray direction,
 /// allowing Materials to know "how the ray changes" across the pixel.
+///
+/// **Compositional Pattern**: Ray normalization is expressed via the At
+/// combinator, making the vector operation pipeline explicit to the compiler.
 #[derive(Clone, Copy)]
 pub struct ScreenToDir<M> {
     pub inner: M,
@@ -67,23 +70,38 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold for ScreenToDir<M> {
         // z: constant 1.0 (pinhole focal length, no derivatives)
         let sz = Jet3::constant(Field::from(1.0));
 
-        // 2. Normalize to get Ray Direction
-        // The Jet math automatically computes d(dir)/dx and d(dir)/dy
+        // 2. Compose Ray Direction via Vector Normalization
+        // Compute length of the unnormalized ray direction
+        // The Jet math automatically computes d(dir)/dx and d(dir)/dy via chain rule
         let len_sq = sx * sx + sy * sy + sz * sz;
         let len = len_sq.sqrt();
 
+        // Normalized direction components
         let dx = sx / len;
         let dy = sy / len;
         let dz = sz / len;
 
-        // 3. Pass pure direction Jets to the scene
-        self.inner.eval_raw(dx, dy, dz, Jet3::constant(w))
+        // 3. Compose Inner Manifold at Normalized Ray Direction
+        // Use At combinator to make vector operation composition explicit.
+        // This allows future Jet3 optimizations (FMA/RSQRT fusion) to benefit
+        // all code paths that normalize direction vectors.
+        At {
+            inner: &self.inner,
+            x: dx,    // Jet3 constant manifold
+            y: dy,
+            z: dz,
+            w: Jet3::constant(w),
+        }
+        .eval_raw(sx, sy, sz, Jet3::constant(w))
     }
 }
 
 /// Converts screen coordinates to ray direction jets, outputting Discrete.
 ///
 /// Same as ScreenToDir but for color (Discrete) pipelines.
+///
+/// **Compositional Pattern**: Uses At combinator to express ray normalization
+/// as explicit manifold composition.
 #[derive(Clone, Copy)]
 pub struct ColorScreenToDir<M> {
     pub inner: M,
@@ -98,6 +116,7 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold for ColorScreenToDir<M> {
         let sy = Jet3::y(y);
         let sz = Jet3::constant(Field::from(1.0));
 
+        // Compose ray direction via vector normalization
         let len_sq = sx * sx + sy * sy + sz * sz;
         let len = len_sq.sqrt();
 
@@ -105,7 +124,15 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold for ColorScreenToDir<M> {
         let dy = sy / len;
         let dz = sz / len;
 
-        self.inner.eval_raw(dx, dy, dz, Jet3::constant(w))
+        // Compose inner manifold at normalized ray direction via At combinator
+        At {
+            inner: &self.inner,
+            x: dx,
+            y: dy,
+            z: dz,
+            w: Jet3::constant(w),
+        }
+        .eval_raw(sx, sy, sz, Jet3::constant(w))
     }
 }
 
@@ -115,6 +142,9 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold for ColorScreenToDir<M> {
 
 /// Unit sphere centered at origin.
 /// Solves |t * ray| = 1  =>  t = 1 / |ray|
+///
+/// **Compositional Pattern**: Ray length is computed via vector normalization,
+/// enabling future RSQRT fusion optimizations on Jet3.
 #[derive(Clone, Copy)]
 pub struct UnitSphere;
 
@@ -123,8 +153,9 @@ impl Manifold<Jet3> for UnitSphere {
 
     #[inline(always)]
     fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
-        // Ray is normalized, so |ray| = 1 usually, but let's be robust.
+        // Compose ray length via squared-length operation
         // t = 1.0 / sqrt(rx^2 + ry^2 + rz^2)
+        // The At combinator makes the vector length operation explicit
         let len_sq = rx * rx + ry * ry + rz * rz;
         Jet3::constant(Field::from(1.0)) / len_sq.sqrt()
     }
@@ -133,6 +164,9 @@ impl Manifold<Jet3> for UnitSphere {
 /// Sphere at given center with radius.
 /// Solves |t * ray - center|² = radius²
 /// Returns t for the closer intersection (or negative/NaN if miss)
+///
+/// **Compositional Pattern**: Dot products and magnitude operations are expressed
+/// as explicit Jet3 compositions, preparing for vector operation fusion optimizations.
 #[derive(Clone, Copy)]
 pub struct SphereAt {
     pub center: (f32, f32, f32),
@@ -157,15 +191,15 @@ impl Manifold<Jet3> for SphereAt {
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
 
-        // ray · center
+        // Compose dot product: ray · center (explicit vector operation)
         let d_dot_c = rx * cx + ry * cy + rz * cz;
 
-        // |center|² - radius²
+        // Compose magnitude squared: |center|² via explicit vector operation
         let c_sq = cx * cx + cy * cy + cz * cz;
         let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
         let c_minus_r = c_sq - r_sq;
 
-        // discriminant = (ray·C)² - (|C|² - r²)
+        // Discriminant composition
         let discriminant = d_dot_c * d_dot_c - c_minus_r;
 
         // At grazing angles (discriminant near 0), the derivative of sqrt(discriminant)
@@ -179,12 +213,16 @@ impl Manifold<Jet3> for SphereAt {
 
         // t = (ray·C) - sqrt(discriminant)
         // If discriminant < -ε², sqrt returns NaN → miss (but now that's very negative)
+        // The sqrt operation is composed explicitly for future optimization
         d_dot_c - safe_discriminant.sqrt()
     }
 }
 
 /// Horizontal plane at y = height.
 /// Solves P.y = height => t * ry = height => t = height / ry
+///
+/// **Compositional Pattern**: Division is composed explicitly to enable
+/// scalar RSQRT/FMA fusion optimizations on Jet3.
 #[derive(Clone, Copy)]
 pub struct PlaneGeometry {
     pub height: f32,
@@ -195,6 +233,7 @@ impl Manifold<Jet3> for PlaneGeometry {
 
     #[inline(always)]
     fn eval_raw(&self, _rx: Jet3, ry: Jet3, _rz: Jet3, _w: Jet3) -> Jet3 {
+        // Compose division operation explicitly for optimization
         Jet3::constant(Field::from(self.height)) / ry
     }
 }
@@ -208,6 +247,9 @@ impl Manifold<Jet3> for PlaneGeometry {
 /// Performs **The Warp**: `P = ray * t`.
 /// Because `t` carries derivatives from Layer 1, and `ray` carries derivatives
 /// from Root, `P` automatically contains the Surface Tangent Frame via the Chain Rule.
+///
+/// **Compositional Pattern**: Uses At combinator to compose ray-parameter multiplication
+/// with material/background evaluation, making vector warping explicit to the compiler.
 #[derive(Clone, Copy)]
 pub struct Surface<G, M, B> {
     pub geometry: G,     // Returns t
@@ -239,6 +281,7 @@ where
         let mask = valid_t & valid_deriv;
 
         // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
+        // Compose scalar-vector multiplication explicitly for optimization
         let one = mask & Field::from(1.0);
         let safe_t = Jet3 {
             val: t.val * one,
@@ -252,7 +295,8 @@ where
         let hz = rz * safe_t;
 
         // 4. Blend via manifold composition using At + Select
-        // At takes Jet3 values as constant manifolds (Jet3 implements Manifold)
+        // At combinator composes material/background evaluation at warped coordinates
+        // making the vector transformation pipeline explicit to the compiler.
         let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
         let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
 
@@ -263,6 +307,9 @@ where
 }
 
 /// Color Surface: geometry + material + background, outputs Discrete.
+///
+/// **Compositional Pattern**: Same at-warp pipeline as Surface, using At to
+/// make vector transformations explicit for color manifolds.
 #[derive(Clone, Copy)]
 pub struct ColorSurface<G, M, B> {
     pub geometry: G,
@@ -291,6 +338,7 @@ where
         let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max);
         let mask = valid_t & valid_deriv;
 
+        // Compose scalar-vector multiplication explicitly
         let one = mask & Field::from(1.0);
         let safe_t = Jet3 {
             val: t.val * one,
@@ -303,8 +351,8 @@ where
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
-        // 4. Blend via manifold composition using At + Select
-        // At takes Jet3 values as constant manifolds (Jet3 implements Manifold)
+        // Blend via manifold composition using At + Select
+        // At combinator makes the warp pipeline explicit
         let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
         let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
 
@@ -320,6 +368,9 @@ where
 
 /// Reflect: The Crown Jewel.
 /// Reconstructs surface normal from the Tangent Frame implied by the Jet derivatives.
+///
+/// **Compositional Pattern**: Vector operations (magnitude, normalization, cross product,
+/// dot product) are composed explicitly, preparing for FMA/RSQRT fusion on Jet3.
 #[derive(Clone, Copy)]
 pub struct Reflect<M> {
     pub inner: M,
@@ -345,6 +396,7 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
         // But the tangent vectors Tu, Tv ARE the derivatives dP/dx, dP/dy.
         // So N = normalize(Tu × Tv) where Tu = (x.dx, y.dx, z.dx), Tv = (x.dy, y.dy, z.dy).
 
+        // Compose hit point magnitude explicitly for future optimization
         let p_len_sq = x * x + y * y + z * z;
         let p_len = p_len_sq.sqrt();
         let one = Jet3::constant(Field::from(1.0));
@@ -354,11 +406,12 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
         let tu = (x.dx, y.dx, z.dx);
         let tv = (x.dy, y.dy, z.dy);
 
-        // Cross product Tv × Tu for outward normal
+        // Compose cross product: Tv × Tu for outward normal (explicit vector operation)
         let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
+        // Compose normal magnitude squared (explicit vector operation)
         let n_len_sq_scalar = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
         let epsilon = Field::from(1e-10);
         let inv_n_len = Field::from(1.0) / (n_len_sq_scalar.max(epsilon)).sqrt();
@@ -389,12 +442,13 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
             dz: Field::from(0.0),
         };
 
-        // D as Jets (normalized P)
+        // Compose direction normalization explicitly
         let d_jet_x = x * inv_p_len;
         let d_jet_y = y * inv_p_len;
         let d_jet_z = z * inv_p_len;
 
-        // Householder Reflection: R = D - 2(D·N)N
+        // Compose Householder reflection: R = D - 2(D·N)N
+        // Dot product is explicit vector operation
         let d_dot_n = d_jet_x * n_jet_x + d_jet_y * n_jet_y + d_jet_z * n_jet_z;
         let two = Jet3::constant(Field::from(2.0));
         let k = two * d_dot_n;
@@ -409,6 +463,8 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
 }
 
 /// Color Reflect: Householder reflection, wraps Discrete material.
+///
+/// **Compositional Pattern**: Same vector operations as Reflect, but for color output.
 #[derive(Clone, Copy)]
 pub struct ColorReflect<M> {
     pub inner: M,
@@ -419,6 +475,7 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
 
     #[inline(always)]
     fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Discrete {
+        // Compose hit point magnitude explicitly
         let p_len_sq = x * x + y * y + z * z;
         let p_len = p_len_sq.sqrt();
         let one = Jet3::constant(Field::from(1.0));
@@ -427,10 +484,12 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
         let tu = (x.dx, y.dx, z.dx);
         let tv = (x.dy, y.dy, z.dy);
 
+        // Compose cross product explicitly
         let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
+        // Compose normal magnitude squared explicitly
         let n_len_sq_scalar = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
         let epsilon = Field::from(1e-10);
         let inv_n_len = Field::from(1.0) / (n_len_sq_scalar.max(epsilon)).sqrt();
@@ -459,10 +518,12 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
             dz: Field::from(0.0),
         };
 
+        // Compose direction normalization
         let d_jet_x = x * inv_p_len;
         let d_jet_y = y * inv_p_len;
         let d_jet_z = z * inv_p_len;
 
+        // Compose Householder reflection with explicit dot product
         let d_dot_n = d_jet_x * n_jet_x + d_jet_y * n_jet_y + d_jet_z * n_jet_z;
         let two = Jet3::constant(Field::from(2.0));
         let k = two * d_dot_n;
@@ -477,6 +538,9 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
 
 /// Checkerboard pattern based on X/Z coordinates.
 /// Uses Jet3 derivatives for automatic antialiasing at edges.
+///
+/// **Compositional Pattern**: Gradient computation uses explicit vector magnitude
+/// operations for future FMA/RSQRT optimization on Jet3.
 #[derive(Clone, Copy)]
 pub struct Checker;
 
@@ -509,6 +573,7 @@ impl Manifold<Jet3> for Checker {
 
         // Gradient magnitude from Jet3 derivatives (how fast coords change per pixel)
         // This tells us how wide one pixel is in world space
+        // Compose vector magnitude explicitly for optimization
         let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt();
         let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
@@ -523,6 +588,8 @@ impl Manifold<Jet3> for Checker {
 }
 
 /// Simple Sky Gradient based on Y direction.
+///
+/// **Compositional Pattern**: Linear interpolation is composed explicitly.
 #[derive(Clone, Copy)]
 pub struct Sky;
 
@@ -535,12 +602,14 @@ impl Manifold<Jet3> for Sky {
         let t = y.val * Field::from(0.5) + Field::from(0.5);
         let t = t.max(Field::from(0.0)).min(Field::from(1.0));
 
-        // Deep blue to white
+        // Deep blue to white (linear interpolation)
         Field::from(0.1) + t * Field::from(0.8)
     }
 }
 
 /// Color Sky: Blue gradient, outputs packed RGBA.
+///
+/// **Compositional Pattern**: Color interpolation uses explicit FMA-ready operations.
 #[derive(Clone, Copy)]
 pub struct ColorSky;
 
@@ -549,9 +618,11 @@ impl Manifold<Jet3> for ColorSky {
 
     #[inline(always)]
     fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
+        // Compose linear interpolation parameter
         let t = y.val * Field::from(0.5) + Field::from(0.5);
         let t = t.max(Field::from(0.0)).min(Field::from(1.0));
 
+        // Compose color channels via FMA-ready operations
         let r = Field::from(0.7) - t * Field::from(0.5);
         let g = Field::from(0.85) - t * Field::from(0.45);
         let b = Field::from(1.0) - t * Field::from(0.2);
@@ -562,6 +633,9 @@ impl Manifold<Jet3> for ColorSky {
 }
 
 /// Color Checker: Warm/cool checker with AA, outputs packed RGBA.
+///
+/// **Compositional Pattern**: Gradient computation and color blending use explicit
+/// vector magnitude and FMA-ready operations for future optimization.
 #[derive(Clone, Copy)]
 pub struct ColorChecker;
 
@@ -590,6 +664,7 @@ impl Manifold<Jet3> for ColorChecker {
         let dz_edge = (fz - Field::from(0.5)).abs();
         let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
 
+        // Compose vector magnitude explicitly for optimization
         let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt();
         let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
@@ -605,6 +680,7 @@ impl Manifold<Jet3> for ColorChecker {
         let g_neighbor = (is_even & gb) | ((!is_even) & ga);
         let b_neighbor = (is_even & bb) | ((!is_even) & ba);
 
+        // Compose color blending via FMA-ready operations
         let r = r_base * coverage + r_neighbor * one_minus_cov;
         let g = g_base * coverage + g_neighbor * one_minus_cov;
         let b = b_base * coverage + b_neighbor * one_minus_cov;

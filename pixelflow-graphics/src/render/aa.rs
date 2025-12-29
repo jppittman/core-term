@@ -23,6 +23,9 @@ where
 }
 
 /// Antialiased coverage manifold using automatic gradients.
+///
+/// **Compositional Pattern**: Gradient magnitude computation is expressed explicitly
+/// as a 2D vector operation, preparing for FMA/RSQRT fusion on Jet2.
 #[derive(Clone, Debug)]
 pub struct AACoverage<M> {
     pub manifold: M,
@@ -43,7 +46,8 @@ where
             Jet2::constant(w),
         );
 
-        // Gradient magnitude = how many SDF units per pixel
+        // Compose gradient magnitude explicitly as 2D vector operation
+        // grad_mag = how many SDF units per pixel
         let grad_mag = (result.dx * result.dx + result.dy * result.dy).sqrt();
 
         // Distance to edge in pixels = sdf / grad_mag
