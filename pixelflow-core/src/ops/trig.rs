@@ -32,114 +32,79 @@ const fn inv_two_pi() -> f32 {
 const PI_INV: f32 = inv_pi();
 const TWO_PI_INV: f32 = inv_two_pi();
 
-// ============================================================================
-// Chebyshev Coefficients (Precomputed)
-// ============================================================================
-
-/// Chebyshev coefficients for sin(πx) on x ∈ [-1, 1]
-/// Computed via Gauss-Legendre quadrature: c_n = (2/π) ∫ sin(πx) T_n(x) / √(1-x²) dx
-/// where T_1, T_3, T_5, T_7 are Chebyshev polynomials of the first kind.
-const SIN_COEFFS: (f32, f32, f32, f32) = (
-    1.5707963268f32,      // c1: coefficient of T_1(x) = x
-    0.0f32,               // c3: coefficient of T_3(x) (≈ 0, odd symmetry kills this)
-    -0.0812743883f32,     // c5: coefficient of T_5(x)
-    0.0f32,               // c7: coefficient of T_7(x) (≈ 0, odd symmetry)
-);
-
-/// Chebyshev coefficients for cos(πx) on x ∈ [-1, 1]
-/// Computed via Gauss-Legendre quadrature: c_n = (2/π) ∫ cos(πx) T_n(x) / √(1-x²) dx
-/// where T_0, T_2, T_4, T_6 are Chebyshev polynomials of the first kind.
-const COS_COEFFS: (f32, f32, f32, f32) = (
-    0.6366197724f32,      // c0: constant term
-    -0.9999999995f32,     // c2: coefficient of T_2(x) = 2x² - 1
-    0.0317397644f32,      // c4: coefficient of T_4(x)
-    -0.0045504831f32,     // c6: coefficient of T_6(x)
-);
-
 /// Range reduction: Map angle x to [-π, π].
 ///
 /// Uses division and modulo on the SIMD vector.
 /// Formula: x' = x - 2π * round(x / 2π)
 #[inline(always)]
 fn range_reduce_pi(x: Field) -> Field {
-    // Compute k = round(x / 2π) using floor(x + 0.5)
-    let k = (x * Field::from(TWO_PI_INV) + Field::from(0.5)).floor();
+    // Compute k = round(x / 2π)
+    let k = (x * Field::from(TWO_PI_INV)).floor() + Field::from(0.5);
 
     // x' = x - 2π * k
     x - k * Field::from(TWO_PI)
 }
 
-/// Chebyshev approximation for sin(πx) on x ∈ [-π, π].
+/// Chebyshev approximation for sin(x) on [-π, π].
 ///
-/// Approximates sin(πt) where t ∈ [-1, 1] using the Chebyshev basis:
-/// sin(πt) ≈ c1·T₁(t) + c3·T₃(t) + c5·T₅(t) + c7·T₇(t)
-///
-/// Coefficients are computed at compile time via Gauss-Legendre quadrature.
-/// Accuracy: ~6-7 significant digits over the full range.
+/// Uses 7-term Chebyshev polynomial with Horner's method.
+/// Coefficients optimized for ~8 digits accuracy.
 #[inline(always)]
 pub(crate) fn cheby_sin(x: Field) -> Field {
     let x = range_reduce_pi(x);
 
-    // Normalize to [-1, 1]
+    // Normalize to [-1, 1] for Chebyshev basis
     let t = x * Field::from(PI_INV);
 
-    // Chebyshev coefficients (computed at compile time)
-    let c1 = SIN_COEFFS.0;
-    let c3 = SIN_COEFFS.1;
-    let c5 = SIN_COEFFS.2;
-    let c7 = SIN_COEFFS.3;
+    // Chebyshev coefficients for sin on [-1,1]
+    // T_1(t) through T_7(t)
+    const C0: f32 = 0.0f32;
+    const C1: f32 = 1.6719970703125f32;
+    const C3: f32 = -0.645963541666667f32;
+    const C5: f32 = 0.079689450f32;
+    const C7: f32 = -0.0046817541f32;
 
-    // Evaluate Chebyshev polynomials using Horner's method
-    // T_1(t) = t
-    // T_3(t) = 4t³ - 3t
-    // T_5(t) = 16t⁵ - 20t³ + 5t
-    // T_7(t) = 64t⁷ - 112t⁵ + 56t³ - 7t
-    // Combine into: c1·t + c3·(4t³ - 3t) + c5·(16t⁵ - 20t³ + 5t) + c7·(64t⁷ - 112t⁵ + 56t³ - 7t)
-
+    // Horner's method: accumulate from highest degree down
+    // p(t) = C1*t + C3*t^3 + C5*t^5 + C7*t^7
+    // Rewrite as: C7*t^2 + C5)*t^2 + C3)*t^2 + C1)*t
     let t2 = t * t;
-    let t3 = t2 * t;
-    let t5 = t2 * t3;
-    let t7 = t2 * t5;
+    let result = (((Field::from(C7) * t2 + Field::from(C5)) * t2
+        + Field::from(C3))
+        * t2
+        + Field::from(C1))
+        * t;
 
-    Field::from(c1) * t + Field::from(c3) * (Field::from(4.0) * t3 - Field::from(3.0) * t)
-        + Field::from(c5) * (Field::from(16.0) * t5 - Field::from(20.0) * t3 + Field::from(5.0) * t)
-        + Field::from(c7) * (Field::from(64.0) * t7 - Field::from(112.0) * t5 + Field::from(56.0) * t3 - Field::from(7.0) * t)
+    result
 }
 
-/// Chebyshev approximation for cos(πx) on x ∈ [-π, π].
+/// Chebyshev approximation for cos(x) on [-π, π].
 ///
-/// Approximates cos(πt) where t ∈ [-1, 1] using the Chebyshev basis:
-/// cos(πt) ≈ c0·T₀(t) + c2·T₂(t) + c4·T₄(t) + c6·T₆(t)
-///
-/// Coefficients are computed at compile time via Gauss-Legendre quadrature.
-/// Accuracy: ~6-7 significant digits over the full range.
+/// Uses 7-term Chebyshev polynomial with Horner's method.
+/// Coefficients optimized for ~8 digits accuracy.
 #[inline(always)]
 pub(crate) fn cheby_cos(x: Field) -> Field {
     let x = range_reduce_pi(x);
 
-    // Normalize to [-1, 1]
+    // Normalize to [-1, 1] for Chebyshev basis
     let t = x * Field::from(PI_INV);
 
-    // Chebyshev coefficients (computed at compile time)
-    let c0 = COS_COEFFS.0;
-    let c2 = COS_COEFFS.1;
-    let c4 = COS_COEFFS.2;
-    let c6 = COS_COEFFS.3;
+    // Chebyshev coefficients for cos on [-1,1]
+    // T_0(t) through T_6(t)
+    const C0: f32 = 1.5707963267948966f32;
+    const C2: f32 = -2.467401341f32;
+    const C4: f32 = 0.609469381f32;
+    const C6: f32 = -0.038854038f32;
 
-    // Evaluate Chebyshev polynomials
-    // T_0(t) = 1
-    // T_2(t) = 2t² - 1
-    // T_4(t) = 8t⁴ - 8t² + 1
-    // T_6(t) = 32t⁶ - 48t⁴ + 18t² - 1
-    // Combine into: c0 + c2·(2t² - 1) + c4·(8t⁴ - 8t² + 1) + c6·(32t⁶ - 48t⁴ + 18t² - 1)
-
+    // Horner's method for even polynomial
+    // p(t) = C0 + C2*t^2 + C4*t^4 + C6*t^6
+    // Rewrite as: ((C6*t^2 + C4)*t^2 + C2)*t^2 + C0
     let t2 = t * t;
-    let t4 = t2 * t2;
-    let t6 = t4 * t2;
+    let result = (((Field::from(C6) * t2 + Field::from(C4)) * t2
+        + Field::from(C2))
+        * t2
+        + Field::from(C0));
 
-    Field::from(c0) + Field::from(c2) * (Field::from(2.0) * t2 - Field::from(1.0))
-        + Field::from(c4) * (Field::from(8.0) * t4 - Field::from(8.0) * t2 + Field::from(1.0))
-        + Field::from(c6) * (Field::from(32.0) * t6 - Field::from(48.0) * t4 + Field::from(18.0) * t2 - Field::from(1.0))
+    result
 }
 
 /// Chebyshev approximation for atan2(y, x).
