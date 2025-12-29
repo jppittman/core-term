@@ -1,24 +1,228 @@
 //! # Manifold Trait
 //!
-//! The core abstraction: a function from 4D coordinates to values.
+//! The core abstraction of pixelflow-core: **a function from 4D coordinates to values**.
+//!
+//! ## What Is a Manifold?
+//!
+//! In pixelflow, a manifold is:
+//!
+//! - **A functor**: Maps coordinate space (scalars in a field) to output values
+//! - **Compositional**: Manifolds combine via operators (`+`, `*`, `/`) to build larger manifolds
+//! - **A compile-time graph**: The type system IS the compute graph
+//! - **Declarative**: Users express *what* to compute, not *how* to compute it
+//!
+//! ## The Manifold Philosophy
+//!
+//! PixelFlow turns **algebraic expressions into fused SIMD kernels** without runtime dispatch.
+//!
+//! ### Example: Building a Circle
+//! ```ignore
+//! use pixelflow_core::{X, Y, Manifold};
+//!
+//! // Type: Sqrt<Add<Mul<X, X>, Mul<Y, Y>>>
+//! let distance_from_origin = (X * X + Y * Y).sqrt();
+//!
+//! // This is NOT computation - it's an AST. Evaluation is decoupled from definition.
+//! ```
+//!
+//! ### Evaluation is Polymorphic
+//! The same expression can evaluate with different numeric backends:
+//!
+//! ```ignore
+//! // Concrete evaluation with SIMD vectors
+//! let val = distance_from_origin.eval_raw(Field::from(3.0), Field::from(4.0), ...);
+//! // Returns Field = 5.0 (SIMD batch)
+//!
+//! // Automatic differentiation
+//! let x = Jet2::x(3.0);
+//! let y = Jet2::y(4.0);
+//! let result = distance_from_origin.eval_raw(x, y, ...);
+//! // Returns Jet2 with value 5.0 and gradients (∂/∂x, ∂/∂y)
+//! ```
+//!
+//! ## The Type System as a Compute Graph
+//!
+//! In pixelflow, **types are not just information—they are the compile-time representation
+//! of a computation graph**. Each operator (`Add`, `Mul`, `Sqrt`, etc.) corresponds to a
+//! type that:
+//!
+//! 1. Captures the structure of the computation
+//! 2. Is monomorphized into a fused kernel with zero runtime dispatch
+//! 3. Can be evaluated with any `Computational` input type
+//!
+//! The compiler sees:
+//! ```ignore
+//! Add<Mul<X, X>, Mul<Y, Y>>  // Type = Compute graph
+//! ```
+//!
+//! And generates:
+//! ```text
+//! Single fused SIMD loop: (x₀² + y₀, x₁² + y₁, ..., x₁₅² + y₁₅)
+//! ```
+//!
+//! No vtable, no if-statements, no branching. **Just algebra**.
+//!
+//! ## Manifolds vs. Fields/Jets (The IR)
+//!
+//! **Users should NOT write code that directly manipulates Fields or Jets.**
+//!
+//! - **Field** and **Jet2/Jet3** are the **intermediate representation (IR)**
+//! - **Manifolds** are the **high-level abstraction** users compose
+//!
+//! Think of it like this:
+//! - A **Manifold** is like a mathematical expression or equation
+//! - **Field/Jet** is like LLVM IR—powerful but detailed
+//!
+//! Users should:
+//! - ✅ Write manifolds: `(X * X + Y * Y).sqrt()`
+//! - ❌ NOT write IR directly: `Field::raw_mul(...)`
 
 use crate::Field;
 
 /// A manifold is a function from coordinates to a value.
 ///
-/// The `Output` associated type allows manifolds to produce different
-/// types: scalar manifolds return `Field`, color manifolds return
-/// `(Field, Field, Field, Field)`, etc.
+/// # Overview
 ///
-/// The `I` type parameter represents the input coordinate type.
-/// By default it's `Field`, but can be `Jet2` for automatic differentiation.
-/// The bound is `Computational`, which provides arithmetic operators and
-/// constant creation methods (`from_f32`, `sequential`).
+/// `Manifold` is a function that takes 4D coordinates (typically x, y, z, w) and returns
+/// some output value. It's the foundational abstraction for **declarative, composable
+/// computation** in pixelflow.
+///
+/// # Key Properties
+///
+/// - **Functor**: Maps the input coordinate type (field) to an output type
+/// - **Generic over evaluation strategy**: Via the type parameter `I`, supports:
+///   - Concrete SIMD evaluation (`Field`)
+///   - Automatic differentiation (`Jet2` or `Jet3`)
+/// - **Zero-cost**: Polymorphic evaluation is resolved at compile time via monomorphization
+/// - **Composable**: Manifolds combine via operators to build larger manifolds
+///
+/// # Associated Type: `Output`
+///
+/// The `Output` associated type specifies what the manifold produces when evaluated.
+///
+/// Common examples:
+/// - **Scalar manifold**: `Output = Field` — produces single values per coordinate
+/// - **Color manifold**: `Output = Discrete` — produces packed RGBA u32 pixels
+/// - **Vector manifold**: `Output = (Field, Field, Field, Field)` — produces 4D vectors
+///
+/// # Type Parameter: `I` (Input Type)
+///
+/// The `I` type parameter determines *how* the manifold is evaluated, not *what* it
+/// computes. All manifold expressions are generic over `I`, so the same expression
+/// can be evaluated with:
+///
+/// - `I = Field`: Concrete SIMD evaluation (e.g., 16 values per SIMD lane on AVX-512)
+/// - `I = Jet2`: Automatic differentiation (value + 2 partial derivatives)
+/// - `I = Jet3`: Extended AD (value + 3 partial derivatives)
+///
+/// The bound `Computational` ensures `I` supports:
+/// - Arithmetic operators (`+`, `-`, `*`, `/`)
+/// - Constant creation (`from_f32`, `sequential`)
+///
+/// # Composition
+///
+/// Manifolds compose via operator overloading. The type system captures the structure:
+///
+/// ```ignore
+/// use pixelflow_core::{X, Y};
+///
+/// let m1 = X * X;           // Type: Mul<X, X>
+/// let m2 = Y * Y;           // Type: Mul<Y, Y>
+/// let m3 = m1 + m2;         // Type: Add<Mul<X, X>, Mul<Y, Y>>
+/// let m4 = m3.sqrt();       // Type: Sqrt<Add<...>>
+/// ```
+///
+/// The type tree is the compute graph. When `eval_raw` is called, the compiler
+/// monomorphizes and inlines the entire tree into a single fused kernel.
+///
+/// # Philosophy: Expression Trees, Not Evaluation Loops
+///
+/// PixelFlow separates **expression definition** from **evaluation**:
+///
+/// ```ignore
+/// // Define: Build the expression tree (no computation yet)
+/// let circle = (X * X + Y * Y).sqrt() - 1.0;
+///
+/// // Evaluate: Run the computation with concrete coordinates
+/// let result = circle.eval_raw(
+///     Field::from(3.0),
+///     Field::from(4.0),
+///     Field::from(0.0),
+///     Field::from(0.0),
+/// );
+/// ```
+///
+/// This design enables:
+/// - **Monomorphic kernels**: No vtable dispatch, one specialized kernel per expression
+/// - **Automatic differentiation**: Same expression works with `Jet2` for gradients
+/// - **Compiler optimization**: LLVM sees the full expression, inlines everything
+///
+/// # Internal Representation
+///
+/// The `eval_raw` method's raw SIMD argument types (`Field`, `Jet2`, etc.) are **not
+/// intended for direct code**. These are the **intermediate representation (IR)**.
+/// Users compose at the manifold level; the library handles IR internally.
+///
+/// If you find yourself writing `Field::...` or using jet methods directly,
+/// you're likely using the library wrong. Use manifold operators instead.
+///
+/// ## For Custom Manifold Implementers
+///
+/// If you're implementing a custom `Manifold`, you'll receive `Field` or `Jet2` values
+/// in `eval_raw`. **You must compose these using operators**, not call low-level methods:
+///
+/// ```ignore
+/// fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
+///     // ✅ Correct: Use operators (they're polymorphic)
+///     (x * x + y * y).sqrt()
+///
+///     // ❌ Wrong: Don't call Field methods directly
+///     // Field::raw_mul(x, x)
+/// }
+/// ```
+///
+/// Operators like `+`, `*`, `sqrt` are polymorphic (work with any `Computational` type)
+/// and compose properly with automatic differentiation (`Jet2`, `Jet3`).
 pub trait Manifold<I: crate::numeric::Computational = Field>: Send + Sync {
     /// The type this manifold produces when evaluated.
     type Output;
 
-    /// Evaluate at the given coordinates.
+    /// Evaluate the manifold at the given 4D coordinates.
+    ///
+    /// # Arguments
+    ///
+    /// - `x`, `y`, `z`, `w`: Coordinate values of type `I`
+    ///
+    /// The input type `I` determines the evaluation mode:
+    /// - `I = Field`: Evaluates with concrete SIMD values (normal rendering)
+    /// - `I = Jet2`: Evaluates with automatic differentiation (gradients)
+    /// - `I = Jet3`: Evaluates with extended automatic differentiation
+    ///
+    /// # Returns
+    ///
+    /// An instance of `Self::Output` computed at the given coordinates.
+    ///
+    /// # Note
+    ///
+    /// This method is the **only** way to extract values from a manifold.
+    /// Users typically call this indirectly via higher-level functions:
+    /// - [`crate::materialize_discrete`] for color manifolds
+    /// - [`crate::materialize`] for vector manifolds
+    /// - [`ManifoldExt::eval`](crate::ManifoldExt::eval) for convenience evaluation
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pixelflow_core::{X, Y, Manifold, Field};
+    ///
+    /// let m = X + Y;
+    /// let result = m.eval_raw(
+    ///     Field::from(3.0),
+    ///     Field::from(4.0),
+    ///     Field::from(0.0),
+    ///     Field::from(0.0),
+    /// );
+    /// ```
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output;
 }
 
