@@ -440,8 +440,8 @@ impl Numeric for Jet2 {
         let dx_darg = (Field::from(0.0) - self.val) * inv_r_sq;
         Self {
             val: self.val.atan2(x.val),
-            dx: self.dx * dy_darg + x.dx * dx_darg,
-            dy: self.dy * dy_darg + x.dy * dx_darg,
+            dx: self.dx.mul_add(dy_darg, x.dx * dx_darg),
+            dy: self.dy.mul_add(dy_darg, x.dy * dx_darg),
         }
     }
 
@@ -1004,9 +1004,9 @@ impl Numeric for Jet3 {
         let dx_darg = (Field::from(0.0) - self.val) * inv_r_sq;
         Self {
             val: self.val.atan2(x.val),
-            dx: self.dx * dy_darg + x.dx * dx_darg,
-            dy: self.dy * dy_darg + x.dy * dx_darg,
-            dz: self.dz * dy_darg + x.dz * dx_darg,
+            dx: self.dx.mul_add(dy_darg, x.dx * dx_darg),
+            dy: self.dy.mul_add(dy_darg, x.dy * dx_darg),
+            dz: self.dz.mul_add(dy_darg, x.dz * dx_darg),
         }
     }
 
