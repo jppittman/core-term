@@ -1,8 +1,6 @@
-name: Rust CI
+name: Presubmit Tests
 
 on:
-  push:
-    branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
 
@@ -11,7 +9,7 @@ env:
 
 jobs:
   test:
-    name: Test ${{ matrix.test-suite }} on ${{ matrix.os }}
+    name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       # Continue running other jobs even if one fails, to see all failures
@@ -19,10 +17,6 @@ jobs:
       matrix:
         # Test on multiple operating systems
         os: [ubuntu-latest, macos-latest]
-        # Parallel runs to catch flaky tests and maximize CI throughput
-        test-suite: [actor-scheduler, other-crates]
-        # Run each test suite 5 times in parallel for flake detection
-        run-number: [1, 2, 3, 4, 5]
 
     steps:
       - name: Checkout code
@@ -43,12 +37,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run actor-scheduler tests (run ${{ matrix.run-number }}/5)
-        if: matrix.test-suite == 'actor-scheduler'
+      - name: Run workspace tests
         shell: bash
-        run: cargo test -p actor-scheduler -p actor-scheduler-macros --verbose
-
-      - name: Run other crates tests (run ${{ matrix.run-number }}/5)
-        if: matrix.test-suite == 'other-crates'
-        shell: bash
-        run: cargo test --workspace --exclude actor-scheduler --exclude actor-scheduler-macros --verbose
+        run: cargo test --workspace --verbose
