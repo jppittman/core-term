@@ -42,9 +42,9 @@ impl Manifold for Gradient {
 
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Discrete {
         // Normalize coordinates to [0, 1]
-        let r = x / Field::from(self.width);
-        let g = y / Field::from(self.height);
-        let b = (Field::from(1.0) - r + Field::from(1.0) - g) / Field::from(2.0);
+        let r = (x / Field::from(self.width)).constant();
+        let g = (y / Field::from(self.height)).constant();
+        let b = ((Field::from(1.0) - r + Field::from(1.0) - g) / Field::from(2.0)).constant();
 
         Discrete::pack(r, g, b, Field::from(1.0))
     }
@@ -122,7 +122,7 @@ impl Manifold for RadialGradient {
         // 1.0 at center, 0.0 at edge (parabolic falloff)
         // Values outside radius will go negative, but Pixel::from_rgba clamps
         let normalized_sq = dist_sq / Field::from(self.radius_sq);
-        Field::from(1.0) - normalized_sq
+        (Field::from(1.0) - normalized_sq).constant()
     }
 }
 

@@ -16,7 +16,7 @@
 //! No iteration. Nesting is occlusion.
 
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{At, Discrete, Field, Manifold, Select};
+use pixelflow_core::*;
 
 // ============================================================================
 // HELPER: Lift Field mask to Jet3 manifold for Select conditions
@@ -230,23 +230,23 @@ where
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
         // 2. Check Hit Validity (Mask) - is t a valid hit?
-        let zero = Field::from(0.0);
+        let fzero = Field::from(0.0);
         let t_max = Field::from(1e6);
         let deriv_max = Field::from(1e4);
 
-        let valid_t = t.val.gt(zero) & t.val.lt(t_max);
-        let deriv_mag_sq = t.dx * t.dx + t.dy * t.dy + t.dz * t.dz;
-        let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max);
+        // Collapse AST nodes to Field for mask operations
+        let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
+        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz)
+            .constant();
+        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
         let mask = valid_t & valid_deriv;
 
         // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
-        let one = mask & Field::from(1.0);
-        let safe_t = Jet3 {
-            val: t.val * one,
-            dx: t.dx * one,
-            dy: t.dy * one,
-            dz: t.dz * one,
-        };
+        let safe_t = Select {
+            cond: FieldMask(mask),
+            if_true: t,
+            if_false: Jet3::constant(fzero),
+        }.eval_raw(rx, ry, rz, w);
 
         let hx = rx * safe_t;
         let hy = ry * safe_t;
@@ -283,33 +283,32 @@ where
     fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
-        let zero = Field::from(0.0);
+        let fzero = Field::from(0.0);
         let t_max = Field::from(1e6);
         let deriv_max = Field::from(1e4);
 
-        let valid_t = t.val.gt(zero) & t.val.lt(t_max);
-        let deriv_mag_sq = t.dx * t.dx + t.dy * t.dy + t.dz * t.dz;
-        let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max);
+        // Collapse AST nodes to Field for mask operations
+        let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
+        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz)
+            .constant();
+        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
         let mask = valid_t & valid_deriv;
 
-        let one = mask & Field::from(1.0);
-        let safe_t = Jet3 {
-            val: t.val * one,
-            dx: t.dx * one,
-            dy: t.dy * one,
-            dz: t.dz * one,
-        };
+        // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
+        let safe_t = Select {
+            cond: FieldMask(mask),
+            if_true: t,
+            if_false: Jet3::constant(fzero),
+        }.eval_raw(rx, ry, rz, w);
 
         let hx = rx * safe_t;
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
         // 4. Blend via manifold composition using At + Select
-        // At takes Jet3 values as constant manifolds (Jet3 implements Manifold)
         let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
         let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
 
-        // Compose fully: mask selects between material and background manifolds
         Select { cond: FieldMask(mask), if_true: mat, if_false: bg }
             .eval_raw(rx, ry, rz, w)
     }
@@ -360,34 +359,37 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
-        let n_len_sq_scalar = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
-        let epsilon = Field::from(1e-10);
-        let inv_n_len = Field::from(1.0) / (n_len_sq_scalar.max(epsilon)).sqrt();
+        // Collapse AST nodes to Field for scalar operations
+        let fzero = Field::from(0.0);
+        let n_len_sq_scalar = (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z)
+            .constant();
+        let inv_n_len = n_len_sq_scalar.max(Field::from(1e-10)).sqrt().rsqrt()
+            .constant();
 
         // Normal as scalar (for Householder value computation)
-        let nx = cross_x * inv_n_len;
-        let ny = cross_y * inv_n_len;
-        let nz = cross_z * inv_n_len;
+        let nx = (cross_x * inv_n_len).constant();
+        let ny = (cross_y * inv_n_len).constant();
+        let nz = (cross_z * inv_n_len).constant();
 
         // Lift N to Jet3 with approximate derivatives (curvature-aware)
         let curvature_scale = inv_p_len.val; // 1/|P| ≈ 1/t ≈ curvature
         let n_jet_x = Jet3 {
             val: nx,
-            dx: x.dx * curvature_scale,
-            dy: x.dy * curvature_scale,
-            dz: Field::from(0.0),
+            dx: (x.dx * curvature_scale).constant(),
+            dy: (x.dy * curvature_scale).constant(),
+            dz: fzero,
         };
         let n_jet_y = Jet3 {
             val: ny,
-            dx: y.dx * curvature_scale,
-            dy: y.dy * curvature_scale,
-            dz: Field::from(0.0),
+            dx: (y.dx * curvature_scale).constant(),
+            dy: (y.dy * curvature_scale).constant(),
+            dz: fzero,
         };
         let n_jet_z = Jet3 {
             val: nz,
-            dx: z.dx * curvature_scale,
-            dy: z.dy * curvature_scale,
-            dz: Field::from(0.0),
+            dx: (z.dx * curvature_scale).constant(),
+            dy: (z.dy * curvature_scale).constant(),
+            dz: fzero,
         };
 
         // D as Jets (normalized P)
@@ -432,32 +434,35 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
-        let n_len_sq_scalar = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
-        let epsilon = Field::from(1e-10);
-        let inv_n_len = Field::from(1.0) / (n_len_sq_scalar.max(epsilon)).sqrt();
+        // Collapse AST nodes to Field for scalar operations
+        let fzero = Field::from(0.0);
+        let n_len_sq_scalar = (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z)
+            .constant();
+        let inv_n_len = n_len_sq_scalar.max(Field::from(1e-10)).sqrt().rsqrt()
+            .constant();
 
-        let nx = cross_x * inv_n_len;
-        let ny = cross_y * inv_n_len;
-        let nz = cross_z * inv_n_len;
+        let nx = (cross_x * inv_n_len).constant();
+        let ny = (cross_y * inv_n_len).constant();
+        let nz = (cross_z * inv_n_len).constant();
 
         let curvature_scale = inv_p_len.val;
         let n_jet_x = Jet3 {
             val: nx,
-            dx: x.dx * curvature_scale,
-            dy: x.dy * curvature_scale,
-            dz: Field::from(0.0),
+            dx: (x.dx * curvature_scale).constant(),
+            dy: (x.dy * curvature_scale).constant(),
+            dz: fzero,
         };
         let n_jet_y = Jet3 {
             val: ny,
-            dx: y.dx * curvature_scale,
-            dy: y.dy * curvature_scale,
-            dz: Field::from(0.0),
+            dx: (y.dx * curvature_scale).constant(),
+            dy: (y.dy * curvature_scale).constant(),
+            dz: fzero,
         };
         let n_jet_z = Jet3 {
             val: nz,
-            dx: z.dx * curvature_scale,
-            dy: z.dy * curvature_scale,
-            dz: Field::from(0.0),
+            dx: (z.dx * curvature_scale).constant(),
+            dy: (z.dy * curvature_scale).constant(),
+            dz: fzero,
         };
 
         let d_jet_x = x * inv_p_len;
@@ -494,10 +499,10 @@ impl Manifold<Jet3> for Checker {
         let fract_half = half - half.floor();
         let is_even = fract_half.abs().lt(Field::from(0.25));
 
-        // Colors
+        // Colors - use select for branchless conditional
         let color_a = Field::from(0.9);
         let color_b = Field::from(0.2);
-        let base_color = (is_even & color_a) | ((!is_even) & color_b);
+        let base_color = is_even.clone().select(color_a, color_b);
 
         // AA: distance to nearest grid line in X and Z
         let fx = x.val - cell_x; // [0, 1) within cell
@@ -509,17 +514,21 @@ impl Manifold<Jet3> for Checker {
         let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
 
         // Gradient magnitude from Jet3 derivatives (how fast coords change per pixel)
+        // Build expression once with coordinate variables, evaluate at Jet derivative components
+        let grad_mag = (X * X + Y * Y + Z * Z).sqrt();
+        let grad_x = grad_mag.at(x.dx, x.dy, x.dz, Field::from(0.0)).eval();
+        let grad_z = grad_mag.at(z.dx, z.dy, z.dz, Field::from(0.0)).eval();
         // This tells us how wide one pixel is in world space
-        let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt();
-        let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
 
         // Coverage: how much of the pixel is in this cell vs neighbor
         let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
 
         // Blend with neighbor color at edges
-        let neighbor_color = (is_even & color_b) | ((!is_even) & color_a);
-        base_color * coverage + neighbor_color * (Field::from(1.0) - coverage)
+        let neighbor_color = is_even.select(color_b, color_a);
+        (base_color * coverage + neighbor_color * (Field::from(1.0) - coverage))
+            .at(x.val, Field::from(0.0), z.val, Field::from(0.0))
+            .eval()
     }
 }
 
@@ -537,7 +546,8 @@ impl Manifold<Jet3> for Sky {
         let t = t.max(Field::from(0.0)).min(Field::from(1.0));
 
         // Deep blue to white
-        Field::from(0.1) + t * Field::from(0.8)
+        let fzero = Field::from(0.0);
+        (Field::from(0.1) + t * Field::from(0.8)).constant()
     }
 }
 
@@ -550,12 +560,13 @@ impl Manifold<Jet3> for ColorSky {
 
     #[inline(always)]
     fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
+        let fzero = Field::from(0.0);
         let t = y.val * Field::from(0.5) + Field::from(0.5);
         let t = t.max(Field::from(0.0)).min(Field::from(1.0));
 
-        let r = Field::from(0.7) - t * Field::from(0.5);
-        let g = Field::from(0.85) - t * Field::from(0.45);
-        let b = Field::from(1.0) - t * Field::from(0.2);
+        let r = (Field::from(0.7) - t.clone() * Field::from(0.5)).constant();
+        let g = (Field::from(0.85) - t.clone() * Field::from(0.45)).constant();
+        let b = (Field::from(1.0) - t * Field::from(0.2)).constant();
         let a = Field::from(1.0);
 
         Discrete::pack(r, g, b, a)
@@ -571,6 +582,7 @@ impl Manifold<Jet3> for ColorChecker {
 
     #[inline(always)]
     fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Discrete {
+        let fzero = Field::from(0.0);
         let cell_x = x.val.floor();
         let cell_z = z.val.floor();
         let sum = cell_x + cell_z;
@@ -596,19 +608,20 @@ impl Manifold<Jet3> for ColorChecker {
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
 
         let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
-        let one_minus_cov = Field::from(1.0) - coverage;
+        let one_minus_cov = Field::from(1.0) - coverage.clone();
 
-        let r_base = (is_even & ra) | ((!is_even) & rb);
-        let g_base = (is_even & ga) | ((!is_even) & gb);
-        let b_base = (is_even & ba) | ((!is_even) & bb);
+        // Use select for branchless color choice
+        let r_base = is_even.clone().select(ra, rb);
+        let g_base = is_even.clone().select(ga, gb);
+        let b_base = is_even.clone().select(ba, bb);
 
-        let r_neighbor = (is_even & rb) | ((!is_even) & ra);
-        let g_neighbor = (is_even & gb) | ((!is_even) & ga);
-        let b_neighbor = (is_even & bb) | ((!is_even) & ba);
+        let r_neighbor = is_even.clone().select(rb, ra);
+        let g_neighbor = is_even.clone().select(gb, ga);
+        let b_neighbor = is_even.select(bb, ba);
 
-        let r = r_base * coverage + r_neighbor * one_minus_cov;
-        let g = g_base * coverage + g_neighbor * one_minus_cov;
-        let b = b_base * coverage + b_neighbor * one_minus_cov;
+        let r = (r_base * coverage.clone() + r_neighbor * one_minus_cov.clone()).constant();
+        let g = (g_base * coverage.clone() + g_neighbor * one_minus_cov.clone()).constant();
+        let b = (b_base * coverage + b_neighbor * one_minus_cov).constant();
         let a = Field::from(1.0);
 
         Discrete::pack(r, g, b, a)

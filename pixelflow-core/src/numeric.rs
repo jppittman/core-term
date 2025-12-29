@@ -13,15 +13,13 @@
 ///
 /// This trait intentionally hides SIMD internals like `sqrt`, `select_raw`,
 /// and mask introspection. Use the provided combinators instead.
+///
+/// Arithmetic operators return Manifold types (AST nodes) for algebraic optimization.
 pub trait Computational:
     Copy
     + Send
     + Sync
     + Sized
-    + core::ops::Add<Output = Self>
-    + core::ops::Sub<Output = Self>
-    + core::ops::Mul<Output = Self>
-    + core::ops::Div<Output = Self>
     + core::ops::BitAnd<Output = Self>
     + core::ops::BitOr<Output = Self>
     + core::ops::Not<Output = Self>
@@ -141,11 +139,27 @@ pub(crate) trait Numeric: Computational {
     /// - sqrt + div: ~25 cycles
     fn rsqrt(self) -> Self;
 
+    // ========================================================================
+    // Raw Arithmetic (SIMD operations, used by combinator eval_raw)
+    // ========================================================================
+
+    /// Raw addition - direct SIMD operation, no AST building.
+    fn raw_add(self, rhs: Self) -> Self;
+
+    /// Raw subtraction - direct SIMD operation, no AST building.
+    fn raw_sub(self, rhs: Self) -> Self;
+
+    /// Raw multiplication - direct SIMD operation, no AST building.
+    fn raw_mul(self, rhs: Self) -> Self;
+
+    /// Raw division - direct SIMD operation, no AST building.
+    fn raw_div(self, rhs: Self) -> Self;
+
     /// Masked add: self + (mask ? val : 0)
     /// Optimized for winding accumulation patterns.
     #[inline(always)]
     fn add_masked(self, val: Self, mask: Self) -> Self {
         // Default implementation - backends can override with masked instructions
-        self + (mask & val)
+        self.raw_add(mask & val)
     }
 }

@@ -52,7 +52,7 @@ where
         // Linear ramp over 1 pixel centered on edge
         let coverage = result.val / (grad_mag + Field::from(MIN_GRADIENT)) + Field::from(0.5);
 
-        // Clamp to [0, 1]
-        coverage.max(Field::from(0.0)).min(Field::from(1.0))
+        // Clamp to [0, 1] - collapse AST to Field
+        coverage.max(0.0f32).min(1.0f32).at(x, y, z, w).eval()
     }
 }

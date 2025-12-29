@@ -4,6 +4,8 @@
 //! - Jet3: value + 3D gradient (∂f/∂x, ∂f/∂y, ∂f/∂z) for surface normals
 
 use crate::Field;
+use crate::Manifold;
+use crate::ManifoldExt;
 use crate::numeric::{Computational, Numeric, Selectable};
 
 /// A 2-jet: value and first derivatives.
@@ -55,6 +57,24 @@ impl Jet2 {
         }
     }
 
+    /// Collapse manifold expressions into a Jet2.
+    ///
+    /// Evaluates each component at origin to get concrete Field values.
+    /// Use sparingly - prefer keeping expressions as manifolds.
+    #[inline(always)]
+    pub fn new<V, Dx, Dy>(val: V, dx: Dx, dy: Dy) -> Self
+    where
+        V: Manifold<Field, Output = Field>,
+        Dx: Manifold<Field, Output = Field>,
+        Dy: Manifold<Field, Output = Field>,
+    {
+        Self {
+            val: val.constant(),
+            dx: dx.constant(),
+            dy: dy.constant(),
+        }
+    }
+
     /// Raw select without early exit (pub(crate) only).
     #[inline(always)]
     pub(crate) fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
@@ -102,11 +122,7 @@ impl Jet2 {
         let rsqrt_val = self.val.rsqrt();
         let sqrt_val = self.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Self {
-            val: sqrt_val,
-            dx: self.dx * half_rsqrt,
-            dy: self.dy * half_rsqrt,
-        }
+        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt)
     }
 
     /// Absolute value with derivative.
@@ -114,11 +130,7 @@ impl Jet2 {
     pub fn abs(self) -> Self {
         // |f|' = f' * sign(f)
         let sign = self.val / self.val.abs();
-        Self {
-            val: self.val.abs(),
-            dx: self.dx * sign,
-            dy: self.dy * sign,
-        }
+        Self::new(self.val.abs(), self.dx * sign, self.dy * sign)
     }
 
     /// Element-wise minimum with derivative.
@@ -174,11 +186,7 @@ impl core::ops::Add for Jet2 {
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
         // (f + g)' = f' + g'
-        Self {
-            val: self.val + rhs.val,
-            dx: self.dx + rhs.dx,
-            dy: self.dy + rhs.dy,
-        }
+        Self::new(self.val + rhs.val, self.dx + rhs.dx, self.dy + rhs.dy)
     }
 }
 
@@ -187,11 +195,7 @@ impl core::ops::Sub for Jet2 {
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
         // (f - g)' = f' - g'
-        Self {
-            val: self.val - rhs.val,
-            dx: self.dx - rhs.dx,
-            dy: self.dy - rhs.dy,
-        }
+        Self::new(self.val - rhs.val, self.dx - rhs.dx, self.dy - rhs.dy)
     }
 }
 
@@ -200,12 +204,11 @@ impl core::ops::Mul for Jet2 {
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         // Product rule: (f * g)' = f' * g + f * g'
-        // Use FMA for both terms: fma(a, b, c*d) = a*b + c*d in one SIMD FMA instruction
-        Self {
-            val: self.val * rhs.val,
-            dx: self.dx.mul_add(rhs.val, self.val * rhs.dx),
-            dy: self.dy.mul_add(rhs.val, self.val * rhs.dy),
-        }
+        Self::new(
+            self.val * rhs.val,
+            self.dx * rhs.val + self.val * rhs.dx,
+            self.dy * rhs.val + self.val * rhs.dy,
+        )
     }
 }
 
@@ -214,15 +217,14 @@ impl core::ops::Div for Jet2 {
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
         // Quotient rule: (f / g)' = (f' * g - f * g') / g²
-        // Restructure to use FMA: f'*(g/g²) - f*(g'/g²) = f'*(1/g) - f*g'*(1/g²)
         let g_sq = rhs.val * rhs.val;
-        let inv_g_sq = Field::from(1.0) / g_sq;  // One division
-        let scale = rhs.val * inv_g_sq;          // Pre-compute rhs.val/g_sq
-        Self {
-            val: self.val / rhs.val,
-            dx: self.dx.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dx * inv_g_sq),  // FMA: f'*(g/g²) - f*(g'/g²)
-            dy: self.dy.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dy * inv_g_sq),
-        }
+        let inv_g_sq = Field::from(1.0) / g_sq;
+        let scale = rhs.val * inv_g_sq;
+        Self::new(
+            self.val / rhs.val,
+            self.dx * scale - self.val * rhs.dx * inv_g_sq,
+            self.dy * scale - self.val * rhs.dy * inv_g_sq,
+        )
     }
 }
 
@@ -301,11 +303,7 @@ impl Numeric for Jet2 {
         let rsqrt_val = self.val.rsqrt();
         let sqrt_val = self.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Self {
-            val: sqrt_val,
-            dx: self.dx * half_rsqrt,
-            dy: self.dy * half_rsqrt,
-        }
+        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt)
     }
 
     #[inline(always)]
@@ -313,11 +311,7 @@ impl Numeric for Jet2 {
         // |f|' = f' * sign(f)
         // Note: derivative undefined at f=0, we use sign
         let sign = self.val / self.val.abs(); // NaN at zero, but close enough
-        Self {
-            val: self.val.abs(),
-            dx: self.dx * sign,
-            dy: self.dy * sign,
-        }
+        Self::new(self.val.abs(), self.dx * sign, self.dy * sign)
     }
 
     #[inline(always)]
@@ -415,11 +409,7 @@ impl Numeric for Jet2 {
         // Chain rule: (sin f)' = cos(f) * f'
         let sin_val = self.val.sin();
         let cos_deriv = self.val.cos();
-        Self {
-            val: sin_val,
-            dx: self.dx * cos_deriv,
-            dy: self.dy * cos_deriv,
-        }
+        Self::new(sin_val, self.dx * cos_deriv, self.dy * cos_deriv)
     }
 
     #[inline(always)]
@@ -427,11 +417,7 @@ impl Numeric for Jet2 {
         // Chain rule: (cos f)' = -sin(f) * f'
         let cos_val = self.val.cos();
         let neg_sin = -self.val.sin();
-        Self {
-            val: cos_val,
-            dx: self.dx * neg_sin,
-            dy: self.dy * neg_sin,
-        }
+        Self::new(cos_val, self.dx * neg_sin, self.dy * neg_sin)
     }
 
     #[inline(always)]
@@ -439,42 +425,36 @@ impl Numeric for Jet2 {
         // atan2(y, x) derivatives:
         // ∂/∂y = x / (x² + y²)
         // ∂/∂x = -y / (x² + y²)
-        // Compute 1/(x² + y²) once, then multiply instead of 2 sequential divs
         let r_sq = self.val * self.val + x.val * x.val;
-        let inv_r_sq = Field::from(1.0) / r_sq;  // One division
+        let inv_r_sq = Field::from(1.0) / r_sq;
         let dy_darg = x.val * inv_r_sq;
         let dx_darg = (-self.val) * inv_r_sq;
-        Self {
-            val: self.val.atan2(x.val),
-            dx: self.dx.mul_add(dy_darg, x.dx * dx_darg),
-            dy: self.dy.mul_add(dy_darg, x.dy * dx_darg),
-        }
+        Self::new(
+            self.val.atan2(x.val),
+            self.dx * dy_darg + x.dx * dx_darg,
+            self.dy * dy_darg + x.dy * dx_darg,
+        )
     }
 
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
         // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
-        // Compute 1/f once, then use FMA for each derivative
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
-        let inv_self = Field::from(1.0) / self.val;  // One division
-        let coeff = exp.val * inv_self;               // Common coefficient g/f
-        Self {
+        let inv_self = Field::from(1.0) / self.val;
+        let coeff = exp.val * inv_self;
+        Self::new(
             val,
-            dx: val * exp.dx.mul_add(ln_base, coeff * self.dx),  // FMA: g*ln(f) + g/f*f'
-            dy: val * exp.dy.mul_add(ln_base, coeff * self.dy),
-        }
+            val * (exp.dx * ln_base + coeff * self.dx),
+            val * (exp.dy * ln_base + coeff * self.dy),
+        )
     }
 
     #[inline(always)]
     fn exp(self) -> Self {
         // Chain rule: (exp f)' = exp(f) * f'
         let exp_val = self.val.exp();
-        Self {
-            val: exp_val,
-            dx: self.dx * exp_val,
-            dy: self.dy * exp_val,
-        }
+        Self::new(exp_val, self.dx * exp_val, self.dy * exp_val)
     }
 
     #[inline(always)]
@@ -486,14 +466,11 @@ impl Numeric for Jet2 {
     #[inline(always)]
     fn mul_add(self, b: Self, c: Self) -> Self {
         // (a * b + c)' where a, b, c are jets
-        // val = a.val * b.val + c.val (already FMA'd above)
-        // d/dx = a.dx * b.val + a.val * b.dx + c.dx (triple FMA)
-        // Use nested FMA: fma(fma(a.dx, b.val, a.val * b.dx), 1, c.dx)
-        Self {
-            val: self.val.mul_add(b.val, c.val),
-            dx: self.dx.mul_add(b.val, self.val.mul_add(b.dx, c.dx)),
-            dy: self.dy.mul_add(b.val, self.val.mul_add(b.dy, c.dy)),
-        }
+        Self::new(
+            self.val.mul_add(b.val, c.val),
+            self.dx * b.val + self.val * b.dx + c.dx,
+            self.dy * b.val + self.val * b.dy + c.dy,
+        )
     }
 
     #[inline(always)]
@@ -501,25 +478,16 @@ impl Numeric for Jet2 {
         // (1/f)' = -f'/f²
         let inv = self.val.recip();
         let neg_inv_sq = Field::from(0.0) - inv * inv;
-        Self {
-            val: inv,
-            dx: self.dx * neg_inv_sq,
-            dy: self.dy * neg_inv_sq,
-        }
+        Self::new(inv, self.dx * neg_inv_sq, self.dy * neg_inv_sq)
     }
 
     #[inline(always)]
     fn rsqrt(self) -> Self {
-        // d/dx[1/√f] = -f' / (2 * f * √f) = -f' * rsqrt(f) / (2f)
-        // = -f' / (2 * f^(3/2)) = -f' * rsqrt(f)³ / 2
+        // d/dx[1/√f] = -f' * rsqrt(f)³ / 2
         let rsqrt_val = self.val.rsqrt();
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
         let scale = Field::from(-0.5) * rsqrt_cubed;
-        Self {
-            val: rsqrt_val,
-            dx: self.dx * scale,
-            dy: self.dy * scale,
-        }
+        Self::new(rsqrt_val, self.dx * scale, self.dy * scale)
     }
 
     #[inline(always)]
@@ -530,6 +498,26 @@ impl Numeric for Jet2 {
             dx: self.dx.add_masked(val.dx, mask.val),
             dy: self.dy.add_masked(val.dy, mask.val),
         }
+    }
+
+    #[inline(always)]
+    fn raw_add(self, rhs: Self) -> Self {
+        self + rhs
+    }
+
+    #[inline(always)]
+    fn raw_sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
+
+    #[inline(always)]
+    fn raw_mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
+
+    #[inline(always)]
+    fn raw_div(self, rhs: Self) -> Self {
+        self / rhs
     }
 }
 
@@ -602,15 +590,44 @@ impl Jet3 {
         }
     }
 
+    /// Collapse manifold expressions into a Jet3.
+    ///
+    /// Evaluates each component at origin to get concrete Field values.
+    /// Use sparingly - prefer keeping expressions as manifolds.
+    #[inline(always)]
+    pub fn new<V, Dx, Dy, Dz>(val: V, dx: Dx, dy: Dy, dz: Dz) -> Self
+    where
+        V: Manifold<Field, Output = Field>,
+        Dx: Manifold<Field, Output = Field>,
+        Dy: Manifold<Field, Output = Field>,
+        Dz: Manifold<Field, Output = Field>,
+    {
+        Self {
+            val: val.constant(),
+            dx: dx.constant(),
+            dy: dy.constant(),
+            dz: dz.constant(),
+        }
+    }
+
     /// Get the normalized gradient as a surface normal.
     ///
     /// For an SDF f(p) = 0, the gradient ∇f points outward from the surface.
-    /// This function returns the unit normal: ∇f / |∇f|
+    /// Returns manifold expressions for the unit normal components.
+    /// Use `Jet3::new(nx, ny, nz)` to collapse if needed.
     #[inline(always)]
-    pub fn normal(&self) -> (Field, Field, Field) {
+    pub fn normal(&self) -> (
+        impl Manifold<Field, Output = Field>,
+        impl Manifold<Field, Output = Field>,
+        impl Manifold<Field, Output = Field>,
+    ) {
         let len_sq = self.dx * self.dx + self.dy * self.dy + self.dz * self.dz;
         let inv_len = len_sq.rsqrt();
-        (self.dx * inv_len, self.dy * inv_len, self.dz * inv_len)
+        (
+            self.dx * inv_len,
+            self.dy * inv_len,
+            self.dz * inv_len,
+        )
     }
 
     /// Get the raw gradient without normalization.
@@ -667,12 +684,7 @@ impl Jet3 {
         let rsqrt_val = self.val.rsqrt();
         let sqrt_val = self.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Self {
-            val: sqrt_val,
-            dx: self.dx * half_rsqrt,
-            dy: self.dy * half_rsqrt,
-            dz: self.dz * half_rsqrt,
-        }
+        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt, self.dz * half_rsqrt)
     }
 
     /// Absolute value with derivative.
@@ -680,12 +692,7 @@ impl Jet3 {
     pub fn abs(self) -> Self {
         // |f|' = f' * sign(f)
         let sign = self.val / self.val.abs();
-        Self {
-            val: self.val.abs(),
-            dx: self.dx * sign,
-            dy: self.dy * sign,
-            dz: self.dz * sign,
-        }
+        Self::new(self.val.abs(), self.dx * sign, self.dy * sign, self.dz * sign)
     }
 
     /// Element-wise minimum with derivative.
@@ -741,12 +748,12 @@ impl core::ops::Add for Jet3 {
     type Output = Self;
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
-        Self {
-            val: self.val + rhs.val,
-            dx: self.dx + rhs.dx,
-            dy: self.dy + rhs.dy,
-            dz: self.dz + rhs.dz,
-        }
+        Self::new(
+            self.val + rhs.val,
+            self.dx + rhs.dx,
+            self.dy + rhs.dy,
+            self.dz + rhs.dz,
+        )
     }
 }
 
@@ -754,12 +761,12 @@ impl core::ops::Sub for Jet3 {
     type Output = Self;
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
-        Self {
-            val: self.val - rhs.val,
-            dx: self.dx - rhs.dx,
-            dy: self.dy - rhs.dy,
-            dz: self.dz - rhs.dz,
-        }
+        Self::new(
+            self.val - rhs.val,
+            self.dx - rhs.dx,
+            self.dy - rhs.dy,
+            self.dz - rhs.dz,
+        )
     }
 }
 
@@ -768,13 +775,12 @@ impl core::ops::Mul for Jet3 {
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         // Product rule: (f * g)' = f' * g + f * g'
-        // Use FMA for both terms: fma(a, b, c*d) = a*b + c*d in one SIMD FMA instruction
-        Self {
-            val: self.val * rhs.val,
-            dx: self.dx.mul_add(rhs.val, self.val * rhs.dx),
-            dy: self.dy.mul_add(rhs.val, self.val * rhs.dy),
-            dz: self.dz.mul_add(rhs.val, self.val * rhs.dz),
-        }
+        Self::new(
+            self.val * rhs.val,
+            self.dx * rhs.val + self.val * rhs.dx,
+            self.dy * rhs.val + self.val * rhs.dy,
+            self.dz * rhs.val + self.val * rhs.dz,
+        )
     }
 }
 
@@ -783,16 +789,15 @@ impl core::ops::Div for Jet3 {
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
         // Quotient rule: (f / g)' = (f' * g - f * g') / g²
-        // Restructure to use FMA: f'*(g/g²) - f*(g'/g²) = f'*(1/g) - f*g'*(1/g²)
         let g_sq = rhs.val * rhs.val;
-        let inv_g_sq = Field::from(1.0) / g_sq;  // One division
-        let scale = rhs.val * inv_g_sq;          // Pre-compute rhs.val/g_sq
-        Self {
-            val: self.val / rhs.val,
-            dx: self.dx.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dx * inv_g_sq),  // FMA: f'*(g/g²) - f*(g'/g²)
-            dy: self.dy.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dy * inv_g_sq),
-            dz: self.dz.mul_add(scale, (Field::from(0.0) - self.val) * rhs.dz * inv_g_sq),
-        }
+        let inv_g_sq = Field::from(1.0) / g_sq;
+        let scale = rhs.val * inv_g_sq;
+        Self::new(
+            self.val / rhs.val,
+            self.dx * scale - self.val * rhs.dx * inv_g_sq,
+            self.dy * scale - self.val * rhs.dy * inv_g_sq,
+            self.dz * scale - self.val * rhs.dz * inv_g_sq,
+        )
     }
 }
 
@@ -870,23 +875,13 @@ impl Numeric for Jet3 {
         let rsqrt_val = self.val.rsqrt();
         let sqrt_val = self.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Self {
-            val: sqrt_val,
-            dx: self.dx * half_rsqrt,
-            dy: self.dy * half_rsqrt,
-            dz: self.dz * half_rsqrt,
-        }
+        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt, self.dz * half_rsqrt)
     }
 
     #[inline(always)]
     fn abs(self) -> Self {
         let sign = self.val / self.val.abs();
-        Self {
-            val: self.val.abs(),
-            dx: self.dx * sign,
-            dy: self.dy * sign,
-            dz: self.dz * sign,
-        }
+        Self::new(self.val.abs(), self.dx * sign, self.dy * sign, self.dz * sign)
     }
 
     #[inline(always)]
@@ -972,24 +967,14 @@ impl Numeric for Jet3 {
     fn sin(self) -> Self {
         let sin_val = self.val.sin();
         let cos_deriv = self.val.cos();
-        Self {
-            val: sin_val,
-            dx: self.dx * cos_deriv,
-            dy: self.dy * cos_deriv,
-            dz: self.dz * cos_deriv,
-        }
+        Self::new(sin_val, self.dx * cos_deriv, self.dy * cos_deriv, self.dz * cos_deriv)
     }
 
     #[inline(always)]
     fn cos(self) -> Self {
         let cos_val = self.val.cos();
         let neg_sin = -self.val.sin();
-        Self {
-            val: cos_val,
-            dx: self.dx * neg_sin,
-            dy: self.dy * neg_sin,
-            dz: self.dz * neg_sin,
-        }
+        Self::new(cos_val, self.dx * neg_sin, self.dy * neg_sin, self.dz * neg_sin)
     }
 
     #[inline(always)]
@@ -997,44 +982,37 @@ impl Numeric for Jet3 {
         // atan2(y, x) derivatives:
         // ∂/∂y = x / (x² + y²)
         // ∂/∂x = -y / (x² + y²)
-        // Compute 1/(x² + y²) once, then multiply instead of 2 sequential divs
         let r_sq = self.val * self.val + x.val * x.val;
-        let inv_r_sq = Field::from(1.0) / r_sq;  // One division
+        let inv_r_sq = Field::from(1.0) / r_sq;
         let dy_darg = x.val * inv_r_sq;
         let dx_darg = (-self.val) * inv_r_sq;
-        Self {
-            val: self.val.atan2(x.val),
-            dx: self.dx.mul_add(dy_darg, x.dx * dx_darg),
-            dy: self.dy.mul_add(dy_darg, x.dy * dx_darg),
-            dz: self.dz.mul_add(dy_darg, x.dz * dx_darg),
-        }
+        Self::new(
+            self.val.atan2(x.val),
+            self.dx * dy_darg + x.dx * dx_darg,
+            self.dy * dy_darg + x.dy * dx_darg,
+            self.dz * dy_darg + x.dz * dx_darg,
+        )
     }
 
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
         // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
-        // Compute 1/f once, then use FMA for each derivative
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
-        let inv_self = Field::from(1.0) / self.val;  // One division
-        let coeff = exp.val * inv_self;               // Common coefficient g/f
-        Self {
+        let inv_self = Field::from(1.0) / self.val;
+        let coeff = exp.val * inv_self;
+        Self::new(
             val,
-            dx: val * exp.dx.mul_add(ln_base, coeff * self.dx),  // FMA: g*ln(f) + g/f*f'
-            dy: val * exp.dy.mul_add(ln_base, coeff * self.dy),
-            dz: val * exp.dz.mul_add(ln_base, coeff * self.dz),
-        }
+            val * (exp.dx * ln_base + coeff * self.dx),
+            val * (exp.dy * ln_base + coeff * self.dy),
+            val * (exp.dz * ln_base + coeff * self.dz),
+        )
     }
 
     #[inline(always)]
     fn exp(self) -> Self {
         let exp_val = self.val.exp();
-        Self {
-            val: exp_val,
-            dx: self.dx * exp_val,
-            dy: self.dy * exp_val,
-            dz: self.dz * exp_val,
-        }
+        Self::new(exp_val, self.dx * exp_val, self.dy * exp_val, self.dz * exp_val)
     }
 
     #[inline(always)]
@@ -1045,27 +1023,19 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn mul_add(self, b: Self, c: Self) -> Self {
         // (a * b + c)' where a, b, c are jets
-        // val = a.val * b.val + c.val (already FMA'd above)
-        // d/dx = a.dx * b.val + a.val * b.dx + c.dx (triple FMA)
-        // Use nested FMA: fma(fma(a.dx, b.val, a.val * b.dx), 1, c.dx)
-        Self {
-            val: self.val.mul_add(b.val, c.val),
-            dx: self.dx.mul_add(b.val, self.val.mul_add(b.dx, c.dx)),
-            dy: self.dy.mul_add(b.val, self.val.mul_add(b.dy, c.dy)),
-            dz: self.dz.mul_add(b.val, self.val.mul_add(b.dz, c.dz)),
-        }
+        Self::new(
+            self.val.mul_add(b.val, c.val),
+            self.dx * b.val + self.val * b.dx + c.dx,
+            self.dy * b.val + self.val * b.dy + c.dy,
+            self.dz * b.val + self.val * b.dz + c.dz,
+        )
     }
 
     #[inline(always)]
     fn recip(self) -> Self {
         let inv = self.val.recip();
         let neg_inv_sq = Field::from(0.0) - inv * inv;
-        Self {
-            val: inv,
-            dx: self.dx * neg_inv_sq,
-            dy: self.dy * neg_inv_sq,
-            dz: self.dz * neg_inv_sq,
-        }
+        Self::new(inv, self.dx * neg_inv_sq, self.dy * neg_inv_sq, self.dz * neg_inv_sq)
     }
 
     #[inline(always)]
@@ -1073,12 +1043,7 @@ impl Numeric for Jet3 {
         let rsqrt_val = self.val.rsqrt();
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
         let scale = Field::from(-0.5) * rsqrt_cubed;
-        Self {
-            val: rsqrt_val,
-            dx: self.dx * scale,
-            dy: self.dy * scale,
-            dz: self.dz * scale,
-        }
+        Self::new(rsqrt_val, self.dx * scale, self.dy * scale, self.dz * scale)
     }
 
     #[inline(always)]
@@ -1089,5 +1054,25 @@ impl Numeric for Jet3 {
             dy: self.dy.add_masked(val.dy, mask.val),
             dz: self.dz.add_masked(val.dz, mask.val),
         }
+    }
+
+    #[inline(always)]
+    fn raw_add(self, rhs: Self) -> Self {
+        self + rhs
+    }
+
+    #[inline(always)]
+    fn raw_sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
+
+    #[inline(always)]
+    fn raw_mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
+
+    #[inline(always)]
+    fn raw_div(self, rhs: Self) -> Self {
+        self / rhs
     }
 }

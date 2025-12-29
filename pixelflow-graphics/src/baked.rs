@@ -148,7 +148,7 @@ where
 mod tests {
     use super::*;
     use crate::Rgba8;
-    use pixelflow_core::{Discrete, PARALLELISM, materialize_discrete};
+    use pixelflow_core::{Discrete, ManifoldExt, PARALLELISM, materialize_discrete};
 
     // A simple solid color manifold for testing
     struct SolidColor(u8, u8, u8, u8);
@@ -199,7 +199,7 @@ mod tests {
             type Output = Discrete;
             fn eval_raw(&self, x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
                 // Red channel = x / 4 (for 4 wide texture)
-                let r = x / Field::from(4.0);
+                let r = (x / Field::from(4.0)).constant();
                 Discrete::pack(r, Field::from(0.0), Field::from(0.0), Field::from(1.0))
             }
         }

@@ -4,7 +4,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Discrete, Field, Manifold, PARALLELISM};
+use pixelflow_core::combinators::At;
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
 use pixelflow_graphics::{
     render::rasterizer::{execute, parallel::render_parallel_pooled, render_work_stealing, TensorShape, ThreadPool},
     CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
@@ -418,7 +419,7 @@ fn bench_discrete_pack(c: &mut Criterion) {
     });
 
     group.bench_function("pack_sequential_fields", |bencher| {
-        let r = Field::sequential(0.0) / Field::from(PARALLELISM as f32);
+        let r = (Field::sequential(0.0) / Field::from(PARALLELISM as f32)).constant();
         let g = Field::from(0.5);
         let b = Field::from(0.5);
         let a = Field::from(1.0);
@@ -816,7 +817,7 @@ fn bench_scene3d(c: &mut Criterion) {
             let scale = 2.0 / self.height;
             let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
             let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-            self.inner.eval_raw(sx, sy, z, w)
+            At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
         }
     }
 
@@ -925,7 +926,7 @@ fn bench_scene3d(c: &mut Criterion) {
             let scale = 2.0 / self.height;
             let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
             let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-            self.inner.eval_raw(sx, sy, z, w)
+            At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
         }
     }
 
@@ -1066,7 +1067,7 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
             let scale = 2.0 / self.height;
             let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
             let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-            self.inner.eval_raw(sx, sy, z, w)
+            At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
         }
     }
 

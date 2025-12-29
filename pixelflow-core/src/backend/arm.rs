@@ -57,12 +57,40 @@ impl Mask4 {
 impl MaskOps for Mask4 {
     #[inline(always)]
     fn any(self) -> bool {
-        unsafe { vmaxvq_u32(self.0) != 0 }
+        // Use inline asm to prevent LLVM from transforming vmax into movemask pattern.
+        // LLVM's optimizer converts vmaxvq_u32 into a slower 6-instruction sequence.
+        // Inline asm forces the optimal 2-instruction umaxv+fmov sequence.
+        unsafe {
+            let max_val: u32;
+            core::arch::asm!(
+                "umaxv {s:s}, {v:v}.4s",
+                "fmov {w:w}, {s:s}",
+                v = in(vreg) self.0,
+                s = lateout(vreg) _,
+                w = lateout(reg) max_val,
+                options(pure, nomem, nostack),
+            );
+            max_val != 0
+        }
     }
 
     #[inline(always)]
     fn all(self) -> bool {
-        unsafe { vminvq_u32(self.0) != 0 }
+        // Use inline asm to prevent LLVM from transforming vmin into movemask pattern.
+        // LLVM's optimizer converts vminvq_u32 into a slower 6-instruction sequence.
+        // Inline asm forces the optimal 2-instruction uminv+fmov sequence.
+        unsafe {
+            let min_val: u32;
+            core::arch::asm!(
+                "uminv {s:s}, {v:v}.4s",
+                "fmov {w:w}, {s:s}",
+                v = in(vreg) self.0,
+                s = lateout(vreg) _,
+                w = lateout(reg) min_val,
+                options(pure, nomem, nostack),
+            );
+            min_val != 0
+        }
     }
 }
 

@@ -2,9 +2,12 @@
 //!
 //! Build animations by composing manifolds with time-varying transformations.
 //! Time flows through the W dimension - wrap any manifold to modify how it evolves.
+//!
+//! All combinators are purely compositional - they build AST nodes that are
+//! evaluated lazily, enabling full optimization by LLVM.
 
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{At, Field, Manifold, Add, Sub, Mul, W, X, Y, Z};
 
 // ============================================================================
 // Time Shifting
@@ -12,31 +15,26 @@ use pixelflow_core::{Field, Manifold};
 
 /// Translate the W (time) dimension.
 ///
-/// Wraps a time-dependent manifold and shifts the time parameter before evaluation.
+/// Type alias for `At<X, Y, Z, Add<W, f32>, M>`.
+/// Purely compositional - the time offset becomes part of the AST.
+pub type TimeShift<M> = At<X, Y, Z, Add<W, f32>, M>;
+
+/// Create a time-shifted manifold.
+///
+/// Shifts the W coordinate by `offset` before evaluating the inner manifold.
 /// Used to set the "current time" in the animation system.
 ///
 /// # Example
 /// ```ignore
-/// let scene = TimeShift {
-///     inner: scene,
-///     offset: current_time,
-/// };
+/// let scene = time_shift(scene, current_time);
 /// ```
-#[derive(Clone, Copy, Debug)]
-pub struct TimeShift<M> {
-    pub inner: M,
-    pub offset: f32,
-}
-
-impl<M: Manifold<Output = O>, O> Manifold for TimeShift<M>
-where
-    O: Manifold<Output = O>,
-{
-    type Output = O;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> O {
-        self.inner.eval_raw(x, y, z, w + Field::from(self.offset))
+pub fn time_shift<M>(inner: M, offset: f32) -> TimeShift<M> {
+    At {
+        inner,
+        x: X,
+        y: Y,
+        z: Z,
+        w: W + offset,
     }
 }
 
@@ -46,36 +44,37 @@ where
 
 /// Normalize screen coordinates to device space.
 ///
-/// Remaps pixel coordinates (0..width, 0..height) to normalized device coordinates
+/// Type alias using At combinator for coordinate transformation.
+/// Maps pixel coordinates (0..width, 0..height) to normalized device coordinates
 /// suitable for camera systems (e.g., for perspective projection, ~60° FOV).
 ///
 /// Maps the screen to [−aspect*scale, aspect*scale] × [−scale, scale] where
 /// scale = 2.0/height.
+pub type ScreenRemap<M> = At<
+    Mul<Sub<X, Field>, Field>,  // (x - width/2) * scale
+    Mul<Sub<Field, Y>, Field>,  // (height/2 - y) * scale
+    Z,
+    W,
+    M,
+>;
+
+/// Create a screen-remapped manifold.
 ///
 /// # Example
 /// ```ignore
-/// let scene = ScreenRemap {
-///     inner: scene,
-///     width: 1920.0,
-///     height: 1080.0,
-/// };
+/// let scene = screen_remap(scene, 1920.0, 1080.0);
 /// ```
-#[derive(Clone, Copy, Debug)]
-pub struct ScreenRemap<M> {
-    pub inner: M,
-    pub width: f32,
-    pub height: f32,
-}
+pub fn screen_remap<M>(inner: M, width: f32, height: f32) -> ScreenRemap<M> {
+    let scale = Field::from(2.0 / height);
+    let half_width = Field::from(width * 0.5);
+    let half_height = Field::from(height * 0.5);
 
-impl<M: Manifold<Output = O>, O: Manifold<Output = O>> Manifold for ScreenRemap<M> {
-    type Output = O;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> O {
-        let scale = 2.0 / self.height;
-        let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
-        let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-        self.inner.eval_raw(sx, sy, z, w)
+    At {
+        inner,
+        x: (X - half_width) * scale,
+        y: (half_height - Y) * scale,
+        z: Z,
+        w: W,
     }
 }
 

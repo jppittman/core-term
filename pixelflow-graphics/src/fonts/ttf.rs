@@ -7,52 +7,59 @@
 
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Abs, Computational, Field, Ge, Manifold, Select};
+use pixelflow_core::{Abs, At, Field, Ge, Manifold, ManifoldExt, Select, X, Y, Z, W};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Combinators
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Affine transform combinator - generic over any inner manifold.
+/// Affine transform combinator.
+///
+/// Transforms coordinates via inverse matrix before sampling inner manifold.
+/// x' = (x - tx) * a + (y - ty) * b
+/// y' = (x - tx) * c + (y - ty) * d
 #[derive(Clone, Debug)]
 pub struct Affine<M> {
     pub inner: M,
-    pub inv: [f32; 6], // [a b c d tx ty] inverted
+    inv: [f32; 6], // [a b c d tx ty] inverted
 }
 
-impl<M> Affine<M> {
-    pub fn new(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Self {
-        let det = a * d - b * c;
-        let inv_det = if det.abs() < 1e-6 { 0.0 } else { 1.0 / det };
-        Self {
-            inner,
-            inv: [
-                d * inv_det,
-                -b * inv_det,
-                -c * inv_det,
-                a * inv_det,
-                tx,
-                ty,
-            ],
-        }
+/// Create an affine-transformed manifold.
+pub fn affine<M>(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Affine<M> {
+    let det = a * d - b * c;
+    let inv_det = if det.abs() < 1e-6 { 0.0 } else { 1.0 / det };
+    Affine {
+        inner,
+        inv: [d * inv_det, -b * inv_det, -c * inv_det, a * inv_det, tx, ty],
     }
 }
 
-/// Generic Affine implementation for any inner manifold.
-impl<M, I> Manifold<I> for Affine<M>
-where
-    I: Computational,
-    M: Manifold<I>,
-{
+impl<M: Manifold<Field>> Manifold<Field> for Affine<M> {
     type Output = M::Output;
 
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
         let [a, b, c, d, tx, ty] = self.inv;
-        let x2 = (x - I::from_f32(tx)) * I::from_f32(a) + (y - I::from_f32(ty)) * I::from_f32(b);
-        let y2 = (x - I::from_f32(tx)) * I::from_f32(c) + (y - I::from_f32(ty)) * I::from_f32(d);
-        self.inner.eval_raw(x2, y2, z, w)
+        // Build coordinate transform AST
+        let x2 = (X - tx) * a + (Y - ty) * b;
+        let y2 = (X - tx) * c + (Y - ty) * d;
+        // Compose with At and evaluate
+        At { inner: &self.inner, x: x2, y: y2, z: Z, w: W }.eval_raw(x, y, z, w)
+    }
+}
+
+impl<M: Manifold<Jet2>> Manifold<Jet2> for Affine<M> {
+    type Output = M::Output;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Self::Output {
+        let [a, b, c, d, tx, ty] = self.inv;
+        // Build coordinate transform AST
+        let x2 = (X - tx) * a + (Y - ty) * b;
+        let y2 = (X - tx) * c + (Y - ty) * d;
+        // Compose with At and evaluate
+        At { inner: &self.inner, x: x2, y: y2, z: Z, w: W }.eval_raw(x, y, z, w)
     }
 }
 
@@ -60,23 +67,36 @@ where
 #[derive(Clone, Debug)]
 pub struct Sum<M>(pub Arc<[M]>);
 
-/// Generic Sum implementation for any inner manifold.
-impl<M, I> Manifold<I> for Sum<M>
-where
-    I: Computational,
-    M: Manifold<I, Output = I>,
-{
-    type Output = I;
+impl<M: Manifold<Field, Output = Field>> Manifold<Field> for Sum<M> {
+    type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        // Fast path for single-element sums (common case: scaled glyphs)
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         if self.0.len() == 1 {
             return self.0[0].eval_raw(x, y, z, w);
         }
-        self.0
-            .iter()
-            .fold(I::from_f32(0.0), |acc, m| acc + m.eval_raw(x, y, z, w))
+        // Build sum AST and evaluate - each iteration builds Add node, then evals
+        let zero = Field::from(0.0);
+        self.0.iter().fold(zero, |acc, m| {
+            let val = m.eval_raw(x, y, z, w);
+            (acc + val).eval_raw(zero, zero, zero, zero)
+        })
+    }
+}
+
+impl<M: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Sum<M> {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        if self.0.len() == 1 {
+            return self.0[0].eval_raw(x, y, z, w);
+        }
+        let zero = Jet2::constant(Field::from(0.0));
+        self.0.iter().fold(zero, |acc, m| {
+            let val = m.eval_raw(x, y, z, w);
+            (acc + val).eval_raw(zero, zero, zero, zero)
+        })
     }
 }
 
@@ -236,27 +256,27 @@ impl Manifold<Field> for Line {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, _: Field, _: Field) -> Field {
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         let [[x0, y0], [x1, y1]] = self.points;
         let (dy, dx) = (y1 - y0, x1 - x0);
         if dy.abs() < 1e-6 {
             return Field::from(0.0);
         }
-        let (y0f, y1f) = (Field::from(y0), Field::from(y1));
-        let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
 
-        let x_int = Field::from(x0) + (y - y0f) * Field::from(dx / dy);
-        let dir = if dy > 0.0 { Field::from(1.0) } else { Field::from(-1.0) };
+        // Build AST using coordinate variables X, Y
+        let y_min = y0.min(y1);
+        let y_max = y0.max(y1);
+        let in_y = Y.ge(y_min) & Y.lt(y_max);
 
-        // Smooth AA: dist * aa_scale gives normalized distance, then map to [0,1]
-        // aa_scale = |dy|/len was precomputed at construction
+        let x_int = (Y - y0) * (dx / dy) + x0;
+        let dir: f32 = if dy > 0.0 { 1.0 } else { -1.0 };
+
         // dist > 0 when query is LEFT of crossing (x < x_int)
-        let dist = x_int - x;
-        let coverage = (dist * Field::from(self.aa_scale) + Field::from(0.5))
-            .max(Field::from(0.0))
-            .min(Field::from(1.0));
+        let dist = x_int - X;
+        let coverage = (dist * self.aa_scale + 0.5).max(0.0f32).min(1.0f32);
 
-        (in_y & (dir * coverage)) | (!in_y & Field::from(0.0))
+        // Compose and evaluate
+        in_y.select(coverage * dir, 0.0f32).at(x, y, z, w).eval()
     }
 }
 
@@ -264,57 +284,63 @@ impl Manifold<Field> for Quad {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, _: Field, _: Field) -> Field {
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
         let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
         let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
-
-        // Analytical AA: derivative of quadratic is linear in t
-        // dx/dt = 2*ax*t + bx, dy/dt = 2*ay*t + by
-        // grad_mag = sqrt(dx_dt² + dy_dt²) / |dy_dt|
-        let eval_t = |t: Field| -> Field {
-            let in_t = t.ge(Field::from(0.0)) & t.lt(Field::from(1.0));
-            if !in_t.any() {
-                return Field::from(0.0);
-            }
-            let x_int = (Field::from(ax) * t + Field::from(bx)) * t + Field::from(cx);
-
-            // Analytical derivatives (linear in t)
-            let dx_dt = Field::from(2.0 * ax) * t + Field::from(bx);
-            let dy_dt = Field::from(2.0 * ay) * t + Field::from(by);
-
-            // Direction based on curve tangent
-            let dir_mask = dy_dt.gt(Field::from(0.0));
-            let dir = (dir_mask & Field::from(1.0)) | (!dir_mask & Field::from(-1.0));
-
-            // Smooth AA coverage using fast rsqrt
-            // aa_scale = |dy_dt| / sqrt(dx_dt² + dy_dt²)
-            //          = |dy_dt| * rsqrt(dx_dt² + dy_dt²)
-            // rsqrt is ~5 cycles vs sqrt+div at ~27 cycles
-            // dist > 0 when query is LEFT of crossing (x < x_int)
-            let dist = x_int - x;
-            let curve_grad_sq = dx_dt * dx_dt + dy_dt * dy_dt;
-            let aa_scale = dy_dt.abs() * curve_grad_sq.max(Field::from(1e-12)).rsqrt();
-            let coverage = (dist * aa_scale + Field::from(0.5))
-                .max(Field::from(0.0))
-                .min(Field::from(1.0));
-
-            (in_t & (dir * coverage)) | (!in_t & Field::from(0.0))
-        };
 
         if ay.abs() < 1e-6 {
             if by.abs() < 1e-6 {
                 return Field::from(0.0);
             }
-            eval_t((y - Field::from(cy)) / Field::from(by))
+            // Linear case: t = (Y - cy) / by
+            let t = (Y - cy) / by;
+            let in_t = t.ge(0.0f32) & t.lt(1.0f32);
+            let x_int = (t * ax + bx) * t + cx;
+            let dx_dt = t * (2.0 * ax) + bx;
+            let dy_dt = t * (2.0 * ay) + by;
+            let dir = dy_dt.gt(0.0f32).select(1.0f32, -1.0f32);
+            let dist = x_int - X;
+            let curve_grad_sq = dx_dt * dx_dt + dy_dt * dy_dt;
+            let aa_scale = dy_dt.abs() * curve_grad_sq.max(1e-12f32).rsqrt();
+            let coverage = (dist * aa_scale + 0.5).max(0.0f32).min(1.0f32);
+            in_t.select(coverage * dir, 0.0f32).at(x, y, z, w).eval()
         } else {
-            let c_val = Field::from(cy) - y;
-            let d = Field::from(by * by) - Field::from(4.0 * ay) * c_val;
-            let valid = d.ge(Field::from(0.0));
-            let sd = d.abs().sqrt();
-            let t1 = (Field::from(-by) - sd) / Field::from(2.0 * ay);
-            let t2 = (Field::from(-by) + sd) / Field::from(2.0 * ay);
-            (valid & (eval_t(t1) + eval_t(t2))) | (!valid & Field::from(0.0))
+            // Quadratic: t = (-by ± sqrt(by² - 4*ay*(cy - Y))) / (2*ay)
+            // c_val = cy - Y, rewritten as -Y + cy for Manifold-first ordering
+            let c_val = Y * (-1.0) + cy;
+            let discriminant = (c_val * (-4.0 * ay)) + (by * by);
+            let valid = discriminant.ge(0.0f32);
+            let sd = discriminant.abs().sqrt();
+            let inv_2ay = 1.0 / (2.0 * ay);
+
+            // t1 = (-by - sd) / (2*ay)
+            let t1 = (sd * (-1.0) - by) * inv_2ay;
+            let in_t1 = t1.ge(0.0f32) & t1.lt(1.0f32);
+            let x_int1 = (t1 * ax + bx) * t1 + cx;
+            let dx_dt1 = t1 * (2.0 * ax) + bx;
+            let dy_dt1 = t1 * (2.0 * ay) + by;
+            let dir1 = dy_dt1.gt(0.0f32).select(1.0f32, -1.0f32);
+            let dist1 = x_int1 - X;
+            let grad_sq1 = dx_dt1 * dx_dt1 + dy_dt1 * dy_dt1;
+            let aa1 = dy_dt1.abs() * grad_sq1.max(1e-12f32).rsqrt();
+            let cov1 = (dist1 * aa1 + 0.5).max(0.0f32).min(1.0f32);
+            let contrib1 = in_t1.select(cov1 * dir1, 0.0f32);
+
+            // t2 = (-by + sd) / (2*ay)
+            let t2 = (sd - by) * inv_2ay;
+            let in_t2 = t2.ge(0.0f32) & t2.lt(1.0f32);
+            let x_int2 = (t2 * ax + bx) * t2 + cx;
+            let dx_dt2 = t2 * (2.0 * ax) + bx;
+            let dy_dt2 = t2 * (2.0 * ay) + by;
+            let dir2 = dy_dt2.gt(0.0f32).select(1.0f32, -1.0f32);
+            let dist2 = x_int2 - X;
+            let grad_sq2 = dx_dt2 * dx_dt2 + dy_dt2 * dy_dt2;
+            let aa2 = dy_dt2.abs() * grad_sq2.max(1e-12f32).rsqrt();
+            let cov2 = (dist2 * aa2 + 0.5).max(0.0f32).min(1.0f32);
+            let contrib2 = in_t2.select(cov2 * dir2, 0.0f32);
+
+            valid.select(contrib1 + contrib2, 0.0f32).at(x, y, z, w).eval()
         }
     }
 }
@@ -330,20 +356,21 @@ impl Manifold<Jet2> for Line {
     fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
         let [[x0, y0], [x1, y1]] = self.points;
         let (dy, dx) = (y1 - y0, x1 - x0);
+        let zero = Jet2::constant(Field::from(0.0));
         if dy.abs() < 1e-6 {
-            return Jet2::from_f32(0.0);
+            return zero;
         }
-        let (y0f, y1f) = (Jet2::from_f32(y0), Jet2::from_f32(y1));
+        let (y0f, y1f) = (Jet2::constant(Field::from(y0)), Jet2::constant(Field::from(y1)));
         let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
         if !in_y.val.any() {
-            return Jet2::from_f32(0.0);
+            return zero;
         }
 
-        let x_int = Jet2::from_f32(x0) + (y - y0f) * Jet2::from_f32(dx / dy);
+        let x_int = Jet2::constant(Field::from(x0)) + (y - y0f) * Jet2::constant(Field::from(dx / dy));
         let dir = if dy > 0.0 {
-            Jet2::from_f32(1.0)
+            Jet2::constant(Field::from(1.0))
         } else {
-            Jet2::from_f32(-1.0)
+            Jet2::constant(Field::from(-1.0))
         };
 
         // dist > 0 when query is LEFT of crossing (x < x_int)
@@ -351,11 +378,13 @@ impl Manifold<Jet2> for Line {
         let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
             .sqrt()
             .max(Field::from(1e-6));
+        let fzero = Field::from(0.0);
         let coverage = (dist.val / grad_mag + Field::from(0.5))
-            .max(Field::from(0.0))
-            .min(Field::from(1.0));
+            .max(fzero)
+            .min(Field::from(1.0))
+            .eval_raw(fzero, fzero, fzero, fzero);
 
-        (in_y & (dir * Jet2::constant(coverage))) | (!in_y & Jet2::from_f32(0.0))
+        (in_y & (dir * Jet2::constant(coverage))) | (!in_y & zero)
     }
 }
 
@@ -367,32 +396,37 @@ impl Manifold<Jet2> for Quad {
         let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
         let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
         let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
+        let zero = Jet2::constant(Field::from(0.0));
+        let one = Jet2::constant(Field::from(1.0));
 
+        let fzero = Field::from(0.0);
         let eval_t = |t: Jet2| -> Jet2 {
-            let in_t = t.ge(Jet2::from_f32(0.0)) & t.lt(Jet2::from_f32(1.0));
-            if !in_t.val.any() { return Jet2::from_f32(0.0); }
-            let x_int = (Jet2::from_f32(ax) * t + Jet2::from_f32(bx)) * t + Jet2::from_f32(cx);
-            let dy_dt = Jet2::from_f32(2.0 * ay) * t + Jet2::from_f32(by);
-            let dir_mask = dy_dt.gt(Jet2::from_f32(0.0));
-            let dir = (dir_mask & Jet2::from_f32(1.0)) | (!dir_mask & Jet2::from_f32(-1.0));
-            // dist > 0 when query is LEFT of crossing (x < x_int)
+            let in_t = t.ge(zero) & t.lt(one);
+            if !in_t.val.any() { return zero; }
+            let x_int = (Jet2::constant(Field::from(ax)) * t + Jet2::constant(Field::from(bx))) * t + Jet2::constant(Field::from(cx));
+            let dy_dt = Jet2::constant(Field::from(2.0 * ay)) * t + Jet2::constant(Field::from(by));
+            let dir_mask = dy_dt.gt(zero);
+            let dir = (dir_mask & one) | (!dir_mask & Jet2::constant(Field::from(-1.0)));
             let dist = x_int - x;
             let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy).sqrt().max(Field::from(1e-6));
-            let coverage = (dist.val / grad_mag + Field::from(0.5)).max(Field::from(0.0)).min(Field::from(1.0));
-            (in_t & (dir * Jet2::constant(coverage))) | (!in_t & Jet2::from_f32(0.0))
+            let coverage = (dist.val / grad_mag + Field::from(0.5))
+                .max(fzero)
+                .min(Field::from(1.0))
+                .eval_raw(fzero, fzero, fzero, fzero);
+            (in_t & (dir * Jet2::constant(coverage))) | (!in_t & zero)
         };
 
         if ay.abs() < 1e-6 {
-            if by.abs() < 1e-6 { return Jet2::from_f32(0.0); }
-            eval_t((y - Jet2::from_f32(cy)) / Jet2::from_f32(by))
+            if by.abs() < 1e-6 { return zero; }
+            eval_t((y - Jet2::constant(Field::from(cy))) / Jet2::constant(Field::from(by)))
         } else {
-            let c_val = Jet2::from_f32(cy) - y;
-            let d = Jet2::from_f32(by * by) - Jet2::from_f32(4.0 * ay) * c_val;
-            let valid = d.ge(Jet2::from_f32(0.0));
+            let c_val = Jet2::constant(Field::from(cy)) - y;
+            let d = Jet2::constant(Field::from(by * by)) - Jet2::constant(Field::from(4.0 * ay)) * c_val;
+            let valid = d.ge(zero);
             let sd = d.abs().sqrt();
-            let t1 = (Jet2::from_f32(-by) - sd) / Jet2::from_f32(2.0 * ay);
-            let t2 = (Jet2::from_f32(-by) + sd) / Jet2::from_f32(2.0 * ay);
-            (valid & (eval_t(t1) + eval_t(t2))) | (!valid & Jet2::from_f32(0.0))
+            let t1 = (Jet2::constant(Field::from(-by)) - sd) / Jet2::constant(Field::from(2.0 * ay));
+            let t2 = (Jet2::constant(Field::from(-by)) + sd) / Jet2::constant(Field::from(2.0 * ay));
+            (valid & (eval_t(t1) + eval_t(t2))) | (!valid & zero)
         }
     }
 }
@@ -413,16 +447,18 @@ impl Manifold<Field> for Geometry {
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let mut acc = Field::from(0.0);
+        let fzero = Field::from(0.0);
+        let mut acc = fzero;
         for l in self.lines.iter() {
-            acc = acc + l.eval_raw(x, y, z, w);
+            let val = l.eval_raw(x, y, z, w);
+            acc = (acc + val).eval_raw(fzero, fzero, fzero, fzero);
         }
         for q in self.quads.iter() {
-            acc = acc + q.eval_raw(x, y, z, w);
+            let val = q.eval_raw(x, y, z, w);
+            acc = (acc + val).eval_raw(fzero, fzero, fzero, fzero);
         }
         // Apply non-zero winding rule: |winding| becomes coverage
-        // Clamp to [0, 1] to handle overlapping contours
-        acc.abs().min(Field::from(1.0))
+        acc.abs().min(Field::from(1.0)).eval_raw(fzero, fzero, fzero, fzero)
     }
 }
 
@@ -431,7 +467,8 @@ impl Manifold<Jet2> for Geometry {
 
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
-        let mut acc = Jet2::from_f32(0.0);
+        let zero = Jet2::constant(Field::from(0.0));
+        let mut acc = zero;
         for l in self.lines.iter() {
             acc = acc + l.eval_raw(x, y, z, w);
         }
@@ -439,8 +476,7 @@ impl Manifold<Jet2> for Geometry {
             acc = acc + q.eval_raw(x, y, z, w);
         }
         // Apply non-zero winding rule: |winding| becomes coverage
-        // Clamp to [0, 1] to handle overlapping contours
-        acc.abs().min(Jet2::from_f32(1.0))
+        acc.abs().min(Jet2::constant(Field::from(1.0)))
     }
 }
 
@@ -501,7 +537,7 @@ impl Manifold<Jet2> for Glyph {
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
         match self {
-            Self::Empty => Jet2::from_f32(0.0),
+            Self::Empty => Jet2::constant(Field::from(0.0)),
             Self::Simple(g) => g.eval_raw(x, y, z, w),
             Self::Compound(g) => g.eval_raw(x, y, z, w),
         }
@@ -767,7 +803,7 @@ impl<'a> Font<'a> {
         // so the top of the text is at Y=0 in screen coordinates.
         let y_offset = self.ascent as f32 * scale;
         Some(Glyph::Compound(Sum(
-            [Affine::new(g, [scale, 0.0, 0.0, -scale, 0.0, y_offset])].into(),
+            [affine(g, [scale, 0.0, 0.0, -scale, 0.0, y_offset])].into(),
         )))
     }
 
@@ -844,7 +880,7 @@ impl<'a> Font<'a> {
 
             // Compose: Geometry (smooth AA coverage) -> Bounded (via square) -> Affine
             let bounded = square(sum_segs, 0.0f32);
-            Some(Glyph::Simple(Affine::new(bounded, restore)))
+            Some(Glyph::Simple(affine(bounded, restore)))
         } else {
             // Compound glyphs: children are already fully composed with their own bounds
             self.compound(&mut r)
@@ -947,7 +983,7 @@ impl<'a> Font<'a> {
                 m[3] = r.i16()? as f32 / 16384.0;
             }
             if let Some(g) = self.compile(id) {
-                kids.push(Affine::new(g, m));
+                kids.push(affine(g, m));
             }
             if fl & 0x20 == 0 {
                 break;

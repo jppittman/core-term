@@ -6,6 +6,13 @@
 use alloc::vec::Vec;
 use crate::{Field, Manifold};
 
+/// Evaluate a manifold graph to Field.
+#[inline(always)]
+fn eval<M: Manifold<Field, Output = Field>>(m: M) -> Field {
+    let zero = Field::from(0.0);
+    m.eval_raw(zero, zero, zero, zero)
+}
+
 /// A manifold backed by a 2D texture in memory.
 ///
 /// `Texture` wraps a slice of f32 values and serves queries by
@@ -105,7 +112,7 @@ impl Manifold for Texture {
         let y_idx = y.floor().max(zero).min(max_y);
 
         // Linear index = y * width + x
-        let indices = y_idx * w + x_idx;
+        let indices = eval(y_idx * w + x_idx);
 
         Field::gather(&self.data, indices)
     }

@@ -96,35 +96,72 @@ impl<I: crate::numeric::Computational, M: Manifold<I> + ?Sized> Manifold<I> for 
 }
 
 // ============================================================================
+// Thunk: Lazy Manifold Construction
+// ============================================================================
+
+/// Lazy manifold construction wrapper.
+///
+/// Wraps a closure that produces a manifold. The closure is called on each
+/// evaluation, constructing the inner manifold fresh. Since manifolds are
+/// typically zero-sized types built from combinators, LLVM inlines everything
+/// and the thunk disappears at compile time.
+///
+/// This enables compositional manifold definitions using functions:
+///
+/// ```ignore
+/// fn circle_sdf() -> Thunk<impl Fn() -> impl Manifold> {
+///     Thunk(|| (X * X + Y * Y).sqrt() - 1.0f32)
+/// }
+///
+/// // Compose with other manifolds
+/// let scene = circle_sdf() + 0.5f32;
+/// ```
+#[derive(Clone, Copy)]
+pub struct Thunk<F>(pub F);
+
+impl<I, F, M> Manifold<I> for Thunk<F>
+where
+    I: crate::numeric::Numeric,
+    F: Fn() -> M + Send + Sync,
+    M: Manifold<I>,
+{
+    type Output = M::Output;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        (self.0)().eval_raw(x, y, z, w)
+    }
+}
+
+// ============================================================================
 // Scale Combinator
 // ============================================================================
 
 /// A combinator that scales the coordinate space of an inner manifold.
 ///
 /// When evaluated at (x, y), it evaluates the inner manifold at (x/scale, y/scale).
-#[derive(Clone, Copy, Debug)]
-pub struct Scale<M> {
-    inner: M,
-    scale: f32,
-}
+/// This is purely compositional - uses At with coordinate manifolds.
+///
+/// Type alias for `At<Mul<Field, X>, Mul<Field, Y>, Z, W, M>`.
+pub type Scale<M> = crate::combinators::At<
+    crate::ops::Mul<Field, crate::X>,
+    crate::ops::Mul<Field, crate::Y>,
+    crate::Z,
+    crate::W,
+    M,
+>;
 
-impl<M> Scale<M> {
-    /// Create a new Scale combinator with uniform scaling.
-    pub fn uniform(inner: M, scale: f64) -> Self {
-        Self {
-            inner,
-            scale: scale as f32,
-        }
-    }
-}
-
-impl<M: Manifold> Manifold for Scale<M> {
-    type Output = M::Output;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
-        let inv_scale = Field::from(1.0 / self.scale);
-        self.inner
-            .eval_raw(x * inv_scale, y * inv_scale, z, w)
+/// Create a Scale combinator with uniform scaling.
+///
+/// Uses fast reciprocal instruction for the 1/scale computation.
+pub fn scale<M>(inner: M, scale_factor: f64) -> Scale<M> {
+    // Use fast reciprocal - this is a bespoke SIMD instruction
+    let inv_scale = Field::from(scale_factor as f32).recip();
+    crate::combinators::At {
+        inner,
+        x: inv_scale * crate::X,
+        y: inv_scale * crate::Y,
+        z: crate::Z,
+        w: crate::W,
     }
 }

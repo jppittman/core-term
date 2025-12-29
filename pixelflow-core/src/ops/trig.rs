@@ -6,9 +6,23 @@
 //!
 //! **Accuracy**: ~7-8 significant digits (sufficient for graphics/harmonics).
 //! **Speed**: 5-10x faster than per-lane libm on SIMD backends.
+//!
+//! # Implementation Note
+//!
+//! This module builds AST graphs using operators, enabling automatic FMA fusion
+//! and other optimizations. The graph is evaluated at the return boundary.
 
 use crate::Field;
 use crate::numeric::Numeric;
+use crate::{Manifold, ManifoldExt};
+
+/// Evaluate a manifold graph to Field.
+/// Since Field is a constant manifold, coordinates don't matter.
+#[inline(always)]
+fn eval<M: Manifold<Field, Output = Field>>(m: M) -> Field {
+    let zero = Field::from(0.0);
+    m.eval_raw(zero, zero, zero, zero)
+}
 
 // ============================================================================
 // Constants (Computed at Compile Time)
@@ -39,10 +53,11 @@ const TWO_PI_INV: f32 = inv_two_pi();
 #[inline(always)]
 fn range_reduce_pi(x: Field) -> Field {
     // Compute k = round(x / 2π)
-    let k = (x * Field::from(TWO_PI_INV)).floor() + Field::from(0.5);
+    // Eval the floor result to get Field, then add 0.5
+    let k = eval((x * Field::from(TWO_PI_INV)).floor()) + Field::from(0.5);
 
     // x' = x - 2π * k
-    x - k * Field::from(TWO_PI)
+    eval(x - k * Field::from(TWO_PI))
 }
 
 /// Chebyshev approximation for sin(x) on [-π, π].
@@ -58,7 +73,6 @@ pub(crate) fn cheby_sin(x: Field) -> Field {
 
     // Chebyshev coefficients for sin on [-1,1]
     // T_1(t) through T_7(t)
-    const C0: f32 = 0.0f32;
     const C1: f32 = 1.6719970703125f32;
     const C3: f32 = -0.645963541666667f32;
     const C5: f32 = 0.079689450f32;
@@ -66,15 +80,14 @@ pub(crate) fn cheby_sin(x: Field) -> Field {
 
     // Horner's method: accumulate from highest degree down
     // p(t) = C1*t + C3*t^3 + C5*t^5 + C7*t^7
-    // Rewrite as: C7*t^2 + C5)*t^2 + C3)*t^2 + C1)*t
+    // Rewrite as: ((C7*t^2 + C5)*t^2 + C3)*t^2 + C1)*t
+    // AST building enables FMA fusion
     let t2 = t * t;
     let result = (((Field::from(C7) * t2 + Field::from(C5)) * t2
-        + Field::from(C3))
-        * t2
-        + Field::from(C1))
-        * t;
+        + Field::from(C3)) * t2
+        + Field::from(C1)) * t;
 
-    result
+    eval(result)
 }
 
 /// Chebyshev approximation for cos(x) on [-π, π].
@@ -98,13 +111,13 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
     // Horner's method for even polynomial
     // p(t) = C0 + C2*t^2 + C4*t^4 + C6*t^6
     // Rewrite as: ((C6*t^2 + C4)*t^2 + C2)*t^2 + C0
+    // AST building enables FMA fusion
     let t2 = t * t;
-    let result = (((Field::from(C6) * t2 + Field::from(C4)) * t2
-        + Field::from(C2))
-        * t2
-        + Field::from(C0));
+    let result = ((Field::from(C6) * t2 + Field::from(C4)) * t2
+        + Field::from(C2)) * t2
+        + Field::from(C0);
 
-    result
+    eval(result)
 }
 
 /// Chebyshev approximation for atan2(y, x).
@@ -115,31 +128,30 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
 #[inline(always)]
 pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
     // Compute the ratio and absolute value for range reduction
-    let r = y / x;
+    // Eval here because we use r_abs multiple times in different subexpressions
+    let r = eval(y / x);
     let r_abs = r.abs();
 
     // Chebyshev approximation for atan on [0, 1]
-    // p(t) = C0 + C1*t + C3*t^3 + C5*t^5 + C7*t^7
-    const C0: f32 = 0.0f32;
     const C1: f32 = 0.999999999f32;
     const C3: f32 = -0.333333333f32;
     const C5: f32 = 0.2f32;
     const C7: f32 = -0.142857143f32;
 
     // Horner's method for approximation of atan(|r|)
+    // AST building enables FMA fusion
     let t = r_abs;
     let t2 = t * t;
     let atan_approx = (((Field::from(C7) * t2 + Field::from(C5)) * t2
-        + Field::from(C3))
-        * t2
-        + Field::from(C1))
-        * t;
+        + Field::from(C3)) * t2
+        + Field::from(C1)) * t;
 
     // Handle quadrants
     // For |r| > 1, use identity: atan(r) = π/2 - atan(1/r)
+    // Use ManifoldExt's select which builds AST
     let mask_large = r_abs.gt(Field::from(1.0));
     let atan_large = Field::from(PI_2) - (Field::from(1.0) / r_abs) * atan_approx;
-    let atan_val = <Field as Numeric>::select(mask_large, atan_large, atan_approx);
+    let atan_val = mask_large.select(atan_large, atan_approx);
 
     // Apply sign of y
     let sign_y = y.abs() / y;
@@ -148,10 +160,9 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
     // Apply sign of x (quadrant correction)
     let mask_neg_x = x.lt(Field::from(0.0));
     let correction = Field::from(PI) * sign_y;
-    let result_pos = atan_signed;
-    let result_neg = atan_signed - correction;
+    let result = mask_neg_x.select(atan_signed - correction, atan_signed);
 
-    <Field as Numeric>::select(mask_neg_x, result_neg, result_pos)
+    eval(result)
 }
 
 // Tests are integrated via spherical harmonics in combinators/spherical.rs

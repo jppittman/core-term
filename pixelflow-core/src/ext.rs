@@ -34,7 +34,7 @@
 
 use crate::Manifold;
 use crate::combinators::{At, Map, Select};
-use crate::ops::{Abs, Add, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Sin, Sqrt, Sub};
+use crate::ops::{Abs, Add, Cos, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Rsqrt, Sin, Sqrt, Sub};
 
 use alloc::sync::Arc;
 
@@ -145,6 +145,49 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         self.eval_raw(x.into(), y.into(), z.into(), w.into())
     }
 
+    /// Evaluate the manifold at manifold-computed coordinates.
+    ///
+    /// Takes coordinate expressions (manifolds), evaluates them at origin,
+    /// then evaluates self at those coordinates. Immediate execution, no AST.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Translate: evaluate inner at (x - dx, y - dy)
+    /// inner.eval_at(x - dx, y - dy, z, w)
+    /// ```
+    #[inline(always)]
+    fn eval_at<Cx, Cy, Cz, Cw>(&self, x: Cx, y: Cy, z: Cz, w: Cw) -> crate::Field
+    where
+        Cx: Manifold<crate::Field, Output = crate::Field>,
+        Cy: Manifold<crate::Field, Output = crate::Field>,
+        Cz: Manifold<crate::Field, Output = crate::Field>,
+        Cw: Manifold<crate::Field, Output = crate::Field>,
+    {
+        let zero = crate::Field::from(0.0);
+        let new_x = x.eval_raw(zero, zero, zero, zero);
+        let new_y = y.eval_raw(zero, zero, zero, zero);
+        let new_z = z.eval_raw(zero, zero, zero, zero);
+        let new_w = w.eval_raw(zero, zero, zero, zero);
+        self.eval_raw(new_x, new_y, new_z, new_w)
+    }
+
+    /// Collapse an AST expression to a concrete Field value.
+    ///
+    /// Evaluates at origin (0,0,0,0). Use this to force evaluation of
+    /// lazy arithmetic expressions when you need a concrete Field.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let result = (x * x + y * y).sqrt().constant();
+    /// ```
+    #[inline(always)]
+    fn constant(&self) -> crate::Field {
+        let zero = crate::Field::from(0.0);
+        self.eval_raw(zero, zero, zero, zero)
+    }
+
     /// Map a function over this manifold's output (functor fmap).
     fn map<F>(self, func: F) -> Map<Self, F>
     where
@@ -178,6 +221,11 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         Sqrt(self)
     }
 
+    /// Reciprocal square root (1/sqrt(x)).
+    fn rsqrt(self) -> Rsqrt<Self> {
+        Rsqrt(self)
+    }
+
     /// Absolute value.
     fn abs(self) -> Abs<Self> {
         Abs(self)
@@ -191,6 +239,11 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     /// Sine function.
     fn sin(self) -> Sin<Self> {
         Sin(self)
+    }
+
+    /// Cosine function.
+    fn cos(self) -> Cos<Self> {
+        Cos(self)
     }
 
     /// Element-wise maximum.
@@ -242,10 +295,18 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     /// ```ignore
     /// // Evaluate at constant field coordinates
     /// let at_origin = manifold.at(0.0.into(), 0.0.into(), 0.0.into(), 0.0.into());
-    /// let result = at_origin.eval_raw(Field::from(100.0), Field::from(100.0), Field::from(100.0), Field::from(100.0));
-    /// // result is the same as manifold.eval_raw(0.0, 0.0, 0.0, 0.0)
+    /// let result = at_origin.eval();
+    ///
+    /// // Evaluate at transformed coordinates (e.g., for Scale/Translate)
+    /// let scaled = manifold.at(x / s, y / s, z, w).eval();
     /// ```
-    fn at(self, x: crate::Field, y: crate::Field, z: crate::Field, w: crate::Field) -> At<crate::Field, crate::Field, crate::Field, crate::Field, Self> {
+    fn at<Cx, Cy, Cz, Cw>(self, x: Cx, y: Cy, z: Cz, w: Cw) -> At<Cx, Cy, Cz, Cw, Self>
+    where
+        Cx: Manifold,
+        Cy: Manifold,
+        Cz: Manifold,
+        Cw: Manifold,
+    {
         At { inner: self, x, y, z, w }
     }
 
