@@ -18,7 +18,6 @@
 //! ```
 
 use crate::Manifold;
-use super::unary::Sqrt;
 
 /// Addition: L + R
 #[derive(Clone, Copy, Debug)]
@@ -74,56 +73,52 @@ pub struct AddMasked<Acc, Val, Mask> {
 impl<L, R, I> Manifold<I> for Add<L, R>
 where
     I: crate::numeric::Numeric,
-    L: Manifold<I>,
-    R: Manifold<I>,
-    L::Output: core::ops::Add<R::Output>,
+    L: Manifold<I, Output = I>,
+    R: Manifold<I, Output = I>,
 {
-    type Output = <L::Output as core::ops::Add<R::Output>>::Output;
+    type Output = I;
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w) + self.1.eval_raw(x, y, z, w)
+        self.0.eval_raw(x, y, z, w).raw_add(self.1.eval_raw(x, y, z, w))
     }
 }
 
 impl<L, R, I> Manifold<I> for Sub<L, R>
 where
     I: crate::numeric::Numeric,
-    L: Manifold<I>,
-    R: Manifold<I>,
-    L::Output: core::ops::Sub<R::Output>,
+    L: Manifold<I, Output = I>,
+    R: Manifold<I, Output = I>,
 {
-    type Output = <L::Output as core::ops::Sub<R::Output>>::Output;
+    type Output = I;
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w) - self.1.eval_raw(x, y, z, w)
+        self.0.eval_raw(x, y, z, w).raw_sub(self.1.eval_raw(x, y, z, w))
     }
 }
 
 impl<L, R, I> Manifold<I> for Mul<L, R>
 where
     I: crate::numeric::Numeric,
-    L: Manifold<I>,
-    R: Manifold<I>,
-    L::Output: core::ops::Mul<R::Output>,
+    L: Manifold<I, Output = I>,
+    R: Manifold<I, Output = I>,
 {
-    type Output = <L::Output as core::ops::Mul<R::Output>>::Output;
+    type Output = I;
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w) * self.1.eval_raw(x, y, z, w)
+        self.0.eval_raw(x, y, z, w).raw_mul(self.1.eval_raw(x, y, z, w))
     }
 }
 
 impl<L, R, I> Manifold<I> for Div<L, R>
 where
     I: crate::numeric::Numeric,
-    L: Manifold<I>,
-    R: Manifold<I>,
-    L::Output: core::ops::Div<R::Output>,
+    L: Manifold<I, Output = I>,
+    R: Manifold<I, Output = I>,
 {
-    type Output = <L::Output as core::ops::Div<R::Output>>::Output;
+    type Output = I;
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w) / self.1.eval_raw(x, y, z, w)
+        self.0.eval_raw(x, y, z, w).raw_div(self.1.eval_raw(x, y, z, w))
     }
 }
 
@@ -153,7 +148,7 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         // Multiply by precomputed reciprocal - avoids slow division
-        self.inner.eval_raw(x, y, z, w) * I::from_f32(self.recip)
+        self.inner.eval_raw(x, y, z, w).raw_mul(I::from_f32(self.recip))
     }
 }
 
@@ -198,16 +193,9 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         // L * rsqrt(R) = L / sqrt(R) but faster
-        self.0.eval_raw(x, y, z, w) * self.1.eval_raw(x, y, z, w).rsqrt()
+        self.0.eval_raw(x, y, z, w).raw_mul(self.1.eval_raw(x, y, z, w).rsqrt())
     }
 }
 
-// Operator overload: Field / Sqrt<R> → MulRsqrt<Field, R>
-// This captures the pattern `value / sqrt(expr)` and optimizes to `value * rsqrt(expr)`
-impl<R> core::ops::Div<Sqrt<R>> for crate::Field {
-    type Output = MulRsqrt<crate::Field, R>;
-    #[inline(always)]
-    fn div(self, rhs: Sqrt<R>) -> Self::Output {
-        MulRsqrt(self, rhs.0)
-    }
-}
+
+

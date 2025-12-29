@@ -43,7 +43,7 @@ use pixelflow_core::{Field, Manifold, Texture};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::ttf::{Affine, Font, Glyph, Sum};
+use super::ttf::{affine, Affine, Font, Glyph, Sum};
 use crate::Lift;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -306,7 +306,7 @@ impl CachedText {
                 // Scale and translate to cursor position
                 // The cached glyph is at bucket size, so we need to scale it
                 let transform = [scale, 0.0, 0.0, scale, cursor_x, 0.0];
-                glyphs.push(Affine::new(cached, transform));
+                glyphs.push(affine(cached, transform));
             }
 
             // Advance cursor using pre-looked-up glyph ID

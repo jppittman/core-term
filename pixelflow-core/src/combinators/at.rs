@@ -70,3 +70,22 @@ where
         self.inner.eval_raw(new_x, new_y, new_z, new_w)
     }
 }
+
+impl<Cx, Cy, Cz, Cw, M> At<Cx, Cy, Cz, Cw, M>
+where
+    Cx: Manifold<crate::Field, Output = crate::Field>,
+    Cy: Manifold<crate::Field, Output = crate::Field>,
+    Cz: Manifold<crate::Field, Output = crate::Field>,
+    Cw: Manifold<crate::Field, Output = crate::Field>,
+    M: Manifold<crate::Field>,
+{
+    /// Collapse the pinned manifold to a value.
+    ///
+    /// Since coordinates are already bound via At, evaluates at origin.
+    /// `foo.at(x, y, z, w).eval()` is cleaner than `foo.eval_raw(x, y, z, w)`.
+    #[inline(always)]
+    pub fn eval(&self) -> M::Output {
+        let zero = crate::Field::from(0.0);
+        self.eval_raw(zero, zero, zero, zero)
+    }
+}

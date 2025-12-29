@@ -26,6 +26,10 @@ pub struct Rsqrt<M>(pub M);
 #[derive(Clone, Copy, Debug)]
 pub struct Sin<M>(pub M);
 
+/// Cosine function.
+#[derive(Clone, Copy, Debug)]
+pub struct Cos<M>(pub M);
+
 /// Element-wise maximum.
 #[derive(Clone, Copy, Debug)]
 pub struct Max<L, R>(pub L, pub R);
@@ -99,6 +103,19 @@ where
     }
 }
 
+impl<M, I> Manifold<I> for Cos<M>
+where
+    I: crate::numeric::Numeric,
+    M: Manifold<I>,
+    M::Output: crate::numeric::Numeric,
+{
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        self.0.eval_raw(x, y, z, w).cos()
+    }
+}
+
 impl<L, R, I, O> Manifold<I> for Max<L, R>
 where
     I: crate::numeric::Numeric,
@@ -126,3 +143,4 @@ where
         self.0.eval_raw(x, y, z, w).min(self.1.eval_raw(x, y, z, w))
     }
 }
+

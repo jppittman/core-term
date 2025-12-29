@@ -6,6 +6,13 @@ resolver = "2"
 # Normal release - fast compile, good perf
 [profile.release]
 opt-level = 3
+lto = true
+codegen-units = 1
+
+# Benchmark profile - ensure LTO is used
+[profile.bench]
+lto = true
+codegen-units = 1
 
 # Distribution build - maximum optimization, slow compile
 # Usage: cargo build --profile dist

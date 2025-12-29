@@ -1,6 +1,7 @@
 //! Coordinate transformations for manifolds.
 
-use pixelflow_core::{Computational, Manifold};
+use pixelflow_core::jet::Jet2;
+use pixelflow_core::{Field, Manifold, ManifoldExt};
 
 /// Uniform scaling of the manifold domain.
 ///
@@ -12,15 +13,26 @@ pub struct Scale<M> {
     pub factor: f32,
 }
 
-impl<M, I> Manifold<I> for Scale<M>
+impl<M> Manifold<Field> for Scale<M>
 where
-    M: Manifold<I>,
-    I: Computational,
+    M: Manifold<Field, Output = Field> + ManifoldExt,
+{
+    type Output = Field;
+
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        let s = Field::from(self.factor);
+        self.manifold.eval_at(x / s, y / s, z, w)
+    }
+}
+
+impl<M> Manifold<Jet2> for Scale<M>
+where
+    M: Manifold<Jet2>,
 {
     type Output = M::Output;
 
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        let s = I::from_f32(self.factor);
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Self::Output {
+        let s = Jet2::constant(Field::from(self.factor));
         self.manifold.eval_raw(x / s, y / s, z, w)
     }
 }
@@ -35,16 +47,28 @@ pub struct Translate<M> {
     pub offset: [f32; 2],
 }
 
-impl<M, I> Manifold<I> for Translate<M>
+impl<M> Manifold<Field> for Translate<M>
 where
-    M: Manifold<I>,
-    I: Computational,
+    M: Manifold<Field, Output = Field> + ManifoldExt,
+{
+    type Output = Field;
+
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        let dx = Field::from(self.offset[0]);
+        let dy = Field::from(self.offset[1]);
+        self.manifold.eval_at(x - dx, y - dy, z, w)
+    }
+}
+
+impl<M> Manifold<Jet2> for Translate<M>
+where
+    M: Manifold<Jet2>,
 {
     type Output = M::Output;
 
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        let dx = I::from_f32(self.offset[0]);
-        let dy = I::from_f32(self.offset[1]);
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Self::Output {
+        let dx = Jet2::constant(Field::from(self.offset[0]));
+        let dy = Jet2::constant(Field::from(self.offset[1]));
         self.manifold.eval_raw(x - dx, y - dy, z, w)
     }
 }

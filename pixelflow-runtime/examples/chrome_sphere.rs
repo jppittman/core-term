@@ -3,6 +3,7 @@
 //! Compares single-threaded vs parallel rasterization of the 3D chrome sphere scene.
 //! Uses the mullet architecture: geometry once, colors as packed Discrete.
 
+use pixelflow_core::combinators::At;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
@@ -36,7 +37,7 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         let x = (px - width * Field::from(0.5)) * scale;
         let y = (height * Field::from(0.5) - py) * scale;
 
-        self.inner.eval_raw(x, y, z, w)
+        At { inner: &self.inner, x, y, z, w }.eval()
     }
 }
 

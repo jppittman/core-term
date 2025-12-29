@@ -60,7 +60,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use pixelflow_core::{Field, ShCoeffs};
+use pixelflow_core::{Field, ManifoldExt, ShCoeffs};
 
 // ============================================================================
 // Feature Maps: The Bridge Between Attention and SH
@@ -97,7 +97,7 @@ impl FeatureMap for EluFeature {
         let zero = Field::from(0.0);
         let pos_part = x.max(zero);
         let neg_part = x.min(zero).exp();
-        pos_part + neg_part
+        (pos_part + neg_part).constant()
     }
 
     fn dim(&self) -> usize {
@@ -225,27 +225,29 @@ impl ShFeatureMap<9> {
     pub fn project(x: Field, y: Field, z: Field) -> [Field; 9] {
         use pixelflow_core::SH_NORM;
 
-        // Normalize direction
-        let r = (x * x + y * y + z * z).sqrt();
-        let inv_r = Field::from(1.0) / r;
-        let nx = x * inv_r;
-        let ny = y * inv_r;
-        let nz = z * inv_r;
+        let zero = Field::from(0.0);
 
-        // Compute all 9 SH basis functions
+        // Normalize direction - collapse intermediate AST
+        let r = (x * x + y * y + z * z).sqrt().constant();
+        let inv_r = (Field::from(1.0) / r).constant();
+        let nx = (x * inv_r).constant();
+        let ny = (y * inv_r).constant();
+        let nz = (z * inv_r).constant();
+
+        // Compute all 9 SH basis functions - collapse each
         [
             // l=0
             Field::from(SH_NORM[0][0]),
             // l=1
-            Field::from(SH_NORM[1][1]) * ny,
-            Field::from(SH_NORM[1][0]) * nz,
-            Field::from(SH_NORM[1][1]) * nx,
+            (Field::from(SH_NORM[1][1]) * ny).constant(),
+            (Field::from(SH_NORM[1][0]) * nz).constant(),
+            (Field::from(SH_NORM[1][1]) * nx).constant(),
             // l=2
-            Field::from(SH_NORM[2][2]) * nx * ny,
-            Field::from(SH_NORM[2][1]) * ny * nz,
-            Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)),
-            Field::from(SH_NORM[2][1]) * nx * nz,
-            Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny),
+            (Field::from(SH_NORM[2][2]) * nx * ny).constant(),
+            (Field::from(SH_NORM[2][1]) * ny * nz).constant(),
+            (Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0))).constant(),
+            (Field::from(SH_NORM[2][1]) * nx * nz).constant(),
+            (Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny)).constant(),
         ]
     }
 }

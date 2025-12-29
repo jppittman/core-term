@@ -27,7 +27,7 @@
 //! Uses `ColorManifold` from pixelflow-graphics for RGBA packing.
 //! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
-use pixelflow_core::{Field, Lt, Manifold, Select, X, Y};
+use pixelflow_core::{Field, Lt, Manifold, ManifoldExt, Select, X, Y};
 use pixelflow_graphics::render::color::ColorManifold;
 
 // Re-export Color for solid color manifolds
@@ -81,12 +81,12 @@ impl<G: Manifold<Output = Field> + Clone, const CHANNEL: usize> Manifold
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        let zero = Field::from(0.0);
         let coverage = self.cell.glyph.eval_raw(x, y, z, w);
-        let c = coverage
-            .max(Field::from(0.0))
-            .min(Field::from(1.0));
+        let c = coverage.max(zero).min(Field::from(1.0)).constant();
         let omc = Field::from(1.0) - c;
-        c * Field::from(self.cell.fg[CHANNEL]) + omc * Field::from(self.cell.bg[CHANNEL])
+        (c * Field::from(self.cell.fg[CHANNEL]) + omc * Field::from(self.cell.bg[CHANNEL]))
+            .constant()
     }
 }
 
@@ -118,14 +118,14 @@ impl<M> LocalCoords<M> {
     }
 }
 
-impl<M: Manifold> Manifold for LocalCoords<M> {
-    type Output = M::Output;
+impl<M: Manifold<Output = Field> + ManifoldExt> Manifold for LocalCoords<M> {
+    type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> M::Output {
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         let local_x = x - Field::from(self.offset_x);
         let local_y = y - Field::from(self.offset_y);
-        self.inner.eval_raw(local_x, local_y, z, w)
+        self.inner.eval_at(local_x, local_y, z, w)
     }
 }
 

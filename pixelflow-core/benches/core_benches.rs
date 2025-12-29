@@ -4,7 +4,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use pixelflow_core::{
-    combinators::Fix, Field, Jet2, Manifold, ManifoldExt, PARALLELISM, X, Y, Z,
+    combinators::Fix, Field, jet::Jet2, Manifold, ManifoldExt, PARALLELISM, X, Y, Z,
 };
 
 // ============================================================================
@@ -32,26 +32,27 @@ fn bench_field_arithmetic(c: &mut Criterion) {
     let a = Field::sequential(1.0);
     let b = Field::sequential(2.0);
 
+    // Note: Field ops return AST types, so we call .constant() to evaluate
     group.bench_function("add", |bencher| {
-        bencher.iter(|| black_box(black_box(a) + black_box(b)))
+        bencher.iter(|| black_box((black_box(a) + black_box(b)).constant()))
     });
 
     group.bench_function("sub", |bencher| {
-        bencher.iter(|| black_box(black_box(a) - black_box(b)))
+        bencher.iter(|| black_box((black_box(a) - black_box(b)).constant()))
     });
 
     group.bench_function("mul", |bencher| {
-        bencher.iter(|| black_box(black_box(a) * black_box(b)))
+        bencher.iter(|| black_box((black_box(a) * black_box(b)).constant()))
     });
 
     group.bench_function("div", |bencher| {
-        bencher.iter(|| black_box(black_box(a) / black_box(b)))
+        bencher.iter(|| black_box((black_box(a) / black_box(b)).constant()))
     });
 
     group.bench_function("chained_mad", |bencher| {
-        // Multiply-add chain: a * b + c
+        // Multiply-add chain: a * b + c → MulAdd (fused to FMA)
         let c = Field::from(0.5);
-        bencher.iter(|| black_box(black_box(a) * black_box(b) + black_box(c)))
+        bencher.iter(|| black_box((black_box(a) * black_box(b) + black_box(c)).constant()))
     });
 
     group.finish();
@@ -132,10 +133,29 @@ fn bench_field_select(c: &mut Criterion) {
     let z = Field::from(0.0);
     let w = Field::from(0.0);
 
-    group.bench_function("select_manifold", |bencher| {
-        // if x < 2 then 1.0 else 0.0
-        let m = X.lt(2.0f32).select(1.0f32, 0.0f32);
+    // Both compute the comparison inside the loop for fair comparison
+    group.bench_function("select_with_gt_ast", |bencher| {
+        // Select with Gt<X, f32> AST condition - goes through FieldCondition
+        let m = X.gt(2.0f32).select(1.0f32, 0.0f32);
         bencher.iter(|| black_box(m.eval_raw(black_box(x), y, z, w)))
+    });
+
+    group.bench_function("select_with_field_condition", |bencher| {
+        // Select with pre-computed Field mask - UNFAIR: mask computed once!
+        let mask = x.gt(Field::from(2.0)); // computed once outside loop
+        let m = mask.select(Field::from(1.0), Field::from(0.0));
+        bencher.iter(|| black_box(m.eval_raw(black_box(x), y, z, w)))
+    });
+
+    group.bench_function("select_gt_recompute_each_iter", |bencher| {
+        // Compute mask inside loop - fair comparison with AST path
+        let if_true = Field::from(1.0);
+        let if_false = Field::from(0.0);
+        bencher.iter(|| {
+            let mask = black_box(x).gt(Field::from(2.0));
+            let m = mask.select(if_true, if_false);
+            black_box(m.eval_raw(x, y, z, w))
+        })
     });
 
     group.finish();
@@ -505,7 +525,7 @@ fn bench_evaluation_throughput(c: &mut Criterion) {
                 for row in 0..rows {
                     let y = Field::from(row as f32);
                     let x = Field::sequential(0.0);
-                    total = total + m.eval_raw(x, y, z, w);
+                    total = (total + m.eval_raw(x, y, z, w)).constant();
                 }
                 black_box(total)
             })

@@ -177,6 +177,15 @@ where
     }
 }
 
+// Field itself can be a condition (mask stored as float bits).
+// Used when Field::gt/lt/etc. returns a Field mask directly.
+impl FieldCondition for Field {
+    #[inline(always)]
+    fn eval_mask(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> NativeMask {
+        self.0.float_to_mask()
+    }
+}
+
 // ============================================================================
 // Select implementation for Field with FieldCondition (OPTIMIZED PATH)
 // ============================================================================

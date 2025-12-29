@@ -8,6 +8,7 @@
 use actor_scheduler::Message;
 use pixelflow_core::ops::Sin;
 use pixelflow_core::jet::Jet3;
+use pixelflow_core::combinators::At;
 use pixelflow_core::{Discrete, Field, Manifold, W};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
@@ -36,7 +37,8 @@ impl<M: Manifold<Output = Discrete> + Send + Sync> Manifold for TimeShift<M> {
     type Output = Discrete;
 
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        self.inner.eval_raw(x, y, z, w + Field::from(self.t))
+        let w_shifted = w + Field::from(self.t);
+        At { inner: &self.inner, x, y, z, w: w_shifted }.eval()
     }
 }
 
@@ -108,7 +110,7 @@ impl<M: Manifold<Output = Discrete> + Send + Sync> Manifold for ScreenRemap<M> {
         let scale = 2.0 / self.height;
         let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
         let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-        self.inner.eval_raw(sx, sy, z, w)
+        At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
     }
 }
 

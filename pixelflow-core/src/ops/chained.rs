@@ -11,7 +11,7 @@
 //! Note: Symmetric fusion (`C + Mul<A, B>`) would require specialization,
 //! which is unstable. Write `A * B + C` (multiply first) to get FMA.
 
-use super::{Abs, Add, Div, Max, Min, Mul, MulAdd, Sqrt, Sub};
+use super::{Abs, Add, AddMasked, Cos, Div, Floor, Max, Min, Mul, MulAdd, MulRecip, MulRsqrt, Rsqrt, Sin, Sqrt, Sub};
 use crate::Manifold;
 use crate::combinators::Select;
 
@@ -92,9 +92,45 @@ impl_chained_ops!(Min<L, R>);
 // Unary nodes
 impl_chained_ops!(Sqrt<M>);
 impl_chained_ops!(Abs<M>);
+impl_chained_ops!(Floor<M>);
+impl_chained_ops!(Rsqrt<M>);
+impl_chained_ops!(Sin<M>);
+impl_chained_ops!(Cos<M>);
 
 // Combinators
 impl_chained_ops!(Select<C, T, F>);
 
-// MulAdd also needs chained ops for further composition
+// MulAdd and other compound ops need chained ops for further composition
 impl_chained_ops!(MulAdd<A, B, C>);
+impl_chained_ops!(MulRecip<M>);
+impl_chained_ops!(MulRsqrt<L, R>);
+impl_chained_ops!(AddMasked<Acc, Val, Mask>);
+
+// ============================================================================
+// Thunk Operators
+// ============================================================================
+
+// Thunk needs manual impls because its Manifold bound is on F's return type
+impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Add<Rhs> for crate::Thunk<F> {
+    type Output = Add<Self, Rhs>;
+    #[inline(always)]
+    fn add(self, rhs: Rhs) -> Self::Output { Add(self, rhs) }
+}
+
+impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Sub<Rhs> for crate::Thunk<F> {
+    type Output = Sub<Self, Rhs>;
+    #[inline(always)]
+    fn sub(self, rhs: Rhs) -> Self::Output { Sub(self, rhs) }
+}
+
+impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Mul<Rhs> for crate::Thunk<F> {
+    type Output = Mul<Self, Rhs>;
+    #[inline(always)]
+    fn mul(self, rhs: Rhs) -> Self::Output { Mul(self, rhs) }
+}
+
+impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Div<Rhs> for crate::Thunk<F> {
+    type Output = Div<Self, Rhs>;
+    #[inline(always)]
+    fn div(self, rhs: Rhs) -> Self::Output { Div(self, rhs) }
+}

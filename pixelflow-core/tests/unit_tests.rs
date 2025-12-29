@@ -19,7 +19,7 @@ use pixelflow_core::{
     And, Or,
     // Combinators
     combinators::{Select, Map, Fix},
-    manifold::Scale,
+    scale,
     // Computational trait (needed for from_f32)
     Computational,
     // Materialize
@@ -202,7 +202,7 @@ mod manifold_tests {
 
     #[test]
     fn test_scale_combinator() {
-        let scaled = Scale::uniform(X, 2.0);
+        let scaled = scale(X, 2.0);
         let x = Field::from(4.0);
         let y = Field::from(0.0);
         let z = Field::from(0.0);
@@ -638,7 +638,7 @@ mod map_tests {
 
     #[test]
     fn test_map_combinator() {
-        let doubled = Map::new(X, |v| v + v);
+        let doubled = Map::new(X, |v: Field| (v + v).constant());
 
         let x = Field::from(5.0);
         let y = Field::from(0.0);
@@ -651,7 +651,7 @@ mod map_tests {
 
     #[test]
     fn test_map_via_extension() {
-        let squared = X.map(|v| v * v);
+        let squared = X.map(|v: Field| (v * v).constant());
 
         let x = Field::from(4.0);
         let y = Field::from(0.0);
@@ -664,7 +664,7 @@ mod map_tests {
 
     #[test]
     fn test_map_clamp() {
-        let clamped = X.map(|v| v.max(Field::from(0.0)).min(Field::from(1.0)));
+        let clamped = X.map(|v: Field| v.max(Field::from(0.0)).min(Field::from(1.0)).constant());
 
         // Test value in range
         let x = Field::from(0.5);
@@ -1320,10 +1320,11 @@ mod debug_tests {
 
     #[test]
     fn test_scale_debug() {
-        let scale = Scale::uniform(X, 2.0);
+        let scaled = scale(X, 2.0);
         let mut s = String::new();
-        write!(s, "{:?}", scale).unwrap();
-        assert!(s.contains("Scale"));
+        write!(s, "{:?}", scaled).unwrap();
+        // Scale is now a type alias for At
+        assert!(s.contains("At"));
     }
 }
 

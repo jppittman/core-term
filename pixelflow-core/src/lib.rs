@@ -193,17 +193,9 @@ impl Field {
     pub fn sqrt_fast(self) -> Self {
         let rsqrt = self.rsqrt();
         // sqrt(x) = x * (1/sqrt(x))
-        // If x=0, rsqrt=Inf, 0*Inf = NaN.
-        // We must handle zero to match sqrt behavior (sqrt(0) = 0).
-        // However, for typical graphics workloads, slight errors at 0 might be acceptable
-        // or masked.
-        // But let's check if we need to mask.
-        // The standard rsqrt typically handles it, but x*rsqrt(x) is the issue.
-        //
-        // In this project's rsqrt (Sse2/Avx512 implementation), it does one NR step.
-        //
-        // Let's trust the algebraic identity for now as per performance analysis.
-        self * rsqrt
+        // Use raw_mul since this is Field's internal implementation, not AST building.
+        use crate::numeric::Numeric;
+        self.raw_mul(rsqrt)
     }
 
     /// Absolute value.
@@ -637,6 +629,26 @@ impl numeric::Numeric for Field {
     fn add_masked(self, val: Self, mask: Self) -> Self {
         Self::add_masked(self, val, mask)
     }
+
+    #[inline(always)]
+    fn raw_add(self, rhs: Self) -> Self {
+        Self(self.0 + rhs.0)
+    }
+
+    #[inline(always)]
+    fn raw_sub(self, rhs: Self) -> Self {
+        Self(self.0 - rhs.0)
+    }
+
+    #[inline(always)]
+    fn raw_mul(self, rhs: Self) -> Self {
+        Self(self.0 * rhs.0)
+    }
+
+    #[inline(always)]
+    fn raw_div(self, rhs: Self) -> Self {
+        Self(self.0 / rhs.0)
+    }
 }
 
 // ============================================================================
@@ -658,38 +670,41 @@ impl From<i32> for Field {
 }
 
 // ============================================================================
-// Operator Implementations
+// Operator Implementations (AST-building)
 // ============================================================================
+//
+// All Field ops build AST nodes for composition with other manifolds.
+// FMA fusion: Mul<A,B> + C → MulAdd<A,B,C> (see ops/chained.rs)
 
-impl core::ops::Add for Field {
-    type Output = Self;
+impl<M: Manifold> core::ops::Add<M> for Field {
+    type Output = ops::Add<Self, M>;
     #[inline(always)]
-    fn add(self, rhs: Self) -> Self {
-        Self(self.0 + rhs.0)
+    fn add(self, rhs: M) -> Self::Output {
+        ops::Add(self, rhs)
     }
 }
 
-impl core::ops::Sub for Field {
-    type Output = Self;
+impl<M: Manifold> core::ops::Sub<M> for Field {
+    type Output = ops::Sub<Self, M>;
     #[inline(always)]
-    fn sub(self, rhs: Self) -> Self {
-        Self(self.0 - rhs.0)
+    fn sub(self, rhs: M) -> Self::Output {
+        ops::Sub(self, rhs)
     }
 }
 
-impl core::ops::Mul for Field {
-    type Output = Self;
+impl<M: Manifold> core::ops::Mul<M> for Field {
+    type Output = ops::Mul<Self, M>;
     #[inline(always)]
-    fn mul(self, rhs: Self) -> Self {
-        Self(self.0 * rhs.0)
+    fn mul(self, rhs: M) -> Self::Output {
+        ops::Mul(self, rhs)
     }
 }
 
-impl core::ops::Div for Field {
-    type Output = Self;
+impl<M: Manifold> core::ops::Div<M> for Field {
+    type Output = ops::Div<Self, M>;
     #[inline(always)]
-    fn div(self, rhs: Self) -> Self {
-        Self(self.0 / rhs.0)
+    fn div(self, rhs: M) -> Self::Output {
+        ops::Div(self, rhs)
     }
 }
 
@@ -818,3 +833,4 @@ where
 
 /// Parallelism width (number of lanes).
 pub const PARALLELISM: usize = NativeSimd::LANES;
+

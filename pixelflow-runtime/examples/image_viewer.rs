@@ -6,6 +6,7 @@
 //! 3. Send a manifold to render
 //! 4. Run the event loop
 
+use pixelflow_core::combinators::At;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_runtime::{api::public::AppData, EngineConfig, EngineTroupe, WindowConfig};
 use std::sync::Arc;
@@ -33,7 +34,7 @@ impl<M: Manifold<Output = Discrete>> Manifold for ScreenRemap<M> {
         let scale = 2.0 / self.height;
         let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
         let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-        self.inner.eval_raw(sx, sy, z, w)
+        At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
     }
 }
 
