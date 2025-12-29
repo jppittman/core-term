@@ -4,7 +4,8 @@
 //! The gradient tells us how fast the SDF changes per pixel, giving us
 //! the exact coverage without any smoothstep hacks.
 
-use pixelflow_core::{BoxedManifold, Field, Jet2, Manifold, ManifoldExt};
+use pixelflow_core::jet::Jet2;
+use pixelflow_core::{BoxedManifold, Field, Manifold, ManifoldExt};
 
 const MIN_GRADIENT: f32 = 0.001;
 

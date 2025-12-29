@@ -22,6 +22,12 @@ pub type UnitSquareCond = And<And<And<Ge<X, f32>, Le<X, f32>>, Ge<Y, f32>>, Le<Y
 /// A manifold bounded to the unit square.
 pub type Bounded<M> = Select<UnitSquareCond, M, f32>;
 
+/// Half-plane x ≥ 0 selecting between two manifolds.
+pub type HalfPlaneX<F, B> = Select<Ge<X, f32>, F, B>;
+
+/// Half-plane y ≥ 0 selecting between two manifolds.
+pub type HalfPlaneY<F, B> = Select<Ge<Y, f32>, F, B>;
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -61,21 +67,31 @@ pub fn square<F, B>(fg: F, bg: B) -> Select<UnitSquareCond, F, B> {
 /// Half-plane: x ≥ 0
 ///
 /// Returns fg where x ≥ 0, bg elsewhere.
-pub fn half_plane_x<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
-    fg: F,
-    bg: B,
-) -> impl Manifold<Output = Field> {
-    X.ge(0.0f32).select(fg, bg)
+pub fn half_plane_x<F, B>(fg: F, bg: B) -> HalfPlaneX<F, B>
+where
+    F: Manifold,
+    B: Manifold,
+{
+    Select {
+        cond: Ge(X, 0.0f32),
+        if_true: fg,
+        if_false: bg,
+    }
 }
 
 /// Half-plane: y ≥ 0
 ///
 /// Returns fg where y ≥ 0, bg elsewhere.
-pub fn half_plane_y<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
-    fg: F,
-    bg: B,
-) -> impl Manifold<Output = Field> {
-    Y.ge(0.0f32).select(fg, bg)
+pub fn half_plane_y<F, B>(fg: F, bg: B) -> HalfPlaneY<F, B>
+where
+    F: Manifold,
+    B: Manifold,
+{
+    Select {
+        cond: Ge(Y, 0.0f32),
+        if_true: fg,
+        if_false: bg,
+    }
 }
 
 // ============================================================================

@@ -1,7 +1,6 @@
 use crate::input::{CursorIcon, KeySymbol, Modifiers, MouseButton};
-use pixelflow_core::Manifold;
+use pixelflow_core::{Discrete, Manifold};
 use pixelflow_graphics::render::color::Pixel;
-use pixelflow_graphics::Discrete;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {

@@ -69,6 +69,7 @@ Auto-generated TOC of `cargo doc` output. Use this to find types, traits, and mo
 - `backend/arm`
 - `backend/scalar`
 - `combinators`
+- `combinators/at`
 - `combinators/fix`
 - `combinators/map`
 - `combinators/pack`
@@ -87,7 +88,7 @@ Auto-generated TOC of `cargo doc` output. Use this to find types, traits, and mo
 - `ops/vector`
 - `variables`
 
-**Structs:** Abs,Add,AddMasked,And,BNot,BoxedManifold,Discrete,Div,F32x4,Field,Fix,Floor,Ge,Gt,Jet2,Jet3,Le,Lt,Map,Mask4,MaskScalar,Max,Min,Mul,MulAdd,MulRecip,MulRsqrt,Neon,Or,Pack,Project,Rsqrt,Scalar,ScalarF32,ScalarU32,Scale,Select,Sh2Field,ShCoeffs,ShProject,ShReconstruct,SoftGt,SoftLt,SoftSelect,SphericalHarmonic,Sqrt,Sub,Texture,U32x4,W,X,Y,Z,ZonalHarmonic
+**Structs:** Abs,Add,AddMasked,And,At,BNot,BoxedManifold,Div,F32x4,Fix,Floor,Ge,Gt,Le,Lt,Map,Mask4,MaskScalar,Max,Min,Mul,MulAdd,MulRecip,MulRsqrt,Neon,Or,Pack,Project,Rsqrt,Scalar,ScalarF32,ScalarU32,Scale,Select,Sh2Field,ShCoeffs,ShProject,ShReconstruct,Sin,SoftGt,SoftLt,SoftSelect,SphericalHarmonic,Sqrt,Sub,Texture,U32x4,W,X,Y,Z,ZonalHarmonic
 
 **Traits:** Backend,Computational,Dimension,FieldCondition,Manifold,ManifoldExt,MaskOps,Projectable,SimdOps,SimdU32Ops,Vector
 

@@ -4,7 +4,8 @@
 
 use super::ttf::{Font, Glyph, Sum};
 use crate::transform::Translate;
-use pixelflow_core::{Field, Jet2, Manifold};
+use pixelflow_core::jet::Jet2;
+use pixelflow_core::{Field, Manifold};
 use std::sync::Arc;
 
 /// A Monoid representing a line of text.

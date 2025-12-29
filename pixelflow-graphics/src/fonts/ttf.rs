@@ -6,7 +6,8 @@
 //! short-circuit evaluation, then wrapped in Affine transforms.
 
 use crate::shapes::{square, Bounded};
-use pixelflow_core::{Abs, Computational, Field, Ge, Jet2, Manifold, Select};
+use pixelflow_core::jet::Jet2;
+use pixelflow_core::{Abs, Computational, Field, Ge, Manifold, Select};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -3,7 +3,8 @@
 //! Tests font parsing, glyph rendering, rasterization, and color operations.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use pixelflow_core::{Discrete, Field, Jet2, Manifold, PARALLELISM};
+use pixelflow_core::jet::Jet2;
+use pixelflow_core::{Discrete, Field, Manifold, PARALLELISM};
 use pixelflow_graphics::{
     render::rasterizer::{execute, parallel::render_parallel_pooled, render_work_stealing, TensorShape, ThreadPool},
     CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
@@ -145,7 +146,7 @@ fn bench_glyph_evaluation(c: &mut Criterion) {
 
     // Add AA benchmark using Jet2
     group.bench_function("eval_glyph_A_AA_single_point", |bencher| {
-        use pixelflow_core::Jet2;
+        use pixelflow_core::jet::Jet2;
         let xj = Jet2::x(x);
         let yj = Jet2::y(y);
         let zj = Jet2::constant(z);

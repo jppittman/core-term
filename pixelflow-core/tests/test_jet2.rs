@@ -1,4 +1,5 @@
-use pixelflow_core::{Jet2, Manifold, ManifoldExt, X, Y};
+use pixelflow_core::jet::Jet2;
+use pixelflow_core::{Manifold, ManifoldExt, X, Y};
 
 #[test]
 #[ignore = "Needs internal Field access for lane extraction"]

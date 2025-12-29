@@ -7,7 +7,8 @@
 
 use actor_scheduler::Message;
 use pixelflow_core::ops::Sin;
-use pixelflow_core::{Discrete, Field, Jet3, Manifold, W};
+use pixelflow_core::jet::Jet3;
+use pixelflow_core::{Discrete, Field, Manifold, W};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
