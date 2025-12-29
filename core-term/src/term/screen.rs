@@ -222,8 +222,7 @@ impl Screen {
     pub fn fill_region_with_glyph(
         &mut self,
         y: usize,
-        x_start: usize,
-        x_end: usize,
+        x_range: std::ops::Range<usize>,
         fill_glyph: Glyph,
     ) {
         if y >= self.height {
@@ -247,8 +246,8 @@ impl Screen {
             }
         };
 
-        let start_clamped = min(x_start, width);
-        let end_clamped = min(x_end, width);
+        let start_clamped = min(x_range.start, width);
+        let end_clamped = min(x_range.end, width);
 
         if start_clamped < end_clamped {
             let row = Arc::make_mut(row_arc);
@@ -608,7 +607,7 @@ impl Screen {
         if clear_mode == AltScreenClear::Clear {
             let fill_glyph = self.get_default_fill_glyph();
             for y_idx in 0..self.height {
-                self.fill_region_with_glyph(y_idx, 0, self.width, fill_glyph);
+                self.fill_region_with_glyph(y_idx, 0..self.width, fill_glyph);
             }
         }
         self.mark_all_dirty();
@@ -678,7 +677,7 @@ impl Screen {
 
     pub fn clear_line_segment(&mut self, y: usize, x_start: usize, x_end: usize) {
         let fill_glyph = self.get_default_fill_glyph();
-        self.fill_region_with_glyph(y, x_start, x_end, fill_glyph);
+        self.fill_region_with_glyph(y, x_start..x_end, fill_glyph);
     }
 
     // --- Tab stop methods ---
