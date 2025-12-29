@@ -18,7 +18,13 @@ let distance = circle.eval_raw(x, y, 0.0, 0.0);
 
 Inspired by [Conal Elliott's denotational design](http://conal.net/papers/icfp97/) and [Halide](https://halide-lang.org/), `pixelflow-core` treats SIMD not as an optimization but as the **algebraic realization of continuous fields**.
 
-You write equations. The type system builds a compute graph. Evaluation compiles to optimal vector assembly.
+**Everything is a manifold.** You compose functions, not values. No intermediate results. No pre-computation. Just expressions that fuse into optimal vector assembly.
+
+The idiomatic style:
+- ✅ **Write composable manifold expressions**: `X * scale + offset`, `circle.select(inner, outer)`
+- ✅ **Use combinators**: `At`, `Select`, `Fix` for control flow
+- ✅ **Stay generic**: Manifolds work with `Field`, `Jet2`, `Jet3` automatically
+- ❌ **Avoid pre-computed values**: Don't materialize to `Field` then recombine
 
 ## Core Concepts
 
@@ -53,7 +59,7 @@ Built-in coordinate accessors:
 use pixelflow_core::{X, Y, Z, W};
 
 // X just returns the x coordinate
-// Y just returns the y coordinate  
+// Y just returns the y coordinate
 // etc.
 ```
 
@@ -68,6 +74,70 @@ let product = X * 2.0;
 let complex = (X + 2.0) * Y - 0.5;
 let ratio = X / (Y + 1.0);
 ```
+
+### Combinators: Composition Over Values
+
+The idiomatic PixelFlow pattern is to **compose manifolds as manifolds**, not materialize to values.
+
+**The Right Way**: Use combinators
+
+```rust
+use pixelflow_core::{Manifold, ManifoldExt, Select, At, X, Y};
+
+// Blend two manifolds based on a condition
+let sdf = (X * X + Y * Y).sqrt() - 10.0;
+let condition = sdf.lt(0.0);
+let result = condition.select(inner_color, outer_color);  // Both stay as manifolds!
+```
+
+**The Wrong Way**: Pre-compute to values
+
+```rust
+// ❌ Don't do this - loses compositional structure
+let sdf_value = sdf.eval_raw(x, y, z, w);        // Materialized!
+let condition_value = sdf_value < 0.0;           // Materialized!
+let result = if condition_value { inner } else { outer };  // Lost genericity!
+```
+
+#### Select: Branchless Conditional
+
+Choose between two manifolds without materializing intermediate values:
+
+```rust
+let mask = X.lt(50.0);
+let result = mask.select(white, black);  // Fuses into single kernel
+```
+
+#### At: Pin Manifolds to Computed Coordinates
+
+Evaluate manifolds at different coordinate systems, then blend:
+
+```rust
+use pixelflow_core::{At, Jet3};
+
+// material_at_hit and background_at_ray are independent evaluations
+// No pre-computed hit points or ray directions
+let material_at_hit = At {
+    inner: &material,
+    x: hit_x,  // Jet3 constants are manifolds too
+    y: hit_y,
+    z: hit_z,
+    w: Jet3::constant(0.0),
+};
+
+let background_at_ray = At {
+    inner: &background,
+    x: ray_x,
+    y: ray_y,
+    z: ray_z,
+    w,
+};
+
+// Compose: all parts stay as manifolds
+let scene = hit_mask.select(material_at_hit, background_at_ray);
+```
+
+The key insight: **Jet3 values themselves implement `Manifold`**, so they're not "pre-computed"—they're constant manifold expressions that integrate into the computation graph.
 
 ## Examples
 
