@@ -29,20 +29,28 @@ pub struct TerminalApp<P: Pixel> {
     _pixel: PhantomData<P>,
 }
 
+/// Parameters for constructing a TerminalApp.
+pub struct TerminalAppParams<P: Pixel> {
+    /// Terminal emulator instance.
+    pub emulator: TerminalEmulator,
+    /// Channel to send data to PTY.
+    pub pty_tx: SyncSender<Vec<u8>>,
+    /// Channel to receive commands from PTY.
+    pub pty_rx: Receiver<Vec<AnsiCommand>>,
+    /// Application configuration.
+    pub config: Config,
+    /// Handle to the engine actor.
+    pub engine_tx: EngineActorHandle<P>,
+}
+
 impl<P: Pixel> TerminalApp<P> {
     /// Creates a new terminal app.
-    pub fn new(
-        emulator: TerminalEmulator,
-        pty_tx: SyncSender<Vec<u8>>,
-        pty_rx: Receiver<Vec<AnsiCommand>>,
-        config: Config,
-        _engine_tx: EngineActorHandle<P>,
-    ) -> Self {
+    pub fn new(params: TerminalAppParams<P>) -> Self {
         Self {
-            _emulator: emulator,
-            _pty_tx: pty_tx,
-            _pty_rx: pty_rx,
-            _config: config,
+            _emulator: params.emulator,
+            _pty_tx: params.pty_tx,
+            _pty_rx: params.pty_rx,
+            _config: params.config,
             _pixel: PhantomData,
         }
     }
@@ -118,11 +126,7 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
 
 /// Creates terminal app and spawns it in a thread.
 pub fn spawn_terminal_app<P: Pixel + 'static>(
-    emulator: TerminalEmulator,
-    pty_tx: SyncSender<Vec<u8>>,
-    pty_rx: Receiver<Vec<AnsiCommand>>,
-    config: Config,
-    engine_tx: EngineActorHandle<P>,
+    params: TerminalAppParams<P>,
 ) -> std::io::Result<(
     actor_scheduler::ActorHandle<EngineEventData, EngineEventControl, EngineEventManagement>,
     std::thread::JoinHandle<()>,
@@ -130,7 +134,7 @@ pub fn spawn_terminal_app<P: Pixel + 'static>(
     let (app_tx, mut app_rx) =
         ActorScheduler::<EngineEventData, EngineEventControl, EngineEventManagement>::new(10, 128);
 
-    let mut app = TerminalApp::new(emulator, pty_tx, pty_rx, config, engine_tx);
+    let mut app = TerminalApp::new(params);
 
     let handle = std::thread::Builder::new()
         .name("terminal-app".to_string())
@@ -181,7 +185,14 @@ mod tests {
         let (engine_tx, _) = actor_scheduler::ActorScheduler::new(10, 10);
 
         let config = Config::default();
-        let app = TerminalApp::new(emulator, pty_tx, cmd_rx, config, engine_tx.clone());
+        let params = TerminalAppParams {
+            emulator,
+            pty_tx,
+            pty_rx: cmd_rx,
+            config,
+            engine_tx: engine_tx.clone(),
+        };
+        let app = TerminalApp::new(params);
 
         (app, pty_rx, cmd_tx, engine_tx)
     }
