@@ -562,24 +562,24 @@ impl Manifold<Jet3> for Checker {
         let color_b = Field::from(0.2);
         let base_color = (is_even & color_a) | ((!is_even) & color_b);
 
-        // AA: distance to nearest grid line in X and Z
-        let fx = x.val - cell_x; // [0, 1) within cell
-        let fz = z.val - cell_z;
+        // AA: distance to nearest grid line in X and Z via compositional Jet3 expressions
+        let fx = x - Jet3::constant(cell_x);
+        let fz = z - Jet3::constant(cell_z);
 
-        // Distance to nearest edge (0.0 or 1.0 boundary)
-        let dx_edge = (fx - Field::from(0.5)).abs(); // 0.5 at center, 0.0 at edge
-        let dz_edge = (fz - Field::from(0.5)).abs();
-        let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
+        // Distance to nearest edge (0.0 or 1.0 boundary) via Jet3 composition
+        let half_const = Jet3::constant(Field::from(0.5));
+        let dx_edge = (fx - half_const).abs();
+        let dz_edge = (fz - half_const).abs();
+        let dist_to_edge = (half_const - dx_edge).min(half_const - dz_edge);
 
         // Gradient magnitude from Jet3 derivatives (how fast coords change per pixel)
-        // This tells us how wide one pixel is in world space
-        // Compose vector magnitude explicitly for optimization
+        // Compose vector magnitude explicitly: sqrt(dx² + dy² + dz²) for each coordinate
         let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt();
         let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
 
-        // Coverage: how much of the pixel is in this cell vs neighbor
-        let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
+        // Coverage: how much of the pixel is in this cell vs neighbor via Jet3 composition
+        let coverage = (dist_to_edge.val / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
 
         // Blend with neighbor color at edges
         let neighbor_color = (is_even & color_b) | ((!is_even) & color_a);
@@ -598,12 +598,12 @@ impl Manifold<Jet3> for Sky {
 
     #[inline(always)]
     fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Field {
-        // y is the Y component of the direction vector
-        let t = y.val * Field::from(0.5) + Field::from(0.5);
-        let t = t.max(Field::from(0.0)).min(Field::from(1.0));
+        // Compose interpolation parameter: t = y * 0.5 + 0.5 via Jet3 composition
+        let half = Jet3::constant(Field::from(0.5));
+        let t = (y * half + half).max(Jet3::constant(Field::from(0.0))).min(Jet3::constant(Field::from(1.0)));
 
-        // Deep blue to white (linear interpolation)
-        Field::from(0.1) + t * Field::from(0.8)
+        // Deep blue to white: 0.1 + t * 0.8
+        (Jet3::constant(Field::from(0.1)) + t * Jet3::constant(Field::from(0.8))).val
     }
 }
 
@@ -618,17 +618,17 @@ impl Manifold<Jet3> for ColorSky {
 
     #[inline(always)]
     fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
-        // Compose linear interpolation parameter
-        let t = y.val * Field::from(0.5) + Field::from(0.5);
-        let t = t.max(Field::from(0.0)).min(Field::from(1.0));
+        // Compose linear interpolation parameter: t = y * 0.5 + 0.5
+        let half = Jet3::constant(Field::from(0.5));
+        let t = (y * half + half).max(Jet3::constant(Field::from(0.0))).min(Jet3::constant(Field::from(1.0)));
 
-        // Compose color channels via FMA-ready operations
-        let r = Field::from(0.7) - t * Field::from(0.5);
-        let g = Field::from(0.85) - t * Field::from(0.45);
-        let b = Field::from(1.0) - t * Field::from(0.2);
-        let a = Field::from(1.0);
+        // Compose color channels via Jet3 FMA expressions
+        let r = Jet3::constant(Field::from(0.7)) - t * Jet3::constant(Field::from(0.5));
+        let g = Jet3::constant(Field::from(0.85)) - t * Jet3::constant(Field::from(0.45));
+        let b = Jet3::constant(Field::from(1.0)) - t * Jet3::constant(Field::from(0.2));
+        let a = Jet3::constant(Field::from(1.0));
 
-        Discrete::pack(r, g, b, a)
+        Discrete::pack(r.val, g.val, b.val, a.val)
     }
 }
 
@@ -658,18 +658,20 @@ impl Manifold<Jet3> for ColorChecker {
         let gb = Field::from(0.25);
         let bb = Field::from(0.3);
 
-        let fx = x.val - cell_x;
-        let fz = z.val - cell_z;
-        let dx_edge = (fx - Field::from(0.5)).abs();
-        let dz_edge = (fz - Field::from(0.5)).abs();
-        let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
+        // AA: distance to nearest grid line via compositional Jet3 expressions
+        let fx = x - Jet3::constant(cell_x);
+        let fz = z - Jet3::constant(cell_z);
+        let half_const = Jet3::constant(Field::from(0.5));
+        let dx_edge = (fx - half_const).abs();
+        let dz_edge = (fz - half_const).abs();
+        let dist_to_edge = (half_const - dx_edge).min(half_const - dz_edge);
 
         // Compose vector magnitude explicitly for optimization
         let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt();
         let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
 
-        let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
+        let coverage = (dist_to_edge.val / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
         let one_minus_cov = Field::from(1.0) - coverage;
 
         let r_base = (is_even & ra) | ((!is_even) & rb);
