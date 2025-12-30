@@ -4,9 +4,9 @@ pub mod api;
 // Internal modules
 pub mod channel;
 pub mod config;
-pub mod error;
 pub mod display;
 pub mod engine_troupe;
+pub mod error;
 pub mod frame;
 pub mod input;
 pub mod platform;

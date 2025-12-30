@@ -7,7 +7,9 @@ use pixelflow_core::combinators::At;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::{execute, render_parallel, RenderOptions, TensorShape};
+use pixelflow_graphics::render::rasterizer::{
+    execute, render_parallel, RenderOptions, TensorShape,
+};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry, SphereAt,
 };
@@ -37,7 +39,14 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         let x = (px - width * Field::from(0.5)) * scale;
         let y = (height * Field::from(0.5) - py) * scale;
 
-        At { inner: &self.inner, x, y, z, w }.eval()
+        At {
+            inner: &self.inner,
+            x,
+            y,
+            z,
+            w,
+        }
+        .eval()
     }
 }
 
@@ -69,13 +78,21 @@ fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync {
 fn main() {
     println!("Chrome Sphere Parallel Rendering Demo");
     println!("=====================================");
-    println!("Resolution: {}x{} ({:.1}M pixels)", W, H, (W * H) as f64 / 1_000_000.0);
+    println!(
+        "Resolution: {}x{} ({:.1}M pixels)",
+        W,
+        H,
+        (W * H) as f64 / 1_000_000.0
+    );
     println!();
 
     // Build the scene using mullet architecture (geometry once, colors as packed Discrete)
     let scene = build_scene();
 
-    let shape = TensorShape { width: W, height: H };
+    let shape = TensorShape {
+        width: W,
+        height: H,
+    };
     let num_cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -98,8 +115,12 @@ fn main() {
 
         let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
         let fps = 1.0 / elapsed.as_secs_f64();
-        println!("Single-threaded: {:>7.2}ms ({:>5.1} Mpix/s, {:>5.1} FPS)",
-            elapsed.as_secs_f64() * 1000.0, mpps, fps);
+        println!(
+            "Single-threaded: {:>7.2}ms ({:>5.1} Mpix/s, {:>5.1} FPS)",
+            elapsed.as_secs_f64() * 1000.0,
+            mpps,
+            fps
+        );
 
         // Save the image
         let path = std::env::temp_dir().join("chrome_sphere_single.ppm");
@@ -118,7 +139,9 @@ fn main() {
     // Parallel benchmarks with different thread counts
     for threads in [2, 4, 8, num_cpus].iter().filter(|&&t| t <= num_cpus) {
         let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-        let options = RenderOptions { num_threads: *threads };
+        let options = RenderOptions {
+            num_threads: *threads,
+        };
 
         let start = Instant::now();
         render_parallel(&scene, frame.as_slice_mut(), shape, options);
@@ -128,8 +151,14 @@ fn main() {
         let fps = 1.0 / elapsed.as_secs_f64();
         let speedup = single_time.as_secs_f64() / elapsed.as_secs_f64();
 
-        println!("{:>2}-threaded:      {:>7.2}ms ({:>5.1} Mpix/s, {:>5.1} FPS) - {:.2}x speedup",
-            threads, elapsed.as_secs_f64() * 1000.0, mpps, fps, speedup);
+        println!(
+            "{:>2}-threaded:      {:>7.2}ms ({:>5.1} Mpix/s, {:>5.1} FPS) - {:.2}x speedup",
+            threads,
+            elapsed.as_secs_f64() * 1000.0,
+            mpps,
+            fps,
+            speedup
+        );
 
         if *threads == num_cpus {
             // Save the parallel result

@@ -16,11 +16,7 @@ fn ascii_text(size: usize) -> Vec<u8> {
 
 /// Mixed printable with newlines
 fn ascii_with_newlines(size: usize) -> Vec<u8> {
-    "Hello, World!\r\n"
-        .bytes()
-        .cycle()
-        .take(size)
-        .collect()
+    "Hello, World!\r\n".bytes().cycle().take(size).collect()
 }
 
 /// Heavy CSI sequences (cursor movement, SGR)
@@ -68,11 +64,7 @@ fn vtebench_alt_screen(size: usize) -> Vec<u8> {
 
 /// UTF-8 heavy (emoji, CJK)
 fn unicode_heavy(size: usize) -> Vec<u8> {
-    "こんにちは世界🎉🚀💻"
-        .bytes()
-        .cycle()
-        .take(size)
-        .collect()
+    "こんにちは世界🎉🚀💻".bytes().cycle().take(size).collect()
 }
 
 /// OSC sequences (window title, etc)
@@ -99,30 +91,22 @@ fn bench_parser_throughput(c: &mut Criterion) {
         // ASCII text (fast path)
         let data = ascii_text(size);
         group.throughput(Throughput::Bytes(data.len() as u64));
-        group.bench_with_input(
-            BenchmarkId::new("ascii_text", size),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    let mut parser = AnsiProcessor::new();
-                    black_box(parser.process_bytes(data))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("ascii_text", size), &data, |b, data| {
+            b.iter(|| {
+                let mut parser = AnsiProcessor::new();
+                black_box(parser.process_bytes(data))
+            })
+        });
 
         // CSI heavy
         let data = csi_heavy(size);
         group.throughput(Throughput::Bytes(data.len() as u64));
-        group.bench_with_input(
-            BenchmarkId::new("csi_heavy", size),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    let mut parser = AnsiProcessor::new();
-                    black_box(parser.process_bytes(data))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("csi_heavy", size), &data, |b, data| {
+            b.iter(|| {
+                let mut parser = AnsiProcessor::new();
+                black_box(parser.process_bytes(data))
+            })
+        });
 
         // SGR 256 colors
         let data = sgr_256_colors(size);
@@ -155,30 +139,22 @@ fn bench_parser_throughput(c: &mut Criterion) {
         // Unicode
         let data = unicode_heavy(size);
         group.throughput(Throughput::Bytes(data.len() as u64));
-        group.bench_with_input(
-            BenchmarkId::new("unicode_heavy", size),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    let mut parser = AnsiProcessor::new();
-                    black_box(parser.process_bytes(data))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("unicode_heavy", size), &data, |b, data| {
+            b.iter(|| {
+                let mut parser = AnsiProcessor::new();
+                black_box(parser.process_bytes(data))
+            })
+        });
 
         // Scrolling
         let data = scrolling(size);
         group.throughput(Throughput::Bytes(data.len() as u64));
-        group.bench_with_input(
-            BenchmarkId::new("scrolling", size),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    let mut parser = AnsiProcessor::new();
-                    black_box(parser.process_bytes(data))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("scrolling", size), &data, |b, data| {
+            b.iter(|| {
+                let mut parser = AnsiProcessor::new();
+                black_box(parser.process_bytes(data))
+            })
+        });
     }
 
     group.finish();

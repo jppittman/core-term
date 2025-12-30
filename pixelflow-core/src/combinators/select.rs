@@ -17,12 +17,12 @@
 //!
 //! This happens transparently - just use `Select { cond: Lt(...), ... }`.
 
-use crate::Manifold;
-use crate::numeric::Numeric;
 use crate::Field;
+use crate::Manifold;
 use crate::backend::{MaskOps, SimdOps};
-use crate::ops::compare::{Lt, Gt, Le, Ge};
-use crate::ops::logic::{And, Or, BNot};
+use crate::numeric::Numeric;
+use crate::ops::compare::{Ge, Gt, Le, Lt};
+use crate::ops::logic::{And, BNot, Or};
 
 /// Branchless conditional with short-circuit.
 ///
@@ -230,7 +230,13 @@ where
 {
     type Output = O;
     #[inline]
-    fn eval_raw(&self, x: crate::jet::Jet2, y: crate::jet::Jet2, z: crate::jet::Jet2, w: crate::jet::Jet2) -> O {
+    fn eval_raw(
+        &self,
+        x: crate::jet::Jet2,
+        y: crate::jet::Jet2,
+        z: crate::jet::Jet2,
+        w: crate::jet::Jet2,
+    ) -> O {
         let mask = self.cond.eval_raw(x, y, z, w);
         if mask.all() {
             return self.if_true.eval_raw(x, y, z, w);
@@ -258,7 +264,13 @@ where
 {
     type Output = O;
     #[inline]
-    fn eval_raw(&self, x: crate::jet::Jet3, y: crate::jet::Jet3, z: crate::jet::Jet3, w: crate::jet::Jet3) -> O {
+    fn eval_raw(
+        &self,
+        x: crate::jet::Jet3,
+        y: crate::jet::Jet3,
+        z: crate::jet::Jet3,
+        w: crate::jet::Jet3,
+    ) -> O {
         let cond_jet = self.cond.eval_raw(x, y, z, w);
         let mask = cond_jet.val; // Extract Field mask from Jet3
 

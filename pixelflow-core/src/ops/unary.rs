@@ -143,4 +143,3 @@ where
         self.0.eval_raw(x, y, z, w).min(self.1.eval_raw(x, y, z, w))
     }
 }
-

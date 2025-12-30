@@ -37,12 +37,9 @@ where
 
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         // Evaluate SDF with Jet2 to get value AND gradient in one pass
-        let result = self.manifold.eval_raw(
-            Jet2::x(x),
-            Jet2::y(y),
-            Jet2::constant(z),
-            Jet2::constant(w),
-        );
+        let result =
+            self.manifold
+                .eval_raw(Jet2::x(x), Jet2::y(y), Jet2::constant(z), Jet2::constant(w));
 
         // Gradient magnitude = how many SDF units per pixel
         let grad_mag = (result.dx * result.dx + result.dy * result.dy).sqrt();

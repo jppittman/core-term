@@ -110,11 +110,7 @@ impl BezierPatch {
         let mut points = [[[0.0f32; 3]; 4]; 4];
         for v in 0..4 {
             for u in 0..4 {
-                points[v][u] = [
-                    (u as f32 / 3.0) * size,
-                    (v as f32 / 3.0) * size,
-                    0.0,
-                ];
+                points[v][u] = [(u as f32 / 3.0) * size, (v as f32 / 3.0) * size, 0.0];
             }
         }
         Self { points }
@@ -159,10 +155,10 @@ impl BezierPatch {
         let u1_3 = u1_2 * u1;
 
         let bu = [
-            u1_3,                    // (1-u)³
-            three * u * u1_2,        // 3u(1-u)²
-            three * u2 * u1,         // 3u²(1-u)
-            u3,                      // u³
+            u1_3,             // (1-u)³
+            three * u * u1_2, // 3u(1-u)²
+            three * u2 * u1,  // 3u²(1-u)
+            u3,               // u³
         ];
 
         // Compute Bernstein basis for v
@@ -173,10 +169,10 @@ impl BezierPatch {
         let v1_3 = v1_2 * v1;
 
         let bv = [
-            v1_3,                    // (1-v)³
-            three * v * v1_2,        // 3v(1-v)²
-            three * v2 * v1,         // 3v²(1-v)
-            v3,                      // v³
+            v1_3,             // (1-v)³
+            three * v * v1_2, // 3v(1-v)²
+            three * v2 * v1,  // 3v²(1-v)
+            v3,               // v³
         ];
 
         // Accumulate P(u,v) = Σᵢ Σⱼ Bᵢ(u) Bⱼ(v) Pᵢⱼ
@@ -201,8 +197,8 @@ impl BezierPatch {
     /// Evaluate with seeded Jet2H for differentiation w.r.t. u and v.
     #[inline]
     pub fn eval_at(&self, u_val: Field, v_val: Field) -> PatchJet {
-        let u = Jet2H::x(u_val);  // du/du = 1, du/dv = 0
-        let v = Jet2H::y(v_val);  // dv/du = 0, dv/dv = 1
+        let u = Jet2H::x(u_val); // du/du = 1, du/dv = 0
+        let v = Jet2H::y(v_val); // dv/du = 0, dv/dv = 1
         self.eval(u, v)
     }
 }
@@ -253,11 +249,7 @@ pub struct PatchHit {
 /// 5. Use quadratic formula (like fonts!) for the dominant direction
 ///
 /// This typically converges in 2-3 iterations vs 5-10 for linear Newton.
-pub fn intersect_ray_patch(
-    ray: &Ray,
-    patch: &BezierPatch,
-    max_iters: usize,
-) -> Option<PatchHit> {
+pub fn intersect_ray_patch(ray: &Ray, patch: &BezierPatch, max_iters: usize) -> Option<PatchHit> {
     intersect_ray_patch_taylor(ray, patch, max_iters)
 }
 
@@ -353,13 +345,33 @@ pub fn intersect_ray_patch_taylor(
         // [d_cross_pu · d_cross_pu,  d_cross_pu · d_cross_pv]
         // [d_cross_pu · d_cross_pv,  d_cross_pv · d_cross_pv]
 
-        let a11 = eval(d_cross_pu[0] * d_cross_pu[0] + d_cross_pu[1] * d_cross_pu[1] + d_cross_pu[2] * d_cross_pu[2]);
-        let a12 = eval(d_cross_pu[0] * d_cross_pv[0] + d_cross_pu[1] * d_cross_pv[1] + d_cross_pu[2] * d_cross_pv[2]);
-        let a22 = eval(d_cross_pv[0] * d_cross_pv[0] + d_cross_pv[1] * d_cross_pv[1] + d_cross_pv[2] * d_cross_pv[2]);
+        let a11 = eval(
+            d_cross_pu[0] * d_cross_pu[0]
+                + d_cross_pu[1] * d_cross_pu[1]
+                + d_cross_pu[2] * d_cross_pu[2],
+        );
+        let a12 = eval(
+            d_cross_pu[0] * d_cross_pv[0]
+                + d_cross_pu[1] * d_cross_pv[1]
+                + d_cross_pu[2] * d_cross_pv[2],
+        );
+        let a22 = eval(
+            d_cross_pv[0] * d_cross_pv[0]
+                + d_cross_pv[1] * d_cross_pv[1]
+                + d_cross_pv[2] * d_cross_pv[2],
+        );
 
         // Aᵀb (note: we negate because we want δu, δv that make D×r go to zero)
-        let b1 = eval(d_cross_pu[0] * d_cross_r[0] + d_cross_pu[1] * d_cross_r[1] + d_cross_pu[2] * d_cross_r[2]);
-        let b2 = eval(d_cross_pv[0] * d_cross_r[0] + d_cross_pv[1] * d_cross_r[1] + d_cross_pv[2] * d_cross_r[2]);
+        let b1 = eval(
+            d_cross_pu[0] * d_cross_r[0]
+                + d_cross_pu[1] * d_cross_r[1]
+                + d_cross_pu[2] * d_cross_r[2],
+        );
+        let b2 = eval(
+            d_cross_pv[0] * d_cross_r[0]
+                + d_cross_pv[1] * d_cross_r[1]
+                + d_cross_pv[2] * d_cross_r[2],
+        );
 
         // Solve 2x2 system: [a11 a12; a12 a22] · [δu; δv] = -[b1; b2]
         let det = eval(a11 * a22 - a12 * a12);
@@ -384,27 +396,39 @@ pub fn intersect_ray_patch_taylor(
 
         // Quadratic residual contribution
         let half = Field::from(0.5);
-        let quad_x = eval(half * d_cross_puu[0] * du_est * du_est
-                       + d_cross_puv[0] * du_est * dv_est
-                       + half * d_cross_pvv[0] * dv_est * dv_est);
-        let quad_y = eval(half * d_cross_puu[1] * du_est * du_est
-                       + d_cross_puv[1] * du_est * dv_est
-                       + half * d_cross_pvv[1] * dv_est * dv_est);
-        let quad_z = eval(half * d_cross_puu[2] * du_est * du_est
-                       + d_cross_puv[2] * du_est * dv_est
-                       + half * d_cross_pvv[2] * dv_est * dv_est);
+        let quad_x = eval(
+            half * d_cross_puu[0] * du_est * du_est
+                + d_cross_puv[0] * du_est * dv_est
+                + half * d_cross_pvv[0] * dv_est * dv_est,
+        );
+        let quad_y = eval(
+            half * d_cross_puu[1] * du_est * du_est
+                + d_cross_puv[1] * du_est * dv_est
+                + half * d_cross_pvv[1] * dv_est * dv_est,
+        );
+        let quad_z = eval(
+            half * d_cross_puu[2] * du_est * du_est
+                + d_cross_puv[2] * du_est * dv_est
+                + half * d_cross_pvv[2] * dv_est * dv_est,
+        );
 
         // Corrected RHS
-        let b1_corr = eval(b1 + d_cross_pu[0] * quad_x + d_cross_pu[1] * quad_y + d_cross_pu[2] * quad_z);
-        let b2_corr = eval(b2 + d_cross_pv[0] * quad_x + d_cross_pv[1] * quad_y + d_cross_pv[2] * quad_z);
+        let b1_corr =
+            eval(b1 + d_cross_pu[0] * quad_x + d_cross_pu[1] * quad_y + d_cross_pu[2] * quad_z);
+        let b2_corr =
+            eval(b2 + d_cross_pv[0] * quad_x + d_cross_pv[1] * quad_y + d_cross_pv[2] * quad_z);
 
         // Solve again with corrected RHS (Gauss-Newton with Hessian)
         let delta_u = eval((Field::from(-1.0) * b1_corr * a22 + b2_corr * a12) * inv_det);
         let delta_v = eval((b1_corr * a12 + Field::from(-1.0) * b2_corr * a11) * inv_det);
 
         // Update and clamp
-        u = eval(u + delta_u).max(Field::from(0.0)).min(Field::from(1.0));
-        v = eval(v + delta_v).max(Field::from(0.0)).min(Field::from(1.0));
+        u = eval(u + delta_u)
+            .max(Field::from(0.0))
+            .min(Field::from(1.0));
+        v = eval(v + delta_v)
+            .max(Field::from(0.0))
+            .min(Field::from(1.0));
 
         // Check convergence
         let conv_thresh = Field::from(1e-6);
@@ -462,7 +486,12 @@ fn finalize_hit(
 
     // Accept if error is small and t > 0
     if err_sq.lt(Field::from(1e-4)).all() && t.gt(Field::from(0.0)).any() {
-        Some(PatchHit { t, uv: [u, v], normal, pos })
+        Some(PatchHit {
+            t,
+            uv: [u, v],
+            normal,
+            pos,
+        })
     } else {
         None
     }
@@ -512,13 +541,27 @@ pub fn intersect_ray_patch_newton(
         let inv_det = eval(Field::from(1.0) / det);
 
         let cross_diff_dv = cross3(diff, dv);
-        let delta_u = eval((ray_d[0] * cross_diff_dv[0] + ray_d[1] * cross_diff_dv[1] + ray_d[2] * cross_diff_dv[2]) * inv_det);
+        let delta_u = eval(
+            (ray_d[0] * cross_diff_dv[0]
+                + ray_d[1] * cross_diff_dv[1]
+                + ray_d[2] * cross_diff_dv[2])
+                * inv_det,
+        );
 
         let cross_du_diff = cross3(du, diff);
-        let delta_v = eval((ray_d[0] * cross_du_diff[0] + ray_d[1] * cross_du_diff[1] + ray_d[2] * cross_du_diff[2]) * inv_det);
+        let delta_v = eval(
+            (ray_d[0] * cross_du_diff[0]
+                + ray_d[1] * cross_du_diff[1]
+                + ray_d[2] * cross_du_diff[2])
+                * inv_det,
+        );
 
-        u = eval(u + delta_u).max(Field::from(0.0)).min(Field::from(1.0));
-        v = eval(v + delta_v).max(Field::from(0.0)).min(Field::from(1.0));
+        u = eval(u + delta_u)
+            .max(Field::from(0.0))
+            .min(Field::from(1.0));
+        v = eval(v + delta_v)
+            .max(Field::from(0.0))
+            .min(Field::from(1.0));
 
         if (delta_u.abs().lt(Field::from(1e-6)) & delta_v.abs().lt(Field::from(1e-6))).all() {
             return finalize_hit(patch, ray_o, ray_d, u, v);

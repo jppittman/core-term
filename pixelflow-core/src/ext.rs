@@ -448,7 +448,13 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         Cz: Manifold,
         Cw: Manifold,
     {
-        At { inner: self, x, y, z, w }
+        At {
+            inner: self,
+            x,
+            y,
+            z,
+            w,
+        }
     }
 
     /// Type-erase this manifold into a boxed trait object.

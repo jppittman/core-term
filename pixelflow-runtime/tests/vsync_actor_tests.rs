@@ -115,7 +115,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
             VsyncManagement::SetConfig { config, .. } => {
                 self.refresh_rate = config.refresh_rate;
                 self.running = true;
-                self.log(&format!("config:rate={:.1},auto_started", config.refresh_rate));
+                self.log(&format!(
+                    "config:rate={:.1},auto_started",
+                    config.refresh_rate
+                ));
             }
         }
     }
@@ -158,7 +161,10 @@ fn vsync_command_start_stop_lifecycle() {
     let log = log.lock().unwrap();
     assert!(log.contains(&"started".to_string()), "Should have started");
     assert!(log.contains(&"stopped".to_string()), "Should have stopped");
-    assert!(log.contains(&"shutdown".to_string()), "Should have shutdown");
+    assert!(
+        log.contains(&"shutdown".to_string()),
+        "Should have shutdown"
+    );
 }
 
 #[test]
@@ -459,7 +465,11 @@ fn tick_resumes_after_stop_and_start() {
     let tick_logs: Vec<_> = log.iter().filter(|s| s.starts_with("tick:")).collect();
 
     // 1 before stop + 1 after restart = 2
-    assert_eq!(tick_logs.len(), 2, "Should have 2 ticks (before stop + after restart)");
+    assert_eq!(
+        tick_logs.len(),
+        2,
+        "Should have 2 ticks (before stop + after restart)"
+    );
 }
 
 // ============================================================================
@@ -629,7 +639,8 @@ fn multiple_senders_to_vsync_actor() {
     });
     let s3 = thread::spawn(move || {
         for _ in 0..5 {
-            tx3.send(Message::Management(VsyncManagement::Tick)).unwrap();
+            tx3.send(Message::Management(VsyncManagement::Tick))
+                .unwrap();
         }
     });
 
@@ -705,7 +716,9 @@ fn shutdown_stops_processing_immediately() {
             }
             fn handle_control(&mut self, _: VsyncCommand) {}
             fn handle_management(&mut self, _: VsyncManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut CountingActor(processed_clone));
     });

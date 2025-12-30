@@ -93,10 +93,7 @@ pub enum DisplayControl {
     ///     title: "My Application - Updated".to_string(),
     /// }))?;
     /// ```
-    SetTitle {
-        id: WindowId,
-        title: String,
-    },
+    SetTitle { id: WindowId, title: String },
 
     /// Resize the window.
     ///
@@ -143,10 +140,7 @@ pub enum DisplayControl {
     ///
     /// - `id`: Window identifier
     /// - `cursor`: Cursor icon (arrow, text, etc.)
-    SetCursor {
-        id: WindowId,
-        cursor: CursorIcon,
-    },
+    SetCursor { id: WindowId, cursor: CursorIcon },
 
     /// Show or hide the window.
     ///
@@ -160,10 +154,7 @@ pub enum DisplayControl {
     ///
     /// - `id`: Window identifier
     /// - `visible`: `true` to show, `false` to hide
-    SetVisible {
-        id: WindowId,
-        visible: bool,
-    },
+    SetVisible { id: WindowId, visible: bool },
 
     /// Request an immediate redraw.
     ///
@@ -182,9 +173,7 @@ pub enum DisplayControl {
     ///
     /// Use when the application has updated internal state and needs to redraw
     /// without waiting for the next frame request.
-    RequestRedraw {
-        id: WindowId,
-    },
+    RequestRedraw { id: WindowId },
 
     /// Ring the bell (system beep).
     ///
@@ -212,9 +201,7 @@ pub enum DisplayControl {
     /// # Arguments
     ///
     /// - `text`: UTF-8 text to copy
-    Copy {
-        text: String,
-    },
+    Copy { text: String },
 
     /// Request clipboard paste.
     ///
@@ -327,9 +314,7 @@ pub enum DisplayMgmt {
     /// tx.send(Message::Management(DisplayMgmt::Destroy { id: window_id }))?;
     /// // ... wait for DisplayEvent::WindowDestroyed ...
     /// ```
-    Destroy {
-        id: WindowId,
-    },
+    Destroy { id: WindowId },
 }
 
 /// Events emitted by the display driver

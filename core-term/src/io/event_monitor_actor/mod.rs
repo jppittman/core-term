@@ -193,12 +193,12 @@ impl EventMonitorActor {
 
         // Create parser's actor scheduler for raw bytes
         let (parser_tx, parser_rx) = ActorScheduler::<
-            Vec<u8>,                    // Data: raw bytes
-            parser_thread::NoControl,   // Control: unused
-            parser_thread::NoManagement // Management: unused
+            Vec<u8>,                     // Data: raw bytes
+            parser_thread::NoControl,    // Control: unused
+            parser_thread::NoManagement, // Management: unused
         >::new(
-            10,  // burst limit: max 10 byte batches per wake
-            64,  // buffer size: 64 byte batches
+            10, // burst limit: max 10 byte batches per wake
+            64, // buffer size: 64 byte batches
         );
 
         // Clone PTY for the read thread (shared ownership of FD)
@@ -213,8 +213,8 @@ impl EventMonitorActor {
         let (recycler_tx, recycler_rx) = channel();
 
         // Spawn read thread: PTY → sends raw bytes to parser via ActorHandle
-        let read_thread =
-            ReadThread::spawn(pty_read, parser_tx, recycler_rx).context("Failed to spawn PTY read thread")?;
+        let read_thread = ReadThread::spawn(pty_read, parser_tx, recycler_rx)
+            .context("Failed to spawn PTY read thread")?;
 
         // Spawn parser thread: receives raw bytes via ActorScheduler, sends ANSI commands to app
         let parser_thread = ParserThread::spawn(parser_rx, cmd_tx, recycler_tx)

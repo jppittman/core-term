@@ -6,26 +6,42 @@ extern crate std;
 
 use std::prelude::v1::*;
 
+use pixelflow_core::jet::Jet2;
 use pixelflow_core::{
-    // Core types
-    Field, Manifold, ManifoldExt, PARALLELISM,
-    // Variables
-    X, Y, Z, W,
-    variables::Axis,
+    Abs,
     // Operations
-    Add, Sub, Mul, Div,
-    Sqrt, Abs, Max, Min,
-    Lt, Gt, Le, Ge,
-    And, Or,
-    // Combinators
-    combinators::{Select, Map, Fix},
-    scale,
+    Add,
+    And,
     // Computational trait (needed for from_f32)
     Computational,
+    Div,
+    // Core types
+    Field,
+    Ge,
+    Gt,
+    Le,
+    Lt,
+    Manifold,
+    ManifoldExt,
+    Max,
+    Min,
+    Mul,
+    Or,
+    PARALLELISM,
+    Sqrt,
+    Sub,
+    W,
+    // Variables
+    X,
+    Y,
+    Z,
+    // Combinators
+    combinators::{Fix, Map, Select},
     // Materialize
     materialize,
+    scale,
+    variables::Axis,
 };
-use pixelflow_core::jet::Jet2;
 
 // ============================================================================
 // Field Tests

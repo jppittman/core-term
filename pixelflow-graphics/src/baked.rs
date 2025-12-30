@@ -58,7 +58,11 @@ where
     pub fn new(source: M, width: usize, height: usize) -> Self {
         // First rasterize to a Frame
         let mut frame = Frame::<P>::new(width as u32, height as u32);
-        execute(&source, frame.as_slice_mut(), TensorShape::new(width, height));
+        execute(
+            &source,
+            frame.as_slice_mut(),
+            TensorShape::new(width, height),
+        );
 
         // Extract channels to separate f32 buffers
         let mut r_data = Vec::with_capacity(width * height);
@@ -148,7 +152,7 @@ where
 mod tests {
     use super::*;
     use crate::Rgba8;
-    use pixelflow_core::{Discrete, ManifoldExt, PARALLELISM, materialize_discrete};
+    use pixelflow_core::{materialize_discrete, Discrete, ManifoldExt, PARALLELISM};
 
     // A simple solid color manifold for testing
     struct SolidColor(u8, u8, u8, u8);

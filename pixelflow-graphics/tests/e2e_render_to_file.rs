@@ -3,11 +3,11 @@
 //! This test verifies the full pipeline from manifold composition
 //! through rasterization to file output.
 
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, X, Y};
 use pixelflow_graphics::render::color::{Lift, NamedColor, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
 use pixelflow_graphics::transform::{Scale, Translate};
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, X, Y};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -309,7 +309,11 @@ fn e2e_frame_operations() {
     }
 
     // Render something
-    execute(&NamedColor::Red, frame.as_slice_mut(), TensorShape::new(SIZE as usize, SIZE as usize));
+    execute(
+        &NamedColor::Red,
+        frame.as_slice_mut(),
+        TensorShape::new(SIZE as usize, SIZE as usize),
+    );
 
     // Now all should be red
     for pixel in &frame.data {

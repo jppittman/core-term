@@ -16,7 +16,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
-use pixelflow_runtime::vsync_actor::{RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement};
+use pixelflow_runtime::vsync_actor::{
+    RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
+};
 
 // ============================================================================
 // POTENTIAL BUG: Double Clock Thread Spawn
@@ -222,7 +224,10 @@ fn fps_calculation_handles_zero_elapsed() {
     let frame_count = 10u64;
 
     let fps = frame_count as f64 / elapsed.as_secs_f64();
-    assert!(fps.is_infinite() || fps.is_nan(), "Division by zero should produce inf/nan, not panic");
+    assert!(
+        fps.is_infinite() || fps.is_nan(),
+        "Division by zero should produce inf/nan, not panic"
+    );
 }
 
 #[test]
@@ -231,7 +236,10 @@ fn fps_with_very_small_elapsed_does_not_panic() {
     let frame_count = 1_000_000u64;
 
     let fps = frame_count as f64 / elapsed.as_secs_f64();
-    assert!(!fps.is_nan(), "Should produce a valid (possibly infinite) number");
+    assert!(
+        !fps.is_nan(),
+        "Should produce a valid (possibly infinite) number"
+    );
     assert!(fps > 0.0);
 }
 
@@ -384,7 +392,9 @@ fn shutdown_command_stops_tick_processing() {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut ShutdownActor {
             tick_count: tick_count_clone,
@@ -448,7 +458,9 @@ fn fps_request_handles_dropped_receiver() {
                 }
             }
             fn handle_management(&mut self, _: VsyncManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut FPSActor(log_clone));
     });
@@ -528,7 +540,9 @@ fn refresh_rate_update_during_ticks_is_safe() {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut RateChangeActor {
             tick_count: tick_count_clone,

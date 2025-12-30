@@ -31,7 +31,14 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         let x = (px - width * Field::from(0.5)) * scale;
         let y = (height * Field::from(0.5) - py) * scale;
 
-        At { inner: &self.inner, x, y, z, w }.eval()
+        At {
+            inner: &self.inner,
+            x,
+            y,
+            z,
+            w,
+        }
+        .eval()
     }
 }
 
@@ -215,9 +222,19 @@ fn test_chrome_sphere_on_checkerboard() {
 
     // Debug: print some pixel values
     let center = &frame.data[(HEIGHT / 2) * WIDTH + (WIDTH / 2)];
-    println!("Center pixel (sphere): r={} g={} b={}", center.r(), center.g(), center.b());
+    println!(
+        "Center pixel (sphere): r={} g={} b={}",
+        center.r(),
+        center.g(),
+        center.b()
+    );
     let bottom = &frame.data[(HEIGHT * 3 / 4) * WIDTH + (WIDTH / 2)];
-    println!("Bottom pixel (floor): r={} g={} b={}", bottom.r(), bottom.g(), bottom.b());
+    println!(
+        "Bottom pixel (floor): r={} g={} b={}",
+        bottom.r(),
+        bottom.g(),
+        bottom.b()
+    );
     let top = &frame.data[(HEIGHT / 4) * WIDTH + (WIDTH / 2)];
     println!("Top pixel (sky): r={} g={} b={}", top.r(), top.g(), top.b());
 

@@ -4,8 +4,8 @@
 //! concurrent access, and various edge conditions.
 
 use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -117,10 +117,9 @@ fn high_contention_all_messages_delivered() {
     receiver_handle.join().unwrap();
 
     // Verify all messages were delivered
-    let total =
-        data_count.load(Ordering::SeqCst) +
-        ctrl_count.load(Ordering::SeqCst) +
-        mgmt_count.load(Ordering::SeqCst);
+    let total = data_count.load(Ordering::SeqCst)
+        + ctrl_count.load(Ordering::SeqCst)
+        + mgmt_count.load(Ordering::SeqCst);
 
     assert_eq!(
         total,
@@ -285,11 +284,8 @@ fn custom_wake_handler_is_called() {
         called: called.clone(),
     });
 
-    let (tx, _rx) = ActorScheduler::<u64, u64, u64>::new_with_wake_handler(
-        10,
-        100,
-        Some(wake_handler),
-    );
+    let (tx, _rx) =
+        ActorScheduler::<u64, u64, u64>::new_with_wake_handler(10, 100, Some(wake_handler));
 
     tx.send(Message::Data(42)).unwrap();
 

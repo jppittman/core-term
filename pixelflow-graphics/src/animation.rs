@@ -7,7 +7,7 @@
 //! evaluated lazily, enabling full optimization by LLVM.
 
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{At, Field, Manifold, Add, Sub, Mul, W, X, Y, Z};
+use pixelflow_core::{Add, At, Field, Manifold, Mul, Sub, W, X, Y, Z};
 
 // ============================================================================
 // Time Shifting
@@ -51,8 +51,8 @@ pub fn time_shift<M>(inner: M, offset: f32) -> TimeShift<M> {
 /// Maps the screen to [−aspect*scale, aspect*scale] × [−scale, scale] where
 /// scale = 2.0/height.
 pub type ScreenRemap<M> = At<
-    Mul<Sub<X, Field>, Field>,  // (x - width/2) * scale
-    Mul<Sub<Field, Y>, Field>,  // (height/2 - y) * scale
+    Mul<Sub<X, Field>, Field>, // (x - width/2) * scale
+    Mul<Sub<Field, Y>, Field>, // (height/2 - y) * scale
     Z,
     W,
     M,

@@ -31,7 +31,8 @@ enum TestAnsiCommand {
 
 impl Actor<Vec<u8>, (), ()> for TestParserActor {
     fn handle_data(&mut self, bytes: Vec<u8>) {
-        self.bytes_processed.fetch_add(bytes.len(), Ordering::SeqCst);
+        self.bytes_processed
+            .fetch_add(bytes.len(), Ordering::SeqCst);
 
         let mut commands = Vec::new();
         let mut i = 0;
@@ -281,9 +282,9 @@ impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerm
             TestEngineControl::Resize(width, height) => {
                 self.resize_count.fetch_add(1, Ordering::SeqCst);
                 // In real app, this would update terminal dimensions
-                let _ = self.pty_output_tx.send(
-                    format!("RESIZE:{}x{}", width, height).into_bytes()
-                );
+                let _ = self
+                    .pty_output_tx
+                    .send(format!("RESIZE:{}x{}", width, height).into_bytes());
             }
             TestEngineControl::Close => {
                 // Handle close
@@ -326,11 +327,8 @@ fn terminal_app_roundtrip_key_input() {
     let keypress_count = Arc::new(AtomicUsize::new(0));
     let frame_count = Arc::new(AtomicUsize::new(0));
 
-    let (tx, mut rx) = ActorScheduler::<
-        TestEngineData,
-        TestEngineControl,
-        TestEngineManagement
-    >::new(10, 64);
+    let (tx, mut rx) =
+        ActorScheduler::<TestEngineData, TestEngineControl, TestEngineManagement>::new(10, 64);
 
     let resize_clone = resize_count.clone();
     let keypress_clone = keypress_count.clone();
@@ -347,8 +345,10 @@ fn terminal_app_roundtrip_key_input() {
     });
 
     // Roundtrip: send key press → expect PTY output
-    tx.send(Message::Management(TestEngineManagement::KeyPress('a'))).unwrap();
-    tx.send(Message::Management(TestEngineManagement::KeyPress('b'))).unwrap();
+    tx.send(Message::Management(TestEngineManagement::KeyPress('a')))
+        .unwrap();
+    tx.send(Message::Management(TestEngineManagement::KeyPress('b')))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(50));
     drop(tx);
@@ -371,11 +371,8 @@ fn terminal_app_roundtrip_special_key() {
     let keypress_count = Arc::new(AtomicUsize::new(0));
     let frame_count = Arc::new(AtomicUsize::new(0));
 
-    let (tx, mut rx) = ActorScheduler::<
-        TestEngineData,
-        TestEngineControl,
-        TestEngineManagement
-    >::new(10, 64);
+    let (tx, mut rx) =
+        ActorScheduler::<TestEngineData, TestEngineControl, TestEngineManagement>::new(10, 64);
 
     let resize_clone = resize_count.clone();
     let keypress_clone = keypress_count.clone();
@@ -392,7 +389,10 @@ fn terminal_app_roundtrip_special_key() {
     });
 
     // Roundtrip: send arrow key → expect ANSI escape sequence
-    tx.send(Message::Management(TestEngineManagement::SpecialKey("Up".to_string()))).unwrap();
+    tx.send(Message::Management(TestEngineManagement::SpecialKey(
+        "Up".to_string(),
+    )))
+    .unwrap();
 
     thread::sleep(Duration::from_millis(50));
     drop(tx);
@@ -411,11 +411,8 @@ fn terminal_app_roundtrip_resize_control() {
     let keypress_count = Arc::new(AtomicUsize::new(0));
     let frame_count = Arc::new(AtomicUsize::new(0));
 
-    let (tx, mut rx) = ActorScheduler::<
-        TestEngineData,
-        TestEngineControl,
-        TestEngineManagement
-    >::new(10, 64);
+    let (tx, mut rx) =
+        ActorScheduler::<TestEngineData, TestEngineControl, TestEngineManagement>::new(10, 64);
 
     let resize_clone = resize_count.clone();
     let keypress_clone = keypress_count.clone();
@@ -432,7 +429,8 @@ fn terminal_app_roundtrip_resize_control() {
     });
 
     // Roundtrip: send resize control → expect notification
-    tx.send(Message::Control(TestEngineControl::Resize(1920, 1080))).unwrap();
+    tx.send(Message::Control(TestEngineControl::Resize(1920, 1080)))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(50));
     drop(tx);
@@ -451,11 +449,8 @@ fn terminal_app_roundtrip_frame_request() {
     let keypress_count = Arc::new(AtomicUsize::new(0));
     let frame_count = Arc::new(AtomicUsize::new(0));
 
-    let (tx, mut rx) = ActorScheduler::<
-        TestEngineData,
-        TestEngineControl,
-        TestEngineManagement
-    >::new(10, 64);
+    let (tx, mut rx) =
+        ActorScheduler::<TestEngineData, TestEngineControl, TestEngineManagement>::new(10, 64);
 
     let resize_clone = resize_count.clone();
     let keypress_clone = keypress_count.clone();
@@ -472,9 +467,12 @@ fn terminal_app_roundtrip_frame_request() {
     });
 
     // Roundtrip: send frame requests
-    tx.send(Message::Data(TestEngineData::FrameRequest)).unwrap();
-    tx.send(Message::Data(TestEngineData::FrameRequest)).unwrap();
-    tx.send(Message::Data(TestEngineData::FrameRequest)).unwrap();
+    tx.send(Message::Data(TestEngineData::FrameRequest))
+        .unwrap();
+    tx.send(Message::Data(TestEngineData::FrameRequest))
+        .unwrap();
+    tx.send(Message::Data(TestEngineData::FrameRequest))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(50));
     drop(tx);
@@ -490,11 +488,8 @@ fn terminal_app_roundtrip_priority_ordering() {
     let keypress_count = Arc::new(AtomicUsize::new(0));
     let frame_count = Arc::new(AtomicUsize::new(0));
 
-    let (tx, mut rx) = ActorScheduler::<
-        TestEngineData,
-        TestEngineControl,
-        TestEngineManagement
-    >::new(10, 64);
+    let (tx, mut rx) =
+        ActorScheduler::<TestEngineData, TestEngineControl, TestEngineManagement>::new(10, 64);
 
     let resize_clone = resize_count.clone();
     let keypress_clone = keypress_count.clone();
@@ -511,9 +506,12 @@ fn terminal_app_roundtrip_priority_ordering() {
     });
 
     // Send in reverse priority order
-    tx.send(Message::Data(TestEngineData::FrameRequest)).unwrap();
-    tx.send(Message::Management(TestEngineManagement::KeyPress('x'))).unwrap();
-    tx.send(Message::Control(TestEngineControl::Resize(800, 600))).unwrap();
+    tx.send(Message::Data(TestEngineData::FrameRequest))
+        .unwrap();
+    tx.send(Message::Management(TestEngineManagement::KeyPress('x')))
+        .unwrap();
+    tx.send(Message::Control(TestEngineControl::Resize(800, 600)))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(100));
     drop(tx);
@@ -612,8 +610,12 @@ fn multi_actor_chain_roundtrip() {
     // Verify complete chain
     assert_eq!(bytes_processed.load(Ordering::SeqCst), 11); // "Hello World"
 
-    let output1 = app_output_rx.recv_timeout(Duration::from_millis(100)).unwrap();
-    let output2 = app_output_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+    let output1 = app_output_rx
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap();
+    let output2 = app_output_rx
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap();
 
     assert_eq!(output1, "Hello");
     assert_eq!(output2, " World");

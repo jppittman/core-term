@@ -25,9 +25,9 @@
 //! This combinator enables the same trick: represent lighting/fields
 //! as SH coefficients, compute irradiance as dot products.
 
-use crate::manifold::Manifold;
-use crate::ext::ManifoldExt;
 use crate::Field;
+use crate::ext::ManifoldExt;
+use crate::manifold::Manifold;
 
 // TODO: Refactor to build polymorphic AST from X, Y, Z using Fix combinator
 // for the Legendre recurrence. For now, Field-only implementation.
@@ -46,7 +46,15 @@ pub const SH_NORM: [[f32; 7]; 4] = [
     // l=2
     [0.315_391_57, 1.092_548_4, 0.546_274_2, 0.0, 0.0, 0.0, 0.0],
     // l=3
-    [0.373_176_33, 0.457_045_8, 1.445_305_8, 0.590_043_6, 0.0, 0.0, 0.0],
+    [
+        0.373_176_33,
+        0.457_045_8,
+        1.445_305_8,
+        0.590_043_6,
+        0.0,
+        0.0,
+        0.0,
+    ],
 ];
 
 // ============================================================================
@@ -100,11 +108,7 @@ impl<const L: usize, const M: i32> Manifold<Field> for SphericalHarmonic<L, M> {
 
 /// Evaluate real spherical harmonic Y_l^m.
 #[inline(always)]
-fn eval_sh<const L: usize, const M: i32>(
-    cos_theta: Field,
-    sin_theta: Field,
-    phi: Field,
-) -> Field {
+fn eval_sh<const L: usize, const M: i32>(cos_theta: Field, sin_theta: Field, phi: Field) -> Field {
     let plm = legendre_p::<L, M>(cos_theta, sin_theta);
     let norm = Field::from(SH_NORM[L][M.unsigned_abs() as usize]);
 
@@ -166,7 +170,9 @@ fn legendre_p<const L: usize, const M: i32>(cos_theta: Field, sin_theta: Field) 
         let a = (2 * l - 1) as f32;
         let b = (l + m - 1) as f32;
         let c = (l - m) as f32;
-        let p_curr = eval((Field::from(a) * cos_theta * p_prev1 - Field::from(b) * p_prev2) / Field::from(c));
+        let p_curr = eval(
+            (Field::from(a) * cos_theta * p_prev1 - Field::from(b) * p_prev2) / Field::from(c),
+        );
         p_prev2 = p_prev1;
         p_prev1 = p_curr;
     }
@@ -277,7 +283,8 @@ impl<M: Manifold<Field, Output = (Field, Field, Field)>> Manifold<Field> for ShR
         // l=2
         let y2m2 = eval(Field::from(SH_NORM[2][2]) * nx * ny);
         let y2m1 = eval(Field::from(SH_NORM[2][1]) * ny * nz);
-        let y20 = eval(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)));
+        let y20 =
+            eval(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)));
         let y21 = eval(Field::from(SH_NORM[2][1]) * nx * nz);
         let y22 = eval(Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny));
 
@@ -291,7 +298,7 @@ impl<M: Manifold<Field, Output = (Field, Field, Field)>> Manifold<Field> for ShR
                 + Field::from(self.coeffs.coeffs[5]) * y2m1
                 + Field::from(self.coeffs.coeffs[6]) * y20
                 + Field::from(self.coeffs.coeffs[7]) * y21
-                + Field::from(self.coeffs.coeffs[8]) * y22
+                + Field::from(self.coeffs.coeffs[8]) * y22,
         )
     }
 }
@@ -599,7 +606,7 @@ pub fn cosine_lobe_sh2(n: (Field, Field, Field)) -> Sh2Field {
             eval(l1_scale * n.1), // Y1-1 (y direction)
             eval(l1_scale * n.2), // Y10  (z direction)
             eval(l1_scale * n.0), // Y11  (x direction)
-            Field::from(0.0), // L2 terms small for Lambertian
+            Field::from(0.0),     // L2 terms small for Lambertian
             Field::from(0.0),
             Field::from(0.0),
             Field::from(0.0),

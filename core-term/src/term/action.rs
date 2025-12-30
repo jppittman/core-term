@@ -152,10 +152,7 @@ pub enum UserInputAction {
     ///
     /// Coordinates are in logical pixels (after DPI scaling). The emulator
     /// converts to cell coordinates (grid position) using its Layout.
-    StartSelection {
-        x_px: u16,
-        y_px: u16,
-    },
+    StartSelection { x_px: u16, y_px: u16 },
 
     /// Extend an ongoing selection.
     ///
@@ -173,10 +170,7 @@ pub enum UserInputAction {
     /// # Fields
     ///
     /// - `x_px`, `y_px`: Mouse position in logical pixels (e.g., mouse drag)
-    ExtendSelection {
-        x_px: u16,
-        y_px: u16,
-    },
+    ExtendSelection { x_px: u16, y_px: u16 },
 
     /// Finalize and potentially clear a selection.
     ///

@@ -211,9 +211,9 @@ impl Manifold<Jet3> for PlaneGeometry {
 /// from Root, `P` automatically contains the Surface Tangent Frame via the Chain Rule.
 #[derive(Clone, Copy)]
 pub struct Surface<G, M, B> {
-    pub geometry: G,     // Returns t
-    pub material: M,     // Evaluates at Hit Point P
-    pub background: B,   // Evaluates at Ray Direction D (if miss)
+    pub geometry: G,   // Returns t
+    pub material: M,   // Evaluates at Hit Point P
+    pub background: B, // Evaluates at Ray Direction D (if miss)
 }
 
 impl<G, M, B> Manifold<Jet3> for Surface<G, M, B>
@@ -236,8 +236,7 @@ where
 
         // Collapse AST nodes to Field for mask operations
         let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
-        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz)
-            .constant();
+        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz).constant();
         let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
         let mask = valid_t & valid_deriv;
 
@@ -246,7 +245,8 @@ where
             cond: FieldMask(mask),
             if_true: t,
             if_false: Jet3::constant(fzero),
-        }.eval_raw(rx, ry, rz, w);
+        }
+        .eval_raw(rx, ry, rz, w);
 
         let hx = rx * safe_t;
         let hy = ry * safe_t;
@@ -254,12 +254,28 @@ where
 
         // 4. Blend via manifold composition using At + Select
         // At takes Jet3 values as constant manifolds (Jet3 implements Manifold)
-        let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
-        let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
+        let mat = At {
+            inner: &self.material,
+            x: hx,
+            y: hy,
+            z: hz,
+            w,
+        };
+        let bg = At {
+            inner: &self.background,
+            x: rx,
+            y: ry,
+            z: rz,
+            w,
+        };
 
         // Compose fully: mask selects between material and background manifolds
-        Select { cond: FieldMask(mask), if_true: mat, if_false: bg }
-            .eval_raw(rx, ry, rz, w)
+        Select {
+            cond: FieldMask(mask),
+            if_true: mat,
+            if_false: bg,
+        }
+        .eval_raw(rx, ry, rz, w)
     }
 }
 
@@ -289,8 +305,7 @@ where
 
         // Collapse AST nodes to Field for mask operations
         let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
-        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz)
-            .constant();
+        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz).constant();
         let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
         let mask = valid_t & valid_deriv;
 
@@ -299,18 +314,35 @@ where
             cond: FieldMask(mask),
             if_true: t,
             if_false: Jet3::constant(fzero),
-        }.eval_raw(rx, ry, rz, w);
+        }
+        .eval_raw(rx, ry, rz, w);
 
         let hx = rx * safe_t;
         let hy = ry * safe_t;
         let hz = rz * safe_t;
 
         // 4. Blend via manifold composition using At + Select
-        let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
-        let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
+        let mat = At {
+            inner: &self.material,
+            x: hx,
+            y: hy,
+            z: hz,
+            w,
+        };
+        let bg = At {
+            inner: &self.background,
+            x: rx,
+            y: ry,
+            z: rz,
+            w,
+        };
 
-        Select { cond: FieldMask(mask), if_true: mat, if_false: bg }
-            .eval_raw(rx, ry, rz, w)
+        Select {
+            cond: FieldMask(mask),
+            if_true: mat,
+            if_false: bg,
+        }
+        .eval_raw(rx, ry, rz, w)
     }
 }
 
@@ -361,9 +393,12 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
 
         // Collapse AST nodes to Field for scalar operations
         let fzero = Field::from(0.0);
-        let n_len_sq_scalar = (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z)
-            .constant();
-        let inv_n_len = n_len_sq_scalar.max(Field::from(1e-10)).sqrt().rsqrt()
+        let n_len_sq_scalar =
+            (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z).constant();
+        let inv_n_len = n_len_sq_scalar
+            .max(Field::from(1e-10))
+            .sqrt()
+            .rsqrt()
             .constant();
 
         // Normal as scalar (for Householder value computation)
@@ -436,9 +471,12 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
 
         // Collapse AST nodes to Field for scalar operations
         let fzero = Field::from(0.0);
-        let n_len_sq_scalar = (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z)
-            .constant();
-        let inv_n_len = n_len_sq_scalar.max(Field::from(1e-10)).sqrt().rsqrt()
+        let n_len_sq_scalar =
+            (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z).constant();
+        let inv_n_len = n_len_sq_scalar
+            .max(Field::from(1e-10))
+            .sqrt()
+            .rsqrt()
             .constant();
 
         let nx = (cross_x * inv_n_len).constant();
@@ -522,7 +560,9 @@ impl Manifold<Jet3> for Checker {
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
 
         // Coverage: how much of the pixel is in this cell vs neighbor
-        let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
+        let coverage = (dist_to_edge / pixel_size)
+            .min(Field::from(1.0))
+            .max(Field::from(0.0));
 
         // Blend with neighbor color at edges
         let neighbor_color = is_even.select(color_b, color_a);
@@ -607,7 +647,9 @@ impl Manifold<Jet3> for ColorChecker {
         let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
 
-        let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
+        let coverage = (dist_to_edge / pixel_size)
+            .min(Field::from(1.0))
+            .max(Field::from(0.0));
         let one_minus_cov = Field::from(1.0) - coverage.clone();
 
         // Use select for branchless color choice

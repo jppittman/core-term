@@ -3,11 +3,13 @@
 //! Tests font parsing, glyph rendering, rasterization, and color operations.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use pixelflow_core::jet::Jet2;
 use pixelflow_core::combinators::At;
+use pixelflow_core::jet::Jet2;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
 use pixelflow_graphics::{
-    render::rasterizer::{execute, parallel::render_parallel_pooled, render_work_stealing, TensorShape, ThreadPool},
+    render::rasterizer::{
+        execute, parallel::render_parallel_pooled, render_work_stealing, TensorShape, ThreadPool,
+    },
     CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
 };
 
@@ -162,12 +164,7 @@ fn bench_glyph_evaluation(c: &mut Criterion) {
                 for col_batch in 0..(8 / PARALLELISM).max(1) {
                     let fx = (col_batch * PARALLELISM) as f32;
                     let fy = row as f32;
-                    black_box(glyph_a.eval_raw(
-                        Field::sequential(fx),
-                        Field::from(fy),
-                        z,
-                        w,
-                    ));
+                    black_box(glyph_a.eval_raw(Field::sequential(fx), Field::from(fy), z, w));
                 }
             }
         })
@@ -218,12 +215,7 @@ fn bench_rasterize_gradient(c: &mut Criterion) {
             size,
             |bencher, &size| {
                 use pixelflow_core::X;
-                let gradient = ColorManifold::new(
-                    X / (size as f32),
-                    0.5f32,
-                    0.5f32,
-                    1.0f32,
-                );
+                let gradient = ColorManifold::new(X / (size as f32), 0.5f32, 0.5f32, 1.0f32);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -817,7 +809,14 @@ fn bench_scene3d(c: &mut Criterion) {
             let scale = 2.0 / self.height;
             let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
             let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-            At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
+            At {
+                inner: &self.inner,
+                x: sx,
+                y: sy,
+                z,
+                w,
+            }
+            .eval()
         }
     }
 
@@ -926,7 +925,14 @@ fn bench_scene3d(c: &mut Criterion) {
             let scale = 2.0 / self.height;
             let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
             let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-            At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
+            At {
+                inner: &self.inner,
+                x: sx,
+                y: sy,
+                z,
+                w,
+            }
+            .eval()
         }
     }
 
@@ -943,7 +949,10 @@ fn bench_scene3d(c: &mut Criterion) {
         };
 
         let scene = ColorSurface {
-            geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+            geometry: SphereAt {
+                center: (0.0, 0.0, 4.0),
+                radius: 1.0,
+            },
             material: ColorReflect { inner: world },
             background: world,
         };
@@ -974,7 +983,10 @@ fn bench_scene3d(c: &mut Criterion) {
         };
 
         let scene = ColorSurface {
-            geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+            geometry: SphereAt {
+                center: (0.0, 0.0, 4.0),
+                radius: 1.0,
+            },
             material: ColorReflect { inner: world },
             background: world,
         };
@@ -1016,7 +1028,10 @@ fn bench_scene3d(c: &mut Criterion) {
             };
 
             let scene = ColorSurface {
-                geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+                geometry: SphereAt {
+                    center: (0.0, 0.0, 4.0),
+                    radius: 1.0,
+                },
                 material: ColorReflect { inner: world },
                 background: world,
             };
@@ -1049,8 +1064,8 @@ criterion_group!(scene3d_benches, bench_scene3d,);
 fn bench_scheduler_comparison(c: &mut Criterion) {
     use pixelflow_graphics::render::frame::Frame;
     use pixelflow_graphics::scene3d::{
-        ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
-        PlaneGeometry, SphereAt,
+        ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
+        SphereAt,
     };
 
     // Helper: remap for Discrete output
@@ -1067,7 +1082,14 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
             let scale = 2.0 / self.height;
             let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
             let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-            At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
+            At {
+                inner: &self.inner,
+                x: sx,
+                y: sy,
+                z,
+                w,
+            }
+            .eval()
         }
     }
 
@@ -1090,7 +1112,10 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
     };
 
     let scene = ColorSurface {
-        geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+        geometry: SphereAt {
+            center: (0.0, 0.0, 4.0),
+            radius: 1.0,
+        },
         material: ColorReflect { inner: world },
         background: world,
     };
@@ -1105,16 +1130,13 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
 
     // Benchmark 1: ThreadPool with spinning MPMC
     let pool = ThreadPool::new(num_threads);
-    group.bench_function(
-        &format!("pool_spin_mpmc_{}t", num_threads),
-        |bencher| {
-            let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
-            bencher.iter(|| {
-                render_parallel_pooled(&pool, &renderable, frame.as_slice_mut(), shape);
-                black_box(&frame);
-            })
-        },
-    );
+    group.bench_function(&format!("pool_spin_mpmc_{}t", num_threads), |bencher| {
+        let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+        bencher.iter(|| {
+            render_parallel_pooled(&pool, &renderable, frame.as_slice_mut(), shape);
+            black_box(&frame);
+        })
+    });
 
     // Benchmark 2: Work-stealing with atomic counter (scoped threads)
     group.bench_function(

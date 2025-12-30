@@ -24,11 +24,14 @@
 //! When dividing by `Sqrt<R>`, the result is `MulRsqrt<L, R>` instead of `Div<L, Sqrt<R>>`.
 //! This uses fast rsqrt (~3 cycles) instead of sqrt (~12) + div (~12).
 
-use super::{Abs, Add, AddMasked, Cos, Div, Floor, Max, Min, Mul, MulAdd, MulRecip, MulRsqrt, Rsqrt, Sin, Sqrt, Sub};
+use super::{
+    Abs, Add, AddMasked, Cos, Div, Floor, Max, Min, Mul, MulAdd, MulRecip, MulRsqrt, Rsqrt, Sin,
+    Sqrt, Sub,
+};
+use crate::Field;
 use crate::Manifold;
 use crate::combinators::Select;
 use crate::variables::{W, X, Y, Z};
-use crate::Field;
 
 // ============================================================================
 // The Macro
@@ -114,7 +117,9 @@ macro_rules! impl_base_div_concrete {
         impl core::ops::Div<$div_ty> for $self_ty {
             type Output = Div<$self_ty, $div_ty>;
             #[inline(always)]
-            fn div(self, rhs: $div_ty) -> Self::Output { Div(self, rhs) }
+            fn div(self, rhs: $div_ty) -> Self::Output {
+                Div(self, rhs)
+            }
         }
     };
 }

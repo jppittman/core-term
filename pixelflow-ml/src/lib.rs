@@ -245,7 +245,8 @@ impl ShFeatureMap<9> {
             // l=2
             (Field::from(SH_NORM[2][2]) * nx * ny).constant(),
             (Field::from(SH_NORM[2][1]) * ny * nz).constant(),
-            (Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0))).constant(),
+            (Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)))
+                .constant(),
             (Field::from(SH_NORM[2][1]) * nx * nz).constant(),
             (Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny)).constant(),
         ]
@@ -498,8 +499,14 @@ mod tests {
         attn.query(&query_sh, &mut output);
 
         // Should have contributions from both sources
-        assert!(output[0] > 0.0, "Should have contribution from first source");
-        assert!(output[1] > 0.0, "Should have contribution from second source");
+        assert!(
+            output[0] > 0.0,
+            "Should have contribution from first source"
+        );
+        assert!(
+            output[1] > 0.0,
+            "Should have contribution from second source"
+        );
     }
 
     #[test]
@@ -530,11 +537,8 @@ mod tests {
     #[test]
     fn test_sh_feature_map_projects_direction() {
         // Project the +Z direction
-        let result = ShFeatureMap::<9>::project(
-            Field::from(0.0),
-            Field::from(0.0),
-            Field::from(1.0),
-        );
+        let result =
+            ShFeatureMap::<9>::project(Field::from(0.0), Field::from(0.0), Field::from(1.0));
 
         // Should get 9 coefficients
         assert_eq!(result.len(), 9);
@@ -543,11 +547,8 @@ mod tests {
     #[test]
     fn test_sh_feature_map_normalized() {
         // Project an unnormalized direction
-        let result = ShFeatureMap::<9>::project(
-            Field::from(2.0),
-            Field::from(0.0),
-            Field::from(0.0),
-        );
+        let result =
+            ShFeatureMap::<9>::project(Field::from(2.0), Field::from(0.0), Field::from(0.0));
 
         // First coefficient (DC term) should be constant regardless of normalization
         // Y_00 = 0.282... (constant)

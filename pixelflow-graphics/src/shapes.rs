@@ -61,7 +61,11 @@ pub fn circle<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
 /// Returns concrete type for use in type aliases.
 pub fn square<F, B>(fg: F, bg: B) -> Select<UnitSquareCond, F, B> {
     let cond = Ge(X, 0.0f32) & Le(X, 1.0f32) & Ge(Y, 0.0f32) & Le(Y, 1.0f32);
-    Select { cond, if_true: fg, if_false: bg }
+    Select {
+        cond,
+        if_true: fg,
+        if_false: bg,
+    }
 }
 
 /// Half-plane: x ≥ 0

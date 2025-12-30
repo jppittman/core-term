@@ -32,7 +32,11 @@ fn demo_single_glyph_rasterization() {
     let height = 45;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
 
-    execute(&color_manifold, &mut pixels, TensorShape::new(width, height));
+    execute(
+        &color_manifold,
+        &mut pixels,
+        TensorShape::new(width, height),
+    );
 
     println!("ASCII render of 'A' ({}x{}):", width, height);
     println!();
@@ -71,7 +75,11 @@ fn demo_text_rasterization_with_frame() {
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
 
     // Rasterize!
-    execute(&color_manifold, &mut pixels, TensorShape::new(width, height));
+    execute(
+        &color_manifold,
+        &mut pixels,
+        TensorShape::new(width, height),
+    );
 
     // Print as ASCII art
     println!("Rasterized 'HELLO' ({}x{}):", width, height);
@@ -111,7 +119,11 @@ fn demo_alphabet_rasterization() {
     let height = 24;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
 
-    execute(&color_manifold, &mut pixels, TensorShape::new(width, height));
+    execute(
+        &color_manifold,
+        &mut pixels,
+        TensorShape::new(width, height),
+    );
 
     let chars = [' ', '.', ':', '+', '#', '@'];
 
@@ -133,7 +145,11 @@ fn demo_alphabet_rasterization() {
     let color_manifold2 = Lift(text2);
 
     let mut pixels2: Vec<Rgba8> = vec![Rgba8::default(); width * height];
-    execute(&color_manifold2, &mut pixels2, TensorShape::new(width, height));
+    execute(
+        &color_manifold2,
+        &mut pixels2,
+        TensorShape::new(width, height),
+    );
 
     println!("NOPQRSTUVWXYZ:");
     for y in 0..height {

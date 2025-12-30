@@ -35,7 +35,7 @@ pub struct SelectionRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionMode {
     #[default]
-    Cell,  // Standard character-by-character selection
+    Cell, // Standard character-by-character selection
     Block, // Rectangular block selection
 }
 

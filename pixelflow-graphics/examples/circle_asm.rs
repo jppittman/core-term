@@ -2,7 +2,7 @@
 //!
 //! Run: cargo show-asm -p pixelflow-graphics --example circle_asm circle_kernel --release
 
-use pixelflow_core::{Field, ManifoldExt, Manifold, X, Y};
+use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
 use std::hint::black_box;
 
 /// Circle kernel: (x-cx)^2 + (y-cy)^2 < r^2 ? 1.0 : 0.0
@@ -17,7 +17,9 @@ pub fn circle_kernel(x: Field, y: Field) -> Field {
     let dy = Y - cy;
     let dist_sq = dx * dx + dy * dy;
     let inside = dist_sq.lt(r * r);
-    inside.select(1.0f32, 0.0f32).eval_raw(x, y, Field::from(0.0), Field::from(0.0))
+    inside
+        .select(1.0f32, 0.0f32)
+        .eval_raw(x, y, Field::from(0.0), Field::from(0.0))
 }
 
 fn main() {

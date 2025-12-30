@@ -7,7 +7,7 @@
 
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Abs, At, Field, Ge, Manifold, ManifoldExt, Select, X, Y, Z, W};
+use pixelflow_core::{Abs, At, Field, Ge, Manifold, ManifoldExt, Select, W, X, Y, Z};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -45,7 +45,14 @@ impl<M: Manifold<Field>> Manifold<Field> for Affine<M> {
         let x2 = (X - tx) * a + (Y - ty) * b;
         let y2 = (X - tx) * c + (Y - ty) * d;
         // Compose with At and evaluate
-        At { inner: &self.inner, x: x2, y: y2, z: Z, w: W }.eval_raw(x, y, z, w)
+        At {
+            inner: &self.inner,
+            x: x2,
+            y: y2,
+            z: Z,
+            w: W,
+        }
+        .eval_raw(x, y, z, w)
     }
 }
 
@@ -59,7 +66,14 @@ impl<M: Manifold<Jet2>> Manifold<Jet2> for Affine<M> {
         let x2 = (X - tx) * a + (Y - ty) * b;
         let y2 = (X - tx) * c + (Y - ty) * d;
         // Compose with At and evaluate
-        At { inner: &self.inner, x: x2, y: y2, z: Z, w: W }.eval_raw(x, y, z, w)
+        At {
+            inner: &self.inner,
+            x: x2,
+            y: y2,
+            z: Z,
+            w: W,
+        }
+        .eval_raw(x, y, z, w)
     }
 }
 
@@ -202,8 +216,8 @@ pub struct OptQuad {
     cy: f32,
     two_ay: f32,
     // Precomputed reciprocals (0.0 if degenerate)
-    inv_by: f32,    // 1/by for linear Y case
-    inv_2ay: f32,   // 1/(2*ay) for quadratic case
+    inv_by: f32,  // 1/by for linear Y case
+    inv_2ay: f32, // 1/(2*ay) for quadratic case
     // Precomputed quadratic formula values
     neg_by: f32,
     by_sq: f32,
@@ -340,7 +354,10 @@ impl Manifold<Field> for Quad {
             let cov2 = (dist2 * aa2 + 0.5).max(0.0f32).min(1.0f32);
             let contrib2 = in_t2.select(cov2 * dir2, 0.0f32);
 
-            valid.select(contrib1 + contrib2, 0.0f32).at(x, y, z, w).eval()
+            valid
+                .select(contrib1 + contrib2, 0.0f32)
+                .at(x, y, z, w)
+                .eval()
         }
     }
 }
@@ -360,13 +377,17 @@ impl Manifold<Jet2> for Line {
         if dy.abs() < 1e-6 {
             return zero;
         }
-        let (y0f, y1f) = (Jet2::constant(Field::from(y0)), Jet2::constant(Field::from(y1)));
+        let (y0f, y1f) = (
+            Jet2::constant(Field::from(y0)),
+            Jet2::constant(Field::from(y1)),
+        );
         let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
         if !in_y.val.any() {
             return zero;
         }
 
-        let x_int = Jet2::constant(Field::from(x0)) + (y - y0f) * Jet2::constant(Field::from(dx / dy));
+        let x_int =
+            Jet2::constant(Field::from(x0)) + (y - y0f) * Jet2::constant(Field::from(dx / dy));
         let dir = if dy > 0.0 {
             Jet2::constant(Field::from(1.0))
         } else {
@@ -402,13 +423,18 @@ impl Manifold<Jet2> for Quad {
         let fzero = Field::from(0.0);
         let eval_t = |t: Jet2| -> Jet2 {
             let in_t = t.ge(zero) & t.lt(one);
-            if !in_t.val.any() { return zero; }
-            let x_int = (Jet2::constant(Field::from(ax)) * t + Jet2::constant(Field::from(bx))) * t + Jet2::constant(Field::from(cx));
+            if !in_t.val.any() {
+                return zero;
+            }
+            let x_int = (Jet2::constant(Field::from(ax)) * t + Jet2::constant(Field::from(bx))) * t
+                + Jet2::constant(Field::from(cx));
             let dy_dt = Jet2::constant(Field::from(2.0 * ay)) * t + Jet2::constant(Field::from(by));
             let dir_mask = dy_dt.gt(zero);
             let dir = (dir_mask & one) | (!dir_mask & Jet2::constant(Field::from(-1.0)));
             let dist = x_int - x;
-            let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy).sqrt().max(Field::from(1e-6));
+            let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
+                .sqrt()
+                .max(Field::from(1e-6));
             let coverage = (dist.val / grad_mag + Field::from(0.5))
                 .max(fzero)
                 .min(Field::from(1.0))
@@ -417,15 +443,20 @@ impl Manifold<Jet2> for Quad {
         };
 
         if ay.abs() < 1e-6 {
-            if by.abs() < 1e-6 { return zero; }
+            if by.abs() < 1e-6 {
+                return zero;
+            }
             eval_t((y - Jet2::constant(Field::from(cy))) / Jet2::constant(Field::from(by)))
         } else {
             let c_val = Jet2::constant(Field::from(cy)) - y;
-            let d = Jet2::constant(Field::from(by * by)) - Jet2::constant(Field::from(4.0 * ay)) * c_val;
+            let d = Jet2::constant(Field::from(by * by))
+                - Jet2::constant(Field::from(4.0 * ay)) * c_val;
             let valid = d.ge(zero);
             let sd = d.abs().sqrt();
-            let t1 = (Jet2::constant(Field::from(-by)) - sd) / Jet2::constant(Field::from(2.0 * ay));
-            let t2 = (Jet2::constant(Field::from(-by)) + sd) / Jet2::constant(Field::from(2.0 * ay));
+            let t1 =
+                (Jet2::constant(Field::from(-by)) - sd) / Jet2::constant(Field::from(2.0 * ay));
+            let t2 =
+                (Jet2::constant(Field::from(-by)) + sd) / Jet2::constant(Field::from(2.0 * ay));
             (valid & (eval_t(t1) + eval_t(t2))) | (!valid & zero)
         }
     }
@@ -458,7 +489,9 @@ impl Manifold<Field> for Geometry {
             acc = (acc + val).eval_raw(fzero, fzero, fzero, fzero);
         }
         // Apply non-zero winding rule: |winding| becomes coverage
-        acc.abs().min(Field::from(1.0)).eval_raw(fzero, fzero, fzero, fzero)
+        acc.abs()
+            .min(Field::from(1.0))
+            .eval_raw(fzero, fzero, fzero, fzero)
     }
 }
 
@@ -622,9 +655,14 @@ impl Cmap<'_> {
                     Some(if range == 0 {
                         (c as i16).wrapping_add(delta) as u16
                     } else {
-                        let off = 16 + n * 6 + i * 2 + range as usize + (c as u16 - start) as usize * 2;
+                        let off =
+                            16 + n * 6 + i * 2 + range as usize + (c as u16 - start) as usize * 2;
                         let g = R(*d, off).u16()?;
-                        if g == 0 { 0 } else { (g as i16).wrapping_add(delta) as u16 }
+                        if g == 0 {
+                            0
+                        } else {
+                            (g as i16).wrapping_add(delta) as u16
+                        }
                     })
                 })
             }
@@ -650,18 +688,26 @@ enum Kern<'a> {
 
 impl<'a> Kern<'a> {
     fn parse(data: &'a [u8]) -> Self {
-        let Some(n_tables) = R(data, 2).u16() else { return Self::None };
+        let Some(n_tables) = R(data, 2).u16() else {
+            return Self::None;
+        };
         let mut off = 4;
 
         for _ in 0..n_tables {
-            let Some(length) = R(data, off + 2).u16() else { return Self::None };
-            let Some(coverage) = R(data, off + 4).u16() else { return Self::None };
+            let Some(length) = R(data, off + 2).u16() else {
+                return Self::None;
+            };
+            let Some(coverage) = R(data, off + 4).u16() else {
+                return Self::None;
+            };
 
             let format = coverage >> 8;
             let horizontal = coverage & 1;
 
             if format == 0 && horizontal == 1 {
-                let Some(n_pairs) = R(data, off + 6).u16() else { return Self::None };
+                let Some(n_pairs) = R(data, off + 6).u16() else {
+                    return Self::None;
+                };
                 return Self::Fmt0 {
                     data: &data[off + 14..], // Skip header to pairs
                     n_pairs: n_pairs as usize,
@@ -744,7 +790,10 @@ impl<'a> Font<'a> {
                 Loca::Short(&data[loca..])
             },
             cmap: Self::find_cmap(&data[*t.get(b"cmap")?..])?,
-            kern: t.get(b"kern").map(|&off| Kern::parse(&data[off..])).unwrap_or(Kern::None),
+            kern: t
+                .get(b"kern")
+                .map(|&off| Kern::parse(&data[off..]))
+                .unwrap_or(Kern::None),
             hmtx: *t.get(b"hmtx")?,
             num_hm: R(data, hhea + 34).u16()? as usize,
             units_per_em: R(data, head + 18).u16()?,
@@ -802,9 +851,11 @@ impl<'a> Font<'a> {
         // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
         // so the top of the text is at Y=0 in screen coordinates.
         let y_offset = self.ascent as f32 * scale;
-        Some(Glyph::Compound(Sum(
-            [affine(g, [scale, 0.0, 0.0, -scale, 0.0, y_offset])].into(),
-        )))
+        Some(Glyph::Compound(Sum([affine(
+            g,
+            [scale, 0.0, 0.0, -scale, 0.0, y_offset],
+        )]
+        .into())))
     }
 
     pub fn advance(&self, ch: char) -> Option<f32> {
@@ -846,10 +897,7 @@ impl<'a> Font<'a> {
     }
 
     fn compile(&self, id: u16) -> Option<Glyph> {
-        let (a, b) = (
-            self.loca.get(id as usize)?,
-            self.loca.get(id as usize + 1)?,
-        );
+        let (a, b) = (self.loca.get(id as usize)?, self.loca.get(id as usize + 1)?);
         if a == b {
             return Some(Glyph::Empty);
         }
@@ -930,11 +978,15 @@ impl<'a> Font<'a> {
         let (xs, ys) = (dec(r, 2, 16)?, dec(r, 4, 32)?);
 
         // Normalize points immediately
-        let pts: Vec<_> = (0..np).map(|i| (
-            (xs[i] as f32) * scale + tx,
-            (ys[i] as f32) * scale + ty,
-            fl[i] & 1 != 0
-        )).collect();
+        let pts: Vec<_> = (0..np)
+            .map(|i| {
+                (
+                    (xs[i] as f32) * scale + tx,
+                    (ys[i] as f32) * scale + ty,
+                    fl[i] & 1 != 0,
+                )
+            })
+            .collect();
 
         // Partition segments into lines and quads
         let mut lines = Vec::new();

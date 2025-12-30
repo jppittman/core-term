@@ -1,7 +1,7 @@
 use crate::api::public::WindowDescriptor;
+use crate::error::RuntimeError;
 use crate::platform::macos::cocoa::{NSPoint, NSRect, NSSize, NSView, NSWindow};
 use crate::platform::macos::sys::{self, Id, BOOL, YES};
-use crate::error::RuntimeError;
 use std::ffi::c_void;
 
 pub struct MacWindow {

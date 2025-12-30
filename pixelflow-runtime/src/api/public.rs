@@ -120,11 +120,7 @@ pub enum EngineEventManagement {
     ///
     /// - `x`, `y`: Click position in logical pixels
     /// - `button`: Which button was clicked (left=0, right=1, middle=2, etc.)
-    MouseClick {
-        x: u32,
-        y: u32,
-        button: MouseButton,
-    },
+    MouseClick { x: u32, y: u32, button: MouseButton },
 
     /// Mouse button released.
     ///
@@ -138,11 +134,7 @@ pub enum EngineEventManagement {
     ///
     /// - `x`, `y`: Release position in logical pixels
     /// - `button`: Which button was released
-    MouseRelease {
-        x: u32,
-        y: u32,
-        button: MouseButton,
-    },
+    MouseRelease { x: u32, y: u32, button: MouseButton },
 
     /// Mouse moved.
     ///
@@ -157,11 +149,7 @@ pub enum EngineEventManagement {
     ///
     /// - `x`, `y`: New position in logical pixels
     /// - `mods`: Current modifier key state
-    MouseMove {
-        x: u32,
-        y: u32,
-        mods: Modifiers,
-    },
+    MouseMove { x: u32, y: u32, mods: Modifiers },
 
     /// Mouse wheel or trackpad scrolled.
     ///

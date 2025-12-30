@@ -15,7 +15,9 @@ fn parse_font_and_get_glyph() {
 
     // Test getting glyphs
     let glyph_a = font.glyph_scaled('A', 64.0).expect("Glyph 'A' not found");
-    let advance = font.advance_scaled('A', 64.0).expect("Advance for 'A' not found");
+    let advance = font
+        .advance_scaled('A', 64.0)
+        .expect("Advance for 'A' not found");
     assert!(advance > 0.0, "Glyph should have positive advance");
 
     // Test that we can evaluate the glyph

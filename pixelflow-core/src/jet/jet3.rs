@@ -95,18 +95,16 @@ impl Jet3 {
     /// Returns manifold expressions for the unit normal components.
     /// Use `Jet3::new(nx, ny, nz)` to collapse if needed.
     #[inline(always)]
-    pub fn normal(&self) -> (
+    pub fn normal(
+        &self,
+    ) -> (
         impl Manifold<Field, Output = Field>,
         impl Manifold<Field, Output = Field>,
         impl Manifold<Field, Output = Field>,
     ) {
         let len_sq = self.dx * self.dx + self.dy * self.dy + self.dz * self.dz;
         let inv_len = len_sq.rsqrt();
-        (
-            self.dx * inv_len,
-            self.dy * inv_len,
-            self.dz * inv_len,
-        )
+        (self.dx * inv_len, self.dy * inv_len, self.dz * inv_len)
     }
 
     /// Get the raw gradient without normalization.
@@ -168,7 +166,12 @@ impl Jet3 {
     pub fn abs(self) -> Self {
         // |f|' = f' * sign(f)
         let sign = self.val / self.val.abs();
-        Self::new(self.val.abs(), self.dx * sign, self.dy * sign, self.dz * sign)
+        Self::new(
+            self.val.abs(),
+            self.dx * sign,
+            self.dy * sign,
+            self.dz * sign,
+        )
     }
 
     /// Element-wise minimum with derivative.
@@ -210,8 +213,12 @@ impl Jet3 {
     /// Conditional select with early-exit optimization.
     #[inline(always)]
     pub fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        if mask.all() { return if_true; }
-        if !mask.any() { return if_false; }
+        if mask.all() {
+            return if_true;
+        }
+        if !mask.any() {
+            return if_false;
+        }
         Self::select_raw(mask, if_true, if_false)
     }
 }
@@ -238,7 +245,12 @@ impl Jet3Sqrt {
         let rsqrt_val = self.0.val.rsqrt();
         let sqrt_val = self.0.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Jet3::new(sqrt_val, self.0.dx * half_rsqrt, self.0.dy * half_rsqrt, self.0.dz * half_rsqrt)
+        Jet3::new(
+            sqrt_val,
+            self.0.dx * half_rsqrt,
+            self.0.dy * half_rsqrt,
+            self.0.dz * half_rsqrt,
+        )
     }
 }
 
@@ -467,13 +479,23 @@ impl Numeric for Jet3 {
         let rsqrt_val = self.val.rsqrt();
         let sqrt_val = self.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt, self.dz * half_rsqrt)
+        Self::new(
+            sqrt_val,
+            self.dx * half_rsqrt,
+            self.dy * half_rsqrt,
+            self.dz * half_rsqrt,
+        )
     }
 
     #[inline(always)]
     fn abs(self) -> Self {
         let sign = self.val / self.val.abs();
-        Self::new(self.val.abs(), self.dx * sign, self.dy * sign, self.dz * sign)
+        Self::new(
+            self.val.abs(),
+            self.dx * sign,
+            self.dy * sign,
+            self.dz * sign,
+        )
     }
 
     #[inline(always)]
@@ -520,8 +542,12 @@ impl Numeric for Jet3 {
 
     #[inline(always)]
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        if mask.all() { return if_true; }
-        if !mask.any() { return if_false; }
+        if mask.all() {
+            return if_true;
+        }
+        if !mask.any() {
+            return if_false;
+        }
         Self::select_raw(mask, if_true, if_false)
     }
 
@@ -559,14 +585,24 @@ impl Numeric for Jet3 {
     fn sin(self) -> Self {
         let sin_val = self.val.sin();
         let cos_deriv = self.val.cos();
-        Self::new(sin_val, self.dx * cos_deriv, self.dy * cos_deriv, self.dz * cos_deriv)
+        Self::new(
+            sin_val,
+            self.dx * cos_deriv,
+            self.dy * cos_deriv,
+            self.dz * cos_deriv,
+        )
     }
 
     #[inline(always)]
     fn cos(self) -> Self {
         let cos_val = self.val.cos();
         let neg_sin = -self.val.sin();
-        Self::new(cos_val, self.dx * neg_sin, self.dy * neg_sin, self.dz * neg_sin)
+        Self::new(
+            cos_val,
+            self.dx * neg_sin,
+            self.dy * neg_sin,
+            self.dz * neg_sin,
+        )
     }
 
     #[inline(always)]
@@ -604,7 +640,12 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn exp(self) -> Self {
         let exp_val = self.val.exp();
-        Self::new(exp_val, self.dx * exp_val, self.dy * exp_val, self.dz * exp_val)
+        Self::new(
+            exp_val,
+            self.dx * exp_val,
+            self.dy * exp_val,
+            self.dz * exp_val,
+        )
     }
 
     #[inline(always)]
@@ -627,7 +668,12 @@ impl Numeric for Jet3 {
     fn recip(self) -> Self {
         let inv = self.val.recip();
         let neg_inv_sq = Field::from(0.0) - inv * inv;
-        Self::new(inv, self.dx * neg_inv_sq, self.dy * neg_inv_sq, self.dz * neg_inv_sq)
+        Self::new(
+            inv,
+            self.dx * neg_inv_sq,
+            self.dy * neg_inv_sq,
+            self.dz * neg_inv_sq,
+        )
     }
 
     #[inline(always)]

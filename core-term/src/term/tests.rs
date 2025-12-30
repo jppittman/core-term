@@ -6,7 +6,7 @@ use crate::glyph::{Attributes, ContentCell, Glyph};
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::term::{
-    modes::DecModeConstant,   // For DECTCEM test
+    modes::DecModeConstant, // For DECTCEM test
     snapshot::SelectionRange,
     AnsiCommand,
     ControlEvent,
@@ -1145,12 +1145,10 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     );
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-
         CsiCommand::ResetModePrivate(DecModeConstant::Origin as u16),
     )));
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-
         CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
     )));
 
@@ -1168,7 +1166,6 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     );
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-
         CsiCommand::CursorPosition(1, 1),
     )));
     for _ in 0..5 {
@@ -1176,21 +1173,18 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     }
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-
         CsiCommand::CursorPosition(2, 1),
     )));
     for _ in 0..5 {
         emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
     }
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-
         CsiCommand::CursorPosition(3, 1),
     )));
     for _ in 0..5 {
         emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Y')));
     }
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-
         CsiCommand::CursorPosition(4, 1),
     )));
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('Z')));

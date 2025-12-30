@@ -29,6 +29,16 @@ fn main() {
     let z = Field::from(0.0);
     let w = Field::from(0.0);
 
-    black_box(select_gt(black_box(x), black_box(y), black_box(z), black_box(w)));
-    black_box(select_field(black_box(x), black_box(y), black_box(z), black_box(w)));
+    black_box(select_gt(
+        black_box(x),
+        black_box(y),
+        black_box(z),
+        black_box(w),
+    ));
+    black_box(select_field(
+        black_box(x),
+        black_box(y),
+        black_box(z),
+        black_box(w),
+    ));
 }

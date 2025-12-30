@@ -53,7 +53,9 @@ impl DisplayDriver for HeadlessDisplayDriver {
     }
 
     fn send(&self, cmd: DriverCommand<Rgba>) -> Result<(), RuntimeError> {
-        self.cmd_tx.send(cmd).map_err(|_| RuntimeError::DriverChannelDisconnected)?;
+        self.cmd_tx
+            .send(cmd)
+            .map_err(|_| RuntimeError::DriverChannelDisconnected)?;
         Ok(())
     }
 
@@ -74,7 +76,10 @@ fn run_event_loop(
     engine_tx: &EngineSender<Rgba>,
 ) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
-    let (window_id, width_px, height_px, title) = match cmd_rx.recv().map_err(|_| RuntimeError::DriverChannelDisconnected)? {
+    let (window_id, width_px, height_px, title) = match cmd_rx
+        .recv()
+        .map_err(|_| RuntimeError::DriverChannelDisconnected)?
+    {
         DriverCommand::CreateWindow {
             id,
             width,
@@ -99,7 +104,10 @@ fn run_event_loop(
 
     // 2. Run simple event loop
     loop {
-        match cmd_rx.recv().map_err(|_| RuntimeError::DriverChannelDisconnected)? {
+        match cmd_rx
+            .recv()
+            .map_err(|_| RuntimeError::DriverChannelDisconnected)?
+        {
             DriverCommand::CreateWindow { .. } => {
                 // Already created, ignore
             }

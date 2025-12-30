@@ -267,10 +267,16 @@ pub fn render_parallel_pooled<P, M>(
 
                 // Process this row
                 let offset = row * width;
-                let row_slice = unsafe {
-                    std::slice::from_raw_parts_mut(ptr.0.add(offset), width)
-                };
-                execute_stripe(&m_clone, row_slice, width, Stripe { start_y: row, end_y: row + 1 });
+                let row_slice = unsafe { std::slice::from_raw_parts_mut(ptr.0.add(offset), width) };
+                execute_stripe(
+                    &m_clone,
+                    row_slice,
+                    width,
+                    Stripe {
+                        start_y: row,
+                        end_y: row + 1,
+                    },
+                );
 
                 // Mark done
                 done.fetch_add(1, Ordering::Release);
@@ -382,12 +388,19 @@ pub fn render_work_stealing<P, M>(
 
                         // Calculate row slice
                         let offset = row * width;
-                        let row_slice = unsafe {
-                            std::slice::from_raw_parts_mut(ptr.0.add(offset), width)
-                        };
+                        let row_slice =
+                            unsafe { std::slice::from_raw_parts_mut(ptr.0.add(offset), width) };
 
                         // Render single row
-                        execute_stripe(manifold, row_slice, width, Stripe { start_y: row, end_y: row + 1 });
+                        execute_stripe(
+                            manifold,
+                            row_slice,
+                            width,
+                            Stripe {
+                                start_y: row,
+                                end_y: row + 1,
+                            },
+                        );
                     }
                 })
                 .expect("Failed to spawn render thread");

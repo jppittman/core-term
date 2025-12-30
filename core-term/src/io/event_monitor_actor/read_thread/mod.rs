@@ -90,7 +90,8 @@ impl ReadThread {
                             }
 
                             // Reuse buffer if available, otherwise allocate new
-                            let mut data = recycled_bufs.pop().unwrap_or_else(|| Vec::with_capacity(n));
+                            let mut data =
+                                recycled_bufs.pop().unwrap_or_else(|| Vec::with_capacity(n));
                             data.clear();
                             data.extend_from_slice(&buf[..n]);
 

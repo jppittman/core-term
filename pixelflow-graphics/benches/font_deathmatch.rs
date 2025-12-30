@@ -1,7 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use freetype::Library;
 use pixelflow_graphics::{
-    render::rasterizer::{execute, render_parallel, render_parallel_pooled, RenderOptions, TensorShape, ThreadPool},
+    render::rasterizer::{
+        execute, render_parallel, render_parallel_pooled, RenderOptions, TensorShape, ThreadPool,
+    },
     Font, Lift, Rgba8,
 };
 use std::sync::Arc;
@@ -23,7 +25,7 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     let char_code = 'g';
     let size_px: u32 = 64;
     let total_pixels = size_px * size_px;
-    
+
     group.throughput(Throughput::Elements(total_pixels as u64));
 
     // ------------------------------------------------------------------------
@@ -36,7 +38,9 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("freetype", "64px_g"), |b| {
         b.iter(|| {
             // Load and render the glyph
-            ft_face.load_char(char_code as usize, freetype::face::LoadFlag::RENDER).unwrap();
+            ft_face
+                .load_char(char_code as usize, freetype::face::LoadFlag::RENDER)
+                .unwrap();
             let glyph = ft_face.glyph();
             let bitmap = glyph.bitmap();
             black_box(bitmap.buffer());
@@ -47,20 +51,22 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     // PixelFlow Setup
     // ------------------------------------------------------------------------
     let pf_font = Font::parse(FONT_DATA).unwrap();
-    
+
     // Pre-allocate buffer for PixelFlow (simulating reuse, Freetype also reuses its internal slot buffer)
     let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
     let shape = TensorShape::new(size_px as usize, size_px as usize);
 
     group.bench_function(BenchmarkId::new("pixelflow", "64px_g"), |b| {
         b.iter(|| {
-            let glyph = pf_font.glyph_scaled(black_box(char_code), size_px as f32).unwrap();
+            let glyph = pf_font
+                .glyph_scaled(black_box(char_code), size_px as f32)
+                .unwrap();
             let colored = Lift(glyph);
             execute(&colored, &mut buffer, shape);
             black_box(&buffer);
         })
     });
-    
+
     // ------------------------------------------------------------------------
     // PixelFlow Setup (Cached Glyph)
     // ------------------------------------------------------------------------
@@ -80,7 +86,7 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     // Create pool once (outside measurement loop in real app, here we include init or put outside?)
     // Criterion iter loops many times. We want the pool to persist across iterations.
     // So we must create it outside the b.iter closure.
-    
+
     let pool_2 = ThreadPool::new(2);
     let pool_4 = ThreadPool::new(4);
 
@@ -103,7 +109,7 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
 
 fn bench_heavy_workload(c: &mut Criterion) {
     let mut group = c.benchmark_group("heavy_workload");
-    
+
     // 512x512 = 262,144 pixels.
     let size_px = 512;
     let total_pixels = size_px * size_px;
@@ -113,7 +119,7 @@ fn bench_heavy_workload(c: &mut Criterion) {
     // Render a large '@' which has complex geometry
     let glyph = pf_font.glyph_scaled('@', size_px as f32).unwrap();
     let colored = Lift(glyph);
-    
+
     let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
     let shape = TensorShape::new(size_px as usize, size_px as usize);
 
@@ -142,7 +148,7 @@ fn bench_heavy_workload(c: &mut Criterion) {
             black_box(&buffer);
         })
     });
-    
+
     // Parallel 8 (Pooled)
     let pool_8 = ThreadPool::new(8);
     group.bench_function(BenchmarkId::new("pixelflow_pooled_8", "512px_@"), |b| {
@@ -157,24 +163,25 @@ fn bench_heavy_workload(c: &mut Criterion) {
 
 fn bench_cold_start(c: &mut Criterion) {
     let mut group = c.benchmark_group("cold_start");
-    
+
     let char_code = 'g';
     let size_px: u32 = 64;
-    
+
     // ------------------------------------------------------------------------
     // Freetype Cold (Face Creation + Render)
     // ------------------------------------------------------------------------
     let ft_lib = Library::init().unwrap();
-    
+
     group.bench_function(BenchmarkId::new("freetype", "parse_and_render"), |b| {
         b.iter(|| {
-            // Freetype requires keeping the buffer alive or copying it. 
-            // The Rust wrapper's new_memory_face takes Rc<Vec<u8>> or similar usually, 
+            // Freetype requires keeping the buffer alive or copying it.
+            // The Rust wrapper's new_memory_face takes Rc<Vec<u8>> or similar usually,
             // but here we might need to be careful.
             // Using to_vec() mimics loading bytes from a file.
             let face = ft_lib.new_memory_face(FONT_DATA.to_vec(), 0).unwrap();
             face.set_pixel_sizes(size_px, size_px).unwrap();
-            face.load_char(char_code as usize, freetype::face::LoadFlag::RENDER).unwrap();
+            face.load_char(char_code as usize, freetype::face::LoadFlag::RENDER)
+                .unwrap();
             let glyph = face.glyph();
             let bitmap = glyph.bitmap();
             black_box(bitmap.buffer());
@@ -191,7 +198,9 @@ fn bench_cold_start(c: &mut Criterion) {
         b.iter(|| {
             // Font::parse is zero-copy (borrowed)
             let font = Font::parse(black_box(FONT_DATA)).unwrap();
-            let glyph = font.glyph_scaled(black_box(char_code), size_px as f32).unwrap();
+            let glyph = font
+                .glyph_scaled(black_box(char_code), size_px as f32)
+                .unwrap();
             let colored = Lift(glyph);
             execute(&colored, &mut buffer, shape);
             black_box(&buffer);
@@ -201,5 +210,10 @@ fn bench_cold_start(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_rasterization_deathmatch, bench_cold_start, bench_heavy_workload);
+criterion_group!(
+    benches,
+    bench_rasterization_deathmatch,
+    bench_cold_start,
+    bench_heavy_workload
+);
 criterion_main!(benches);

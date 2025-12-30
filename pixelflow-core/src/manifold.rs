@@ -258,7 +258,13 @@ impl<I: crate::numeric::Numeric> Manifold<I> for Field {
 impl Manifold<crate::jet::Jet2> for crate::jet::Jet2 {
     type Output = crate::jet::Jet2;
     #[inline(always)]
-    fn eval_raw(&self, _x: crate::jet::Jet2, _y: crate::jet::Jet2, _z: crate::jet::Jet2, _w: crate::jet::Jet2) -> crate::jet::Jet2 {
+    fn eval_raw(
+        &self,
+        _x: crate::jet::Jet2,
+        _y: crate::jet::Jet2,
+        _z: crate::jet::Jet2,
+        _w: crate::jet::Jet2,
+    ) -> crate::jet::Jet2 {
         *self
     }
 }
@@ -267,7 +273,13 @@ impl Manifold<crate::jet::Jet2> for crate::jet::Jet2 {
 impl Manifold<crate::jet::Jet3> for crate::jet::Jet3 {
     type Output = crate::jet::Jet3;
     #[inline(always)]
-    fn eval_raw(&self, _x: crate::jet::Jet3, _y: crate::jet::Jet3, _z: crate::jet::Jet3, _w: crate::jet::Jet3) -> crate::jet::Jet3 {
+    fn eval_raw(
+        &self,
+        _x: crate::jet::Jet3,
+        _y: crate::jet::Jet3,
+        _z: crate::jet::Jet3,
+        _w: crate::jet::Jet3,
+    ) -> crate::jet::Jet3 {
         *self
     }
 }

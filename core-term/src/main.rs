@@ -2,8 +2,8 @@
 
 //! Main entry point for `core-term`.
 
-use core_term::config::CONFIG;
 use anyhow::Context;
+use core_term::config::CONFIG;
 use log::{info, warn};
 
 struct Args {
@@ -58,7 +58,9 @@ fn get_secure_log_path() -> std::path::PathBuf {
 
     // Fall back to user's cache directory
     if let Some(home) = std::env::var_os("HOME") {
-        let cache_dir = std::path::PathBuf::from(home).join(".cache").join("core-term");
+        let cache_dir = std::path::PathBuf::from(home)
+            .join(".cache")
+            .join("core-term");
         // Create directory with restricted permissions if it doesn't exist
         if !cache_dir.exists() {
             #[cfg(unix)]

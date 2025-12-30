@@ -1,6 +1,7 @@
 // src/term/emulator/mode_handler.rs
 
 use super::TerminalEmulator;
+use crate::term::screen::AltScreenClear;
 use crate::{
     ansi::commands::Attribute,
     glyph::{AttrFlags, Attributes},
@@ -11,7 +12,6 @@ use crate::{
         modes::{DecModeConstant, Mode, ModeAction, StandardModeConstant},
     },
 };
-use crate::term::screen::AltScreenClear;
 use log::{trace, warn};
 
 impl TerminalEmulator {
@@ -230,22 +230,20 @@ impl TerminalEmulator {
                     }
                 }
             }
-            Mode::Standard(mode_num) => {
-                match StandardModeConstant::from_u16(mode_num) {
-                    Some(StandardModeConstant::InsertMode) => {
-                        self.dec_modes.insert_mode = enable;
-                    }
-                    Some(StandardModeConstant::LinefeedNewlineMode) => {
-                        self.dec_modes.linefeed_newline_mode = enable;
-                    }
-                    None => {
-                        warn!(
-                            "Standard mode {} set/reset to {} - not fully implemented yet.",
-                            mode_num, enable
-                        );
-                    }
+            Mode::Standard(mode_num) => match StandardModeConstant::from_u16(mode_num) {
+                Some(StandardModeConstant::InsertMode) => {
+                    self.dec_modes.insert_mode = enable;
                 }
-            }
+                Some(StandardModeConstant::LinefeedNewlineMode) => {
+                    self.dec_modes.linefeed_newline_mode = enable;
+                }
+                None => {
+                    warn!(
+                        "Standard mode {} set/reset to {} - not fully implemented yet.",
+                        mode_num, enable
+                    );
+                }
+            },
         }
         action_to_return
     }
