@@ -950,7 +950,16 @@ impl Screen {
             (range.start, range.end)
         };
 
-        let mut selected_text_buffer = String::new();
+        // Estimate capacity to avoid reallocations
+        let est_rows = norm_end_point.y.saturating_sub(norm_start_point.y) + 1;
+        let est_cols = match self.selection.mode {
+            SelectionMode::Cell => self.width, // Rough upper bound per row
+            SelectionMode::Block => max(range.start.x, range.end.x)
+                .saturating_sub(std_min(range.start.x, range.end.x))
+                + 1,
+        };
+        let capacity = est_rows.saturating_mul(est_cols + 1); // +1 for newlines
+        let mut selected_text_buffer = String::with_capacity(capacity);
         let grid_to_use = self.active_grid();
 
         match self.selection.mode {
