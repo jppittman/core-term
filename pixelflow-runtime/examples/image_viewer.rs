@@ -15,8 +15,11 @@ const W: u32 = 1920;
 const H: u32 = 1080;
 
 // Import scene3d types
+use pixelflow_graphics::patch::BezierPatch;
+use pixelflow_graphics::render::Color;
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry, SphereAt,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, HeightFieldGeometry,
+    Lift, PlaneGeometry, SceneObject, SphereAt, Union,
 };
 
 /// Screen coordinate remapper for Discrete output.
@@ -45,21 +48,43 @@ impl<M: Manifold<Output = Discrete>> Manifold for ScreenRemap<M> {
     }
 }
 
-/// Build the chrome sphere scene.
+/// Build the chrome sphere scene with bezier patch.
 fn build_scene() -> impl Manifold<Output = Discrete> + Send + Sync + Clone {
-    let world = ColorSurface {
+    // Floor: checkerboard plane at y = -1
+    let floor = SceneObject {
         geometry: PlaneGeometry { height: -1.0 },
         material: ColorChecker,
+    };
+
+    // Bezier patch: paraboloid bump on the ground
+    let patch = BezierPatch::paraboloid(2.0, 0.5);
+    let patch_geo = HeightFieldGeometry {
+        height_field: patch,
+        base_height: -0.8,
+        scale: 0.3,
+        uv_scale: 0.15, // Maps world coords to [0,1] parameter space
+    };
+    let patch_obj = SceneObject {
+        geometry: patch_geo,
+        material: Lift(Color::Rgb(180, 120, 60)), // Warm orange-brown
+    };
+
+    // Ground: patch in front of floor, with sky background
+    // Union = first hit wins (patch occludes floor where it exists)
+    let ground = Union {
+        first: patch_obj,
+        second: floor,
         background: ColorSky,
     };
 
+    // Chrome sphere reflecting the ground
     let scene = ColorSurface {
         geometry: SphereAt {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world },
-        background: world,
+        material: ColorReflect { inner: ground },
+        background: ground,
     };
 
     ScreenRemap {
@@ -73,15 +98,15 @@ fn main() -> anyhow::Result<()> {
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    println!("Chrome Sphere Image Viewer");
-    println!("==========================");
+    println!("Chrome Sphere + Bezier Patch");
+    println!("=============================");
     println!("Resolution: {}x{}", W, H);
     println!();
 
     // Configure the engine
     let config = EngineConfig {
         window: WindowConfig {
-            title: "Chrome Sphere".to_string(),
+            title: "Chrome Sphere + Bezier Patch".to_string(),
             width: W,
             height: H,
         },

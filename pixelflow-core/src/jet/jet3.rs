@@ -714,3 +714,23 @@ impl Numeric for Jet3 {
         self / rhs
     }
 }
+
+// ============================================================================
+// Field/Jet3 conversions
+// ============================================================================
+
+/// Explicit lift: Field → Jet3 (constant with zero derivatives)
+impl From<Field> for Jet3 {
+    #[inline(always)]
+    fn from(val: Field) -> Self {
+        Self::constant(val)
+    }
+}
+
+/// Implicit projection: Jet3 → Field (extract value, discard derivatives)
+impl From<Jet3> for Field {
+    #[inline(always)]
+    fn from(jet: Jet3) -> Self {
+        jet.val
+    }
+}
