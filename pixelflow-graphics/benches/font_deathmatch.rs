@@ -1,12 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use freetype::Library;
 use pixelflow_graphics::{
-    render::rasterizer::{
-        execute, render_parallel, render_parallel_pooled, RenderOptions, TensorShape, ThreadPool,
-    },
+    render::rasterizer::{execute, render_work_stealing, RenderOptions, TensorShape},
     Font, Lift, Rgba8,
 };
-use std::sync::Arc;
 
 // ============================================================================
 // Font Data
@@ -83,25 +80,20 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     });
 
     // ------------------------------------------------------------------------
-    // PixelFlow Setup (Pooled Parallel)
+    // PixelFlow Setup (Parallel)
     // ------------------------------------------------------------------------
-    // Create pool once (outside measurement loop in real app, here we include init or put outside?)
-    // Criterion iter loops many times. We want the pool to persist across iterations.
-    // So we must create it outside the b.iter closure.
-
-    let pool_2 = ThreadPool::new(2);
-    let pool_4 = ThreadPool::new(4);
-
-    group.bench_function(BenchmarkId::new("pixelflow_pooled_2", "64px_g"), |b| {
+    group.bench_function(BenchmarkId::new("pixelflow_parallel_2", "64px_g"), |b| {
+        let options = RenderOptions { num_threads: 2 };
         b.iter(|| {
-            render_parallel_pooled(&pool_2, &cached_colored, &mut buffer, shape);
+            render_work_stealing(&cached_colored, &mut buffer, shape, options);
             black_box(&buffer);
         })
     });
 
-    group.bench_function(BenchmarkId::new("pixelflow_pooled_4", "64px_g"), |b| {
+    group.bench_function(BenchmarkId::new("pixelflow_parallel_4", "64px_g"), |b| {
+        let options = RenderOptions { num_threads: 4 };
         b.iter(|| {
-            render_parallel_pooled(&pool_4, &cached_colored, &mut buffer, shape);
+            render_work_stealing(&cached_colored, &mut buffer, shape, options);
             black_box(&buffer);
         })
     });
@@ -128,36 +120,36 @@ fn bench_heavy_workload(c: &mut Criterion) {
     let shape = TensorShape::new(size_px as usize, size_px as usize);
 
     // Serial
-    group.bench_function(BenchmarkId::new("pixelflow_serial", "512px_@"), |b| {
+    group.bench_function(BenchmarkId::new("pixelflow_serial", "256px_@"), |b| {
         b.iter(|| {
             execute(&colored, &mut buffer, shape);
             black_box(&buffer);
         })
     });
 
-    // Parallel 2 (Pooled)
-    let pool_2 = ThreadPool::new(2);
-    group.bench_function(BenchmarkId::new("pixelflow_pooled_2", "512px_@"), |b| {
+    // Parallel 2
+    group.bench_function(BenchmarkId::new("pixelflow_parallel_2", "256px_@"), |b| {
+        let options = RenderOptions { num_threads: 2 };
         b.iter(|| {
-            render_parallel_pooled(&pool_2, &colored, &mut buffer, shape);
+            render_work_stealing(&colored, &mut buffer, shape, options);
             black_box(&buffer);
         })
     });
 
-    // Parallel 4 (Pooled)
-    let pool_4 = ThreadPool::new(4);
-    group.bench_function(BenchmarkId::new("pixelflow_pooled_4", "512px_@"), |b| {
+    // Parallel 4
+    group.bench_function(BenchmarkId::new("pixelflow_parallel_4", "256px_@"), |b| {
+        let options = RenderOptions { num_threads: 4 };
         b.iter(|| {
-            render_parallel_pooled(&pool_4, &colored, &mut buffer, shape);
+            render_work_stealing(&colored, &mut buffer, shape, options);
             black_box(&buffer);
         })
     });
 
-    // Parallel 8 (Pooled)
-    let pool_8 = ThreadPool::new(8);
-    group.bench_function(BenchmarkId::new("pixelflow_pooled_8", "512px_@"), |b| {
+    // Parallel 8
+    group.bench_function(BenchmarkId::new("pixelflow_parallel_8", "256px_@"), |b| {
+        let options = RenderOptions { num_threads: 8 };
         b.iter(|| {
-            render_parallel_pooled(&pool_8, &colored, &mut buffer, shape);
+            render_work_stealing(&colored, &mut buffer, shape, options);
             black_box(&buffer);
         })
     });

@@ -187,9 +187,8 @@ use pixelflow_core::{
 };
 
 pub mod parallel;
-pub mod pool;
-pub use parallel::{render_parallel, render_parallel_pooled, render_work_stealing, RenderOptions};
-pub use pool::{Job, ThreadPool};
+pub(crate) mod pool;
+pub use parallel::{render_parallel, render_work_stealing, RenderOptions};
 
 /// A wrapper that adapts a continuous manifold for rasterization.
 #[derive(Clone, Copy, Debug)]
