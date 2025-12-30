@@ -67,7 +67,7 @@
 //!
 //! ## Architecture
 //!
-//! ```
+//! ```text
 //! manifold.rs    -> Manifold trait (function from coords to value)
 //! ext.rs         -> ManifoldExt (fluent API for building expressions)
 //! ops/           -> Operators (Add, Mul, Sqrt, etc.)
