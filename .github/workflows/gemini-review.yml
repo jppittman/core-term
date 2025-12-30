@@ -19,6 +19,7 @@ defaults:
 jobs:
   review:
     runs-on: 'ubuntu-latest'
+    environment: 'ci'
     timeout-minutes: 7
     permissions:
       contents: 'read'

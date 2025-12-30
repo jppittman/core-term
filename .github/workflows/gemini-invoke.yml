@@ -19,6 +19,7 @@ defaults:
 jobs:
   invoke:
     runs-on: 'ubuntu-latest'
+    environment: 'ci'
     permissions:
       contents: 'read'
       id-token: 'write'
