@@ -8,7 +8,8 @@ use pixelflow_core::jet::Jet2;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
 use pixelflow_graphics::{
     render::rasterizer::{
-        execute, parallel::render_parallel_pooled, render_work_stealing, TensorShape, ThreadPool,
+        execute, parallel::render_parallel_pooled, render_work_stealing, RenderOptions,
+        TensorShape, ThreadPool,
     },
     CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
 };
@@ -1143,8 +1144,9 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
         &format!("work_stealing_atomic_{}t", num_threads),
         |bencher| {
             let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
+            let options = RenderOptions { num_threads };
             bencher.iter(|| {
-                render_work_stealing(&renderable, frame.as_slice_mut(), shape, num_threads);
+                render_work_stealing(&renderable, frame.as_slice_mut(), shape, options);
                 black_box(&frame);
             })
         },

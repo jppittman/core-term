@@ -352,12 +352,12 @@ pub fn render_work_stealing<P, M>(
     manifold: &M,
     buffer: &mut [P],
     shape: TensorShape,
-    num_threads: usize,
+    options: RenderOptions,
 ) where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {
-    if num_threads <= 1 || shape.height <= 1 {
+    if options.num_threads <= 1 || shape.height <= 1 {
         execute(manifold, buffer, shape);
         return;
     }
@@ -374,7 +374,7 @@ pub fn render_work_stealing<P, M>(
     const STACK_SIZE: usize = 2 * 1024 * 1024;
 
     std::thread::scope(|s| {
-        for _ in 0..num_threads {
+        for _ in 0..options.num_threads {
             std::thread::Builder::new()
                 .stack_size(STACK_SIZE)
                 .spawn_scoped(s, || {
