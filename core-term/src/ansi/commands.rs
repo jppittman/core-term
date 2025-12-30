@@ -638,6 +638,18 @@ impl AnsiCommand {
             // Ensure 'T' for ScrollDown is only matched if no intermediates, to avoid conflict with other 'T' sequences
             (false, b"", b'T') => Some(AnsiCommand::Csi(CsiCommand::ScrollDown(param_or_1(0)))),
             (false, b"", b'g') => Some(AnsiCommand::Csi(CsiCommand::ClearTabStops(param_or(0, 0)))),
+            (false, b"", b'W') => match param_or(0, 0) {
+                0 => Some(AnsiCommand::Csi(CsiCommand::SetTabStop)),
+                2 => Some(AnsiCommand::Csi(CsiCommand::ClearTabStops(0))), // Clear current
+                5 => Some(AnsiCommand::Csi(CsiCommand::ClearTabStops(3))), // Clear all
+                _ => {
+                    warn!("Unsupported CTC parameter: {:?}", params.first());
+                    Some(AnsiCommand::Csi(CsiCommand::Unsupported(
+                        intermediates,
+                        Some(final_byte),
+                    )))
+                }
+            },
             (false, b"", b'm') => Some(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(
                 Self::parse_sgr(params),
             ))),
