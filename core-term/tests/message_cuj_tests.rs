@@ -248,8 +248,10 @@ fn cuj_pty01_channel_closure_propagation() {
 #[test]
 fn cuj_pty02_command_batch_delivery() {
     // Given: A channel from parser to app
-    let (cmd_tx, cmd_rx): (SyncSender<Vec<MockAnsiCommand>>, Receiver<Vec<MockAnsiCommand>>) =
-        sync_channel(10);
+    let (cmd_tx, cmd_rx): (
+        SyncSender<Vec<MockAnsiCommand>>,
+        Receiver<Vec<MockAnsiCommand>>,
+    ) = sync_channel(10);
 
     // When: Parser sends a batch of commands
     let commands = vec![
@@ -631,7 +633,8 @@ fn cuj_eng09_frame_request_delivery() {
     });
 
     // When: Frame request is sent
-    tx.send(Message::Data(MockEngineData::RequestFrame)).unwrap();
+    tx.send(Message::Data(MockEngineData::RequestFrame))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(50));
     drop(tx);

@@ -915,7 +915,9 @@ mod tests {
                 fn handle_data(&mut self, _: ()) {}
                 fn handle_control(&mut self, _: ()) {}
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: ParkHint) -> ParkHint { h }
+                fn park(&mut self, h: ParkHint) -> ParkHint {
+                    h
+                }
             }
             rx.run(&mut NoopActor);
             exited_clone.store(true, Ordering::SeqCst);
@@ -957,7 +959,9 @@ mod tests {
                 }
                 fn handle_control(&mut self, _: ()) {}
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: ParkHint) -> ParkHint { h }
+                fn park(&mut self, h: ParkHint) -> ParkHint {
+                    h
+                }
             }
             rx.run(&mut CountActor(processed_clone));
         });
@@ -966,7 +970,11 @@ mod tests {
 
         // Shutdown should have caused exit before all data processed
         let count = processed.load(Ordering::SeqCst);
-        assert!(count < 50, "shutdown should exit before processing all data, processed {}", count);
+        assert!(
+            count < 50,
+            "shutdown should exit before processing all data, processed {}",
+            count
+        );
     }
 }
 

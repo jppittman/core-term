@@ -28,7 +28,7 @@
 //! };
 //! ```
 
-use crate::{Manifold, Computational};
+use crate::{Computational, Manifold};
 
 /// Evaluates a manifold at manifold-computed coordinates.
 ///

@@ -7,8 +7,8 @@
 //! - Winding number calculation errors
 
 use pixelflow_core::{materialize_discrete, PARALLELISM};
-use pixelflow_graphics::fonts::{Font, Text};
 use pixelflow_graphics::fonts::ttf::{Geometry, Line};
+use pixelflow_graphics::fonts::{Font, Text};
 use pixelflow_graphics::render::color::{Lift, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 use std::sync::Arc;
@@ -251,11 +251,13 @@ fn regression_monospace_advance() {
     assert!(
         (advance_a - advance_m).abs() < 0.01,
         "Monospace font should have equal advances: A={}, M={}",
-        advance_a, advance_m
+        advance_a,
+        advance_m
     );
     assert!(
         (advance_a - advance_i).abs() < 0.01,
         "Monospace font should have equal advances: A={}, i={}",
-        advance_a, advance_i
+        advance_a,
+        advance_i
     );
 }

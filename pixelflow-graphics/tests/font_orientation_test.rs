@@ -11,7 +11,12 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
 /// Measure the horizontal extent of rendered pixels at a given Y row.
 /// Returns (leftmost_x, rightmost_x) of pixels above the threshold, or None if row is empty.
-fn measure_row_extent(pixels: &[Rgba8], width: usize, y: usize, threshold: u8) -> Option<(usize, usize)> {
+fn measure_row_extent(
+    pixels: &[Rgba8],
+    width: usize,
+    y: usize,
+    threshold: u8,
+) -> Option<(usize, usize)> {
     let row_start = y * width;
     let row = &pixels[row_start..row_start + width];
 
@@ -45,7 +50,11 @@ fn letter_a_apex_is_at_top() {
     let width = 60;
     let height = 70;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
-    execute(&color_manifold, &mut pixels, TensorShape::new(width, height));
+    execute(
+        &color_manifold,
+        &mut pixels,
+        TensorShape::new(width, height),
+    );
 
     // Debug: print the rendered 'A'
     println!("\nRendered 'A' at size 48 ({}x{}):", width, height);
@@ -53,7 +62,13 @@ fn letter_a_apex_is_at_top() {
         print!("{:2} | ", y);
         for x in 0..width {
             let intensity = pixels[y * width + x].r();
-            let ch = if intensity > 128 { '#' } else if intensity > 32 { '.' } else { ' ' };
+            let ch = if intensity > 128 {
+                '#'
+            } else if intensity > 32 {
+                '.'
+            } else {
+                ' '
+            };
             print!("{}", ch);
         }
         println!(" | width={}", row_width(&pixels, width, y, 32));
@@ -76,9 +91,16 @@ fn letter_a_apex_is_at_top() {
     let bottom_row = bottom_row.expect("Glyph should have rendered content");
     let glyph_height = bottom_row - top_row + 1;
 
-    println!("\nGlyph bounds: top={}, bottom={}, height={}", top_row, bottom_row, glyph_height);
+    println!(
+        "\nGlyph bounds: top={}, bottom={}, height={}",
+        top_row, bottom_row, glyph_height
+    );
 
-    assert!(glyph_height > 10, "Glyph should be tall enough to measure (got {} rows)", glyph_height);
+    assert!(
+        glyph_height > 10,
+        "Glyph should be tall enough to measure (got {} rows)",
+        glyph_height
+    );
 
     // Measure width at top quarter and bottom quarter of the glyph
     let top_quarter_y = top_row + glyph_height / 4;
@@ -88,7 +110,10 @@ fn letter_a_apex_is_at_top() {
     let bottom_width = row_width(&pixels, width, bottom_quarter_y, threshold);
 
     println!("Top quarter (y={}): width={}", top_quarter_y, top_width);
-    println!("Bottom quarter (y={}): width={}", bottom_quarter_y, bottom_width);
+    println!(
+        "Bottom quarter (y={}): width={}",
+        bottom_quarter_y, bottom_width
+    );
 
     // The apex (top) should be NARROWER than the legs (bottom)
     assert!(
@@ -97,8 +122,10 @@ fn letter_a_apex_is_at_top() {
          Top quarter (y={}) width: {}\n\
          Bottom quarter (y={}) width: {}\n\
          This suggests the glyph is rendered upside-down.",
-        top_quarter_y, top_width,
-        bottom_quarter_y, bottom_width
+        top_quarter_y,
+        top_width,
+        bottom_quarter_y,
+        bottom_width
     );
 }
 
@@ -114,7 +141,11 @@ fn letter_a_has_crossbar() {
     let width = 60;
     let height = 70;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
-    execute(&color_manifold, &mut pixels, TensorShape::new(width, height));
+    execute(
+        &color_manifold,
+        &mut pixels,
+        TensorShape::new(width, height),
+    );
 
     let threshold = 32;
 
@@ -158,7 +189,9 @@ fn letter_a_has_crossbar() {
         "Letter 'A' should have a crossbar wider than the apex.\n\
          Crossbar (y={}) width: {}\n\
          Apex width: {}",
-        crossbar_row, max_width, apex_width
+        crossbar_row,
+        max_width,
+        apex_width
     );
 }
 
@@ -177,7 +210,11 @@ fn letter_v_point_is_at_bottom() {
     let width = 60;
     let height = 70;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
-    execute(&color_manifold, &mut pixels, TensorShape::new(width, height));
+    execute(
+        &color_manifold,
+        &mut pixels,
+        TensorShape::new(width, height),
+    );
 
     // Find the vertical bounds (use threshold 32 for cleaner edges)
     let threshold = 32;
@@ -212,7 +249,9 @@ fn letter_v_point_is_at_bottom() {
          Top quarter (y={}) width: {}\n\
          Bottom quarter (y={}) width: {}\n\
          This suggests the glyph is rendered upside-down.",
-        top_quarter_y, top_width,
-        bottom_quarter_y, bottom_width
+        top_quarter_y,
+        top_width,
+        bottom_quarter_y,
+        bottom_width
     );
 }

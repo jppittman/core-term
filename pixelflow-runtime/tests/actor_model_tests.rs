@@ -254,7 +254,9 @@ fn control_processed_before_management() {
                 self.management_seen = true;
             }
             fn handle_data(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         let mut actor = FirstWinsActor {
             control_first: control_first_clone,
@@ -455,7 +457,9 @@ fn management_burst_limit_prevents_starvation() {
             fn handle_management(&mut self, _: String) {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut Counter(count_clone));
     });
@@ -603,7 +607,9 @@ fn actor_run_exits_when_all_senders_dropped() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut NoopActor);
         exited_clone.store(true, Ordering::SeqCst);
@@ -612,7 +618,10 @@ fn actor_run_exits_when_all_senders_dropped() {
     // Ensure actor is running
     tx.send(Message::Control(())).unwrap();
     thread::sleep(Duration::from_millis(20));
-    assert!(!exited.load(Ordering::SeqCst), "Actor should still be running");
+    assert!(
+        !exited.load(Ordering::SeqCst),
+        "Actor should still be running"
+    );
 
     // Drop sender
     drop(tx);
@@ -629,8 +638,14 @@ fn send_to_dropped_receiver_returns_error() {
 
     // All sends should fail
     assert!(matches!(tx.send(Message::Data(1)), Err(SendError::Unknown)));
-    assert!(matches!(tx.send(Message::Control(2)), Err(SendError::Unknown)));
-    assert!(matches!(tx.send(Message::Management(3)), Err(SendError::Unknown)));
+    assert!(matches!(
+        tx.send(Message::Control(2)),
+        Err(SendError::Unknown)
+    ));
+    assert!(matches!(
+        tx.send(Message::Management(3)),
+        Err(SendError::Unknown)
+    ));
 }
 
 #[test]
@@ -649,7 +664,9 @@ fn cloned_handle_works_after_original_dropped() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut CounterActor(count_clone));
     });
@@ -806,14 +823,17 @@ fn different_message_types_per_lane() {
             fn handle_management(&mut self, _: std::time::Duration) {
                 self.0.lock().unwrap().2 = true;
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut TypedActor(received_clone));
     });
 
     tx.send(Message::Data(vec![1, 2, 3])).unwrap();
     tx.send(Message::Control(HashMap::new())).unwrap();
-    tx.send(Message::Management(Duration::from_secs(1))).unwrap();
+    tx.send(Message::Management(Duration::from_secs(1)))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(50));
     drop(tx);
@@ -839,10 +859,18 @@ fn handle_clone_is_independent() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn handle_control(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn handle_management(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn handle_data(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn handle_control(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn handle_management(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut Counter(count_clone));
     });
@@ -884,10 +912,14 @@ fn high_throughput_single_sender() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
+            fn handle_data(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut Counter(count_clone));
     });
@@ -917,10 +949,18 @@ fn concurrent_senders_stress_test() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn handle_control(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn handle_management(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn handle_data(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn handle_control(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn handle_management(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut Counter(count_clone));
     });
@@ -995,7 +1035,9 @@ fn priority_maintained_when_both_lanes_have_messages() {
                 }
             }
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut FirstChecker { first: first_clone });
     });
@@ -1032,7 +1074,9 @@ fn empty_message_types_work() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut UnitActor);
     });
@@ -1058,10 +1102,18 @@ fn zero_size_type_messages() {
     let handle = thread::spawn(move || {
         struct ZSTActor(Arc<AtomicUsize>);
         impl Actor<ZST, ZST, ZST> for ZSTActor {
-            fn handle_data(&mut self, _: ZST) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn handle_control(&mut self, _: ZST) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn handle_management(&mut self, _: ZST) { self.0.fetch_add(1, Ordering::SeqCst); }
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn handle_data(&mut self, _: ZST) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn handle_control(&mut self, _: ZST) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn handle_management(&mut self, _: ZST) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut ZSTActor(count_clone));
     });
@@ -1092,16 +1144,21 @@ fn large_message_type_works() {
     let handle = thread::spawn(move || {
         struct LargeActor(Arc<AtomicUsize>);
         impl Actor<LargeMessage, (), ()> for LargeActor {
-            fn handle_data(&mut self, _: LargeMessage) { self.0.fetch_add(1, Ordering::SeqCst); }
+            fn handle_data(&mut self, _: LargeMessage) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut LargeActor(count_clone));
     });
 
     for _ in 0..20 {
-        tx.send(Message::Data(LargeMessage { data: [0u8; 4096] })).unwrap();
+        tx.send(Message::Data(LargeMessage { data: [0u8; 4096] }))
+            .unwrap();
     }
 
     thread::sleep(Duration::from_millis(50));
@@ -1121,7 +1178,9 @@ fn immediate_shutdown_no_messages() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut NoopActor);
     });
@@ -1148,10 +1207,14 @@ fn custom_burst_and_buffer_sizes() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
+            fn handle_data(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut Counter(count_clone));
     });
@@ -1176,10 +1239,14 @@ fn large_burst_and_buffer_sizes() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) { self.0.fetch_add(1, Ordering::SeqCst); }
+            fn handle_data(&mut self, _: i32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         rx.run(&mut Counter(count_clone));
     });

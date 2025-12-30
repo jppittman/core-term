@@ -5,8 +5,7 @@
 use pixelflow_core::combinators::At;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
-    PlaneGeometry, SphereAt,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry, SphereAt,
 };
 use std::hint::black_box;
 
@@ -29,7 +28,14 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         let sx = (x - width * Field::from(0.5)) * scale;
         let sy = (height * Field::from(0.5) - y) * scale;
         // Use At combinator to evaluate at transformed coordinates
-        At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
+        At {
+            inner: &self.inner,
+            x: sx,
+            y: sy,
+            z,
+            w,
+        }
+        .eval()
     }
 }
 
@@ -43,7 +49,10 @@ pub fn eval_one_pixel(x: Field, y: Field) -> Discrete {
     };
 
     let scene = ColorSurface {
-        geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+        geometry: SphereAt {
+            center: (0.0, 0.0, 4.0),
+            radius: 1.0,
+        },
         material: ColorReflect { inner: world },
         background: world,
     };

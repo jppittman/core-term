@@ -79,7 +79,9 @@ where
     type Output = I;
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).raw_add(self.1.eval_raw(x, y, z, w))
+        self.0
+            .eval_raw(x, y, z, w)
+            .raw_add(self.1.eval_raw(x, y, z, w))
     }
 }
 
@@ -92,7 +94,9 @@ where
     type Output = I;
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).raw_sub(self.1.eval_raw(x, y, z, w))
+        self.0
+            .eval_raw(x, y, z, w)
+            .raw_sub(self.1.eval_raw(x, y, z, w))
     }
 }
 
@@ -105,7 +109,9 @@ where
     type Output = I;
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).raw_mul(self.1.eval_raw(x, y, z, w))
+        self.0
+            .eval_raw(x, y, z, w)
+            .raw_mul(self.1.eval_raw(x, y, z, w))
     }
 }
 
@@ -118,7 +124,9 @@ where
     type Output = I;
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).raw_div(self.1.eval_raw(x, y, z, w))
+        self.0
+            .eval_raw(x, y, z, w)
+            .raw_div(self.1.eval_raw(x, y, z, w))
     }
 }
 
@@ -148,7 +156,9 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         // Multiply by precomputed reciprocal - avoids slow division
-        self.inner.eval_raw(x, y, z, w).raw_mul(I::from_f32(self.recip))
+        self.inner
+            .eval_raw(x, y, z, w)
+            .raw_mul(I::from_f32(self.recip))
     }
 }
 
@@ -193,9 +203,8 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         // L * rsqrt(R) = L / sqrt(R) but faster
-        self.0.eval_raw(x, y, z, w).raw_mul(self.1.eval_raw(x, y, z, w).rsqrt())
+        self.0
+            .eval_raw(x, y, z, w)
+            .raw_mul(self.1.eval_raw(x, y, z, w).rsqrt())
     }
 }
-
-
-

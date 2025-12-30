@@ -54,12 +54,10 @@ const UTF8_INVALID_EARLY_START_RANGE: std::ops::RangeInclusive<u8> =
     UTF8_INVALID_AS_START_MIN_RANGE1..=UTF8_INVALID_AS_START_MAX_RANGE1; // 0x80..=0xC1
 const UTF8_2_BYTE_START_RANGE: std::ops::RangeInclusive<u8> = UTF8_2_BYTE_MIN..=0xDF;
 const UTF8_3_BYTE_START_RANGE: std::ops::RangeInclusive<u8> = UTF8_3_BYTE_MIN..=0xEF;
-const UTF8_4_BYTE_START_RANGE: std::ops::RangeInclusive<u8> =
-    UTF8_4_BYTE_MIN..=UTF8_4_BYTE_MAX; // 0xF0..=0xF4
+const UTF8_4_BYTE_START_RANGE: std::ops::RangeInclusive<u8> = UTF8_4_BYTE_MIN..=UTF8_4_BYTE_MAX; // 0xF0..=0xF4
 const UTF8_INVALID_LATE_START_RANGE: std::ops::RangeInclusive<u8> =
     UTF8_INVALID_AS_START_MIN_RANGE2..=0xFF; // 0xF5..=0xFF
 const UTF8_CONTINUATION_RANGE: std::ops::RangeInclusive<u8> = UTF8_CONT_MIN..=UTF8_CONT_MAX; // 0x80..=0xBF
-
 
 /// Represents a single token identified by the lexer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,10 +232,7 @@ impl AnsiLexer {
             Utf8DecodeResult::NeedsMoreBytes => { /* Byte buffered, wait for more */ }
             Utf8DecodeResult::InvalidSequence => {
                 // This means 'byte' itself was an invalid UTF-8 start (e.g., 0xC0, 0xF5).
-                warn!(
-                    "invalid utf8 byte: {:X?}",
-                    byte
-                );
+                warn!("invalid utf8 byte: {:X?}", byte);
                 self.tokens.push(AnsiToken::Print(REPLACEMENT_CHARACTER));
             }
         }

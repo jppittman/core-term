@@ -34,7 +34,14 @@ impl<M: Manifold<Output = Discrete>> Manifold for ScreenRemap<M> {
         let scale = 2.0 / self.height;
         let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
         let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-        At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
+        At {
+            inner: &self.inner,
+            x: sx,
+            y: sy,
+            z,
+            w,
+        }
+        .eval()
     }
 }
 

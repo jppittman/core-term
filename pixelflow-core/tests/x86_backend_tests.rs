@@ -2,8 +2,8 @@
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use pixelflow_core::backend::{MaskOps, SimdOps};
     use pixelflow_core::backend::x86::F32x4;
+    use pixelflow_core::backend::{MaskOps, SimdOps};
     use std::prelude::v1::*;
 
     #[test]

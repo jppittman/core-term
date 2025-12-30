@@ -771,7 +771,11 @@ impl SimdOps for F32x16 {
         // Check if each lane is non-zero
         unsafe {
             let as_int = _mm512_castps_si512(self.0);
-            Mask16(_mm512_cmp_epi32_mask(as_int, _mm512_setzero_si512(), _MM_CMPINT_NE))
+            Mask16(_mm512_cmp_epi32_mask(
+                as_int,
+                _mm512_setzero_si512(),
+                _MM_CMPINT_NE,
+            ))
         }
     }
 }

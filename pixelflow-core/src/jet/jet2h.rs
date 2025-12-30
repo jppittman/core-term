@@ -82,7 +82,14 @@ impl Jet2H {
     /// Evaluates each component at origin to get concrete Field values.
     /// Use sparingly - prefer keeping expressions as manifolds.
     #[inline(always)]
-    pub fn new<V, Dx, Dy, Dxx, Dxy, Dyy>(val: V, dx: Dx, dy: Dy, dxx: Dxx, dxy: Dxy, dyy: Dyy) -> Self
+    pub fn new<V, Dx, Dy, Dxx, Dxy, Dyy>(
+        val: V,
+        dx: Dx,
+        dy: Dy,
+        dxx: Dxx,
+        dxy: Dxy,
+        dyy: Dyy,
+    ) -> Self
     where
         V: Manifold<Field, Output = Field>,
         Dx: Manifold<Field, Output = Field>,
@@ -211,8 +218,12 @@ impl Jet2H {
     /// Returns if_true where mask is set, if_false elsewhere.
     #[inline(always)]
     pub fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        if mask.all() { return if_true; }
-        if !mask.any() { return if_false; }
+        if mask.all() {
+            return if_true;
+        }
+        if !mask.any() {
+            return if_false;
+        }
         Self::select_raw(mask, if_true, if_false)
     }
 }
@@ -246,12 +257,9 @@ impl Jet2HSqrt {
         // where (rsqrt(x))' = -x' * rsqrt(x)³ / 2
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
         let quarter_rsqrt_cubed = rsqrt_cubed * Field::from(0.25);
-        let sqrt_dxx = self.0.dxx * half_rsqrt
-            - self.0.dx * self.0.dx * quarter_rsqrt_cubed;
-        let sqrt_dxy = self.0.dxy * half_rsqrt
-            - self.0.dx * self.0.dy * quarter_rsqrt_cubed;
-        let sqrt_dyy = self.0.dyy * half_rsqrt
-            - self.0.dy * self.0.dy * quarter_rsqrt_cubed;
+        let sqrt_dxx = self.0.dxx * half_rsqrt - self.0.dx * self.0.dx * quarter_rsqrt_cubed;
+        let sqrt_dxy = self.0.dxy * half_rsqrt - self.0.dx * self.0.dy * quarter_rsqrt_cubed;
+        let sqrt_dyy = self.0.dyy * half_rsqrt - self.0.dy * self.0.dy * quarter_rsqrt_cubed;
 
         Jet2H::new(sqrt_val, sqrt_dx, sqrt_dy, sqrt_dxx, sqrt_dxy, sqrt_dyy)
     }
@@ -288,7 +296,7 @@ impl core::ops::Div<Jet2HSqrt> for Jet2H {
         // where d/dx[rsqrt(b)³] = 3 * rsqrt(b)² * (rsqrt(b))'
         //                        = -3 * b' * rsqrt(b)⁵ / 2
         let rsqrt_fifth = rsqrt_cubed * rsqrt_b * rsqrt_b;
-        let term = rsqrt_fifth * Field::from(0.75);  // 3/2 / 2
+        let term = rsqrt_fifth * Field::from(0.75); // 3/2 / 2
         let two = Field::from(2.0);
 
         let result_dxx = self.dxx * rsqrt_b
@@ -308,12 +316,7 @@ impl core::ops::Div<Jet2HSqrt> for Jet2H {
             + self.val * b.dy * b.dy * term;
 
         Jet2H::new(
-            result_val,
-            result_dx,
-            result_dy,
-            result_dxx,
-            result_dxy,
-            result_dyy,
+            result_val, result_dx, result_dy, result_dxx, result_dxy, result_dyy,
         )
     }
 }
@@ -321,43 +324,57 @@ impl core::ops::Div<Jet2HSqrt> for Jet2H {
 impl core::ops::Add<Jet2H> for Jet2HSqrt {
     type Output = Jet2H;
     #[inline(always)]
-    fn add(self, rhs: Jet2H) -> Jet2H { self.eval() + rhs }
+    fn add(self, rhs: Jet2H) -> Jet2H {
+        self.eval() + rhs
+    }
 }
 
 impl core::ops::Sub<Jet2H> for Jet2HSqrt {
     type Output = Jet2H;
     #[inline(always)]
-    fn sub(self, rhs: Jet2H) -> Jet2H { self.eval() - rhs }
+    fn sub(self, rhs: Jet2H) -> Jet2H {
+        self.eval() - rhs
+    }
 }
 
 impl core::ops::Mul<Jet2H> for Jet2HSqrt {
     type Output = Jet2H;
     #[inline(always)]
-    fn mul(self, rhs: Jet2H) -> Jet2H { self.eval() * rhs }
+    fn mul(self, rhs: Jet2H) -> Jet2H {
+        self.eval() * rhs
+    }
 }
 
 impl core::ops::Div<Jet2H> for Jet2HSqrt {
     type Output = Jet2H;
     #[inline(always)]
-    fn div(self, rhs: Jet2H) -> Jet2H { self.eval() / rhs }
+    fn div(self, rhs: Jet2H) -> Jet2H {
+        self.eval() / rhs
+    }
 }
 
 impl core::ops::Add<Jet2HSqrt> for Jet2H {
     type Output = Jet2H;
     #[inline(always)]
-    fn add(self, rhs: Jet2HSqrt) -> Jet2H { self + rhs.eval() }
+    fn add(self, rhs: Jet2HSqrt) -> Jet2H {
+        self + rhs.eval()
+    }
 }
 
 impl core::ops::Sub<Jet2HSqrt> for Jet2H {
     type Output = Jet2H;
     #[inline(always)]
-    fn sub(self, rhs: Jet2HSqrt) -> Jet2H { self - rhs.eval() }
+    fn sub(self, rhs: Jet2HSqrt) -> Jet2H {
+        self - rhs.eval()
+    }
 }
 
 impl core::ops::Mul<Jet2HSqrt> for Jet2H {
     type Output = Jet2H;
     #[inline(always)]
-    fn mul(self, rhs: Jet2HSqrt) -> Jet2H { self * rhs.eval() }
+    fn mul(self, rhs: Jet2HSqrt) -> Jet2H {
+        self * rhs.eval()
+    }
 }
 
 // ============================================================================
@@ -455,14 +472,7 @@ impl core::ops::Div for Jet2H {
             + self.val * rhs.dyy * inv_g_sq * Field::from(-1.0)
             + two * self.val * rhs.dy * rhs.dy * inv_g_cube;
 
-        Self::new(
-            self.val * inv_g,
-            dx,
-            dy,
-            dxx,
-            dxy,
-            dyy,
-        )
+        Self::new(self.val * inv_g, dx, dy, dxx, dxy, dyy)
     }
 }
 
@@ -555,7 +565,14 @@ impl Numeric for Jet2H {
         let sqrt_dyy = self.dyy * half_rsqrt - self.dy * self.dy * quarter_rsqrt_cubed;
         let sqrt_dxy = self.dxy * half_rsqrt - self.dx * self.dy * quarter_rsqrt_cubed;
 
-        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt, sqrt_dxx, sqrt_dxy, sqrt_dyy)
+        Self::new(
+            sqrt_val,
+            self.dx * half_rsqrt,
+            self.dy * half_rsqrt,
+            sqrt_dxx,
+            sqrt_dxy,
+            sqrt_dyy,
+        )
     }
 
     #[inline(always)]
@@ -619,8 +636,12 @@ impl Numeric for Jet2H {
 
     #[inline(always)]
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        if mask.all() { return if_true; }
-        if !mask.any() { return if_false; }
+        if mask.all() {
+            return if_true;
+        }
+        if !mask.any() {
+            return if_false;
+        }
         Self::select_raw(mask, if_true, if_false)
     }
 
@@ -719,11 +740,21 @@ impl Numeric for Jet2H {
             self.val.atan2(x.val),
             self.dx * dy_darg + x.dx * dx_darg,
             self.dy * dy_darg + x.dy * dx_darg,
-            self.dxx * dy_darg + self.dx * d_dy_darg_y * self.dx + x.dxx * dx_darg + x.dx * d_dx_darg_x * x.dx
+            self.dxx * dy_darg
+                + self.dx * d_dy_darg_y * self.dx
+                + x.dxx * dx_darg
+                + x.dx * d_dx_darg_x * x.dx
                 + self.dx * x.dx * (d_dy_darg_x + d_dx_darg_y),
-            self.dxy * dy_darg + self.dx * d_dy_darg_y * self.dy + x.dxy * dx_darg + x.dx * d_dx_darg_x * x.dy
-                + self.dy * x.dx * (d_dy_darg_x + d_dx_darg_y) + self.dx * x.dy * (d_dy_darg_x + d_dx_darg_y),
-            self.dyy * dy_darg + self.dy * d_dy_darg_y * self.dy + x.dyy * dx_darg + x.dy * d_dx_darg_x * x.dy
+            self.dxy * dy_darg
+                + self.dx * d_dy_darg_y * self.dy
+                + x.dxy * dx_darg
+                + x.dx * d_dx_darg_x * x.dy
+                + self.dy * x.dx * (d_dy_darg_x + d_dx_darg_y)
+                + self.dx * x.dy * (d_dy_darg_x + d_dx_darg_y),
+            self.dyy * dy_darg
+                + self.dy * d_dy_darg_y * self.dy
+                + x.dyy * dx_darg
+                + x.dy * d_dx_darg_x * x.dy
                 + self.dy * x.dy * (d_dy_darg_x + d_dx_darg_y),
         )
     }
@@ -743,12 +774,18 @@ impl Numeric for Jet2H {
             val * (exp.dx * ln_base + coeff * self.dx),
             val * (exp.dy * ln_base + coeff * self.dy),
             // Simplified Hessian (full version would be very complex)
-            self.dxx * val * coeff + two * self.dx * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
-                + val * exp.dxx * ln_base - self.dx * self.dx * val * inv_self * inv_self,
-            self.dxy * val * coeff + self.dx * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
-                + self.dy * val * inv_self * (exp.dx * ln_base + coeff * self.dx) + val * exp.dxy * ln_base,
-            self.dyy * val * coeff + two * self.dy * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
-                + val * exp.dyy * ln_base - self.dy * self.dy * val * inv_self * inv_self,
+            self.dxx * val * coeff
+                + two * self.dx * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
+                + val * exp.dxx * ln_base
+                - self.dx * self.dx * val * inv_self * inv_self,
+            self.dxy * val * coeff
+                + self.dx * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
+                + self.dy * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
+                + val * exp.dxy * ln_base,
+            self.dyy * val * coeff
+                + two * self.dy * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
+                + val * exp.dyy * ln_base
+                - self.dy * self.dy * val * inv_self * inv_self,
         )
     }
 

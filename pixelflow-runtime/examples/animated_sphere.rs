@@ -6,9 +6,9 @@
 //! - Animation is injected by wrapping existing geometry nodes
 
 use actor_scheduler::Message;
-use pixelflow_core::ops::Sin;
-use pixelflow_core::jet::Jet3;
 use pixelflow_core::combinators::At;
+use pixelflow_core::jet::Jet3;
+use pixelflow_core::ops::Sin;
 use pixelflow_core::{Discrete, Field, Manifold, W};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
@@ -38,7 +38,14 @@ impl<M: Manifold<Output = Discrete> + Send + Sync> Manifold for TimeShift<M> {
 
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
         let w_shifted = w + Field::from(self.t);
-        At { inner: &self.inner, x, y, z, w: w_shifted }.eval()
+        At {
+            inner: &self.inner,
+            x,
+            y,
+            z,
+            w: w_shifted,
+        }
+        .eval()
     }
 }
 
@@ -74,7 +81,8 @@ impl Manifold<Jet3> for OscillatingSphere {
         let offset: Jet3 = oscillation.eval_raw(rx, ry, rz, w);
 
         // Center = base + offset * amplitude_vector
-        let cx = Jet3::constant(Field::from(self.base.0)) + offset * Jet3::constant(Field::from(self.amplitude));
+        let cx = Jet3::constant(Field::from(self.base.0))
+            + offset * Jet3::constant(Field::from(self.amplitude));
         let cy = Jet3::constant(Field::from(self.base.1));
         let cz = Jet3::constant(Field::from(self.base.2));
 
@@ -110,7 +118,14 @@ impl<M: Manifold<Output = Discrete> + Send + Sync> Manifold for ScreenRemap<M> {
         let scale = 2.0 / self.height;
         let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
         let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-        At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
+        At {
+            inner: &self.inner,
+            x: sx,
+            y: sy,
+            z,
+            w,
+        }
+        .eval()
     }
 }
 
@@ -133,8 +148,8 @@ fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
     // Animated sphere using the algebra: center.x = sin(w * freq) * amp
     let sphere = OscillatingSphere {
         base: (0.0, 0.0, 4.0),
-        amplitude: 2.0,     // Oscillate ±2 units in X
-        frequency: 1.0,     // 1 rad/s
+        amplitude: 2.0, // Oscillate ±2 units in X
+        frequency: 1.0, // 1 rad/s
         radius: 1.0,
     };
 
@@ -187,7 +202,9 @@ fn main() -> anyhow::Result<()> {
             let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> = Arc::new(timed_scene);
 
             if engine_handle
-                .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(arc))))
+                .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
+                    arc,
+                ))))
                 .is_err()
             {
                 break; // Engine shut down

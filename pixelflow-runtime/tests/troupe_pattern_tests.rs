@@ -82,7 +82,10 @@ impl<'a, Dir: 'a> TroupeActor<'a, Dir> for AlphaActor<'a> {
 
 impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
     fn handle_data(&mut self, msg: AlphaData) {
-        self.log.lock().unwrap().push(format!("Alpha:Data:{}", msg.0));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("Alpha:Data:{}", msg.0));
     }
 
     fn handle_control(&mut self, cmd: AlphaControl) {
@@ -124,7 +127,10 @@ impl<'a, Dir: 'a> TroupeActor<'a, Dir> for BetaActor<'a> {
 
 impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
     fn handle_data(&mut self, msg: BetaData) {
-        self.log.lock().unwrap().push(format!("Beta:Data:{}", msg.0));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("Beta:Data:{}", msg.0));
     }
 
     fn handle_control(&mut self, cmd: BetaControl) {
@@ -132,7 +138,10 @@ impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
             BetaControl::Pong => {
                 self.log.lock().unwrap().push("Beta:Pong".to_string());
                 // Send back to alpha
-                let _ = self.dir.alpha.send(Message::Data(AlphaData("pong-response".to_string())));
+                let _ = self
+                    .dir
+                    .alpha
+                    .send(Message::Data(AlphaData("pong-response".to_string())));
             }
             BetaControl::Shutdown => {
                 self.log.lock().unwrap().push("Beta:Shutdown".to_string());
@@ -166,8 +175,10 @@ fn directory_allows_cross_actor_messaging() {
     let log = Arc::new(Mutex::new(Vec::new()));
 
     // Phase 1: Create handles and schedulers
-    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
-    let (beta_h, mut beta_s) = ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
+    let (alpha_h, mut alpha_s) =
+        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+    let (beta_h, mut beta_s) =
+        ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
 
     // Phase 2: Build directory
     let dir = Arc::new(TestDirectory {
@@ -180,7 +191,8 @@ fn directory_allows_cross_actor_messaging() {
     let dir_alpha = dir.clone();
     thread::spawn(move || {
         // Safety: dir lives in Arc, accessible throughout thread lifetime
-        let dir_ref: &TestDirectory = unsafe { &*(Arc::as_ptr(&dir_alpha) as *const TestDirectory) };
+        let dir_ref: &TestDirectory =
+            unsafe { &*(Arc::as_ptr(&dir_alpha) as *const TestDirectory) };
         let mut actor = AlphaActor {
             dir: dir_ref,
             log: log_alpha,
@@ -243,8 +255,10 @@ struct TestExposedHandles {
 
 impl TestTroupe {
     fn new() -> Self {
-        let (alpha_h, alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
-        let (beta_h, beta_s) = ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
+        let (alpha_h, alpha_s) =
+            ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+        let (beta_h, beta_s) =
+            ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
 
         Self {
             directory: TestDirectory {
@@ -272,8 +286,14 @@ fn two_phase_initialization_queues_messages_before_play() {
     let exposed = troupe.exposed();
 
     // Phase 3: Send messages BEFORE play() - they should queue
-    exposed.alpha.send(Message::Data(AlphaData("early-bird".to_string()))).unwrap();
-    exposed.alpha.send(Message::Data(AlphaData("gets-the-worm".to_string()))).unwrap();
+    exposed
+        .alpha
+        .send(Message::Data(AlphaData("early-bird".to_string())))
+        .unwrap();
+    exposed
+        .alpha
+        .send(Message::Data(AlphaData("gets-the-worm".to_string())))
+        .unwrap();
 
     // Verify messages are queued (not processed yet - no threads running)
     // We can't directly check, but the sends should succeed
@@ -293,7 +313,9 @@ fn exposed_handles_can_outlive_troupe_new() {
 
     // Handles still valid for sending
     // (though messages will never be processed since scheduler dropped)
-    let result = exposed.alpha.send(Message::Data(AlphaData("orphan".to_string())));
+    let result = exposed
+        .alpha
+        .send(Message::Data(AlphaData("orphan".to_string())));
 
     // Send might succeed (channel still open) or fail (receiver dropped)
     // Either is acceptable - the important thing is no panic
@@ -306,8 +328,10 @@ fn exposed_handles_can_outlive_troupe_new() {
 
 #[test]
 fn all_actor_threads_exit_on_channel_close() {
-    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
-    let (beta_h, mut beta_s) = ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
+    let (alpha_h, mut alpha_s) =
+        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+    let (beta_h, mut beta_s) =
+        ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
 
     let alpha_exited = Arc::new(AtomicBool::new(false));
     let beta_exited = Arc::new(AtomicBool::new(false));
@@ -321,7 +345,9 @@ fn all_actor_threads_exit_on_channel_close() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         alpha_s.run(&mut NoopActor);
         alpha_exit.store(true, Ordering::SeqCst);
@@ -333,7 +359,9 @@ fn all_actor_threads_exit_on_channel_close() {
             fn handle_data(&mut self, _: BetaData) {}
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         beta_s.run(&mut NoopActor);
         beta_exit.store(true, Ordering::SeqCst);
@@ -358,8 +386,10 @@ fn all_actor_threads_exit_on_channel_close() {
 
 #[test]
 fn actor_thread_panic_isolated() {
-    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
-    let (beta_h, mut beta_s) = ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
+    let (alpha_h, mut alpha_s) =
+        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+    let (beta_h, mut beta_s) =
+        ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
 
     let beta_count = Arc::new(AtomicUsize::new(0));
     let beta_count_clone = beta_count.clone();
@@ -373,7 +403,9 @@ fn actor_thread_panic_isolated() {
             }
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             alpha_s.run(&mut PanicActor);
@@ -389,13 +421,17 @@ fn actor_thread_panic_isolated() {
             }
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         beta_s.run(&mut CountActor(beta_count_clone));
     });
 
     // Trigger alpha panic
-    alpha_h.send(Message::Data(AlphaData("boom".to_string()))).unwrap();
+    alpha_h
+        .send(Message::Data(AlphaData("boom".to_string())))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(50));
 
@@ -430,8 +466,10 @@ fn actor_thread_panic_isolated() {
 /// circular handle references (see directory_allows_cross_actor_messaging).
 #[test]
 fn circular_messaging_does_not_deadlock() {
-    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1000);
-    let (beta_h, mut beta_s) = ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1000);
+    let (alpha_h, mut alpha_s) =
+        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1000);
+    let (beta_h, mut beta_s) =
+        ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1000);
 
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
@@ -457,7 +495,9 @@ fn circular_messaging_does_not_deadlock() {
                 }
             }
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         alpha_s.run(&mut PingActor {
             beta_h: dir_alpha.1.clone(),
@@ -485,7 +525,9 @@ fn circular_messaging_does_not_deadlock() {
                 }
             }
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         beta_s.run(&mut PongActor {
             alpha_h: dir_beta.0.clone(),
@@ -523,7 +565,8 @@ fn circular_messaging_does_not_deadlock() {
 
 #[test]
 fn cloned_directory_handles_work_independently() {
-    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+    let (alpha_h, mut alpha_s) =
+        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
 
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
@@ -536,7 +579,9 @@ fn cloned_directory_handles_work_independently() {
             }
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         alpha_s.run(&mut CountActor(count_clone));
     });
@@ -556,7 +601,9 @@ fn cloned_directory_handles_work_independently() {
     drop(h2);
 
     // Original still works
-    alpha_h.send(Message::Data(AlphaData("4".to_string()))).unwrap();
+    alpha_h
+        .send(Message::Data(AlphaData("4".to_string())))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(50));
 
@@ -594,7 +641,9 @@ fn actors_can_coordinate_startup_with_barrier() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         alpha_s.run(&mut NoopActor);
     });
@@ -610,7 +659,9 @@ fn actors_can_coordinate_startup_with_barrier() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         beta_s.run(&mut NoopActor);
     });
@@ -641,7 +692,8 @@ fn actors_can_coordinate_startup_with_barrier() {
 
 #[test]
 fn shutdown_message_causes_actor_exit() {
-    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+    let (alpha_h, mut alpha_s) =
+        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
 
     let exited = Arc::new(AtomicBool::new(false));
     let exited_clone = exited.clone();
@@ -652,7 +704,9 @@ fn shutdown_message_causes_actor_exit() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         alpha_s.run(&mut NoopActor);
         exited_clone.store(true, Ordering::SeqCst);
@@ -672,8 +726,10 @@ fn shutdown_message_causes_actor_exit() {
 
 #[test]
 fn shutdown_works_with_multiple_actors() {
-    let (alpha_h, mut alpha_s) = ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
-    let (beta_h, mut beta_s) = ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
+    let (alpha_h, mut alpha_s) =
+        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+    let (beta_h, mut beta_s) =
+        ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
 
     let alpha_exited = Arc::new(AtomicBool::new(false));
     let beta_exited = Arc::new(AtomicBool::new(false));
@@ -687,7 +743,9 @@ fn shutdown_works_with_multiple_actors() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         alpha_s.run(&mut NoopActor);
         alpha_exit.store(true, Ordering::SeqCst);
@@ -699,7 +757,9 @@ fn shutdown_works_with_multiple_actors() {
             fn handle_data(&mut self, _: BetaData) {}
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint { h }
+            fn park(&mut self, h: ParkHint) -> ParkHint {
+                h
+            }
         }
         beta_s.run(&mut NoopActor);
         beta_exit.store(true, Ordering::SeqCst);

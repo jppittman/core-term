@@ -65,7 +65,6 @@ pub struct TerminalEmulator {
 impl TerminalEmulator {
     /// Creates a new `TerminalEmulator`.
     pub fn new(width: usize, height: usize) -> Self {
-
         let initial_attributes = Attributes::default(); // SGR Reset attributes
                                                         // Screen::new now gets scrollback_limit from CONFIG
         let mut screen = Screen::new(width, height);

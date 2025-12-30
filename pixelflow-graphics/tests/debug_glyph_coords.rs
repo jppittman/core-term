@@ -52,7 +52,11 @@ fn debug_coverage_at_points() {
     let width = 40;
     let height = 45;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
-    execute(&color_manifold, &mut pixels, TensorShape::new(width, height));
+    execute(
+        &color_manifold,
+        &mut pixels,
+        TensorShape::new(width, height),
+    );
 
     // Print cross-sections at different Y values
     println!("\nQuerying coverage at x=15 for various screen Y values:");
@@ -70,34 +74,68 @@ fn debug_coverage_at_points() {
             "legs (should be wide)      "
         };
 
-        let intensity = if screen_y < height { pixels[screen_y * width + x].r() } else { 0 };
-        println!("{:8} | {:8.1} | {} | {:3}", screen_y, font_y, region, intensity);
+        let intensity = if screen_y < height {
+            pixels[screen_y * width + x].r()
+        } else {
+            0
+        };
+        println!(
+            "{:8} | {:8.1} | {} | {:3}",
+            screen_y, font_y, region, intensity
+        );
     }
 
     // Print X cross-sections at different Y values
-    println!("\nX cross-section at screen Y=15 (font Y={:.0}, should be NARROW near apex):", (y_offset - 15.0) / scale);
+    println!(
+        "\nX cross-section at screen Y=15 (font Y={:.0}, should be NARROW near apex):",
+        (y_offset - 15.0) / scale
+    );
     print!("  ");
     for x in 0..40 {
         let intensity = pixels[15 * width + x].r();
-        let ch = if intensity > 128 { '#' } else if intensity > 32 { '.' } else { ' ' };
+        let ch = if intensity > 128 {
+            '#'
+        } else if intensity > 32 {
+            '.'
+        } else {
+            ' '
+        };
         print!("{}", ch);
     }
     println!();
 
-    println!("\nX cross-section at screen Y=22 (font Y={:.0}, crossbar area):", (y_offset - 22.0) / scale);
+    println!(
+        "\nX cross-section at screen Y=22 (font Y={:.0}, crossbar area):",
+        (y_offset - 22.0) / scale
+    );
     print!("  ");
     for x in 0..40 {
         let intensity = pixels[22 * width + x].r();
-        let ch = if intensity > 128 { '#' } else if intensity > 32 { '.' } else { ' ' };
+        let ch = if intensity > 128 {
+            '#'
+        } else if intensity > 32 {
+            '.'
+        } else {
+            ' '
+        };
         print!("{}", ch);
     }
     println!();
 
-    println!("\nX cross-section at screen Y=30 (font Y={:.0}, should be WIDE at legs):", (y_offset - 30.0) / scale);
+    println!(
+        "\nX cross-section at screen Y=30 (font Y={:.0}, should be WIDE at legs):",
+        (y_offset - 30.0) / scale
+    );
     print!("  ");
     for x in 0..40 {
         let intensity = pixels[30 * width + x].r();
-        let ch = if intensity > 128 { '#' } else if intensity > 32 { '.' } else { ' ' };
+        let ch = if intensity > 128 {
+            '#'
+        } else if intensity > 32 {
+            '.'
+        } else {
+            ' '
+        };
         print!("{}", ch);
     }
     println!();
@@ -109,7 +147,13 @@ fn debug_coverage_at_points() {
         print!("{:6.0} | ", font_y);
         for x in 0..width {
             let intensity = pixels[y * width + x].r();
-            let ch = if intensity > 128 { '#' } else if intensity > 32 { '.' } else { ' ' };
+            let ch = if intensity > 128 {
+                '#'
+            } else if intensity > 32 {
+                '.'
+            } else {
+                ' '
+            };
             print!("{}", ch);
         }
         println!();

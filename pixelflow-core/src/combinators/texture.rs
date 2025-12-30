@@ -3,8 +3,8 @@
 //! A manifold that samples from a backing memory slice.
 //! This enables query caching and texture lookups.
 
-use alloc::vec::Vec;
 use crate::{Field, Manifold};
+use alloc::vec::Vec;
 
 /// Evaluate a manifold graph to Field.
 #[inline(always)]
@@ -50,7 +50,11 @@ impl Texture {
     /// Panics if `data.len() != width * height`.
     pub fn new(data: Vec<f32>, width: usize, height: usize) -> Self {
         assert_eq!(data.len(), width * height, "texture size mismatch");
-        Self { data, width, height }
+        Self {
+            data,
+            width,
+            height,
+        }
     }
 
     /// Create a texture by sampling a manifold.
@@ -74,7 +78,11 @@ impl Texture {
             }
         }
 
-        Self { data, width, height }
+        Self {
+            data,
+            width,
+            height,
+        }
     }
 
     /// Get the texture width.

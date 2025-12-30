@@ -89,7 +89,9 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
     fn handle_management(&mut self, mgmt: EngineEventManagement) {
         match mgmt {
             EngineEventManagement::KeyDown { key, mods, text } => {
-                use crate::term::{EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction};
+                use crate::term::{
+                    EmulatorAction, EmulatorInput, TerminalInterface, UserInputAction,
+                };
 
                 let input = EmulatorInput::User(UserInputAction::KeyInput {
                     symbol: key,

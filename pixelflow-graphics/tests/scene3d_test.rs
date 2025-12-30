@@ -124,7 +124,7 @@ fn test_chrome_unit_sphere() {
     // Debug: print some pixel values
     let center = &frame.data[(H / 2) * W + (W / 2)];
     let bottom_sphere = &frame.data[(H * 5 / 8) * W + (W / 2)]; // Lower part
-    let top_sphere = &frame.data[(H * 3 / 8) * W + (W / 2)];    // Upper part
+    let top_sphere = &frame.data[(H * 3 / 8) * W + (W / 2)]; // Upper part
     let corner = &frame.data[0]; // Top-left (sky)
 
     println!("Chrome center: r={}", center.r());
@@ -133,9 +133,17 @@ fn test_chrome_unit_sphere() {
     println!("Corner (sky): r={}", corner.r());
 
     // Sanity checks
-    assert!(center.r() > 10, "Center should not be black: r={}", center.r());
+    assert!(
+        center.r() > 10,
+        "Center should not be black: r={}",
+        center.r()
+    );
     // Sky gradient goes from 0.1 (dark) to 0.9 (bright) = 25 to 229
-    assert!(corner.r() > 20, "Corner should be sky (not black): r={}", corner.r());
+    assert!(
+        corner.r() > 20,
+        "Corner should be sky (not black): r={}",
+        corner.r()
+    );
 }
 
 /// Test: Just the sky (no geometry)
@@ -290,7 +298,14 @@ fn test_color_chrome_sphere() {
             let scale = Field::from(2.0) / height;
             let x = (px - width * Field::from(0.5)) * scale;
             let y = (height * Field::from(0.5) - py) * scale;
-            At { inner: &self.inner, x, y, z, w }.eval()
+            At {
+                inner: &self.inner,
+                x,
+                y,
+                z,
+                w,
+            }
+            .eval()
         }
     }
 
@@ -331,7 +346,12 @@ fn test_color_chrome_sphere() {
     println!("Sky: r={} g={} b={}", sky.r(), sky.g(), sky.b());
 
     // Sky should be blue-ish (B > R)
-    assert!(sky.b() > sky.r(), "Sky should be blue: r={} b={}", sky.r(), sky.b());
+    assert!(
+        sky.b() > sky.r(),
+        "Sky should be blue: r={} b={}",
+        sky.r(),
+        sky.b()
+    );
 }
 
 /// Test: Compare 3-channel vs mullet rendering to ensure they match.
@@ -347,7 +367,9 @@ fn test_mullet_vs_3channel_comparison() {
 
     /// Per-channel sky (inline version since we deleted BlueSky)
     #[derive(Clone, Copy)]
-    struct ChannelSky { channel: u8 }
+    struct ChannelSky {
+        channel: u8,
+    }
     impl Manifold<Jet3> for ChannelSky {
         type Output = Field;
         fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Field {
@@ -363,7 +385,9 @@ fn test_mullet_vs_3channel_comparison() {
 
     /// Per-channel checker (inline version)
     #[derive(Clone, Copy)]
-    struct ChannelChecker { channel: u8 }
+    struct ChannelChecker {
+        channel: u8,
+    }
     impl Manifold<Jet3> for ChannelChecker {
         type Output = Field;
         fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Field {
@@ -394,9 +418,12 @@ fn test_mullet_vs_3channel_comparison() {
             let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().constant();
             let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).constant();
 
-            let coverage = (dist_to_edge / pixel_size).min(Field::from(1.0)).max(Field::from(0.0));
+            let coverage = (dist_to_edge / pixel_size)
+                .min(Field::from(1.0))
+                .max(Field::from(0.0));
             let neighbor_color = is_even.select(color_b, color_a);
-            (base_color * coverage.clone() + neighbor_color * (Field::from(1.0) - coverage)).constant()
+            (base_color * coverage.clone() + neighbor_color * (Field::from(1.0) - coverage))
+                .constant()
         }
     }
 
@@ -410,19 +437,29 @@ fn test_mullet_vs_3channel_comparison() {
         ScreenRemap {
             inner: ScreenToDir {
                 inner: Surface {
-                    geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+                    geometry: SphereAt {
+                        center: (0.0, 0.0, 4.0),
+                        radius: 1.0,
+                    },
                     material: Reflect { inner: world },
                     background: world,
-                }
+                },
             },
             width: W as f32,
             height: H as f32,
         }
     }
 
-    struct ThreeChannelRenderer<R, G, B> { r: R, g: G, b: B }
+    struct ThreeChannelRenderer<R, G, B> {
+        r: R,
+        g: G,
+        b: B,
+    }
     impl<R, G, B> Manifold for ThreeChannelRenderer<R, G, B>
-    where R: Manifold<Output = Field>, G: Manifold<Output = Field>, B: Manifold<Output = Field>
+    where
+        R: Manifold<Output = Field>,
+        G: Manifold<Output = Field>,
+        B: Manifold<Output = Field>,
     {
         type Output = Discrete;
         fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
@@ -441,14 +478,25 @@ fn test_mullet_vs_3channel_comparison() {
 
     let mut old_frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let old_start = std::time::Instant::now();
-    execute(&old_renderer, old_frame.as_slice_mut(), TensorShape { width: W, height: H });
+    execute(
+        &old_renderer,
+        old_frame.as_slice_mut(),
+        TensorShape {
+            width: W,
+            height: H,
+        },
+    );
     let old_elapsed = old_start.elapsed();
 
     // ============================================================
     // NEW APPROACH: Mullet architecture (geometry once, Discrete colors)
     // ============================================================
 
-    struct ColorScreenRemap<M> { inner: M, width: f32, height: f32 }
+    struct ColorScreenRemap<M> {
+        inner: M,
+        width: f32,
+        height: f32,
+    }
     impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         type Output = Discrete;
         fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
@@ -457,7 +505,14 @@ fn test_mullet_vs_3channel_comparison() {
             let scale = Field::from(2.0) / height;
             let x = (px - width * Field::from(0.5)) * scale;
             let y = (height * Field::from(0.5) - py) * scale;
-            At { inner: &self.inner, x, y, z, w }.eval()
+            At {
+                inner: &self.inner,
+                x,
+                y,
+                z,
+                w,
+            }
+            .eval()
         }
     }
 
@@ -470,10 +525,13 @@ fn test_mullet_vs_3channel_comparison() {
     let new_renderer = ColorScreenRemap {
         inner: ColorScreenToDir {
             inner: ColorSurface {
-                geometry: SphereAt { center: (0.0, 0.0, 4.0), radius: 1.0 },
+                geometry: SphereAt {
+                    center: (0.0, 0.0, 4.0),
+                    radius: 1.0,
+                },
                 material: ColorReflect { inner: world },
                 background: world,
-            }
+            },
         },
         width: W as f32,
         height: H as f32,
@@ -481,7 +539,14 @@ fn test_mullet_vs_3channel_comparison() {
 
     let mut new_frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let new_start = std::time::Instant::now();
-    execute(&new_renderer, new_frame.as_slice_mut(), TensorShape { width: W, height: H });
+    execute(
+        &new_renderer,
+        new_frame.as_slice_mut(),
+        TensorShape {
+            width: W,
+            height: H,
+        },
+    );
     let new_elapsed = new_start.elapsed();
 
     // ============================================================
@@ -490,7 +555,10 @@ fn test_mullet_vs_3channel_comparison() {
 
     println!("3-channel: {:?}", old_elapsed);
     println!("Mullet:    {:?}", new_elapsed);
-    println!("Speedup:   {:.2}x", old_elapsed.as_secs_f64() / new_elapsed.as_secs_f64());
+    println!(
+        "Speedup:   {:.2}x",
+        old_elapsed.as_secs_f64() / new_elapsed.as_secs_f64()
+    );
 
     // Compare all pixels
     let mut max_diff = 0i32;
@@ -504,8 +572,18 @@ fn test_mullet_vs_3channel_comparison() {
             max_diff = d;
             let x = i % W;
             let y = i / W;
-            println!("New max diff {} at ({}, {}): old=({},{},{}) new=({},{},{})",
-                d, x, y, old_p.r(), old_p.g(), old_p.b(), new_p.r(), new_p.g(), new_p.b());
+            println!(
+                "New max diff {} at ({}, {}): old=({},{},{}) new=({},{},{})",
+                d,
+                x,
+                y,
+                old_p.r(),
+                old_p.g(),
+                old_p.b(),
+                new_p.r(),
+                new_p.g(),
+                new_p.b()
+            );
         }
         if d > 0 {
             diff_count += 1;
@@ -516,7 +594,11 @@ fn test_mullet_vs_3channel_comparison() {
     println!("Pixels with diff: {} / {}", diff_count, W * H);
 
     // Allow small differences due to FP ordering, but they should be identical
-    assert!(max_diff <= 1, "Max diff too large: {} (expected 0-1 for FP rounding)", max_diff);
+    assert!(
+        max_diff <= 1,
+        "Max diff too large: {} (expected 0-1 for FP rounding)",
+        max_diff
+    );
 }
 
 /// Benchmark: Compare work-stealing vs single-threaded at 1080p
@@ -543,7 +625,11 @@ fn test_work_stealing_benchmark() {
         background: world,
     };
 
-    struct ColorScreenRemap<M> { inner: M, width: f32, height: f32 }
+    struct ColorScreenRemap<M> {
+        inner: M,
+        width: f32,
+        height: f32,
+    }
     impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         type Output = Discrete;
         fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
@@ -552,7 +638,14 @@ fn test_work_stealing_benchmark() {
             let scale = Field::from(2.0) / height;
             let x = (px - width * Field::from(0.5)) * scale;
             let y = (height * Field::from(0.5) - py) * scale;
-            At { inner: &self.inner, x, y, z, w }.eval()
+            At {
+                inner: &self.inner,
+                x,
+                y,
+                z,
+                w,
+            }
+            .eval()
         }
     }
 
@@ -562,7 +655,10 @@ fn test_work_stealing_benchmark() {
         height: H as f32,
     };
 
-    let shape = TensorShape { width: W, height: H };
+    let shape = TensorShape {
+        width: W,
+        height: H,
+    };
 
     // Single-threaded baseline
     let mut frame1 = Frame::<Rgba8>::new(W as u32, H as u32);
@@ -585,5 +681,8 @@ fn test_work_stealing_benchmark() {
     println!("Throughput: {:.2} Mpix/s", mpps);
 
     // Verify correctness
-    assert_eq!(frame1.data, frame2.data, "Parallel output must match single-threaded");
+    assert_eq!(
+        frame1.data, frame2.data,
+        "Parallel output must match single-threaded"
+    );
 }

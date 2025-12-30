@@ -118,9 +118,9 @@ pub fn create_recycle_channel<T: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_core::Discrete;
     use pixelflow_core::Field;
     use pixelflow_core::Manifold;
-    use pixelflow_core::Discrete;
 
     // A minimal test surface
     #[derive(Clone, Copy)]

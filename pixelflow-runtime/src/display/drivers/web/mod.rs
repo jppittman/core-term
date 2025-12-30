@@ -69,7 +69,9 @@ impl DisplayDriver for WebDisplayDriver {
     }
 
     fn send(&self, cmd: DriverCommand<Rgba>) -> Result<(), RuntimeError> {
-        self.cmd_tx.send(cmd).map_err(|_| RuntimeError::DriverChannelDisconnected)?;
+        self.cmd_tx
+            .send(cmd)
+            .map_err(|_| RuntimeError::DriverChannelDisconnected)?;
         Ok(())
     }
 
@@ -90,12 +92,12 @@ fn run_event_loop(
     engine_tx: &EngineSender<Rgba>,
 ) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
-    let (window_id, width_px, height_px) = match cmd_rx.recv().map_err(|_| RuntimeError::DriverChannelDisconnected)? {
+    let (window_id, width_px, height_px) = match cmd_rx
+        .recv()
+        .map_err(|_| RuntimeError::DriverChannelDisconnected)?
+    {
         DriverCommand::CreateWindow {
-            id,
-            width,
-            height,
-            ..
+            id, width, height, ..
         } => (id, width, height),
         other => return Err(RuntimeError::UnexpectedCommand(format!("{:?}", other))),
     };
@@ -220,12 +222,9 @@ impl WebState {
 
     fn handle_present(&mut self, frame: Frame<Rgba>) -> Result<Frame<Rgba>, RuntimeError> {
         let data = frame.as_bytes();
-        let image_data = ImageData::new_with_u8_clamped_array_and_sh(
-            Clamped(data),
-            frame.width,
-            frame.height,
-        )
-        .map_err(|e| RuntimeError::WebImageDataError(format!("{:?}", e)))?;
+        let image_data =
+            ImageData::new_with_u8_clamped_array_and_sh(Clamped(data), frame.width, frame.height)
+                .map_err(|e| RuntimeError::WebImageDataError(format!("{:?}", e)))?;
 
         self.context
             .put_image_data(&image_data, 0.0, 0.0)

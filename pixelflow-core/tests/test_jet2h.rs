@@ -94,9 +94,9 @@ fn test_jet2h_multiplication_self() {
     let prod = x * x;
 
     assert!(approx_eq(prod.val, 4.0, 1e-6));
-    assert!(approx_eq(prod.dx, 4.0, 1e-6));    // 2 * x
+    assert!(approx_eq(prod.dx, 4.0, 1e-6)); // 2 * x
     assert!(approx_eq(prod.dy, 0.0, 1e-6));
-    assert!(approx_eq(prod.dxx, 2.0, 1e-6));   // 2
+    assert!(approx_eq(prod.dxx, 2.0, 1e-6)); // 2
     assert!(approx_eq(prod.dxy, 0.0, 1e-6));
     assert!(approx_eq(prod.dyy, 0.0, 1e-6));
 }
@@ -110,27 +110,25 @@ fn test_jet2h_division() {
     let y = Jet2H::y(Field::from(3.0));
     let quot = x / y;
 
-    assert!(approx_eq(quot.val, 2.0/3.0, 1e-5));
-    assert!(approx_eq(quot.dx, 1.0/3.0, 1e-5));
-    assert!(approx_eq(quot.dy, -2.0/9.0, 1e-5));
+    assert!(approx_eq(quot.val, 2.0 / 3.0, 1e-5));
+    assert!(approx_eq(quot.dx, 1.0 / 3.0, 1e-5));
+    assert!(approx_eq(quot.dy, -2.0 / 9.0, 1e-5));
     assert!(approx_eq(quot.dxx, 0.0, 1e-5));
-    assert!(approx_eq(quot.dxy, -1.0/9.0, 1e-5));
-    assert!(approx_eq(quot.dyy, 16.0/27.0, 1e-5));
+    assert!(approx_eq(quot.dxy, -1.0 / 9.0, 1e-5));
+    assert!(approx_eq(quot.dyy, 16.0 / 27.0, 1e-5));
 }
 
 #[test]
 fn test_jet2h_sqrt() {
     // sqrt(x²) should recover the chain rule
     let x = Jet2H::x(Field::from(2.0));
-    let x_sq = x * x;  // x² at x=2: val=4, dx=4, dxx=2
-    let sqrt_x_sq: Jet2H = x_sq.sqrt().into();  // sqrt(4) = 2
+    let x_sq = x * x; // x² at x=2: val=4, dx=4, dxx=2
+    let sqrt_x_sq: Jet2H = x_sq.sqrt().into(); // sqrt(4) = 2
 
     // Basic sanity check that sqrt was computed
     assert!(approx_eq(sqrt_x_sq.val, 2.0, 1e-5));
     assert!(approx_eq(sqrt_x_sq.dx, 1.0, 1e-5));
 }
-
-
 
 #[test]
 fn test_jet2h_mul_add() {
@@ -262,5 +260,5 @@ fn test_jet2h_hessian_symmetry() {
     let prod = x * y_sq;
 
     // dxy from product of x and y²
-    assert!(approx_eq(prod.dxy, 6.0, 1e-5));  // 2*y = 6
+    assert!(approx_eq(prod.dxy, 6.0, 1e-5)); // 2*y = 6
 }

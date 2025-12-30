@@ -12,7 +12,9 @@ use crate::display::platform::PlatformActor;
 use crate::error::RuntimeError;
 use crate::input::MouseButton;
 use crate::platform::{ActivePlatform, PlatformPixel};
-use crate::vsync_actor::{RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement};
+use crate::vsync_actor::{
+    RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
+};
 use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ParkHint, TroupeActor};
 use pixelflow_core::{Discrete, Manifold};
 use pixelflow_graphics::render::rasterizer::{render_work_stealing, TensorShape};
@@ -148,16 +150,22 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
                 }));
             }
             AppManagement::CopyToClipboard(text) => {
-                let _ = self.driver.send(Message::Control(DisplayControl::Copy { text }));
+                let _ = self
+                    .driver
+                    .send(Message::Control(DisplayControl::Copy { text }));
             }
             AppManagement::RequestPaste => {
-                let _ = self.driver.send(Message::Control(DisplayControl::RequestPaste));
+                let _ = self
+                    .driver
+                    .send(Message::Control(DisplayControl::RequestPaste));
             }
             AppManagement::SetCursorIcon(icon) => {
-                let _ = self.driver.send(Message::Control(DisplayControl::SetCursor {
-                    id: WindowId::PRIMARY,
-                    cursor: icon,
-                }));
+                let _ = self
+                    .driver
+                    .send(Message::Control(DisplayControl::SetCursor {
+                        id: WindowId::PRIMARY,
+                        cursor: icon,
+                    }));
             }
             AppManagement::Quit => {
                 let _ = self.driver.send(Message::Control(DisplayControl::Shutdown));
@@ -214,10 +222,7 @@ impl EngineHandler {
     }
 
     /// Rasterize manifold and present to driver, then notify VSync.
-    fn render_and_present(
-        &mut self,
-        manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
-    ) {
+    fn render_and_present(&mut self, manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>) {
         // Take the frame buffer (driver will return it via PresentComplete)
         let Some(mut frame) = self.frame_buffer.take() else {
             // No frame available - skip this render (waiting for driver to return one)
@@ -240,7 +245,12 @@ impl EngineHandler {
 
         self.frame_number += 1;
         if self.frame_number % 60 == 0 {
-            log::info!("Frame {}: render={:?}, send={:?}", self.frame_number, render_time, send_time);
+            log::info!(
+                "Frame {}: render={:?}, send={:?}",
+                self.frame_number,
+                render_time,
+                send_time
+            );
         }
         // Note: RenderedResponse is sent in PresentComplete handler, not here
         // This ensures VSync only gets a token back when the frame buffer is available
@@ -291,9 +301,7 @@ impl EngineHandler {
                     }));
                 }
             }
-            DisplayEvent::MouseButtonPress {
-                button, x, y, ..
-            } => {
+            DisplayEvent::MouseButtonPress { button, x, y, .. } => {
                 if let Some(app) = &self.app_handle {
                     let button = convert_mouse_button(button);
                     let _ = app.send(EngineEvent::Management(EngineEventManagement::MouseClick {
@@ -303,9 +311,7 @@ impl EngineHandler {
                     }));
                 }
             }
-            DisplayEvent::MouseButtonRelease {
-                button, x, y, ..
-            } => {
+            DisplayEvent::MouseButtonRelease { button, x, y, .. } => {
                 if let Some(app) = &self.app_handle {
                     let button = convert_mouse_button(button);
                     let _ = app.send(EngineEvent::Management(
@@ -337,13 +343,15 @@ impl EngineHandler {
                 ..
             } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Management(EngineEventManagement::MouseScroll {
-                        x: x as u32,
-                        y: y as u32,
-                        dx,
-                        dy,
-                        mods: modifiers,
-                    }));
+                    let _ = app.send(EngineEvent::Management(
+                        EngineEventManagement::MouseScroll {
+                            x: x as u32,
+                            y: y as u32,
+                            dx,
+                            dy,
+                            mods: modifiers,
+                        },
+                    ));
                 }
             }
             DisplayEvent::CloseRequested { .. } => {
@@ -370,7 +378,9 @@ impl EngineHandler {
             }
             DisplayEvent::ScaleChanged { scale, .. } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Control(EngineEventControl::ScaleChanged(scale)));
+                    let _ = app.send(EngineEvent::Control(EngineEventControl::ScaleChanged(
+                        scale,
+                    )));
                 }
             }
             DisplayEvent::ClipboardDataRequested => {
@@ -451,7 +461,9 @@ impl Troupe {
 
         // Configure the engine with window settings
         dir.engine
-            .send(Message::Management(AppManagement::Configure(config.clone())))
+            .send(Message::Management(AppManagement::Configure(
+                config.clone(),
+            )))
             .map_err(|e| RuntimeError::InitError(format!("Failed to configure engine: {}", e)))?;
 
         // Configure vsync with target FPS

@@ -304,7 +304,11 @@ impl Screen {
             // If scroll_top == 0 (full screen), this is pop_front() which is O(1)
             if let Some(row) = active_grid.remove(scroll_top) {
                 // Save to history if requested and scrolling from top
-                if history_mode == ScrollHistory::Save && scroll_top == 0 && !alt_screen_active && scrollback_limit > 0 {
+                if history_mode == ScrollHistory::Save
+                    && scroll_top == 0
+                    && !alt_screen_active
+                    && scrollback_limit > 0
+                {
                     self.scrollback.push_back(row);
                     if self.scrollback.len() > scrollback_limit {
                         self.scrollback.pop_front();
@@ -1020,7 +1024,10 @@ impl Screen {
                                 // Find the byte index of the character *after* the last non-space char
                                 // new_part[rel_idx] is the start of the char.
                                 // We need to include this char.
-                                let char_len = new_part[rel_idx..].chars().next().map_or(1, |c| c.len_utf8());
+                                let char_len = new_part[rel_idx..]
+                                    .chars()
+                                    .next()
+                                    .map_or(1, |c| c.len_utf8());
                                 selected_text_buffer.truncate(line_start_len + rel_idx + char_len);
                             } else {
                                 // Line was all spaces
@@ -1073,16 +1080,8 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::{
-        Arc,
-        Attributes,
-        ContentCell,
-        Glyph,
-        Point,
-        Screen,
-        ScrollHistory,
-        Selection,
-        SelectionMode,
-        SelectionRange,
+        Arc, Attributes, ContentCell, Glyph, Point, Screen, ScrollHistory, Selection,
+        SelectionMode, SelectionRange,
     };
 
     // Helper function for tests, using a fixed scrollback for test predictability
@@ -1436,7 +1435,10 @@ mod tests {
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
         screen.update_selection(Point { x: 3, y: 2 });
-        assert_eq!(screen.get_selected_text(), Some("bcd\ncde\ndef".to_string()));
+        assert_eq!(
+            screen.get_selected_text(),
+            Some("bcd\ncde\ndef".to_string())
+        );
     }
 
     #[test]
@@ -1445,7 +1447,10 @@ mod tests {
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 3, y: 2 }, SelectionMode::Block);
         screen.update_selection(Point { x: 1, y: 0 });
-        assert_eq!(screen.get_selected_text(), Some("bcd\ncde\ndef".to_string()));
+        assert_eq!(
+            screen.get_selected_text(),
+            Some("bcd\ncde\ndef".to_string())
+        );
     }
 
     #[test]
@@ -1471,15 +1476,33 @@ mod tests {
         let mut screen = create_test_screen(3, 2);
         {
             let row0 = Arc::make_mut(&mut screen.grid[0]);
-            row0[0] = Glyph::Single(ContentCell { c: 'a', attr: Attributes::default() });
-            row0[1] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-            row0[2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row0[0] = Glyph::Single(ContentCell {
+                c: 'a',
+                attr: Attributes::default(),
+            });
+            row0[1] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
+            row0[2] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
         }
         {
             let row1 = Arc::make_mut(&mut screen.grid[1]);
-            row1[0] = Glyph::Single(ContentCell { c: 'b', attr: Attributes::default() });
-            row1[1] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
-            row1[2] = Glyph::Single(ContentCell { c: ' ', attr: Attributes::default() });
+            row1[0] = Glyph::Single(ContentCell {
+                c: 'b',
+                attr: Attributes::default(),
+            });
+            row1[1] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
+            row1[2] = Glyph::Single(ContentCell {
+                c: ' ',
+                attr: Attributes::default(),
+            });
         }
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
         screen.update_selection(Point { x: 1, y: 1 });
@@ -1505,6 +1528,10 @@ mod tests {
         fill_screen_with_pattern(&mut screen);
         // scroll up 1 line. Top line should go to scrollback.
         screen.scroll_up(1, ScrollHistory::Save);
-        assert_eq!(screen.scrollback.len(), 1, "Scrollback should contain 1 line after scroll up");
+        assert_eq!(
+            screen.scrollback.len(),
+            1,
+            "Scrollback should contain 1 line after scroll up"
+        );
     }
 }

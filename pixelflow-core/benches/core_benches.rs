@@ -2,9 +2,9 @@
 //!
 //! Tests SIMD operations, manifold evaluation, and composition performance.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use pixelflow_core::{
-    combinators::Fix, Field, jet::Jet2, Manifold, ManifoldExt, PARALLELISM, X, Y, Z,
+    Field, Manifold, ManifoldExt, PARALLELISM, X, Y, Z, combinators::Fix, jet::Jet2,
 };
 
 // ============================================================================
@@ -470,9 +470,9 @@ fn bench_fix_iteration(c: &mut Criterion) {
         // All lanes converge immediately: w >= 10 (seed = 100)
         use pixelflow_core::W;
         let fix = Fix {
-            seed: 100.0f32,           // All lanes start at 100
-            step: W + 1.0f32,         // Increment (never used if done)
-            done: W.ge(10.0f32),      // All lanes done immediately
+            seed: 100.0f32,      // All lanes start at 100
+            step: W + 1.0f32,    // Increment (never used if done)
+            done: W.ge(10.0f32), // All lanes done immediately
         };
         bencher.iter(|| black_box(fix.eval_raw(black_box(x), y, z, w)))
     });
@@ -493,9 +493,9 @@ fn bench_fix_iteration(c: &mut Criterion) {
         // Different lanes converge at different times based on x
         // seed = x, done when w >= 5
         let fix = Fix {
-            seed: X,                   // Lanes start at [0, 1, 2, 3, ...]
+            seed: X, // Lanes start at [0, 1, 2, 3, ...]
             step: W + 1.0f32,
-            done: W.ge(5.0f32),        // Each lane needs 5-x iterations
+            done: W.ge(5.0f32), // Each lane needs 5-x iterations
         };
         bencher.iter(|| black_box(fix.eval_raw(black_box(x), y, z, w)))
     });

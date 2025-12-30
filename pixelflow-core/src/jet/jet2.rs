@@ -165,8 +165,12 @@ impl Jet2 {
     /// Returns if_true where mask is set, if_false elsewhere.
     #[inline(always)]
     pub fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        if mask.all() { return if_true; }
-        if !mask.any() { return if_false; }
+        if mask.all() {
+            return if_true;
+        }
+        if !mask.any() {
+            return if_false;
+        }
         Self::select_raw(mask, if_true, if_false)
     }
 }
@@ -222,43 +226,57 @@ impl core::ops::Div<Jet2Sqrt> for Jet2 {
 impl core::ops::Add<Jet2> for Jet2Sqrt {
     type Output = Jet2;
     #[inline(always)]
-    fn add(self, rhs: Jet2) -> Jet2 { self.eval() + rhs }
+    fn add(self, rhs: Jet2) -> Jet2 {
+        self.eval() + rhs
+    }
 }
 
 impl core::ops::Sub<Jet2> for Jet2Sqrt {
     type Output = Jet2;
     #[inline(always)]
-    fn sub(self, rhs: Jet2) -> Jet2 { self.eval() - rhs }
+    fn sub(self, rhs: Jet2) -> Jet2 {
+        self.eval() - rhs
+    }
 }
 
 impl core::ops::Mul<Jet2> for Jet2Sqrt {
     type Output = Jet2;
     #[inline(always)]
-    fn mul(self, rhs: Jet2) -> Jet2 { self.eval() * rhs }
+    fn mul(self, rhs: Jet2) -> Jet2 {
+        self.eval() * rhs
+    }
 }
 
 impl core::ops::Div<Jet2> for Jet2Sqrt {
     type Output = Jet2;
     #[inline(always)]
-    fn div(self, rhs: Jet2) -> Jet2 { self.eval() / rhs }
+    fn div(self, rhs: Jet2) -> Jet2 {
+        self.eval() / rhs
+    }
 }
 
 impl core::ops::Add<Jet2Sqrt> for Jet2 {
     type Output = Jet2;
     #[inline(always)]
-    fn add(self, rhs: Jet2Sqrt) -> Jet2 { self + rhs.eval() }
+    fn add(self, rhs: Jet2Sqrt) -> Jet2 {
+        self + rhs.eval()
+    }
 }
 
 impl core::ops::Sub<Jet2Sqrt> for Jet2 {
     type Output = Jet2;
     #[inline(always)]
-    fn sub(self, rhs: Jet2Sqrt) -> Jet2 { self - rhs.eval() }
+    fn sub(self, rhs: Jet2Sqrt) -> Jet2 {
+        self - rhs.eval()
+    }
 }
 
 impl core::ops::Mul<Jet2Sqrt> for Jet2 {
     type Output = Jet2;
     #[inline(always)]
-    fn mul(self, rhs: Jet2Sqrt) -> Jet2 { self * rhs.eval() }
+    fn mul(self, rhs: Jet2Sqrt) -> Jet2 {
+        self * rhs.eval()
+    }
 }
 
 // ============================================================================
@@ -446,8 +464,12 @@ impl Numeric for Jet2 {
 
     #[inline(always)]
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        if mask.all() { return if_true; }
-        if !mask.any() { return if_false; }
+        if mask.all() {
+            return if_true;
+        }
+        if !mask.any() {
+            return if_false;
+        }
         Self::select_raw(mask, if_true, if_false)
     }
 

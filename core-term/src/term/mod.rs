@@ -22,13 +22,7 @@ pub use charset::{map_to_dec_line_drawing, CharacterSet};
 pub use emulator::TerminalEmulator;
 pub use layout::Layout;
 pub use snapshot::{
-    CursorRenderState,
-    CursorShape,
-    Point,
-    Selection,
-    SelectionMode,
-    SnapshotLine,
-    TerminalSnapshot,
+    CursorRenderState, CursorShape, Point, Selection, SelectionMode, SnapshotLine, TerminalSnapshot,
 };
 
 // Crate-level imports (adjust paths based on where items are moved)

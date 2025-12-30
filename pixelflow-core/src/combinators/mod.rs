@@ -18,6 +18,6 @@ pub use pack::Pack;
 pub use project::Project;
 pub use select::Select;
 pub use spherical::{
-    Sh1, Sh2, Sh3, ShCoeffs, ShProject, ShReconstruct, SphericalHarmonic, ZonalHarmonic, SH_NORM,
+    SH_NORM, Sh1, Sh2, Sh3, ShCoeffs, ShProject, ShReconstruct, SphericalHarmonic, ZonalHarmonic,
 };
 pub use texture::Texture;

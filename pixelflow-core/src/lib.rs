@@ -486,7 +486,11 @@ impl Field {
     #[inline(always)]
     pub(crate) fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
         // Convert float mask to native, use native select
-        Self(NativeSimd::select(mask.0.float_to_mask(), if_true.0, if_false.0))
+        Self(NativeSimd::select(
+            mask.0.float_to_mask(),
+            if_true.0,
+            if_false.0,
+        ))
     }
 
     // ========================================================================
@@ -725,7 +729,11 @@ impl numeric::Computational for Field {
 impl numeric::Selectable for Field {
     #[inline(always)]
     fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
-        Self(NativeSimd::select(mask.0.float_to_mask(), if_true.0, if_false.0))
+        Self(NativeSimd::select(
+            mask.0.float_to_mask(),
+            if_true.0,
+            if_false.0,
+        ))
     }
 }
 
@@ -795,15 +803,23 @@ impl numeric::Numeric for Field {
 
     #[inline(always)]
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
-        if mask.all() { return if_true; }
-        if !mask.any() { return if_false; }
+        if mask.all() {
+            return if_true;
+        }
+        if !mask.any() {
+            return if_false;
+        }
         Self::select_raw(mask, if_true, if_false)
     }
 
     #[inline(always)]
     fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
         // Convert float mask to native, use native select
-        Self(NativeSimd::select(mask.0.float_to_mask(), if_true.0, if_false.0))
+        Self(NativeSimd::select(
+            mask.0.float_to_mask(),
+            if_true.0,
+            if_false.0,
+        ))
     }
 
     #[inline(always)]
@@ -959,118 +975,168 @@ impl<R: Manifold> core::ops::Div<ops::Sqrt<R>> for Field {
 impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Add<DL, DR>> for Field {
     type Output = ops::Div<Self, ops::Add<DL, DR>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Add<DL, DR>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Add<DL, DR>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Sub<DL, DR>> for Field {
     type Output = ops::Div<Self, ops::Sub<DL, DR>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Sub<DL, DR>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Sub<DL, DR>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Mul<DL, DR>> for Field {
     type Output = ops::Div<Self, ops::Mul<DL, DR>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Mul<DL, DR>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Mul<DL, DR>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Div<DL, DR>> for Field {
     type Output = ops::Div<Self, ops::Div<DL, DR>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Div<DL, DR>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Div<DL, DR>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Max<DL, DR>> for Field {
     type Output = ops::Div<Self, ops::Max<DL, DR>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Max<DL, DR>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Max<DL, DR>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Min<DL, DR>> for Field {
     type Output = ops::Div<Self, ops::Min<DL, DR>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Min<DL, DR>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Min<DL, DR>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DM: Manifold> core::ops::Div<ops::Abs<DM>> for Field {
     type Output = ops::Div<Self, ops::Abs<DM>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Abs<DM>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Abs<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DM: Manifold> core::ops::Div<ops::Floor<DM>> for Field {
     type Output = ops::Div<Self, ops::Floor<DM>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Floor<DM>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Floor<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DM: Manifold> core::ops::Div<ops::Rsqrt<DM>> for Field {
     type Output = ops::Div<Self, ops::Rsqrt<DM>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Rsqrt<DM>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Rsqrt<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DM: Manifold> core::ops::Div<ops::Sin<DM>> for Field {
     type Output = ops::Div<Self, ops::Sin<DM>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Sin<DM>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Sin<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DM: Manifold> core::ops::Div<ops::Cos<DM>> for Field {
     type Output = ops::Div<Self, ops::Cos<DM>>;
     #[inline(always)]
-    fn div(self, rhs: ops::Cos<DM>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::Cos<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
-impl<DC: Manifold, DT: Manifold, DF: Manifold> core::ops::Div<combinators::Select<DC, DT, DF>> for Field {
+impl<DC: Manifold, DT: Manifold, DF: Manifold> core::ops::Div<combinators::Select<DC, DT, DF>>
+    for Field
+{
     type Output = ops::Div<Self, combinators::Select<DC, DT, DF>>;
     #[inline(always)]
-    fn div(self, rhs: combinators::Select<DC, DT, DF>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: combinators::Select<DC, DT, DF>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DA: Manifold, DB: Manifold, DC: Manifold> core::ops::Div<ops::MulAdd<DA, DB, DC>> for Field {
     type Output = ops::Div<Self, ops::MulAdd<DA, DB, DC>>;
     #[inline(always)]
-    fn div(self, rhs: ops::MulAdd<DA, DB, DC>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::MulAdd<DA, DB, DC>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DM: Manifold> core::ops::Div<ops::MulRecip<DM>> for Field {
     type Output = ops::Div<Self, ops::MulRecip<DM>>;
     #[inline(always)]
-    fn div(self, rhs: ops::MulRecip<DM>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::MulRecip<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::MulRsqrt<DL, DR>> for Field {
     type Output = ops::Div<Self, ops::MulRsqrt<DL, DR>>;
     #[inline(always)]
-    fn div(self, rhs: ops::MulRsqrt<DL, DR>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::MulRsqrt<DL, DR>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
-impl<DAcc: Manifold, DVal: Manifold, DMask: Manifold> core::ops::Div<ops::AddMasked<DAcc, DVal, DMask>> for Field {
+impl<DAcc: Manifold, DVal: Manifold, DMask: Manifold>
+    core::ops::Div<ops::AddMasked<DAcc, DVal, DMask>> for Field
+{
     type Output = ops::Div<Self, ops::AddMasked<DAcc, DVal, DMask>>;
     #[inline(always)]
-    fn div(self, rhs: ops::AddMasked<DAcc, DVal, DMask>) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: ops::AddMasked<DAcc, DVal, DMask>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 // Concrete divisor types for Field
 impl core::ops::Div<variables::X> for Field {
     type Output = ops::Div<Self, variables::X>;
     #[inline(always)]
-    fn div(self, rhs: variables::X) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: variables::X) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl core::ops::Div<variables::Y> for Field {
     type Output = ops::Div<Self, variables::Y>;
     #[inline(always)]
-    fn div(self, rhs: variables::Y) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: variables::Y) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl core::ops::Div<variables::Z> for Field {
     type Output = ops::Div<Self, variables::Z>;
     #[inline(always)]
-    fn div(self, rhs: variables::Z) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: variables::Z) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl core::ops::Div<variables::W> for Field {
     type Output = ops::Div<Self, variables::W>;
     #[inline(always)]
-    fn div(self, rhs: variables::W) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: variables::W) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl core::ops::Div<Field> for Field {
     type Output = ops::Div<Self, Field>;
     #[inline(always)]
-    fn div(self, rhs: Field) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: Field) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl core::ops::Div<f32> for Field {
     type Output = ops::Div<Self, f32>;
     #[inline(always)]
-    fn div(self, rhs: f32) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: f32) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 impl core::ops::Div<i32> for Field {
     type Output = ops::Div<Self, i32>;
     #[inline(always)]
-    fn div(self, rhs: i32) -> Self::Output { ops::Div(self, rhs) }
+    fn div(self, rhs: i32) -> Self::Output {
+        ops::Div(self, rhs)
+    }
 }
 
 impl core::ops::BitAnd for Field {
@@ -1198,4 +1264,3 @@ where
 
 /// Parallelism width (number of lanes).
 pub const PARALLELISM: usize = NativeSimd::LANES;
-

@@ -133,7 +133,10 @@ fn run_event_loop(
     waker: &X11Waker,
 ) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
-    let (window_id, width, height, title) = match cmd_rx.recv().map_err(|_| RuntimeError::DriverChannelDisconnected)? {
+    let (window_id, width, height, title) = match cmd_rx
+        .recv()
+        .map_err(|_| RuntimeError::DriverChannelDisconnected)?
+    {
         DriverCommand::CreateWindow {
             id,
             width,

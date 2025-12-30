@@ -1,4 +1,3 @@
-
 use serde::{Deserialize, Serialize};
 
 /// Defines the visibility state of the cursor.

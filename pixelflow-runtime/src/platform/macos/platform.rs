@@ -69,9 +69,11 @@ impl PlatformOps for MetalOps {
                     // Present returns the frame after blitting
                     let returned_frame = win.present(frame);
                     // Return the frame to the engine for reuse
-                    let _ = self.event_tx.send(Message::Control(
-                        EngineControl::PresentComplete(returned_frame),
-                    ));
+                    let _ = self
+                        .event_tx
+                        .send(Message::Control(EngineControl::PresentComplete(
+                            returned_frame,
+                        )));
                 }
             }
         }

@@ -83,9 +83,9 @@ pub(crate) fn cheby_sin(x: Field) -> Field {
     // Rewrite as: ((C7*t^2 + C5)*t^2 + C3)*t^2 + C1)*t
     // AST building enables FMA fusion
     let t2 = t * t;
-    let result = (((Field::from(C7) * t2 + Field::from(C5)) * t2
-        + Field::from(C3)) * t2
-        + Field::from(C1)) * t;
+    let result = (((Field::from(C7) * t2 + Field::from(C5)) * t2 + Field::from(C3)) * t2
+        + Field::from(C1))
+        * t;
 
     eval(result)
 }
@@ -113,9 +113,8 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
     // Rewrite as: ((C6*t^2 + C4)*t^2 + C2)*t^2 + C0
     // AST building enables FMA fusion
     let t2 = t * t;
-    let result = ((Field::from(C6) * t2 + Field::from(C4)) * t2
-        + Field::from(C2)) * t2
-        + Field::from(C0);
+    let result =
+        ((Field::from(C6) * t2 + Field::from(C4)) * t2 + Field::from(C2)) * t2 + Field::from(C0);
 
     eval(result)
 }
@@ -142,9 +141,9 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
     // AST building enables FMA fusion
     let t = r_abs;
     let t2 = t * t;
-    let atan_approx = (((Field::from(C7) * t2 + Field::from(C5)) * t2
-        + Field::from(C3)) * t2
-        + Field::from(C1)) * t;
+    let atan_approx = (((Field::from(C7) * t2 + Field::from(C5)) * t2 + Field::from(C3)) * t2
+        + Field::from(C1))
+        * t;
 
     // Handle quadrants
     // For |r| > 1, use identity: atan(r) = π/2 - atan(1/r)

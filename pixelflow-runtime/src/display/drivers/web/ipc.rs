@@ -38,7 +38,10 @@ impl SharedRingBuffer {
 
     /// Block until an event is available or timeout occurs.
     /// Timeout is in milliseconds.
-    pub fn blocking_read_timeout(&self, timeout_ms: i32) -> Result<Option<DisplayEvent>, RuntimeError> {
+    pub fn blocking_read_timeout(
+        &self,
+        timeout_ms: i32,
+    ) -> Result<Option<DisplayEvent>, RuntimeError> {
         loop {
             let read_pos = self.read_idx();
             let write_pos = self.write_idx();
@@ -86,7 +89,8 @@ impl SharedRingBuffer {
             Atomics::notify(&self.indices, IDX_READ)
                 .map_err(|e| RuntimeError::AtomicsNotifyError(format!("{:?}", e)))?;
 
-            let event: DisplayEvent = bincode::deserialize(&payload).map_err(|e| RuntimeError::InitError(format!("Bincode error: {}", e)))?;
+            let event: DisplayEvent = bincode::deserialize(&payload)
+                .map_err(|e| RuntimeError::InitError(format!("Bincode error: {}", e)))?;
             return Ok(Some(event));
         }
     }
@@ -105,7 +109,8 @@ impl SharedRingBuffer {
 
     // Called by Main Thread (Writer)
     pub fn write(&self, event: &DisplayEvent) -> Result<(), RuntimeError> {
-        let payload = bincode::serialize(event).map_err(|e| RuntimeError::InitError(format!("Bincode error: {}", e)))?;
+        let payload = bincode::serialize(event)
+            .map_err(|e| RuntimeError::InitError(format!("Bincode error: {}", e)))?;
         let len = payload.len() as u32;
         let total_len = 4 + len;
 

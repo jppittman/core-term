@@ -13,9 +13,9 @@
 //! Select { cond: Lt(a, b), if_true, if_false }
 //! ```
 
-use crate::numeric::Computational;
-use crate::jet::Jet2;
 use crate::Manifold;
+use crate::jet::Jet2;
+use crate::numeric::Computational;
 
 // ============================================================================
 // Hard Comparisons (generic over Numeric)
@@ -91,7 +91,6 @@ where
         self.0.eval_raw(x, y, z, w).ge(self.1.eval_raw(x, y, z, w))
     }
 }
-
 
 // ============================================================================
 // Bitwise ops for chaining comparisons: X.ge(0) & X.le(1)
