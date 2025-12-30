@@ -254,7 +254,9 @@ pub(super) fn process_ansi_command(
                 Some(EmulatorAction::WritePty(response))
             }
             CsiCommand::SetTabStop => {
-                todo!("ansi set tabstop");
+                let (cursor_x, _) = emulator.cursor_controller.logical_pos();
+                emulator.screen.set_tabstop(cursor_x);
+                None
             }
             CsiCommand::Reset => emulator.reset(),
             CsiCommand::Unsupported(intermediates, final_byte_opt) => {
