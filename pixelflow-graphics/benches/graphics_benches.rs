@@ -7,10 +7,7 @@ use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
 use pixelflow_graphics::{
-    render::rasterizer::{
-        execute, parallel::render_parallel_pooled, render_work_stealing, RenderOptions,
-        TensorShape, ThreadPool,
-    },
+    render::rasterizer::{execute, render_work_stealing, RenderOptions, TensorShape},
     CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
 };
 
@@ -1011,11 +1008,9 @@ fn bench_scene3d(c: &mut Criterion) {
     // PARALLEL RENDERING
     // ========================================================================
 
-    // Parallel 1080p chrome sphere (mullet) with thread pool
     let num_threads = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(4);
-    let pool = ThreadPool::new(num_threads);
 
     group.throughput(Throughput::Elements((w_hd * h_hd) as u64));
 
@@ -1045,9 +1040,10 @@ fn bench_scene3d(c: &mut Criterion) {
 
             let mut frame = Frame::<Rgba8>::new(w_hd as u32, h_hd as u32);
             let shape = TensorShape::new(w_hd, h_hd);
+            let options = RenderOptions { num_threads };
 
             bencher.iter(|| {
-                render_parallel_pooled(&pool, &renderable, frame.as_slice_mut(), shape);
+                render_work_stealing(&renderable, frame.as_slice_mut(), shape, options);
                 black_box(&frame);
             })
         },
@@ -1129,17 +1125,7 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
 
     let shape = TensorShape::new(w, h);
 
-    // Benchmark 1: ThreadPool with spinning MPMC
-    let pool = ThreadPool::new(num_threads);
-    group.bench_function(&format!("pool_spin_mpmc_{}t", num_threads), |bencher| {
-        let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
-        bencher.iter(|| {
-            render_parallel_pooled(&pool, &renderable, frame.as_slice_mut(), shape);
-            black_box(&frame);
-        })
-    });
-
-    // Benchmark 2: Work-stealing with atomic counter (scoped threads)
+    // Benchmark 1: Work-stealing with atomic counter (scoped threads)
     group.bench_function(
         &format!("work_stealing_atomic_{}t", num_threads),
         |bencher| {
@@ -1152,7 +1138,7 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
         },
     );
 
-    // Benchmark 3: Single-threaded (baseline)
+    // Benchmark 2: Single-threaded (baseline)
     group.bench_function("single_threaded", |bencher| {
         let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
         bencher.iter(|| {
