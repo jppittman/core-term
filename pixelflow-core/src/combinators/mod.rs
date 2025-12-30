@@ -11,7 +11,7 @@ pub mod select;
 pub mod spherical;
 pub mod texture;
 
-pub use at::At;
+pub use at::{At, AtArray};
 pub use fix::Fix;
 pub use map::Map;
 pub use pack::Pack;
