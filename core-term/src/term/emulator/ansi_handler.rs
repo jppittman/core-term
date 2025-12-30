@@ -2,7 +2,10 @@
 
 use super::TerminalEmulator;
 use crate::{
-    ansi::commands::{AnsiCommand, C0Control, CsiCommand, EscCommand},
+    ansi::commands::{
+        AnsiCommand, C0Control, CsiCommand, EscCommand, DSR_DEFAULT, DSR_REPORT_CURSOR_POSITION,
+        DSR_STATUS_OK,
+    },
     term::{
         action::EmulatorAction,
         charset::CharacterSet,
@@ -183,13 +186,13 @@ pub(super) fn process_ansi_command(
                 emulator.handle_set_mode(Mode::DecPrivate(mode_num), ModeAction::Disable)
             }
             CsiCommand::DeviceStatusReport(dsr_param) => {
-                if dsr_param == 0 || dsr_param == 6 {
+                if dsr_param == DSR_DEFAULT || dsr_param == DSR_REPORT_CURSOR_POSITION {
                     let screen_ctx = emulator.current_screen_context();
                     let (abs_x, abs_y) =
                         emulator.cursor_controller.physical_screen_pos(&screen_ctx);
                     let response = format!("\x1B[{};{}R", abs_y + 1, abs_x + 1);
                     Some(EmulatorAction::WritePty(response.into_bytes()))
-                } else if dsr_param == 5 {
+                } else if dsr_param == DSR_STATUS_OK {
                     Some(EmulatorAction::WritePty(b"\x1B[0n".to_vec()))
                 } else {
                     warn!("Unhandled DSR parameter: {}", dsr_param);
