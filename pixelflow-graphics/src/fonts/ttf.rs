@@ -846,7 +846,15 @@ impl<'a> Font<'a> {
     }
 
     pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph> {
-        let g = self.glyph(ch)?;
+        let id = self.cmap.lookup(ch as u32)?;
+        self.glyph_scaled_by_id(id, size)
+    }
+
+    /// Get scaled glyph by pre-looked-up glyph ID.
+    ///
+    /// Avoids redundant CMAP lookup when you already have the glyph ID.
+    pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph> {
+        let g = self.glyph_by_id(id)?;
         let scale = size / self.units_per_em as f32;
         // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
         // so the top of the text is at Y=0 in screen coordinates.
@@ -874,6 +882,13 @@ impl<'a> Font<'a> {
 
     pub fn advance_scaled(&self, ch: char, size: f32) -> Option<f32> {
         Some(self.advance(ch)? * size / self.units_per_em as f32)
+    }
+
+    /// Get scaled advance width by pre-looked-up glyph ID.
+    ///
+    /// Avoids redundant CMAP lookup when you already have the glyph ID.
+    pub fn advance_scaled_by_id(&self, id: u16, size: f32) -> Option<f32> {
+        Some(self.advance_by_id(id)? * size / self.units_per_em as f32)
     }
 
     /// Get kerning adjustment between two characters in font units.

@@ -26,21 +26,21 @@ impl Text {
     /// This is a scan (prefix sum) operation over the character stream,
     /// lifting each character into the Manifold category.
     pub fn new(font: &Font, text: &str, size: f32) -> Self {
-        // The Stream: Char -> (Scaled Glyph, Scaled Advance)
-        // glyph_scaled handles: scaling, Y-axis flip, and ascent offset
-        let stream = text.chars().map(|ch| {
-            (
-                font.glyph_scaled(ch, size).unwrap_or(Glyph::Empty),
-                font.advance_scaled(ch, size).unwrap_or(0.0),
-            )
-        });
-
-        // The Scan: Accumulate X position
+        // The Scan: Accumulate X position while mapping chars to glyphs
+        // Optimized to perform a single CMAP lookup per character
         let mut cursor = 0.0;
-        let terms: Vec<_> = stream
-            .map(|(glyph, advance)| {
+        let terms: Vec<_> = text
+            .chars()
+            .map(|ch| {
+                // Single CMAP lookup!
+                let id = font.cmap_lookup(ch).unwrap_or(0);
+
+                // Fetch scaled glyph and advance using the ID
+                let glyph = font.glyph_scaled_by_id(id, size).unwrap_or(Glyph::Empty);
+                let scaled_advance = font.advance_scaled_by_id(id, size).unwrap_or(0.0);
+
                 let pos = cursor;
-                cursor += advance;
+                cursor += scaled_advance;
 
                 // The Morphism: Translate the pre-scaled glyph
                 Translate {
