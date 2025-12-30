@@ -935,6 +935,8 @@ impl Screen {
     /// An `Option<String>` containing the selected text, or `None` if there's
     /// no valid selection or the selection is empty.
     pub fn get_selected_text(&self) -> Option<String> {
+        use crate::glyph::WIDE_CHAR_PLACEHOLDER;
+
         let Some(range) = &self.selection.range else {
             return None; // No active selection range.
         };
@@ -992,7 +994,10 @@ impl Screen {
 
                     for x_abs in line_col_start..=effective_line_col_end {
                         if x_abs < current_row_glyphs.len() {
-                            selected_text_buffer.push(current_row_glyphs[x_abs].display_char());
+                            let c = current_row_glyphs[x_abs].display_char();
+                            if c != WIDE_CHAR_PLACEHOLDER {
+                                selected_text_buffer.push(c);
+                            }
                         } else {
                             // If selection extends beyond available glyphs on the line, append space.
                             selected_text_buffer.push(' ');
@@ -1055,7 +1060,10 @@ impl Screen {
 
                     for x in min_x..=max_x {
                         if x < current_row_glyphs.len() {
-                            selected_text_buffer.push(current_row_glyphs[x].display_char());
+                            let c = current_row_glyphs[x].display_char();
+                            if c != WIDE_CHAR_PLACEHOLDER {
+                                selected_text_buffer.push(c);
+                            }
                         } else {
                             selected_text_buffer.push(' ');
                         }
@@ -1533,5 +1541,70 @@ mod tests {
             1,
             "Scrollback should contain 1 line after scroll up"
         );
+    }
+
+    // --- New tests for wide characters ---
+
+    fn create_screen_with_wide_char() -> Screen {
+        let mut screen = Screen::new(10, 5);
+        // Row 0: "a" "b" "你" "c" (positions 0, 1, 2-3, 4)
+        let row = Arc::make_mut(&mut screen.grid[0]);
+        row[0] = Glyph::Single(ContentCell {
+            c: 'a',
+            attr: Attributes::default(),
+        });
+        row[1] = Glyph::Single(ContentCell {
+            c: 'b',
+            attr: Attributes::default(),
+        });
+        row[2] = Glyph::WidePrimary(ContentCell {
+            c: '你',
+            attr: Attributes::default(),
+        });
+        row[3] = Glyph::WideSpacer {
+            primary_column_on_line: 2,
+        };
+        row[4] = Glyph::Single(ContentCell {
+            c: 'c',
+            attr: Attributes::default(),
+        });
+        screen
+    }
+
+    #[test]
+    fn test_block_selection_wide_char_full() {
+        let mut screen = create_screen_with_wide_char();
+        // Select "b" "你" "c" (columns 1 to 4)
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 4, y: 0 });
+
+        let text = screen.get_selected_text();
+        assert_eq!(text, Some("b你c".to_string()));
+    }
+
+    #[test]
+    fn test_block_selection_wide_char_partial_left() {
+        let mut screen = create_screen_with_wide_char();
+        // Select "b" "你" (primary only) (columns 1 to 2)
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 2, y: 0 });
+
+        let text = screen.get_selected_text();
+        // Should include '你' because we selected the primary cell.
+        assert_eq!(text, Some("b你".to_string()));
+    }
+
+    #[test]
+    fn test_block_selection_wide_char_partial_right() {
+        let mut screen = create_screen_with_wide_char();
+        // Select spacer of "你" and "c" (columns 3 to 4)
+        screen.start_selection(Point { x: 3, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 4, y: 0 });
+
+        let text = screen.get_selected_text();
+        // Spacer is \0. "c" is c.
+        // The user probably doesn't want \0 in the output, but currently it returns \0.
+        // I will assert the current behavior.
+        assert_eq!(text, Some("c".to_string()));
     }
 }
