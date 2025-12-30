@@ -159,6 +159,7 @@ pub mod animation;
 pub mod baked;
 pub mod fonts;
 pub mod image;
+pub mod patch;
 pub mod render;
 pub mod scene3d;
 pub mod shapes;
