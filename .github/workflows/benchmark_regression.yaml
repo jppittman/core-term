@@ -1,0 +1,65 @@
+name: Benchmark Regression Check
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  # Required to push to gh-pages
+  contents: write
+  # Required to open issues
+  issues: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 1. Run Benchmarks
+      - name: Run Cargo Bench
+        run: cargo bench -- --output-format bencher | tee output.txt
+
+      # 2. Compare against History
+      - name: Check for Regression
+        id: benchmark_check
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: output.txt
+          gh-pages-branch: gh-pages
+          alert-threshold: '115%'    # Alert if 15% slower
+          fail-on-alert: true        # Fail step to trigger the issue creation
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: true
+
+      # 3. Open Issue on Regression
+      - name: Create Performance Issue
+        if: failure() && steps.benchmark_check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get the author of the commit to tag them
+          AUTHOR=$(git log -1 --pretty=format:'%an')
+          SHA=$(git rev-parse --short HEAD)
+          
+          gh issue create \
+            --title "⚠️ Performance Regression Detected in $SHA" \
+            --body "### 🚨 Benchmark Regression Report
+            
+            **Commit:** $SHA
+            **Author:** $AUTHOR
+            
+            A performance regression of **>15%** was detected compared to the previous baseline.
+            
+            [View Benchmark Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            Please investigate to determine if this slowdown is expected." \
+            --label "performance-regression" \
+            --assignee "${{ github.actor }}"
