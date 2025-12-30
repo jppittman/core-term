@@ -19,6 +19,7 @@ defaults:
 jobs:
   triage:
     runs-on: 'ubuntu-latest'
+    environment: 'ci'
     timeout-minutes: 7
     outputs:
       available_labels: '${{ steps.get_labels.outputs.available_labels }}'
