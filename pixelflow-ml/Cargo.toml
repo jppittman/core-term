@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Linear Attention as Harmonic Global Illumination"
 
-[lib]
-bench = false
+# [lib] bench = false removed
 
 [dependencies]
 pixelflow-core = { path = "../pixelflow-core" }

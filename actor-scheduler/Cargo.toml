@@ -3,8 +3,7 @@ name = "actor-scheduler"
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-bench = false
+# [lib] bench = false removed
 
 [dependencies]
 actor-scheduler-macros = { path = "../actor-scheduler-macros" }

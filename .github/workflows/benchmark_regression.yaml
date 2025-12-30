@@ -26,7 +26,14 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p benchmark_results
-          cargo bench --workspace -- --output-format bencher | tee benchmark_results/output.txt
+          # Get all bench targets from the workspace, excluding dependencies
+          BENCHES=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].targets[] | select(.kind[] == "bench") | .name' | sort | uniq)
+
+          # Run each benchmark individually to avoid running library tests as benchmarks
+          for bench in $BENCHES; do
+            echo "Running benchmark: $bench"
+            cargo bench --bench "$bench" -- --output-format bencher | tee -a benchmark_results/output.txt
+          done
 
       # 2. Compare against History
       - name: Check for Regression

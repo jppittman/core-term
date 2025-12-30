@@ -3,12 +3,12 @@ name = "actor-scheduler-macros"
 version = "0.1.0"
 edition = "2024"
 
+# [lib] bench = false removed
+
 [lib]
 proc-macro = true
-bench = false
 
 [dependencies]
-# No external dependencies - only proc_macro from std
-
-[dev-dependencies]
-actor-scheduler = { path = "../actor-scheduler" }
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"

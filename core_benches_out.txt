@@ -1,0 +1,94 @@
+warning: unused import: `crate::numeric::Numeric`
+  --> pixelflow-core/src/ops/trig.rs:16:5
+   |
+16 | use crate::numeric::Numeric;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `pow` and `zip_lanes` are never used
+   --> pixelflow-core/src/lib.rs:526:19
+    |
+353 | impl Field {
+    | ---------- methods in this implementation
+...
+526 |     pub(crate) fn pow(self, exp: Self) -> Self {
+    |                   ^^^
+...
+586 |     fn zip_lanes(self, other: Self, f: fn(f32, f32) -> f32) -> Self {
+    |        ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `select`, `atan2`, `pow`, `exp`, and `recip` are never used
+   --> pixelflow-core/src/numeric.rs:82:8
+    |
+ 54 | pub(crate) trait Numeric: Computational {
+    |                  ------- associated items in this trait
+...
+ 82 |     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
+    |        ^^^^^^
+...
+115 |     fn atan2(self, x: Self) -> Self;
+    |        ^^^^^
+...
+118 |     fn pow(self, exp: Self) -> Self;
+    |        ^^^
+...
+121 |     fn exp(self) -> Self;
+    |        ^^^
+...
+132 |     fn recip(self) -> Self;
+    |        ^^^^^
+
+warning: constant `PI_4` is never used
+  --> pixelflow-core/src/ops/trig.rs:34:7
+   |
+34 | const PI_4: f32 = 0.7853981633974483f32;
+   |       ^^^^
+
+warning: `pixelflow-core` (lib) generated 4 warnings
+    Finished `bench` profile [optimized] target(s) in 0.10s
+     Running benches/core_benches.rs (target/release/deps/core_benches-f3b02d6fe43c1dfa)
+Gnuplot not found, using plotters backend
+test field_creation/from_f32_splat ... bench:           1 ns/iter (+/- 0)
+test field_creation/sequential ... bench:           1 ns/iter (+/- 0)
+
+test field_arithmetic/add ... bench:           2 ns/iter (+/- 0)
+test field_arithmetic/sub ... bench:           2 ns/iter (+/- 0)
+test field_arithmetic/mul ... bench:           2 ns/iter (+/- 0)
+test field_arithmetic/div ... bench:           2 ns/iter (+/- 0)
+test field_arithmetic/chained_mad ... bench:           2 ns/iter (+/- 0)
+
+test field_math/sqrt ... bench:           1 ns/iter (+/- 0)
+test field_math/abs ... bench:           1 ns/iter (+/- 0)
+test field_math/min ... bench:           2 ns/iter (+/- 0)
+test field_math/max ... bench:           2 ns/iter (+/- 0)
+
+test field_comparisons/lt_manifold ... bench:           1 ns/iter (+/- 0)
+test field_comparisons/le_manifold ... bench:           1 ns/iter (+/- 0)
+test field_comparisons/gt_manifold ... bench:           1 ns/iter (+/- 0)
+test field_comparisons/ge_manifold ... bench:           1 ns/iter (+/- 0)
+
+test field_select/select_with_gt_ast ... bench:           2 ns/iter (+/- 0)
+test field_select/select_with_field_condition ... bench:           1 ns/iter (+/- 0)
+test field_select/select_gt_recompute_each_iter ... bench:           2 ns/iter (+/- 0)
+
+test field_bitwise/and_manifold ... bench:           1 ns/iter (+/- 0)
+test field_bitwise/or_manifold ... bench:           1 ns/iter (+/- 0)
+
+test manifold_constants/f32_constant ... bench:           2 ns/iter (+/- 0)
+test manifold_constants/X_variable ... bench:           2 ns/iter (+/- 0)
+test manifold_constants/Y_variable ... bench:           2 ns/iter (+/- 0)
+
+test manifold_simple/X_plus_Y ... bench:           2 ns/iter (+/- 0)
+test manifold_simple/X_mul_Y ... bench:           2 ns/iter (+/- 0)
+test manifold_simple/X_squared ... bench:           2 ns/iter (+/- 0)
+test manifold_simple/fma_X_mul_Y_plus_Z ... bench:           2 ns/iter (+/- 0)
+test manifold_simple/distance_squared ... bench:           2 ns/iter (+/- 0)
+test manifold_simple/distance_from_origin ... bench:           2 ns/iter (+/- 0)
+
+test manifold_circle/unit_circle_sdf ... bench:           2 ns/iter (+/- 0)
+test manifold_circle/circle_inside_test ... bench:           2 ns/iter (+/- 0)
+
+test manifold_select/simple_select ... bench:           2 ns/iter (+/- 0)
