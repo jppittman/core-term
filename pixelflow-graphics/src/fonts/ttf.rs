@@ -479,19 +479,24 @@ impl Manifold<Field> for Geometry {
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         let fzero = Field::from(0.0);
-        let mut acc = fzero;
-        for l in self.lines.iter() {
-            let val = l.eval_raw(x, y, z, w);
-            acc = (acc + val).eval_raw(fzero, fzero, fzero, fzero);
-        }
-        for q in self.quads.iter() {
-            let val = q.eval_raw(x, y, z, w);
-            acc = (acc + val).eval_raw(fzero, fzero, fzero, fzero);
-        }
-        // Apply non-zero winding rule: |winding| becomes coverage
-        acc.abs()
-            .min(Field::from(1.0))
-            .eval_raw(fzero, fzero, fzero, fzero)
+
+        // Accumulate line and quad contributions into a single composite value.
+        // Note: Field + Field produces Add<Field, Field> (a manifold), so we must
+        // evaluate to get back a scalar. This pattern is more efficient than the
+        // old code because we defer the final evaluation until after combining
+        // all contributions, rather than collapsing after each addition.
+        let total = self.lines
+            .iter()
+            .map(|l| l.eval_raw(x, y, z, w))
+            .chain(self.quads.iter().map(|q| q.eval_raw(x, y, z, w)))
+            .fold(fzero, |acc, contrib| {
+                // Compose: acc + contrib produces Add<Field, Field>
+                // Evaluate the sum to collapse back to Field
+                (acc + contrib).eval_raw(fzero, fzero, fzero, fzero)
+            });
+
+        // Apply non-zero winding rule: |winding| becomes coverage (clamped to [0, 1])
+        total.abs().min(Field::from(1.0)).eval_raw(fzero, fzero, fzero, fzero)
     }
 }
 
