@@ -176,8 +176,8 @@ pub mod loader;
 pub mod text;
 pub mod ttf;
 
-// Re-export font types
-pub use ttf::{Affine, Curve, Font, Glyph, Line, Quad, Sum};
+// Re-export font types (user-facing only; internal geometry types stay in ttf module)
+pub use ttf::{Font, Glyph};
 
 // Re-export loader types
 pub use loader::{DataSource, EmbeddedSource, FontSource, LoadedFont, MmapSource};
