@@ -3,6 +3,9 @@ name = "pixelflow-runtime"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+bench = false
+
 [dependencies]
 # Core dependencies
 log = "0.4"

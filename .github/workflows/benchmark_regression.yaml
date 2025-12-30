@@ -23,7 +23,10 @@ jobs:
 
       # 1. Run Benchmarks
       - name: Run Cargo Bench
-        run: cargo bench -- --output-format bencher | tee output.txt
+        run: |
+          set -o pipefail
+          mkdir -p benchmark_results
+          cargo bench --workspace -- --output-format bencher | tee benchmark_results/output.txt
 
       # 2. Compare against History
       - name: Check for Regression
@@ -31,7 +34,7 @@ jobs:
         uses: benchmark-action/github-action-benchmark@v1
         with:
           tool: 'cargo'
-          output-file-path: output.txt
+          output-file-path: benchmark_results/output.txt
           gh-pages-branch: gh-pages
           alert-threshold: '115%'    # Alert if 15% slower
           fail-on-alert: true        # Fail step to trigger the issue creation
