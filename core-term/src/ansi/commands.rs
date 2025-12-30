@@ -94,6 +94,11 @@ pub const SGR_NO_OVERLINED: u16 = 55;
 pub const SGR_UNDERLINE_COLOR_SET: u16 = 58; // Followed by extended color params
 pub const SGR_UNDERLINE_COLOR_DEFAULT: u16 = 59;
 
+// --- DSR (Device Status Report) Constants ---
+pub const DSR_DEFAULT: u16 = 0;
+pub const DSR_STATUS_OK: u16 = 5;
+pub const DSR_REPORT_CURSOR_POSITION: u16 = 6;
+
 // --- Color Definitions ---
 // The local `Color` enum has been removed. We now use `crate::color::Color`.
 
