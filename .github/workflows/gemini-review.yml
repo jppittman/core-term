@@ -85,6 +85,10 @@ jobs:
                     "--rm",
                     "-e",
                     "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "-e",
+                    "GITHUB_REPOSITORY",
+                    "-e",
+                    "PULL_REQUEST_NUMBER",
                     "ghcr.io/github/github-mcp-server:v0.18.0"
                   ],
                   "includeTools": [
@@ -94,7 +98,9 @@ jobs:
                     "submit_pending_pull_request_review"
                   ],
                   "env": {
-                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}",
+                    "GITHUB_REPOSITORY": "${REPOSITORY}",
+                    "PULL_REQUEST_NUMBER": "${PULL_REQUEST_NUMBER}"
                   }
                 }
               },
