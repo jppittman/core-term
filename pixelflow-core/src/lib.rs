@@ -68,13 +68,13 @@
 //! ## Architecture
 //!
 //! ```
-//! manifold.rs    ← Manifold trait (function from coords to value)
-//! ext.rs         ← ManifoldExt (fluent API for building expressions)
-//! ops/           ← Operators (Add, Mul, Sqrt, etc.)
-//! combinators/   ← Select, Fix, Map (control flow as types)
-//! variables.rs   ← X, Y, Z, W (coordinate variables)
-//! jet.rs         ← Jet2, Jet3 (automatic differentiation)
-//! backend/       ← SIMD abstraction (x86, ARM, scalar)
+//! manifold.rs    -> Manifold trait (function from coords to value)
+//! ext.rs         -> ManifoldExt (fluent API for building expressions)
+//! ops/           -> Operators (Add, Mul, Sqrt, etc.)
+//! combinators/   -> Select, Fix, Map (control flow as types)
+//! variables.rs   -> X, Y, Z, W (coordinate variables)
+//! jet.rs         -> Jet2, Jet3 (automatic differentiation)
+//! backend/       -> SIMD abstraction (x86, ARM, scalar)
 //! ```
 //!
 //! ## Quick Start: Building a Circle
