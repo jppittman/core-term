@@ -168,8 +168,8 @@ pub mod transform;
 pub use baked::Baked;
 pub use transform::Scale;
 
-// Re-export fonts
-pub use fonts::{Affine, CachedGlyph, CachedText, Font, Glyph, GlyphCache, Sum};
+// Re-export fonts (user-facing types only; internal combinators like Affine/Sum stay in fonts::ttf)
+pub use fonts::{CachedGlyph, CachedText, Font, Glyph, GlyphCache};
 
 // Re-export render
 pub use render::color::{

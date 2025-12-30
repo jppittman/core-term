@@ -256,7 +256,7 @@ pub fn render_parallel_pooled<P, M>(
         let done = Arc::clone(&rows_done);
         let send_ptr = SendPtr(buffer_ptr);
 
-        let job = Box::new(move || {
+        pool.submit(move || {
             let ptr = send_ptr;
             loop {
                 // Compete for next row
@@ -282,8 +282,6 @@ pub fn render_parallel_pooled<P, M>(
                 done.fetch_add(1, Ordering::Release);
             }
         });
-
-        pool.submit(job);
     }
 
     // Wait for all rows to complete

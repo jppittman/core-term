@@ -6,7 +6,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
-type Job = Box<dyn FnOnce() + Send + 'static>;
+/// A boxed closure that can be executed by a thread pool worker.
+///
+/// This is the fundamental unit of work for the thread pool. Each job is a
+/// one-shot closure that will be executed exactly once by a worker thread.
+pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
 /// Number of spin iterations before blocking.
 const SPIN_COUNT: u32 = 1000;
@@ -98,13 +102,48 @@ impl ThreadPool {
         }
     }
 
-    /// Submit a single job.
-    pub fn submit(&self, job: Job) {
+    /// Submit a closure to be executed by a worker thread.
+    ///
+    /// The closure is boxed and placed in the job queue, where it will be
+    /// picked up by the next available worker.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pool = ThreadPool::new(4);
+    /// pool.submit(|| {
+    ///     println!("Hello from worker thread!");
+    /// });
+    /// ```
+    pub fn submit<F>(&self, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.queue.push(Box::new(f));
+    }
+
+    /// Submit a pre-boxed job to the queue.
+    ///
+    /// Use this when you already have a [`Job`] (boxed closure), or when
+    /// dispatching heterogeneous closures that cannot share a common type.
+    pub fn submit_boxed(&self, job: Job) {
         self.queue.push(job);
     }
 
-    /// Dispatch a list of jobs.
-    pub fn dispatch(&self, jobs: Vec<Job>) {
+    /// Dispatch multiple jobs to the queue.
+    ///
+    /// Jobs are added in order, but execution order depends on worker availability.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pool = ThreadPool::new(4);
+    /// let jobs: Vec<Job> = (0..10)
+    ///     .map(|i| Box::new(move || println!("Job {}", i)) as Job)
+    ///     .collect();
+    /// pool.dispatch(jobs);
+    /// ```
+    pub fn dispatch(&self, jobs: impl IntoIterator<Item = Job>) {
         for job in jobs {
             self.queue.push(job);
         }
