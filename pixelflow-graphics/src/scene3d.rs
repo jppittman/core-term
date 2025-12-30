@@ -19,6 +19,27 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
 
 // ============================================================================
+// LIFT: Field manifold → Jet3 manifold (explicit conversion)
+// ============================================================================
+
+/// Lifts a Field-based manifold to work with Jet3 inputs.
+///
+/// Uses `From<Jet3> for Field` to project jet coordinates to values,
+/// discarding derivatives. Use this for constant-valued manifolds
+/// (like Color) that don't need derivative information.
+#[derive(Clone, Copy)]
+pub struct Lift<M>(pub M);
+
+impl<M: Manifold<Field> + Send + Sync> Manifold<Jet3> for Lift<M> {
+    type Output = M::Output;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Self::Output {
+        self.0.eval_raw(x.into(), y.into(), z.into(), w.into())
+    }
+}
+
+// ============================================================================
 // HELPER: Lift Field mask to Jet3 manifold for Select conditions
 // ============================================================================
 
@@ -200,6 +221,58 @@ impl Manifold<Jet3> for PlaneGeometry {
     }
 }
 
+/// Height field geometry: z = base_height + scale * f(x, y)
+///
+/// Single-step intersection: hit base plane, sample height, adjust t.
+/// No iteration - just one evaluation of the height manifold.
+#[derive(Clone, Copy)]
+pub struct HeightFieldGeometry<H> {
+    pub height_field: H,
+    pub base_height: f32,
+    pub scale: f32,
+    pub uv_scale: f32, // Maps world (x, y) to (u, v) parameter space
+}
+
+impl<H: Manifold<Field, Output = Field>> Manifold<Jet3> for HeightFieldGeometry<H> {
+    type Output = Jet3;
+
+    #[inline]
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+        // Step 1: Hit base plane at y = base_height
+        let t_plane = Jet3::constant(Field::from(self.base_height)) / ry;
+
+        // Step 2: Get (x, z) world coords at plane hit (note: scene uses y-up)
+        let hit_x = rx * t_plane;
+        let hit_z = rz * t_plane;
+
+        // Step 3: Map to (u, v) and check bounds
+        let uv_scale = Field::from(self.uv_scale);
+        let u = (hit_x.val * uv_scale).constant();
+        let v = (hit_z.val * uv_scale).constant();
+
+        // Bounds check: (u, v) must be in [0, 1]
+        let zero = Field::from(0.0);
+        let one = Field::from(1.0);
+        let in_bounds = u.ge(zero) & u.le(one) & v.ge(zero) & v.le(one);
+
+        // Sample height field
+        let h = self.height_field.eval_raw(u, v, zero, zero);
+
+        // Step 4: Adjust t for height displacement
+        let effective_height = (Field::from(self.base_height) + Field::from(self.scale) * h).constant();
+        let t_hit = Jet3::constant(effective_height) / ry;
+
+        // Return valid t if in bounds, else negative (miss)
+        let miss = Field::from(-1.0);
+        Jet3::new(
+            in_bounds.select(t_hit.val, miss),
+            in_bounds.select(t_hit.dx, miss),
+            in_bounds.select(t_hit.dy, miss),
+            in_bounds.select(t_hit.dz, miss),
+        )
+    }
+}
+
 // ============================================================================
 // LAYER 2: Surface (The Warp)
 // ============================================================================
@@ -343,6 +416,151 @@ where
             if_false: bg,
         }
         .eval_raw(rx, ry, rz, w)
+    }
+}
+
+// ============================================================================
+// SCENE COMPOSITION: Union via priority order
+// ============================================================================
+
+/// A Scene separates hit detection (mask) from appearance (color).
+///
+/// This enables Union composition: check S1 first, if miss check S2.
+/// "First hit in scene graph wins" - not distance-based, but priority-based.
+pub trait Scene {
+    /// Mask manifold: evaluates to positive where ray hits this scene.
+    type Mask: Manifold<Jet3, Output = Field>;
+    /// Color manifold: evaluates to the color at the hit point.
+    type Color: Manifold<Jet3, Output = Discrete>;
+
+    fn mask(&self) -> Self::Mask;
+    fn color(&self) -> Self::Color;
+}
+
+/// Union of two scenes: first hit wins.
+///
+/// Evaluates S1's mask first. If hit, use S1's color.
+/// Otherwise, evaluate S2's mask. If hit, use S2's color.
+/// Otherwise, use background.
+#[derive(Clone, Copy)]
+pub struct Union<S1, S2, B> {
+    pub first: S1,
+    pub second: S2,
+    pub background: B,
+}
+
+impl<S1, S2, B> Manifold<Jet3> for Union<S1, S2, B>
+where
+    S1: Scene + Send + Sync,
+    S2: Scene + Send + Sync,
+    B: Manifold<Jet3, Output = Discrete>,
+{
+    type Output = Discrete;
+
+    #[inline]
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
+        // First hit wins: nested Select
+        // Select(S1.mask, S1.color, Select(S2.mask, S2.color, background))
+        let m1 = self.first.mask();
+        let c1 = self.first.color();
+        let m2 = self.second.mask();
+        let c2 = self.second.color();
+
+        let mask1 = m1.eval_raw(rx, ry, rz, w);
+        let mask2 = m2.eval_raw(rx, ry, rz, w);
+
+        // Inner select: S2 vs background
+        let color2 = c2.eval_raw(rx, ry, rz, w);
+        let bg_color = self.background.eval_raw(rx, ry, rz, w);
+        let inner = Discrete::select(mask2, color2, bg_color);
+
+        // Outer select: S1 vs inner
+        let color1 = c1.eval_raw(rx, ry, rz, w);
+        Discrete::select(mask1, color1, inner)
+    }
+}
+
+/// Simple scene wrapper: geometry + material with explicit mask exposure.
+///
+/// Unlike ColorSurface which hides the mask, SceneObject exposes it
+/// for use in Union composition.
+#[derive(Clone, Copy)]
+pub struct SceneObject<G, M> {
+    pub geometry: G,
+    pub material: M,
+}
+
+/// Mask manifold for geometry hit detection.
+#[derive(Clone, Copy)]
+pub struct GeometryMask<G> {
+    geometry: G,
+}
+
+impl<G: Manifold<Jet3, Output = Jet3>> Manifold<Jet3> for GeometryMask<G> {
+    type Output = Field;
+
+    #[inline]
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Field {
+        let t = self.geometry.eval_raw(rx, ry, rz, w);
+
+        let fzero = Field::from(0.0);
+        let t_max = Field::from(1e6);
+        let deriv_max = Field::from(1e4);
+
+        let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
+        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz).constant();
+        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
+        valid_t & valid_deriv
+    }
+}
+
+/// Color manifold for material evaluation at hit point.
+#[derive(Clone, Copy)]
+pub struct GeometryColor<G, M> {
+    geometry: G,
+    material: M,
+}
+
+impl<G, M> Manifold<Jet3> for GeometryColor<G, M>
+where
+    G: Manifold<Jet3, Output = Jet3>,
+    M: Manifold<Jet3, Output = Discrete>,
+{
+    type Output = Discrete;
+
+    #[inline]
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
+        let t = self.geometry.eval_raw(rx, ry, rz, w);
+
+        // Compute hit point: P = ray * t
+        let hx = rx * t;
+        let hy = ry * t;
+        let hz = rz * t;
+
+        // Evaluate material at hit point
+        self.material.eval_raw(hx, hy, hz, w)
+    }
+}
+
+impl<G, M> Scene for SceneObject<G, M>
+where
+    G: Manifold<Jet3, Output = Jet3> + Clone + Copy,
+    M: Manifold<Jet3, Output = Discrete> + Clone + Copy,
+{
+    type Mask = GeometryMask<G>;
+    type Color = GeometryColor<G, M>;
+
+    fn mask(&self) -> Self::Mask {
+        GeometryMask {
+            geometry: self.geometry,
+        }
+    }
+
+    fn color(&self) -> Self::Color {
+        GeometryColor {
+            geometry: self.geometry,
+            material: self.material,
+        }
     }
 }
 
