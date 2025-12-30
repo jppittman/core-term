@@ -2,6 +2,7 @@
 //!
 //! Run: cargo-asm -p pixelflow-graphics --example chrome_asm eval_one_pixel --release
 
+use pixelflow_core::combinators::At;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
@@ -22,11 +23,13 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        let scale = 2.0 / self.height;
-        let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
-        let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-        // Baseline: direct eval_raw (sx, sy are Field)
-        self.inner.eval_raw(sx, sy, z, w)
+        let width = Field::from(self.width);
+        let height = Field::from(self.height);
+        let scale = Field::from(2.0) / height;
+        let sx = (x - width * Field::from(0.5)) * scale;
+        let sy = (height * Field::from(0.5) - y) * scale;
+        // Use At combinator to evaluate at transformed coordinates
+        At { inner: &self.inner, x: sx, y: sy, z, w }.eval()
     }
 }
 
