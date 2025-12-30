@@ -19,6 +19,28 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
 
 // ============================================================================
+// HELPERS: Coordinate Pinning via AtArray Contramap
+// ============================================================================
+
+/// Pin a point in 3D space as a Jet3 array—no derivatives, pure constants.
+///
+/// **The Contramap Beauty**: We express a fixed world-space point as a **constant
+/// manifold in Jet3 domain**. When composed with geometry, this point becomes
+/// independent of the ray input—it's **pinned** to a specific location.
+///
+/// This is what `Jet3::constant(...)` did manually; now it's compositional:
+/// "Here's a point. Evaluate any manifold at this fixed point, ignoring input."
+#[inline(always)]
+fn pin_point(x: f32, y: f32, z: f32) -> [Jet3; 4] {
+    [
+        Jet3::constant(Field::from(x)),
+        Jet3::constant(Field::from(y)),
+        Jet3::constant(Field::from(z)),
+        Jet3::constant(Field::from(0.0)),
+    ]
+}
+
+// ============================================================================
 // HELPER: Lift Field mask to Jet3 manifold for Select conditions
 // ============================================================================
 
@@ -154,9 +176,11 @@ impl Manifold<Jet3> for SphereAt {
         // Quadratic: t = (ray·C) ± sqrt((ray·C)² - (|C|² - r²))
         // We want the closer (smaller positive) root: t = (ray·C) - sqrt(...)
 
-        let cx = Jet3::constant(Field::from(self.center.0));
-        let cy = Jet3::constant(Field::from(self.center.1));
-        let cz = Jet3::constant(Field::from(self.center.2));
+        // **The Contramap**: Pin the center point to constant coordinates in Jet3 space.
+        // This expresses the geometric intent: "The sphere's center is fixed in world space,
+        // independent of the ray direction." The pin_point helper uses At semantics under
+        // the hood—it's a coordinate transformation that maps ANY input to the center point.
+        let [cx, cy, cz, _w] = pin_point(self.center.0, self.center.1, self.center.2);
 
         // ray · center
         let d_dot_c = rx * cx + ry * cy + rz * cz;
