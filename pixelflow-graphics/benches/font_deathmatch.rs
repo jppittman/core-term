@@ -20,6 +20,8 @@ const FONT_DATA: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
 fn bench_rasterization_deathmatch(c: &mut Criterion) {
     let mut group = c.benchmark_group("font_rasterization_deathmatch");
+    // Reduce sample count for faster execution
+    group.sample_size(50);
 
     // Common parameters
     let char_code = 'g';
@@ -109,9 +111,11 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
 
 fn bench_heavy_workload(c: &mut Criterion) {
     let mut group = c.benchmark_group("heavy_workload");
+    // Reduce sample count for faster execution
+    group.sample_size(10);
 
-    // 512x512 = 262,144 pixels.
-    let size_px = 512;
+    // 256x256 = 65,536 pixels (reduced from 512x512 = 262,144)
+    let size_px = 256;
     let total_pixels = size_px * size_px;
     group.throughput(Throughput::Elements(total_pixels as u64));
 

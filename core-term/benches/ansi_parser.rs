@@ -85,9 +85,11 @@ fn scrolling(size: usize) -> Vec<u8> {
 
 fn bench_parser_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("ansi_parser");
+    // Reduce sample count for faster execution
+    group.sample_size(50);
 
-    // Test different sizes
-    for size in [1024, 4096, 16384, 65536, 262144] {
+    // Test different sizes (reduced from [1024, 4096, 16384, 65536, 262144])
+    for size in [1024, 4096, 16384, 65536] {
         // ASCII text (fast path)
         let data = ascii_text(size);
         group.throughput(Throughput::Bytes(data.len() as u64));
