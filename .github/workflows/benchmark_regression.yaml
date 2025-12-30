@@ -26,10 +26,17 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p benchmark_results
+
+          # 1. Run library benchmarks (if any) to verify they pass.
+          # We do not capture this output for regression checks as libtest doesn't support 'bencher' format
+          echo "Running library benchmarks..."
+          cargo bench --workspace --lib
+
+          # 2. Run dedicated benchmarks (criterion) for regression tracking
           # Get all bench targets from the workspace, excluding dependencies
           BENCHES=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].targets[] | select(.kind[] == "bench") | .name' | sort | uniq)
 
-          # Run each benchmark individually to avoid running library tests as benchmarks
+          # Run each benchmark individually with bencher output format
           for bench in $BENCHES; do
             echo "Running benchmark: $bench"
             cargo bench --bench "$bench" -- --output-format bencher | tee -a benchmark_results/output.txt

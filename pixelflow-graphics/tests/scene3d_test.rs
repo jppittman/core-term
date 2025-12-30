@@ -604,7 +604,7 @@ fn test_mullet_vs_3channel_comparison() {
 /// Benchmark: Compare work-stealing vs single-threaded at 1080p
 #[test]
 fn test_work_stealing_benchmark() {
-    use pixelflow_graphics::render::rasterizer::render_work_stealing;
+    use pixelflow_graphics::render::rasterizer::{render_work_stealing, RenderOptions};
 
     const W: usize = 1920;
     const H: usize = 1080;
@@ -669,7 +669,8 @@ fn test_work_stealing_benchmark() {
     // Work-stealing with 12 threads
     let mut frame2 = Frame::<Rgba8>::new(W as u32, H as u32);
     let start2 = std::time::Instant::now();
-    render_work_stealing(&renderable, frame2.as_slice_mut(), shape, 12);
+    let options = RenderOptions { num_threads: 12 };
+    render_work_stealing(&renderable, frame2.as_slice_mut(), shape, options);
     let parallel = start2.elapsed();
 
     let speedup = single.as_secs_f64() / parallel.as_secs_f64();

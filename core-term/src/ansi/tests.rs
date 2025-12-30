@@ -5,7 +5,7 @@
 // Use the AnsiProcessor, which combines lexer and parser
 // Corrected imports using commands submodule path
 use super::{
-    commands::{AnsiCommand, Attribute, C0Control, CsiCommand},
+    commands::{AnsiCommand, Attribute, C0Control, CsiCommand, EscCommand},
     AnsiParser, AnsiProcessor,
 };
 use crate::color::{Color, NamedColor};
@@ -1027,5 +1027,167 @@ fn it_should_handle_text_before_and_after_esc_k_sequence() {
             AnsiCommand::Print('r'),
         ],
         "Text before and after ESC k sequence should print correctly, title should be consumed"
+    );
+}
+
+// --- Character Set Designation Tests (ESC ( ) * + with final byte) ---
+
+#[test]
+fn it_should_process_esc_open_paren_b_usascii_charset() {
+    // ESC ( B - Select US ASCII as G0 character set
+    let bytes = b"\x1B(B";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet('(', 'B'))],
+        "ESC ( B should select US ASCII charset"
+    );
+}
+
+#[test]
+fn it_should_process_esc_open_paren_0_dec_graphics_charset() {
+    // ESC ( 0 - Select DEC Special Character and Line Drawing Set as G0
+    let bytes = b"\x1B(0";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet('(', '0'))],
+        "ESC ( 0 should select DEC Special Graphics charset"
+    );
+}
+
+#[test]
+fn it_should_process_esc_close_paren_a_uk_charset() {
+    // ESC ) A - Select UK as G1 character set
+    let bytes = b"\x1B)A";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet(')', 'A'))],
+        "ESC ) A should select UK charset as G1"
+    );
+}
+
+#[test]
+fn it_should_process_esc_star_with_dec_supplemental() {
+    // ESC * < - Select DEC Supplemental as G2
+    let bytes = b"\x1B*<";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet('*', '<'))],
+        "ESC * < should select DEC Supplemental charset as G2"
+    );
+}
+
+#[test]
+fn it_should_process_esc_plus_with_dec_technical() {
+    // ESC + > - Select DEC Technical as G3
+    let bytes = b"\x1B+>";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet('+', '>'))],
+        "ESC + > should select DEC Technical charset as G3"
+    );
+}
+
+#[test]
+fn it_should_process_charset_designator_boundary_low() {
+    // ESC ( 0 - '0' is 0x30, the lowest valid charset designator
+    let bytes = b"\x1B(0";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet('(', '0'))],
+        "ESC ( 0 (0x30) should be valid - lowest boundary"
+    );
+}
+
+#[test]
+fn it_should_process_charset_designator_boundary_high() {
+    // ESC ( ~ - '~' is 0x7E, the highest valid charset designator
+    let bytes = b"\x1B(~";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet('(', '~'))],
+        "ESC ( ~ (0x7E) should be valid - highest boundary"
+    );
+}
+
+#[test]
+fn it_should_process_charset_special_designators() {
+    // Test special characters that are valid charset designators
+    let test_cases = [
+        (':', "colon"),
+        (';', "semicolon"),
+        ('=', "equals (Swiss charset)"),
+        ('?', "question mark"),
+        ('@', "at sign"),
+        ('[', "open bracket"),
+        (']', "close bracket"),
+        ('^', "caret"),
+        ('_', "underscore"),
+        ('`', "backtick"),
+        ('{', "open brace"),
+        ('|', "pipe"),
+        ('}', "close brace"),
+    ];
+
+    for (designator, name) in test_cases {
+        let bytes = format!("\x1B({}", designator);
+        let commands = process_bytes(bytes.as_bytes());
+        assert_eq!(
+            commands,
+            vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet(
+                '(',
+                designator
+            ))],
+            "ESC ( {} ({}) should be a valid charset designator",
+            designator,
+            name
+        );
+    }
+}
+
+#[test]
+fn it_should_reject_charset_designator_below_valid_range() {
+    // ESC ( / - '/' is 0x2F, below the valid range (0x30-0x7E)
+    let bytes = b"\x1B(/";
+    let commands = process_bytes(bytes);
+    // Invalid charset designator should not produce a SelectCharacterSet command
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, AnsiCommand::Esc(EscCommand::SelectCharacterSet(_, _)))),
+        "ESC ( / (0x2F) should be rejected - below valid range"
+    );
+}
+
+#[test]
+fn it_should_reject_charset_designator_above_valid_range() {
+    // ESC ( DEL - DEL is 0x7F, above the valid range (0x30-0x7E)
+    let bytes = b"\x1B(\x7F";
+    let commands = process_bytes(bytes);
+    // Invalid charset designator should not produce a SelectCharacterSet command
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, AnsiCommand::Esc(EscCommand::SelectCharacterSet(_, _)))),
+        "ESC ( DEL (0x7F) should be rejected - above valid range"
+    );
+}
+
+#[test]
+fn it_should_reject_space_as_charset_designator() {
+    // ESC ( SP - Space is 0x20, below the valid range
+    let bytes = b"\x1B( ";
+    let commands = process_bytes(bytes);
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, AnsiCommand::Esc(EscCommand::SelectCharacterSet(_, _)))),
+        "ESC ( SP (0x20) should be rejected - not a valid charset designator"
     );
 }

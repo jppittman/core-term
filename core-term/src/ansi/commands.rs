@@ -94,6 +94,11 @@ pub const SGR_NO_OVERLINED: u16 = 55;
 pub const SGR_UNDERLINE_COLOR_SET: u16 = 58; // Followed by extended color params
 pub const SGR_UNDERLINE_COLOR_DEFAULT: u16 = 59;
 
+// --- DSR (Device Status Report) Constants ---
+pub const DSR_DEFAULT: u16 = 0;
+pub const DSR_STATUS_OK: u16 = 5;
+pub const DSR_REPORT_CURSOR_POSITION: u16 = 6;
+
 // --- Color Definitions ---
 // The local `Color` enum has been removed. We now use `crate::color::Color`.
 
@@ -395,20 +400,36 @@ impl AnsiCommand {
         }
     }
 
+    /// Checks if a character is a valid charset designator final byte.
+    ///
+    /// According to ECMA-35/ISO 2022, valid final bytes for character set designation
+    /// are in the range 0x30-0x7E (ASCII '0' through '~'). This includes:
+    /// - Private-use designators: 0x30-0x3F ('0'-'9', ':', ';', '<', '=', '>', '?')
+    /// - Standard registered sets: 0x40-0x7E ('@'-'~')
+    ///
+    /// Common charset designators include:
+    /// - '0' - DEC Special Character and Line Drawing Set
+    /// - 'A' - UK (United Kingdom)
+    /// - 'B' - USASCII
+    /// - '<' - DEC Supplemental
+    /// - '>' - DEC Technical
+    fn is_valid_charset_designator(c: char) -> bool {
+        matches!(c, '0'..='~')
+    }
+
     /// Parses an escape sequence with an intermediate character.
     pub(crate) fn from_esc_intermediate(intermediate: char, final_char: char) -> Option<Self> {
         if ['(', ')', '*', '+'].contains(&intermediate) {
-            // TODO: Validate final_char more strictly if needed (e.g., specific ranges for charsets)
-            if final_char.is_ascii_alphanumeric() || final_char == '%' || final_char == '@' {
-                // Common charset designators
+            if Self::is_valid_charset_designator(final_char) {
                 Some(AnsiCommand::Esc(EscCommand::SelectCharacterSet(
                     intermediate,
                     final_char,
                 )))
             } else {
                 warn!(
-                    "Unsupported final char '{}' for ESC {} sequence",
-                    final_char, intermediate
+                    "Invalid charset designator '{}' (0x{:02X}) for ESC {} sequence. \
+                     Valid range is 0x30-0x7E ('0'-'~').",
+                    final_char, final_char as u32, intermediate
                 );
                 None
             }
