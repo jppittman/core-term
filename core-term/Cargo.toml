@@ -3,6 +3,9 @@ name = "core-term"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+bench = false
+
 [dependencies]
 anyhow = "1.0"
 bitflags = { version = "2.9", features = ["serde"] }
@@ -51,6 +54,11 @@ criterion = "0.5"
 [[bench]]
 name = "ansi_parser"
 harness = false
+
+[[bin]]
+name = "core-term"
+path = "src/main.rs"
+bench = false
 
 [features]
 # Manual override features (optional - platform auto-detects)
