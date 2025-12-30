@@ -9,6 +9,3 @@ bench = false
 
 [dependencies]
 # No external dependencies - only proc_macro from std
-
-[dev-dependencies]
-actor-scheduler = { path = "../actor-scheduler" }
