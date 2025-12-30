@@ -97,10 +97,9 @@ pub use error::SendError;
 pub use actor_scheduler_macros::{actor_impl, troupe};
 
 use std::sync::{
-    Arc,
-    mpsc::{self, Receiver, SyncSender, TryRecvError},
+    mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
+    Arc, Mutex,
 };
-use std::time::{Duration, Instant};
 
 /// The types of messages supported by the scheduler.
 ///
@@ -440,51 +439,8 @@ pub trait WakeHandler: Send + Sync {
     fn wake(&self);
 }
 
-/// Maximum capacity for Control and Management lanes
-const CONTROL_MGMT_BUFFER_SIZE: usize = 128;
-
-/// Minimum backoff duration when no messages are available
-const MIN_BACKOFF: Duration = Duration::from_micros(10);
-
-/// Maximum backoff duration when no messages are available
-const MAX_BACKOFF: Duration = Duration::from_millis(500);
-
-/// Calculate exponential backoff with jitter.
-///
-/// Uses a simple exponential backoff strategy with added jitter to prevent
-/// thundering herd problems when multiple actors wake simultaneously.
-///
-/// # Arguments
-/// * `attempt` - The backoff attempt count (0 = first backoff)
-///
-/// # Returns
-/// A duration to sleep, with exponential growth and random jitter
-/// Fibonacci hash constant for jitter calculation.
-const JITTER_HASH_CONSTANT: u64 = 0x9e3779b97f4a7c15;
-/// Minimum jitter percentage (50%).
-const JITTER_MIN_PCT: u64 = 50;
-/// Jitter range (50-99%).
-const JITTER_RANGE: u64 = 50;
-
-fn backoff_with_jitter(attempt: u32) -> Result<Duration, SendError> {
-    let base_micros = MIN_BACKOFF.as_micros() as u64;
-    let max_micros = MAX_BACKOFF.as_micros() as u64;
-
-    let multiplier = 2u64.saturating_pow(attempt);
-    let backoff_micros = base_micros.saturating_mul(multiplier);
-    if backoff_micros > max_micros {
-        return Err(SendError::Timeout);
-    }
-
-    // Add jitter: random value between [0.5 * backoff, 1.0 * backoff]
-    // Using Instant hash for "randomness" (good enough for backoff jitter)
-    let now = Instant::now();
-    let hash = (now.elapsed().as_nanos() as u64).wrapping_mul(JITTER_HASH_CONSTANT);
-    let jitter_pct = JITTER_MIN_PCT + (hash % JITTER_RANGE);
-    let jittered_micros = (backoff_micros * jitter_pct) / 100;
-
-    Ok(Duration::from_micros(jittered_micros))
-}
+/// Maximum burst limit for Management lane processing
+const MANAGEMENT_BURST_LIMIT: usize = 128;
 
 /// A unified sender handle that routes messages to the scheduler with priority lanes.
 pub struct ActorHandle<D, C, M> {
@@ -492,10 +448,11 @@ pub struct ActorHandle<D, C, M> {
     tx_doorbell: SyncSender<()>,
     // Shutdown channel (buffer: 1) - shutdown signal
     tx_shutdown: SyncSender<()>,
-    // All lanes are bounded for backpressure
+    // Data lane is bounded for backpressure
     tx_data: SyncSender<D>,
-    tx_control: SyncSender<C>,
-    tx_mgmt: SyncSender<M>,
+    // Control and Management lanes are unbounded but wrapped in Mutex for Sync
+    tx_control: Arc<Mutex<Sender<C>>>,
+    tx_mgmt: Arc<Mutex<Sender<M>>>,
     // Optional custom wake handler for platform-specific wake mechanisms
     wake_handler: Option<Arc<dyn WakeHandler>>,
 }
@@ -524,32 +481,6 @@ impl<D, C, M> Clone for ActorHandle<D, C, M> {
     }
 }
 
-/// Send with retry and exponential backoff + jitter for fairness.
-///
-/// Used for control and management lanes to prevent thundering herd when
-/// multiple senders compete for buffer space.
-fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError> {
-    use std::sync::mpsc::TrySendError;
-
-    let mut attempt = 0;
-    loop {
-        match tx.try_send(msg) {
-            Ok(()) => return Ok(()),
-            Err(TrySendError::Full(returned_msg)) => {
-                // Channel full - backoff with jitter for fairness
-                let backoff = backoff_with_jitter(attempt)?;
-                std::thread::sleep(backoff);
-                attempt = attempt.saturating_add(1);
-                msg = returned_msg; // Restore message for retry
-            }
-            Err(err) => {
-                // Disconnected - convert to our error type
-                return Err(err.into());
-            }
-        }
-    }
-}
-
 impl<D, C, M> ActorHandle<D, C, M> {
     /// Sends a message to the appropriate priority lane and wakes the scheduler.
     ///
@@ -559,11 +490,8 @@ impl<D, C, M> ActorHandle<D, C, M> {
     ///
     /// # Blocking Behavior
     /// - `Data`: Blocking send (backpressure when buffer full)
-    /// - `Control`: Retry with exponential backoff + jitter for fairness
-    /// - `Management`: Retry with exponential backoff + jitter for fairness
-    ///
-    /// Backoff on control/management prevents thundering herd when multiple
-    /// senders compete for these lanes.
+    /// - `Control`: Non-blocking (unbounded buffer)
+    /// - `Management`: Non-blocking (unbounded buffer)
     ///
     /// # Errors
     /// Returns `Err` only if the receiver has been dropped.
@@ -580,13 +508,21 @@ impl<D, C, M> ActorHandle<D, C, M> {
                 self.wake();
             }
             Message::Control(ctrl_msg) => {
-                // Control lane: retry with backoff for fairness
-                send_with_backoff(&self.tx_control, ctrl_msg)?;
+                // Control lane: non-blocking send (unbounded)
+                self.tx_control
+                    .lock()
+                    .map_err(|_| SendError::Unknown)?
+                    .send(ctrl_msg)
+                    .map_err(|_| SendError::Unknown)?;
                 self.wake();
             }
             Message::Management(m) => {
-                // Management lane: retry with backoff for fairness
-                send_with_backoff(&self.tx_mgmt, m)?;
+                // Management lane: non-blocking send (unbounded)
+                self.tx_mgmt
+                    .lock()
+                    .map_err(|_| SendError::Unknown)?
+                    .send(m)
+                    .map_err(|_| SendError::Unknown)?;
                 self.wake();
             }
             Message::Shutdown => {
@@ -638,15 +574,15 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_shutdown, rx_shutdown) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+        let (tx_control, rx_control) = mpsc::channel();
+        let (tx_mgmt, rx_mgmt) = mpsc::channel();
 
         let sender = ActorHandle {
             tx_doorbell,
             tx_shutdown,
             tx_data,
-            tx_control,
-            tx_mgmt,
+            tx_control: Arc::new(Mutex::new(tx_control)),
+            tx_mgmt: Arc::new(Mutex::new(tx_mgmt)),
             wake_handler: None,
         };
 
@@ -657,7 +593,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             rx_control,
             rx_mgmt,
             data_burst_limit,
-            management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
+            management_burst_limit: MANAGEMENT_BURST_LIMIT,
         };
 
         (sender, receiver)
@@ -683,15 +619,15 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_shutdown, rx_shutdown) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+        let (tx_control, rx_control) = mpsc::channel();
+        let (tx_mgmt, rx_mgmt) = mpsc::channel();
 
         let sender = ActorHandle {
             tx_doorbell,
             tx_shutdown,
             tx_data,
-            tx_control,
-            tx_mgmt,
+            tx_control: Arc::new(Mutex::new(tx_control)),
+            tx_mgmt: Arc::new(Mutex::new(tx_mgmt)),
             wake_handler,
         };
 
@@ -702,7 +638,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             rx_control,
             rx_mgmt,
             data_burst_limit,
-            management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
+            management_burst_limit: MANAGEMENT_BURST_LIMIT,
         };
 
         (sender, receiver)
