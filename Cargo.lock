@@ -12,9 +12,6 @@ dependencies = [
 [[package]]
 name = "actor-scheduler-macros"
 version = "0.1.0"
-dependencies = [
- "actor-scheduler",
-]
 
 [[package]]
 name = "addr2line"
