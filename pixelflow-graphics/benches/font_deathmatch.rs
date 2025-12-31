@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use freetype::Library;
 use pixelflow_graphics::{
     render::rasterizer::{execute, render_work_stealing, RenderOptions, TensorShape},
-    Font, Lift, Rgba8,
+    Font, Grayscale, Rgba8,
 };
 
 // ============================================================================
@@ -60,7 +60,7 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
             let glyph = pf_font
                 .glyph_scaled(black_box(char_code), size_px as f32)
                 .unwrap();
-            let colored = Lift(glyph);
+            let colored = Grayscale(glyph);
             execute(&colored, &mut buffer, shape);
             black_box(&buffer);
         })
@@ -70,7 +70,7 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     // PixelFlow Setup (Cached Glyph)
     // ------------------------------------------------------------------------
     let cached_glyph = pf_font.glyph_scaled(char_code, size_px as f32).unwrap();
-    let cached_colored = Lift(cached_glyph);
+    let cached_colored = Grayscale(cached_glyph);
 
     group.bench_function(BenchmarkId::new("pixelflow_cached", "64px_g"), |b| {
         b.iter(|| {
@@ -114,7 +114,7 @@ fn bench_heavy_workload(c: &mut Criterion) {
     let pf_font = Font::parse(FONT_DATA).unwrap();
     // Render a large '@' which has complex geometry
     let glyph = pf_font.glyph_scaled('@', size_px as f32).unwrap();
-    let colored = Lift(glyph);
+    let colored = Grayscale(glyph);
 
     let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
     let shape = TensorShape::new(size_px as usize, size_px as usize);
@@ -197,7 +197,7 @@ fn bench_cold_start(c: &mut Criterion) {
             let glyph = font
                 .glyph_scaled(black_box(char_code), size_px as f32)
                 .unwrap();
-            let colored = Lift(glyph);
+            let colored = Grayscale(glyph);
             execute(&colored, &mut buffer, shape);
             black_box(&buffer);
         })

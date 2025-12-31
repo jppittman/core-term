@@ -254,7 +254,7 @@ fn bench_rasterize_circle(c: &mut Criterion) {
                 let dx = X - cx;
                 let dy = Y - cy;
                 let inside = (dx * dx + dy * dy).lt(r * r);
-                let circle = Lift(inside.select(1.0f32, 0.0f32));
+                let circle = Grayscale(inside.select(1.0f32, 0.0f32));
 
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
@@ -284,7 +284,7 @@ fn bench_rasterize_glyph(c: &mut Criterion) {
             size,
             |bencher, &size| {
                 let glyph = font.glyph_scaled('A', size as f32).unwrap();
-                let colored = Lift(glyph);
+                let colored = Grayscale(glyph);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -300,7 +300,7 @@ fn bench_rasterize_glyph(c: &mut Criterion) {
             size,
             |bencher, &size| {
                 let glyph = font.glyph_scaled('@', size as f32).unwrap();
-                let colored = Lift(glyph);
+                let colored = Grayscale(glyph);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -333,7 +333,7 @@ fn bench_rasterize_glyph_aa(c: &mut Criterion) {
             |bencher, &size| {
                 let glyph = font.glyph_scaled('A', size as f32).unwrap();
                 let aa_glyph = aa_coverage(glyph);
-                let colored = Lift(aa_glyph);
+                let colored = Grayscale(aa_glyph);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -350,7 +350,7 @@ fn bench_rasterize_glyph_aa(c: &mut Criterion) {
             |bencher, &size| {
                 let glyph = font.glyph_scaled('@', size as f32).unwrap();
                 let aa_glyph = aa_coverage(glyph);
-                let colored = Lift(aa_glyph);
+                let colored = Grayscale(aa_glyph);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -627,7 +627,7 @@ fn bench_cached_vs_uncached_raster(c: &mut Criterion) {
             size,
             |bencher, &size| {
                 let glyph = font.glyph_scaled('A', size as f32).unwrap();
-                let colored = Lift(glyph);
+                let colored = Grayscale(glyph);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -645,7 +645,7 @@ fn bench_cached_vs_uncached_raster(c: &mut Criterion) {
             |bencher, &size| {
                 let glyph = font.glyph_scaled('A', size as f32).unwrap();
                 let cached = CachedGlyph::new(&glyph, size);
-                let colored = Lift(cached);
+                let colored = Grayscale(cached);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -688,7 +688,7 @@ fn bench_cached_text(c: &mut Criterion) {
     group.bench_function("render_cached_text", |bencher| {
         let mut cache_copy = cache.clone();
         let cached_text = CachedText::new(&font, &mut cache_copy, text, size);
-        let colored = Lift(cached_text);
+        let colored = Grayscale(cached_text);
         let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); width * height];
         let shape = TensorShape::new(width, height);
 
@@ -726,7 +726,7 @@ fn bench_text_rendering(c: &mut Criterion) {
 
     group.bench_function("render_single_char_64px", |bencher| {
         let glyph = font.glyph_scaled('A', 64.0).unwrap();
-        let colored = Lift(glyph);
+        let colored = Grayscale(glyph);
         let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); 64 * 64];
         let shape = TensorShape::new(64, 64);
 
@@ -740,7 +740,7 @@ fn bench_text_rendering(c: &mut Criterion) {
         bencher.iter(|| {
             for c in 'A'..='Z' {
                 let glyph = font.glyph_scaled(c, 32.0).unwrap();
-                let colored = Lift(glyph);
+                let colored = Grayscale(glyph);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); 32 * 32];
                 let shape = TensorShape::new(32, 32);
                 execute(&colored, &mut buffer, shape);
