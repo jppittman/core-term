@@ -365,6 +365,14 @@ where
     }
 
     #[inline(always)]
+    fn log2(self) -> Self {
+        Self {
+            val: self.val.log2(),
+            dir: self.dir.log2(),
+        }
+    }
+
+    #[inline(always)]
     fn floor(self) -> Self {
         Self {
             val: self.val.floor(),

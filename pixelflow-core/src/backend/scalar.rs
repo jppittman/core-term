@@ -180,6 +180,26 @@ impl SimdOps for ScalarF32 {
         // Convert float representation to bool mask
         MaskScalar(self.0.to_bits() != 0)
     }
+
+    #[inline(always)]
+    fn from_u32_bits(bits: u32) -> Self {
+        Self(f32::from_bits(bits))
+    }
+
+    #[inline(always)]
+    fn shr_u32(self, n: u32) -> Self {
+        Self(f32::from_bits(self.0.to_bits() >> n))
+    }
+
+    #[inline(always)]
+    fn i32_to_f32(self) -> Self {
+        Self((self.0.to_bits() as i32) as f32)
+    }
+
+    #[inline(always)]
+    fn log2(self) -> Self {
+        Self(libm::log2f(self.0))
+    }
 }
 
 // ============================================================================

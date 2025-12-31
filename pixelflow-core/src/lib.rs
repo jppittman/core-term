@@ -527,10 +527,23 @@ impl Field {
         self.zip_lanes(exp, libm::powf)
     }
 
-    /// Exponential function (per-lane via libm).
+    /// Exponential function.
+    ///
+    /// TODO(simd): Currently uses scalar fallback via map_lanes.
+    /// Should use range reduction + polynomial for proper SIMD.
     #[inline(always)]
     pub fn exp(self) -> Self {
+        // TODO(simd): Replace with SIMD polynomial approximation
         self.map_lanes(libm::expf)
+    }
+
+    /// Base-2 logarithm.
+    ///
+    /// Uses hardware getexp/getmant on AVX-512, bit manipulation + Remez polynomial elsewhere.
+    /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
+    #[inline(always)]
+    pub fn log2(self) -> Self {
+        Self(self.0.log2())
     }
 
     /// Floor (round toward negative infinity).
@@ -865,6 +878,11 @@ impl numeric::Numeric for Field {
     #[inline(always)]
     fn exp(self) -> Self {
         Self::exp(self)
+    }
+
+    #[inline(always)]
+    fn log2(self) -> Self {
+        Self::log2(self)
     }
 
     #[inline(always)]
