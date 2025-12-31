@@ -139,6 +139,30 @@ pub trait SimdOps:
     /// Convert float representation to native mask.
     /// Used by Field to convert float masks to native for select/add_masked.
     fn float_to_mask(self) -> Self::Mask;
+
+    // =========================================================================
+    // Bit Manipulation (for transcendentals)
+    // =========================================================================
+
+    /// Splat u32 bit pattern as float (BITCAST - no conversion).
+    /// The u32 value is reinterpreted as IEEE 754 float bits.
+    fn from_u32_bits(bits: u32) -> Self;
+
+    /// Shift bits right treating as u32 (BITCAST in, BITCAST out).
+    /// Reinterprets float bits as u32, shifts, reinterprets result as float bits.
+    fn shr_u32(self, n: u32) -> Self;
+
+    /// Interpret bits as i32, convert to f32 (SEMANTIC conversion).
+    /// Reinterprets float bits as i32, then converts that integer to f32.
+    /// Example: bits 0x00000005 → i32 value 5 → f32 value 5.0
+    fn i32_to_f32(self) -> Self;
+
+    /// Base-2 logarithm.
+    ///
+    /// Computes log2(x) for positive finite x.
+    /// Uses hardware getexp/getmant on AVX-512, bit manipulation + polynomial elsewhere.
+    /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
+    fn log2(self) -> Self;
 }
 
 /// SIMD operations for u32 (packed pixels).

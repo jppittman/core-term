@@ -649,6 +649,21 @@ impl Numeric for Jet3 {
     }
 
     #[inline(always)]
+    fn log2(self) -> Self {
+        // Chain rule: (log2 f)' = f' / (f * ln(2))
+        // log2(e) = 1/ln(2) ≈ 1.4426950408889634
+        let log2_e = Field::from(1.4426950408889634);
+        let inv_val = Field::from(1.0) / self.val;
+        let deriv_coeff = inv_val * log2_e;
+        Self::new(
+            self.val.log2(),
+            self.dx * deriv_coeff,
+            self.dy * deriv_coeff,
+            self.dz * deriv_coeff,
+        )
+    }
+
+    #[inline(always)]
     fn floor(self) -> Self {
         Self::constant(self.val.floor())
     }

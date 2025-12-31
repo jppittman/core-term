@@ -290,6 +290,65 @@ impl SimdOps for F32x4 {
         // Convert float representation to u32 mask
         unsafe { Mask4(vreinterpretq_u32_f32(self.0)) }
     }
+
+    #[inline(always)]
+    fn from_u32_bits(bits: u32) -> Self {
+        unsafe { Self(vreinterpretq_f32_u32(vdupq_n_u32(bits))) }
+    }
+
+    #[inline(always)]
+    fn shr_u32(self, n: u32) -> Self {
+        unsafe {
+            let as_int = vreinterpretq_u32_f32(self.0);
+            // NEON uses negative shift for right shift
+            let shift = vdupq_n_s32(-(n as i32));
+            let shifted = vshlq_u32(as_int, shift);
+            Self(vreinterpretq_f32_u32(shifted))
+        }
+    }
+
+    #[inline(always)]
+    fn i32_to_f32(self) -> Self {
+        unsafe {
+            let as_int = vreinterpretq_s32_f32(self.0);
+            Self(vcvtq_f32_s32(as_int))
+        }
+    }
+
+    #[inline(always)]
+    fn log2(self) -> Self {
+        // NEON: Use bit manipulation for exponent/mantissa extraction
+        // log2(x) = exponent + log2(mantissa) where mantissa ∈ [1, 2)
+        unsafe {
+            let x_u32 = vreinterpretq_u32_f32(self.0);
+
+            // Extract exponent: (bits >> 23) - 127
+            let exp_bits = vshrq_n_u32::<23>(x_u32);
+            let bias = vdupq_n_s32(127);
+            let n = vcvtq_f32_s32(vsubq_s32(vreinterpretq_s32_u32(exp_bits), bias));
+
+            // Extract mantissa in [1, 2): (bits & 0x007FFFFF) | 0x3F800000
+            let mant_mask = vdupq_n_u32(0x007FFFFF);
+            let one_bits = vdupq_n_u32(0x3F800000);
+            let f = vreinterpretq_f32_u32(vorrq_u32(vandq_u32(x_u32, mant_mask), one_bits));
+
+            // Remez minimax polynomial for log2(f), f ∈ [1, 2)
+            // Degree 4, max error ~10^-7
+            let c4 = vdupq_n_f32(-0.1334614);
+            let c3 = vdupq_n_f32(1.0588497);
+            let c2 = vdupq_n_f32(-2.3600652);
+            let c1 = vdupq_n_f32(2.8647557);
+            let c0 = vdupq_n_f32(-0.6366198);
+
+            // Horner's method using NEON FMA: vfmaq_f32(c, a, b) = a*b + c
+            let poly = vfmaq_f32(c3, c4, f);
+            let poly = vfmaq_f32(c2, poly, f);
+            let poly = vfmaq_f32(c1, poly, f);
+            let poly = vfmaq_f32(c0, poly, f);
+
+            Self(vaddq_f32(n, poly))
+        }
+    }
 }
 
 // ============================================================================

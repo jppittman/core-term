@@ -120,6 +120,9 @@ pub(crate) trait Numeric: Computational {
     /// Exponential function.
     fn exp(self) -> Self;
 
+    /// Base-2 logarithm.
+    fn log2(self) -> Self;
+
     /// Floor (round toward negative infinity).
     fn floor(self) -> Self;
 
