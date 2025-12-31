@@ -13,7 +13,6 @@
 //! and other optimizations. The graph is evaluated at the return boundary.
 
 use crate::Field;
-use crate::numeric::Numeric;
 use crate::{Manifold, ManifoldExt};
 
 /// Evaluate a manifold graph to Field.
