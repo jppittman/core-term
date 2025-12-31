@@ -550,6 +550,548 @@ impl U32x4 {
 }
 
 // ============================================================================
+// AVX2 Backend (8 lanes)
+// ============================================================================
+
+// ============================================================================
+// Mask8 - 8-lane mask for AVX2
+// ============================================================================
+
+/// 8-lane mask for AVX2.
+///
+/// AVX2 uses 256-bit YMM registers. Masks are typically stored as float vectors
+/// where each lane is all-1s (true) or all-0s (false), similar to SSE.
+/// However, AVX2 introduces integer-based masks for some operations.
+/// We stick to float masks (__m256) for compatibility with blendvps.
+#[cfg(target_feature = "avx2")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct Mask8(__m256);
+
+#[cfg(target_feature = "avx2")]
+impl Default for Mask8 {
+    fn default() -> Self {
+        unsafe { Self(_mm256_setzero_ps()) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Debug for Mask8 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Mask8({:08b})", unsafe { _mm256_movemask_ps(self.0) })
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl MaskOps for Mask8 {
+    #[inline(always)]
+    fn any(self) -> bool {
+        unsafe { _mm256_movemask_ps(self.0) != 0 }
+    }
+
+    #[inline(always)]
+    fn all(self) -> bool {
+        unsafe { _mm256_movemask_ps(self.0) == 0xFF }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl BitAnd for Mask8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_and_ps(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl BitOr for Mask8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_or_ps(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Not for Mask8 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm256_castsi256_ps(_mm256_set1_epi32(-1));
+            Self(_mm256_xor_ps(self.0, all_ones))
+        }
+    }
+}
+
+/// AVX2 Backend (8 lanes).
+#[cfg(target_feature = "avx2")]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Avx2;
+
+#[cfg(target_feature = "avx2")]
+impl Backend for Avx2 {
+    const LANES: usize = 8;
+    type F32 = F32x8;
+    type U32 = U32x8;
+}
+
+/// 8-lane f32 SIMD vector for AVX2.
+#[cfg(target_feature = "avx2")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct F32x8(__m256);
+
+#[cfg(target_feature = "avx2")]
+impl Default for F32x8 {
+    fn default() -> Self {
+        unsafe { Self(_mm256_setzero_ps()) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Debug for F32x8 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let arr = self.to_array();
+        write!(f, "F32x8({:?})", arr)
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl F32x8 {
+    #[inline(always)]
+    fn to_array(self) -> [f32; 8] {
+        let mut arr = [0.0f32; 8];
+        unsafe { _mm256_storeu_ps(arr.as_mut_ptr(), self.0) };
+        arr
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl SimdOps for F32x8 {
+    type Mask = Mask8;
+    const LANES: usize = 8;
+
+    #[inline(always)]
+    fn splat(val: f32) -> Self {
+        unsafe { Self(_mm256_set1_ps(val)) }
+    }
+
+    #[inline(always)]
+    fn sequential(start: f32) -> Self {
+        unsafe {
+            // _mm256_set_ps args are in reverse order
+            Self(_mm256_set_ps(
+                start + 7.0,
+                start + 6.0,
+                start + 5.0,
+                start + 4.0,
+                start + 3.0,
+                start + 2.0,
+                start + 1.0,
+                start,
+            ))
+        }
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [f32]) {
+        assert!(out.len() >= Self::LANES);
+        unsafe { _mm256_storeu_ps(out.as_mut_ptr(), self.0) }
+    }
+
+    #[inline(always)]
+    fn cmp_lt(self, rhs: Self) -> Mask8 {
+        unsafe { Mask8(_mm256_cmp_ps(self.0, rhs.0, _CMP_LT_OQ)) }
+    }
+
+    #[inline(always)]
+    fn cmp_le(self, rhs: Self) -> Mask8 {
+        unsafe { Mask8(_mm256_cmp_ps(self.0, rhs.0, _CMP_LE_OQ)) }
+    }
+
+    #[inline(always)]
+    fn cmp_gt(self, rhs: Self) -> Mask8 {
+        unsafe { Mask8(_mm256_cmp_ps(self.0, rhs.0, _CMP_GT_OQ)) }
+    }
+
+    #[inline(always)]
+    fn cmp_ge(self, rhs: Self) -> Mask8 {
+        unsafe { Mask8(_mm256_cmp_ps(self.0, rhs.0, _CMP_GE_OQ)) }
+    }
+
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        unsafe { Self(_mm256_sqrt_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        unsafe {
+            let mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+            Self(_mm256_and_ps(self.0, mask))
+        }
+    }
+
+    #[inline(always)]
+    fn min(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_min_ps(self.0, rhs.0)) }
+    }
+
+    #[inline(always)]
+    fn max(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_max_ps(self.0, rhs.0)) }
+    }
+
+    #[inline(always)]
+    fn select(mask: Mask8, if_true: Self, if_false: Self) -> Self {
+        unsafe { Self(_mm256_blendv_ps(if_false.0, if_true.0, mask.0)) }
+    }
+
+    #[inline(always)]
+    fn from_slice(slice: &[f32]) -> Self {
+        assert!(slice.len() >= Self::LANES);
+        unsafe { Self(_mm256_loadu_ps(slice.as_ptr())) }
+    }
+
+    #[inline(always)]
+    fn gather(slice: &[f32], indices: Self) -> Self {
+        unsafe {
+            let idx_i32 = _mm256_cvttps_epi32(indices.0);
+            Self(_mm256_i32gather_ps::<4>(slice.as_ptr(), idx_i32))
+        }
+    }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        unsafe { Self(_mm256_floor_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        #[cfg(target_feature = "fma")]
+        unsafe {
+            Self(_mm256_fmadd_ps(self.0, b.0, c.0))
+        }
+        #[cfg(not(target_feature = "fma"))]
+        {
+            self * b + c
+        }
+    }
+
+    #[inline(always)]
+    fn add_masked(self, val: Self, mask: Mask8) -> Self {
+        unsafe {
+            let masked_val = _mm256_and_ps(mask.0, val.0);
+            Self(_mm256_add_ps(self.0, masked_val))
+        }
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        unsafe { Self(_mm256_rcp_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        unsafe { Self(_mm256_rsqrt_ps(self.0)) }
+    }
+
+    #[inline(always)]
+    fn mask_to_float(mask: Mask8) -> Self {
+        Self(mask.0)
+    }
+
+    #[inline(always)]
+    fn float_to_mask(self) -> Mask8 {
+        Mask8(self.0)
+    }
+
+    #[inline(always)]
+    fn from_u32_bits(bits: u32) -> Self {
+        unsafe { Self(_mm256_castsi256_ps(_mm256_set1_epi32(bits as i32))) }
+    }
+
+    #[inline(always)]
+    fn shr_u32(self, n: u32) -> Self {
+        unsafe {
+            let as_int = _mm256_castps_si256(self.0);
+            let shift = _mm_cvtsi32_si128(n as i32);
+            let shifted = _mm256_srl_epi32(as_int, shift);
+            Self(_mm256_castsi256_ps(shifted))
+        }
+    }
+
+    #[inline(always)]
+    fn i32_to_f32(self) -> Self {
+        unsafe {
+            let as_int = _mm256_castps_si256(self.0);
+            Self(_mm256_cvtepi32_ps(as_int))
+        }
+    }
+
+    #[inline(always)]
+    fn log2(self) -> Self {
+        unsafe {
+            let x_i32 = _mm256_castps_si256(self.0);
+
+            let exp_bits = _mm256_srli_epi32(x_i32, 23);
+            let bias = _mm256_set1_epi32(127);
+            let n = _mm256_cvtepi32_ps(_mm256_sub_epi32(exp_bits, bias));
+
+            let mant_mask = _mm256_set1_epi32(0x007FFFFF);
+            let one_bits = _mm256_set1_epi32(0x3F800000);
+            let f = _mm256_castsi256_ps(_mm256_or_si256(
+                _mm256_and_si256(x_i32, mant_mask),
+                one_bits,
+            ));
+
+            let c4 = _mm256_set1_ps(-0.1334614);
+            let c3 = _mm256_set1_ps(1.0588497);
+            let c2 = _mm256_set1_ps(-2.3600652);
+            let c1 = _mm256_set1_ps(2.8647557);
+            let c0 = _mm256_set1_ps(-0.6366198);
+
+            // Horner's method
+            #[cfg(target_feature = "fma")]
+            {
+                let mut poly = _mm256_fmadd_ps(c4, f, c3);
+                poly = _mm256_fmadd_ps(poly, f, c2);
+                poly = _mm256_fmadd_ps(poly, f, c1);
+                poly = _mm256_fmadd_ps(poly, f, c0);
+                Self(_mm256_add_ps(n, poly))
+            }
+            #[cfg(not(target_feature = "fma"))]
+            {
+                let mut poly = _mm256_add_ps(_mm256_mul_ps(c4, f), c3);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c2);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c1);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c0);
+                Self(_mm256_add_ps(n, poly))
+            }
+        }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Add for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_add_ps(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Sub for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_sub_ps(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Mul for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_mul_ps(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Div for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_div_ps(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl BitAnd for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_and_ps(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl BitOr for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_or_ps(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Not for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let all_ones = _mm256_castsi256_ps(_mm256_set1_epi32(-1));
+            Self(_mm256_xor_ps(self.0, all_ones))
+        }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl core::ops::Neg for F32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn neg(self) -> Self {
+        unsafe {
+            let neg_zero = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MIN));
+            Self(_mm256_xor_ps(self.0, neg_zero))
+        }
+    }
+}
+
+// ============================================================================
+// U32x8 - 8-lane u32 SIMD for packed RGBA pixels (AVX2)
+// ============================================================================
+
+/// 8-lane u32 SIMD vector for AVX2 (packed RGBA pixels).
+#[cfg(target_feature = "avx2")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct U32x8(__m256i);
+
+#[cfg(target_feature = "avx2")]
+impl Default for U32x8 {
+    fn default() -> Self {
+        unsafe { Self(_mm256_setzero_si256()) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Debug for U32x8 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let mut arr = [0u32; 8];
+        unsafe { _mm256_storeu_si256(arr.as_mut_ptr() as *mut __m256i, self.0) };
+        write!(f, "U32x8({:?})", arr)
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl SimdU32Ops for U32x8 {
+    const LANES: usize = 8;
+
+    #[inline(always)]
+    fn splat(val: u32) -> Self {
+        unsafe { Self(_mm256_set1_epi32(val as i32)) }
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u32]) {
+        assert!(out.len() >= Self::LANES);
+        unsafe { _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, self.0) }
+    }
+
+    #[inline(always)]
+    fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl BitAnd for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_and_si256(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl BitOr for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        unsafe { Self(_mm256_or_si256(self.0, rhs.0)) }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Not for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        unsafe {
+            let ones = _mm256_set1_epi32(-1);
+            Self(_mm256_xor_si256(self.0, ones))
+        }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Shl<u32> for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn shl(self, rhs: u32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(rhs as i32);
+            Self(_mm256_sll_epi32(self.0, shift))
+        }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl Shr<u32> for U32x8 {
+    type Output = Self;
+    #[inline(always)]
+    fn shr(self, rhs: u32) -> Self {
+        unsafe {
+            let shift = _mm_cvtsi32_si128(rhs as i32);
+            Self(_mm256_srl_epi32(self.0, shift))
+        }
+    }
+}
+
+#[cfg(target_feature = "avx2")]
+impl U32x8 {
+    /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
+    #[inline(always)]
+    pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
+        unsafe {
+            let scale = _mm256_set1_ps(255.0);
+            let zero = _mm256_setzero_ps();
+            let one = _mm256_set1_ps(1.0);
+
+            let r_clamped = _mm256_min_ps(_mm256_max_ps(r.0, zero), one);
+            let g_clamped = _mm256_min_ps(_mm256_max_ps(g.0, zero), one);
+            let b_clamped = _mm256_min_ps(_mm256_max_ps(b.0, zero), one);
+            let a_clamped = _mm256_min_ps(_mm256_max_ps(a.0, zero), one);
+
+            let r_scaled = _mm256_mul_ps(r_clamped, scale);
+            let g_scaled = _mm256_mul_ps(g_clamped, scale);
+            let b_scaled = _mm256_mul_ps(b_clamped, scale);
+            let a_scaled = _mm256_mul_ps(a_clamped, scale);
+
+            let r_i32 = _mm256_cvttps_epi32(r_scaled);
+            let g_i32 = _mm256_cvttps_epi32(g_scaled);
+            let b_i32 = _mm256_cvttps_epi32(b_scaled);
+            let a_i32 = _mm256_cvttps_epi32(a_scaled);
+
+            let g_shifted = _mm256_slli_epi32(g_i32, 8);
+            let b_shifted = _mm256_slli_epi32(b_i32, 16);
+            let a_shifted = _mm256_slli_epi32(a_i32, 24);
+
+            let packed = _mm256_or_si256(
+                _mm256_or_si256(r_i32, g_shifted),
+                _mm256_or_si256(b_shifted, a_shifted),
+            );
+            Self(packed)
+        }
+    }
+}
+
+// ============================================================================
 // AVX512 Backend
 // ============================================================================
 
