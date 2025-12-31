@@ -99,6 +99,13 @@ pub const DSR_DEFAULT: u16 = 0;
 pub const DSR_STATUS_OK: u16 = 5;
 pub const DSR_REPORT_CURSOR_POSITION: u16 = 6;
 
+// --- Device Attribute Responses ---
+/// Response to Primary Device Attributes (DA1) request (CSI c), identifying as a VT102-compatible terminal.
+pub const DA1_RESPONSE_VT102: &[u8] = b"\x1b[?6c";
+
+/// Response to Device Status Report (DSR) status request (CSI 5 n), indicating status OK.
+pub const DSR_RESPONSE_OK: &[u8] = b"\x1b[0n";
+
 // --- Color Definitions ---
 // The local `Color` enum has been removed. We now use `crate::color::Color`.
 

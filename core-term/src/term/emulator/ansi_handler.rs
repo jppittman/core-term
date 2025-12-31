@@ -3,8 +3,8 @@
 use super::TerminalEmulator;
 use crate::{
     ansi::commands::{
-        AnsiCommand, C0Control, CsiCommand, EscCommand, DSR_DEFAULT, DSR_REPORT_CURSOR_POSITION,
-        DSR_STATUS_OK,
+        AnsiCommand, C0Control, CsiCommand, EscCommand, DA1_RESPONSE_VT102, DSR_DEFAULT,
+        DSR_REPORT_CURSOR_POSITION, DSR_RESPONSE_OK, DSR_STATUS_OK,
     },
     term::{
         action::EmulatorAction,
@@ -193,7 +193,7 @@ pub(super) fn process_ansi_command(
                     let response = format!("\x1B[{};{}R", abs_y + 1, abs_x + 1);
                     Some(EmulatorAction::WritePty(response.into_bytes()))
                 } else if dsr_param == DSR_STATUS_OK {
-                    Some(EmulatorAction::WritePty(b"\x1B[0n".to_vec()))
+                    Some(EmulatorAction::WritePty(DSR_RESPONSE_OK.to_vec()))
                 } else {
                     warn!("Unhandled DSR parameter: {}", dsr_param);
                     None
@@ -253,8 +253,7 @@ pub(super) fn process_ansi_command(
                 emulator.handle_window_manipulation(ps1, ps2, ps3)
             }
             CsiCommand::PrimaryDeviceAttributes => {
-                let response = "\x1b[?6c".to_string().into_bytes();
-                Some(EmulatorAction::WritePty(response))
+                Some(EmulatorAction::WritePty(DA1_RESPONSE_VT102.to_vec()))
             }
             CsiCommand::SetTabStop => {
                 let (cursor_x, _) = emulator.cursor_controller.logical_pos();
