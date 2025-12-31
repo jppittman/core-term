@@ -257,33 +257,41 @@ impl Manifold<Field> for LoopBlinnTriangle {
 
     /// Evaluate triangle coverage with analytical AA.
     ///
-    /// Uses analytical Jet2 to get curve value and gradient in one pass,
-    /// then computes coverage from signed distance.
+    /// Builds expression tree with X, Y variables, evaluates with seeded Jet2
+    /// to get value + derivatives in one pass via automatic differentiation.
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
         let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
         let fzero = Field::from(0.0);
+        let jzero = Jet2::constant(fzero);
 
-        // Edge functions (evaluate immediately to Field)
+        // Edge functions - evaluate with Field for fast early exit
         let e0 = (X * a0 + Y * b0 + c0).eval_raw(x, y, fzero, fzero);
         let e1 = (X * a1 + Y * b1 + c1).eval_raw(x, y, fzero, fzero);
         let e2 = (X * a2 + Y * b2 + c2).eval_raw(x, y, fzero, fzero);
         let edge_mask = Field::ge(e0, fzero) & Field::ge(e1, fzero) & Field::ge(e2, fzero);
 
-        // SIMD early exit: if no lanes are inside triangle, skip curve math
         if !edge_mask.any() {
             return fzero;
         }
 
-        // Get curve value and analytical gradient via Jet2
-        let jet = self.curve_jet(x, y);
+        // Build curve expression tree: f = u² - v
+        let u = X * self.ua + Y * self.ub + self.uc;
+        let v = X * self.va + Y * self.vb + self.vc;
+        let f = u * u - v;
+
+        // Evaluate with seeded Jets - derivatives propagate via chain rule!
+        let jx = Jet2::x(x);  // ∂x/∂x = 1, ∂x/∂y = 0
+        let jy = Jet2::y(y);  // ∂y/∂x = 0, ∂y/∂y = 1
+        let jet: Jet2 = f.eval_raw(jx, jy, jzero, jzero);
+        // jet.val = u²-v, jet.dx = 2u·ua - va, jet.dy = 2u·ub - vb
 
         // Gradient magnitude for signed distance
-        let grad_mag_sq = (jet.dx * jet.dx + jet.dy * jet.dy).eval_raw(fzero, fzero, fzero, fzero);
+        let grad_mag_sq = jet.dx * jet.dx + jet.dy * jet.dy;
         let grad_mag = Field::max(grad_mag_sq.sqrt(), Field::from(1e-6));
 
         // Coverage from signed distance: 0.5 - f/|∇f|, clamped to [0,1]
-        let signed_dist = (jet.val / grad_mag).eval_raw(fzero, fzero, fzero, fzero);
+        let signed_dist = jet.val / grad_mag;
         let coverage_raw = (signed_dist * -1.0 + 0.5).eval_raw(fzero, fzero, fzero, fzero);
         let curve_coverage = Field::min(Field::max(coverage_raw, fzero), Field::from(1.0));
 
