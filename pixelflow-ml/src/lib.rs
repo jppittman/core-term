@@ -94,9 +94,10 @@ impl FeatureMap for EluFeature {
     #[inline(always)]
     fn apply(&self, x: Field) -> Field {
         // ELU(x) + 1 = max(0, x) + exp(min(0, x))
+        use pixelflow_core::{field_exp, field_max, field_min};
         let zero = Field::from(0.0);
-        let pos_part = x.max(zero);
-        let neg_part = x.min(zero).exp();
+        let pos_part = field_max(x, zero);
+        let neg_part = field_exp(field_min(x, zero));
         (pos_part + neg_part).constant()
     }
 

@@ -1491,6 +1491,39 @@ pub fn field_lt(lhs: Field, rhs: Field) -> Field {
     lhs.lt(rhs)
 }
 
+/// Minimum of two Fields.
+///
+/// # For Manifold Implementors Only
+///
+/// Use this for low-level Field manipulation in feature maps or similar.
+/// For declarative code, use the `Min` manifold combinator instead.
+#[inline(always)]
+pub fn field_min(lhs: Field, rhs: Field) -> Field {
+    lhs.min(rhs)
+}
+
+/// Maximum of two Fields.
+///
+/// # For Manifold Implementors Only
+///
+/// Use this for low-level Field manipulation in feature maps or similar.
+/// For declarative code, use the `Max` manifold combinator instead.
+#[inline(always)]
+pub fn field_max(lhs: Field, rhs: Field) -> Field {
+    lhs.max(rhs)
+}
+
+/// Exponential function on a Field.
+///
+/// # For Manifold Implementors Only
+///
+/// Use this for low-level Field manipulation in feature maps or similar.
+/// For declarative code, use the `Exp` manifold combinator instead.
+#[inline(always)]
+pub fn field_exp(field: Field) -> Field {
+    field.exp()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
