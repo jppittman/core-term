@@ -189,53 +189,62 @@ fn compute_uv_coeffs(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], winding: f32) -> 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Manifold Implementation - Branchless SIMD-friendly
+// Manifold Implementation - Pure SIMD with Analytical Gradients
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Manifold<Field> for LoopBlinnTriangle {
     type Output = Field;
 
-    /// Evaluate triangle coverage at (x, y).
+    /// Evaluate triangle coverage with analytical AA.
     ///
-    /// Pure arithmetic, no branches. Same code path for solid and curved triangles.
-    /// For solid: UV gives u²-v = -1 (always inside curve).
-    /// For curved: UV maps to parabola test, winding baked into v sign.
+    /// The gradient ∇(u²-v) = (2u·ua - va, 2u·ub - vb) uses baked coefficients.
+    /// Coverage = (0.5 - f/|∇f|).clamp(0, 1) gives smooth antialiasing.
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
         let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
+        let fzero = Field::from(0.0);
 
-        // Build expression using coordinate manifolds
-        // Edge functions: e = A*x + B*y + C, inside when >= 0
-        let e0 = X * a0 + Y * b0 + c0;
-        let e1 = X * a1 + Y * b1 + c1;
-        let e2 = X * a2 + Y * b2 + c2;
+        // Edge functions
+        let e0 = x * a0 + y * b0 + c0;
+        let e1 = x * a1 + y * b1 + c1;
+        let e2 = x * a2 + y * b2 + c2;
 
-        // Curve test: u² - v <= 0 means inside
-        // For solid: u=0, v=1, gives u²-v = -1 (always inside)
-        let u = X * self.ua + Y * self.ub + self.uc;
-        let v = X * self.va + Y * self.vb + self.vc;
-        let curve = u * u - v;
+        // UV coordinates
+        let u = x * self.ua + y * self.ub + self.uc;
+        let v = x * self.va + y * self.vb + self.vc;
 
-        // Combine all tests, evaluate at actual coordinates
-        let inside = e0.ge(0.0f32) & e1.ge(0.0f32) & e2.ge(0.0f32) & curve.le(0.0f32);
-        inside.select(1.0f32, 0.0f32).at(x, y, z, w).eval()
+        // Curve implicit: f = u² - v
+        let f = u * u - v;
+
+        // Analytical gradient: ∇f = (2u·ua - va, 2u·ub - vb)
+        let two_u = u + u;
+        let grad_x = two_u * self.ua - self.va;
+        let grad_y = two_u * self.ub - self.vb;
+        let grad_mag = (grad_x * grad_x + grad_y * grad_y).sqrt().max(1e-6);
+
+        // Coverage from signed distance: 0.5 - f/|∇f|, clamped to [0,1]
+        let signed_dist = f / grad_mag;
+        let curve_coverage = (signed_dist * -1.0 + 0.5).max(0.0).min(1.0);
+
+        // Edge mask and final select
+        let edge_inside = e0.ge(0.0) & e1.ge(0.0) & e2.ge(0.0);
+        edge_inside
+            .select(curve_coverage, 0.0)
+            .eval_raw(fzero, fzero, fzero, fzero)
     }
 }
 
 impl Manifold<Jet2> for LoopBlinnTriangle {
     type Output = Jet2;
 
-    /// Evaluate with automatic differentiation for antialiasing.
-    ///
-    /// Uses analytical gradients from Jet2 forward-mode AD.
-    /// The gradient magnitude gives us pixel coverage for smooth AA.
+    /// Jet2 implementation for composition with other AD-aware manifolds.
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, _z: Jet2, _w: Jet2) -> Jet2 {
         let zero = Jet2::constant(Field::from(0.0));
-        let one = Jet2::constant(Field::from(1.0));
+        let half = Field::from(0.5);
         let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
 
-        // Edge functions with derivatives
+        // Edge functions
         let e0 = x * Jet2::constant(Field::from(a0))
                + y * Jet2::constant(Field::from(b0))
                + Jet2::constant(Field::from(c0));
@@ -246,38 +255,26 @@ impl Manifold<Jet2> for LoopBlinnTriangle {
                + y * Jet2::constant(Field::from(b2))
                + Jet2::constant(Field::from(c2));
 
-        let inside_edges = e0.ge(zero) & e1.ge(zero) & e2.ge(zero);
-
-        // Early exit if completely outside triangle bounds
+        // Use Jet2:: to avoid ManifoldExt trait shadowing
+        let inside_edges = Jet2::ge(e0, zero) & Jet2::ge(e1, zero) & Jet2::ge(e2, zero);
         if !inside_edges.val.any() {
             return zero;
         }
 
-        // Curve test with derivatives for AA
+        // UV and curve (Jet2 carries derivatives for composition)
         let u = x * Jet2::constant(Field::from(self.ua))
               + y * Jet2::constant(Field::from(self.ub))
               + Jet2::constant(Field::from(self.uc));
         let v = x * Jet2::constant(Field::from(self.va))
               + y * Jet2::constant(Field::from(self.vb))
               + Jet2::constant(Field::from(self.vc));
+        let f = u * u - v;
 
-        let curve = u * u - v;
+        // Use Jet2's AD for gradient (for composition correctness)
+        let grad_mag = (f.dx * f.dx + f.dy * f.dy).sqrt().max(Field::from(1e-6));
+        let signed_dist = f.val / grad_mag;
+        let coverage = (half - signed_dist).max(Field::from(0.0)).min(Field::from(1.0));
 
-        // Analytical gradient magnitude for AA coverage
-        // d(u²-v)/dx = 2u·du/dx - dv/dx, d(u²-v)/dy = 2u·du/dy - dv/dy
-        let grad_mag = (curve.dx * curve.dx + curve.dy * curve.dy)
-            .sqrt()
-            .max(Field::from(1e-6));
-
-        // Signed distance to curve (negative = inside)
-        let dist = curve.val / grad_mag;
-
-        // Smooth coverage: 0.5 pixel transition zone
-        let coverage = (Field::from(-1.0) * dist + Field::from(0.5))
-            .max(Field::from(0.0))
-            .min(Field::from(1.0));
-
-        // Combine edge and curve coverage
         let fzero = Field::from(0.0);
         let result = coverage.eval_raw(fzero, fzero, fzero, fzero);
         (inside_edges & Jet2::constant(result)) | (!inside_edges & zero)
