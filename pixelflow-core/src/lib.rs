@@ -184,9 +184,30 @@ type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    target_feature = "avx2"
+))]
+type NativeSimd = <backend::x86::Avx2 as Backend>::F32;
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    target_feature = "avx2"
+))]
+type NativeU32Simd = <backend::x86::Avx2 as Backend>::U32;
+
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 type NativeU32Simd = <backend::x86::Sse2 as Backend>::U32;
 
 #[cfg(target_arch = "aarch64")]
@@ -672,7 +693,16 @@ impl Discrete {
                 unsafe { core::mem::transmute(a.0) },
             ))
         }
-        #[cfg(not(target_feature = "avx512f"))]
+        #[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
+        {
+            Self(backend::x86::U32x8::pack_rgba(
+                unsafe { core::mem::transmute(r.0) },
+                unsafe { core::mem::transmute(g.0) },
+                unsafe { core::mem::transmute(b.0) },
+                unsafe { core::mem::transmute(a.0) },
+            ))
+        }
+        #[cfg(all(not(target_feature = "avx512f"), not(target_feature = "avx2")))]
         {
             Self(backend::x86::U32x4::pack_rgba(
                 unsafe { core::mem::transmute(r.0) },
