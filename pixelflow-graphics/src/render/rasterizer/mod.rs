@@ -92,7 +92,7 @@
 //! ```
 //!
 //! - **PARALLELISM**: Number of simultaneous SIMD lanes (16-64 depending on CPU)
-//! - **Sequential generation**: `Field::sequential(x)` creates `[x, x+1, x+2, ..., x+PARALLELISM-1]` for batch evaluation
+//! - **Sequential generation**: `materialize_discrete` internally creates sequential coordinates for batch evaluation
 //! - **Fused evaluation**: Manifold is compiled into a single SIMD kernel per expression
 //!
 //! ### Why This Works
@@ -182,9 +182,7 @@
 //! Color manifolds output `Discrete` (packed u32 pixels) directly.
 
 use crate::render::color::Pixel;
-use pixelflow_core::{
-    materialize_discrete, materialize_discrete_fields, Discrete, Field, Manifold, PARALLELISM,
-};
+use pixelflow_core::{materialize_discrete, Discrete, Manifold, PARALLELISM};
 
 pub mod parallel;
 pub(crate) mod pool;
@@ -263,14 +261,14 @@ where
         let row_offset = row_idx * width;
         let mut x = 0;
 
-        let ys = Field::from(y as f32 + 0.5);
+        let fy = y as f32 + 0.5;
 
         // SIMD Hot Path - process PARALLELISM pixels at a time
         while x + PARALLELISM <= width {
-            let xs = Field::sequential(x as f32 + 0.5);
+            let fx = x as f32 + 0.5;
 
-            // Use materialize_discrete_fields to evaluate and store
-            materialize_discrete_fields(manifold, xs, ys, &mut packed);
+            // Use manifold API - materialize_discrete handles Field creation internally
+            materialize_discrete(manifold, fx, fy, &mut packed);
 
             // Copy to target
             for i in 0..PARALLELISM {
@@ -283,7 +281,6 @@ where
         // Scalar Fallback (Tail) - handle remaining pixels one at a time
         while x < width {
             let fx = x as f32 + 0.5;
-            let fy = y as f32 + 0.5;
 
             // For single pixels, use materialize_discrete with a 1-element buffer
             materialize_discrete(manifold, fx, fy, &mut packed);

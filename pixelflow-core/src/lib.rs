@@ -380,8 +380,12 @@ impl Field {
     ///
     /// This is the efficient way to create sequential x-coordinates
     /// for rasterization loops.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use manifold composition, not direct Field construction.
     #[inline(always)]
-    pub fn sequential(start: f32) -> Self {
+    pub(crate) fn sequential(start: f32) -> Self {
         Self(NativeSimd::sequential(start))
     }
 
@@ -406,47 +410,76 @@ impl Field {
     }
 
     /// Check if any lane is non-zero.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use manifold composition, not direct Field operations.
     #[inline(always)]
-    pub fn any(&self) -> bool {
+    pub(crate) fn any(&self) -> bool {
         // Convert float representation to native mask, then check
         self.0.float_to_mask().any()
     }
 
     /// Check if all lanes are non-zero.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use manifold composition, not direct Field operations.
     #[inline(always)]
-    pub fn all(&self) -> bool {
+    pub(crate) fn all(&self) -> bool {
         // Convert float representation to native mask, then check
         self.0.float_to_mask().all()
     }
 
     /// Less than comparison (returns mask as Field).
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Lt` manifold combinator instead.
     #[inline(always)]
-    pub fn lt(self, rhs: Self) -> Self {
+    pub(crate) fn lt(self, rhs: Self) -> Self {
         // Returns native mask, convert back to float representation
         Self(NativeSimd::mask_to_float(self.0.cmp_lt(rhs.0)))
     }
 
     /// Less than or equal (returns mask as Field).
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Le` manifold combinator instead.
     #[inline(always)]
-    pub fn le(self, rhs: Self) -> Self {
+    pub(crate) fn le(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_le(rhs.0)))
     }
 
     /// Greater than comparison (returns mask as Field).
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Gt` manifold combinator instead.
     #[inline(always)]
-    pub fn gt(self, rhs: Self) -> Self {
+    pub(crate) fn gt(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_gt(rhs.0)))
     }
 
     /// Greater than or equal (returns mask as Field).
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Ge` manifold combinator instead.
     #[inline(always)]
-    pub fn ge(self, rhs: Self) -> Self {
+    pub(crate) fn ge(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_ge(rhs.0)))
     }
 
     /// Square root.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Sqrt` manifold combinator instead.
+    /// Example: `(X * X + Y * Y).sqrt()` builds a Sqrt<Add<...>> type.
     #[inline(always)]
-    pub fn sqrt(self) -> Self {
+    pub(crate) fn sqrt(self) -> Self {
         self.sqrt_fast()
     }
 
@@ -457,8 +490,12 @@ impl Field {
     /// Hardware sqrt is 20-30 cycles.
     ///
     /// The accuracy is comparable to hardware sqrt due to the NR iteration in rsqrt.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Sqrt` manifold combinator instead.
     #[inline(always)]
-    pub fn sqrt_fast(self) -> Self {
+    pub(crate) fn sqrt_fast(self) -> Self {
         let rsqrt = self.rsqrt();
         // sqrt(x) = x * (1/sqrt(x))
         // Use raw_mul since this is Field's internal implementation, not AST building.
@@ -467,20 +504,35 @@ impl Field {
     }
 
     /// Absolute value.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Abs` manifold combinator instead.
+    /// Example: `X.abs()` builds an Abs<X> type.
     #[inline(always)]
-    pub fn abs(self) -> Self {
+    pub(crate) fn abs(self) -> Self {
         Self(self.0.abs())
     }
 
     /// Element-wise minimum.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Min` manifold combinator instead.
+    /// Example: `X.min(Y)` builds a Min<X, Y> type.
     #[inline(always)]
-    pub fn min(self, rhs: Self) -> Self {
+    pub(crate) fn min(self, rhs: Self) -> Self {
         Self(self.0.min(rhs.0))
     }
 
     /// Element-wise maximum.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Max` manifold combinator instead.
+    /// Example: `X.max(Y)` builds a Max<X, Y> type.
     #[inline(always)]
-    pub fn max(self, rhs: Self) -> Self {
+    pub(crate) fn max(self, rhs: Self) -> Self {
         Self(self.0.max(rhs.0))
     }
 
@@ -553,8 +605,12 @@ impl Field {
     ///
     /// TODO(simd): Currently uses scalar fallback via map_lanes.
     /// Should use range reduction + polynomial for proper SIMD.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Exp` manifold combinator instead.
     #[inline(always)]
-    pub fn exp(self) -> Self {
+    pub(crate) fn exp(self) -> Self {
         // TODO(simd): Replace with SIMD polynomial approximation
         self.map_lanes(libm::expf)
     }
@@ -563,14 +619,22 @@ impl Field {
     ///
     /// Uses hardware getexp/getmant on AVX-512, bit manipulation + Remez polynomial elsewhere.
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Log2` manifold combinator instead.
     #[inline(always)]
-    pub fn log2(self) -> Self {
+    pub(crate) fn log2(self) -> Self {
         Self(self.0.log2())
     }
 
     /// Floor (round toward negative infinity).
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Floor` manifold combinator instead.
     #[inline(always)]
-    pub fn floor(self) -> Self {
+    pub(crate) fn floor(self) -> Self {
         Self(self.0.floor())
     }
     /// Fused multiply-add: `self * b + c` in a single operation.
@@ -591,8 +655,12 @@ impl Field {
     ///
     /// Uses SIMD rsqrt + one NR iteration for near-full f32 precision.
     /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Rsqrt` manifold combinator instead.
     #[inline(always)]
-    pub fn rsqrt(self) -> Self {
+    pub(crate) fn rsqrt(self) -> Self {
         Self(self.0.rsqrt())
     }
 
@@ -670,9 +738,13 @@ impl Discrete {
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use color manifold combinators from pixelflow-graphics.
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
-    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
+    pub(crate) fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
         Self(backend::arm::U32x4::pack_rgba(
             unsafe { core::mem::transmute(r.0) },
             unsafe { core::mem::transmute(g.0) },
@@ -682,9 +754,13 @@ impl Discrete {
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use color manifold combinators from pixelflow-graphics.
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
-    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
+    pub(crate) fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
         #[cfg(target_feature = "avx512f")]
         {
             Self(backend::x86::U32x16::pack_rgba(
@@ -715,9 +791,13 @@ impl Discrete {
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use color manifold combinators from pixelflow-graphics.
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     #[inline(always)]
-    pub fn pack(r: Field, g: Field, b: Field, _a: Field) -> Self {
+    pub(crate) fn pack(r: Field, g: Field, b: Field, _a: Field) -> Self {
         // Scalar fallback - only packs first element
         let mut r_buf = [0.0f32; 1];
         let mut g_buf = [0.0f32; 1];
@@ -740,8 +820,12 @@ impl Discrete {
     /// Branchless select: returns `if_true` where mask is set, `if_false` elsewhere.
     ///
     /// The mask is interpreted bitwise from the Field representation.
+    ///
+    /// # Internal Use Only
+    ///
+    /// External crates should use the `Select` manifold combinator instead.
     #[inline(always)]
-    pub fn select(mask: Field, if_true: Self, if_false: Self) -> Self {
+    pub(crate) fn select(mask: Field, if_true: Self, if_false: Self) -> Self {
         use core::ops::{BitAnd, BitOr, Not};
         let mask_bits: NativeU32Simd = unsafe { core::mem::transmute(mask.0) };
         let t = if_true.0.bitand(mask_bits);
@@ -1252,6 +1336,11 @@ where
 /// This is an optimized version of [`materialize_discrete`] where coordinate Fields
 /// are precomputed or updated in a loop (e.g., via vector addition).
 ///
+/// # Internal Use Only
+///
+/// External crates should use `materialize_discrete` which takes f32 coordinates.
+/// This function exposes Field internals and is reserved for internal optimizations.
+///
 /// # Example
 /// ```ignore
 /// let mut xs = Field::sequential(0.0);
@@ -1263,7 +1352,7 @@ where
 /// xs = xs + step;
 /// ```
 #[inline(always)]
-pub fn materialize_discrete_fields<M>(m: &M, x: Field, y: Field, out: &mut [u32])
+pub(crate) fn materialize_discrete_fields<M>(m: &M, x: Field, y: Field, out: &mut [u32])
 where
     M: Manifold<Output = Discrete> + ?Sized,
 {
