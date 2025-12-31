@@ -85,7 +85,7 @@ where
     L: Manifold<Field, Output = Field>,
     R: Manifold<Field, Output = Field>,
 {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
         let left = self.0.eval_raw(x, y, z, w);
         let right = self.1.eval_raw(x, y, z, w);
@@ -98,7 +98,7 @@ where
     L: Manifold<Field, Output = Field>,
     R: Manifold<Field, Output = Field>,
 {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
         let left = self.0.eval_raw(x, y, z, w);
         let right = self.1.eval_raw(x, y, z, w);
@@ -111,7 +111,7 @@ where
     L: Manifold<Field, Output = Field>,
     R: Manifold<Field, Output = Field>,
 {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
         let left = self.0.eval_raw(x, y, z, w);
         let right = self.1.eval_raw(x, y, z, w);
@@ -124,7 +124,7 @@ where
     L: Manifold<Field, Output = Field>,
     R: Manifold<Field, Output = Field>,
 {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
         let left = self.0.eval_raw(x, y, z, w);
         let right = self.1.eval_raw(x, y, z, w);
@@ -141,7 +141,7 @@ where
     L: FieldCondition,
     R: FieldCondition,
 {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
         self.0.eval_mask(x, y, z, w) & self.1.eval_mask(x, y, z, w)
     }
@@ -152,7 +152,7 @@ where
     L: FieldCondition,
     R: FieldCondition,
 {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
         self.0.eval_mask(x, y, z, w) | self.1.eval_mask(x, y, z, w)
     }
@@ -162,7 +162,7 @@ impl<T> FieldCondition for BNot<T>
 where
     T: FieldCondition,
 {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
         !self.0.eval_mask(x, y, z, w)
     }
@@ -176,7 +176,7 @@ impl<T> FieldCondition for crate::ops::unary::Abs<T>
 where
     T: Manifold<Field, Output = Field>,
 {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
         // Abs doesn't produce a mask directly, so this shouldn't be called.
         // But we need it for nested expressions like Ge(Abs(m), 0.5)
@@ -190,7 +190,7 @@ where
 // Field itself can be a condition (mask stored as float bits).
 // Used when Field::gt/lt/etc. returns a Field mask directly.
 impl FieldCondition for Field {
-    #[inline]
+    #[inline(always)]
     fn eval_mask(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> NativeMask {
         self.0.float_to_mask()
     }
@@ -207,7 +207,7 @@ where
     F: Manifold<Field, Output = Field>,
 {
     type Output = Field;
-    #[inline]
+    #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         // Get native mask directly - no float conversion!
         let mask = self.cond.eval_mask(x, y, z, w);
@@ -239,7 +239,7 @@ where
     F: Manifold<crate::jet::Jet2, Output = O>,
 {
     type Output = O;
-    #[inline]
+    #[inline(always)]
     fn eval_raw(
         &self,
         x: crate::jet::Jet2,
@@ -273,7 +273,7 @@ where
     F: Manifold<crate::jet::Jet3, Output = O>,
 {
     type Output = O;
-    #[inline]
+    #[inline(always)]
     fn eval_raw(
         &self,
         x: crate::jet::Jet3,
