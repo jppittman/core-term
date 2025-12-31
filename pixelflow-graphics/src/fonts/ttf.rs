@@ -58,11 +58,13 @@ impl<T: Manifold<Field, Output = Field>> Manifold<Field> for Sum<T> {
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         // Max-blend: any glyph covering this pixel fills it
-        let fzero = Field::from(0.0);
-        self.0.iter().fold(fzero, |acc, term| {
+        // Use Field::max directly to avoid expression tree overhead
+        let mut acc = Field::from(0.0);
+        for term in self.0.iter() {
             let val = term.eval_raw(x, y, z, w);
-            acc.max(val).eval_raw(fzero, fzero, fzero, fzero)
-        })
+            acc = Field::max(acc, val);
+        }
+        acc
     }
 }
 
@@ -196,41 +198,43 @@ impl Manifold<Field> for LoopBlinnTriangle {
     type Output = Field;
 
     /// Evaluate triangle coverage with analytical AA.
-    ///
-    /// The gradient ∇(u²-v) = (2u·ua - va, 2u·ub - vb) uses baked coefficients.
-    /// Coverage = (0.5 - f/|∇f|).clamp(0, 1) gives smooth antialiasing.
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
         let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
         let fzero = Field::from(0.0);
 
-        // Edge functions
-        let e0 = x * a0 + y * b0 + c0;
-        let e1 = x * a1 + y * b1 + c1;
-        let e2 = x * a2 + y * b2 + c2;
+        // Early exit: compute edge functions first
+        let e0 = (X * a0 + Y * b0 + c0).eval_raw(x, y, fzero, fzero);
+        let e1 = (X * a1 + Y * b1 + c1).eval_raw(x, y, fzero, fzero);
+        let e2 = (X * a2 + Y * b2 + c2).eval_raw(x, y, fzero, fzero);
+        let edge_mask = Field::ge(e0, fzero) & Field::ge(e1, fzero) & Field::ge(e2, fzero);
 
-        // UV coordinates
-        let u = x * self.ua + y * self.ub + self.uc;
-        let v = x * self.va + y * self.vb + self.vc;
+        // SIMD early exit: if no lanes are inside, skip curve math
+        if !edge_mask.any() {
+            return fzero;
+        }
 
-        // Curve implicit: f = u² - v
-        let f = u * u - v;
+        // UV and curve computation only for triangles with potential hits
+        let u = (X * self.ua + Y * self.ub + self.uc).eval_raw(x, y, fzero, fzero);
+        let v = (X * self.va + Y * self.vb + self.vc).eval_raw(x, y, fzero, fzero);
 
-        // Analytical gradient: ∇f = (2u·ua - va, 2u·ub - vb)
+        // f = u² - v (use Field:: to stay as Field, not expression tree)
+        let f = (u * u - v).eval_raw(fzero, fzero, fzero, fzero);
+
+        // Analytical gradient: ∇(u²-v) = (2u·ua - va, 2u·ub - vb)
         let two_u = u + u;
-        let grad_x = two_u * self.ua - self.va;
-        let grad_y = two_u * self.ub - self.vb;
-        let grad_mag = (grad_x * grad_x + grad_y * grad_y).sqrt().max(1e-6);
+        let grad_x = (two_u * self.ua - self.va).eval_raw(fzero, fzero, fzero, fzero);
+        let grad_y = (two_u * self.ub - self.vb).eval_raw(fzero, fzero, fzero, fzero);
+        let grad_mag_sq = (grad_x * grad_x + grad_y * grad_y).eval_raw(fzero, fzero, fzero, fzero);
+        let grad_mag = Field::max(grad_mag_sq.sqrt(), Field::from(1e-6));
 
-        // Coverage from signed distance: 0.5 - f/|∇f|, clamped to [0,1]
-        let signed_dist = f / grad_mag;
-        let curve_coverage = (signed_dist * -1.0 + 0.5).max(0.0).min(1.0);
+        // Coverage from signed distance: 0.5 - f/|∇f|
+        let signed_dist = (f / grad_mag).eval_raw(fzero, fzero, fzero, fzero);
+        let coverage_raw = (signed_dist * -1.0 + 0.5).eval_raw(fzero, fzero, fzero, fzero);
+        let curve_coverage = Field::min(Field::max(coverage_raw, fzero), Field::from(1.0));
 
-        // Edge mask and final select
-        let edge_inside = e0.ge(0.0) & e1.ge(0.0) & e2.ge(0.0);
-        edge_inside
-            .select(curve_coverage, 0.0)
-            .eval_raw(fzero, fzero, fzero, fzero)
+        // Apply edge mask using select expression
+        edge_mask.select(curve_coverage, fzero).eval_raw(fzero, fzero, fzero, fzero)
     }
 }
 
@@ -296,15 +300,15 @@ impl Manifold<Field> for TriangulatedGlyph {
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let fzero = Field::from(0.0);
+        let mut acc = Field::from(0.0);
 
         // Max blend: any triangle covering this pixel fills it
-        self.triangles
-            .iter()
-            .map(|tri| tri.eval_raw(x, y, z, w))
-            .fold(fzero, |acc, val| {
-                acc.max(val).eval_raw(fzero, fzero, fzero, fzero)
-            })
+        // Use Field::max directly to avoid expression tree overhead
+        for tri in self.triangles.iter() {
+            let val = tri.eval_raw(x, y, z, w);
+            acc = Field::max(acc, val);
+        }
+        acc
     }
 }
 
