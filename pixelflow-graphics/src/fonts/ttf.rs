@@ -133,6 +133,64 @@ impl LoopBlinnTriangle {
             ua, ub, uc, va, vb, vc,
         }
     }
+
+    /// Compute the curve value f = u² - v with analytical derivatives.
+    /// Returns Jet2 with memoized gradient - no AD overhead.
+    ///
+    /// For f = u² - v where u = ua*x + ub*y + uc, v = va*x + vb*y + vc:
+    /// - ∂f/∂x = 2u·ua - va
+    /// - ∂f/∂y = 2u·ub - vb
+    #[inline(always)]
+    pub fn curve_jet(&self, x: Field, y: Field) -> Jet2 {
+        let fzero = Field::from(0.0);
+
+        // u = ua*x + ub*y + uc
+        let u = (X * self.ua + Y * self.ub + self.uc).eval_raw(x, y, fzero, fzero);
+        // v = va*x + vb*y + vc
+        let v = (X * self.va + Y * self.vb + self.vc).eval_raw(x, y, fzero, fzero);
+
+        // f = u² - v
+        let val = (u * u - v).eval_raw(fzero, fzero, fzero, fzero);
+
+        // Analytical gradient: ∂f/∂x = 2u·ua - va, ∂f/∂y = 2u·ub - vb
+        let two_u = u + u;
+        let dx = (two_u * self.ua - self.va).eval_raw(fzero, fzero, fzero, fzero);
+        let dy = (two_u * self.ub - self.vb).eval_raw(fzero, fzero, fzero, fzero);
+
+        Jet2::new(val, dx, dy)
+    }
+
+    /// Check if triangle could contribute to a tile using Taylor bounds.
+    ///
+    /// Uses Jet2 at tile center + Lagrange error bound for conservative test.
+    /// For quadratic u²-v, the error bound is exact: R₂ = (ua·hx + ub·hy)²
+    #[inline(always)]
+    pub fn might_affect_tile(&self, cx: Field, cy: Field, hx: f32, hy: f32) -> bool {
+        let fzero = Field::from(0.0);
+
+        // First check edge bounds - quick reject if tile is completely outside
+        for [a, b, c] in self.edges {
+            let edge_at_center = (X * a + Y * b + c).eval_raw(cx, cy, fzero, fzero);
+            let max_dev = Field::from(a.abs() * hx + b.abs() * hy);
+            let min_edge = (edge_at_center - max_dev).eval_raw(fzero, fzero, fzero, fzero);
+            if !Field::ge(min_edge, fzero).any() {
+                return false;
+            }
+        }
+
+        // Tile might be inside triangle - check curve bounds via analytical Jet2
+        let jet = self.curve_jet(cx, cy);
+
+        // Taylor bound: f ± |∂f/∂x|·hx ± |∂f/∂y|·hy ± R₂
+        // R₂ = (ua·hx + ub·hy)² (exact for quadratic)
+        let linear_dev = (jet.dx.abs() * hx + jet.dy.abs() * hy).eval_raw(fzero, fzero, fzero, fzero);
+        let u_dev = self.ua.abs() * hx + self.ub.abs() * hy;
+        let total_dev = (linear_dev + u_dev * u_dev).eval_raw(fzero, fzero, fzero, fzero);
+
+        // Curve might contribute if min value < 0.5
+        let min_f = (jet.val - total_dev).eval_raw(fzero, fzero, fzero, fzero);
+        Field::lt(min_f, Field::from(0.5)).any()
+    }
 }
 
 /// Compute edge function coefficients for barycentric bounds.
@@ -198,42 +256,38 @@ impl Manifold<Field> for LoopBlinnTriangle {
     type Output = Field;
 
     /// Evaluate triangle coverage with analytical AA.
+    ///
+    /// Uses analytical Jet2 to get curve value and gradient in one pass,
+    /// then computes coverage from signed distance.
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
         let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
         let fzero = Field::from(0.0);
 
-        // Early exit: compute edge functions first
+        // Edge functions (evaluate immediately to Field)
         let e0 = (X * a0 + Y * b0 + c0).eval_raw(x, y, fzero, fzero);
         let e1 = (X * a1 + Y * b1 + c1).eval_raw(x, y, fzero, fzero);
         let e2 = (X * a2 + Y * b2 + c2).eval_raw(x, y, fzero, fzero);
         let edge_mask = Field::ge(e0, fzero) & Field::ge(e1, fzero) & Field::ge(e2, fzero);
 
-        // SIMD early exit: if no lanes are inside, skip curve math
+        // SIMD early exit: if no lanes are inside triangle, skip curve math
         if !edge_mask.any() {
             return fzero;
         }
 
-        // UV and curve computation only for triangles with potential hits
-        let u = (X * self.ua + Y * self.ub + self.uc).eval_raw(x, y, fzero, fzero);
-        let v = (X * self.va + Y * self.vb + self.vc).eval_raw(x, y, fzero, fzero);
+        // Get curve value and analytical gradient via Jet2
+        let jet = self.curve_jet(x, y);
 
-        // f = u² - v (use Field:: to stay as Field, not expression tree)
-        let f = (u * u - v).eval_raw(fzero, fzero, fzero, fzero);
-
-        // Analytical gradient: ∇(u²-v) = (2u·ua - va, 2u·ub - vb)
-        let two_u = u + u;
-        let grad_x = (two_u * self.ua - self.va).eval_raw(fzero, fzero, fzero, fzero);
-        let grad_y = (two_u * self.ub - self.vb).eval_raw(fzero, fzero, fzero, fzero);
-        let grad_mag_sq = (grad_x * grad_x + grad_y * grad_y).eval_raw(fzero, fzero, fzero, fzero);
+        // Gradient magnitude for signed distance
+        let grad_mag_sq = (jet.dx * jet.dx + jet.dy * jet.dy).eval_raw(fzero, fzero, fzero, fzero);
         let grad_mag = Field::max(grad_mag_sq.sqrt(), Field::from(1e-6));
 
-        // Coverage from signed distance: 0.5 - f/|∇f|
-        let signed_dist = (f / grad_mag).eval_raw(fzero, fzero, fzero, fzero);
+        // Coverage from signed distance: 0.5 - f/|∇f|, clamped to [0,1]
+        let signed_dist = (jet.val / grad_mag).eval_raw(fzero, fzero, fzero, fzero);
         let coverage_raw = (signed_dist * -1.0 + 0.5).eval_raw(fzero, fzero, fzero, fzero);
         let curve_coverage = Field::min(Field::max(coverage_raw, fzero), Field::from(1.0));
 
-        // Apply edge mask using select expression
+        // Apply edge mask
         edge_mask.select(curve_coverage, fzero).eval_raw(fzero, fzero, fzero, fzero)
     }
 }
