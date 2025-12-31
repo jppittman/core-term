@@ -3,7 +3,7 @@
 //! A manifold that samples from a backing memory slice.
 //! This enables query caching and texture lookups.
 
-use crate::{Field, Manifold};
+use crate::{Field, Manifold, PARALLELISM};
 use alloc::vec::Vec;
 
 /// Evaluate a manifold graph to Field.
@@ -65,6 +65,7 @@ impl Texture {
         M: Manifold<Output = Field>,
     {
         let mut data = Vec::with_capacity(width * height);
+        let mut buf = [0.0f32; PARALLELISM];
 
         for y in 0..height {
             let fy = Field::from(y as f32 + 0.5);
@@ -72,7 +73,6 @@ impl Texture {
                 let fx = Field::from(x as f32 + 0.5);
                 let val = source.eval_raw(fx, fy, Field::from(0.0), Field::from(0.0));
                 // All lanes have same value for splat input, extract first
-                let mut buf = [0.0f32; 1];
                 val.store(&mut buf);
                 data.push(buf[0]);
             }
