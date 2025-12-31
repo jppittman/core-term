@@ -6,7 +6,7 @@ pub mod rasterizer;
 
 pub use aa::aa_coverage;
 pub use color::{
-    AttrFlags, Bgra8, CocoaPixel, Color, ColorManifold, ColorMap, Lift, NamedColor, Rgba8,
+    AttrFlags, Bgra8, CocoaPixel, Color, ColorCube, ColorManifold, Grayscale, NamedColor, Rgba8,
     WebPixel, X11Pixel,
 };
 pub use frame::Frame;

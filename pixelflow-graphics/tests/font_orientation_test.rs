@@ -4,7 +4,7 @@
 //! glyphs were rendering upside-down.
 
 use pixelflow_graphics::fonts::{Font, Text};
-use pixelflow_graphics::render::color::{Lift, Rgba8};
+use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
@@ -45,7 +45,7 @@ fn letter_a_apex_is_at_top() {
 
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let text = Text::new(&font, "A", 48.0);
-    let color_manifold = Lift(text);
+    let color_manifold = Grayscale(text);
 
     let width = 60;
     let height = 70;
@@ -136,7 +136,7 @@ fn letter_a_has_crossbar() {
 
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let text = Text::new(&font, "A", 48.0);
-    let color_manifold = Lift(text);
+    let color_manifold = Grayscale(text);
 
     let width = 60;
     let height = 70;
@@ -205,7 +205,7 @@ fn letter_v_point_is_at_bottom() {
 
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let text = Text::new(&font, "V", 48.0);
-    let color_manifold = Lift(text);
+    let color_manifold = Grayscale(text);
 
     let width = 60;
     let height = 70;

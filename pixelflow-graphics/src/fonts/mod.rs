@@ -136,10 +136,11 @@
 //! seamlessly with color manifolds and other effects:
 //!
 //! ```ignore
-//! use pixelflow_graphics::{CachedText, ColorManifold};
+//! use pixelflow_graphics::{CachedText, ColorCube};
+//! use pixelflow_core::combinators::At;
 //!
 //! let text = CachedText::new(...)?;
-//! let background = ColorManifold::new(0.2, 0.2, 0.2, 1.0);  // Dark gray background
+//! let background = At { inner: ColorCube, x: 0.2, y: 0.2, z: 0.2, w: 1.0 };  // Dark gray
 //!
 //! // Compose: text over background
 //! let scene = text.select(background);  // TextOn{text, background}

@@ -1,7 +1,7 @@
 //! Debug test to understand glyph geometry
 
 use pixelflow_graphics::fonts::{Font, Text};
-use pixelflow_graphics::render::color::{Lift, Rgba8};
+use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
@@ -36,7 +36,7 @@ fn debug_coverage_at_points() {
 
     // Create text 'A' at size 32
     let text = Text::new(&font, "A", 32.0);
-    let color_manifold = Lift(text);
+    let color_manifold = Grayscale(text);
 
     // For size 32:
     // scale = 32/1000 = 0.032

@@ -5,19 +5,26 @@
 
 use crate::{Field, Manifold};
 
-/// Maps a function over a manifold's output.
+/// Maps a function over a manifold's output (covariant functor).
 ///
 /// This is the functor `fmap` operation for manifolds.
 /// It transforms every output value while preserving the spatial structure.
 ///
+/// ## Covariant Mapping
+///
+/// Map can change the output type, enabling conversions like:
+/// - `Field → Field` (same type)
+/// - `Field → PathJet<Field>` (lifting to ray space)
+/// - `Field → Discrete` (color packing)
+///
 /// # Example
 ///
 /// ```ignore
-/// // Double every output value
+/// // Double every output value (Field → Field)
 /// let doubled = Map::new(sdf, |v| v * 2.0);
 ///
-/// // Clamp to [0, 1]
-/// let clamped = Map::new(color_channel, |v| v.max(0.0).min(1.0));
+/// // Convert screen coord to ray (Field → PathJet)
+/// let ray_x = Map::new(X, PathJet::from_slope);
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Map<M, F> {
@@ -33,6 +40,7 @@ impl<M, F> Map<M, F> {
     }
 }
 
+/// Field → Field mapping (backward compatible)
 impl<M, F> Manifold for Map<M, F>
 where
     M: Manifold<Output = Field>,
@@ -43,6 +51,28 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         let val = self.inner.eval_raw(x, y, z, w);
+        (self.func)(val)
+    }
+}
+
+/// Covariant map for Field → PathJet<Field>
+impl<M, F> Manifold<crate::jet::PathJet<Field>> for Map<M, F>
+where
+    M: Manifold<Field, Output = Field>,
+    F: Fn(Field) -> crate::jet::PathJet<Field> + Send + Sync,
+{
+    type Output = crate::jet::PathJet<Field>;
+
+    #[inline(always)]
+    fn eval_raw(
+        &self,
+        x: crate::jet::PathJet<Field>,
+        y: crate::jet::PathJet<Field>,
+        z: crate::jet::PathJet<Field>,
+        w: crate::jet::PathJet<Field>,
+    ) -> crate::jet::PathJet<Field> {
+        // Extract origin components and evaluate inner manifold
+        let val = self.inner.eval_raw(x.val, y.val, z.val, w.val);
         (self.func)(val)
     }
 }

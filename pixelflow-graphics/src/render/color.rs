@@ -379,97 +379,112 @@ pub type WebPixel = Rgba8;
 // Color Manifolds
 // =============================================================================
 
-/// A color manifold composed of four independent channel manifolds (R, G, B, A).
+/// The RGBA color cube as a manifold.
 ///
-/// # Overview
+/// `ColorCube` is the terminal object for color: it interprets its input
+/// coordinates as RGBA channels and packs them to `Discrete`.
 ///
-/// `ColorManifold` is the primary abstraction for building complex color compositions.
-/// Unlike the semantic `Color` enum (which represents a single color value),
-/// a `ColorManifold` treats each RGBA channel as an independent manifold that can
-/// vary across the 2D coordinate space.
+/// - X = Red   (0.0 to 1.0)
+/// - Y = Green (0.0 to 1.0)
+/// - Z = Blue  (0.0 to 1.0)
+/// - W = Alpha (0.0 to 1.0)
 ///
-/// # Evaluation Contract
+/// # Philosophy
 ///
-/// When a `ColorManifold` is evaluated at coordinates `(x, y)`:
-/// 1. The red channel manifold is evaluated to produce a value in [0.0, 1.0]
-/// 2. The green channel manifold is evaluated to produce a value in [0.0, 1.0]
-/// 3. The blue channel manifold is evaluated to produce a value in [0.0, 1.0]
-/// 4. The alpha channel manifold is evaluated to produce a value in [0.0, 1.0]
-/// 5. The four values are packed into a single `Discrete` u32 pixel (RGBA format)
+/// Colors ARE coordinates. Use `At` (the universal contramap) to navigate
+/// the color cube:
 ///
-/// If any channel evaluates outside [0.0, 1.0], it is automatically clamped.
-///
-/// # Type Parameters
-///
-/// - `R`: Manifold producing the red channel
-/// - `G`: Manifold producing the green channel
-/// - `B`: Manifold producing the blue channel
-/// - `A`: Manifold producing the alpha channel
-///
-/// Each parameter can be:
-/// - A constant scalar (f32 promotes to a manifold automatically)
-/// - A coordinate manifold like `X`, `Y`, or `X * Y`
-/// - A complex expression like `(X / 100.0).abs()`
-/// - Any type implementing `Manifold<Output = Field>`
-///
-/// # Examples
-///
-/// ## Solid Color
 /// ```ignore
-/// use pixelflow_graphics::ColorManifold;
+/// use pixelflow_core::{At, X, Y};
+/// use pixelflow_graphics::ColorCube;
 ///
-/// // Solid red everywhere
-/// let red = ColorManifold::new(1.0, 0.0, 0.0, 1.0);
+/// // Solid red
+/// let red = At { inner: ColorCube, x: 1.0, y: 0.0, z: 0.0, w: 1.0 };
+///
+/// // Gradient: red varies with screen X
+/// let gradient = At { inner: ColorCube, x: X / 255.0, y: 0.5, z: 0.5, w: 1.0 };
+///
+/// // Grayscale: same value for R, G, B
+/// let gray = At { inner: ColorCube, x: v, y: v, z: v, w: 1.0 };
+///
+/// // Blend two colors: coordinate arithmetic before At
+/// let blended = At {
+///     inner: ColorCube,
+///     x: t * r1 + (1.0 - t) * r2,
+///     y: t * g1 + (1.0 - t) * g2,
+///     z: t * b1 + (1.0 - t) * b2,
+///     w: t * a1 + (1.0 - t) * a2,
+/// };
 /// ```
 ///
-/// ## Horizontal Gradient
+/// # ColorCube vs ColorManifold
+///
+/// - Use `ColorCube` with `At` when channel values are scalar expressions
+/// - Use `ColorManifold` when channels come from separate manifold trees
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ColorCube;
+
+impl Manifold for ColorCube {
+    type Output = Discrete;
+
+    #[inline(always)]
+    fn eval_raw(&self, r: Field, g: Field, b: Field, a: Field) -> Discrete {
+        Discrete::pack(r, g, b, a)
+    }
+}
+
+/// Grayscale: lifts a scalar to R=G=B, A=1.
+///
+/// Convenience for the common pattern:
+/// ```ignore
+/// At { inner: ColorCube, x: v, y: v, z: v, w: 1.0 }
+/// ```
+///
+/// # Example
+/// ```ignore
+/// use pixelflow_graphics::Grayscale;
+/// use pixelflow_core::X;
+///
+/// let gradient = Grayscale(X / 256.0);  // Black to white
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct Grayscale<M>(pub M);
+
+impl<M: Manifold<Output = Field>> Manifold for Grayscale<M> {
+    type Output = Discrete;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+        let v = self.0.eval_raw(x, y, z, w);
+        Discrete::pack(v, v, v, Field::from(1.0))
+    }
+}
+
+/// Composes 4 Field manifolds into a single RGBA output.
+///
+/// Unlike `ColorCube` which interprets input coordinates as colors,
+/// `ColorManifold` evaluates separate manifolds for each channel
+/// and packs the results.
+///
+/// # Use Cases
+///
+/// - Terminal grids with Select trees per channel
+/// - Any case where R, G, B, A come from separate computation trees
+///
+/// # Example
 /// ```ignore
 /// use pixelflow_graphics::ColorManifold;
 /// use pixelflow_core::X;
 ///
-/// // Red increases from left to right, green and blue are constant
-/// let gradient = ColorManifold::new(
-///     X / 255.0,   // Red varies with X
-///     0.5f32,      // Green constant
-///     0.5f32,      // Blue constant
-///     1.0f32,      // Alpha fully opaque
+/// // Red channel varies with X, others constant
+/// let grad = ColorManifold::new(
+///     X / 255.0,    // R: gradient
+///     0.5f32,       // G: constant
+///     0.5f32,       // B: constant
+///     1.0f32,       // A: opaque
 /// );
 /// ```
-///
-/// ## Radial Gradient (Heatmap)
-/// ```ignore
-/// use pixelflow_graphics::ColorManifold;
-/// use pixelflow_core::{X, Y};
-///
-/// // Distance from center determines heat color
-/// let center_x = 128.0;
-/// let center_y = 128.0;
-/// let distance = ((X - center_x) * (X - center_x) + (Y - center_y) * (Y - center_y)).sqrt();
-///
-/// let heatmap = ColorManifold::new(
-///     1.0 - (distance / 200.0),  // Red (inverse distance)
-///     distance / 200.0,           // Green (distance)
-///     0.0f32,                     // Blue off
-///     1.0f32,
-/// );
-/// ```
-///
-/// # Channel Accessors
-///
-/// You can inspect individual channel manifolds after construction:
-///
-/// ```ignore
-/// let cm = ColorManifold::new(X / 255.0, 0.5, 0.5, 1.0);
-/// let red_channel = cm.red();    // Access the red manifold
-/// let alpha_channel = cm.alpha(); // Access the alpha manifold
-/// ```
-///
-/// # Performance Notes
-///
-/// - Channels are evaluated independently; the compiler typically fuses them into a single SIMD kernel
-/// - Shared subexpressions across channels are automatically deduplicated by the compiler
-/// - No runtime overhead compared to manually packing Field values
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ColorManifold<R, G, B, A> {
     r: R,
     g: G,
@@ -478,29 +493,9 @@ pub struct ColorManifold<R, G, B, A> {
 }
 
 impl<R, G, B, A> ColorManifold<R, G, B, A> {
-    /// Create a new color manifold from 4 channel manifolds.
+    /// Create a new color manifold from four channel manifolds.
     pub fn new(r: R, g: G, b: B, a: A) -> Self {
         Self { r, g, b, a }
-    }
-
-    /// Access the red channel manifold.
-    pub fn red(&self) -> &R {
-        &self.r
-    }
-
-    /// Access the green channel manifold.
-    pub fn green(&self) -> &G {
-        &self.g
-    }
-
-    /// Access the blue channel manifold.
-    pub fn blue(&self) -> &B {
-        &self.b
-    }
-
-    /// Access the alpha channel manifold.
-    pub fn alpha(&self) -> &A {
-        &self.a
     }
 }
 
@@ -519,224 +514,6 @@ where
         let g = self.g.eval_raw(x, y, z, w);
         let b = self.b.eval_raw(x, y, z, w);
         let a = self.a.eval_raw(x, y, z, w);
-        Discrete::pack(r, g, b, a)
-    }
-}
-
-/// Lifts a scalar manifold to grayscale color by duplicating its value across R, G, B channels.
-///
-/// # Purpose
-///
-/// `Lift<M>` is a convenience combinator for converting scalar manifolds (that produce single `Field` values)
-/// into color manifolds (that produce `Discrete` RGBA pixels). It's commonly used for:
-///
-/// - Creating monochromatic gradients
-/// - Rendering distance fields or signed distance fields as grayscale
-/// - Heatmaps where a single value should map to neutral gray
-///
-/// # Evaluation Contract
-///
-/// When `Lift<M>` is evaluated at coordinates `(x, y)`:
-/// 1. The inner scalar manifold `M` is evaluated to produce a value in [0.0, 1.0]
-/// 2. That value is replicated across all three color channels: R = G = B = value
-/// 3. Alpha is set to 1.0 (fully opaque)
-/// 4. The four components are packed into a single `Discrete` u32 pixel
-///
-/// Result: If the scalar evaluates to gray (0.5), the pixel will be RGB(128, 128, 128) with A=255.
-///
-/// # Examples
-///
-/// ## Grayscale Gradient
-/// ```ignore
-/// use pixelflow_graphics::Lift;
-/// use pixelflow_core::X;
-///
-/// // Grayscale gradient from black to white (left to right)
-/// let gray_gradient = Lift(X / 256.0);
-///
-/// // At x=0, produces black (0, 0, 0)
-/// // At x=256, produces white (255, 255, 255)
-/// ```
-///
-/// ## Distance Field Visualization
-/// ```ignore
-/// use pixelflow_graphics::Lift;
-/// use pixelflow_core::{X, Y};
-///
-/// // Visualize distance from center as grayscale brightness
-/// let center_x = 128.0;
-/// let center_y = 128.0;
-/// let distance = ((X - center_x) * (X - center_x) + (Y - center_y) * (Y - center_y)).sqrt();
-/// let normalized_distance = 1.0 - (distance / 256.0);  // Invert: center is white
-///
-/// let distance_field = Lift(normalized_distance.clamp(0.0, 1.0));
-/// ```
-///
-/// # Type Parameter
-///
-/// `M` must implement `Manifold<Output = Field>` - that is, it produces a single scalar value
-/// when evaluated. This includes:
-/// - Coordinate manifolds (`X`, `Y`, `Z`, `W`)
-/// - Arithmetic expressions (`X + Y`, `(X * Y).sqrt()`)
-/// - Any custom manifold producing scalar output
-///
-/// # Performance Notes
-///
-/// `Lift` is zero-cost. The inner scalar is evaluated once and replicated three times in the packed output.
-/// The compiler fuses this into a single instruction on most targets.
-///
-/// # Contrast with ColorManifold
-///
-/// | Feature | Lift | ColorManifold |
-/// |---------|------|---------------|
-/// | Input | Single scalar manifold | Four independent channel manifolds |
-/// | Use case | Grayscale/monochrome | Complex color compositions |
-/// | Simplicity | High | More complex (but more flexible) |
-#[derive(Clone, Copy, Debug)]
-pub struct Lift<M>(pub M);
-
-impl<M: Manifold<Output = Field> + Clone> Manifold for Lift<M> {
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        let v = self.0.eval_raw(x, y, z, w);
-        Discrete::pack(v, v, v, Field::from(1.0))
-    }
-}
-
-/// Maps a scalar function over all four color channels independently before packing.
-///
-/// # Purpose
-///
-/// `ColorMap` is a postprocessing combinator for applying effects uniformly across all channels
-/// (R, G, B, A) after a `ColorManifold` has been evaluated. Common uses:
-///
-/// - Brightness/contrast adjustment
-/// - Gamma correction or tone mapping
-/// - Color space transformations
-/// - Clamping or normalization
-/// - Threshold effects (convert to black/white)
-///
-/// # Evaluation Contract
-///
-/// When `ColorMap` evaluates at coordinates `(x, y)`:
-/// 1. The inner `ColorManifold` is evaluated to produce raw R, G, B, A values
-/// 2. The function `F` is applied to each channel independently: `f(r)`, `f(g)`, `f(b)`, `f(a)`
-/// 3. The transformed values are clamped to [0.0, 1.0]
-/// 4. The four components are packed into a single `Discrete` u32 pixel
-///
-/// # Type Parameters
-///
-/// - `C`: A `ColorManifold<R, G, B, A>` that produces the base colors
-/// - `F`: A function `Fn(Field) -> Field + Send + Sync + Copy` that transforms each channel
-///
-/// # Examples
-///
-/// ## Brightness Adjustment
-/// ```ignore
-/// use pixelflow_graphics::{ColorManifold, ColorMap};
-/// use pixelflow_core::X;
-///
-/// // Create a gradient
-/// let gradient = ColorManifold::new(X / 255.0, 0.5, 0.5, 1.0);
-///
-/// // Brighten by multiplying all channels by 1.5
-/// let brighter = ColorMap::new(gradient, |channel| channel * 1.5);
-/// ```
-///
-/// ## Gamma Correction
-/// ```ignore
-/// use pixelflow_graphics::{ColorManifold, ColorMap};
-/// use pixelflow_core::X;
-///
-/// let gradient = ColorManifold::new(X / 255.0, 0.5, 0.5, 1.0);
-///
-/// // Apply gamma correction (gamma = 2.2)
-/// let gamma_corrected = ColorMap::new(gradient, |channel| {
-///     // For proper gamma correction: channel.powf(1.0 / 2.2)
-///     // But this requires exposing powf on Field
-///     channel * channel  // Simplified: square (approx gamma 2.0)
-/// });
-/// ```
-///
-/// ## Threshold Effect (Posterize)
-/// ```ignore
-/// use pixelflow_graphics::{ColorManifold, ColorMap};
-/// use pixelflow_core::X;
-///
-/// let gradient = ColorManifold::new(X / 255.0, 0.5, 0.5, 1.0);
-///
-/// // Convert to binary black/white based on threshold
-/// let posterized = ColorMap::new(gradient, |channel| {
-///     if channel < 0.5 { 0.0 } else { 1.0 }
-/// });
-/// ```
-///
-/// # Limitations
-///
-/// The function `F` must be:
-/// - **Deterministic**: Same input always produces same output
-/// - **Pure**: No side effects (can be called any number of times)
-/// - **Simple algebra**: The compiler must be able to inline and vectorize it
-///
-/// `F` receives and returns `Field` (the SIMD IR), so you can only use `Computational` operations.
-/// You cannot use non-algebraic functions (e.g., random numbers, file I/O, external state).
-///
-/// # Performance Notes
-///
-/// - The function is applied four times per pixel (once per channel), but typically inlines to a single SIMD operation
-/// - The overhead of the function call is eliminated by monomorphization
-/// - Combining multiple `ColorMap`s chains them; the compiler fuses them into one kernel
-///
-/// # Example: Chaining ColorMaps
-///
-/// ```ignore
-/// use pixelflow_graphics::{ColorManifold, ColorMap};
-/// use pixelflow_core::X;
-///
-/// let gradient = ColorManifold::new(X / 255.0, 0.5, 0.5, 1.0);
-/// let brighten = ColorMap::new(gradient, |c| c * 1.2);
-/// let saturate = ColorMap::new(brighten, |c| c * c);  // Deepen colors
-///
-/// // Both transformations are fused by the compiler into a single kernel
-/// ```
-#[derive(Clone, Copy, Debug)]
-pub struct ColorMap<C, F> {
-    color: C,
-    func: F,
-}
-
-impl<R, G, B, A, F> ColorMap<ColorManifold<R, G, B, A>, F>
-where
-    R: Manifold<Output = Field>,
-    G: Manifold<Output = Field>,
-    B: Manifold<Output = Field>,
-    A: Manifold<Output = Field>,
-    F: Fn(Field) -> Field + Send + Sync + Copy,
-{
-    /// Create a new ColorMap.
-    pub fn new(color: ColorManifold<R, G, B, A>, func: F) -> Self {
-        Self { color, func }
-    }
-}
-
-impl<R, G, B, A, F> Manifold for ColorMap<ColorManifold<R, G, B, A>, F>
-where
-    R: Manifold<Output = Field>,
-    G: Manifold<Output = Field>,
-    B: Manifold<Output = Field>,
-    A: Manifold<Output = Field>,
-    F: Fn(Field) -> Field + Send + Sync + Copy,
-{
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        let r = (self.func)(self.color.r.eval_raw(x, y, z, w));
-        let g = (self.func)(self.color.g.eval_raw(x, y, z, w));
-        let b = (self.func)(self.color.b.eval_raw(x, y, z, w));
-        let a = (self.func)(self.color.a.eval_raw(x, y, z, w));
         Discrete::pack(r, g, b, a)
     }
 }

@@ -8,9 +8,9 @@
 //! Manifold (Algebra)        Pixels (Discrete u32)
 //!      ↓                             ↓
 //!      │  Tier 1: Colors            │
-//!      │  ├─ ColorManifold          │
+//!      │  ├─ ColorCube + At         │
 //!      │  ├─ Color (semantic)       │
-//!      │  └─ Lift (grayscale)       │
+//!      │  └─ Grayscale              │
 //!      ↓                             ↓
 //!      │  Tier 2: Fonts             │
 //!      │  ├─ Font (glyph atlas)     │
@@ -27,7 +27,40 @@
 //!
 //! ## Tier 1: Colors
 //!
-//! Colors are manifolds that produce `Discrete` (packed u32 RGBA pixels). Three levels of abstraction:
+//! **Colors ARE coordinates.** The `ColorCube` manifold interprets its input as RGBA:
+//! - X = Red, Y = Green, Z = Blue, W = Alpha
+//!
+//! Use `At` (the universal contramap) to navigate the color cube:
+//!
+//! ### Solid Colors
+//! ```ignore
+//! use pixelflow_graphics::ColorCube;
+//! use pixelflow_core::combinators::At;
+//!
+//! // Solid red: navigate to (1, 0, 0, 1) in color space
+//! let red = At { inner: ColorCube, x: 1.0, y: 0.0, z: 0.0, w: 1.0 };
+//! ```
+//!
+//! ### Gradients
+//! ```ignore
+//! use pixelflow_graphics::ColorCube;
+//! use pixelflow_core::{combinators::At, X};
+//!
+//! // Red varies with screen X position
+//! let gradient = At { inner: ColorCube, x: X / 255.0, y: 0.5, z: 0.5, w: 1.0 };
+//! ```
+//!
+//! ### Blending
+//! ```ignore
+//! // Blend is just coordinate arithmetic before At
+//! let blended = At {
+//!     inner: ColorCube,
+//!     x: t * r1 + (1.0 - t) * r2,
+//!     y: t * g1 + (1.0 - t) * g2,
+//!     z: t * b1 + (1.0 - t) * b2,
+//!     w: t * a1 + (1.0 - t) * a2,
+//! };
+//! ```
 //!
 //! ### Semantic Colors (`Color` enum)
 //! **For human thinking**: ANSI colors, indexed palette, or RGB true color.
@@ -35,46 +68,17 @@
 //! ```ignore
 //! use pixelflow_graphics::Color;
 //!
-//! // Semantic color (no coordinates needed)
 //! let red = Color::Rgb(255, 0, 0);
 //! let named = Color::Named(NamedColor::Red);
 //! ```
 //!
-//! A `Color` is a constant manifold—when evaluated, it returns the same pixel everywhere.
-//!
-//! ### Channel-based Colors (`ColorManifold`)
-//! **For composition**: Four independent scalar manifolds for R, G, B, A channels.
-//!
+//! ### Grayscale
 //! ```ignore
-//! use pixelflow_graphics::ColorManifold;
-//! use pixelflow_core::{X, Y};
-//!
-//! // Gradient: red increases left-to-right
-//! let gradient = ColorManifold::new(
-//!     X / 255.0,      // Red channel varies with X
-//!     0.5f32,         // Green constant
-//!     0.5f32,         // Blue constant
-//!     1.0f32,         // Alpha full opaque
-//! );
-//! ```
-//!
-//! When a `ColorManifold` is evaluated, it:
-//! 1. Evaluates each channel separately at the given coordinates
-//! 2. Clamps each channel to [0.0, 1.0]
-//! 3. Packs the 4 channels into a single `Discrete` u32 pixel
-//!
-//! ### Grayscale Lifting (`Lift`)
-//! **For simplicity**: Convert a scalar manifold to grayscale color.
-//!
-//! ```ignore
-//! use pixelflow_graphics::Lift;
+//! use pixelflow_graphics::Grayscale;
 //! use pixelflow_core::X;
 //!
-//! // Grayscale gradient
-//! let gray_gradient = Lift(X / 255.0);
+//! let gray_gradient = Grayscale(X / 255.0);  // R=G=B=value, A=1
 //! ```
-//!
-//! `Lift<M>` duplicates the scalar value across R, G, B and sets A=1.
 //!
 //! ## Tier 2: Fonts
 //!
@@ -173,8 +177,8 @@ pub use fonts::{CachedGlyph, CachedText, Font, Glyph, GlyphCache};
 
 // Re-export render
 pub use render::color::{
-    AttrFlags, Bgra8, CocoaPixel, Color, ColorManifold, ColorMap, Lift, NamedColor, Pixel, Rgba8,
-    WebPixel, X11Pixel,
+    AttrFlags, Bgra8, CocoaPixel, Color, ColorCube, Grayscale, NamedColor, Pixel, Rgba8, WebPixel,
+    X11Pixel,
 };
 pub use render::frame::Frame;
 pub use render::rasterizer::TensorShape;
