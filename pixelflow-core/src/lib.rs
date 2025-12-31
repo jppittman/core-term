@@ -162,6 +162,7 @@ pub mod ext;
 // Re-exports (The "Prelude")
 // ============================================================================
 
+pub use backend::fastmath::FastMathGuard;
 pub use combinators::*;
 pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
