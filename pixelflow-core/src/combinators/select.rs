@@ -44,7 +44,17 @@ pub struct Select<C, T, F> {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeSimd = crate::backend::x86::F32x16;
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    target_feature = "avx2"
+))]
+type NativeSimd = crate::backend::x86::F32x8;
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 type NativeSimd = crate::backend::x86::F32x4;
 #[cfg(target_arch = "aarch64")]
 type NativeSimd = crate::backend::arm::F32x4;
