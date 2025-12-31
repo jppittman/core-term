@@ -287,15 +287,16 @@ impl Manifold<Field> for LoopBlinnTriangle {
         // jet.val = u²-v, jet.dx = 2u·ua - va, jet.dy = 2u·ub - vb
 
         // Gradient magnitude for signed distance
-        let grad_mag_sq = jet.dx * jet.dx + jet.dy * jet.dy;
+        // Use .constant() to materialize expression trees to Field
+        let grad_mag_sq: Field = (jet.dx * jet.dx + jet.dy * jet.dy).constant();
         let grad_mag = Field::max(grad_mag_sq.sqrt(), Field::from(1e-6));
 
         // Coverage from signed distance: 0.5 - f/|∇f|, clamped to [0,1]
-        let signed_dist = jet.val / grad_mag;
-        let coverage_raw = (signed_dist * -1.0 + 0.5).eval_raw(fzero, fzero, fzero, fzero);
-        let curve_coverage = Field::min(Field::max(coverage_raw, fzero), Field::from(1.0));
+        let signed_dist: Field = (jet.val / grad_mag).constant();
+        let coverage: Field = (Field::from(0.5) - signed_dist).constant();
+        let curve_coverage = Field::min(Field::max(coverage, fzero), Field::from(1.0));
 
-        // Apply edge mask
+        // Apply edge mask via select combinator
         edge_mask.select(curve_coverage, fzero).eval_raw(fzero, fzero, fzero, fzero)
     }
 }

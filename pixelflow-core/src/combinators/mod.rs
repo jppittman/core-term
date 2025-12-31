@@ -3,6 +3,7 @@
 //! Control flow and structural combinators.
 
 pub mod at;
+pub mod cull;
 pub mod fix;
 pub mod map;
 pub mod pack;
@@ -12,6 +13,7 @@ pub mod spherical;
 pub mod texture;
 
 pub use at::{At, AtArray};
+pub use cull::quadratic_hessian_bound;
 pub use fix::Fix;
 pub use map::Map;
 pub use pack::Pack;
