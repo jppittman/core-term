@@ -1,6 +1,8 @@
 [alias]
 # Build and run the bundled macOS app (required for keyboard input on macOS)
 bundle-run = "run --package xtask --release -- bundle-run"
+# Bake eigenstructure binary to Rust consts
+bake-eigen = "run --package xtask --release -- bake-eigen"
 
 [build]
 # Relaxed FP math for faster SIMD - allows FMA contraction and unsafe FP opts

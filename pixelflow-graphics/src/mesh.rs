@@ -6,7 +6,6 @@
 //! - Face connectivity (indices into vertex array)
 //! - Valence computation (edges per vertex)
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
@@ -75,7 +74,8 @@ impl QuadMesh {
         let mut faces = Vec::new();
 
         for (line_num, line_result) in reader.lines().enumerate() {
-            let line = line_result.map_err(|e| format!("IO error at line {}: {}", line_num + 1, e))?;
+            let line =
+                line_result.map_err(|e| format!("IO error at line {}: {}", line_num + 1, e))?;
             let line = line.trim();
 
             if line.is_empty() || line.starts_with('#') {

@@ -1,11 +1,11 @@
 //! Test: 3D scene rendering with sphere + floor using the scene3d architecture
 
 use pixelflow_core::combinators::At;
+use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
-use pixelflow_core::jet::Jet3;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };

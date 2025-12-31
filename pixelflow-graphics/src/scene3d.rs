@@ -177,9 +177,9 @@ pub struct HeightFieldGeometry<H> {
     pub height_field: H,
     pub base_height: f32,
     pub scale: f32,
-    pub uv_scale: f32,  // Maps world coords to (u, v) parameter space
-    pub center_x: f32,  // World x offset (patch centered here)
-    pub center_z: f32,  // World z offset (patch centered here)
+    pub uv_scale: f32, // Maps world coords to (u, v) parameter space
+    pub center_x: f32, // World x offset (patch centered here)
+    pub center_z: f32, // World z offset (patch centered here)
 }
 
 impl<H: Manifold<Field, Output = Field>> Manifold<Jet3> for HeightFieldGeometry<H> {
@@ -209,7 +209,8 @@ impl<H: Manifold<Field, Output = Field>> Manifold<Jet3> for HeightFieldGeometry<
         let h = self.height_field.eval_raw(u, v, zero, zero);
 
         // Step 4: Adjust t for height displacement
-        let effective_height = (Field::from(self.base_height) + Field::from(self.scale) * h).constant();
+        let effective_height =
+            (Field::from(self.base_height) + Field::from(self.scale) * h).constant();
         let t_hit = Jet3::constant(effective_height) / ry;
 
         // Return valid t if in bounds, else negative (miss)
@@ -834,12 +835,25 @@ where
         // ====================================================================
 
         // New ray: origin = hit point, direction = reflected
-        let reflected_x = PathJet { val: x.val, dir: r_x };
-        let reflected_y = PathJet { val: y.val, dir: r_y };
-        let reflected_z = PathJet { val: z.val, dir: r_z };
-        let reflected_w = PathJet { val: w.val, dir: w.dir };
+        let reflected_x = PathJet {
+            val: x.val,
+            dir: r_x,
+        };
+        let reflected_y = PathJet {
+            val: y.val,
+            dir: r_y,
+        };
+        let reflected_z = PathJet {
+            val: z.val,
+            dir: r_z,
+        };
+        let reflected_w = PathJet {
+            val: w.val,
+            dir: w.dir,
+        };
 
-        self.inner.eval_raw(reflected_x, reflected_y, reflected_z, reflected_w)
+        self.inner
+            .eval_raw(reflected_x, reflected_y, reflected_z, reflected_w)
     }
 }
 
@@ -920,12 +934,25 @@ where
         let r_z = dz - k * n_jet_z;
 
         // 5. Reflected ray
-        let reflected_x = PathJet { val: x.val, dir: r_x };
-        let reflected_y = PathJet { val: y.val, dir: r_y };
-        let reflected_z = PathJet { val: z.val, dir: r_z };
-        let reflected_w = PathJet { val: w.val, dir: w.dir };
+        let reflected_x = PathJet {
+            val: x.val,
+            dir: r_x,
+        };
+        let reflected_y = PathJet {
+            val: y.val,
+            dir: r_y,
+        };
+        let reflected_z = PathJet {
+            val: z.val,
+            dir: r_z,
+        };
+        let reflected_w = PathJet {
+            val: w.val,
+            dir: w.dir,
+        };
 
-        self.inner.eval_raw(reflected_x, reflected_y, reflected_z, reflected_w)
+        self.inner
+            .eval_raw(reflected_x, reflected_y, reflected_z, reflected_w)
     }
 }
 

@@ -168,6 +168,7 @@ pub mod patch;
 pub mod render;
 pub mod scene3d;
 pub mod shapes;
+pub mod subdiv;
 pub mod subdivision;
 pub mod transform;
 

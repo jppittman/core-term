@@ -485,7 +485,8 @@ impl Manifold<Field> for Geometry {
         // evaluate to get back a scalar. This pattern is more efficient than the
         // old code because we defer the final evaluation until after combining
         // all contributions, rather than collapsing after each addition.
-        let total = self.lines
+        let total = self
+            .lines
             .iter()
             .map(|l| l.eval_raw(x, y, z, w))
             .chain(self.quads.iter().map(|q| q.eval_raw(x, y, z, w)))
@@ -496,7 +497,10 @@ impl Manifold<Field> for Geometry {
             });
 
         // Apply non-zero winding rule: |winding| becomes coverage (clamped to [0, 1])
-        total.abs().min(Field::from(1.0)).eval_raw(fzero, fzero, fzero, fzero)
+        total
+            .abs()
+            .min(Field::from(1.0))
+            .eval_raw(fzero, fzero, fzero, fzero)
     }
 }
 

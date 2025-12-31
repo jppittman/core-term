@@ -183,8 +183,8 @@
 //! All three functions check `num_threads <= 1` and fall back to `execute()` (single-threaded).
 //! This simplifies usage: you can always call the parallel version with dynamic thread count.
 
-use crate::render::color::Pixel;
 use super::pool::ThreadPool;
+use crate::render::color::Pixel;
 use crate::render::rasterizer::{execute, execute_stripe, Stripe, TensorShape};
 use pixelflow_core::{Discrete, Manifold};
 use std::sync::atomic::{AtomicUsize, Ordering};
