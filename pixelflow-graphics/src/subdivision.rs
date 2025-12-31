@@ -161,8 +161,7 @@ impl SubdivisionPatch {
         // B3(t) = t³ / 6
 
         let bu0 = u1 * u1 * u1 / six;
-        let bu1 = (u3 * Jet3::constant(Field::from(3.0))
-            - u2 * Jet3::constant(Field::from(6.0))
+        let bu1 = (u3 * Jet3::constant(Field::from(3.0)) - u2 * Jet3::constant(Field::from(6.0))
             + Jet3::constant(Field::from(4.0)))
             / six;
         let bu2 = (u3 * Jet3::constant(Field::from(-3.0))
@@ -173,8 +172,7 @@ impl SubdivisionPatch {
         let bu3 = u3 / six;
 
         let bv0 = v1 * v1 * v1 / six;
-        let bv1 = (v3 * Jet3::constant(Field::from(3.0))
-            - v2 * Jet3::constant(Field::from(6.0))
+        let bv1 = (v3 * Jet3::constant(Field::from(3.0)) - v2 * Jet3::constant(Field::from(6.0))
             + Jet3::constant(Field::from(4.0)))
             / six;
         let bv2 = (v3 * Jet3::constant(Field::from(-3.0))
@@ -284,7 +282,12 @@ impl SubdivisionSurface {
     pub fn stats(&self) -> SurfaceStats {
         let total_patches = self.patches.len();
         let extraordinary_patches = self.patches.iter().filter(|p| p.is_extraordinary()).count();
-        let max_valence = self.patches.iter().map(|p| p.max_valence()).max().unwrap_or(0);
+        let max_valence = self
+            .patches
+            .iter()
+            .map(|p| p.max_valence())
+            .max()
+            .unwrap_or(0);
 
         SurfaceStats {
             total_patches,
@@ -453,8 +456,8 @@ impl Manifold<Jet3> for SubdivisionGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
     use std::io::BufReader;
+    use std::io::Cursor;
 
     #[test]
     fn test_regular_patch() {

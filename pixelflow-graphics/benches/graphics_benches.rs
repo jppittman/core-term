@@ -8,7 +8,7 @@ use pixelflow_core::jet::Jet2;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
 use pixelflow_graphics::{
     render::rasterizer::{execute, render_work_stealing, RenderOptions, TensorShape},
-    CachedGlyph, CachedText, Color, ColorCube, Font, Grayscale, GlyphCache, NamedColor, Rgba8,
+    CachedGlyph, CachedText, Color, ColorCube, Font, GlyphCache, Grayscale, NamedColor, Rgba8,
 };
 
 // ============================================================================

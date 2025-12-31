@@ -8,7 +8,9 @@
 
 use pixelflow_graphics::mesh::{Point3, QuadMesh};
 use pixelflow_graphics::render::{execute, TensorShape};
-use pixelflow_graphics::scene3d::{ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface};
+use pixelflow_graphics::scene3d::{
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
+};
 use pixelflow_graphics::subdivision::{SubdivisionGeometry, SubdivisionPatch};
 use pixelflow_graphics::{Frame, Rgba8};
 
@@ -29,12 +31,10 @@ fn main() {
     println!("  Extraordinary: {}", patch.is_extraordinary());
 
     let geometry = SubdivisionGeometry::new(
-        patch,
-        &mesh,
-        -1.0,  // base_height (intersection plane)
-        1.0,   // uv_scale
-        0.0,   // center_x
-        0.0,   // center_z
+        patch, &mesh, -1.0, // base_height (intersection plane)
+        1.0,  // uv_scale
+        0.0,  // center_x
+        0.0,  // center_z
     );
 
     // Build scene: subdivision surface with checker floor and sky
@@ -58,7 +58,11 @@ fn main() {
     println!("\nRendering {}x{} image...", width, height);
 
     let mut frame = Frame::<Rgba8>::new(width, height);
-    execute(&scene, frame.as_slice_mut(), TensorShape::new(width as usize, height as usize));
+    execute(
+        &scene,
+        frame.as_slice_mut(),
+        TensorShape::new(width as usize, height as usize),
+    );
 
     // Save to PPM (simple format, no dependencies)
     save_ppm("subdivision_autodiff.ppm", &frame);
@@ -74,10 +78,10 @@ fn main() {
 fn create_curved_quad() -> QuadMesh {
     // Four corners of a quad, with Z displacement for curvature
     let vertices = vec![
-        Point3::new(-1.0, 0.0, -1.0),   // Bottom-left
-        Point3::new(1.0, 0.0, 1.0),     // Bottom-right (lifted)
-        Point3::new(1.0, 0.0, -1.0),    // Top-right
-        Point3::new(-1.0, 0.0, 1.0),    // Top-left (lifted)
+        Point3::new(-1.0, 0.0, -1.0), // Bottom-left
+        Point3::new(1.0, 0.0, 1.0),   // Bottom-right (lifted)
+        Point3::new(1.0, 0.0, -1.0),  // Top-right
+        Point3::new(-1.0, 0.0, 1.0),  // Top-left (lifted)
     ];
 
     let faces = vec![pixelflow_graphics::mesh::Quad::new(0, 1, 2, 3)];
