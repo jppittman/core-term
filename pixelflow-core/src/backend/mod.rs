@@ -209,3 +209,5 @@ pub mod arm;
 pub mod x86;
 
 pub mod scalar;
+
+pub mod fastmath;
