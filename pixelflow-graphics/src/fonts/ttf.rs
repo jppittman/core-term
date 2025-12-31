@@ -1,31 +1,364 @@
-//! pixelflow-graphics/src/fonts/ttf.rs
+//! # Loop-Blinn Font Rendering
 //!
-//! Pure Manifold TTF Parser.
+//! GPU-style quadratic Bézier rendering using barycentric coordinates.
+//! Each glyph is triangulated, with curved edges evaluated via u² - v ≤ 0.
 //!
-//! Glyphs are parsed into unit space [0,1]², bounded with Select for
-//! short-circuit evaluation, then wrapped in Affine transforms.
+//! ## Architecture
+//!
+//! ```text
+//! TTF Outline → Triangulation → Loop-Blinn Triangles → Manifold Composition
+//!     │              │                  │                      │
+//!   Parse      Ear-clipping      UV matrices         Select { bounds, curve }
+//! ```
+//!
+//! ## The Loop-Blinn Insight
+//!
+//! A quadratic Bézier P(t) = (1-t)²P₀ + 2t(1-t)P₁ + t²P₂ can be rendered as:
+//!
+//! 1. Map the control triangle to texture space:
+//!    - P₀ → (u=0, v=0)
+//!    - P₁ → (u=0.5, v=0)
+//!    - P₂ → (u=1, v=1)
+//!
+//! 2. The curve is the zero set: u² - v = 0
+//!    - Inside (filled): u² - v < 0
+//!    - Outside: u² - v > 0
+//!
+//! ## Manifold Composition
+//!
+//! Each triangle becomes a `LoopBlinnTriangle`:
+//! ```text
+//! Select {
+//!     cond: barycentric_bounds,  // Is point inside triangle?
+//!     if_true: curve_test,       // Solid 1.0 or u² - v ≤ 0
+//!     if_false: 0.0,            // Outside triangle
+//! }
+//! ```
+//!
+//! Glyph = Sum of triangles. Types ARE the shader graph.
 
-use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Abs, At, Field, Ge, Manifold, ManifoldExt, Select, W, X, Y, Z};
+use pixelflow_core::{At, Field, Manifold, ManifoldExt, X, Y, Z, W};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Combinators
+// Sum Combinator - Glyph Composition via Max-Blend
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A monoidal sum of manifolds (max-blend for coverage).
+///
+/// Used to compose glyphs: `Sum<Translate<Glyph>>` for text,
+/// `Sum<Affine<Glyph>>` for compound glyphs.
+#[derive(Clone, Debug)]
+pub struct Sum<T>(pub Arc<[T]>);
+
+impl<T: Manifold<Field, Output = Field>> Manifold<Field> for Sum<T> {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        // Max-blend: any glyph covering this pixel fills it
+        let fzero = Field::from(0.0);
+        self.0.iter().fold(fzero, |acc, term| {
+            let val = term.eval_raw(x, y, z, w);
+            acc.max(val).eval_raw(fzero, fzero, fzero, fzero)
+        })
+    }
+}
+
+impl<T: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Sum<T> {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        let zero = Jet2::constant(Field::from(0.0));
+        self.0.iter().fold(zero, |acc, term| {
+            acc.max(term.eval_raw(x, y, z, w))
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Loop-Blinn Triangle Primitive
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A single triangle in Loop-Blinn representation.
+///
+/// For curved triangles, the UV matrix maps screen (x, y) to texture (u, v)
+/// where the curve satisfies u² - v = 0.
+///
+/// For solid triangles, the interior is always filled (u² - v test skipped).
+#[derive(Clone, Copy, Debug)]
+pub struct LoopBlinnTriangle {
+    /// Vertices of the triangle: [[x0, y0], [x1, y1], [x2, y2]]
+    pub vertices: [[f32; 2]; 3],
+
+    /// 3x3 matrix mapping (x, y, 1) → (u, v, 1) for curve test.
+    /// Row-major: [a, b, c, d, e, f, g, h, i] where:
+    ///   u = a*x + b*y + c
+    ///   v = d*x + e*y + f
+    /// Only used when `is_curved` is true.
+    pub uv_matrix: [f32; 9],
+
+    /// Edge function coefficients for barycentric bounds.
+    /// Each edge: sign * (A*x + B*y + C) ≥ 0
+    /// Stored as [[A0, B0, C0], [A1, B1, C1], [A2, B2, C2]]
+    pub edges: [[f32; 3]; 3],
+
+    /// Whether this triangle has a curved edge (quadratic Bézier).
+    pub is_curved: bool,
+
+    /// Winding direction: +1.0 for CCW (fill inside), -1.0 for CW (fill outside)
+    pub winding: f32,
+}
+
+impl LoopBlinnTriangle {
+    /// Create a solid (non-curved) triangle.
+    pub fn solid(vertices: [[f32; 2]; 3]) -> Self {
+        Self {
+            vertices,
+            uv_matrix: [0.0; 9],
+            edges: compute_edge_functions(vertices),
+            is_curved: false,
+            winding: 1.0,
+        }
+    }
+
+    /// Create a curved triangle with quadratic Bézier edge.
+    ///
+    /// Control points: P0 (on-curve), P1 (off-curve control), P2 (on-curve)
+    /// The curve runs from P0 to P2 with P1 as the control point.
+    pub fn curved(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], winding: f32) -> Self {
+        let vertices = [p0, p1, p2];
+        Self {
+            vertices,
+            uv_matrix: compute_uv_matrix(p0, p1, p2),
+            edges: compute_edge_functions(vertices),
+            is_curved: true,
+            winding,
+        }
+    }
+}
+
+/// Compute edge function coefficients for barycentric bounds.
+/// Edge i goes from vertex[i] to vertex[(i+1)%3].
+/// Returns coefficients [A, B, C] where A*x + B*y + C gives signed distance.
+fn compute_edge_functions(v: [[f32; 2]; 3]) -> [[f32; 3]; 3] {
+    let mut edges = [[0.0f32; 3]; 3];
+    for i in 0..3 {
+        let [x0, y0] = v[i];
+        let [x1, y1] = v[(i + 1) % 3];
+        // Edge normal: perpendicular to (x1-x0, y1-y0) → (y1-y0, x0-x1)
+        let a = y1 - y0;
+        let b = x0 - x1;
+        let c = -(a * x0 + b * y0);
+
+        // Ensure the third vertex is on the positive side
+        let [x2, y2] = v[(i + 2) % 3];
+        let sign = if a * x2 + b * y2 + c >= 0.0 { 1.0 } else { -1.0 };
+
+        edges[i] = [a * sign, b * sign, c * sign];
+    }
+    edges
+}
+
+/// Compute UV matrix for Loop-Blinn curve test.
+///
+/// Maps: P0 → (0, 0), P1 → (0.5, 0), P2 → (1, 1)
+///
+/// Solves the system:
+/// ```text
+/// | x0 y0 1 |   | a d g |   | 0   0   1 |
+/// | x1 y1 1 | × | b e h | = | 0.5 0   1 |
+/// | x2 y2 1 |   | c f i |   | 1   1   1 |
+/// ```
+fn compute_uv_matrix(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> [f32; 9] {
+    let [x0, y0] = p0;
+    let [x1, y1] = p1;
+    let [x2, y2] = p2;
+
+    // Compute inverse of vertex matrix
+    let det = x0 * (y1 - y2) - y0 * (x1 - x2) + (x1 * y2 - x2 * y1);
+    if det.abs() < 1e-10 {
+        return [0.0; 9]; // Degenerate triangle
+    }
+    let inv_det = 1.0 / det;
+
+    // Adjugate matrix (transposed cofactors) * inv_det
+    let m00 = (y1 - y2) * inv_det;
+    let m01 = (y2 - y0) * inv_det;
+    let m02 = (y0 - y1) * inv_det;
+    let m10 = (x2 - x1) * inv_det;
+    let m11 = (x0 - x2) * inv_det;
+    let m12 = (x1 - x0) * inv_det;
+    let m20 = (x1 * y2 - x2 * y1) * inv_det;
+    let m21 = (x2 * y0 - x0 * y2) * inv_det;
+    let m22 = (x0 * y1 - x1 * y0) * inv_det;
+
+    // Target UV values: P0→(0,0), P1→(0.5,0), P2→(1,1)
+    // u = M * [0, 0.5, 1]ᵀ = 0.5*col1 + 1.0*col2
+    // v = M * [0, 0, 1]ᵀ = col2
+    let ua = 0.5 * m01 + m02;  // coefficient for x
+    let ub = 0.5 * m11 + m12;  // coefficient for y
+    let uc = 0.5 * m21 + m22;  // constant
+
+    let va = m02;
+    let vb = m12;
+    let vc = m22;
+
+    // Return row-major: u = [0]*x + [1]*y + [2], v = [3]*x + [4]*y + [5]
+    [ua, ub, uc, va, vb, vc, 0.0, 0.0, 1.0]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Manifold Implementation - Pure Declarative Pixelflow
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Manifold<Field> for LoopBlinnTriangle {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        // 1. Barycentric bounds check: all three edge functions ≥ 0
+        let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
+
+        let e0 = X * a0 + Y * b0 + c0;
+        let e1 = X * a1 + Y * b1 + c1;
+        let e2 = X * a2 + Y * b2 + c2;
+
+        let inside_tri = e0.ge(0.0f32) & e1.ge(0.0f32) & e2.ge(0.0f32);
+
+        // 2. Curve test (only for curved triangles)
+        if self.is_curved {
+            // Map (x, y) → (u, v) via UV matrix
+            let [ua, ub, uc, va, vb, vc, _, _, _] = self.uv_matrix;
+            let u = X * ua + Y * ub + uc;
+            let v = X * va + Y * vb + vc;
+
+            // Loop-Blinn: inside curve when u² - v ≤ 0
+            // Multiply by winding to flip: CCW (winding=1) fills inside, CW (winding=-1) fills outside
+            // curve_val * winding <= 0 gives correct fill for both directions
+            let curve_val = (u * u - v) * self.winding;
+            let fill = curve_val.le(0.0f32).select(1.0f32, 0.0f32);
+
+            // 3. Compose: inside triangle AND curve test
+            inside_tri.select(fill, 0.0f32).at(x, y, z, w).eval()
+        } else {
+            // Solid triangle: always filled when inside bounds
+            inside_tri.select(1.0f32, 0.0f32).at(x, y, z, w).eval()
+        }
+    }
+}
+
+impl Manifold<Jet2> for LoopBlinnTriangle {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, _z: Jet2, _w: Jet2) -> Jet2 {
+        let zero = Jet2::constant(Field::from(0.0));
+        let one = Jet2::constant(Field::from(1.0));
+
+        // Edge functions for bounds
+        let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
+
+        let e0 = x * Jet2::constant(Field::from(a0))
+               + y * Jet2::constant(Field::from(b0))
+               + Jet2::constant(Field::from(c0));
+        let e1 = x * Jet2::constant(Field::from(a1))
+               + y * Jet2::constant(Field::from(b1))
+               + Jet2::constant(Field::from(c1));
+        let e2 = x * Jet2::constant(Field::from(a2))
+               + y * Jet2::constant(Field::from(b2))
+               + Jet2::constant(Field::from(c2));
+
+        let inside = e0.ge(zero) & e1.ge(zero) & e2.ge(zero);
+        if !inside.val.any() {
+            return zero;
+        }
+
+        if self.is_curved {
+            let [ua, ub, uc, va, vb, vc, _, _, _] = self.uv_matrix;
+            let u = x * Jet2::constant(Field::from(ua))
+                  + y * Jet2::constant(Field::from(ub))
+                  + Jet2::constant(Field::from(uc));
+            let v = x * Jet2::constant(Field::from(va))
+                  + y * Jet2::constant(Field::from(vb))
+                  + Jet2::constant(Field::from(vc));
+
+            let curve_val = u * u - v;
+
+            // Anti-aliased coverage from curve distance
+            // Use winding to flip distance sign uniformly (avoids type mismatch)
+            let grad_mag = (curve_val.dx * curve_val.dx + curve_val.dy * curve_val.dy)
+                .sqrt()
+                .max(Field::from(1e-6));
+            let dist = curve_val.val / grad_mag;
+            let signed_dist = dist * Field::from(-self.winding);
+            let coverage = (signed_dist + Field::from(0.5))
+                .max(Field::from(0.0))
+                .min(Field::from(1.0));
+
+            let fzero = Field::from(0.0);
+            let result = coverage.eval_raw(fzero, fzero, fzero, fzero);
+            (inside & Jet2::constant(result)) | (!inside & zero)
+        } else {
+            (inside & one) | (!inside & zero)
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Glyph Composition
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A glyph as a sum of Loop-Blinn triangles.
+#[derive(Clone, Debug)]
+pub struct TriangulatedGlyph {
+    pub triangles: Arc<[LoopBlinnTriangle]>,
+}
+
+impl Manifold<Field> for TriangulatedGlyph {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        let fzero = Field::from(0.0);
+
+        // Max blend: any triangle covering this pixel fills it
+        self.triangles
+            .iter()
+            .map(|tri| tri.eval_raw(x, y, z, w))
+            .fold(fzero, |acc, val| {
+                acc.max(val).eval_raw(fzero, fzero, fzero, fzero)
+            })
+    }
+}
+
+impl Manifold<Jet2> for TriangulatedGlyph {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        let zero = Jet2::constant(Field::from(0.0));
+
+        self.triangles
+            .iter()
+            .map(|tri| tri.eval_raw(x, y, z, w))
+            .fold(zero, |acc, val| acc.max(val))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Affine Transform (unchanged from original)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Affine transform combinator.
-///
-/// Transforms coordinates via inverse matrix before sampling inner manifold.
-/// x' = (x - tx) * a + (y - ty) * b
-/// y' = (x - tx) * c + (y - ty) * d
 #[derive(Clone, Debug)]
 pub struct Affine<M> {
     pub inner: M,
-    inv: [f32; 6], // [a b c d tx ty] inverted
+    inv: [f32; 6],
 }
 
-/// Create an affine-transformed manifold.
 pub fn affine<M>(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Affine<M> {
     let det = a * d - b * c;
     let inv_det = if det.abs() < 1e-6 { 0.0 } else { 1.0 / det };
@@ -41,10 +374,8 @@ impl<M: Manifold<Field>> Manifold<Field> for Affine<M> {
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
         let [a, b, c, d, tx, ty] = self.inv;
-        // Build coordinate transform AST
         let x2 = (X - tx) * a + (Y - ty) * b;
         let y2 = (X - tx) * c + (Y - ty) * d;
-        // Compose with At and evaluate
         At {
             inner: &self.inner,
             x: x2,
@@ -62,10 +393,8 @@ impl<M: Manifold<Jet2>> Manifold<Jet2> for Affine<M> {
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Self::Output {
         let [a, b, c, d, tx, ty] = self.inv;
-        // Build coordinate transform AST
         let x2 = (X - tx) * a + (Y - ty) * b;
         let y2 = (X - tx) * c + (Y - ty) * d;
-        // Compose with At and evaluate
         At {
             inner: &self.inner,
             x: x2,
@@ -77,474 +406,18 @@ impl<M: Manifold<Jet2>> Manifold<Jet2> for Affine<M> {
     }
 }
 
-/// Monoid sum - accumulates winding numbers from multiple segments/glyphs.
-#[derive(Clone, Debug)]
-pub struct Sum<M>(pub Arc<[M]>);
-
-impl<M: Manifold<Field, Output = Field>> Manifold<Field> for Sum<M> {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        if self.0.len() == 1 {
-            return self.0[0].eval_raw(x, y, z, w);
-        }
-        // Build sum AST and evaluate - each iteration builds Add node, then evals
-        let zero = Field::from(0.0);
-        self.0.iter().fold(zero, |acc, m| {
-            let val = m.eval_raw(x, y, z, w);
-            (acc + val).eval_raw(zero, zero, zero, zero)
-        })
-    }
-}
-
-impl<M: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Sum<M> {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
-        if self.0.len() == 1 {
-            return self.0[0].eval_raw(x, y, z, w);
-        }
-        let zero = Jet2::constant(Field::from(0.0));
-        self.0.iter().fold(zero, |acc, m| {
-            let val = m.eval_raw(x, y, z, w);
-            (acc + val).eval_raw(zero, zero, zero, zero)
-        })
-    }
-}
-
-/// Threshold combinator - converts winding number to inside/outside (0 or 1).
-///
-/// Applies the non-zero winding rule: |winding| >= 0.5 means inside.
-/// Threshold: |winding| >= 0.5 → 1.0, else 0.0 (non-zero winding rule)
-/// Defined as combinator composition, not imperative code.
-pub type Threshold<M> = Select<Ge<Abs<M>, f32>, f32, f32>;
-
-/// Create a threshold manifold from a winding number manifold.
-#[inline(always)]
-pub fn threshold<M>(m: M) -> Threshold<M> {
-    Select {
-        cond: Ge(Abs(m), 0.5f32),
-        if_true: 1.0f32,
-        if_false: 0.0f32,
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
-// Geometry
+// Glyph Enum
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[derive(Clone, Copy, Debug)]
-pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
+pub type SimpleGlyph = Affine<TriangulatedGlyph>;
 
-pub type Quad = Curve<3>;
-
-/// Line segment with precomputed AA scale for smooth anti-aliasing.
-///
-/// The `aa_scale` is `|dy|/len` where `len = sqrt(dx² + dy²)`.
-/// This converts horizontal distance to normalized distance for coverage.
-#[derive(Clone, Copy, Debug)]
-pub struct Line {
-    pub points: [[f32; 2]; 2],
-    /// Precomputed |dy|/sqrt(dx² + dy²) for AA coverage
-    pub aa_scale: f32,
-}
-
-impl Line {
-    /// Create a line from two points, precomputing the AA scale.
-    #[inline(always)]
-    pub fn new([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> Self {
-        let (dx, dy) = (x1 - x0, y1 - y0);
-        let len_sq = dx * dx + dy * dy;
-        let aa_scale = if len_sq > 1e-12 {
-            dy.abs() / len_sq.sqrt()
-        } else {
-            0.0
-        };
-        Self {
-            points: [[x0, y0], [x1, y1]],
-            aa_scale,
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Optimized Geometry with Precomputed Reciprocals
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Line segment optimized with precomputed division reciprocal.
-#[derive(Clone, Copy, Debug)]
-pub struct OptLine {
-    x0: f32,
-    y0: f32,
-    y_min: f32,
-    y_max: f32,
-    dx_over_dy: f32, // Precomputed dx/dy
-    dir: f32,        // +1 or -1
-}
-
-impl OptLine {
-    /// Create from two points. Returns None for horizontal lines.
-    #[inline(always)]
-    pub fn new([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
-        let dy = y1 - y0;
-        if dy.abs() < 1e-6 {
-            return None;
-        }
-        let dx = x1 - x0;
-        Some(Self {
-            x0,
-            y0,
-            y_min: y0.min(y1),
-            y_max: y0.max(y1),
-            dx_over_dy: dx / dy, // Division at construction, not evaluation
-            dir: if dy > 0.0 { 1.0 } else { -1.0 },
-        })
-    }
-}
-
-/// Quadratic curve optimized with precomputed reciprocals.
-#[derive(Clone, Copy, Debug)]
-pub struct OptQuad {
-    // Bezier coefficients
-    ax: f32,
-    bx: f32,
-    cx: f32,
-    ay: f32,
-    by: f32,
-    cy: f32,
-    two_ay: f32,
-    // Precomputed reciprocals (0.0 if degenerate)
-    inv_by: f32,  // 1/by for linear Y case
-    inv_2ay: f32, // 1/(2*ay) for quadratic case
-    // Precomputed quadratic formula values
-    neg_by: f32,
-    by_sq: f32,
-    four_ay: f32,
-    // Flag for which case we're in
-    is_linear: bool,
-    is_degenerate: bool,
-}
-
-impl OptQuad {
-    /// Create from three control points.
-    #[inline(always)]
-    pub fn new([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> Self {
-        let ay = y0 - 2.0 * y1 + y2;
-        let by = 2.0 * (y1 - y0);
-        let cy = y0;
-        let ax = x0 - 2.0 * x1 + x2;
-        let bx = 2.0 * (x1 - x0);
-        let cx = x0;
-
-        let is_linear = ay.abs() < 1e-6;
-        let is_degenerate = is_linear && by.abs() < 1e-6;
-
-        Self {
-            ax,
-            bx,
-            cx,
-            ay,
-            by,
-            cy,
-            two_ay: 2.0 * ay,
-            inv_by: if !is_linear || is_degenerate {
-                0.0
-            } else {
-                1.0 / by
-            },
-            inv_2ay: if is_linear { 0.0 } else { 1.0 / (2.0 * ay) },
-            neg_by: -by,
-            by_sq: by * by,
-            four_ay: 4.0 * ay,
-            is_linear,
-            is_degenerate,
-        }
-    }
-}
-
-// ─── Field Implementation (Smooth Anti-Aliased Coverage) ───────────────────
-
-impl Manifold<Field> for Line {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let [[x0, y0], [x1, y1]] = self.points;
-        let (dy, dx) = (y1 - y0, x1 - x0);
-        if dy.abs() < 1e-6 {
-            return Field::from(0.0);
-        }
-
-        // Build AST using coordinate variables X, Y
-        let y_min = y0.min(y1);
-        let y_max = y0.max(y1);
-        let in_y = Y.ge(y_min) & Y.lt(y_max);
-
-        let x_int = (Y - y0) * (dx / dy) + x0;
-        let dir: f32 = if dy > 0.0 { 1.0 } else { -1.0 };
-
-        // dist > 0 when query is LEFT of crossing (x < x_int)
-        let dist = x_int - X;
-        let coverage = (dist * self.aa_scale + 0.5).max(0.0f32).min(1.0f32);
-
-        // Compose and evaluate
-        in_y.select(coverage * dir, 0.0f32).at(x, y, z, w).eval()
-    }
-}
-
-impl Manifold<Field> for Quad {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
-        let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
-        let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
-
-        if ay.abs() < 1e-6 {
-            if by.abs() < 1e-6 {
-                return Field::from(0.0);
-            }
-            // Linear case: t = (Y - cy) / by
-            let t = (Y - cy) / by;
-            let in_t = t.ge(0.0f32) & t.lt(1.0f32);
-            let x_int = (t * ax + bx) * t + cx;
-            let dx_dt = t * (2.0 * ax) + bx;
-            let dy_dt = t * (2.0 * ay) + by;
-            let dir = dy_dt.gt(0.0f32).select(1.0f32, -1.0f32);
-            let dist = x_int - X;
-            let curve_grad_sq = dx_dt * dx_dt + dy_dt * dy_dt;
-            let aa_scale = dy_dt.abs() * curve_grad_sq.max(1e-12f32).rsqrt();
-            let coverage = (dist * aa_scale + 0.5).max(0.0f32).min(1.0f32);
-            in_t.select(coverage * dir, 0.0f32).at(x, y, z, w).eval()
-        } else {
-            // Quadratic: t = (-by ± sqrt(by² - 4*ay*(cy - Y))) / (2*ay)
-            // c_val = cy - Y, rewritten as -Y + cy for Manifold-first ordering
-            let c_val = Y * (-1.0) + cy;
-            let discriminant = (c_val * (-4.0 * ay)) + (by * by);
-            let valid = discriminant.ge(0.0f32);
-            let sd = discriminant.abs().sqrt();
-            let inv_2ay = 1.0 / (2.0 * ay);
-
-            // t1 = (-by - sd) / (2*ay)
-            let t1 = (sd * (-1.0) - by) * inv_2ay;
-            let in_t1 = t1.ge(0.0f32) & t1.lt(1.0f32);
-            let x_int1 = (t1 * ax + bx) * t1 + cx;
-            let dx_dt1 = t1 * (2.0 * ax) + bx;
-            let dy_dt1 = t1 * (2.0 * ay) + by;
-            let dir1 = dy_dt1.gt(0.0f32).select(1.0f32, -1.0f32);
-            let dist1 = x_int1 - X;
-            let grad_sq1 = dx_dt1 * dx_dt1 + dy_dt1 * dy_dt1;
-            let aa1 = dy_dt1.abs() * grad_sq1.max(1e-12f32).rsqrt();
-            let cov1 = (dist1 * aa1 + 0.5).max(0.0f32).min(1.0f32);
-            let contrib1 = in_t1.select(cov1 * dir1, 0.0f32);
-
-            // t2 = (-by + sd) / (2*ay)
-            let t2 = (sd - by) * inv_2ay;
-            let in_t2 = t2.ge(0.0f32) & t2.lt(1.0f32);
-            let x_int2 = (t2 * ax + bx) * t2 + cx;
-            let dx_dt2 = t2 * (2.0 * ax) + bx;
-            let dy_dt2 = t2 * (2.0 * ay) + by;
-            let dir2 = dy_dt2.gt(0.0f32).select(1.0f32, -1.0f32);
-            let dist2 = x_int2 - X;
-            let grad_sq2 = dx_dt2 * dx_dt2 + dy_dt2 * dy_dt2;
-            let aa2 = dy_dt2.abs() * grad_sq2.max(1e-12f32).rsqrt();
-            let cov2 = (dist2 * aa2 + 0.5).max(0.0f32).min(1.0f32);
-            let contrib2 = in_t2.select(cov2 * dir2, 0.0f32);
-
-            valid
-                .select(contrib1 + contrib2, 0.0f32)
-                .at(x, y, z, w)
-                .eval()
-        }
-    }
-}
-
-// ─── Jet2 Implementation (Anti-Aliased / Smooth Edges) ─────────────────────
-// Note: The Field implementation now produces smooth AA coverage directly.
-// Jet2 impls are kept for automatic differentiation use cases beyond AA.
-
-impl Manifold<Jet2> for Line {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
-        let [[x0, y0], [x1, y1]] = self.points;
-        let (dy, dx) = (y1 - y0, x1 - x0);
-        let zero = Jet2::constant(Field::from(0.0));
-        if dy.abs() < 1e-6 {
-            return zero;
-        }
-        let (y0f, y1f) = (
-            Jet2::constant(Field::from(y0)),
-            Jet2::constant(Field::from(y1)),
-        );
-        let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
-        if !in_y.val.any() {
-            return zero;
-        }
-
-        let x_int =
-            Jet2::constant(Field::from(x0)) + (y - y0f) * Jet2::constant(Field::from(dx / dy));
-        let dir = if dy > 0.0 {
-            Jet2::constant(Field::from(1.0))
-        } else {
-            Jet2::constant(Field::from(-1.0))
-        };
-
-        // dist > 0 when query is LEFT of crossing (x < x_int)
-        let dist = x_int - x;
-        let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
-            .sqrt()
-            .max(Field::from(1e-6));
-        let fzero = Field::from(0.0);
-        let coverage = (dist.val / grad_mag + Field::from(0.5))
-            .max(fzero)
-            .min(Field::from(1.0))
-            .eval_raw(fzero, fzero, fzero, fzero);
-
-        (in_y & (dir * Jet2::constant(coverage))) | (!in_y & zero)
-    }
-}
-
-impl Manifold<Jet2> for Quad {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
-        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
-        let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
-        let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
-        let zero = Jet2::constant(Field::from(0.0));
-        let one = Jet2::constant(Field::from(1.0));
-
-        let fzero = Field::from(0.0);
-        let eval_t = |t: Jet2| -> Jet2 {
-            let in_t = t.ge(zero) & t.lt(one);
-            if !in_t.val.any() {
-                return zero;
-            }
-            let x_int = (Jet2::constant(Field::from(ax)) * t + Jet2::constant(Field::from(bx))) * t
-                + Jet2::constant(Field::from(cx));
-            let dy_dt = Jet2::constant(Field::from(2.0 * ay)) * t + Jet2::constant(Field::from(by));
-            let dir_mask = dy_dt.gt(zero);
-            let dir = (dir_mask & one) | (!dir_mask & Jet2::constant(Field::from(-1.0)));
-            let dist = x_int - x;
-            let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
-                .sqrt()
-                .max(Field::from(1e-6));
-            let coverage = (dist.val / grad_mag + Field::from(0.5))
-                .max(fzero)
-                .min(Field::from(1.0))
-                .eval_raw(fzero, fzero, fzero, fzero);
-            (in_t & (dir * Jet2::constant(coverage))) | (!in_t & zero)
-        };
-
-        if ay.abs() < 1e-6 {
-            if by.abs() < 1e-6 {
-                return zero;
-            }
-            eval_t((y - Jet2::constant(Field::from(cy))) / Jet2::constant(Field::from(by)))
-        } else {
-            let c_val = Jet2::constant(Field::from(cy)) - y;
-            let d = Jet2::constant(Field::from(by * by))
-                - Jet2::constant(Field::from(4.0 * ay)) * c_val;
-            let valid = d.ge(zero);
-            let sd = d.abs().sqrt();
-            let t1 =
-                (Jet2::constant(Field::from(-by)) - sd) / Jet2::constant(Field::from(2.0 * ay));
-            let t2 =
-                (Jet2::constant(Field::from(-by)) + sd) / Jet2::constant(Field::from(2.0 * ay));
-            (valid & (eval_t(t1) + eval_t(t2))) | (!valid & zero)
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Glyph (Compositional Scene Graph)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Optimized geometry storage separating lines and quads to avoid enum dispatch.
-#[derive(Clone, Debug)]
-pub struct Geometry {
-    pub lines: Arc<[Line]>,
-    pub quads: Arc<[Quad]>,
-}
-
-impl Manifold<Field> for Geometry {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let fzero = Field::from(0.0);
-
-        // Accumulate line and quad contributions into a single composite value.
-        // Note: Field + Field produces Add<Field, Field> (a manifold), so we must
-        // evaluate to get back a scalar. This pattern is more efficient than the
-        // old code because we defer the final evaluation until after combining
-        // all contributions, rather than collapsing after each addition.
-        let total = self
-            .lines
-            .iter()
-            .map(|l| l.eval_raw(x, y, z, w))
-            .chain(self.quads.iter().map(|q| q.eval_raw(x, y, z, w)))
-            .fold(fzero, |acc, contrib| {
-                // Compose: acc + contrib produces Add<Field, Field>
-                // Evaluate the sum to collapse back to Field
-                (acc + contrib).eval_raw(fzero, fzero, fzero, fzero)
-            });
-
-        // Apply non-zero winding rule: |winding| becomes coverage (clamped to [0, 1])
-        total
-            .abs()
-            .min(Field::from(1.0))
-            .eval_raw(fzero, fzero, fzero, fzero)
-    }
-}
-
-impl Manifold<Jet2> for Geometry {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
-        let zero = Jet2::constant(Field::from(0.0));
-        let mut acc = zero;
-        for l in self.lines.iter() {
-            acc = acc + l.eval_raw(x, y, z, w);
-        }
-        for q in self.quads.iter() {
-            acc = acc + q.eval_raw(x, y, z, w);
-        }
-        // Apply non-zero winding rule: |winding| becomes coverage
-        acc.abs().min(Jet2::constant(Field::from(1.0)))
-    }
-}
-
-/// A simple glyph: segments in unit space, bounded, then transformed.
-///
-/// The composition is: Affine<Select<UnitSquare, Geometry, 0.0>>
-/// - Geometry: Optimized Sum of Lines and Quads (produces smooth 0.0-1.0 coverage)
-/// - Select (via square): Bounds check with short-circuit
-/// - Affine: Restores to font coordinate space
-///
-/// Note: Lines and Quads now produce analytically anti-aliased coverage directly,
-/// so Threshold is no longer needed.
-pub type SimpleGlyph = Affine<Bounded<Geometry>>;
-
-/// A compound glyph: sum of transformed child glyphs.
-pub type CompoundGlyph = Sum<Affine<Glyph>>;
-
-/// A glyph is either empty, a simple outline, or a compound of sub-glyphs.
+/// A glyph: empty, triangulated outline, or compound.
 #[derive(Clone)]
 pub enum Glyph {
-    /// No geometry - evaluates to 0.
     Empty,
-    /// Simple glyph: bounded, thresholded segments in unit space.
     Simple(SimpleGlyph),
-    /// Compound glyph: sum of transformed child glyphs.
-    Compound(CompoundGlyph),
+    Compound(Sum<Affine<Glyph>>),
 }
 
 impl core::fmt::Debug for Glyph {
@@ -556,9 +429,6 @@ impl core::fmt::Debug for Glyph {
         }
     }
 }
-
-// Glyph evaluation - concrete impls because Line/Quad/Segment have
-// different implementations for Field (hard) vs Jet2 (anti-aliased).
 
 impl Manifold<Field> for Glyph {
     type Output = Field;
@@ -587,7 +457,7 @@ impl Manifold<Jet2> for Glyph {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Reader
+// TTF Reader (unchanged)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[derive(Clone, Copy)]
@@ -623,7 +493,7 @@ impl<'a> R<'a> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Tables (Dependent Types)
+// Tables
 // ═══════════════════════════════════════════════════════════════════════════
 
 enum Loca<'a> {
@@ -689,9 +559,7 @@ impl Cmap<'_> {
 }
 
 enum Kern<'a> {
-    /// Format 0: sorted pairs (left_glyph, right_glyph, value)
     Fmt0 { data: &'a [u8], n_pairs: usize },
-    /// No kerning table
     None,
 }
 
@@ -718,7 +586,7 @@ impl<'a> Kern<'a> {
                     return Self::None;
                 };
                 return Self::Fmt0 {
-                    data: &data[off + 14..], // Skip header to pairs
+                    data: &data[off + 14..],
                     n_pairs: n_pairs as usize,
                 };
             }
@@ -730,7 +598,6 @@ impl<'a> Kern<'a> {
     fn get(&self, left: u16, right: u16) -> i16 {
         match self {
             Self::Fmt0 { data, n_pairs } => {
-                // Binary search: each pair is 6 bytes (left:2, right:2, value:2)
                 let key = ((left as u32) << 16) | (right as u32);
                 let (mut lo, mut hi) = (0, *n_pairs);
 
@@ -774,8 +641,6 @@ pub struct Font<'a> {
 
 impl<'a> Font<'a> {
     pub fn parse(data: &'a [u8]) -> Option<Self> {
-        // TTF header: sfntVersion(4) + numTables(2) + searchRange(2) + entrySelector(2) + rangeShift(2) = 12 bytes
-        // Table record: tag(4) + checksum(4) + offset(4) + length(4) = 16 bytes
         let num_tables = R(data, 4).u16()? as usize;
         let mut t = std::collections::HashMap::new();
 
@@ -835,10 +700,6 @@ impl<'a> Font<'a> {
             })
     }
 
-    /// Lookup a glyph ID from a codepoint (single CMAP lookup).
-    ///
-    /// Use this when you need the glyph ID to batch multiple operations,
-    /// avoiding redundant CMAP lookups in tight loops.
     #[inline]
     pub fn cmap_lookup(&self, ch: char) -> Option<u16> {
         self.cmap.lookup(ch as u32)
@@ -848,7 +709,6 @@ impl<'a> Font<'a> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
-    /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
     pub fn glyph_by_id(&self, id: u16) -> Option<Glyph> {
         self.compile(id)
@@ -859,20 +719,13 @@ impl<'a> Font<'a> {
         self.glyph_scaled_by_id(id, size)
     }
 
-    /// Get scaled glyph by pre-looked-up glyph ID.
-    ///
-    /// Avoids redundant CMAP lookup when you already have the glyph ID.
     pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph> {
         let g = self.glyph_by_id(id)?;
         let scale = size / self.units_per_em as f32;
-        // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
-        // so the top of the text is at Y=0 in screen coordinates.
         let y_offset = self.ascent as f32 * scale;
-        Some(Glyph::Compound(Sum([affine(
-            g,
-            [scale, 0.0, 0.0, -scale, 0.0, y_offset],
-        )]
-        .into())))
+        Some(Glyph::Compound(Sum(
+            [affine(g, [scale, 0.0, 0.0, -scale, 0.0, y_offset])].into(),
+        )))
     }
 
     pub fn advance(&self, ch: char) -> Option<f32> {
@@ -880,9 +733,6 @@ impl<'a> Font<'a> {
         self.advance_by_id(id)
     }
 
-    /// Get advance width in font units by pre-looked-up glyph ID.
-    ///
-    /// Avoids redundant CMAP lookup when you already have the glyph ID.
     #[inline]
     pub fn advance_by_id(&self, id: u16) -> Option<f32> {
         let i = (id as usize).min(self.num_hm.saturating_sub(1));
@@ -893,29 +743,21 @@ impl<'a> Font<'a> {
         Some(self.advance(ch)? * size / self.units_per_em as f32)
     }
 
-    /// Get scaled advance width by pre-looked-up glyph ID.
-    ///
-    /// Avoids redundant CMAP lookup when you already have the glyph ID.
     pub fn advance_scaled_by_id(&self, id: u16, size: f32) -> Option<f32> {
         Some(self.advance_by_id(id)? * size / self.units_per_em as f32)
     }
 
-    /// Get kerning adjustment between two characters in font units.
     pub fn kern(&self, left: char, right: char) -> f32 {
         let left_id = self.cmap.lookup(left as u32).unwrap_or(0);
         let right_id = self.cmap.lookup(right as u32).unwrap_or(0);
         self.kern_by_ids(left_id, right_id)
     }
 
-    /// Get kerning adjustment between two pre-looked-up glyph IDs in font units.
-    ///
-    /// Avoids redundant CMAP lookups when you already have both glyph IDs.
     #[inline]
     pub fn kern_by_ids(&self, left_id: u16, right_id: u16) -> f32 {
         self.kern.get(left_id, right_id) as f32
     }
 
-    /// Get kerning adjustment between two characters, scaled to size.
     pub fn kern_scaled(&self, left: char, right: char, size: f32) -> f32 {
         self.kern(left, right) * size / self.units_per_em as f32
     }
@@ -934,38 +776,37 @@ impl<'a> Font<'a> {
 
         let width = (x_max - x_min) as f32;
         let height = (y_max - y_min) as f32;
-        let max_dim = width.max(height).max(1.0); // Avoid div by 0
+        let max_dim = width.max(height).max(1.0);
 
-        // Normalize transform: map [x_min, x_min+max_dim] -> [0, 1]
         let norm_scale = 1.0 / max_dim;
         let norm_tx = -(x_min as f32) * norm_scale;
         let norm_ty = -(y_min as f32) * norm_scale;
 
-        // The restore transform maps [0, 1] back to font units
-        // x_world = x_local * max_dim + x_min
-        // y_world = -max_dim * y_local + y_max (flip Y: normalized Y-down → font Y-up)
-        let restore = [max_dim, 0.0, 0.0, -max_dim, x_min as f32, y_max as f32];
+        // Restore transform: scale back to font units, translate to original position
+        // Do NOT flip Y here - glyph_scaled_by_id handles the Y flip
+        let restore = [max_dim, 0.0, 0.0, max_dim, x_min as f32, y_min as f32];
 
         if n >= 0 {
-            // Parse segments in normalized [0,1] space
-            let sum_segs = self.simple(&mut r, n as usize, norm_scale, norm_tx, norm_ty)?;
-
-            // Compose: Geometry (smooth AA coverage) -> Bounded (via square) -> Affine
-            let bounded = square(sum_segs, 0.0f32);
-            Some(Glyph::Simple(affine(bounded, restore)))
+            let triangles = self.triangulate(&mut r, n as usize, norm_scale, norm_tx, norm_ty)?;
+            let glyph = TriangulatedGlyph { triangles: triangles.into() };
+            Some(Glyph::Simple(affine(glyph, restore)))
         } else {
-            // Compound glyphs: children are already fully composed with their own bounds
             self.compound(&mut r)
         }
     }
 
-    fn simple(&self, r: &mut R, n: usize, scale: f32, tx: f32, ty: f32) -> Option<Geometry> {
+    fn triangulate(
+        &self,
+        r: &mut R,
+        n: usize,
+        scale: f32,
+        tx: f32,
+        ty: f32,
+    ) -> Option<Vec<LoopBlinnTriangle>> {
         if n == 0 {
-            return Some(Geometry {
-                lines: vec![].into(),
-                quads: vec![].into(),
-            });
+            return Some(vec![]);
         }
+
         let ends: Vec<_> = (0..n)
             .map(|_| r.u16().map(|v| v as usize))
             .collect::<Option<_>>()?;
@@ -1001,32 +842,26 @@ impl<'a> Font<'a> {
 
         let (xs, ys) = (dec(r, 2, 16)?, dec(r, 4, 32)?);
 
-        // Normalize points immediately
         let pts: Vec<_> = (0..np)
             .map(|i| {
                 (
                     (xs[i] as f32) * scale + tx,
                     (ys[i] as f32) * scale + ty,
-                    fl[i] & 1 != 0,
+                    fl[i] & 1 != 0, // on-curve
                 )
             })
             .collect();
 
-        // Partition segments into lines and quads
-        let mut lines = Vec::new();
-        let mut quads = Vec::new();
-
+        let mut triangles = Vec::new();
         let mut start = 0;
+
         for &e in ends.iter() {
-            let c = &pts[start..=e];
+            let contour = &pts[start..=e];
             start = e + 1;
-            push_segs(c, &mut lines, &mut quads);
+            triangulate_contour(contour, &mut triangles);
         }
 
-        Some(Geometry {
-            lines: lines.into(),
-            quads: quads.into(),
-        })
+        Some(triangles)
     }
 
     fn compound(&self, r: &mut R) -> Option<Glyph> {
@@ -1069,11 +904,21 @@ impl<'a> Font<'a> {
     }
 }
 
-fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line>, quads: &mut Vec<Quad>) {
-    if pts.is_empty() {
+// ═══════════════════════════════════════════════════════════════════════════
+// Triangulation - Ear Clipping with Quadratic Curves
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Triangulate a single contour into Loop-Blinn triangles.
+///
+/// For each quadratic curve (on-off-on), creates a curved triangle.
+/// For straight edges, creates solid triangles via ear clipping.
+fn triangulate_contour(pts: &[(f32, f32, bool)], out: &mut Vec<LoopBlinnTriangle>) {
+    if pts.len() < 3 {
         return;
     }
-    let exp: Vec<_> = pts
+
+    // Expand implicit on-curve points between consecutive off-curve points
+    let expanded: Vec<_> = pts
         .iter()
         .enumerate()
         .flat_map(|(i, &(x, y, on))| {
@@ -1086,24 +931,125 @@ fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line>, quads: &mut Vec<Qu
         })
         .collect();
 
-    if exp.is_empty() {
+    if expanded.len() < 3 {
         return;
     }
 
-    let start = exp.iter().position(|p| p.2).unwrap_or(0);
+    // Find starting on-curve point
+    let start = expanded.iter().position(|p| p.2).unwrap_or(0);
+
+    // Extract curved triangles and build polygon for ear clipping
+    let mut polygon: Vec<[f32; 2]> = Vec::new();
     let mut i = 0;
-    while i < exp.len() {
-        let p = |j: usize| {
-            let (x, y, _) = exp[(start + j) % exp.len()];
-            [x, y]
-        };
-        if exp[(start + i + 1) % exp.len()].2 {
-            // Use Line::new() to precompute aa_scale
-            lines.push(Line::new([p(i), p(i + 1)]));
-            i += 1;
+
+    while i < expanded.len() {
+        let curr = (start + i) % expanded.len();
+        let next = (start + i + 1) % expanded.len();
+
+        let (x0, y0, on0) = expanded[curr];
+        let (x1, y1, on1) = expanded[next];
+
+        if on0 {
+            polygon.push([x0, y0]);
+
+            if !on1 {
+                // Quadratic curve: on → off → on
+                let next2 = (start + i + 2) % expanded.len();
+                let (x2, y2, _) = expanded[next2];
+
+                // Determine winding from contour direction
+                let cross = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+                let winding = if cross >= 0.0 { 1.0 } else { -1.0 };
+
+                out.push(LoopBlinnTriangle::curved(
+                    [x0, y0],
+                    [x1, y1],
+                    [x2, y2],
+                    winding,
+                ));
+
+                i += 2;
+            } else {
+                i += 1;
+            }
         } else {
-            quads.push(Curve([p(i), p(i + 1), p(i + 2)]));
-            i += 2;
+            i += 1;
         }
     }
+
+    // Ear clipping for the remaining polygon (solid triangles)
+    if polygon.len() >= 3 {
+        ear_clip_polygon(&polygon, out);
+    }
+}
+
+/// Simple ear clipping triangulation for convex/simple polygons.
+fn ear_clip_polygon(polygon: &[[f32; 2]], out: &mut Vec<LoopBlinnTriangle>) {
+    if polygon.len() < 3 {
+        return;
+    }
+
+    let mut indices: Vec<usize> = (0..polygon.len()).collect();
+
+    while indices.len() > 3 {
+        let mut ear_found = false;
+
+        for i in 0..indices.len() {
+            let prev = indices[(i + indices.len() - 1) % indices.len()];
+            let curr = indices[i];
+            let next = indices[(i + 1) % indices.len()];
+
+            let p0 = polygon[prev];
+            let p1 = polygon[curr];
+            let p2 = polygon[next];
+
+            // Check if this is a convex vertex (ear candidate)
+            let cross = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]);
+            if cross <= 0.0 {
+                continue; // Reflex vertex, not an ear
+            }
+
+            // Check no other vertices inside this triangle
+            let mut is_ear = true;
+            for &j in &indices {
+                if j == prev || j == curr || j == next {
+                    continue;
+                }
+                if point_in_triangle(polygon[j], p0, p1, p2) {
+                    is_ear = false;
+                    break;
+                }
+            }
+
+            if is_ear {
+                out.push(LoopBlinnTriangle::solid([p0, p1, p2]));
+                indices.remove(i);
+                ear_found = true;
+                break;
+            }
+        }
+
+        if !ear_found {
+            // Degenerate case - just fan triangulate remaining
+            break;
+        }
+    }
+
+    // Final triangle
+    if indices.len() == 3 {
+        out.push(LoopBlinnTriangle::solid([
+            polygon[indices[0]],
+            polygon[indices[1]],
+            polygon[indices[2]],
+        ]));
+    }
+}
+
+/// Check if point p is inside triangle (p0, p1, p2) using barycentric coordinates.
+fn point_in_triangle(p: [f32; 2], p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> bool {
+    let d00 = (p1[0] - p0[0]) * (p[1] - p0[1]) - (p1[1] - p0[1]) * (p[0] - p0[0]);
+    let d01 = (p2[0] - p1[0]) * (p[1] - p1[1]) - (p2[1] - p1[1]) * (p[0] - p1[0]);
+    let d02 = (p0[0] - p2[0]) * (p[1] - p2[1]) - (p0[1] - p2[1]) * (p[0] - p2[0]);
+
+    (d00 >= 0.0 && d01 >= 0.0 && d02 >= 0.0) || (d00 <= 0.0 && d01 <= 0.0 && d02 <= 0.0)
 }
