@@ -1264,3 +1264,38 @@ where
 
 /// Parallelism width (number of lanes).
 pub const PARALLELISM: usize = NativeSimd::LANES;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gather_behavior() {
+        let data = [10.0, 20.0, 30.0, 40.0, 50.0];
+        // Indices: 0.0, 1.9 (trunc to 1), 2.1 (trunc to 2), 4.0
+        // We expect: data[0], data[1], data[2], data[4]
+        // i.e., 10.0, 20.0, 30.0, 50.0
+        //
+        // If we create a Field with these indices:
+        // We can't easily construct arbitrary Field with parallelism > 4.
+        // But gather is per-lane.
+        //
+        // Let's make a buffer of indices.
+        let mut indices_buf = [0.0f32; PARALLELISM];
+        indices_buf[0] = 0.0;
+        if PARALLELISM > 1 { indices_buf[1] = 1.9; }
+        if PARALLELISM > 2 { indices_buf[2] = 2.1; }
+        if PARALLELISM > 3 { indices_buf[3] = 4.0; }
+
+        let indices = Field::from_slice(&indices_buf);
+        let result = Field::gather(&data, indices);
+
+        let mut out = [0.0f32; PARALLELISM];
+        result.store(&mut out);
+
+        assert_eq!(out[0], 10.0);
+        if PARALLELISM > 1 { assert_eq!(out[1], 20.0); } // 1.9 -> 1
+        if PARALLELISM > 2 { assert_eq!(out[2], 30.0); } // 2.1 -> 2
+        if PARALLELISM > 3 { assert_eq!(out[3], 50.0); } // 4.0 -> 4
+    }
+}

@@ -202,7 +202,9 @@ impl SimdOps for F32x4 {
         let len = slice.len();
         let mut out = [0.0f32; 4];
         for i in 0..4 {
-            let ix = (libm::floorf(idx[i]) as isize).clamp(0, len as isize - 1) as usize;
+            // Indices are pre-floored by Texture::eval_raw, so truncation is safe and faster.
+            // Even for general use, truncation matches floor for positive indices.
+            let ix = (idx[i] as isize).clamp(0, len as isize - 1) as usize;
             out[i] = slice[ix];
         }
         Self::from_slice(&out)
