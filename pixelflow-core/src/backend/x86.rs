@@ -1415,7 +1415,13 @@ impl SimdOps for F32x16 {
             // Extract mantissa normalized to [0.75, 1.5) for better polynomial centering
             // 0x0B = _MM_MANT_NORM_p75_1p5 (centers around 1.0 for ~1-2 extra bits precision)
             // Interval: 3 (_MM_MANT_NORM_p75_1p5), Sign: 2 (_MM_MANT_SIGN_nan)
-            let f = _mm512_getmant_ps::<3, 2>(self.0);
+            //
+            // We define these constants locally as they might not be exported as simple integers
+            // in all versions of core::arch, but the values are standard AVX-512.
+            const _MM_MANT_NORM_p75_1p5: i32 = 3; // Interval [0.75, 1.5)
+            const _MM_MANT_SIGN_nan: i32 = 2;     // if (sign(src) == 0) sign = 0 else sign = NaN
+
+            let f = _mm512_getmant_ps::<_MM_MANT_NORM_p75_1p5, _MM_MANT_SIGN_nan>(self.0);
 
             // Extract exponent (automatically adjusts for the mantissa range shift)
             let n = _mm512_getexp_ps(self.0);
