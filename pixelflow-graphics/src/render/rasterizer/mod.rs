@@ -182,7 +182,7 @@
 //! Color manifolds output `Discrete` (packed u32 pixels) directly.
 
 use crate::render::color::Pixel;
-use pixelflow_core::{materialize_discrete, Discrete, Manifold, PARALLELISM};
+use pixelflow_core::{materialize_discrete, Discrete, Field, Manifold, PARALLELISM};
 
 pub mod parallel;
 pub(crate) mod pool;

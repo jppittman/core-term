@@ -114,14 +114,16 @@ mod tests {
 
     #[test]
     fn test_flat_patch() {
+        use pixelflow_core::{field_abs, field_all, field_lt};
         let patch = BezierPatch::flat(1.0);
         let z = Field::from(0.0);
         let result = patch.eval_raw(Field::from(0.5), Field::from(0.5), z, z);
-        assert!(result.abs().lt(Field::from(1e-4)).all());
+        assert!(field_all(field_lt(field_abs(result), Field::from(1e-4))));
     }
 
     #[test]
     fn test_derivatives() {
+        use pixelflow_core::{field_abs, field_all, field_lt};
         let patch = BezierPatch::paraboloid(2.0, 1.0);
         let u = Jet2H::x(Field::from(0.5));
         let v = Jet2H::y(Field::from(0.5));
@@ -129,7 +131,7 @@ mod tests {
 
         // At center of symmetric paraboloid, tangents should be ~horizontal
         // (dx and dy of z should be near zero)
-        assert!(p[2].dx.abs().lt(Field::from(0.1)).all());
-        assert!(p[2].dy.abs().lt(Field::from(0.1)).all());
+        assert!(field_all(field_lt(field_abs(p[2].dx), Field::from(0.1))));
+        assert!(field_all(field_lt(field_abs(p[2].dy), Field::from(0.1))));
     }
 }

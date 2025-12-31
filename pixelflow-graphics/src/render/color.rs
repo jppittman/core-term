@@ -103,7 +103,7 @@ impl pixelflow_core::Manifold for NamedColor {
         _w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b) = self.to_rgb();
-        pixelflow_core::Discrete::pack(
+        pixelflow_core::pack_rgba(
             pixelflow_core::Field::from(r as f32 / 255.0),
             pixelflow_core::Field::from(g as f32 / 255.0),
             pixelflow_core::Field::from(b as f32 / 255.0),
@@ -166,7 +166,7 @@ impl pixelflow_core::Manifold for Color {
         _w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b, a) = self.to_f32_rgba();
-        pixelflow_core::Discrete::pack(
+        pixelflow_core::pack_rgba(
             pixelflow_core::Field::from(r),
             pixelflow_core::Field::from(g),
             pixelflow_core::Field::from(b),
@@ -429,7 +429,7 @@ impl Manifold for ColorCube {
 
     #[inline(always)]
     fn eval_raw(&self, r: Field, g: Field, b: Field, a: Field) -> Discrete {
-        Discrete::pack(r, g, b, a)
+        pixelflow_core::pack_rgba(r, g, b, a)
     }
 }
 
@@ -456,7 +456,7 @@ impl<M: Manifold<Output = Field>> Manifold for Grayscale<M> {
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
         let v = self.0.eval_raw(x, y, z, w);
-        Discrete::pack(v, v, v, Field::from(1.0))
+        pixelflow_core::pack_rgba(v, v, v, Field::from(1.0))
     }
 }
 
@@ -514,7 +514,7 @@ where
         let g = self.g.eval_raw(x, y, z, w);
         let b = self.b.eval_raw(x, y, z, w);
         let a = self.a.eval_raw(x, y, z, w);
-        Discrete::pack(r, g, b, a)
+        pixelflow_core::pack_rgba(r, g, b, a)
     }
 }
 

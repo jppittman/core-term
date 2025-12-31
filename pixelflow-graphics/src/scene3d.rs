@@ -266,7 +266,7 @@ where
 
         // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
         let safe_t = Select {
-            cond: FieldMask(mask),
+            cond: mask,
             if_true: t,
             if_false: Jet3::constant(fzero),
         }
@@ -295,7 +295,7 @@ where
 
         // Compose fully: mask selects between material and background manifolds
         Select {
-            cond: FieldMask(mask),
+            cond: mask,
             if_true: mat,
             if_false: bg,
         }
@@ -335,7 +335,7 @@ where
 
         // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
         let safe_t = Select {
-            cond: FieldMask(mask),
+            cond: mask,
             if_true: t,
             if_false: Jet3::constant(fzero),
         }
@@ -362,7 +362,7 @@ where
         };
 
         Select {
-            cond: FieldMask(mask),
+            cond: mask,
             if_true: mat,
             if_false: bg,
         }
@@ -423,11 +423,11 @@ where
         // Inner select: S2 vs background
         let color2 = c2.eval_raw(rx, ry, rz, w);
         let bg_color = self.background.eval_raw(rx, ry, rz, w);
-        let inner = Discrete::select(mask2, color2, bg_color);
+        let inner = pixelflow_core::select_discrete(mask2, color2, bg_color);
 
         // Outer select: S1 vs inner
         let color1 = c1.eval_raw(rx, ry, rz, w);
-        Discrete::select(mask1, color1, inner)
+        pixelflow_core::select_discrete(mask1, color1, inner)
     }
 }
 
@@ -458,10 +458,14 @@ impl<G: Manifold<Jet3, Output = Jet3>> Manifold<Jet3> for GeometryMask<G> {
         let t_max = Field::from(1e6);
         let deriv_max = Field::from(1e4);
 
-        let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
+        // Build manifold expressions, then evaluate them to get Field
+        let valid_t_manifold = t.val.gt(fzero) & t.val.lt(t_max);
         let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz).constant();
-        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
-        valid_t & valid_deriv
+        let valid_deriv_manifold = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
+        let mask_manifold = valid_t_manifold & valid_deriv_manifold;
+
+        // Evaluate the manifold to get a Field
+        mask_manifold.eval_raw(fzero, fzero, fzero, fzero)
     }
 }
 
@@ -1044,7 +1048,7 @@ impl Manifold<Jet3> for ColorSky {
         let b = (Field::from(1.0) - t * Field::from(0.2)).constant();
         let a = Field::from(1.0);
 
-        Discrete::pack(r, g, b, a)
+        pixelflow_core::pack_rgba(r, g, b, a)
     }
 }
 
@@ -1100,6 +1104,6 @@ impl Manifold<Jet3> for ColorChecker {
         let b = (b_base * coverage + b_neighbor * one_minus_cov).constant();
         let a = Field::from(1.0);
 
-        Discrete::pack(r, g, b, a)
+        pixelflow_core::pack_rgba(r, g, b, a)
     }
 }

@@ -144,7 +144,7 @@ where
         let a = self.a.eval_raw(x, y, z, w);
 
         // Pack into Discrete
-        Discrete::pack(r, g, b, a)
+        pixelflow_core::pack_rgba(r, g, b, a)
     }
 }
 
@@ -161,7 +161,7 @@ mod tests {
         type Output = Discrete;
 
         fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
-            Discrete::pack(
+            pixelflow_core::pack_rgba(
                 Field::from(self.0 as f32 / 255.0),
                 Field::from(self.1 as f32 / 255.0),
                 Field::from(self.2 as f32 / 255.0),
@@ -204,7 +204,7 @@ mod tests {
             fn eval_raw(&self, x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
                 // Red channel = x / 4 (for 4 wide texture)
                 let r = (x / Field::from(4.0)).constant();
-                Discrete::pack(r, Field::from(0.0), Field::from(0.0), Field::from(1.0))
+                pixelflow_core::pack_rgba(r, Field::from(0.0), Field::from(0.0), Field::from(1.0))
             }
         }
 

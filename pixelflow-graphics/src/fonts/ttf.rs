@@ -382,7 +382,7 @@ impl Manifold<Jet2> for Line {
             Jet2::constant(Field::from(y1)),
         );
         let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
-        if !in_y.val.any() {
+        if !pixelflow_core::field_any(in_y.val) {
             return zero;
         }
 
@@ -423,7 +423,7 @@ impl Manifold<Jet2> for Quad {
         let fzero = Field::from(0.0);
         let eval_t = |t: Jet2| -> Jet2 {
             let in_t = t.ge(zero) & t.lt(one);
-            if !in_t.val.any() {
+            if !pixelflow_core::field_any(in_t.val) {
                 return zero;
             }
             let x_int = (Jet2::constant(Field::from(ax)) * t + Jet2::constant(Field::from(bx))) * t

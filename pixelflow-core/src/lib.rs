@@ -1403,6 +1403,94 @@ where
 /// Parallelism width (number of lanes).
 pub const PARALLELISM: usize = NativeSimd::LANES;
 
+// ============================================================================
+// Advanced API for Manifold Implementors
+// ============================================================================
+//
+// These functions expose Field/Discrete operations needed when implementing
+// custom manifolds. External users should use the declarative manifold API
+// (X, Y, operators, combinators) instead.
+//
+// Use these ONLY when implementing Manifold trait for custom types.
+
+/// Pack four Field values (RGBA, 0.0-1.0) into a Discrete (packed RGBA pixels).
+///
+/// # For Manifold Implementors Only
+///
+/// Use this when implementing `Manifold<Output = Discrete>` to pack RGBA channels.
+///
+/// # Example
+/// ```ignore
+/// impl Manifold for MyColorManifold {
+///     type Output = Discrete;
+///     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+///         let r = self.r_channel.eval_raw(x, y, z, w);
+///         let g = self.g_channel.eval_raw(x, y, z, w);
+///         let b = self.b_channel.eval_raw(x, y, z, w);
+///         let a = self.a_channel.eval_raw(x, y, z, w);
+///         pack_rgba(r, g, b, a)
+///     }
+/// }
+/// ```
+#[inline(always)]
+pub fn pack_rgba(r: Field, g: Field, b: Field, a: Field) -> Discrete {
+    Discrete::pack(r, g, b, a)
+}
+
+/// Select between two Discrete values based on a Field mask.
+///
+/// # For Manifold Implementors Only
+///
+/// Use this when implementing custom color manifolds that need conditional logic.
+#[inline(always)]
+pub fn select_discrete(mask: Field, if_true: Discrete, if_false: Discrete) -> Discrete {
+    Discrete::select(mask, if_true, if_false)
+}
+
+/// Check if any lane in a Field is non-zero.
+///
+/// # For Manifold Implementors Only
+///
+/// Use this for early-exit optimizations in manifold implementations.
+/// For declarative conditionals, use `Select` combinator instead.
+#[inline(always)]
+pub fn field_any(field: Field) -> bool {
+    field.any()
+}
+
+/// Check if all lanes in a Field are non-zero.
+///
+/// # For Manifold Implementors Only
+///
+/// Use this for early-exit optimizations in manifold implementations.
+/// For declarative conditionals, use `Select` combinator instead.
+#[inline(always)]
+pub fn field_all(field: Field) -> bool {
+    field.all()
+}
+
+/// Absolute value of a Field.
+///
+/// # For Manifold Implementors Only
+///
+/// Use this for testing or low-level Field manipulation.
+/// For declarative code, use the `Abs` manifold combinator instead.
+#[inline(always)]
+pub fn field_abs(field: Field) -> Field {
+    field.abs()
+}
+
+/// Less-than comparison of two Fields (returns mask as Field).
+///
+/// # For Manifold Implementors Only
+///
+/// Use this for testing or low-level Field manipulation.
+/// For declarative code, use the `Lt` manifold combinator instead.
+#[inline(always)]
+pub fn field_lt(lhs: Field, rhs: Field) -> Field {
+    lhs.lt(rhs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
