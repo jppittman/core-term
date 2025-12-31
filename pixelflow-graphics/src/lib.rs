@@ -163,10 +163,12 @@ pub mod animation;
 pub mod baked;
 pub mod fonts;
 pub mod image;
+pub mod mesh;
 pub mod patch;
 pub mod render;
 pub mod scene3d;
 pub mod shapes;
+pub mod subdivision;
 pub mod transform;
 
 pub use baked::Baked;
