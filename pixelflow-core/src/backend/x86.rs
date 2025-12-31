@@ -1393,7 +1393,8 @@ impl SimdOps for F32x16 {
     fn shr_u32(self, n: u32) -> Self {
         unsafe {
             let as_int = _mm512_castps_si512(self.0);
-            let shifted = _mm512_srli_epi32(as_int, n);
+            let shift = _mm_cvtsi32_si128(n as i32);
+            let shifted = _mm512_srl_epi32(as_int, shift);
             Self(_mm512_castsi512_ps(shifted))
         }
     }
@@ -1412,8 +1413,8 @@ impl SimdOps for F32x16 {
         // log2(x) = exponent + log2(mantissa)
         unsafe {
             // Extract mantissa normalized to [0.75, 1.5) for better polynomial centering
-            // 0x0B = _MM_MANT_NORM_p75_1p5 (centers around 1.0 for ~1-2 extra bits precision)
-            let f = _mm512_getmant_ps::<0x0B>(self.0);
+            // NORM=3 (_MM_MANT_NORM_p75_1p5), SIGN=0 (_MM_MANT_SIGN_src)
+            let f = _mm512_getmant_ps::<3, 0>(self.0);
 
             // Extract exponent (automatically adjusts for the mantissa range shift)
             let n = _mm512_getexp_ps(self.0);
