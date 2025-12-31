@@ -4,7 +4,7 @@
 //! through rasterization to file output.
 
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, X, Y};
-use pixelflow_graphics::render::color::{Lift, NamedColor, Rgba8};
+use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
 use pixelflow_graphics::transform::{Scale, Translate};
@@ -130,8 +130,8 @@ impl Manifold for RadialGradient {
 fn e2e_render_radial_gradient() {
     const SIZE: u32 = 200;
 
-    // Use Lift to convert a scalar field to grayscale
-    let radial = Lift(RadialGradient {
+    // Use Grayscale to convert a scalar field to grayscale
+    let radial = Grayscale(RadialGradient {
         cx: SIZE as f32 / 2.0,
         cy: SIZE as f32 / 2.0,
         radius_sq: (SIZE as f32 / 2.0) * (SIZE as f32 / 2.0),
@@ -201,8 +201,8 @@ fn e2e_render_circle() {
         offset: [SIZE as f32 / 2.0, SIZE as f32 / 2.0],
     };
 
-    // Lift to grayscale
-    let scene = Lift(centered);
+    // Grayscale conversion
+    let scene = Grayscale(centered);
 
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
     let shape = TensorShape::new(SIZE as usize, SIZE as usize);

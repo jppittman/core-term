@@ -274,6 +274,28 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         Map::new(self, func)
     }
 
+    /// Lift this manifold's output to ray space via a covariant map.
+    ///
+    /// This enables conversion from point space (Field) to ray space (PathJet).
+    /// The function transforms each Field output into a PathJet.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pixelflow_core::{ManifoldExt, X, Y, jet::PathJet};
+    ///
+    /// // Convert screen coordinates to rays from origin
+    /// let ray_x = X.lift(PathJet::from_slope);  // origin=0, direction=X
+    /// let ray_y = Y.lift(PathJet::from_slope);  // origin=0, direction=Y
+    /// let ray_z = 1.0f32.lift(PathJet::from_slope);  // origin=0, direction=1 (forward)
+    /// ```
+    fn lift<F>(self, func: F) -> Map<Self, F>
+    where
+        F: Fn(crate::Field) -> crate::jet::PathJet<crate::Field> + Send + Sync,
+    {
+        Map::new(self, func)
+    }
+
     /// Add two manifolds.
     fn add<R: Manifold>(self, rhs: R) -> Add<Self, R> {
         Add(self, rhs)

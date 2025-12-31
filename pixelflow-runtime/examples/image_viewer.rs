@@ -15,12 +15,36 @@ const W: u32 = 1920;
 const H: u32 = 1080;
 
 // Import scene3d types
-use pixelflow_graphics::patch::BezierPatch;
-use pixelflow_graphics::render::Color;
+use pixelflow_core::jet::Jet3;
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, HeightFieldGeometry,
-    Lift, PlaneGeometry, SceneObject, SphereAt, Union,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
+
+/// Sphere at given center with radius (local to this example).
+#[derive(Clone, Copy)]
+struct SphereAt {
+    center: (f32, f32, f32),
+    radius: f32,
+}
+
+impl Manifold<Jet3> for SphereAt {
+    type Output = Jet3;
+
+    #[inline]
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+        let cx = Jet3::constant(Field::from(self.center.0));
+        let cy = Jet3::constant(Field::from(self.center.1));
+        let cz = Jet3::constant(Field::from(self.center.2));
+
+        let d_dot_c = rx * cx + ry * cy + rz * cz;
+        let c_sq = cx * cx + cy * cy + cz * cz;
+        let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
+        let discriminant = d_dot_c * d_dot_c - (c_sq - r_sq);
+
+        let epsilon_sq = Jet3::constant(Field::from(0.0001));
+        d_dot_c - (discriminant + epsilon_sq).sqrt()
+    }
+}
 
 /// Screen coordinate remapper for Discrete output.
 #[derive(Clone, Copy)]
@@ -48,43 +72,21 @@ impl<M: Manifold<Output = Discrete>> Manifold for ScreenRemap<M> {
     }
 }
 
-/// Build the chrome sphere scene with bezier patch.
+/// Build the chrome sphere scene.
 fn build_scene() -> impl Manifold<Output = Discrete> + Send + Sync + Clone {
-    // Floor: checkerboard plane at y = -1
-    let floor = SceneObject {
+    let world = ColorSurface {
         geometry: PlaneGeometry { height: -1.0 },
         material: ColorChecker,
-    };
-
-    // Bezier patch: paraboloid bump on the ground
-    let patch = BezierPatch::paraboloid(2.0, 0.5);
-    let patch_geo = HeightFieldGeometry {
-        height_field: patch,
-        base_height: -0.8,
-        scale: 0.3,
-        uv_scale: 0.15, // Maps world coords to [0,1] parameter space
-    };
-    let patch_obj = SceneObject {
-        geometry: patch_geo,
-        material: Lift(Color::Rgb(180, 120, 60)), // Warm orange-brown
-    };
-
-    // Ground: patch in front of floor, with sky background
-    // Union = first hit wins (patch occludes floor where it exists)
-    let ground = Union {
-        first: patch_obj,
-        second: floor,
         background: ColorSky,
     };
 
-    // Chrome sphere reflecting the ground
     let scene = ColorSurface {
         geometry: SphereAt {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: ground },
-        background: ground,
+        material: ColorReflect { inner: world },
+        background: world,
     };
 
     ScreenRemap {

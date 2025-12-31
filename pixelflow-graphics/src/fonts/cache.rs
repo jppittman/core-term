@@ -44,7 +44,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ttf::{affine, Affine, Font, Glyph, Sum};
-use crate::Lift;
+use crate::Grayscale;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CachedGlyph: The Morphism
@@ -76,8 +76,8 @@ impl CachedGlyph {
     ///
     /// The glyph is rasterized at `size × size` resolution.
     pub fn new(glyph: &Glyph, size: usize) -> Self {
-        // Rasterize glyph to RGBA frame using Lift (coverage → grayscale)
-        let lifted = Lift(glyph.clone());
+        // Rasterize glyph to RGBA frame using Grayscale (coverage → grayscale)
+        let lifted = Grayscale(glyph.clone());
         let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
         execute(&lifted, frame.as_slice_mut(), TensorShape::new(size, size));
 

@@ -5,9 +5,36 @@ use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
+use pixelflow_core::jet::Jet3;
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry, SphereAt,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
+
+/// Sphere at given center with radius (local to this test).
+#[derive(Clone, Copy)]
+struct SphereAt {
+    center: (f32, f32, f32),
+    radius: f32,
+}
+
+impl Manifold<Jet3> for SphereAt {
+    type Output = Jet3;
+
+    #[inline]
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+        let cx = Jet3::constant(Field::from(self.center.0));
+        let cy = Jet3::constant(Field::from(self.center.1));
+        let cz = Jet3::constant(Field::from(self.center.2));
+
+        let d_dot_c = rx * cx + ry * cy + rz * cz;
+        let c_sq = cx * cx + cy * cy + cz * cz;
+        let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
+        let discriminant = d_dot_c * d_dot_c - (c_sq - r_sq);
+
+        let epsilon_sq = Jet3::constant(Field::from(0.0001));
+        d_dot_c - (discriminant + epsilon_sq).sqrt()
+    }
+}
 use std::fs::File;
 use std::io::Write;
 

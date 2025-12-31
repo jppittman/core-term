@@ -8,7 +8,7 @@ use pixelflow_core::jet::Jet2;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
 use pixelflow_graphics::{
     render::rasterizer::{execute, render_work_stealing, RenderOptions, TensorShape},
-    CachedGlyph, CachedText, Color, ColorManifold, Font, GlyphCache, Lift, NamedColor, Rgba8,
+    CachedGlyph, CachedText, Color, ColorCube, Font, Grayscale, GlyphCache, NamedColor, Rgba8,
 };
 
 // ============================================================================
@@ -213,7 +213,13 @@ fn bench_rasterize_gradient(c: &mut Criterion) {
             size,
             |bencher, &size| {
                 use pixelflow_core::X;
-                let gradient = ColorManifold::new(X / (size as f32), 0.5f32, 0.5f32, 1.0f32);
+                let gradient = At {
+                    inner: ColorCube,
+                    x: X / (size as f32),
+                    y: 0.5f32,
+                    z: 0.5f32,
+                    w: 1.0f32,
+                };
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
                 let shape = TensorShape::new(size, size);
 
@@ -434,20 +440,32 @@ fn bench_color_manifold(c: &mut Criterion) {
         bencher.iter(|| black_box(color.eval_raw(black_box(x), y, z, w)))
     });
 
-    group.bench_function("eval_color_manifold_constant", |bencher| {
-        let color = ColorManifold::new(1.0f32, 0.5f32, 0.0f32, 1.0f32);
+    group.bench_function("eval_color_cube_constant", |bencher| {
+        let color = At {
+            inner: ColorCube,
+            x: 1.0f32,
+            y: 0.5f32,
+            z: 0.0f32,
+            w: 1.0f32,
+        };
         bencher.iter(|| black_box(color.eval_raw(black_box(x), y, z, w)))
     });
 
-    group.bench_function("eval_color_manifold_gradient", |bencher| {
+    group.bench_function("eval_color_cube_gradient", |bencher| {
         use pixelflow_core::X;
-        let color = ColorManifold::new(X / 100.0f32, 0.5f32, 0.5f32, 1.0f32);
+        let color = At {
+            inner: ColorCube,
+            x: X / 100.0f32,
+            y: 0.5f32,
+            z: 0.5f32,
+            w: 1.0f32,
+        };
         bencher.iter(|| black_box(color.eval_raw(black_box(x), y, z, w)))
     });
 
-    group.bench_function("eval_lift_scalar", |bencher| {
-        let lifted = Lift(0.75f32);
-        bencher.iter(|| black_box(lifted.eval_raw(black_box(x), y, z, w)))
+    group.bench_function("eval_grayscale", |bencher| {
+        let gray = Grayscale(0.75f32);
+        bencher.iter(|| black_box(gray.eval_raw(black_box(x), y, z, w)))
     });
 
     group.finish();
@@ -773,11 +791,38 @@ criterion_group!(text_benches, bench_text_rendering,);
 // ============================================================================
 
 fn bench_scene3d(c: &mut Criterion) {
+    use pixelflow_core::jet::Jet3;
     use pixelflow_graphics::render::frame::Frame;
     use pixelflow_graphics::scene3d::{
         Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
-        PlaneGeometry, Reflect, ScreenToDir, Sky, SphereAt, Surface,
+        PlaneGeometry, Reflect, ScreenToDir, Sky, Surface,
     };
+
+    /// Sphere at given center with radius (local to this benchmark).
+    #[derive(Clone, Copy)]
+    struct SphereAt {
+        center: (f32, f32, f32),
+        radius: f32,
+    }
+
+    impl Manifold<Jet3> for SphereAt {
+        type Output = Jet3;
+
+        #[inline]
+        fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+            let cx = Jet3::constant(Field::from(self.center.0));
+            let cy = Jet3::constant(Field::from(self.center.1));
+            let cz = Jet3::constant(Field::from(self.center.2));
+
+            let d_dot_c = rx * cx + ry * cy + rz * cz;
+            let c_sq = cx * cx + cy * cy + cz * cz;
+            let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
+            let discriminant = d_dot_c * d_dot_c - (c_sq - r_sq);
+
+            let epsilon_sq = Jet3::constant(Field::from(0.0001));
+            d_dot_c - (discriminant + epsilon_sq).sqrt()
+        }
+    }
 
     // Helper: grayscale Field -> Discrete RGBA
     #[derive(Copy, Clone)]
@@ -1059,11 +1104,37 @@ criterion_group!(scene3d_benches, bench_scene3d,);
 // ============================================================================
 
 fn bench_scheduler_comparison(c: &mut Criterion) {
+    use pixelflow_core::jet::Jet3;
     use pixelflow_graphics::render::frame::Frame;
     use pixelflow_graphics::scene3d::{
         ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
-        SphereAt,
     };
+
+    /// Sphere at given center with radius (local to this benchmark).
+    #[derive(Clone, Copy)]
+    struct SphereAt {
+        center: (f32, f32, f32),
+        radius: f32,
+    }
+
+    impl Manifold<Jet3> for SphereAt {
+        type Output = Jet3;
+
+        #[inline]
+        fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+            let cx = Jet3::constant(Field::from(self.center.0));
+            let cy = Jet3::constant(Field::from(self.center.1));
+            let cz = Jet3::constant(Field::from(self.center.2));
+
+            let d_dot_c = rx * cx + ry * cy + rz * cz;
+            let c_sq = cx * cx + cy * cy + cz * cz;
+            let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
+            let discriminant = d_dot_c * d_dot_c - (c_sq - r_sq);
+
+            let epsilon_sq = Jet3::constant(Field::from(0.0001));
+            d_dot_c - (discriminant + epsilon_sq).sqrt()
+        }
+    }
 
     // Helper: remap for Discrete output
     #[derive(Copy, Clone)]

@@ -24,7 +24,7 @@ impl Image {
     /// The image is filled with white where the manifold is 1.0,
     /// and black where it is 0.0.
     ///
-    /// Future versions will support ColorManifolds.
+    /// Future versions will support color manifolds via At<ColorCube, ...>.
     pub fn render_mask(&mut self, _mask: &impl Manifold) {
         // Placeholder implementation to allow compilation.
         // The previous implementation used a private `materialize` function.
