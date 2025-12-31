@@ -183,7 +183,8 @@
 
 use crate::render::color::Pixel;
 use pixelflow_core::{
-    materialize_discrete, materialize_discrete_fields, Discrete, Field, Manifold, PARALLELISM,
+    materialize_discrete, materialize_discrete_fields, Discrete, FastMathGuard, Field, Manifold,
+    PARALLELISM,
 };
 
 pub mod parallel;
@@ -257,6 +258,10 @@ where
     P: Pixel,
     M: Manifold<Output = Discrete> + ?Sized,
 {
+    // Enable fast-math mode: flush denormals to zero for ~100x speedup on edge cases.
+    // SAFETY: We're in a rendering context where IEEE 754 denormal precision isn't needed.
+    let _fast_math = unsafe { FastMathGuard::new() };
+
     let mut packed = [0u32; PARALLELISM];
 
     for (row_idx, y) in (stripe.start_y..stripe.end_y).enumerate() {
