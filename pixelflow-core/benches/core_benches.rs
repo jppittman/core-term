@@ -5,6 +5,7 @@
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use pixelflow_core::{
     Field, Manifold, ManifoldExt, PARALLELISM, X, Y, Z, combinators::Fix, jet::Jet2,
+    FastMathGuard,
 };
 
 // ============================================================================
@@ -536,6 +537,130 @@ fn bench_evaluation_throughput(c: &mut Criterion) {
 }
 
 // ============================================================================
+// FastMath Guard Benchmarks
+// ============================================================================
+
+fn bench_fastmath_guard(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fastmath_denormals");
+    group.throughput(Throughput::Elements(PARALLELISM as u64));
+
+    // Create denormal values (very small numbers near zero)
+    // These are 2^-120, well into denormal range (denormals: 2^-126 to 2^-149)
+    let denormal = 1.0e-36f32; // ~2^-120
+    let denormal_field = Field::from(denormal);
+
+    let y = Field::from(5.0);
+    let z = Field::from(0.0);
+    let w = Field::from(0.0);
+
+    // Benchmark 1: Denormal multiplication without guard (very slow)
+    group.bench_function("denormal_mul_no_guard", |bencher| {
+        bencher.iter(|| {
+            // Multiply denormals - triggers slow path on CPU
+            let result = black_box(denormal_field) * black_box(denormal_field);
+            black_box(result)
+        })
+    });
+
+    // Benchmark 2: Denormal multiplication with guard (fast, treated as zero)
+    group.bench_function("denormal_mul_with_guard", |bencher| {
+        bencher.iter(|| {
+            let _guard = unsafe { FastMathGuard::new() };
+            let result = black_box(denormal_field) * black_box(denormal_field);
+            black_box(result)
+        })
+    });
+
+    // Benchmark 3: Denormal-producing division without guard
+    group.bench_function("denormal_div_no_guard", |bencher| {
+        let large = Field::from(1.0e30f32);
+        let tiny = Field::from(1.0e-30f32);
+        bencher.iter(|| {
+            // tiny / large produces denormal
+            let result = black_box(tiny) / black_box(large);
+            black_box(result)
+        })
+    });
+
+    // Benchmark 4: Denormal-producing division with guard
+    group.bench_function("denormal_div_with_guard", |bencher| {
+        let large = Field::from(1.0e30f32);
+        let tiny = Field::from(1.0e-30f32);
+        bencher.iter(|| {
+            let _guard = unsafe { FastMathGuard::new() };
+            let result = black_box(tiny) / black_box(large);
+            black_box(result)
+        })
+    });
+
+    // Benchmark 5: Complex manifold with denormals (realistic rendering scenario)
+    group.bench_function("manifold_denormal_heavy_no_guard", |bencher| {
+        // Create a manifold that produces denormals in intermediate calculations
+        // e^(-x^2 - y^2) with large x,y produces denormals
+        let m = ((X * X + Y * Y) * -1.0f32).map(|f| f.exp());
+        let far_x = Field::from(20.0); // e^(-400) is deep in denormal range
+        bencher.iter(|| black_box(m.eval_raw(black_box(far_x), y, z, w)))
+    });
+
+    // Benchmark 6: Same manifold with guard
+    group.bench_function("manifold_denormal_heavy_with_guard", |bencher| {
+        let m = ((X * X + Y * Y) * -1.0f32).map(|f| f.exp());
+        let far_x = Field::from(20.0);
+        bencher.iter(|| {
+            let _guard = unsafe { FastMathGuard::new() };
+            black_box(m.eval_raw(black_box(far_x), y, z, w))
+        })
+    });
+
+    // Benchmark 7: Normal values without guard (baseline - should be same speed)
+    group.bench_function("normal_mul_no_guard", |bencher| {
+        let normal = Field::from(1.5f32);
+        bencher.iter(|| {
+            let result = black_box(normal) * black_box(normal);
+            black_box(result)
+        })
+    });
+
+    // Benchmark 8: Normal values with guard (should be same as baseline)
+    group.bench_function("normal_mul_with_guard", |bencher| {
+        let normal = Field::from(1.5f32);
+        bencher.iter(|| {
+            let _guard = unsafe { FastMathGuard::new() };
+            let result = black_box(normal) * black_box(normal);
+            black_box(result)
+        })
+    });
+
+    // Benchmark 9: Iterative denormal accumulation (extreme case)
+    group.bench_function("denormal_accumulation_no_guard", |bencher| {
+        let tiny_step = Field::from(1.0e-40f32);
+        bencher.iter(|| {
+            let mut acc = Field::from(0.0);
+            for _ in 0..100 {
+                // Each iteration adds denormal value
+                acc = (acc + black_box(tiny_step)).constant();
+            }
+            black_box(acc)
+        })
+    });
+
+    // Benchmark 10: Same accumulation with guard
+    group.bench_function("denormal_accumulation_with_guard", |bencher| {
+        let tiny_step = Field::from(1.0e-40f32);
+        bencher.iter(|| {
+            let _guard = unsafe { FastMathGuard::new() };
+            let mut acc = Field::from(0.0);
+            for _ in 0..100 {
+                acc = (acc + black_box(tiny_step)).constant();
+            }
+            black_box(acc)
+        })
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Groups
 // ============================================================================
 
@@ -570,10 +695,13 @@ criterion_group!(fix_benches, bench_fix_iteration,);
 
 criterion_group!(throughput_benches, bench_evaluation_throughput,);
 
+criterion_group!(fastmath_benches, bench_fastmath_guard,);
+
 criterion_main!(
     field_benches,
     manifold_benches,
     jet2_benches,
     fix_benches,
-    throughput_benches
+    throughput_benches,
+    fastmath_benches
 );
