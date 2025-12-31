@@ -87,180 +87,155 @@ impl<T: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Sum<T> {
 /// For curved triangles, the UV matrix maps screen (x, y) to texture (u, v)
 /// where the curve satisfies u² - v = 0.
 ///
-/// For solid triangles, the interior is always filled (u² - v test skipped).
+/// For solid triangles, UV is set so u² - v = -1 (always inside curve).
+/// No runtime branching - same code path for both.
 #[derive(Clone, Copy, Debug)]
 pub struct LoopBlinnTriangle {
-    /// Vertices of the triangle: [[x0, y0], [x1, y1], [x2, y2]]
-    pub vertices: [[f32; 2]; 3],
-
-    /// 3x3 matrix mapping (x, y, 1) → (u, v, 1) for curve test.
-    /// Row-major: [a, b, c, d, e, f, g, h, i] where:
-    ///   u = a*x + b*y + c
-    ///   v = d*x + e*y + f
-    /// Only used when `is_curved` is true.
-    pub uv_matrix: [f32; 9],
-
     /// Edge function coefficients for barycentric bounds.
-    /// Each edge: sign * (A*x + B*y + C) ≥ 0
+    /// Each edge: A*x + B*y + C ≥ 0 means inside.
     /// Stored as [[A0, B0, C0], [A1, B1, C1], [A2, B2, C2]]
     pub edges: [[f32; 3]; 3],
 
-    /// Whether this triangle has a curved edge (quadratic Bézier).
-    pub is_curved: bool,
-
-    /// Winding direction: +1.0 for CCW (fill inside), -1.0 for CW (fill outside)
-    pub winding: f32,
+    /// UV transform: u = ua*x + ub*y + uc, v = va*x + vb*y + vc
+    /// For solid triangles: u=0, v=1 always → u² - v = -1 (inside)
+    /// Winding is baked in: multiply v by winding at construction.
+    pub ua: f32,
+    pub ub: f32,
+    pub uc: f32,
+    pub va: f32,
+    pub vb: f32,
+    pub vc: f32,
 }
 
 impl LoopBlinnTriangle {
     /// Create a solid (non-curved) triangle.
+    /// UV is set so curve test always passes: u=0, v=1 → u²-v = -1 < 0
+    #[inline]
     pub fn solid(vertices: [[f32; 2]; 3]) -> Self {
         Self {
-            vertices,
-            uv_matrix: [0.0; 9],
             edges: compute_edge_functions(vertices),
-            is_curved: false,
-            winding: 1.0,
+            // u = 0 always, v = 1 always → u² - v = -1 (always inside curve)
+            ua: 0.0, ub: 0.0, uc: 0.0,
+            va: 0.0, vb: 0.0, vc: 1.0,
         }
     }
 
     /// Create a curved triangle with quadratic Bézier edge.
-    ///
-    /// Control points: P0 (on-curve), P1 (off-curve control), P2 (on-curve)
-    /// The curve runs from P0 to P2 with P1 as the control point.
+    /// Winding is baked into the UV matrix (v is negated for CW).
+    #[inline]
     pub fn curved(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], winding: f32) -> Self {
         let vertices = [p0, p1, p2];
+        let [ua, ub, uc, va, vb, vc] = compute_uv_coeffs(p0, p1, p2, winding);
         Self {
-            vertices,
-            uv_matrix: compute_uv_matrix(p0, p1, p2),
             edges: compute_edge_functions(vertices),
-            is_curved: true,
-            winding,
+            ua, ub, uc, va, vb, vc,
         }
     }
 }
 
 /// Compute edge function coefficients for barycentric bounds.
-/// Edge i goes from vertex[i] to vertex[(i+1)%3].
-/// Returns coefficients [A, B, C] where A*x + B*y + C gives signed distance.
+#[inline]
 fn compute_edge_functions(v: [[f32; 2]; 3]) -> [[f32; 3]; 3] {
     let mut edges = [[0.0f32; 3]; 3];
     for i in 0..3 {
         let [x0, y0] = v[i];
         let [x1, y1] = v[(i + 1) % 3];
-        // Edge normal: perpendicular to (x1-x0, y1-y0) → (y1-y0, x0-x1)
         let a = y1 - y0;
         let b = x0 - x1;
         let c = -(a * x0 + b * y0);
 
-        // Ensure the third vertex is on the positive side
         let [x2, y2] = v[(i + 2) % 3];
         let sign = if a * x2 + b * y2 + c >= 0.0 { 1.0 } else { -1.0 };
-
         edges[i] = [a * sign, b * sign, c * sign];
     }
     edges
 }
 
-/// Compute UV matrix for Loop-Blinn curve test.
-///
+/// Compute UV coefficients for Loop-Blinn curve test.
 /// Maps: P0 → (0, 0), P1 → (0.5, 0), P2 → (1, 1)
-///
-/// Solves the system:
-/// ```text
-/// | x0 y0 1 |   | a d g |   | 0   0   1 |
-/// | x1 y1 1 | × | b e h | = | 0.5 0   1 |
-/// | x2 y2 1 |   | c f i |   | 1   1   1 |
-/// ```
-fn compute_uv_matrix(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> [f32; 9] {
+/// Winding is baked in by scaling v.
+#[inline]
+fn compute_uv_coeffs(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], winding: f32) -> [f32; 6] {
     let [x0, y0] = p0;
     let [x1, y1] = p1;
     let [x2, y2] = p2;
 
-    // Compute inverse of vertex matrix
     let det = x0 * (y1 - y2) - y0 * (x1 - x2) + (x1 * y2 - x2 * y1);
     if det.abs() < 1e-10 {
-        return [0.0; 9]; // Degenerate triangle
+        // Degenerate: return "always inside" like solid
+        return [0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
     }
     let inv_det = 1.0 / det;
 
-    // Adjugate matrix (transposed cofactors) * inv_det
-    let m00 = (y1 - y2) * inv_det;
+    // Inverse of vertex matrix columns
     let m01 = (y2 - y0) * inv_det;
     let m02 = (y0 - y1) * inv_det;
-    let m10 = (x2 - x1) * inv_det;
     let m11 = (x0 - x2) * inv_det;
     let m12 = (x1 - x0) * inv_det;
-    let m20 = (x1 * y2 - x2 * y1) * inv_det;
     let m21 = (x2 * y0 - x0 * y2) * inv_det;
     let m22 = (x0 * y1 - x1 * y0) * inv_det;
 
-    // Target UV values: P0→(0,0), P1→(0.5,0), P2→(1,1)
-    // u = M * [0, 0.5, 1]ᵀ = 0.5*col1 + 1.0*col2
-    // v = M * [0, 0, 1]ᵀ = col2
-    let ua = 0.5 * m01 + m02;  // coefficient for x
-    let ub = 0.5 * m11 + m12;  // coefficient for y
-    let uc = 0.5 * m21 + m22;  // constant
+    // u = 0.5*col1 + 1.0*col2, v = 1.0*col2
+    let ua = 0.5 * m01 + m02;
+    let ub = 0.5 * m11 + m12;
+    let uc = 0.5 * m21 + m22;
+    // Bake winding into v: for CW (winding=-1), negate v
+    // This makes curve_test = u² - v work correctly for both orientations
+    let va = m02 * winding;
+    let vb = m12 * winding;
+    let vc = m22 * winding;
 
-    let va = m02;
-    let vb = m12;
-    let vc = m22;
-
-    // Return row-major: u = [0]*x + [1]*y + [2], v = [3]*x + [4]*y + [5]
-    [ua, ub, uc, va, vb, vc, 0.0, 0.0, 1.0]
+    [ua, ub, uc, va, vb, vc]
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Manifold Implementation - Pure Declarative Pixelflow
+// Manifold Implementation - Branchless SIMD-friendly
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl Manifold<Field> for LoopBlinnTriangle {
     type Output = Field;
 
+    /// Evaluate triangle coverage at (x, y).
+    ///
+    /// Pure arithmetic, no branches. Same code path for solid and curved triangles.
+    /// For solid: UV gives u²-v = -1 (always inside curve).
+    /// For curved: UV maps to parabola test, winding baked into v sign.
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        // 1. Barycentric bounds check: all three edge functions ≥ 0
         let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
 
+        // Build expression using coordinate manifolds
+        // Edge functions: e = A*x + B*y + C, inside when >= 0
         let e0 = X * a0 + Y * b0 + c0;
         let e1 = X * a1 + Y * b1 + c1;
         let e2 = X * a2 + Y * b2 + c2;
 
-        let inside_tri = e0.ge(0.0f32) & e1.ge(0.0f32) & e2.ge(0.0f32);
+        // Curve test: u² - v <= 0 means inside
+        // For solid: u=0, v=1, gives u²-v = -1 (always inside)
+        let u = X * self.ua + Y * self.ub + self.uc;
+        let v = X * self.va + Y * self.vb + self.vc;
+        let curve = u * u - v;
 
-        // 2. Curve test (only for curved triangles)
-        if self.is_curved {
-            // Map (x, y) → (u, v) via UV matrix
-            let [ua, ub, uc, va, vb, vc, _, _, _] = self.uv_matrix;
-            let u = X * ua + Y * ub + uc;
-            let v = X * va + Y * vb + vc;
-
-            // Loop-Blinn: inside curve when u² - v ≤ 0
-            // Multiply by winding to flip: CCW (winding=1) fills inside, CW (winding=-1) fills outside
-            // curve_val * winding <= 0 gives correct fill for both directions
-            let curve_val = (u * u - v) * self.winding;
-            let fill = curve_val.le(0.0f32).select(1.0f32, 0.0f32);
-
-            // 3. Compose: inside triangle AND curve test
-            inside_tri.select(fill, 0.0f32).at(x, y, z, w).eval()
-        } else {
-            // Solid triangle: always filled when inside bounds
-            inside_tri.select(1.0f32, 0.0f32).at(x, y, z, w).eval()
-        }
+        // Combine all tests, evaluate at actual coordinates
+        let inside = e0.ge(0.0f32) & e1.ge(0.0f32) & e2.ge(0.0f32) & curve.le(0.0f32);
+        inside.select(1.0f32, 0.0f32).at(x, y, z, w).eval()
     }
 }
 
 impl Manifold<Jet2> for LoopBlinnTriangle {
     type Output = Jet2;
 
+    /// Evaluate with automatic differentiation for antialiasing.
+    ///
+    /// Uses analytical gradients from Jet2 forward-mode AD.
+    /// The gradient magnitude gives us pixel coverage for smooth AA.
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, _z: Jet2, _w: Jet2) -> Jet2 {
         let zero = Jet2::constant(Field::from(0.0));
         let one = Jet2::constant(Field::from(1.0));
-
-        // Edge functions for bounds
         let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
 
+        // Edge functions with derivatives
         let e0 = x * Jet2::constant(Field::from(a0))
                + y * Jet2::constant(Field::from(b0))
                + Jet2::constant(Field::from(c0));
@@ -271,39 +246,41 @@ impl Manifold<Jet2> for LoopBlinnTriangle {
                + y * Jet2::constant(Field::from(b2))
                + Jet2::constant(Field::from(c2));
 
-        let inside = e0.ge(zero) & e1.ge(zero) & e2.ge(zero);
-        if !inside.val.any() {
+        let inside_edges = e0.ge(zero) & e1.ge(zero) & e2.ge(zero);
+
+        // Early exit if completely outside triangle bounds
+        if !inside_edges.val.any() {
             return zero;
         }
 
-        if self.is_curved {
-            let [ua, ub, uc, va, vb, vc, _, _, _] = self.uv_matrix;
-            let u = x * Jet2::constant(Field::from(ua))
-                  + y * Jet2::constant(Field::from(ub))
-                  + Jet2::constant(Field::from(uc));
-            let v = x * Jet2::constant(Field::from(va))
-                  + y * Jet2::constant(Field::from(vb))
-                  + Jet2::constant(Field::from(vc));
+        // Curve test with derivatives for AA
+        let u = x * Jet2::constant(Field::from(self.ua))
+              + y * Jet2::constant(Field::from(self.ub))
+              + Jet2::constant(Field::from(self.uc));
+        let v = x * Jet2::constant(Field::from(self.va))
+              + y * Jet2::constant(Field::from(self.vb))
+              + Jet2::constant(Field::from(self.vc));
 
-            let curve_val = u * u - v;
+        let curve = u * u - v;
 
-            // Anti-aliased coverage from curve distance
-            // Use winding to flip distance sign uniformly (avoids type mismatch)
-            let grad_mag = (curve_val.dx * curve_val.dx + curve_val.dy * curve_val.dy)
-                .sqrt()
-                .max(Field::from(1e-6));
-            let dist = curve_val.val / grad_mag;
-            let signed_dist = dist * Field::from(-self.winding);
-            let coverage = (signed_dist + Field::from(0.5))
-                .max(Field::from(0.0))
-                .min(Field::from(1.0));
+        // Analytical gradient magnitude for AA coverage
+        // d(u²-v)/dx = 2u·du/dx - dv/dx, d(u²-v)/dy = 2u·du/dy - dv/dy
+        let grad_mag = (curve.dx * curve.dx + curve.dy * curve.dy)
+            .sqrt()
+            .max(Field::from(1e-6));
 
-            let fzero = Field::from(0.0);
-            let result = coverage.eval_raw(fzero, fzero, fzero, fzero);
-            (inside & Jet2::constant(result)) | (!inside & zero)
-        } else {
-            (inside & one) | (!inside & zero)
-        }
+        // Signed distance to curve (negative = inside)
+        let dist = curve.val / grad_mag;
+
+        // Smooth coverage: 0.5 pixel transition zone
+        let coverage = (Field::from(-1.0) * dist + Field::from(0.5))
+            .max(Field::from(0.0))
+            .min(Field::from(1.0));
+
+        // Combine edge and curve coverage
+        let fzero = Field::from(0.0);
+        let result = coverage.eval_raw(fzero, fzero, fzero, fzero);
+        (inside_edges & Jet2::constant(result)) | (!inside_edges & zero)
     }
 }
 
