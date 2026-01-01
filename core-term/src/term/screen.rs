@@ -935,8 +935,6 @@ impl Screen {
     /// An `Option<String>` containing the selected text, or `None` if there's
     /// no valid selection or the selection is empty.
     pub fn get_selected_text(&self) -> Option<String> {
-        use crate::glyph::WIDE_CHAR_PLACEHOLDER;
-
         let Some(range) = &self.selection.range else {
             return None; // No active selection range.
         };
@@ -963,131 +961,179 @@ impl Screen {
         let grid_to_use = self.active_grid();
 
         match self.selection.mode {
-            SelectionMode::Cell => {
-                for y_abs in norm_start_point.y..=norm_end_point.y {
-                    if y_abs >= grid_to_use.len() {
-                        continue;
-                    } // Should not happen with valid points
-
-                    let current_row_glyphs = &grid_to_use[y_abs];
-
-                    // Determine the start and end columns for text extraction on the current line.
-                    let line_col_start = if y_abs == norm_start_point.y {
-                        norm_start_point.x
-                    } else {
-                        0
-                    };
-                    let line_col_end = if y_abs == norm_end_point.y {
-                        norm_end_point.x
-                    } else {
-                        self.width.saturating_sub(1)
-                    };
-
-                    // Ensure line_col_end does not exceed grid width for safety, though std_min handles this too.
-                    let effective_line_col_end =
-                        std_min(line_col_end, self.width.saturating_sub(1));
-
-                    if line_col_start > effective_line_col_end
-                        && !(line_col_start == 0 && effective_line_col_end == 0 && self.width == 0)
-                    {
-                        // This handles cases like zero-width selection or start beyond end on a line.
-                        // If it's a multi-line selection, we still need the newline.
-                        if y_abs < norm_end_point.y {
-                            selected_text_buffer.push('\n');
-                        }
-                        continue;
-                    }
-
-                    // Record start index of the current line in the buffer
-                    let line_start_len = selected_text_buffer.len();
-
-                    for x_abs in line_col_start..=effective_line_col_end {
-                        if x_abs < current_row_glyphs.len() {
-                            let c = current_row_glyphs[x_abs].display_char();
-                            if c != WIDE_CHAR_PLACEHOLDER {
-                                selected_text_buffer.push(c);
-                            }
-                        } else {
-                            // If selection extends beyond available glyphs on the line, append space.
-                            selected_text_buffer.push(' ');
-                        }
-                    }
-
-                    // Trim trailing whitespace if:
-                    // 1. It's a multi-line selection (norm_start_point.y != norm_end_point.y)
-                    // 2. This is NOT the last line of the multi-line selection (y_abs < norm_end_point.y)
-                    // 3. The selection on this line went all the way to the end of the screen width (line_col_end included self.width - 1)
-                    if norm_start_point.y != norm_end_point.y
-                        && y_abs < norm_end_point.y
-                        && line_col_end >= self.width.saturating_sub(1)
-                    {
-                        // Check if selection extended to line end
-                        // Search backwards in the newly added segment of selected_text_buffer
-                        let current_line_len = selected_text_buffer.len() - line_start_len;
-                        if current_line_len > 0 {
-                            let mut last_non_space_relative_idx = None;
-                            // Scan backwards through the bytes we just added
-                            // Since we pushed chars, we can iterate chars, but we need byte indices.
-                            // Easier: slice the new part and search.
-                            let new_part = &selected_text_buffer[line_start_len..];
-                            if let Some(idx) = new_part.rfind(|c: char| c != ' ') {
-                                last_non_space_relative_idx = Some(idx);
-                            }
-
-                            if let Some(rel_idx) = last_non_space_relative_idx {
-                                // Find the byte index of the character *after* the last non-space char
-                                // new_part[rel_idx] is the start of the char.
-                                // We need to include this char.
-                                let char_len = new_part[rel_idx..]
-                                    .chars()
-                                    .next()
-                                    .map_or(1, |c| c.len_utf8());
-                                selected_text_buffer.truncate(line_start_len + rel_idx + char_len);
-                            } else {
-                                // Line was all spaces
-                                selected_text_buffer.truncate(line_start_len);
-                            }
-                        }
-                    }
-
-                    if y_abs < norm_end_point.y {
-                        selected_text_buffer.push('\n');
-                    }
-                }
-            }
-            SelectionMode::Block => {
-                // For block selection, we take the rectangular region defined by
-                // the min/max x coordinates across all lines.
-                let min_x = std_min(range.start.x, range.end.x);
-                let max_x = max(range.start.x, range.end.x);
-
-                for y in norm_start_point.y..=norm_end_point.y {
-                    if y >= grid_to_use.len() {
-                        continue;
-                    }
-                    let current_row_glyphs = &grid_to_use[y];
-
-                    for x in min_x..=max_x {
-                        if x < current_row_glyphs.len() {
-                            let c = current_row_glyphs[x].display_char();
-                            if c != WIDE_CHAR_PLACEHOLDER {
-                                selected_text_buffer.push(c);
-                            }
-                        } else {
-                            selected_text_buffer.push(' ');
-                        }
-                    }
-                    if y < norm_end_point.y {
-                        selected_text_buffer.push('\n');
-                    }
-                }
-            }
+            SelectionMode::Cell => self.get_selected_text_cell(
+                norm_start_point,
+                norm_end_point,
+                grid_to_use,
+                &mut selected_text_buffer,
+            ),
+            SelectionMode::Block => self.get_selected_text_block(
+                range,
+                norm_start_point,
+                norm_end_point,
+                grid_to_use,
+                &mut selected_text_buffer,
+            ),
         }
 
         if selected_text_buffer.is_empty() {
             None
         } else {
             Some(selected_text_buffer)
+        }
+    }
+
+    /// Helper for retrieving text in `SelectionMode::Cell`.
+    fn get_selected_text_cell(
+        &self,
+        norm_start_point: Point,
+        norm_end_point: Point,
+        grid: &Grid,
+        buffer: &mut String,
+    ) {
+        use crate::glyph::WIDE_CHAR_PLACEHOLDER;
+
+        for y_abs in norm_start_point.y..=norm_end_point.y {
+            if y_abs >= grid.len() {
+                continue;
+            }
+
+            let current_row_glyphs = &grid[y_abs];
+
+            // Determine the start and end columns for text extraction on the current line.
+            let line_col_start = if y_abs == norm_start_point.y {
+                norm_start_point.x
+            } else {
+                0
+            };
+            let line_col_end = if y_abs == norm_end_point.y {
+                norm_end_point.x
+            } else {
+                self.width.saturating_sub(1)
+            };
+
+            // Ensure line_col_end does not exceed grid width for safety
+            let effective_line_col_end = std_min(line_col_end, self.width.saturating_sub(1));
+
+            if line_col_start > effective_line_col_end
+                && !(line_col_start == 0 && effective_line_col_end == 0 && self.width == 0)
+            {
+                // This handles cases like zero-width selection or start beyond end on a line.
+                // If it's a multi-line selection, we still need the newline.
+                if y_abs < norm_end_point.y {
+                    buffer.push('\n');
+                }
+                continue;
+            }
+
+            // Record start index of the current line in the buffer
+            let line_start_len = buffer.len();
+
+            for x_abs in line_col_start..=effective_line_col_end {
+                if x_abs < current_row_glyphs.len() {
+                    let c = current_row_glyphs[x_abs].display_char();
+                    if c != WIDE_CHAR_PLACEHOLDER {
+                        buffer.push(c);
+                    }
+                } else {
+                    // If selection extends beyond available glyphs on the line, append space.
+                    buffer.push(' ');
+                }
+            }
+
+            // Trim trailing whitespace if needed
+            self.trim_trailing_whitespace_if_needed(
+                norm_start_point,
+                norm_end_point,
+                y_abs,
+                line_col_end,
+                line_start_len,
+                buffer,
+            );
+
+            if y_abs < norm_end_point.y {
+                buffer.push('\n');
+            }
+        }
+    }
+
+    /// Helper for retrieving text in `SelectionMode::Block`.
+    fn get_selected_text_block(
+        &self,
+        range: &SelectionRange,
+        norm_start_point: Point,
+        norm_end_point: Point,
+        grid: &Grid,
+        buffer: &mut String,
+    ) {
+        use crate::glyph::WIDE_CHAR_PLACEHOLDER;
+
+        // For block selection, we take the rectangular region defined by
+        // the min/max x coordinates across all lines.
+        let min_x = std_min(range.start.x, range.end.x);
+        let max_x = max(range.start.x, range.end.x);
+
+        for y in norm_start_point.y..=norm_end_point.y {
+            if y >= grid.len() {
+                continue;
+            }
+            let current_row_glyphs = &grid[y];
+
+            for x in min_x..=max_x {
+                if x < current_row_glyphs.len() {
+                    let c = current_row_glyphs[x].display_char();
+                    if c != WIDE_CHAR_PLACEHOLDER {
+                        buffer.push(c);
+                    }
+                } else {
+                    buffer.push(' ');
+                }
+            }
+            if y < norm_end_point.y {
+                buffer.push('\n');
+            }
+        }
+    }
+
+    /// Trims trailing whitespace from the buffer for the current line if conditions are met.
+    fn trim_trailing_whitespace_if_needed(
+        &self,
+        norm_start_point: Point,
+        norm_end_point: Point,
+        y_abs: usize,
+        line_col_end: usize,
+        line_start_len: usize,
+        buffer: &mut String,
+    ) {
+        // Trim trailing whitespace if:
+        // 1. It's a multi-line selection (norm_start_point.y != norm_end_point.y)
+        // 2. This is NOT the last line of the multi-line selection (y_abs < norm_end_point.y)
+        // 3. The selection on this line went all the way to the end of the screen width (line_col_end included self.width - 1)
+        if norm_start_point.y != norm_end_point.y
+            && y_abs < norm_end_point.y
+            && line_col_end >= self.width.saturating_sub(1)
+        {
+            // Check if selection extended to line end
+            // Search backwards in the newly added segment of buffer
+            let current_line_len = buffer.len() - line_start_len;
+            if current_line_len > 0 {
+                let mut last_non_space_relative_idx = None;
+                // Scan backwards through the bytes we just added
+                let new_part = &buffer[line_start_len..];
+                if let Some(idx) = new_part.rfind(|c: char| c != ' ') {
+                    last_non_space_relative_idx = Some(idx);
+                }
+
+                if let Some(rel_idx) = last_non_space_relative_idx {
+                    // Find the byte index of the character *after* the last non-space char
+                    // new_part[rel_idx] is the start of the char.
+                    let char_len = new_part[rel_idx..].chars().next().map_or(1, |c| c.len_utf8());
+                    buffer.truncate(line_start_len + rel_idx + char_len);
+                } else {
+                    // Line was all spaces
+                    buffer.truncate(line_start_len);
+                }
+            }
         }
     }
 }
