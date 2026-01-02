@@ -90,8 +90,10 @@
 //! ```
 
 mod error;
+pub mod work_pool;
 
 pub use error::SendError;
+pub use work_pool::{WorkPoolActor, WorkPoolConfig};
 
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, troupe};
