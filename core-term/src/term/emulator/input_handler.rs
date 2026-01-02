@@ -200,7 +200,7 @@ mod tests {
                     crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
                         cell.c
                     }
-                    crate::glyph::Glyph::WideSpacer { .. } => crate::glyph::WIDE_CHAR_PLACEHOLDER,
+                    crate::glyph::Glyph::WideSpacer => crate::glyph::WIDE_CHAR_PLACEHOLDER,
                 })
                 .collect();
             println!("Actual line {}: '{}'", r, line_str);

@@ -128,7 +128,7 @@ fn assert_screen_state(
                 // cell_attrs prefixed with _
                 Glyph::Single(cell) => (cell.c, cell.attr),
                 Glyph::WidePrimary(cell) => (cell.c, cell.attr),
-                Glyph::WideSpacer { .. } => {
+                Glyph::WideSpacer => {
                     (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default())
                 }
             };
@@ -161,7 +161,7 @@ fn assert_screen_state(
                             )
                         });
                     assert!(
-                        matches!(spacer_glyph_wrapper, Glyph::WideSpacer { .. }),
+                        matches!(spacer_glyph_wrapper, Glyph::WideSpacer),
                         "Expected WideSpacer for char '{}' at ({}, {})",
                         expected_char,
                         r,
@@ -179,7 +179,7 @@ fn assert_screen_state(
             let cell_char = match glyph_wrapper {
                 Glyph::Single(cell) => cell.c,
                 Glyph::WidePrimary(cell) => cell.c, // Should not happen for fill (wide chars imply non-space)
-                Glyph::WideSpacer { .. } => crate::glyph::WIDE_CHAR_PLACEHOLDER, // Should not happen for fill
+                Glyph::WideSpacer => crate::glyph::WIDE_CHAR_PLACEHOLDER, // Should not happen for fill
             };
             assert_eq!(
                 cell_char, ' ',
