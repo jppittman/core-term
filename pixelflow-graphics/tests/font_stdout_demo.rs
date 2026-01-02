@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo test -p pixelflow-graphics font_stdout_demo -- --nocapture
 
-use pixelflow_graphics::fonts::{Font, Text};
+use pixelflow_graphics::fonts::{Font, text};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 
@@ -25,8 +25,8 @@ fn demo_single_glyph_rasterization() {
     println!();
 
     // Render 'A' at size 32
-    let text = Text::new(&font, "A", 32.0);
-    let color_manifold = Grayscale(text);
+    let glyph = text(&font, "A", 32.0);
+    let color_manifold = Grayscale(glyph);
 
     let width = 40;
     let height = 45;
@@ -64,10 +64,10 @@ fn demo_text_rasterization_with_frame() {
     println!("========================================\n");
 
     // Create text
-    let text = Text::new(&font, "HELLO", 20.0);
+    let glyph = text(&font, "HELLO", 20.0);
 
     // Wrap in Grayscale to convert coverage (Field) to grayscale pixels (Discrete)
-    let color_manifold = Grayscale(text);
+    let color_manifold = Grayscale(glyph);
 
     // Create a framebuffer
     let width = 100;
@@ -112,8 +112,8 @@ fn demo_alphabet_rasterization() {
     println!("========================================\n");
 
     // Create text with all uppercase letters
-    let text = Text::new(&font, "ABCDEFGHIJKLM", 16.0);
-    let color_manifold = Grayscale(text);
+    let glyph = text(&font, "ABCDEFGHIJKLM", 16.0);
+    let color_manifold = Grayscale(glyph);
 
     let width = 180;
     let height = 24;
@@ -141,8 +141,8 @@ fn demo_alphabet_rasterization() {
     println!();
 
     // Second row
-    let text2 = Text::new(&font, "NOPQRSTUVWXYZ", 16.0);
-    let color_manifold2 = Grayscale(text2);
+    let glyph2 = text(&font, "NOPQRSTUVWXYZ", 16.0);
+    let color_manifold2 = Grayscale(glyph2);
 
     let mut pixels2: Vec<Rgba8> = vec![Rgba8::default(); width * height];
     execute(

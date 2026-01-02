@@ -4,27 +4,27 @@
 //! Inspect with: objdump -d target/release/examples/quad_asm | grep -A200 eval_quad_kernel
 
 use pixelflow_core::{Field, Manifold};
-use pixelflow_graphics::fonts::ttf::{Curve, Quad};
+use pixelflow_graphics::fonts::ttf::{loop_blinn_quad, make_line, LineKernel, Quad, QuadKernel};
 use std::hint::black_box;
 
 /// Prevent inlining so we can find this function in the ASM
 #[inline(never)]
-pub fn eval_quad_kernel(quad: &Quad, x: Field, y: Field) -> Field {
+pub fn eval_quad_kernel(quad: &Quad<QuadKernel, LineKernel>, x: Field, y: Field) -> Field {
     quad.eval_raw(x, y, Field::from(0.0), Field::from(0.0))
 }
 
 /// Also test Line for comparison
 #[inline(never)]
-pub fn eval_line_kernel(line: &pixelflow_graphics::fonts::ttf::Line, x: Field, y: Field) -> Field {
+pub fn eval_line_kernel(line: &pixelflow_graphics::fonts::ttf::Line<LineKernel>, x: Field, y: Field) -> Field {
     line.eval_raw(x, y, Field::from(0.0), Field::from(0.0))
 }
 
 fn main() {
-    // Create a simple quadratic Bezier curve
-    let quad: Quad = Curve([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]);
+    // Create a simple quadratic Bezier curve using Loop-Blinn implicit representation
+    let quad = loop_blinn_quad([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]);
 
     // Create a simple line
-    let line = pixelflow_graphics::fonts::ttf::Line::new([[0.0, 0.0], [1.0, 1.0]]);
+    let line = make_line([[0.0, 0.0], [1.0, 1.0]]);
 
     // Evaluate at test point
     let x = Field::from(0.5);
