@@ -210,31 +210,40 @@ fn quadratic_winding(
 
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
 /// All control point computations happen at load time.
+/// Includes derivative (tangent) kernel for antialiasing.
 #[derive(Clone)]
-pub struct Quad<K> {
+pub struct Quad<K, D> {
     kernel: K,
+    derivative_kernel: D,
 }
 
 /// Create a quad with baked Loop-Blinn kernel from control points.
+/// The derivative of the quadratic is a line: dB/dt = 2[(1-t)(P1-P0) + t(P2-P1)]
 #[inline(always)]
-pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
+pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel, LineKernel> {
     let [p0, p1, p2] = points;
+
+    // Derivative control points: 2(P1-P0) and 2(P2-P1)
+    let deriv_p0 = [2.0 * (p1[0] - p0[0]), 2.0 * (p1[1] - p0[1])];
+    let deriv_p1 = [2.0 * (p2[0] - p1[0]), 2.0 * (p2[1] - p1[1])];
+
     Quad {
         kernel: quadratic_winding(p0, p1, p2),
+        derivative_kernel: line_winding_field([deriv_p0, deriv_p1]),
     }
 }
 
 /// Helper to create a quad with baked Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
-pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
+pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel, LineKernel> {
     make_quad(points)
 }
 
-impl<K> Quad<K> {
-    /// Create a quad with explicit kernel (for advanced use).
+impl<K, D> Quad<K, D> {
+    /// Create a quad with explicit kernels (for advanced use).
     #[inline(always)]
-    pub fn with_kernel(kernel: K) -> Self {
-        Self { kernel }
+    pub fn with_kernels(kernel: K, derivative_kernel: D) -> Self {
+        Self { kernel, derivative_kernel }
     }
 }
 
@@ -388,7 +397,7 @@ impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Line<K> {
     }
 }
 
-impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Quad<K> {
+impl<K: Manifold<Field, Output = Field>, D: Send + Sync> Manifold<Field> for Quad<K, D> {
     type Output = Field;
 
     #[inline(always)]
@@ -911,17 +920,17 @@ impl<'a> Font<'a> {
         self.cmap.lookup(ch as u32)
     }
 
-    pub fn glyph(&self, ch: char) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
+    pub fn glyph(&self, ch: char) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
     /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
-    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
+    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         self.compile(id)
     }
 
-    pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
+    pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         let id = self.cmap.lookup(ch as u32)?;
         self.glyph_scaled_by_id(id, size)
     }
@@ -929,7 +938,7 @@ impl<'a> Font<'a> {
     /// Get scaled glyph by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
-    pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
+    pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         let g = self.glyph_by_id(id)?;
         let scale = size / self.units_per_em as f32;
         // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
@@ -987,7 +996,7 @@ impl<'a> Font<'a> {
         self.kern(left, right) * size / self.units_per_em as f32
     }
 
-    fn compile(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
+    fn compile(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         let (a, b) = (self.loca.get(id as usize)?, self.loca.get(id as usize + 1)?);
         if a == b {
             return Some(Glyph::Empty);
@@ -1033,7 +1042,7 @@ impl<'a> Font<'a> {
         scale: f32,
         tx: f32,
         ty: f32,
-    ) -> Option<Geometry<Line<LineKernel>, Quad<QuadKernel>>> {
+    ) -> Option<Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         if n == 0 {
             return Some(Geometry {
                 lines: vec![].into(),
@@ -1103,7 +1112,7 @@ impl<'a> Font<'a> {
         })
     }
 
-    fn compound(&self, r: &mut R) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
+    fn compound(&self, r: &mut R) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         let mut kids = vec![];
         loop {
             let fl = r.u16()?;
@@ -1143,7 +1152,7 @@ impl<'a> Font<'a> {
     }
 }
 
-fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line<LineKernel>>, quads: &mut Vec<Quad<QuadKernel>>) {
+fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line<LineKernel>>, quads: &mut Vec<Quad<QuadKernel, LineKernel>>) {
     if pts.is_empty() {
         return;
     }
