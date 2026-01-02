@@ -11,21 +11,25 @@ use std::sync::Arc;
 /// A Monoid representing a line of text.
 ///
 /// It is literally just the Sum of its parts.
-/// Type: Sum<Translate<Glyph>>
+/// Type: Sum<Translate<Glyph<L, Q>>>
 #[derive(Clone, Debug)]
-pub struct Text {
+pub struct Text<L, Q> {
     // We Monomorphize the scene graph to a concrete type for maximum throughput.
     // No dynamic dispatch. No VTables. Just a massive inlineable expression.
-    pub inner: Sum<Translate<Glyph>>,
+    pub inner: Sum<Translate<Glyph<L, Q>>>,
     pub width: f32,
 }
 
-impl Text {
+impl<L, Q> Text<L, Q> {
     /// Bind the string to the font geometry.
     ///
     /// This is a scan (prefix sum) operation over the character stream,
     /// lifting each character into the Manifold category.
-    pub fn new(font: &Font, text: &str, size: f32) -> Self {
+    pub fn new(font: &Font, text: &str, size: f32) -> Self
+    where
+        L: Clone,
+        Q: Clone,
+    {
         // The Scan: Accumulate X position while mapping chars to glyphs
         // Optimized to perform a single CMAP lookup per character
         let mut cursor = 0.0;
@@ -64,7 +68,10 @@ impl Text {
 // We use concrete impls because Line/Quad/Segment have different
 // implementations for Field (hard edges) vs Jet2 (anti-aliased).
 
-impl Manifold<Field> for Text {
+impl<L, Q> Manifold<Field> for Text<L, Q>
+where
+    Sum<Translate<Glyph<L, Q>>>: Manifold<Field, Output = Field>,
+{
     type Output = Field;
 
     #[inline(always)]
@@ -73,7 +80,10 @@ impl Manifold<Field> for Text {
     }
 }
 
-impl Manifold<Jet2> for Text {
+impl<L, Q> Manifold<Jet2> for Text<L, Q>
+where
+    Sum<Translate<Glyph<L, Q>>>: Manifold<Jet2, Output = Jet2>,
+{
     type Output = Jet2;
 
     #[inline(always)]
