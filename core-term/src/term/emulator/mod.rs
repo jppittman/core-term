@@ -184,7 +184,7 @@ impl TerminalEmulator {
                     match &active_grid[cursor_y][cursor_x] {
                         crate::glyph::Glyph::Single(cell)
                         | crate::glyph::Glyph::WidePrimary(cell) => (cell.c, cell.attr),
-                        crate::glyph::Glyph::WideSpacer { .. } => {
+                        crate::glyph::Glyph::WideSpacer => {
                             (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default())
                         }
                     }

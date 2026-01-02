@@ -1616,9 +1616,7 @@ mod tests {
             c: '你',
             attr: Attributes::default(),
         });
-        row[3] = Glyph::WideSpacer {
-            primary_column_on_line: 2,
-        };
+        row[3] = Glyph::WideSpacer;
         row[4] = Glyph::Single(ContentCell {
             c: 'c',
             attr: Attributes::default(),
