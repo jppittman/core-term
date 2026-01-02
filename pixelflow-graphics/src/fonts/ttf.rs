@@ -135,10 +135,78 @@ pub fn threshold<M>(m: M) -> Threshold<M> {
 // Geometry
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Legacy Curve type for benchmarking
 #[derive(Clone, Copy, Debug)]
 pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
 
-pub type Quad = Curve<3>;
+/// Bake a Loop-Blinn quadratic winding kernel at load time.
+#[inline]
+fn quadratic_winding(
+    [x0, y0]: [f32; 2],
+    [x1, y1]: [f32; 2],
+    [x2, y2]: [f32; 2],
+) -> impl Manifold<Field, Output = Field> {
+    let ay = y0 - 2.0 * y1 + y2;
+    let by = 2.0 * (y1 - y0);
+    let ax = x0 - 2.0 * x1 + x2;
+    let bx = 2.0 * (x1 - x0);
+    let cx = x0;
+    let inv_2a = 0.5 / ay;
+    let neg_b_2a = -by * inv_2a;
+    let disc_const = by * by - 4.0 * ay * y0;
+    let disc_slope = 4.0 * ay;
+
+    // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
+    let winding = {
+        let x_plus = Y * Y * ax + Y * bx + cx;
+        let x_minus = Z * Z * ax + Z * bx + cx;
+        let dy_plus = Y * (2.0 * ay) + by;
+        let dy_minus = Z * (2.0 * ay) + by;
+
+        let valid_plus = Y.ge(0.0) & Y.le(1.0) & x_plus.lt(X);
+        let valid_minus = Z.ge(0.0) & Z.le(1.0) & x_minus.lt(X);
+
+        let sign_plus = dy_plus.gt(0.0).select(1.0, -1.0);
+        let sign_minus = dy_minus.gt(0.0).select(1.0, -1.0);
+
+        valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
+    };
+
+    // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
+    let with_roots = winding.at(
+        X,
+        Z * inv_2a + neg_b_2a,  // t_plus
+        Z * -inv_2a + neg_b_2a, // t_minus
+        W,
+    );
+
+    // Layer 1 (outermost): screen coords
+    let disc = Y * disc_slope + disc_const;
+    disc.ge(0.0)
+        .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
+}
+
+/// Quadratic Bézier curve with baked Loop-Blinn kernel.
+#[derive(Clone)]
+pub struct Quad<K> {
+    points: [[f32; 2]; 3],
+    kernel: K,
+}
+
+impl<K> Quad<K> {
+    /// Create a quad from control points, baking the Loop-Blinn kernel.
+    #[inline(always)]
+    pub fn new(points: [[f32; 2]; 3], kernel: K) -> Self {
+        Self { points, kernel }
+    }
+}
+
+/// Helper to create a quad with baked Loop-Blinn kernel
+#[inline(always)]
+pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<impl Manifold<Field, Output = Field>> {
+    let [p0, p1, p2] = points;
+    Quad::new(points, quadratic_winding(p0, p1, p2))
+}
 
 /// Line segment with precomputed AA scale for smooth anti-aliasing.
 ///
@@ -294,7 +362,17 @@ impl Manifold<Field> for Line {
     }
 }
 
-impl Manifold<Field> for Quad {
+impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Quad<K> {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        self.kernel.eval_raw(x, y, z, w)
+    }
+}
+
+// Old Quad implementation using quadratic formula (for benchmarking Curve<3>)
+impl Manifold<Field> for Curve<3> {
     type Output = Field;
 
     #[inline(always)]
@@ -409,12 +487,12 @@ impl Manifold<Jet2> for Line {
     }
 }
 
-impl Manifold<Jet2> for Quad {
+impl<K: Send + Sync> Manifold<Jet2> for Quad<K> {
     type Output = Jet2;
 
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
-        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
+        let [[x0, y0], [x1, y1], [x2, y2]] = self.points;
         let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
         let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
         let zero = Jet2::constant(Field::from(0.0));
@@ -463,107 +541,18 @@ impl Manifold<Jet2> for Quad {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Loop-Blinn Quadratic (Baked Kernel - Tree Built Once)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Bake a Loop-Blinn quadratic winding kernel at compile/load time.
-/// Returns a manifold with the entire combinator tree pre-built.
-#[inline]
-pub fn quadratic_winding(
-    [x0, y0]: [f32; 2],
-    [x1, y1]: [f32; 2],
-    [x2, y2]: [f32; 2],
-) -> impl Manifold<Field, Output = Field> {
-    let ay = y0 - 2.0 * y1 + y2;
-    let by = 2.0 * (y1 - y0);
-    let ax = x0 - 2.0 * x1 + x2;
-    let bx = 2.0 * (x1 - x0);
-    let cx = x0;
-    let inv_2a = 0.5 / ay;
-    let neg_b_2a = -by * inv_2a;
-    let disc_const = by * by - 4.0 * ay * y0;
-    let disc_slope = 4.0 * ay;
-
-    // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
-    // Y and Z are VALUES here, used freely
-    let winding = {
-        let x_plus = Y * Y * ax + Y * bx + cx;
-        let x_minus = Z * Z * ax + Z * bx + cx;
-        let dy_plus = Y * (2.0 * ay) + by;
-        let dy_minus = Z * (2.0 * ay) + by;
-
-        let valid_plus = Y.ge(0.0) & Y.le(1.0) & x_plus.lt(X);
-        let valid_minus = Z.ge(0.0) & Z.le(1.0) & x_minus.lt(X);
-
-        let sign_plus = dy_plus.gt(0.0).select(1.0, -1.0);
-        let sign_minus = dy_minus.gt(0.0).select(1.0, -1.0);
-
-        valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
-    };
-
-    // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
-    // Compute t_plus, t_minus from Z, bind to Y, Z for layer 3
-    let with_roots = winding.at(
-        X,
-        Z * inv_2a + neg_b_2a,  // t_plus, uses Z once
-        Z * -inv_2a + neg_b_2a, // t_minus, uses Z once
-        W,
-    );
-
-    // Layer 1 (outermost): screen coords
-    // Compute sqrt(disc), bind to Z for layer 2
-    let disc = Y * disc_slope + disc_const;
-    disc.ge(0.0)
-        .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
-}
-
-/// Loop-Blinn quadratic with the manifold kernel baked at construction.
-/// Stores the pre-built combinator tree - no per-pixel tree construction!
-pub struct LoopBlinnQuad<K> {
-    kernel: K,
-}
-
-impl<K: Manifold<Field, Output = Field>> LoopBlinnQuad<K> {
-    /// Create a new Loop-Blinn quad with baked kernel.
-    #[inline(always)]
-    pub fn from_kernel(kernel: K) -> Self {
-        Self { kernel }
-    }
-}
-
-/// Helper to create a Loop-Blinn quad from control points.
-/// Returns the quad with the entire kernel baked.
-#[inline]
-pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> LoopBlinnQuad<impl Manifold<Field, Output = Field>> {
-    let [p0, p1, p2] = points;
-    LoopBlinnQuad {
-        kernel: quadratic_winding(p0, p1, p2),
-    }
-}
-
-impl<K: Manifold<Field, Output = Field>> Manifold<Field> for LoopBlinnQuad<K> {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        // Just evaluate the pre-baked kernel!
-        self.kernel.eval_raw(x, y, z, w)
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Glyph (Compositional Scene Graph)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Optimized geometry storage separating lines and quads to avoid enum dispatch.
-#[derive(Clone, Debug)]
-pub struct Geometry {
+#[derive(Clone)]
+pub struct Geometry<Q> {
     pub lines: Arc<[Line]>,
-    pub quads: Arc<[Quad]>,
+    pub quads: Arc<[Q]>,
 }
 
 
-impl Manifold<Field> for Geometry {
+impl<Q: Manifold<Field, Output = Field>> Manifold<Field> for Geometry<Q> {
     type Output = Field;
 
     #[inline(always)]
@@ -594,7 +583,7 @@ impl Manifold<Field> for Geometry {
     }
 }
 
-impl Manifold<Jet2> for Geometry {
+impl<Q: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Geometry<Q> {
     type Output = Jet2;
 
     #[inline(always)]
@@ -621,7 +610,7 @@ impl Manifold<Jet2> for Geometry {
 ///
 /// Note: Lines and Quads now produce analytically anti-aliased coverage directly,
 /// so Threshold is no longer needed.
-pub type SimpleGlyph = Affine<Bounded<Geometry>>;
+pub type SimpleGlyph<Q> = Affine<Bounded<Geometry<Q>>>;
 
 /// A compound glyph: sum of transformed child glyphs.
 pub type CompoundGlyph = Sum<Affine<Glyph>>;
@@ -1049,7 +1038,14 @@ impl<'a> Font<'a> {
         }
     }
 
-    fn simple(&self, r: &mut R, n: usize, scale: f32, tx: f32, ty: f32) -> Option<Geometry> {
+    fn simple(
+        &self,
+        r: &mut R,
+        n: usize,
+        scale: f32,
+        tx: f32,
+        ty: f32,
+    ) -> Option<Geometry<Quad<impl Manifold<Field, Output = Field>>>> {
         if n == 0 {
             return Some(Geometry {
                 lines: vec![].into(),
@@ -1159,7 +1155,11 @@ impl<'a> Font<'a> {
     }
 }
 
-fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line>, quads: &mut Vec<Quad>) {
+fn push_segs(
+    pts: &[(f32, f32, bool)],
+    lines: &mut Vec<Line>,
+    quads: &mut Vec<Quad<impl Manifold<Field, Output = Field>>>,
+) {
     if pts.is_empty() {
         return;
     }
@@ -1192,7 +1192,7 @@ fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line>, quads: &mut Vec<Qu
             lines.push(Line::new([p(i), p(i + 1)]));
             i += 1;
         } else {
-            quads.push(Curve([p(i), p(i + 1), p(i + 2)]));
+            quads.push(loop_blinn_quad([p(i), p(i + 1), p(i + 2)]));
             i += 2;
         }
     }
