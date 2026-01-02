@@ -463,6 +463,98 @@ impl Manifold<Jet2> for Quad {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Loop-Blinn Quadratic (Baked Coefficients for Winding Number)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Loop-Blinn quadratic with precomputed coefficients for winding number.
+/// All computation is "baked" at load time - evaluation only uses the constants.
+#[derive(Clone, Copy, Debug)]
+pub struct LoopBlinnQuad {
+    // Original control points (for fallback/debugging)
+    pub points: [[f32; 2]; 3],
+    // Precomputed constants for winding number calculation
+    pub ay: f32,
+    pub by: f32,
+    pub ax: f32,
+    pub bx: f32,
+    pub cx: f32,
+    pub inv_2a: f32,
+    pub neg_b_2a: f32,
+    pub disc_const: f32,
+    pub disc_slope: f32,
+}
+
+impl LoopBlinnQuad {
+    /// Create from three control points, precomputing all coefficients.
+    #[inline(always)]
+    pub fn new([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> Self {
+        let ay = y0 - 2.0 * y1 + y2;
+        let by = 2.0 * (y1 - y0);
+        let ax = x0 - 2.0 * x1 + x2;
+        let bx = 2.0 * (x1 - x0);
+        let cx = x0;
+        let inv_2a = 0.5 / ay;
+        let neg_b_2a = -by * inv_2a;
+        let disc_const = by * by - 4.0 * ay * y0;
+        let disc_slope = 4.0 * ay;
+
+        Self {
+            points: [[x0, y0], [x1, y1], [x2, y2]],
+            ay,
+            by,
+            ax,
+            bx,
+            cx,
+            inv_2a,
+            neg_b_2a,
+            disc_const,
+            disc_slope,
+        }
+    }
+}
+
+impl Manifold<Field> for LoopBlinnQuad {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
+        // Y and Z are VALUES here, used freely
+        let winding = {
+            let x_plus = Y * Y * self.ax + Y * self.bx + self.cx;
+            let x_minus = Z * Z * self.ax + Z * self.bx + self.cx;
+            let dy_plus = Y * (2.0 * self.ay) + self.by;
+            let dy_minus = Z * (2.0 * self.ay) + self.by;
+
+            let valid_plus = Y.ge(0.0) & Y.le(1.0) & x_plus.lt(X);
+            let valid_minus = Z.ge(0.0) & Z.le(1.0) & x_minus.lt(X);
+
+            let sign_plus = dy_plus.gt(0.0).select(1.0, -1.0);
+            let sign_minus = dy_minus.gt(0.0).select(1.0, -1.0);
+
+            valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
+        };
+
+        // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
+        // Compute t_plus, t_minus from Z, bind to Y, Z for layer 3
+        let with_roots = winding.at(
+            X,
+            Z * self.inv_2a + self.neg_b_2a,  // t_plus, uses Z once
+            Z * -self.inv_2a + self.neg_b_2a, // t_minus, uses Z once
+            W,
+        );
+
+        // Layer 1 (outermost): screen coords
+        // Compute sqrt(disc), bind to Z for layer 2
+        let disc = Y * self.disc_slope + self.disc_const;
+        disc.ge(0.0)
+            .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
+            .at(x, y, z, w)
+            .eval()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Glyph (Compositional Scene Graph)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -471,6 +563,13 @@ impl Manifold<Jet2> for Quad {
 pub struct Geometry {
     pub lines: Arc<[Line]>,
     pub quads: Arc<[Quad]>,
+}
+
+/// Loop-Blinn geometry with precomputed coefficients for benchmarking.
+#[derive(Clone, Debug)]
+pub struct LoopBlinnGeometry {
+    pub lines: Arc<[Line]>,
+    pub quads: Arc<[LoopBlinnQuad]>,
 }
 
 impl Manifold<Field> for Geometry {
@@ -519,6 +618,44 @@ impl Manifold<Jet2> for Geometry {
         }
         // Apply non-zero winding rule: |winding| becomes coverage
         acc.abs().min(Jet2::constant(Field::from(1.0)))
+    }
+}
+
+impl Manifold<Field> for LoopBlinnGeometry {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        let fzero = Field::from(0.0);
+
+        let total = self
+            .lines
+            .iter()
+            .map(|l| l.eval_raw(x, y, z, w))
+            .chain(self.quads.iter().map(|q| q.eval_raw(x, y, z, w)))
+            .fold(fzero, |acc, contrib| {
+                (acc + contrib).eval_raw(fzero, fzero, fzero, fzero)
+            });
+
+        total
+            .abs()
+            .min(Field::from(1.0))
+            .eval_raw(fzero, fzero, fzero, fzero)
+    }
+}
+
+impl LoopBlinnGeometry {
+    /// Convert from regular Geometry, precomputing all Loop-Blinn coefficients.
+    pub fn from_geometry(geom: &Geometry) -> Self {
+        Self {
+            lines: Arc::clone(&geom.lines),
+            quads: geom
+                .quads
+                .iter()
+                .map(|q| LoopBlinnQuad::new(q.0))
+                .collect::<Vec<_>>()
+                .into(),
+        }
     }
 }
 
