@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, Manifold, jet::Jet2};
 use pixelflow_graphics::{
     fonts::ttf::{Curve, loop_blinn_quad},
     render::rasterizer::{execute, TensorShape},
@@ -45,6 +45,55 @@ fn bench_raw_quad_evaluation(c: &mut Criterion) {
                     let xf = Field::from(x as f32 / size as f32);
                     let yf = Field::from(y as f32 / size as f32);
                     let result = lb_quad.eval_raw(xf, yf, Field::from(0.0), Field::from(0.0));
+                    black_box(result);
+                }
+            }
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_jet2_quad_evaluation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("jet2_quad_evaluation");
+    group.sample_size(200);
+
+    // Create a test quadratic curve
+    let control_points: [[f32; 2]; 3] = [[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]];
+
+    let standard_quad = Curve::<3>(control_points);
+    let lb_quad = loop_blinn_quad(control_points);
+
+    // Test evaluation over a grid with Jet2 (antialiasing path)
+    let size = 64;
+    group.throughput(Throughput::Elements((size * size) as u64));
+
+    // Benchmark standard quad with Jet2
+    group.bench_function("standard_quad_jet2", |b| {
+        b.iter(|| {
+            for y in 0..size {
+                for x in 0..size {
+                    let xj = Jet2::x(Field::from(x as f32 / size as f32));
+                    let yj = Jet2::y(Field::from(y as f32 / size as f32));
+                    let zj = Jet2::constant(Field::from(0.0));
+                    let wj = Jet2::constant(Field::from(0.0));
+                    let result = standard_quad.eval_raw(xj, yj, zj, wj);
+                    black_box(result);
+                }
+            }
+        })
+    });
+
+    // Benchmark Loop-Blinn quad with Jet2
+    group.bench_function("loop_blinn_quad_jet2", |b| {
+        b.iter(|| {
+            for y in 0..size {
+                for x in 0..size {
+                    let xj = Jet2::x(Field::from(x as f32 / size as f32));
+                    let yj = Jet2::y(Field::from(y as f32 / size as f32));
+                    let zj = Jet2::constant(Field::from(0.0));
+                    let wj = Jet2::constant(Field::from(0.0));
+                    let result = lb_quad.eval_raw(xj, yj, zj, wj);
                     black_box(result);
                 }
             }
@@ -126,6 +175,7 @@ fn bench_full_glyph_rendering(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_raw_quad_evaluation,
+    bench_jet2_quad_evaluation,
     bench_geometry_comparison,
     bench_full_glyph_rendering
 );
