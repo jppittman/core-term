@@ -186,53 +186,209 @@ fn quadratic_winding(
         .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
 }
 
-/// Quadratic Bézier curve with baked Loop-Blinn kernel.
+/// Quadratic Bézier curve with baked kernels for both Field and Jet2.
+/// All control point computations happen at load time.
 #[derive(Clone)]
-pub struct Quad<K> {
-    points: [[f32; 2]; 3],
-    kernel: K,
+pub struct Quad<KF, KJ> {
+    field_kernel: KF,
+    jet2_kernel: KJ,
 }
 
-impl<K> Quad<K> {
-    /// Create a quad from control points, baking the Loop-Blinn kernel.
-    #[inline(always)]
-    pub fn new(points: [[f32; 2]; 3], kernel: K) -> Self {
-        Self { points, kernel }
+/// Build quadratic winding kernel for Jet2 using line AA at crossings.
+fn quadratic_winding_jet2([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> impl Manifold<Jet2, Output = Jet2> {
+    use pixelflow_core::jet::Jet2;
+
+    let ay = y0 - 2.0 * y1 + y2;
+    let by = 2.0 * (y1 - y0);
+    let ax = x0 - 2.0 * x1 + x2;
+    let bx = 2.0 * (x1 - x0);
+    let cx = x0;
+    let inv_2a = 0.5 / ay;
+    let neg_b_2a = -by * inv_2a;
+    let disc_const = by * by - 4.0 * ay * y0;
+    let disc_slope = 4.0 * ay;
+
+    let zero = Jet2::constant(Field::from(0.0));
+
+    // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
+    let winding = {
+        let x_plus = Y * Y * ax + Y * bx + cx;
+        let x_minus = Z * Z * ax + Z * bx + cx;
+        let dx_plus = Y * (2.0 * ax) + bx;
+        let dx_minus = Z * (2.0 * ax) + bx;
+        let dy_plus = Y * (2.0 * ay) + by;
+        let dy_minus = Z * (2.0 * ay) + by;
+
+        let valid_plus = Y.ge(0.0) & Y.le(1.0);
+        let valid_minus = Z.ge(0.0) & Z.le(1.0);
+
+        let dir_plus = dy_plus.gt(zero).select(1.0, -1.0);
+        let dir_minus = dy_minus.gt(zero).select(1.0, -1.0);
+
+        let coverage_plus = line_aa_jet2(x_plus, dx_plus, dy_plus);
+        let coverage_minus = line_aa_jet2(x_minus, dx_minus, dy_minus);
+
+        valid_plus.select(coverage_plus * dir_plus, zero)
+            + valid_minus.select(coverage_minus * dir_minus, zero)
+    };
+
+    // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
+    let with_roots = winding.at(
+        X,
+        Z * inv_2a + neg_b_2a,   // t_plus
+        Z * -inv_2a + neg_b_2a,  // t_minus
+        W,
+    );
+
+    // Layer 1 (outermost): screen coords
+    let disc = Y * disc_slope + disc_const;
+    disc.ge(0.0)
+        .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), zero)
+}
+
+/// Create a quad with baked kernels from control points.
+#[inline(always)]
+pub fn make_quad(
+    points: [[f32; 2]; 3],
+) -> Quad<impl Manifold<Field, Output = Field>, impl Manifold<Jet2, Output = Jet2>> {
+    let [p0, p1, p2] = points;
+    Quad {
+        field_kernel: quadratic_winding(p0, p1, p2),
+        jet2_kernel: quadratic_winding_jet2(points),
     }
 }
 
-/// Helper to create a quad with baked Loop-Blinn kernel
+/// Helper to create a quad with baked Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
-pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<impl Manifold<Field, Output = Field>> {
-    let [p0, p1, p2] = points;
-    Quad::new(points, quadratic_winding(p0, p1, p2))
+pub fn loop_blinn_quad(
+    points: [[f32; 2]; 3],
+) -> Quad<impl Manifold<Field, Output = Field>, impl Manifold<Jet2, Output = Jet2>> {
+    make_quad(points)
 }
 
-/// Line segment with precomputed AA scale for smooth anti-aliasing.
-///
-/// The `aa_scale` is `|dy|/len` where `len = sqrt(dx² + dy²)`.
-/// This converts horizontal distance to normalized distance for coverage.
-#[derive(Clone, Copy, Debug)]
-pub struct Line {
-    pub points: [[f32; 2]; 2],
-    /// Precomputed |dy|/sqrt(dx² + dy²) for AA coverage
-    pub aa_scale: f32,
-}
-
-impl Line {
-    /// Create a line from two points, precomputing the AA scale.
+impl<KF, KJ> Quad<KF, KJ> {
+    /// Create a quad with explicit kernels (for advanced use).
     #[inline(always)]
-    pub fn new([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> Self {
-        let (dx, dy) = (x1 - x0, y1 - y0);
-        let len_sq = dx * dx + dy * dy;
-        let aa_scale = if len_sq > 1e-12 {
-            dy.abs() / len_sq.sqrt()
-        } else {
-            0.0
-        };
+    pub fn with_kernels(field_kernel: KF, jet2_kernel: KJ) -> Self {
         Self {
-            points: [[x0, y0], [x1, y1]],
-            aa_scale,
+            field_kernel,
+            jet2_kernel,
+        }
+    }
+}
+
+/// Line segment with baked AA kernels for both Field and Jet2.
+/// All control point computations happen at load time.
+#[derive(Clone)]
+pub struct Line<KF, KJ> {
+    field_kernel: KF,
+    jet2_kernel: KJ,
+}
+
+/// Build line AA coverage kernel for Jet2.
+/// Takes manifold expressions for crossing point, dx, dy and builds AA tree.
+fn line_aa_jet2<V, DX, DY>(
+    x_int: V,
+    dx: DX,
+    dy: DY,
+) -> impl Manifold<pixelflow_core::jet::Jet2, Output = pixelflow_core::jet::Jet2>
+where
+    V: Manifold<pixelflow_core::jet::Jet2, Output = pixelflow_core::jet::Jet2>,
+    DX: Manifold<pixelflow_core::jet::Jet2, Output = pixelflow_core::jet::Jet2>,
+    DY: Manifold<pixelflow_core::jet::Jet2, Output = pixelflow_core::jet::Jet2>,
+{
+    use pixelflow_core::jet::Jet2;
+
+    // dist = x_int - X (positive when pixel is left of line)
+    let dist = x_int - X;
+
+    // grad_mag = sqrt(dx² + dy²), clamped for stability
+    let grad_sq = dx.clone() * dx + dy.clone() * dy;
+    let grad_mag = grad_sq.max(Jet2::constant(Field::from(1e-6))).sqrt();
+
+    // Normalize distance by gradient magnitude
+    let coverage = (dist / grad_mag + Jet2::constant(Field::from(0.5)))
+        .max(Jet2::constant(Field::from(0.0)))
+        .min(Jet2::constant(Field::from(1.0)));
+
+    coverage
+}
+
+/// Build line winding kernel for Field evaluation.
+fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> impl Manifold<Field, Output = Field> {
+    let (dy, dx) = (y1 - y0, x1 - x0);
+
+    if dy.abs() < 1e-6 {
+        return 0.0f32;
+    }
+
+    let y_min = y0.min(y1);
+    let y_max = y0.max(y1);
+    let in_y = Y.ge(y_min) & Y.lt(y_max);
+
+    let x_int = (Y - y0) * (dx / dy) + x0;
+    let dir = if dy > 0.0 { 1.0 } else { -1.0 };
+
+    let dist = x_int - X;
+    let len_sq = dx * dx + dy * dy;
+    let aa_scale = if len_sq > 1e-12 {
+        dy.abs() / len_sq.sqrt()
+    } else {
+        0.0
+    };
+    let coverage = (dist * aa_scale + 0.5).max(0.0f32).min(1.0f32);
+
+    in_y.select(coverage * dir, 0.0f32)
+}
+
+/// Build line winding kernel for Jet2 evaluation with AA.
+fn line_winding_jet2([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> impl Manifold<Jet2, Output = Jet2> {
+    use pixelflow_core::jet::Jet2;
+
+    let (dy, dx) = (y1 - y0, x1 - x0);
+
+    if dy.abs() < 1e-6 {
+        return Jet2::constant(Field::from(0.0));
+    }
+
+    let y_min = y0.min(y1);
+    let y_max = y0.max(y1);
+    let dir = if dy > 0.0 { 1.0 } else { -1.0 };
+
+    // x_int = (Y - y0) * (dx/dy) + x0
+    let x_int = (Y - y0) * (dx / dy) + x0;
+
+    // For Jet2, use the reusable line AA kernel
+    // dx and dy are constants, so wrap them as constant Jet2s
+    let dx_jet = Jet2::constant(Field::from(dx));
+    let dy_jet = Jet2::constant(Field::from(dy));
+
+    let coverage = line_aa_jet2(x_int, dx_jet, dy_jet);
+    let signed_coverage = coverage * dir;
+
+    // Bounds check
+    let in_y = Y.ge(y_min) & Y.lt(y_max);
+    in_y.select(signed_coverage, Jet2::constant(Field::from(0.0)))
+}
+
+/// Create a line with baked kernels from control points.
+#[inline(always)]
+pub fn make_line(
+    points: [[f32; 2]; 2],
+) -> Line<impl Manifold<Field, Output = Field>, impl Manifold<Jet2, Output = Jet2>> {
+    Line {
+        field_kernel: line_winding_field(points),
+        jet2_kernel: line_winding_jet2(points),
+    }
+}
+
+impl<KF, KJ> Line<KF, KJ> {
+    /// Create a line from two points with explicit kernels (for advanced use).
+    #[inline(always)]
+    pub fn with_kernels(field_kernel: KF, jet2_kernel: KJ) -> Self {
+        Self {
+            field_kernel,
+            jet2_kernel,
         }
     }
 }
@@ -334,40 +490,21 @@ impl OptQuad {
 
 // ─── Field Implementation (Smooth Anti-Aliased Coverage) ───────────────────
 
-impl Manifold<Field> for Line {
+impl<KF: Manifold<Field, Output = Field>, KJ> Manifold<Field> for Line<KF, KJ> {
     type Output = Field;
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let [[x0, y0], [x1, y1]] = self.points;
-        let (dy, dx) = (y1 - y0, x1 - x0);
-        if dy.abs() < 1e-6 {
-            return Field::from(0.0);
-        }
-
-        // Build AST using coordinate variables X, Y
-        let y_min = y0.min(y1);
-        let y_max = y0.max(y1);
-        let in_y = Y.ge(y_min) & Y.lt(y_max);
-
-        let x_int = (Y - y0) * (dx / dy) + x0;
-        let dir: f32 = if dy > 0.0 { 1.0 } else { -1.0 };
-
-        // dist > 0 when query is LEFT of crossing (x < x_int)
-        let dist = x_int - X;
-        let coverage = (dist * self.aa_scale + 0.5).max(0.0f32).min(1.0f32);
-
-        // Compose and evaluate
-        in_y.select(coverage * dir, 0.0f32).at(x, y, z, w).eval()
+        self.field_kernel.eval_raw(x, y, z, w)
     }
 }
 
-impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Quad<K> {
+impl<KF: Manifold<Field, Output = Field>, KJ> Manifold<Field> for Quad<KF, KJ> {
     type Output = Field;
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        self.kernel.eval_raw(x, y, z, w)
+        self.field_kernel.eval_raw(x, y, z, w)
     }
 }
 
@@ -444,55 +581,31 @@ impl Manifold<Field> for Curve<3> {
 // Note: The Field implementation now produces smooth AA coverage directly.
 // Jet2 impls are kept for automatic differentiation use cases beyond AA.
 
-impl Manifold<Jet2> for Line {
+impl<KF, KJ: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Line<KF, KJ> {
     type Output = Jet2;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
-        let [[x0, y0], [x1, y1]] = self.points;
-        let (dy, dx) = (y1 - y0, x1 - x0);
-        let zero = Jet2::constant(Field::from(0.0));
-        if dy.abs() < 1e-6 {
-            return zero;
-        }
-        let (y0f, y1f) = (
-            Jet2::constant(Field::from(y0)),
-            Jet2::constant(Field::from(y1)),
-        );
-        let in_y = y.ge(y0f.min(y1f)) & y.lt(y0f.max(y1f));
-        if !in_y.val.any() {
-            return zero;
-        }
-
-        let x_int =
-            Jet2::constant(Field::from(x0)) + (y - y0f) * Jet2::constant(Field::from(dx / dy));
-        let dir = if dy > 0.0 {
-            Jet2::constant(Field::from(1.0))
-        } else {
-            Jet2::constant(Field::from(-1.0))
-        };
-
-        // dist > 0 when query is LEFT of crossing (x < x_int)
-        let dist = x_int - x;
-        let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
-            .sqrt()
-            .max(Field::from(1e-6));
-        let fzero = Field::from(0.0);
-        let coverage = (dist.val / grad_mag + Field::from(0.5))
-            .max(fzero)
-            .min(Field::from(1.0))
-            .eval_raw(fzero, fzero, fzero, fzero);
-
-        (in_y & (dir * Jet2::constant(coverage))) | (!in_y & zero)
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        self.jet2_kernel.eval_raw(x, y, z, w)
     }
 }
 
-impl<K: Send + Sync> Manifold<Jet2> for Quad<K> {
+impl<KF, KJ: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Quad<KF, KJ> {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        self.jet2_kernel.eval_raw(x, y, z, w)
+    }
+}
+
+// Old Quad Jet2 implementation (for legacy Curve<3> benchmarking)
+impl Manifold<Jet2> for Curve<3> {
     type Output = Jet2;
 
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
-        let [[x0, y0], [x1, y1], [x2, y2]] = self.points;
+        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
         let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
         let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
         let zero = Jet2::constant(Field::from(0.0));
@@ -546,13 +659,15 @@ impl<K: Send + Sync> Manifold<Jet2> for Quad<K> {
 
 /// Optimized geometry storage separating lines and quads to avoid enum dispatch.
 #[derive(Clone)]
-pub struct Geometry<Q> {
-    pub lines: Arc<[Line]>,
+pub struct Geometry<L, Q> {
+    pub lines: Arc<[L]>,
     pub quads: Arc<[Q]>,
 }
 
 
-impl<Q: Manifold<Field, Output = Field>> Manifold<Field> for Geometry<Q> {
+impl<L: Manifold<Field, Output = Field>, Q: Manifold<Field, Output = Field>> Manifold<Field>
+    for Geometry<L, Q>
+{
     type Output = Field;
 
     #[inline(always)]
@@ -583,7 +698,9 @@ impl<Q: Manifold<Field, Output = Field>> Manifold<Field> for Geometry<Q> {
     }
 }
 
-impl<Q: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Geometry<Q> {
+impl<L: Manifold<Jet2, Output = Jet2>, Q: Manifold<Jet2, Output = Jet2>> Manifold<Jet2>
+    for Geometry<L, Q>
+{
     type Output = Jet2;
 
     #[inline(always)]
@@ -610,23 +727,23 @@ impl<Q: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Geometry<Q> {
 ///
 /// Note: Lines and Quads now produce analytically anti-aliased coverage directly,
 /// so Threshold is no longer needed.
-pub type SimpleGlyph<Q> = Affine<Bounded<Geometry<Q>>>;
+pub type SimpleGlyph<L, Q> = Affine<Bounded<Geometry<L, Q>>>;
 
 /// A compound glyph: sum of transformed child glyphs.
 pub type CompoundGlyph = Sum<Affine<Glyph>>;
 
 /// A glyph is either empty, a simple outline, or a compound of sub-glyphs.
 #[derive(Clone)]
-pub enum Glyph {
+pub enum Glyph<L, Q> {
     /// No geometry - evaluates to 0.
     Empty,
     /// Simple glyph: bounded, thresholded segments in unit space.
-    Simple(SimpleGlyph),
+    Simple(SimpleGlyph<L, Q>),
     /// Compound glyph: sum of transformed child glyphs.
-    Compound(CompoundGlyph),
+    Compound(Sum<Affine<Glyph<L, Q>>>),
 }
 
-impl core::fmt::Debug for Glyph {
+impl<L, Q> core::fmt::Debug for Glyph<L, Q> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Empty => write!(f, "Glyph::Empty"),
@@ -639,7 +756,9 @@ impl core::fmt::Debug for Glyph {
 // Glyph evaluation - concrete impls because Line/Quad/Segment have
 // different implementations for Field (hard) vs Jet2 (anti-aliased).
 
-impl Manifold<Field> for Glyph {
+impl<L: Manifold<Field, Output = Field>, Q: Manifold<Field, Output = Field>> Manifold<Field>
+    for Glyph<L, Q>
+{
     type Output = Field;
 
     #[inline(always)]
@@ -652,7 +771,9 @@ impl Manifold<Field> for Glyph {
     }
 }
 
-impl Manifold<Jet2> for Glyph {
+impl<L: Manifold<Jet2, Output = Jet2>, Q: Manifold<Jet2, Output = Jet2>> Manifold<Jet2>
+    for Glyph<L, Q>
+{
     type Output = Jet2;
 
     #[inline(always)]
@@ -1155,11 +1276,7 @@ impl<'a> Font<'a> {
     }
 }
 
-fn push_segs(
-    pts: &[(f32, f32, bool)],
-    lines: &mut Vec<Line>,
-    quads: &mut Vec<Quad<impl Manifold<Field, Output = Field>>>,
-) {
+fn push_segs<L, Q>(pts: &[(f32, f32, bool)], lines: &mut Vec<L>, quads: &mut Vec<Q>) {
     if pts.is_empty() {
         return;
     }
@@ -1188,11 +1305,10 @@ fn push_segs(
             [x, y]
         };
         if exp[(start + i + 1) % exp.len()].2 {
-            // Use Line::new() to precompute aa_scale
-            lines.push(Line::new([p(i), p(i + 1)]));
+            lines.push(make_line([p(i), p(i + 1)]));
             i += 1;
         } else {
-            quads.push(loop_blinn_quad([p(i), p(i + 1), p(i + 2)]));
+            quads.push(make_quad([p(i), p(i + 1), p(i + 2)]));
             i += 2;
         }
     }
