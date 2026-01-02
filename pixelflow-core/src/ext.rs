@@ -143,14 +143,14 @@ impl<R: Manifold> core::ops::Div<R> for BoxedManifold {
 /// Extension methods for composing manifolds.
 ///
 /// This trait provides a fluent API for building manifold expressions. The trait
-/// is bound to `Manifold<Output = Field>` for type inference during expression
-/// construction, but the resulting expression trees implement `Manifold<N>` for
-/// any `N: Numeric`, enabling evaluation with both `Field` and `Jet2`.
+/// works with any manifold output type, with some methods specialized for `Field`.
+/// The resulting expression trees implement `Manifold<N>` for any `N: Numeric`,
+/// enabling evaluation with both `Field` and `Jet2`.
 ///
 /// # Genericity of Expression Trees
 ///
-/// While `ManifoldExt` uses `Field` for type inference, the expression types
-/// returned by its methods (like `Sqrt<M>`, `Add<L, R>`, etc.) are fully generic:
+/// Expression types returned by methods (like `Sqrt<M>`, `Add<L, R>`, etc.) are
+/// fully generic and work with any numeric type:
 ///
 /// ```ignore
 /// let expr = X.sqrt();  // expr has type Sqrt<X>
@@ -164,7 +164,7 @@ impl<R: Manifold> core::ops::Div<R> for BoxedManifold {
 /// ```ignore
 /// use pixelflow_core::{ManifoldExt, X, Y, Jet2, Manifold, Numeric};
 ///
-/// // Build expression (Field is used for type inference)
+/// // Build expression (works with any output type)
 /// let expr = X * X + Y;
 ///
 /// // Evaluate with Jet2 for automatic differentiation
@@ -174,11 +174,13 @@ impl<R: Manifold> core::ops::Div<R> for BoxedManifold {
 /// let result = expr.eval_raw(x, y, zero, zero);
 /// // result.val = 28, result.dx = 10 (∂/∂x of x² + y), result.dy = 1 (∂/∂y)
 /// ```
-pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
+pub trait ManifoldExt: Manifold + Sized {
     /// Evaluate the manifold at the given coordinates.
     ///
     /// This convenience method accepts types that convert to `Field`.
     /// For evaluation with other numeric types (like `Jet2`), use `eval_raw` directly.
+    ///
+    /// Note: Only available for manifolds that output `Field`.
     #[inline(always)]
     fn eval<
         A: Into<crate::Field>,
@@ -191,7 +193,10 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
         y: B,
         z: C,
         w: D,
-    ) -> crate::Field {
+    ) -> crate::Field
+    where
+        Self: Manifold<crate::Field, Output = crate::Field>,
+    {
         self.eval_raw(x.into(), y.into(), z.into(), w.into())
     }
 
@@ -199,6 +204,8 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     ///
     /// Takes coordinate expressions (manifolds), evaluates them at origin,
     /// then evaluates self at those coordinates. Immediate execution, no AST.
+    ///
+    /// Note: Only available for manifolds that output `Field`.
     ///
     /// # Example
     ///
@@ -209,6 +216,7 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     #[inline(always)]
     fn eval_at<Cx, Cy, Cz, Cw>(&self, x: Cx, y: Cy, z: Cz, w: Cw) -> crate::Field
     where
+        Self: Manifold<crate::Field, Output = crate::Field>,
         Cx: Manifold<crate::Field, Output = crate::Field>,
         Cy: Manifold<crate::Field, Output = crate::Field>,
         Cz: Manifold<crate::Field, Output = crate::Field>,
@@ -227,13 +235,18 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     /// Evaluates at origin (0,0,0,0). Use this to force evaluation of
     /// lazy arithmetic expressions when you need a concrete Field.
     ///
+    /// Note: Only available for manifolds that output `Field`.
+    ///
     /// # Example
     ///
     /// ```ignore
     /// let result = (x * x + y * y).sqrt().constant();
     /// ```
     #[inline(always)]
-    fn constant(&self) -> crate::Field {
+    fn constant(&self) -> crate::Field
+    where
+        Self: Manifold<crate::Field, Output = crate::Field>,
+    {
         let zero = crate::Field::from(0.0);
         self.eval_raw(zero, zero, zero, zero)
     }
@@ -242,6 +255,8 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     ///
     /// This is a general-purpose escape hatch for applying arbitrary functions
     /// to manifold outputs. The function is applied during evaluation.
+    ///
+    /// Note: Only available for manifolds that output `Field`.
     ///
     /// # Arguments
     ///
@@ -269,6 +284,7 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     /// than `X.mul(0.5).map(|v| v.abs())`.
     fn map<F>(self, func: F) -> Map<Self, F>
     where
+        Self: Manifold<crate::Field, Output = crate::Field>,
         F: Fn(crate::Field) -> crate::Field + Send + Sync,
     {
         Map::new(self, func)
@@ -278,6 +294,8 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     ///
     /// This enables conversion from point space (Field) to ray space (PathJet).
     /// The function transforms each Field output into a PathJet.
+    ///
+    /// Note: Only available for manifolds that output `Field`.
     ///
     /// # Example
     ///
@@ -291,6 +309,7 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     /// ```
     fn lift<F>(self, func: F) -> Map<Self, F>
     where
+        Self: Manifold<crate::Field, Output = crate::Field>,
         F: Fn(crate::Field) -> crate::jet::PathJet<crate::Field> + Send + Sync,
     {
         Map::new(self, func)
@@ -483,12 +502,19 @@ pub trait ManifoldExt: Manifold<Output = crate::Field> + Sized {
     ///
     /// Note: Boxing erases the static type and fixes evaluation to `Field`.
     /// For `Jet2` evaluation, keep the expression statically typed.
+    ///
+    /// Only available for manifolds that output `Field`.
     fn boxed(self) -> BoxedManifold
     where
-        Self: 'static,
+        Self: Manifold<crate::Field, Output = crate::Field> + 'static,
     {
         BoxedManifold(Arc::new(self))
     }
 }
 
-impl<T: Manifold<Output = crate::Field> + Sized> ManifoldExt for T {}
+/// Blanket implementation for all manifolds.
+///
+/// This makes the DSL methods available for any manifold, regardless of output type.
+/// Field-specific methods (eval, constant, map, etc.) are only available when the
+/// manifold outputs `Field`, enforced by where clauses on those methods.
+impl<T: Manifold + Sized> ManifoldExt for T {}
