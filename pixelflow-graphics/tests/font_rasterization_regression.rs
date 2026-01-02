@@ -7,8 +7,8 @@
 //! - Winding number calculation errors
 
 use pixelflow_core::{materialize_discrete, PARALLELISM};
-use pixelflow_graphics::fonts::ttf::{Geometry, Line};
-use pixelflow_graphics::fonts::{Font, Text};
+use pixelflow_graphics::fonts::ttf::{Geometry, Line, LineKernel, Quad, QuadKernel, make_line};
+use pixelflow_graphics::fonts::{Font, text};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 use std::sync::Arc;
@@ -28,13 +28,13 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 fn regression_mask_and_not_multiply() {
     // Create a 400x400 square from (100,100) to (500,500)
     // Use Geometry with lines (which now produce smooth AA coverage)
-    let lines: Vec<Line> = vec![
-        Line::new([[100.0, 100.0], [500.0, 100.0]]), // bottom
-        Line::new([[500.0, 100.0], [500.0, 500.0]]), // right
-        Line::new([[500.0, 500.0], [100.0, 500.0]]), // top
-        Line::new([[100.0, 500.0], [100.0, 100.0]]), // left
+    let lines: Vec<Line<LineKernel>> = vec![
+        make_line([[100.0, 100.0], [500.0, 100.0]]), // bottom
+        make_line([[500.0, 100.0], [500.0, 500.0]]), // right
+        make_line([[500.0, 500.0], [100.0, 500.0]]), // top
+        make_line([[100.0, 500.0], [100.0, 100.0]]), // left
     ];
-    let geo = Geometry {
+    let geo: Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>> = Geometry {
         lines: Arc::from(lines),
         quads: Arc::from(vec![]),
     };
@@ -96,8 +96,8 @@ fn regression_mask_and_not_multiply() {
 #[test]
 fn regression_line_x_intersection_test() {
     // Vertical line at x=500, going from (500,100) to (500,500)
-    let line = Line::new([[500.0, 100.0], [500.0, 500.0]]);
-    let geo = Geometry {
+    let line = make_line([[500.0, 100.0], [500.0, 500.0]]);
+    let geo: Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>> = Geometry {
         lines: Arc::from(vec![line]),
         quads: Arc::from(vec![]),
     };
@@ -137,8 +137,8 @@ fn regression_glyph_ascent_offset() {
 
     // Render 'A' at size 100
     let _glyph = font.glyph_scaled('A', 100.0).expect("No glyph 'A'");
-    let text = Text::new(&font, "A", 100.0);
-    let lifted = Grayscale(text);
+    let glyph = text(&font, "A", 100.0);
+    let lifted = Grayscale(glyph);
 
     // Create a framebuffer
     let width = 80;
@@ -176,8 +176,8 @@ fn regression_glyph_ascent_offset() {
 fn regression_text_rendering_pipeline() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
 
-    let text = Text::new(&font, "HELLO", 20.0);
-    let lifted = Grayscale(text);
+    let glyph = text(&font, "HELLO", 20.0);
+    let lifted = Grayscale(glyph);
 
     let width = 100;
     let height = 30;

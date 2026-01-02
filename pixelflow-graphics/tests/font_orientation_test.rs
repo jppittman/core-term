@@ -3,7 +3,7 @@
 //! This is a regression test for the font Y-axis orientation bug where
 //! glyphs were rendering upside-down.
 
-use pixelflow_graphics::fonts::{Font, Text};
+use pixelflow_graphics::fonts::{Font, text};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 
@@ -44,8 +44,8 @@ fn letter_a_apex_is_at_top() {
     // If the glyph is rendered upside-down, the wide part will be at the top.
 
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
-    let text = Text::new(&font, "A", 48.0);
-    let color_manifold = Grayscale(text);
+    let glyph = text(&font, "A", 48.0);
+    let color_manifold = Grayscale(glyph);
 
     let width = 60;
     let height = 70;
@@ -135,8 +135,8 @@ fn letter_a_has_crossbar() {
     // The crossbar should be filled across its width (high intensity).
 
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
-    let text = Text::new(&font, "A", 48.0);
-    let color_manifold = Grayscale(text);
+    let glyph = text(&font, "A", 48.0);
+    let color_manifold = Grayscale(glyph);
 
     let width = 60;
     let height = 70;
@@ -204,8 +204,8 @@ fn letter_v_point_is_at_bottom() {
     // This is the opposite of 'A' and helps verify we didn't just invert everything.
 
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
-    let text = Text::new(&font, "V", 48.0);
-    let color_manifold = Grayscale(text);
+    let glyph = text(&font, "V", 48.0);
+    let color_manifold = Grayscale(glyph);
 
     let width = 60;
     let height = 70;
