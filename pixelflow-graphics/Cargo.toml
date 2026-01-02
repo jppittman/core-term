@@ -34,6 +34,10 @@ harness = false
 name = "font_deathmatch"
 harness = false
 
+[[bench]]
+name = "loop_blinn_comparison"
+harness = false
+
 [features]
 default = []
 serde = ["dep:serde"]
