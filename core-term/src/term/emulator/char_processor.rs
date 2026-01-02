@@ -61,11 +61,10 @@ impl TerminalEmulator {
         // This flag indicates that the cursor is at the end of the line and the next
         // character should wrap to the beginning of the next line.
         if self.cursor_wrap_next {
-            self.carriage_return(); // Move to column 0 of the current line.
-            self.move_down_one_line_and_dirty(); // Move to the next line, handles scrolling.
-                                                 // move_down_one_line_and_dirty also resets self.cursor_wrap_next to false.
-            screen_ctx = self.current_screen_context(); // Update context after potential scroll/cursor move.
-                                                        // self.cursor_wrap_next is now false.
+            self.carriage_return();
+            self.move_down_one_line_and_dirty();
+            // move_down_one_line_and_dirty also resets self.cursor_wrap_next to false.
+            screen_ctx = self.current_screen_context();
         }
 
         // Get current physical cursor position for placing the glyph.
@@ -90,10 +89,9 @@ impl TerminalEmulator {
 
             // Perform wrap: CR then effectively LF.
             self.carriage_return();
-            self.move_down_one_line_and_dirty(); // This moves cursor down and handles scrolling.
-                                                 // It also resets self.cursor_wrap_next.
-            screen_ctx = self.current_screen_context(); // Update context
-                                                        // Get new physical cursor position after this wrap.
+            self.move_down_one_line_and_dirty();
+            screen_ctx = self.current_screen_context();
+            // Get new physical cursor position after this wrap.
             (physical_x, physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
         }
         // Place the character glyph on the screen.

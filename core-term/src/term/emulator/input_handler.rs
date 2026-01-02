@@ -104,7 +104,6 @@ fn handle_paste_text(
     } else {
         log::debug!("InputHandler: Bracketed paste mode OFF. Calling emulator.paste_text.");
         for char_val in text_to_paste.chars() {
-            // Iterate over chars and process them
             emulator.print_char(char_val);
         }
         Some(EmulatorAction::RequestRedraw)
