@@ -186,138 +186,48 @@ fn quadratic_winding(
         .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
 }
 
-/// Quadratic Bézier curve with baked kernels for both Field and Jet2.
+/// Quadratic Bézier curve with baked Loop-Blinn kernel.
 /// All control point computations happen at load time.
 #[derive(Clone)]
-pub struct Quad<KF, KJ> {
-    field_kernel: KF,
-    jet2_kernel: KJ,
+pub struct Quad<K> {
+    kernel: K,
 }
 
-/// Build quadratic winding kernel for Jet2 using line AA at crossings.
-fn quadratic_winding_jet2([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> impl Manifold<Jet2, Output = Jet2> {
-    use pixelflow_core::jet::Jet2;
-
-    let ay = y0 - 2.0 * y1 + y2;
-    let by = 2.0 * (y1 - y0);
-    let ax = x0 - 2.0 * x1 + x2;
-    let bx = 2.0 * (x1 - x0);
-    let cx = x0;
-    let inv_2a = 0.5 / ay;
-    let neg_b_2a = -by * inv_2a;
-    let disc_const = by * by - 4.0 * ay * y0;
-    let disc_slope = 4.0 * ay;
-
-    let zero = Jet2::constant(Field::from(0.0));
-
-    // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
-    let winding = {
-        let x_plus = Y * Y * ax + Y * bx + cx;
-        let x_minus = Z * Z * ax + Z * bx + cx;
-        let dx_plus = Y * (2.0 * ax) + bx;
-        let dx_minus = Z * (2.0 * ax) + bx;
-        let dy_plus = Y * (2.0 * ay) + by;
-        let dy_minus = Z * (2.0 * ay) + by;
-
-        let valid_plus = Y.ge(0.0) & Y.le(1.0);
-        let valid_minus = Z.ge(0.0) & Z.le(1.0);
-
-        let dir_plus = dy_plus.gt(zero).select(1.0, -1.0);
-        let dir_minus = dy_minus.gt(zero).select(1.0, -1.0);
-
-        let coverage_plus = line_aa_jet2(x_plus, dx_plus, dy_plus);
-        let coverage_minus = line_aa_jet2(x_minus, dx_minus, dy_minus);
-
-        valid_plus.select(coverage_plus * dir_plus, zero)
-            + valid_minus.select(coverage_minus * dir_minus, zero)
-    };
-
-    // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
-    let with_roots = winding.at(
-        X,
-        Z * inv_2a + neg_b_2a,   // t_plus
-        Z * -inv_2a + neg_b_2a,  // t_minus
-        W,
-    );
-
-    // Layer 1 (outermost): screen coords
-    let disc = Y * disc_slope + disc_const;
-    disc.ge(0.0)
-        .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), zero)
-}
-
-/// Create a quad with baked kernels from control points.
+/// Create a quad with baked Loop-Blinn kernel from control points.
 #[inline(always)]
-pub fn make_quad(
-    points: [[f32; 2]; 3],
-) -> Quad<impl Manifold<Field, Output = Field>, impl Manifold<Jet2, Output = Jet2>> {
+pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<impl Manifold<Field, Output = Field>> {
     let [p0, p1, p2] = points;
     Quad {
-        field_kernel: quadratic_winding(p0, p1, p2),
-        jet2_kernel: quadratic_winding_jet2(points),
+        kernel: quadratic_winding(p0, p1, p2),
     }
 }
 
 /// Helper to create a quad with baked Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
-pub fn loop_blinn_quad(
-    points: [[f32; 2]; 3],
-) -> Quad<impl Manifold<Field, Output = Field>, impl Manifold<Jet2, Output = Jet2>> {
+pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<impl Manifold<Field, Output = Field>> {
     make_quad(points)
 }
 
-impl<KF, KJ> Quad<KF, KJ> {
-    /// Create a quad with explicit kernels (for advanced use).
+impl<K> Quad<K> {
+    /// Create a quad with explicit kernel (for advanced use).
     #[inline(always)]
-    pub fn with_kernels(field_kernel: KF, jet2_kernel: KJ) -> Self {
-        Self {
-            field_kernel,
-            jet2_kernel,
-        }
+    pub fn with_kernel(kernel: K) -> Self {
+        Self { kernel }
     }
 }
 
-/// Line segment with baked AA kernels for both Field and Jet2.
+/// Line segment with baked winding kernel.
 /// All control point computations happen at load time.
 #[derive(Clone)]
-pub struct Line<KF, KJ> {
-    field_kernel: KF,
-    jet2_kernel: KJ,
+pub struct Line<K> {
+    kernel: K,
 }
 
-/// Build line AA coverage kernel for Jet2.
-/// Takes manifold expressions for crossing point, dx, dy and builds AA tree.
-fn line_aa_jet2<V, DX, DY>(
-    x_int: V,
-    dx: DX,
-    dy: DY,
-) -> impl Manifold<pixelflow_core::jet::Jet2, Output = pixelflow_core::jet::Jet2>
-where
-    V: Manifold<pixelflow_core::jet::Jet2, Output = pixelflow_core::jet::Jet2>,
-    DX: Manifold<pixelflow_core::jet::Jet2, Output = pixelflow_core::jet::Jet2>,
-    DY: Manifold<pixelflow_core::jet::Jet2, Output = pixelflow_core::jet::Jet2>,
-{
-    use pixelflow_core::jet::Jet2;
-
-    // dist = x_int - X (positive when pixel is left of line)
-    let dist = x_int - X;
-
-    // grad_mag = sqrt(dx² + dy²), clamped for stability
-    let grad_sq = dx.clone() * dx + dy.clone() * dy;
-    let grad_mag = grad_sq.max(Jet2::constant(Field::from(1e-6))).sqrt();
-
-    // Normalize distance by gradient magnitude
-    let coverage = (dist / grad_mag + Jet2::constant(Field::from(0.5)))
-        .max(Jet2::constant(Field::from(0.0)))
-        .min(Jet2::constant(Field::from(1.0)));
-
-    coverage
-}
-
-/// Build line winding kernel for Field evaluation.
+/// Build line winding kernel (hard edges, no AA).
 fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> impl Manifold<Field, Output = Field> {
     let (dy, dx) = (y1 - y0, x1 - x0);
 
+    // Degenerate horizontal lines contribute nothing
     if dy.abs() < 1e-6 {
         return 0.0f32;
     }
@@ -326,70 +236,27 @@ fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> impl Manifold<Fiel
     let y_max = y0.max(y1);
     let in_y = Y.ge(y_min) & Y.lt(y_max);
 
+    // x_int = (Y - y0) * (dx / dy) + x0  (x position where line crosses current Y)
     let x_int = (Y - y0) * (dx / dy) + x0;
     let dir = if dy > 0.0 { 1.0 } else { -1.0 };
 
-    let dist = x_int - X;
-    let len_sq = dx * dx + dy * dy;
-    let aa_scale = if len_sq > 1e-12 {
-        dy.abs() / len_sq.sqrt()
-    } else {
-        0.0
-    };
-    let coverage = (dist * aa_scale + 0.5).max(0.0f32).min(1.0f32);
-
-    in_y.select(coverage * dir, 0.0f32)
+    // Hard edge: contributes dir if pixel is to the left of the crossing
+    in_y.select(x_int.lt(X).select(dir, 0.0), 0.0f32)
 }
 
-/// Build line winding kernel for Jet2 evaluation with AA.
-fn line_winding_jet2([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> impl Manifold<Jet2, Output = Jet2> {
-    use pixelflow_core::jet::Jet2;
-
-    let (dy, dx) = (y1 - y0, x1 - x0);
-
-    if dy.abs() < 1e-6 {
-        return Jet2::constant(Field::from(0.0));
-    }
-
-    let y_min = y0.min(y1);
-    let y_max = y0.max(y1);
-    let dir = if dy > 0.0 { 1.0 } else { -1.0 };
-
-    // x_int = (Y - y0) * (dx/dy) + x0
-    let x_int = (Y - y0) * (dx / dy) + x0;
-
-    // For Jet2, use the reusable line AA kernel
-    // dx and dy are constants, so wrap them as constant Jet2s
-    let dx_jet = Jet2::constant(Field::from(dx));
-    let dy_jet = Jet2::constant(Field::from(dy));
-
-    let coverage = line_aa_jet2(x_int, dx_jet, dy_jet);
-    let signed_coverage = coverage * dir;
-
-    // Bounds check
-    let in_y = Y.ge(y_min) & Y.lt(y_max);
-    in_y.select(signed_coverage, Jet2::constant(Field::from(0.0)))
-}
-
-/// Create a line with baked kernels from control points.
+/// Create a line with baked winding kernel from control points.
 #[inline(always)]
-pub fn make_line(
-    points: [[f32; 2]; 2],
-) -> Line<impl Manifold<Field, Output = Field>, impl Manifold<Jet2, Output = Jet2>> {
+pub fn make_line(points: [[f32; 2]; 2]) -> Line<impl Manifold<Field, Output = Field>> {
     Line {
-        field_kernel: line_winding_field(points),
-        jet2_kernel: line_winding_jet2(points),
+        kernel: line_winding_field(points),
     }
 }
 
-impl<KF, KJ> Line<KF, KJ> {
-    /// Create a line from two points with explicit kernels (for advanced use).
+impl<K> Line<K> {
+    /// Create a line with explicit kernel (for advanced use).
     #[inline(always)]
-    pub fn with_kernels(field_kernel: KF, jet2_kernel: KJ) -> Self {
-        Self {
-            field_kernel,
-            jet2_kernel,
-        }
+    pub fn with_kernel(kernel: K) -> Self {
+        Self { kernel }
     }
 }
 
@@ -488,23 +355,23 @@ impl OptQuad {
     }
 }
 
-// ─── Field Implementation (Smooth Anti-Aliased Coverage) ───────────────────
+// ─── Field Implementation (Winding Number Coverage) ────────────────────────
 
-impl<KF: Manifold<Field, Output = Field>, KJ> Manifold<Field> for Line<KF, KJ> {
+impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Line<K> {
     type Output = Field;
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        self.field_kernel.eval_raw(x, y, z, w)
+        self.kernel.eval_raw(x, y, z, w)
     }
 }
 
-impl<KF: Manifold<Field, Output = Field>, KJ> Manifold<Field> for Quad<KF, KJ> {
+impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Quad<K> {
     type Output = Field;
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        self.field_kernel.eval_raw(x, y, z, w)
+        self.kernel.eval_raw(x, y, z, w)
     }
 }
 
@@ -574,28 +441,6 @@ impl Manifold<Field> for Curve<3> {
                 .at(x, y, z, w)
                 .eval()
         }
-    }
-}
-
-// ─── Jet2 Implementation (Anti-Aliased / Smooth Edges) ─────────────────────
-// Note: The Field implementation now produces smooth AA coverage directly.
-// Jet2 impls are kept for automatic differentiation use cases beyond AA.
-
-impl<KF, KJ: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Line<KF, KJ> {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
-        self.jet2_kernel.eval_raw(x, y, z, w)
-    }
-}
-
-impl<KF, KJ: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Quad<KF, KJ> {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
-        self.jet2_kernel.eval_raw(x, y, z, w)
     }
 }
 
@@ -1166,7 +1011,7 @@ impl<'a> Font<'a> {
         scale: f32,
         tx: f32,
         ty: f32,
-    ) -> Option<Geometry<Quad<impl Manifold<Field, Output = Field>>>> {
+    ) -> Option<impl Manifold<Field, Output = Field> + Clone> {
         if n == 0 {
             return Some(Geometry {
                 lines: vec![].into(),
