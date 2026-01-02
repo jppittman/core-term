@@ -7,8 +7,29 @@
 
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Abs, At, BoxedManifold, Field, Ge, Manifold, ManifoldExt, Select, W, X, Y, Z};
+use pixelflow_core::{Abs, At, Field, Ge, Manifold, ManifoldExt, Select, W, X, Y, Z};
 use std::sync::Arc;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Type Aliases for Concrete Kernel Types
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The concrete type returned by line_winding_field (captured via TAIT).
+pub type LineKernel = impl Manifold<Field, Output = Field> + Clone;
+
+/// The concrete type returned by quadratic_winding (captured via TAIT).
+pub type QuadKernel = impl Manifold<Field, Output = Field> + Clone;
+
+// Defining uses for TAIT - these functions establish what the opaque types actually are
+#[doc(hidden)]
+pub fn __line_kernel_definer([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
+    line_winding_field([[x0, y0], [x1, y1]])
+}
+
+#[doc(hidden)]
+pub fn __quad_kernel_definer([p0, p1, p2]: [[f32; 2]; 3]) -> QuadKernel {
+    quadratic_winding(p0, p1, p2)
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Combinators
@@ -141,11 +162,12 @@ pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
 
 /// Bake a Loop-Blinn quadratic winding kernel at load time.
 #[inline]
+#[define_opaque(QuadKernel)]
 fn quadratic_winding(
     [x0, y0]: [f32; 2],
     [x1, y1]: [f32; 2],
     [x2, y2]: [f32; 2],
-) -> impl Manifold<Field, Output = Field> {
+) -> QuadKernel {
     let ay = y0 - 2.0 * y1 + y2;
     let by = 2.0 * (y1 - y0);
     let ax = x0 - 2.0 * x1 + x2;
@@ -189,29 +211,29 @@ fn quadratic_winding(
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
 /// All control point computations happen at load time.
 #[derive(Clone)]
-pub struct Quad {
-    kernel: BoxedManifold,
+pub struct Quad<K> {
+    kernel: K,
 }
 
 /// Create a quad with baked Loop-Blinn kernel from control points.
 #[inline(always)]
-pub fn make_quad(points: [[f32; 2]; 3]) -> Quad {
+pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
     let [p0, p1, p2] = points;
     Quad {
-        kernel: quadratic_winding(p0, p1, p2).boxed(),
+        kernel: quadratic_winding(p0, p1, p2),
     }
 }
 
 /// Helper to create a quad with baked Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
-pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad {
+pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
     make_quad(points)
 }
 
-impl Quad {
+impl<K> Quad<K> {
     /// Create a quad with explicit kernel (for advanced use).
     #[inline(always)]
-    pub fn with_kernel(kernel: BoxedManifold) -> Self {
+    pub fn with_kernel(kernel: K) -> Self {
         Self { kernel }
     }
 }
@@ -219,12 +241,13 @@ impl Quad {
 /// Line segment with baked winding kernel.
 /// All control point computations happen at load time.
 #[derive(Clone)]
-pub struct Line {
-    kernel: BoxedManifold,
+pub struct Line<K> {
+    kernel: K,
 }
 
 /// Build line winding kernel (hard edges, no AA).
-fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> impl Manifold<Field, Output = Field> {
+#[define_opaque(LineKernel)]
+fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
     let (dy, dx) = (y1 - y0, x1 - x0);
 
     let y_min = y0.min(y1);
@@ -245,16 +268,16 @@ fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> impl Manifold<Fiel
 
 /// Create a line with baked winding kernel from control points.
 #[inline(always)]
-pub fn make_line(points: [[f32; 2]; 2]) -> Line {
+pub fn make_line(points: [[f32; 2]; 2]) -> Line<LineKernel> {
     Line {
-        kernel: line_winding_field(points).boxed(),
+        kernel: line_winding_field(points),
     }
 }
 
-impl Line {
+impl<K> Line<K> {
     /// Create a line with explicit kernel (for advanced use).
     #[inline(always)]
-    pub fn with_kernel(kernel: BoxedManifold) -> Self {
+    pub fn with_kernel(kernel: K) -> Self {
         Self { kernel }
     }
 }
@@ -356,7 +379,7 @@ impl OptQuad {
 
 // ─── Field Implementation (Winding Number Coverage) ────────────────────────
 
-impl Manifold<Field> for Line {
+impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Line<K> {
     type Output = Field;
 
     #[inline(always)]
@@ -365,7 +388,7 @@ impl Manifold<Field> for Line {
     }
 }
 
-impl Manifold<Field> for Quad {
+impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Quad<K> {
     type Output = Field;
 
     #[inline(always)]
@@ -888,17 +911,17 @@ impl<'a> Font<'a> {
         self.cmap.lookup(ch as u32)
     }
 
-    pub fn glyph(&self, ch: char) -> Option<Glyph<Line, Quad>> {
+    pub fn glyph(&self, ch: char) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
     /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
-    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph<Line, Quad>> {
+    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         self.compile(id)
     }
 
-    pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph<Line, Quad>> {
+    pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let id = self.cmap.lookup(ch as u32)?;
         self.glyph_scaled_by_id(id, size)
     }
@@ -906,7 +929,7 @@ impl<'a> Font<'a> {
     /// Get scaled glyph by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
-    pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph<Line, Quad>> {
+    pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let g = self.glyph_by_id(id)?;
         let scale = size / self.units_per_em as f32;
         // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
@@ -964,7 +987,7 @@ impl<'a> Font<'a> {
         self.kern(left, right) * size / self.units_per_em as f32
     }
 
-    fn compile(&self, id: u16) -> Option<Glyph<Line, Quad>> {
+    fn compile(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let (a, b) = (self.loca.get(id as usize)?, self.loca.get(id as usize + 1)?);
         if a == b {
             return Some(Glyph::Empty);
@@ -1010,7 +1033,7 @@ impl<'a> Font<'a> {
         scale: f32,
         tx: f32,
         ty: f32,
-    ) -> Option<Geometry<Line, Quad>> {
+    ) -> Option<Geometry<Line<LineKernel>, Quad<QuadKernel>>> {
         if n == 0 {
             return Some(Geometry {
                 lines: vec![].into(),
@@ -1080,7 +1103,7 @@ impl<'a> Font<'a> {
         })
     }
 
-    fn compound(&self, r: &mut R) -> Option<Glyph<Line, Quad>> {
+    fn compound(&self, r: &mut R) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let mut kids = vec![];
         loop {
             let fl = r.u16()?;
@@ -1120,7 +1143,7 @@ impl<'a> Font<'a> {
     }
 }
 
-fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line>, quads: &mut Vec<Quad>) {
+fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line<LineKernel>>, quads: &mut Vec<Quad<QuadKernel>>) {
     if pts.is_empty() {
         return;
     }
