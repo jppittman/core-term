@@ -397,11 +397,29 @@ impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Line<K> {
     }
 }
 
+impl<K: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Line<K> {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+        self.kernel.eval_raw(x, y, z, w)
+    }
+}
+
 impl<K: Manifold<Field, Output = Field>, D: Send + Sync> Manifold<Field> for Quad<K, D> {
     type Output = Field;
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        self.kernel.eval_raw(x, y, z, w)
+    }
+}
+
+impl<K: Manifold<Jet2, Output = Jet2>, D: Send + Sync> Manifold<Jet2> for Quad<K, D> {
+    type Output = Jet2;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
         self.kernel.eval_raw(x, y, z, w)
     }
 }
