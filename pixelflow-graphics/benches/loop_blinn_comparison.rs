@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use pixelflow_core::{Field, Manifold};
 use pixelflow_graphics::{
-    fonts::ttf::{Curve, LoopBlinnQuad},
+    fonts::ttf::{Curve, loop_blinn_quad},
     render::rasterizer::{execute, TensorShape},
     Font, Grayscale, Rgba8,
 };
@@ -17,7 +17,7 @@ fn bench_raw_quad_evaluation(c: &mut Criterion) {
     let control_points: [[f32; 2]; 3] = [[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]];
 
     let standard_quad = Curve::<3>(control_points);
-    let loop_blinn_quad = LoopBlinnQuad::new(control_points);
+    let lb_quad = loop_blinn_quad(control_points);
 
     // Test evaluation over a grid
     let size = 64;
@@ -44,7 +44,7 @@ fn bench_raw_quad_evaluation(c: &mut Criterion) {
                 for x in 0..size {
                     let xf = Field::from(x as f32 / size as f32);
                     let yf = Field::from(y as f32 / size as f32);
-                    let result = loop_blinn_quad.eval_raw(xf, yf, Field::from(0.0), Field::from(0.0));
+                    let result = lb_quad.eval_raw(xf, yf, Field::from(0.0), Field::from(0.0));
                     black_box(result);
                 }
             }
