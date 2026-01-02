@@ -145,9 +145,7 @@ impl TerminalEmulator {
                     self.screen.set_glyph(
                         physical_x + 1,
                         physical_y,
-                        Glyph::WideSpacer {
-                            primary_column_on_line: physical_x as u16,
-                        },
+                        Glyph::WideSpacer,
                     );
                     // Line is already marked dirty from the primary character.
                 } else {

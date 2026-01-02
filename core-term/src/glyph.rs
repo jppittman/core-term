@@ -25,14 +25,8 @@ pub enum Glyph {
     WidePrimary(ContentCell),
     /// The spacer part of a double-width character, occupying the second cell.
     /// This variant does not store its own character or attributes directly;
-    /// it typically inherits appearance from its `WidePrimary` counterpart.
-    /// `primary_column_on_line` stores the column index of the `WidePrimary`
-    /// glyph this spacer belongs to, which can be useful for context.
-    WideSpacer {
-        // TODO: Consider if `primary_column_on_line` is truly needed here or if
-        // the renderer can manage this context. For now, it's kept from previous design.
-        primary_column_on_line: u16,
-    },
+    /// it inherits appearance from its `WidePrimary` counterpart in the preceding cell.
+    WideSpacer,
 }
 
 /// Holds the actual character and its attributes for a `Glyph::Single` or `Glyph::WidePrimary`.
@@ -77,7 +71,7 @@ impl Glyph {
     pub fn display_char(&self) -> char {
         match self {
             Glyph::Single(cc) | Glyph::WidePrimary(cc) => cc.c,
-            Glyph::WideSpacer { .. } => WIDE_CHAR_PLACEHOLDER,
+            Glyph::WideSpacer => WIDE_CHAR_PLACEHOLDER,
         }
     }
 }

@@ -84,7 +84,7 @@ fn assert_screen_state(
             let (actual_char, _actual_attrs) = match actual_glyph_wrapper {
                 Glyph::Single(cell) => (cell.c, Some(cell.attr)),
                 Glyph::WidePrimary(cell) => (cell.c, Some(cell.attr)),
-                Glyph::WideSpacer { .. } => (crate::glyph::WIDE_CHAR_PLACEHOLDER, None),
+                Glyph::WideSpacer => (crate::glyph::WIDE_CHAR_PLACEHOLDER, None),
             };
 
             assert_eq!(
@@ -116,7 +116,7 @@ fn assert_screen_state(
                                 expected_char
                             )
                         });
-                    assert!(matches!(spacer_glyph_wrapper, Glyph::WideSpacer { .. }),
+                    assert!(matches!(spacer_glyph_wrapper, Glyph::WideSpacer),
                         "Spacer glyph at ({},{}) should be WideSpacer for char '{}', but it is not. Actual glyph: {:?}",
                         r, s_col + 1, expected_char, spacer_glyph_wrapper
                     );
@@ -248,7 +248,7 @@ fn it_should_print_a_single_multibyte_unicode_character() {
     // but its nature as a spacer is checked by the matches macro.
     // The assert_screen_state function already verifies its displayed char if needed.
     assert!(
-        matches!(glyph_2_wrapper, Glyph::WideSpacer { .. }),
+        matches!(glyph_2_wrapper, Glyph::WideSpacer),
         "Expected WideSpacer at (0,1), got {:?}",
         glyph_2_wrapper
     );
@@ -269,7 +269,7 @@ fn it_should_print_multiple_multibyte_unicode_characters() {
         _ => panic!("Expected WidePrimary at (0,0)"),
     }
     assert!(
-        matches!(char1_glyph2, Glyph::WideSpacer { .. }),
+        matches!(char1_glyph2, Glyph::WideSpacer),
         "Expected WideSpacer at (0,1)"
     );
 
@@ -280,7 +280,7 @@ fn it_should_print_multiple_multibyte_unicode_characters() {
         _ => panic!("Expected WidePrimary at (0,2)"),
     }
     assert!(
-        matches!(char2_glyph2, Glyph::WideSpacer { .. }),
+        matches!(char2_glyph2, Glyph::WideSpacer),
         "Expected WideSpacer at (0,3)"
     );
 }
@@ -307,7 +307,7 @@ fn it_should_handle_mixed_ascii_and_multibyte_unicode_characters() {
         _ => panic!("Expected WidePrimary '世' at (0,1)"),
     }
     assert!(
-        matches!(glyph_uni_2, Glyph::WideSpacer { .. }),
+        matches!(glyph_uni_2, Glyph::WideSpacer),
         "Expected WideSpacer at (0,2)"
     );
 
@@ -357,7 +357,7 @@ fn it_should_not_print_second_half_of_wide_char_if_at_edge_and_no_wrap_mode_or_s
     if snapshot.dimensions.0 > 1 {
         let glyph_uni_2 = get_glyph_from_snapshot(&snapshot, 0, 1).unwrap();
         assert!(
-            matches!(glyph_uni_2, Glyph::WideSpacer { .. }),
+            matches!(glyph_uni_2, Glyph::WideSpacer),
             "Expected WideSpacer at (0,1)"
         );
     }
@@ -390,7 +390,7 @@ fn it_should_overwrite_first_half_of_wide_char_with_ascii() {
         _ => panic!("Expected Single ' ' at (0,1)"),
     }
     assert!(
-        !matches!(glyph_after_x, Glyph::WideSpacer { .. }),
+        !matches!(glyph_after_x, Glyph::WideSpacer),
         "Cell after X should not be a wide_char_spacer"
     );
 }
@@ -419,7 +419,7 @@ fn it_should_overwrite_second_half_of_wide_char_with_ascii() {
         _ => panic!("Expected Single 'Y' at (0,1), got {:?}", glyph1),
     }
     assert!(
-        !matches!(glyph1, Glyph::WideSpacer { .. }),
+        !matches!(glyph1, Glyph::WideSpacer),
         "Cell (0,1) should not be a spacer"
     );
 
@@ -525,7 +525,7 @@ fn it_should_print_ascii_over_wide_char_that_straddles_line_end_after_wrap() {
         Glyph::Single(cell) => assert_eq!(cell.c, 'Z'),
         _ => panic!("Expected Single at (0,1)"),
     }
-    assert!(!matches!(glyph_at_0_1, Glyph::WideSpacer { .. }));
+    assert!(!matches!(glyph_at_0_1, Glyph::WideSpacer));
 }
 
 // --- Line Feed (LF) Tests ---
