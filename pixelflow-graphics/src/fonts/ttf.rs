@@ -188,11 +188,13 @@ fn quadratic_winding(
         let dy_plus = Y * (2.0 * ay) + by;
         let dy_minus = Z * (2.0 * ay) + by;
 
-        let valid_plus = Y.ge(0.0) & Y.le(1.0) & x_plus.lt(X);
-        let valid_minus = Z.ge(0.0) & Z.le(1.0) & x_minus.lt(X);
+        // Ray goes right from test point - count crossings to the right
+        let valid_plus = Y.ge(0.0) & Y.le(1.0) & X.lt(x_plus);
+        let valid_minus = Z.ge(0.0) & Z.le(1.0) & X.lt(x_minus);
 
-        let sign_plus = dy_plus.gt(0.0).select(1.0, -1.0);
-        let sign_minus = dy_minus.gt(0.0).select(1.0, -1.0);
+        // In Y-down coordinates: dy > 0 means downward (above → below) → -1
+        let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
+        let sign_minus = dy_minus.gt(0.0).select(-1.0, 1.0);
 
         valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
     };
@@ -270,12 +272,13 @@ fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
     // For degenerate horizontal lines (dy ≈ 0), use safe fallback
     let safe_dy = if dy.abs() < 1e-6 { 1.0 } else { dy };
     let x_int = (Y - y0) * (dx / safe_dy) + x0;
-    let dir = if dy > 0.0 { 1.0 } else { -1.0 };
+    // In Y-down coordinates: dy > 0 means downward (above → below) → -1
+    let dir = if dy > 0.0 { -1.0 } else { 1.0 };
 
-    // Hard edge: contributes dir if pixel is to the left of the crossing
+    // Winding contribution: ray goes right from test point, counts crossings to the right
     // Degenerate horizontal lines (dy ≈ 0) are filtered out by multiplying by a mask
     let non_degenerate = if dy.abs() < 1e-6 { 0.0 } else { 1.0 };
-    in_y.select(x_int.lt(X).select(dir * non_degenerate, 0.0), 0.0f32)
+    in_y.select(X.lt(x_int).select(dir * non_degenerate, 0.0), 0.0f32)
 }
 
 /// Create a line with baked winding kernel from control points.
@@ -525,8 +528,9 @@ impl Manifold<Jet2> for Curve<3> {
             let x_int = (Jet2::constant(Field::from(ax)) * t + Jet2::constant(Field::from(bx))) * t
                 + Jet2::constant(Field::from(cx));
             let dy_dt = Jet2::constant(Field::from(2.0 * ay)) * t + Jet2::constant(Field::from(by));
+            // In Y-down coordinates: dy > 0 means downward (above → below) → -1
             let dir_mask = dy_dt.gt(zero);
-            let dir = (dir_mask & one) | (!dir_mask & Jet2::constant(Field::from(-1.0)));
+            let dir = (dir_mask & Jet2::constant(Field::from(-1.0))) | (!dir_mask & one);
             let dist = x_int - x;
             let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
                 .sqrt()
@@ -1048,8 +1052,8 @@ impl<'a> Font<'a> {
 
         // The restore transform maps [0, 1] back to font units
         // x_world = x_local * max_dim + x_min
-        // y_world = -max_dim * y_local + y_max (flip Y: normalized Y-down → font Y-up)
-        let restore = [max_dim, 0.0, 0.0, -max_dim, x_min as f32, y_max as f32];
+        // y_world = y_local * max_dim + y_min (no flip - keep Y-down from TrueType)
+        let restore = [max_dim, 0.0, 0.0, max_dim, x_min as f32, y_min as f32];
 
         if n >= 0 {
             // Parse segments in normalized [0,1] space
