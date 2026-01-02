@@ -7,7 +7,7 @@
 
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Abs, At, Field, Ge, Manifold, ManifoldExt, Select, W, X, Y, Z};
+use pixelflow_core::{Abs, At, BoxedManifold, Field, Ge, Manifold, ManifoldExt, Select, W, X, Y, Z};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -189,29 +189,29 @@ fn quadratic_winding(
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
 /// All control point computations happen at load time.
 #[derive(Clone)]
-pub struct Quad<K> {
-    kernel: K,
+pub struct Quad {
+    kernel: BoxedManifold,
 }
 
 /// Create a quad with baked Loop-Blinn kernel from control points.
 #[inline(always)]
-pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<impl Manifold<Field, Output = Field>> {
+pub fn make_quad(points: [[f32; 2]; 3]) -> Quad {
     let [p0, p1, p2] = points;
     Quad {
-        kernel: quadratic_winding(p0, p1, p2),
+        kernel: quadratic_winding(p0, p1, p2).boxed(),
     }
 }
 
 /// Helper to create a quad with baked Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
-pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<impl Manifold<Field, Output = Field>> {
+pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad {
     make_quad(points)
 }
 
-impl<K> Quad<K> {
+impl Quad {
     /// Create a quad with explicit kernel (for advanced use).
     #[inline(always)]
-    pub fn with_kernel(kernel: K) -> Self {
+    pub fn with_kernel(kernel: BoxedManifold) -> Self {
         Self { kernel }
     }
 }
@@ -219,43 +219,42 @@ impl<K> Quad<K> {
 /// Line segment with baked winding kernel.
 /// All control point computations happen at load time.
 #[derive(Clone)]
-pub struct Line<K> {
-    kernel: K,
+pub struct Line {
+    kernel: BoxedManifold,
 }
 
 /// Build line winding kernel (hard edges, no AA).
 fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> impl Manifold<Field, Output = Field> {
     let (dy, dx) = (y1 - y0, x1 - x0);
 
-    // Degenerate horizontal lines contribute nothing
-    if dy.abs() < 1e-6 {
-        return 0.0f32;
-    }
-
     let y_min = y0.min(y1);
     let y_max = y0.max(y1);
     let in_y = Y.ge(y_min) & Y.lt(y_max);
 
     // x_int = (Y - y0) * (dx / dy) + x0  (x position where line crosses current Y)
-    let x_int = (Y - y0) * (dx / dy) + x0;
+    // For degenerate horizontal lines (dy ≈ 0), use safe fallback
+    let safe_dy = if dy.abs() < 1e-6 { 1.0 } else { dy };
+    let x_int = (Y - y0) * (dx / safe_dy) + x0;
     let dir = if dy > 0.0 { 1.0 } else { -1.0 };
 
     // Hard edge: contributes dir if pixel is to the left of the crossing
-    in_y.select(x_int.lt(X).select(dir, 0.0), 0.0f32)
+    // Degenerate horizontal lines (dy ≈ 0) are filtered out by multiplying by a mask
+    let non_degenerate = if dy.abs() < 1e-6 { 0.0 } else { 1.0 };
+    in_y.select(x_int.lt(X).select(dir * non_degenerate, 0.0), 0.0f32)
 }
 
 /// Create a line with baked winding kernel from control points.
 #[inline(always)]
-pub fn make_line(points: [[f32; 2]; 2]) -> Line<impl Manifold<Field, Output = Field>> {
+pub fn make_line(points: [[f32; 2]; 2]) -> Line {
     Line {
-        kernel: line_winding_field(points),
+        kernel: line_winding_field(points).boxed(),
     }
 }
 
-impl<K> Line<K> {
+impl Line {
     /// Create a line with explicit kernel (for advanced use).
     #[inline(always)]
-    pub fn with_kernel(kernel: K) -> Self {
+    pub fn with_kernel(kernel: BoxedManifold) -> Self {
         Self { kernel }
     }
 }
@@ -357,7 +356,7 @@ impl OptQuad {
 
 // ─── Field Implementation (Winding Number Coverage) ────────────────────────
 
-impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Line<K> {
+impl Manifold<Field> for Line {
     type Output = Field;
 
     #[inline(always)]
@@ -366,7 +365,7 @@ impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Line<K> {
     }
 }
 
-impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Quad<K> {
+impl Manifold<Field> for Quad {
     type Output = Field;
 
     #[inline(always)]
@@ -575,7 +574,7 @@ impl<L: Manifold<Jet2, Output = Jet2>, Q: Manifold<Jet2, Output = Jet2>> Manifol
 pub type SimpleGlyph<L, Q> = Affine<Bounded<Geometry<L, Q>>>;
 
 /// A compound glyph: sum of transformed child glyphs.
-pub type CompoundGlyph = Sum<Affine<Glyph>>;
+pub type CompoundGlyph<L, Q> = Sum<Affine<Glyph<L, Q>>>;
 
 /// A glyph is either empty, a simple outline, or a compound of sub-glyphs.
 #[derive(Clone)]
@@ -889,17 +888,17 @@ impl<'a> Font<'a> {
         self.cmap.lookup(ch as u32)
     }
 
-    pub fn glyph(&self, ch: char) -> Option<Glyph> {
+    pub fn glyph(&self, ch: char) -> Option<Glyph<Line, Quad>> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
     /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
-    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph> {
+    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph<Line, Quad>> {
         self.compile(id)
     }
 
-    pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph> {
+    pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph<Line, Quad>> {
         let id = self.cmap.lookup(ch as u32)?;
         self.glyph_scaled_by_id(id, size)
     }
@@ -907,7 +906,7 @@ impl<'a> Font<'a> {
     /// Get scaled glyph by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
-    pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph> {
+    pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph<Line, Quad>> {
         let g = self.glyph_by_id(id)?;
         let scale = size / self.units_per_em as f32;
         // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
@@ -965,7 +964,7 @@ impl<'a> Font<'a> {
         self.kern(left, right) * size / self.units_per_em as f32
     }
 
-    fn compile(&self, id: u16) -> Option<Glyph> {
+    fn compile(&self, id: u16) -> Option<Glyph<Line, Quad>> {
         let (a, b) = (self.loca.get(id as usize)?, self.loca.get(id as usize + 1)?);
         if a == b {
             return Some(Glyph::Empty);
@@ -1011,7 +1010,7 @@ impl<'a> Font<'a> {
         scale: f32,
         tx: f32,
         ty: f32,
-    ) -> Option<impl Manifold<Field, Output = Field> + Clone> {
+    ) -> Option<Geometry<Line, Quad>> {
         if n == 0 {
             return Some(Geometry {
                 lines: vec![].into(),
@@ -1081,7 +1080,7 @@ impl<'a> Font<'a> {
         })
     }
 
-    fn compound(&self, r: &mut R) -> Option<Glyph> {
+    fn compound(&self, r: &mut R) -> Option<Glyph<Line, Quad>> {
         let mut kids = vec![];
         loop {
             let fl = r.u16()?;
@@ -1121,7 +1120,7 @@ impl<'a> Font<'a> {
     }
 }
 
-fn push_segs<L, Q>(pts: &[(f32, f32, bool)], lines: &mut Vec<L>, quads: &mut Vec<Q>) {
+fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line>, quads: &mut Vec<Quad>) {
     if pts.is_empty() {
         return;
     }

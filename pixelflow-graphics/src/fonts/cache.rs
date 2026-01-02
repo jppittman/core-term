@@ -77,6 +77,8 @@ impl CachedGlyph {
     /// The glyph is rasterized at `size × size` resolution.
     pub fn new<L, Q>(glyph: &Glyph<L, Q>, size: usize) -> Self
     where
+        L: Manifold<Field, Output = Field>,
+        Q: Manifold<Field, Output = Field>,
         Glyph<L, Q>: Clone,
     {
         // Rasterize glyph to RGBA frame using Grayscale (coverage → grayscale)
