@@ -265,14 +265,14 @@ impl AnsiParser {
         match self.state {
             State::Ground => match token {
                 AnsiToken::Print(c) => self.dispatch_print(c),
-                AnsiToken::C0Control(0x1B) => {
+                AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => {
                     self.clear_esc_state();
                     self.state = State::Escape;
                 }
                 AnsiToken::C0Control(byte) => self.dispatch_c0(byte),
             },
             State::Escape => match token {
-                AnsiToken::C0Control(0x1B) => self.state = State::Escape,
+                AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => self.state = State::Escape,
                 AnsiToken::Print('[') => {
                     self.clear_csi_state();
                     self.state = State::CsiEntry;
@@ -327,7 +327,7 @@ impl AnsiParser {
             }
 
             State::CsiEntry => match token {
-                AnsiToken::C0Control(0x1B) => {
+                AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => {
                     self.clear_csi_state();
                     self.clear_esc_state();
                     self.state = State::Escape;
@@ -363,7 +363,7 @@ impl AnsiParser {
                 }
             },
             State::CsiParam => match token {
-                AnsiToken::C0Control(0x1B) => {
+                AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => {
                     self.clear_csi_state();
                     self.clear_esc_state();
                     self.state = State::Escape;
@@ -403,7 +403,7 @@ impl AnsiParser {
                 }
             },
             State::CsiIntermediate => match token {
-                AnsiToken::C0Control(0x1B) => {
+                AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => {
                     self.clear_csi_state();
                     self.clear_esc_state();
                     self.state = State::Escape;
@@ -422,11 +422,17 @@ impl AnsiParser {
             },
             State::OscString | State::DcsEntry | State::PmString | State::ApcString => {
                 match token {
-                    AnsiToken::C0Control(0x1B) => self.enter_esc_in_string_state(),
-                    AnsiToken::C0Control(0x07) if self.state == State::OscString => {
+                    AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => {
+                        self.enter_esc_in_string_state()
+                    }
+                    AnsiToken::C0Control(b)
+                        if b == C0Control::BEL as u8 && self.state == State::OscString =>
+                    {
                         self.dispatch_osc(false)
                     }
-                    AnsiToken::C0Control(0x18) | AnsiToken::C0Control(0x1A) => {
+                    AnsiToken::C0Control(b)
+                        if b == C0Control::CAN as u8 || b == C0Control::SUB as u8 =>
+                    {
                         self.clear_string_buffer();
                         self.state = State::Ground;
                     }
