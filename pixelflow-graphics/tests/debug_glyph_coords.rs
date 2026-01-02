@@ -1,6 +1,6 @@
 //! Debug test to understand glyph geometry
 
-use pixelflow_graphics::fonts::{Font, Text};
+use pixelflow_graphics::fonts::{Font, text};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 
@@ -35,8 +35,8 @@ fn debug_coverage_at_points() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
 
     // Create text 'A' at size 32
-    let text = Text::new(&font, "A", 32.0);
-    let color_manifold = Grayscale(text);
+    let glyph = text(&font, "A", 32.0);
+    let color_manifold = Grayscale(glyph);
 
     // For size 32:
     // scale = 32/1000 = 0.032
