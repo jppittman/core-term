@@ -184,7 +184,7 @@ pub use ttf::{Font, Glyph};
 pub use loader::{DataSource, EmbeddedSource, FontSource, LoadedFont, MmapSource};
 
 // Re-export text
-pub use text::Text;
+pub use text::text;
 
 // Re-export cache
 pub use cache::{CachedGlyph, CachedText, GlyphCache};
