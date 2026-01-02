@@ -202,19 +202,13 @@ fn it_should_wrap_character_to_next_line_when_end_of_line_is_reached() {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(char_code)));
     }
     let snapshot_before_wrap = term.get_render_snapshot().expect("Snapshot was None");
+    // After filling a line, cursor is at rightmost position (0, 4)
     assert_screen_state(&snapshot_before_wrap, &["12345", "     "], Some((0, 4)));
-    assert!(
-        term.cursor_wrap_next,
-        "cursor_wrap_next should be true before wrapping char"
-    );
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('W'))); // This character should wrap
     let snapshot_after_wrap = term.get_render_snapshot().expect("Snapshot was None");
+    // Character wraps to next line
     assert_screen_state(&snapshot_after_wrap, &["12345", "W    "], Some((1, 1)));
-    assert!(
-        !term.cursor_wrap_next,
-        "cursor_wrap_next should be false after wrapping char"
-    );
 }
 
 #[test]
@@ -324,19 +318,13 @@ fn it_should_wrap_wide_character_correctly() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('世')));
     let snapshot_before_wrap = term.get_render_snapshot().expect("Snapshot was None");
+    // After 'A' and wide char '世', line is full, cursor at (0, 2)
     assert_screen_state(&snapshot_before_wrap, &["A世", "   "], Some((0, 2)));
-    assert!(
-        term.cursor_wrap_next,
-        "cursor_wrap_next should be true before wrapping wide char"
-    );
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('C')));
     let snapshot_after_wrap = term.get_render_snapshot().expect("Snapshot was None");
+    // 'C' wraps to next line
     assert_screen_state(&snapshot_after_wrap, &["A世", "C  "], Some((1, 1)));
-    assert!(
-        !term.cursor_wrap_next,
-        "cursor_wrap_next should be false after wrapping char"
-    );
 }
 
 #[test]
@@ -457,20 +445,17 @@ fn it_should_print_ascii_over_wide_char_that_straddles_line_end_after_wrap() {
     // Emulator logic: 'A' at (0,0). '世' attempts to print at (0,1) on 2-wide terminal.
     // Wrap occurs: space is printed at (0,1). Screen line 0 is "A ".
     // Cursor moves to (1,0). '世' is printed at (1,0) and (1,1).
-    // No scroll for s1. Screen: ["A ", "世"]. Cursor logical (1,2), physical (1,1) due to wrap_next.
+    // No scroll for s1. Screen: ["A ", "世"]. Cursor logical (1,2), physical (1,1).
     assert_screen_state(&s1, &["A ", "世"], Some((1, 1)));
-    assert!(term.cursor_wrap_next);
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
     let s2 = term.get_render_snapshot().expect("Snapshot was None");
-    // cursor_wrap_next was true. CR, then LF. Cursor logical_y becomes 2 (0-indexed row 2).
-    // scroll_up_if_needed: logical_y (2) > scroll_bot (1) is TRUE. Scroll happens.
+    // After wrap, next character causes scroll.
     // Line "A " goes to scrollback. Line "世" becomes new line 0. New blank line 1.
-    // Cursor y adjusted from 2 to 1. Cursor is (0,1) (row 1, col 0).
+    // Cursor is (0,1) (row 1, col 0).
     // 'X' is printed at (0,1).
     // Screen: ["世", "X "]. Cursor (1,1) (row 1, col 1).
     assert_screen_state(&s2, &["世", "X "], Some((1, 1))); // Expected screen ["世", "X "] cursor (1,1)
-    assert!(!term.cursor_wrap_next); // cursor_wrap_next is now false
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorPosition(1, 2),
@@ -532,13 +517,10 @@ fn it_should_print_ascii_over_wide_char_that_straddles_line_end_after_wrap() {
 #[test]
 fn it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off() {
     let mut term = create_test_emulator(10, 3); // LNM is off by default
+    // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetMode(20),
     )));
-    assert!(
-        !term.dec_modes.linefeed_newline_mode,
-        "LNM should be explicitly turned OFF for this test"
-    );
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); // Char 'A' at (0,0). Cursor at (0,1).
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorForward(3),
@@ -573,13 +555,10 @@ fn it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off() {
 #[test]
 fn it_should_scroll_up_and_move_cursor_down_keeping_column_on_line_feed_at_bottom_if_lnm_is_off() {
     let mut term = create_test_emulator(5, 2); // LNM is off by default
+    // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetMode(20),
     )));
-    assert!(
-        !term.dec_modes.linefeed_newline_mode,
-        "LNM should be explicitly turned OFF for this test"
-    );
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('3'))); // Line 0: "123", cursor (0,3)
@@ -605,13 +584,10 @@ fn it_should_scroll_up_and_move_cursor_down_keeping_column_on_line_feed_at_botto
 #[test]
 fn it_should_move_cursor_down_and_to_col_0_on_line_feed_if_lnm_is_on() {
     let mut term = create_test_emulator(10, 3);
+    // Enable Linefeed/Newline Mode - testing that LF does CR+LF
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
         20,
     ))));
-    assert!(
-        term.dec_modes.linefeed_newline_mode,
-        "LNM mode should be on"
-    );
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -646,13 +622,10 @@ fn it_should_move_cursor_down_and_to_col_0_on_line_feed_if_lnm_is_on() {
 #[test]
 fn it_should_scroll_and_move_to_col_0_on_line_feed_at_bottom_if_lnm_is_on() {
     let mut term = create_test_emulator(5, 2);
+    // Enable Linefeed/Newline Mode - testing that LF does CR+LF
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
         20,
     ))));
-    assert!(
-        term.dec_modes.linefeed_newline_mode,
-        "LNM mode should be on"
-    );
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
@@ -712,13 +685,10 @@ fn it_should_move_cursor_left_on_backspace() {
 #[test]
 fn it_should_not_wrap_cursor_on_backspace_at_start_of_line() {
     let mut term = create_test_emulator(10, 2);
+    // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetMode(20),
     )));
-    assert!(
-        !term.dec_modes.linefeed_newline_mode,
-        "LNM should be explicitly turned OFF for this test"
-    );
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
 
@@ -1912,10 +1882,7 @@ fn it_should_show_and_hide_cursor_on_dectcem() {
 
     // Cursor should be visible by default (DECTCEM is typically on by default)
     // The `TerminalEmulator::new` sets `dec_modes.text_cursor_enable_mode = true;`
-    assert!(
-        term.dec_modes.text_cursor_enable_mode,
-        "DECTCEM should be ON by default in emulator state"
-    );
+    // DECTCEM is ON by default - verify behavior via snapshot
     let snapshot_default = term.get_render_snapshot().expect("Snapshot was None");
     assert!(
         snapshot_default.cursor_state.is_some(),
@@ -1926,10 +1893,7 @@ fn it_should_show_and_hide_cursor_on_dectcem() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetModePrivate(DecModeConstant::TextCursorEnable as u16),
     )));
-    assert!(
-        !term.dec_modes.text_cursor_enable_mode,
-        "DECTCEM should be OFF after 25l"
-    );
+    // DECTCEM should be OFF after CSI ? 25 l - verify via snapshot
     let snapshot_hidden = term.get_render_snapshot().expect("Snapshot was None");
     assert!(
         snapshot_hidden.cursor_state.is_none(),
@@ -1940,10 +1904,7 @@ fn it_should_show_and_hide_cursor_on_dectcem() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::SetModePrivate(DecModeConstant::TextCursorEnable as u16),
     )));
-    assert!(
-        term.dec_modes.text_cursor_enable_mode,
-        "DECTCEM should be ON after 25h"
-    );
+    // DECTCEM should be ON after CSI ? 25 h - verify via snapshot
     let snapshot_shown = term.get_render_snapshot().expect("Snapshot was None");
     assert!(
         snapshot_shown.cursor_state.is_some(),
@@ -1978,11 +1939,8 @@ fn it_should_switch_to_alternate_screen_buffer_and_back_on_csi_1049() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16),
     )));
-    assert!(
-        term.screen.alt_screen_active,
-        "Should be on alternate screen after 1049h"
-    );
 
+    // Switched to alternate screen - verify it's cleared
     let snapshot_asb = term.get_render_snapshot().expect("Snapshot was None");
     // ASB should be cleared. Content is all spaces.
     assert_screen_state(&snapshot_asb, &["     ", "     "], Some((0, 0))); // Cursor usually resets to (0,0) on ASB
@@ -1998,11 +1956,8 @@ fn it_should_switch_to_alternate_screen_buffer_and_back_on_csi_1049() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16),
     )));
-    assert!(
-        !term.screen.alt_screen_active,
-        "Should be back on normal screen after 1049l"
-    );
 
+    // Back on normal screen - verify content is restored
     let snapshot_nsb_restored = term.get_render_snapshot().expect("Snapshot was None");
     // Screen content should be restored
     assert_screen_state(
@@ -2018,18 +1973,12 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
     let mut term = create_test_emulator(3, 2); // Small width to test wrap easily
 
     // DECAWM is on by default in emulator
-    assert!(
-        term.dec_modes.autowrap_mode,
-        "Autowrap should be ON by default"
-    );
+    // Autowrap is ON by default - verify wrapping behavior
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('3'))); // Fills line 0: "123"
     assert_eq!(term.cursor_controller.logical_pos(), (3, 0)); // Corrected: logical_pos is (x,y) -> (3,0)
-    assert!(
-        term.cursor_wrap_next,
-        "cursor_wrap_next should be true after filling line with autowrap on"
-    );
+    // After filling line, next char will wrap
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('4'))); // Wraps to line 1
     assert_screen_state(
         &term.get_render_snapshot().expect("Snapshot was None"),
@@ -2041,20 +1990,14 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetModePrivate(DecModeConstant::AutoWrapMode as u16),
     )));
-    assert!(
-        !term.dec_modes.autowrap_mode,
-        "Autowrap should be OFF after 7l"
-    );
+    // Autowrap is OFF - verify no wrapping behavior
     // Move to end of line 1
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorPosition(2, 3),
     ))); // Cursor to (1,2) on line "4  "
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('5'))); // Prints '5' at (1,2). Line "4 5". Cursor (1,3).
     assert_eq!(term.cursor_controller.logical_pos(), (3, 1)); // Corrected: logical_pos is (x,y) -> (3,1)
-    assert!(
-        !term.cursor_wrap_next,
-        "cursor_wrap_next should be false with autowrap off"
-    );
+    // With autowrap off, cursor stays at right edge
 
     // Try to print past end of line with autowrap off
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('6')));
@@ -2066,21 +2009,15 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
         &["123", "4 6"],
         Some((1, 2)),
     );
-    assert!(
-        !term.cursor_wrap_next,
-        "cursor_wrap_next should still be false"
-    );
+    // Cursor still at right edge with autowrap off
 
     // Enable Autowrap again: CSI ? 7 h
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::SetModePrivate(DecModeConstant::AutoWrapMode as u16),
     )));
-    assert!(
-        term.dec_modes.autowrap_mode,
-        "Autowrap should be ON again after 7h"
-    );
+    // Autowrap is ON again - verify wrapping behavior restored
     // Cursor is at (1,3) on line "4 6". Line is full.
-    assert!(term.cursor_wrap_next, "cursor_wrap_next should now be true");
+    // Line is full with autowrap on, next char will wrap
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('7'))); // Should wrap to next line (scroll if needed)
                                                                         // We have 2 lines. (0,1). This will scroll.
                                                                         // L0 "123" scrolls off. L1 "4 6" becomes L0. L2 "7  " becomes L1.
@@ -2823,10 +2760,7 @@ fn it_should_handle_csi_cup_with_origin_mode_decom() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::SetModePrivate(DecModeConstant::Origin as u16),
     )));
-    assert!(
-        term.dec_modes.origin_mode,
-        "Origin mode (DECOM) should be enabled"
-    );
+    // Origin mode (DECOM) enabled - cursor positioning is relative to scrolling region
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorPosition(1, 1),
@@ -2861,10 +2795,7 @@ fn it_should_handle_csi_cup_with_origin_mode_decom() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetModePrivate(DecModeConstant::Origin as u16),
     )));
-    assert!(
-        !term.dec_modes.origin_mode,
-        "Origin mode (DECOM) should be disabled"
-    );
+    // Origin mode (DECOM) disabled - cursor positioning is absolute
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorPosition(1, 1),

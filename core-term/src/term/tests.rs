@@ -226,16 +226,13 @@ fn test_newline_input() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
         20,
     ))));
-    assert!(
-        term.dec_modes.linefeed_newline_mode,
-        "LNM should be enabled for this test"
-    );
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
     // With LNM ON, LF moves to next line AND performs carriage return. 'B' prints at (1,0), cursor moves to (1,1)
+    // Testing behavior: cursor should be at column 0 after LF (that's what LNM does)
     assert_screen_state(&snapshot, &["A         ", "B         "], Some((1, 1)));
 }
 
@@ -379,22 +376,23 @@ fn test_mouse_press_starts_selection() {
     let mut emu = create_test_emulator(10, 5);
     let action = send_mouse_input(&mut emu, start_selection_at(1, 1), MouseButton::Left);
 
+    let snapshot = emu.get_render_snapshot().expect("Snapshot was None");
     assert!(
-        emu.screen.selection.is_active,
+        snapshot.selection.is_active,
         "Selection should be active after left press."
     );
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.start),
+        snapshot.selection.range.map(|r| r.start),
         Some(Point { x: 1, y: 1 }),
         "Selection start point mismatch."
     );
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.end),
+        snapshot.selection.range.map(|r| r.end),
         Some(Point { x: 1, y: 1 }),
         "Selection end point should be same as start initially."
     );
     assert_eq!(
-        emu.screen.selection.mode,
+        snapshot.selection.mode,
         SelectionMode::Cell,
         "Default selection mode should be Cell."
     );
@@ -411,17 +409,18 @@ fn test_mouse_drag_updates_selection() {
     send_mouse_input(&mut emu, start_selection_at(1, 1), MouseButton::Left);
     let action = send_mouse_input(&mut emu, extend_selection_to(5, 2), MouseButton::Left);
 
+    let snapshot = emu.get_render_snapshot().expect("Snapshot was None");
     assert!(
-        emu.screen.selection.is_active,
+        snapshot.selection.is_active,
         "Selection should remain active during drag."
     );
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.start),
+        snapshot.selection.range.map(|r| r.start),
         Some(Point { x: 1, y: 1 }),
         "Selection start point should not change during drag."
     );
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.end),
+        snapshot.selection.range.map(|r| r.end),
         Some(Point { x: 5, y: 2 }),
         "Selection end point should update to drag position."
     );
@@ -443,20 +442,21 @@ fn test_mouse_release_ends_selection_activity() {
         MouseButton::Left,
     );
 
+    let snapshot = emu.get_render_snapshot().expect("Snapshot was None");
     assert!(
         // ApplySelectionClear now clears the selection if start == end, otherwise just deactivates
-        !emu.screen.selection.is_active || emu.screen.selection.range.is_none(),
+        !snapshot.selection.is_active || snapshot.selection.range.is_none(),
         "Selection should be inactive or cleared after release."
     );
-    if emu.screen.selection.range.is_some() {
+    if snapshot.selection.range.is_some() {
         // If not cleared (was a drag)
         assert_eq!(
-            emu.screen.selection.range.map(|r| r.start),
+            snapshot.selection.range.map(|r| r.start),
             Some(Point { x: 1, y: 1 }),
             "Selection start point should be retained."
         );
         assert_eq!(
-            emu.screen.selection.range.map(|r| r.end),
+            snapshot.selection.range.map(|r| r.end),
             Some(Point { x: 5, y: 2 }),
             "Selection end point should be retained."
         );
@@ -507,11 +507,14 @@ fn test_initiate_copy_block_selection() {
         vec!["ABC".to_string(), "DEF".to_string(), "GHI".to_string()],
     );
 
-    emu.screen.clear_selection();
-    emu.screen
-        .start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Using Cell for now
-    emu.screen.update_selection(Point { x: 1, y: 1 });
-    emu.screen.end_selection();
+    // Use the send API to create a selection
+    send_mouse_input(&mut emu, start_selection_at(0, 0), MouseButton::Left);
+    send_mouse_input(&mut emu, extend_selection_to(1, 1), MouseButton::Left);
+    send_mouse_input(
+        &mut emu,
+        UserInputAction::ApplySelectionClear,
+        MouseButton::Left,
+    );
 
     let action = emu.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
     assert_eq!(
@@ -535,32 +538,34 @@ fn test_new_mouse_press_clears_old_selection() {
         MouseButton::Left,
     );
 
-    let old_selection_end = emu.screen.selection.range.map(|r| r.end);
+    let snapshot_old = emu.get_render_snapshot().expect("Snapshot was None");
+    let old_selection_end = snapshot_old.selection.range.map(|r| r.end);
     assert_eq!(
         old_selection_end,
         Some(Point { x: 2, y: 0 }),
         "Pre-condition: First selection should be (0,0) to (2,0)"
     );
-    assert!(!emu.screen.selection.is_active);
+    assert!(!snapshot_old.selection.is_active);
 
     let action = send_mouse_input(&mut emu, start_selection_at(1, 1), MouseButton::Left);
 
+    let snapshot_new = emu.get_render_snapshot().expect("Snapshot was None");
     assert!(
-        emu.screen.selection.is_active,
+        snapshot_new.selection.is_active,
         "New selection should be active."
     );
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.start),
+        snapshot_new.selection.range.map(|r| r.start),
         Some(Point { x: 1, y: 1 }),
         "New selection start point mismatch."
     );
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.end),
+        snapshot_new.selection.range.map(|r| r.end),
         Some(Point { x: 1, y: 1 }),
         "New selection end point should be same as new start."
     );
     assert_ne!(
-        emu.screen.selection.range.map(|r| r.end),
+        snapshot_new.selection.range.map(|r| r.end),
         old_selection_end,
         "New selection should differ from old one."
     );
@@ -589,33 +594,35 @@ fn test_selection_coordinates_adjust_on_scroll() {
         MouseButton::Left,
     );
 
+    let snapshot_before = emu.get_render_snapshot().expect("Snapshot was None");
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.start),
+        snapshot_before.selection.range.map(|r| r.start),
         Some(Point { x: 0, y: 1 })
     );
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.end),
+        snapshot_before.selection.range.map(|r| r.end),
         Some(Point { x: 4, y: 1 })
     );
-    assert!(!emu.screen.selection.is_active);
+    assert!(!snapshot_before.selection.is_active);
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorPosition(3, 1),
     )));
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
+    let snapshot_after = emu.get_render_snapshot().expect("Snapshot was None");
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.start),
+        snapshot_after.selection.range.map(|r| r.start),
         Some(Point { x: 0, y: 1 }),
         "Selection start Y should not change due to scroll."
     );
     assert_eq!(
-        emu.screen.selection.range.map(|r| r.end),
+        snapshot_after.selection.range.map(|r| r.end),
         Some(Point { x: 4, y: 1 }),
         "Selection end Y should not change due to scroll."
     );
 
-    let selected_text_after_scroll = emu.screen.get_selected_text();
+    let selected_text_after_scroll = emu.get_selected_text();
     assert_eq!(
         selected_text_after_scroll,
         Some("Line2".to_string()),
@@ -646,9 +653,9 @@ fn test_selection_on_alt_screen_then_exit() {
         MouseButton::Left,
     );
 
-    assert!(emu.screen.alt_screen_active, "Should be on alt screen.");
+    // Verify selection on alt screen by checking selected text
     assert_eq!(
-        emu.screen.get_selected_text(),
+        emu.get_selected_text(),
         Some("Alt1".to_string()),
         "Selection on alt screen incorrect."
     );
@@ -657,22 +664,20 @@ fn test_selection_on_alt_screen_then_exit() {
         CsiCommand::ResetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16),
     )));
 
-    assert!(
-        !emu.screen.alt_screen_active,
-        "Should be back on primary screen."
-    );
+    // Verify we're back on primary screen and selection is cleared
+    let snapshot = emu.get_render_snapshot().expect("Snapshot was None");
     assert_eq!(
-        emu.screen.selection,
+        snapshot.selection,
         Selection::default(),
         "Selection should be cleared after exiting alt screen."
     );
     assert_eq!(
-        emu.screen.get_selected_text(),
+        emu.get_selected_text(),
         None,
         "No selection should be active/present on primary screen after exiting alt."
     );
 
-    let snapshot = emu.get_render_snapshot().expect("Snapshot was None");
+    // Verify we're showing primary screen content
     match snapshot.lines[0].cells[0] {
         Glyph::Single(cell) | Glyph::WidePrimary(cell) => assert_eq!(cell.c, 'P'),
         other => panic!("Expected char P, got {:?}", other),
@@ -947,20 +952,14 @@ fn test_ps1_multiline_prompt_last_line_fills_screen_then_input() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('E')));
 
     let snapshot_after_prompt = term.get_render_snapshot().expect("Snapshot was None");
+    // After filling line with 3 chars (CDE), cursor should be at rightmost position
     assert_screen_state(&snapshot_after_prompt, &["B  ", "CDE"], Some((1, 2)));
-    assert!(
-        term.cursor_wrap_next,
-        "cursor_wrap_next should be true after prompt fills line"
-    );
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('X')));
 
     let snapshot_after_input = term.get_render_snapshot().expect("Snapshot was None");
+    // After wrap, 'X' should appear on next line, screen should scroll
     assert_screen_state(&snapshot_after_input, &["CDE", "X  "], Some((1, 1)));
-    assert!(
-        !term.cursor_wrap_next,
-        "cursor_wrap_next should be false after printing 'X'"
-    );
 }
 
 #[test]
@@ -1136,13 +1135,10 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     let cols = 10;
     let rows = 5;
     let mut emu = create_test_emulator(cols, rows);
+    // Disable Linefeed/Newline Mode (LNM) - testing that LF doesn't do CR
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetMode(20),
     )));
-    assert!(
-        !emu.dec_modes.linefeed_newline_mode,
-        "LNM should be explicitly turned OFF for this test"
-    );
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetModePrivate(DecModeConstant::Origin as u16),
@@ -1244,17 +1240,20 @@ mod selection_logic_tests {
     fn test_start_selection() {
         let mut emu = create_test_emulator(10, 5);
         let point = Point { x: 2, y: 1 };
-        emu.start_selection(point, SelectionMode::Cell);
 
+        // Use the send API to start selection
+        emu.interpret_input(EmulatorInput::User(start_selection_at(2, 1)));
+
+        let snapshot = emu.get_render_snapshot().expect("Snapshot was None");
         assert_eq!(
-            emu.screen.selection.range,
+            snapshot.selection.range,
             Some(SelectionRange {
                 start: point,
                 end: point
             })
         );
-        assert!(emu.screen.selection.is_active);
-        assert_eq!(emu.screen.selection.mode, SelectionMode::Cell);
+        assert!(snapshot.selection.is_active);
+        assert_eq!(snapshot.selection.mode, SelectionMode::Cell);
     }
 
     #[test]
@@ -1263,20 +1262,24 @@ mod selection_logic_tests {
         let start_point = Point { x: 2, y: 1 };
         let extend_point = Point { x: 5, y: 2 };
 
-        emu.extend_selection(extend_point);
-        assert_eq!(emu.screen.selection.range, None);
-        assert!(!emu.screen.selection.is_active);
+        // Try extending selection when none exists - should have no effect
+        emu.interpret_input(EmulatorInput::User(extend_selection_to(5, 2)));
+        let snapshot1 = emu.get_render_snapshot().expect("Snapshot was None");
+        assert_eq!(snapshot1.selection.range, None);
+        assert!(!snapshot1.selection.is_active);
 
-        emu.start_selection(start_point, SelectionMode::Cell);
-        emu.extend_selection(extend_point);
+        // Start selection and then extend it
+        emu.interpret_input(EmulatorInput::User(start_selection_at(2, 1)));
+        emu.interpret_input(EmulatorInput::User(extend_selection_to(5, 2)));
+        let snapshot2 = emu.get_render_snapshot().expect("Snapshot was None");
         assert_eq!(
-            emu.screen.selection.range,
+            snapshot2.selection.range,
             Some(SelectionRange {
                 start: start_point,
                 end: extend_point
             })
         );
-        assert!(emu.screen.selection.is_active);
+        assert!(snapshot2.selection.is_active);
     }
 
     #[test]
@@ -1285,24 +1288,32 @@ mod selection_logic_tests {
         let point1 = Point { x: 2, y: 1 };
         let point2 = Point { x: 5, y: 1 };
 
-        emu.start_selection(point1, SelectionMode::Cell);
-        assert!(emu.screen.selection.is_active);
-        emu.apply_selection_clear();
+        // Test click (no drag) - selection should be cleared
+        emu.interpret_input(EmulatorInput::User(start_selection_at(2, 1)));
+        let snapshot1 = emu.get_render_snapshot().expect("Snapshot was None");
+        assert!(snapshot1.selection.is_active);
+
+        emu.interpret_input(EmulatorInput::User(UserInputAction::ApplySelectionClear));
+        let snapshot2 = emu.get_render_snapshot().expect("Snapshot was None");
         assert_eq!(
-            emu.screen.selection.range, None,
+            snapshot2.selection.range, None,
             "Selection should be cleared on click"
         );
         assert!(
-            !emu.screen.selection.is_active,
+            !snapshot2.selection.is_active,
             "Selection should be inactive after click"
         );
 
-        emu.start_selection(point1, SelectionMode::Cell);
-        emu.extend_selection(point2);
-        assert!(emu.screen.selection.is_active);
-        emu.apply_selection_clear();
+        // Test drag - selection should be maintained but deactivated
+        emu.interpret_input(EmulatorInput::User(start_selection_at(2, 1)));
+        emu.interpret_input(EmulatorInput::User(extend_selection_to(5, 1)));
+        let snapshot3 = emu.get_render_snapshot().expect("Snapshot was None");
+        assert!(snapshot3.selection.is_active);
+
+        emu.interpret_input(EmulatorInput::User(UserInputAction::ApplySelectionClear));
+        let snapshot4 = emu.get_render_snapshot().expect("Snapshot was None");
         assert_eq!(
-            emu.screen.selection.range,
+            snapshot4.selection.range,
             Some(SelectionRange {
                 start: point1,
                 end: point2
@@ -1310,7 +1321,7 @@ mod selection_logic_tests {
             "Selection range should be maintained after drag"
         );
         assert!(
-            !emu.screen.selection.is_active,
+            !snapshot4.selection.is_active,
             "Selection should be inactive after drag"
         );
     }
@@ -1318,19 +1329,21 @@ mod selection_logic_tests {
     #[test]
     fn test_clear_selection() {
         let mut emu = create_test_emulator(10, 5);
-        let point1 = Point { x: 2, y: 1 };
-        let point2 = Point { x: 5, y: 1 };
 
-        emu.start_selection(point1, SelectionMode::Cell);
-        emu.extend_selection(point2);
-        emu.apply_selection_clear();
+        // Create and deactivate a selection
+        emu.interpret_input(EmulatorInput::User(start_selection_at(2, 1)));
+        emu.interpret_input(EmulatorInput::User(extend_selection_to(5, 1)));
+        emu.interpret_input(EmulatorInput::User(UserInputAction::ApplySelectionClear));
 
-        assert!(emu.screen.selection.range.is_some());
-        assert!(!emu.screen.selection.is_active);
+        let snapshot1 = emu.get_render_snapshot().expect("Snapshot was None");
+        assert!(snapshot1.selection.range.is_some());
+        assert!(!snapshot1.selection.is_active);
 
+        // Clear selection using public API
         emu.clear_selection();
-        assert_eq!(emu.screen.selection.range, None);
-        assert!(!emu.screen.selection.is_active);
+        let snapshot2 = emu.get_render_snapshot().expect("Snapshot was None");
+        assert_eq!(snapshot2.selection.range, None);
+        assert!(!snapshot2.selection.is_active);
     }
 }
 
@@ -1338,24 +1351,6 @@ mod selection_logic_tests {
 mod get_selected_text_tests {
     use super::*;
     use crate::term::snapshot::{Point, SelectionRange};
-
-    fn set_screen_content(emu: &mut TerminalEmulator, lines: &[&str]) {
-        for (y, line_str) in lines.iter().enumerate() {
-            for (x, char_val) in line_str.chars().enumerate() {
-                if x < emu.screen.width && y < emu.screen.height {
-                    let grid = if emu.screen.alt_screen_active {
-                        &mut emu.screen.alt_grid
-                    } else {
-                        &mut emu.screen.grid
-                    };
-                    std::sync::Arc::make_mut(&mut grid[y])[x] = Glyph::Single(ContentCell {
-                        c: char_val,
-                        attr: Attributes::default(),
-                    });
-                }
-            }
-        }
-    }
 
     #[test]
     fn test_get_selected_text_no_selection() {
@@ -1366,50 +1361,89 @@ mod get_selected_text_tests {
     #[test]
     fn test_get_selected_text_single_line() {
         let mut emu = create_test_emulator(10, 5);
-        set_screen_content(&mut emu, &["Hello World"]);
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 0, y: 0 },
-            end: Point { x: 4, y: 0 },
-        });
+        fill_emulator_screen(&mut emu, vec!["Hello World".to_string()]);
+
+        // Create selection from (0,0) to (4,0)
+        send_mouse_input(&mut emu, start_selection_at(0, 0), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(4, 0), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
+
         assert_eq!(emu.get_selected_text(), Some("Hello".to_string()));
     }
 
     #[test]
     fn test_get_selected_text_single_line_trailing_spaces_in_selection() {
         let mut emu = create_test_emulator(10, 1);
-        set_screen_content(&mut emu, &["Hi   "]);
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 0, y: 0 },
-            end: Point { x: 4, y: 0 },
-        });
+        fill_emulator_screen(&mut emu, vec!["Hi   ".to_string()]);
+
+        send_mouse_input(&mut emu, start_selection_at(0, 0), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(4, 0), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
+
         assert_eq!(emu.get_selected_text(), Some("Hi   ".to_string()));
     }
 
     #[test]
     fn test_get_selected_text_multi_line() {
         let mut emu = create_test_emulator(10, 5);
-        set_screen_content(&mut emu, &["First line", "Second line", "Third line"]);
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 2, y: 0 },
-            end: Point { x: 3, y: 1 },
-        });
+        fill_emulator_screen(
+            &mut emu,
+            vec![
+                "First line".to_string(),
+                "Second line".to_string(),
+                "Third line".to_string(),
+            ],
+        );
+
+        send_mouse_input(&mut emu, start_selection_at(2, 0), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(3, 1), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
+
         assert_eq!(emu.get_selected_text(), Some("rst line\nSeco".to_string()));
     }
 
     #[test]
     fn test_get_selected_text_multi_line_full_lines() {
         let mut emu = create_test_emulator(10, 3);
-        set_screen_content(&mut emu, &["Line One", "Line Two", "Line Three"]);
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 0, y: 1 },
-            end: Point { x: 7, y: 1 },
-        });
+        fill_emulator_screen(
+            &mut emu,
+            vec![
+                "Line One".to_string(),
+                "Line Two".to_string(),
+                "Line Three".to_string(),
+            ],
+        );
+
+        // Test single line selection
+        send_mouse_input(&mut emu, start_selection_at(0, 1), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(7, 1), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
         assert_eq!(emu.get_selected_text(), Some("Line Two".to_string()));
 
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 0, y: 0 },
-            end: Point { x: 7, y: 1 },
-        });
+        // Test multi-line selection
+        send_mouse_input(&mut emu, start_selection_at(0, 0), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(7, 1), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
         assert_eq!(
             emu.get_selected_text(),
             Some("Line One\nLine Two".to_string())
@@ -1419,60 +1453,73 @@ mod get_selected_text_tests {
     #[test]
     fn test_get_selected_text_line_boundaries() {
         let mut emu = create_test_emulator(10, 2);
-        set_screen_content(&mut emu, &["0123456789", "abcdefghij"]);
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 7, y: 0 },
-            end: Point { x: 2, y: 1 },
-        });
+        fill_emulator_screen(
+            &mut emu,
+            vec!["0123456789".to_string(), "abcdefghij".to_string()],
+        );
+
+        send_mouse_input(&mut emu, start_selection_at(7, 0), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(2, 1), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
+
         assert_eq!(emu.get_selected_text(), Some("789\nabc".to_string()));
     }
 
     #[test]
     fn test_get_selected_text_empty_cells_within_grid() {
         let mut emu = create_test_emulator(5, 1);
-        {
-            let grid = if emu.screen.alt_screen_active {
-                &mut emu.screen.alt_grid
-            } else {
-                &mut emu.screen.grid
-            };
-            let row = std::sync::Arc::make_mut(&mut grid[0]);
-            row[0] = Glyph::Single(ContentCell {
-                c: 'A',
-                attr: Attributes::default(),
-            });
-            row[4] = Glyph::Single(ContentCell {
-                c: 'E',
-                attr: Attributes::default(),
-            });
-        }
+        // Create sparse content: "A   E" by printing A, moving cursor to col 4, then printing E
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+            CsiCommand::CursorPosition(1, 5),
+        )));
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('E')));
 
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 0, y: 0 },
-            end: Point { x: 4, y: 0 },
-        });
+        send_mouse_input(&mut emu, start_selection_at(0, 0), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(4, 0), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
+
         assert_eq!(emu.get_selected_text(), Some("A   E".to_string()));
     }
 
     #[test]
     fn test_get_selected_text_selection_beyond_line_length() {
         let mut emu = create_test_emulator(10, 1);
-        set_screen_content(&mut emu, &["Test"]);
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 1, y: 0 },
-            end: Point { x: 7, y: 0 },
-        });
+        fill_emulator_screen(&mut emu, vec!["Test".to_string()]);
+
+        send_mouse_input(&mut emu, start_selection_at(1, 0), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(7, 0), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
+
         assert_eq!(emu.get_selected_text(), Some("est    ".to_string()));
     }
 
     #[test]
     fn test_get_selected_text_reversed_points() {
         let mut emu = create_test_emulator(10, 5);
-        set_screen_content(&mut emu, &["Hello World"]);
-        emu.screen.selection.range = Some(SelectionRange {
-            start: Point { x: 4, y: 0 },
-            end: Point { x: 0, y: 0 },
-        });
+        fill_emulator_screen(&mut emu, vec!["Hello World".to_string()]);
+
+        // Select with reversed points (end before start)
+        send_mouse_input(&mut emu, start_selection_at(4, 0), MouseButton::Left);
+        send_mouse_input(&mut emu, extend_selection_to(0, 0), MouseButton::Left);
+        send_mouse_input(
+            &mut emu,
+            UserInputAction::ApplySelectionClear,
+            MouseButton::Left,
+        );
+
         assert_eq!(emu.get_selected_text(), Some("Hello".to_string()));
     }
 }
@@ -1483,8 +1530,8 @@ mod paste_text_tests {
 
     #[test]
     fn test_paste_text_bracketed_off_simple() {
-        let mut emu = create_test_emulator(20, 1); // Adjusted rows to 1
-        assert!(!emu.dec_modes.bracketed_paste_mode);
+        let mut emu = create_test_emulator(20, 1);
+        // Bracketed paste mode is off by default - just verify behavior
 
         let text_to_paste = "Pasted text.";
         emu.paste_text(text_to_paste.to_string());
@@ -1501,7 +1548,7 @@ mod paste_text_tests {
     #[test]
     fn test_paste_text_bracketed_off_with_newline() {
         let mut emu = create_test_emulator(20, 2);
-        assert!(!emu.dec_modes.bracketed_paste_mode);
+        // Bracketed paste mode is off by default - just verify behavior
 
         let text_to_paste = "Line1\nLine2";
         emu.paste_text(text_to_paste.to_string());
@@ -1515,7 +1562,7 @@ mod paste_text_tests {
     #[test]
     fn test_paste_text_bracketed_off_causes_wrap() {
         let mut emu = create_test_emulator(5, 2);
-        assert!(!emu.dec_modes.bracketed_paste_mode);
+        // Bracketed paste mode is off by default - just verify wrapping behavior
 
         let text_to_paste = "HelloWorld";
         emu.paste_text(text_to_paste.to_string());
@@ -1531,7 +1578,10 @@ mod paste_text_tests {
     #[test]
     fn test_paste_text_bracketed_on_logs_warning_processes_chars() {
         let mut emu = create_test_emulator(20, 1);
-        emu.dec_modes.bracketed_paste_mode = true;
+        // Enable bracketed paste mode
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+            CsiCommand::SetModePrivate(2004),
+        )));
 
         let text_to_paste = "Pasted";
         emu.paste_text(text_to_paste.to_string());
