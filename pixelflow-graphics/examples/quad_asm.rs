@@ -4,7 +4,7 @@
 //! Inspect with: objdump -d target/release/examples/quad_asm | grep -A200 eval_triangle_kernel
 
 use pixelflow_core::{Field, Manifold};
-use pixelflow_graphics::fonts::ttf::LoopBlinnTriangle;
+use pixelflow_graphics::fonts::ttf::{curved_triangle, solid_triangle, LoopBlinnTriangle};
 use std::hint::black_box;
 
 /// Prevent inlining so we can find this function in the ASM
@@ -15,10 +15,10 @@ pub fn eval_triangle_kernel(tri: &LoopBlinnTriangle, x: Field, y: Field) -> Fiel
 
 fn main() {
     // Create a solid triangle
-    let solid_tri = LoopBlinnTriangle::solid([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]);
+    let solid_tri = solid_triangle([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]);
 
     // Create a curved triangle (quadratic Bezier)
-    let curved_tri = LoopBlinnTriangle::curved(
+    let curved_tri = curved_triangle(
         [0.0, 0.0],  // P0 on-curve
         [0.5, 0.5],  // P1 control
         [1.0, 0.0],  // P2 on-curve

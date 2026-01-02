@@ -152,11 +152,11 @@ fn regression_monospace_advance() {
 #[test]
 fn regression_loop_blinn_triangle() {
     use pixelflow_core::{materialize_discrete, PARALLELISM};
-    use pixelflow_graphics::fonts::ttf::LoopBlinnTriangle;
+    use pixelflow_graphics::fonts::ttf::solid_triangle;
     use pixelflow_graphics::render::color::Grayscale;
 
     // Create a simple solid triangle
-    let tri = LoopBlinnTriangle::solid([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]);
+    let tri = solid_triangle([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]);
     let lifted = Grayscale(tri);
 
     // Test point inside the triangle
