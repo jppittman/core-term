@@ -191,9 +191,8 @@ fn quadratic_winding(
         let valid_plus = Y.ge(0.0) & Y.le(1.0) & x_plus.lt(X);
         let valid_minus = Z.ge(0.0) & Z.le(1.0) & x_minus.lt(X);
 
-        // Flip signs because Y-axis is flipped (screen Y-down vs font Y-up)
-        let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
-        let sign_minus = dy_minus.gt(0.0).select(-1.0, 1.0);
+        let sign_plus = dy_plus.gt(0.0).select(1.0, -1.0);
+        let sign_minus = dy_minus.gt(0.0).select(1.0, -1.0);
 
         valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
     };
@@ -271,8 +270,7 @@ fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
     // For degenerate horizontal lines (dy ≈ 0), use safe fallback
     let safe_dy = if dy.abs() < 1e-6 { 1.0 } else { dy };
     let x_int = (Y - y0) * (dx / safe_dy) + x0;
-    // Flip dir because Y-axis is flipped (screen Y-down vs font Y-up)
-    let dir = if dy > 0.0 { -1.0 } else { 1.0 };
+    let dir = if dy > 0.0 { 1.0 } else { -1.0 };
 
     // Hard edge: contributes dir if pixel is to the left of the crossing
     // Degenerate horizontal lines (dy ≈ 0) are filtered out by multiplying by a mask
