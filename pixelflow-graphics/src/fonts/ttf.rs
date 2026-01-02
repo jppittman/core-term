@@ -160,7 +160,10 @@ pub fn threshold<M>(m: M) -> Threshold<M> {
 #[derive(Clone, Copy, Debug)]
 pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
 
-/// Bake a Loop-Blinn quadratic winding kernel at load time.
+/// Bake a Loop-Blinn implicit quadratic kernel at load time.
+///
+/// Pre-computes barycentric transform coefficients so eval just applies the transform
+/// and evaluates the implicit function: f = u² - vw
 #[inline]
 #[define_opaque(QuadKernel)]
 fn quadratic_winding(
@@ -168,44 +171,42 @@ fn quadratic_winding(
     [x1, y1]: [f32; 2],
     [x2, y2]: [f32; 2],
 ) -> QuadKernel {
-    let ay = y0 - 2.0 * y1 + y2;
-    let by = 2.0 * (y1 - y0);
-    let ax = x0 - 2.0 * x1 + x2;
-    let bx = 2.0 * (x1 - x0);
-    let cx = x0;
-    let inv_2a = 0.5 / ay;
-    let neg_b_2a = -by * inv_2a;
-    let disc_const = by * by - 4.0 * ay * y0;
-    let disc_slope = 4.0 * ay;
+    // LOAD-TIME: Compute barycentric transform coefficients
+    // Following Loop-Blinn 2005 implicit curve representation
 
-    // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
-    let winding = {
-        let x_plus = Y * Y * ax + Y * bx + cx;
-        let x_minus = Z * Z * ax + Z * bx + cx;
-        let dy_plus = Y * (2.0 * ay) + by;
-        let dy_minus = Z * (2.0 * ay) + by;
+    // Edge vectors
+    let e0x = x1 - x0;
+    let e0y = y1 - y0;
+    let e1x = x2 - x1;
+    let e1y = y2 - y1;
 
-        let valid_plus = Y.ge(0.0) & Y.le(1.0) & x_plus.lt(X);
-        let valid_minus = Z.ge(0.0) & Z.le(1.0) & x_minus.lt(X);
+    // Determinant (2x triangle area)
+    let det = e0x * e1y - e0y * e1x;
+    let is_degenerate = det.abs() < 1e-10;
 
-        let sign_plus = dy_plus.gt(0.0).select(1.0, -1.0);
-        let sign_minus = dy_minus.gt(0.0).select(1.0, -1.0);
+    // Safe inverse (avoid division by zero)
+    let inv_det = if is_degenerate { 0.0 } else { 1.0 / det };
 
-        valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
-    };
+    // BAKE coefficients for barycentric coords
+    let u_x = e1y * inv_det;
+    let u_y = -e1x * inv_det;
+    let u0 = -(x0 * u_x + y0 * u_y);
 
-    // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
-    let with_roots = winding.at(
-        X,
-        Z * inv_2a + neg_b_2a,  // t_plus
-        Z * -inv_2a + neg_b_2a, // t_minus
-        W,
-    );
+    let v_x = (y2 - y0) * inv_det * 0.5;
+    let v_y = -(x2 - x0) * inv_det * 0.5;
+    let v0 = -(x1 * v_x + y1 * v_y);
 
-    // Layer 1 (outermost): screen coords
-    let disc = Y * disc_slope + disc_const;
-    disc.ge(0.0)
-        .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
+    // RUNTIME: Apply baked transform and evaluate implicit function
+    let u = X * u_x + Y * u_y + u0;
+    let v = X * v_x + Y * v_y + v0;
+    let w = 1.0f32;
+
+    // Implicit function: f = u² - vw
+    let implicit = u * u - v * w;
+
+    // Smooth coverage mapping
+    let scaled = implicit * -10.0 + 0.5;
+    scaled.max(0.0f32).min(1.0f32)
 }
 
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
