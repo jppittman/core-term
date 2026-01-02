@@ -38,7 +38,7 @@
 //! Glyph = Sum of triangles. Types ARE the shader graph.
 
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{At, Field, Manifold, ManifoldExt, X, Y, Z, W};
+use pixelflow_core::{Add, At, Field, Manifold, ManifoldExt, Mul, MulAdd, Sub, X, Y, Z, W};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -81,32 +81,49 @@ impl<T: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Sum<T> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Linear Expression Tree - a*X + b*Y + c
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Linear manifold type: `a*X + b*Y + c`.
+/// The type IS the computation graph - coefficients stored in AST nodes.
+/// Expression `X * a + Y * b + c` produces MulAdd due to fusion optimization.
+pub type Linear = Add<MulAdd<X, f32, Mul<Y, f32>>, f32>;
+
+/// Construct a linear manifold expression tree.
+#[inline]
+pub fn linear(a: f32, b: f32, c: f32) -> Linear {
+    X * a + Y * b + c
+}
+
+
+/// Curve manifold type: `u² - v` where u, v are Linear.
+pub type Curve = Sub<Mul<Linear, Linear>, Linear>;
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Loop-Blinn Triangle Primitive
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A single triangle in Loop-Blinn representation.
 ///
-/// For curved triangles, the UV matrix maps screen (x, y) to texture (u, v)
-/// where the curve satisfies u² - v = 0.
-///
-/// For solid triangles, UV is set so u² - v = -1 (always inside curve).
-/// No runtime branching - same code path for both.
+/// Stores expression trees for evaluation + scalar coefficients for bounds/Jet2.
+/// Types ARE the shader graph - monomorphized into fused SIMD kernels.
 #[derive(Clone, Copy, Debug)]
 pub struct LoopBlinnTriangle {
-    /// Edge function coefficients for barycentric bounds.
-    /// Each edge: A*x + B*y + C ≥ 0 means inside.
-    /// Stored as [[A0, B0, C0], [A1, B1, C1], [A2, B2, C2]]
-    pub edges: [[f32; 3]; 3],
+    /// Edge functions as manifolds: e >= 0 means inside
+    pub edges: [Linear; 3],
+    /// Edge coefficients (a, b, c) for bounds and Jet2 evaluation
+    pub edge_coeffs: [[f32; 3]; 3],
 
-    /// UV transform: u = ua*x + ub*y + uc, v = va*x + vb*y + vc
-    /// For solid triangles: u=0, v=1 always → u² - v = -1 (inside)
-    /// Winding is baked in: multiply v by winding at construction.
+    /// The curve function f = u² - v
+    pub curve: Curve,
+
+    /// Precomputed gradient ∂f/∂x, ∂f/∂y as expression trees
+    pub grad_x: Linear,
+    pub grad_y: Linear,
+
+    /// U coefficients for Taylor error bound
     pub ua: f32,
     pub ub: f32,
-    pub uc: f32,
-    pub va: f32,
-    pub vb: f32,
-    pub vc: f32,
 }
 
 impl LoopBlinnTriangle {
@@ -114,65 +131,59 @@ impl LoopBlinnTriangle {
     /// UV is set so curve test always passes: u=0, v=1 → u²-v = -1 < 0
     #[inline]
     pub fn solid(vertices: [[f32; 2]; 3]) -> Self {
-        Self {
-            edges: compute_edge_functions(vertices),
-            // u = 0 always, v = 1 always → u² - v = -1 (always inside curve)
-            ua: 0.0, ub: 0.0, uc: 0.0,
-            va: 0.0, vb: 0.0, vc: 1.0,
-        }
+        let (edges, edge_coeffs) = compute_edges(vertices);
+        let u = linear(0.0, 0.0, 0.0);
+        let v = linear(0.0, 0.0, 1.0);
+        let curve = u * u - v;
+        // Gradient is 0 for solid triangles
+        let grad_x = linear(0.0, 0.0, 0.0);
+        let grad_y = linear(0.0, 0.0, 0.0);
+
+        Self { edges, edge_coeffs, curve, grad_x, grad_y, ua: 0.0, ub: 0.0 }
     }
 
     /// Create a curved triangle with quadratic Bézier edge.
     /// Winding is baked into the UV matrix (v is negated for CW).
     #[inline]
     pub fn curved(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], winding: f32) -> Self {
-        let vertices = [p0, p1, p2];
+        let (edges, edge_coeffs) = compute_edges([p0, p1, p2]);
         let [ua, ub, uc, va, vb, vc] = compute_uv_coeffs(p0, p1, p2, winding);
-        Self {
-            edges: compute_edge_functions(vertices),
-            ua, ub, uc, va, vb, vc,
-        }
+
+        // Build all manifolds from coefficients
+        let u = linear(ua, ub, uc);
+        let v = linear(va, vb, vc);
+        let curve = u * u - v;
+
+        // Gradient: ∂f/∂x = 2*u*ua - va, ∂f/∂y = 2*u*ub - vb
+        let grad_x = linear(2.0 * ua * ua, 2.0 * ua * ub, 2.0 * ua * uc - va);
+        let grad_y = linear(2.0 * ub * ua, 2.0 * ub * ub, 2.0 * ub * uc - vb);
+
+        Self { edges, edge_coeffs, curve, grad_x, grad_y, ua, ub }
     }
 
-    /// Compute the curve value f = u² - v with analytical derivatives.
-    /// Returns Jet2 with memoized gradient - no AD overhead.
-    ///
-    /// For f = u² - v where u = ua*x + ub*y + uc, v = va*x + vb*y + vc:
-    /// - ∂f/∂x = 2u·ua - va
-    /// - ∂f/∂y = 2u·ub - vb
+    /// Compute curve value with precomputed gradient as Jet2.
+    /// All expressions are stored - just contramap and evaluate.
     #[inline(always)]
     pub fn curve_jet(&self, x: Field, y: Field) -> Jet2 {
         let fzero = Field::from(0.0);
-
-        // u = ua*x + ub*y + uc
-        let u = (X * self.ua + Y * self.ub + self.uc).eval_raw(x, y, fzero, fzero);
-        // v = va*x + vb*y + vc
-        let v = (X * self.va + Y * self.vb + self.vc).eval_raw(x, y, fzero, fzero);
-
-        // f = u² - v
-        let val = (u * u - v).eval_raw(fzero, fzero, fzero, fzero);
-
-        // Analytical gradient: ∂f/∂x = 2u·ua - va, ∂f/∂y = 2u·ub - vb
-        let two_u = u + u;
-        let dx = (two_u * self.ua - self.va).eval_raw(fzero, fzero, fzero, fzero);
-        let dy = (two_u * self.ub - self.vb).eval_raw(fzero, fzero, fzero, fzero);
-
+        let val = self.curve.at(x, y, fzero, fzero).constant();
+        let dx = self.grad_x.at(x, y, fzero, fzero).constant();
+        let dy = self.grad_y.at(x, y, fzero, fzero).constant();
         Jet2::new(val, dx, dy)
     }
 
     /// Check if triangle could contribute to a tile using Taylor bounds.
-    ///
-    /// Uses Jet2 at tile center + Lagrange error bound for conservative test.
-    /// For quadratic u²-v, the error bound is exact: R₂ = (ua·hx + ub·hy)²
     #[inline(always)]
     pub fn might_affect_tile(&self, cx: Field, cy: Field, hx: f32, hy: f32) -> bool {
         let fzero = Field::from(0.0);
 
         // First check edge bounds - quick reject if tile is completely outside
-        for [a, b, c] in self.edges {
-            let edge_at_center = (X * a + Y * b + c).eval_raw(cx, cy, fzero, fzero);
+        for i in 0..3 {
+            let edge_at_center = self.edges[i].at(cx, cy, fzero, fzero).constant();
+            let [a, b, _c] = self.edge_coeffs[i];
             let max_dev = Field::from(a.abs() * hx + b.abs() * hy);
-            let min_edge = (edge_at_center - max_dev).eval_raw(fzero, fzero, fzero, fzero);
+            // Evaluate Field - Field to get concrete Field
+            let min_edge: Field = (edge_at_center - max_dev).constant();
             if !Field::ge(min_edge, fzero).any() {
                 return false;
             }
@@ -183,20 +194,22 @@ impl LoopBlinnTriangle {
 
         // Taylor bound: f ± |∂f/∂x|·hx ± |∂f/∂y|·hy ± R₂
         // R₂ = (ua·hx + ub·hy)² (exact for quadratic)
-        let linear_dev = (jet.dx.abs() * hx + jet.dy.abs() * hy).eval_raw(fzero, fzero, fzero, fzero);
+        let linear_dev = jet.dx.abs() * hx + jet.dy.abs() * hy;
         let u_dev = self.ua.abs() * hx + self.ub.abs() * hy;
-        let total_dev = (linear_dev + u_dev * u_dev).eval_raw(fzero, fzero, fzero, fzero);
+        let total_dev = linear_dev + u_dev * u_dev;
 
         // Curve might contribute if min value < 0.5
-        let min_f = (jet.val - total_dev).eval_raw(fzero, fzero, fzero, fzero);
+        let min_f: Field = (jet.val - total_dev).constant();
         Field::lt(min_f, Field::from(0.5)).any()
     }
 }
 
-/// Compute edge function coefficients for barycentric bounds.
+/// Compute edge functions as Linear manifolds + coefficients for bounds/Jet2.
 #[inline]
-fn compute_edge_functions(v: [[f32; 2]; 3]) -> [[f32; 3]; 3] {
-    let mut edges = [[0.0f32; 3]; 3];
+fn compute_edges(v: [[f32; 2]; 3]) -> ([Linear; 3], [[f32; 3]; 3]) {
+    let mut edges = [linear(0.0, 0.0, 0.0); 3];
+    let mut coeffs = [[0.0f32; 3]; 3];
+
     for i in 0..3 {
         let [x0, y0] = v[i];
         let [x1, y1] = v[(i + 1) % 3];
@@ -206,9 +219,12 @@ fn compute_edge_functions(v: [[f32; 2]; 3]) -> [[f32; 3]; 3] {
 
         let [x2, y2] = v[(i + 2) % 3];
         let sign = if a * x2 + b * y2 + c >= 0.0 { 1.0 } else { -1.0 };
-        edges[i] = [a * sign, b * sign, c * sign];
+        let (a, b, c) = (a * sign, b * sign, c * sign);
+
+        edges[i] = linear(a, b, c);
+        coeffs[i] = [a, b, c];
     }
-    edges
+    (edges, coeffs)
 }
 
 /// Compute UV coefficients for Loop-Blinn curve test.
@@ -257,47 +273,30 @@ impl Manifold<Field> for LoopBlinnTriangle {
 
     /// Evaluate triangle coverage with analytical AA.
     ///
-    /// Builds expression tree with X, Y variables, evaluates with seeded Jet2
-    /// to get value + derivatives in one pass via automatic differentiation.
+    /// Uses stored expression trees - no rebuilding.
+    /// Contramap binds coordinates, Select handles early exit.
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
-        let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
         let fzero = Field::from(0.0);
-        let jzero = Jet2::constant(fzero);
 
-        // Edge functions - evaluate with Field for fast early exit
-        let e0 = (X * a0 + Y * b0 + c0).eval_raw(x, y, fzero, fzero);
-        let e1 = (X * a1 + Y * b1 + c1).eval_raw(x, y, fzero, fzero);
-        let e2 = (X * a2 + Y * b2 + c2).eval_raw(x, y, fzero, fzero);
-        let edge_mask = Field::ge(e0, fzero) & Field::ge(e1, fzero) & Field::ge(e2, fzero);
+        // Edge mask from stored Linear manifolds
+        let [e0, e1, e2] = self.edges;
+        let edge_mask = e0.ge(0.0) & e1.ge(0.0) & e2.ge(0.0);
 
-        if !edge_mask.any() {
-            return fzero;
-        }
+        // Gradient magnitude from stored Linear manifolds
+        let grad_mag = (self.grad_x * self.grad_x + self.grad_y * self.grad_y)
+            .sqrt()
+            .max(1e-6);
 
-        // Build curve expression tree: f = u² - v
-        let u = X * self.ua + Y * self.ub + self.uc;
-        let v = X * self.va + Y * self.vb + self.vc;
-        let f = u * u - v;
+        // Coverage: 0.5 - f/|∇f|, clamped to [0,1]
+        let signed_dist = self.curve / grad_mag;
+        let coverage = (signed_dist * -1.0 + 0.5).max(0.0).min(1.0);
 
-        // Evaluate with seeded Jets - derivatives propagate via chain rule!
-        let jx = Jet2::x(x);  // ∂x/∂x = 1, ∂x/∂y = 0
-        let jy = Jet2::y(y);  // ∂y/∂x = 0, ∂y/∂y = 1
-        let jet: Jet2 = f.eval_raw(jx, jy, jzero, jzero);
-        // jet.val = u²-v, jet.dx = 2u·ua - va, jet.dy = 2u·ub - vb
+        // Select with edge mask (lazy, convergent optimization)
+        let result = edge_mask.select(coverage, 0.0);
 
-        // Gradient magnitude for signed distance
-        // Use .constant() to materialize expression trees to Field
-        let grad_mag_sq: Field = (jet.dx * jet.dx + jet.dy * jet.dy).constant();
-        let grad_mag = Field::max(grad_mag_sq.sqrt(), Field::from(1e-6));
-
-        // Coverage from signed distance: 0.5 - f/|∇f|, clamped to [0,1]
-        let signed_dist: Field = (jet.val / grad_mag).constant();
-        let coverage: Field = (Field::from(0.5) - signed_dist).constant();
-        let curve_coverage = Field::min(Field::max(coverage, fzero), Field::from(1.0));
-
-        // Apply edge mask via select combinator
-        edge_mask.select(curve_coverage, fzero).eval_raw(fzero, fzero, fzero, fzero)
+        // Contramap to concrete coordinates and evaluate
+        result.at(x, y, fzero, fzero).constant()
     }
 }
 
@@ -309,42 +308,37 @@ impl Manifold<Jet2> for LoopBlinnTriangle {
     fn eval_raw(&self, x: Jet2, y: Jet2, _z: Jet2, _w: Jet2) -> Jet2 {
         let zero = Jet2::constant(Field::from(0.0));
         let half = Field::from(0.5);
-        let [[a0, b0, c0], [a1, b1, c1], [a2, b2, c2]] = self.edges;
 
-        // Edge functions
-        let e0 = x * Jet2::constant(Field::from(a0))
-               + y * Jet2::constant(Field::from(b0))
-               + Jet2::constant(Field::from(c0));
-        let e1 = x * Jet2::constant(Field::from(a1))
-               + y * Jet2::constant(Field::from(b1))
-               + Jet2::constant(Field::from(c1));
-        let e2 = x * Jet2::constant(Field::from(a2))
-               + y * Jet2::constant(Field::from(b2))
-               + Jet2::constant(Field::from(c2));
+        // Edge functions using stored coefficients
+        let eval_edge = |coeffs: [f32; 3], x: Jet2, y: Jet2| -> Jet2 {
+            let [a, b, c] = coeffs;
+            x * Jet2::constant(Field::from(a))
+                + y * Jet2::constant(Field::from(b))
+                + Jet2::constant(Field::from(c))
+        };
 
-        // Use Jet2:: to avoid ManifoldExt trait shadowing
+        let e0 = eval_edge(self.edge_coeffs[0], x, y);
+        let e1 = eval_edge(self.edge_coeffs[1], x, y);
+        let e2 = eval_edge(self.edge_coeffs[2], x, y);
+
         let inside_edges = Jet2::ge(e0, zero) & Jet2::ge(e1, zero) & Jet2::ge(e2, zero);
         if !inside_edges.val.any() {
             return zero;
         }
 
-        // UV and curve (Jet2 carries derivatives for composition)
-        let u = x * Jet2::constant(Field::from(self.ua))
-              + y * Jet2::constant(Field::from(self.ub))
-              + Jet2::constant(Field::from(self.uc));
-        let v = x * Jet2::constant(Field::from(self.va))
-              + y * Jet2::constant(Field::from(self.vb))
-              + Jet2::constant(Field::from(self.vc));
-        let f = u * u - v;
-
-        // Use Jet2's AD for gradient (for composition correctness)
-        let grad_mag = (f.dx * f.dx + f.dy * f.dy).sqrt().max(Field::from(1e-6));
-        let signed_dist = f.val / grad_mag;
-        let coverage = (half - signed_dist).max(Field::from(0.0)).min(Field::from(1.0));
-
+        // Evaluate curve at Jet2 coordinates (for composition)
         let fzero = Field::from(0.0);
-        let result = coverage.eval_raw(fzero, fzero, fzero, fzero);
-        (inside_edges & Jet2::constant(result)) | (!inside_edges & zero)
+        let curve_val = self.curve.at(x.val, y.val, fzero, fzero).constant();
+        let grad_x_val = self.grad_x.at(x.val, y.val, fzero, fzero).constant();
+        let grad_y_val = self.grad_y.at(x.val, y.val, fzero, fzero).constant();
+
+        let grad_mag = (grad_x_val * grad_x_val + grad_y_val * grad_y_val)
+            .sqrt()
+            .max(Field::from(1e-6));
+        let signed_dist = curve_val / grad_mag;
+        let coverage: Field = (half - signed_dist).max(Field::from(0.0)).min(Field::from(1.0)).constant();
+
+        (inside_edges & Jet2::constant(coverage)) | (!inside_edges & zero)
     }
 }
 
