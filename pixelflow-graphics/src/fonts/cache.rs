@@ -75,7 +75,10 @@ impl CachedGlyph {
     /// Create a cached glyph by baking a glyph manifold.
     ///
     /// The glyph is rasterized at `size × size` resolution.
-    pub fn new(glyph: &Glyph, size: usize) -> Self {
+    pub fn new<L, Q>(glyph: &Glyph<L, Q>, size: usize) -> Self
+    where
+        Glyph<L, Q>: Clone,
+    {
         // Rasterize glyph to RGBA frame using Grayscale (coverage → grayscale)
         let lifted = Grayscale(glyph.clone());
         let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
