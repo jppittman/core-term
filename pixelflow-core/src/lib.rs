@@ -174,6 +174,9 @@ pub use ops::logic::*;
 pub use ops::unary::*;
 pub use variables::*;
 
+// Differentiable trait for manifolds with analytical gradients
+pub use manifold::Differentiable;
+
 // ============================================================================
 // Field: The ONLY User-Facing SIMD Type
 // ============================================================================

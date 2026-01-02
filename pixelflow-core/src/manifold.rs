@@ -381,3 +381,36 @@ pub fn scale<M>(inner: M, scale_factor: f64) -> Scale<M> {
         w: crate::W,
     }
 }
+
+// ============================================================================
+// Differentiable Trait
+// ============================================================================
+
+/// A manifold that can provide analytical gradients.
+///
+/// **Key insight:** Differentiable manifolds of Field ↔ Manifolds of Jet2
+///
+/// - All differentiable manifolds can return Jet2 (value + gradients)
+/// - All manifolds returning Jet2 are differentiable
+///
+/// This trait uses associated types to specify which coordinates the manifold
+/// differentiates with respect to, enabling efficient analytical derivatives
+/// without wasteful autodiff propagation.
+///
+/// # Example
+///
+/// ```ignore
+/// // A quadratic curve with analytical derivatives
+/// impl<K, D> Differentiable for Quad<K, D> {
+///     type DiffWrt = (X, Y);  // Differentiable w.r.t. spatial coordinates
+/// }
+/// ```
+pub trait Differentiable {
+    /// Which coordinates this manifold is differentiable with respect to.
+    ///
+    /// Common values:
+    /// - `(X, Y)` — Spatial derivatives (most common for 2D graphics)
+    /// - `(X, Y, Z)` — 3D spatial derivatives
+    /// - `(X, Y, Z, W)` — Full 4D derivatives
+    type DiffWrt;
+}
