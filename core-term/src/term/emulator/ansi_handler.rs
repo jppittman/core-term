@@ -129,12 +129,12 @@ pub(super) fn process_ansi_command(
             }
             CsiCommand::CursorNextLine(n) => {
                 emulator.cursor_down(n.max(1) as usize);
-                emulator.carriage_return(); // Call as method
+                emulator.carriage_return();
                 None
             }
             CsiCommand::CursorPrevLine(n) => {
                 emulator.cursor_up(n.max(1) as usize);
-                emulator.carriage_return(); // Call as method
+                emulator.carriage_return();
                 None
             }
             CsiCommand::CursorCharacterAbsolute(n) => {
@@ -146,31 +146,31 @@ pub(super) fn process_ansi_command(
                 None
             }
             CsiCommand::EraseInDisplay(mode_val) => {
-                emulator.erase_in_display(EraseMode::from(mode_val)); // Call as method
+                emulator.erase_in_display(EraseMode::from(mode_val));
                 None
             }
             CsiCommand::EraseInLine(mode_val) => {
-                emulator.erase_in_line(EraseMode::from(mode_val)); // Call as method
+                emulator.erase_in_line(EraseMode::from(mode_val));
                 None
             }
             CsiCommand::InsertCharacter(n) => {
-                emulator.insert_blank_chars(n.max(1) as usize); // Call as method
+                emulator.insert_blank_chars(n.max(1) as usize);
                 None
             }
             CsiCommand::DeleteCharacter(n) => {
-                emulator.delete_chars(n.max(1) as usize); // Call as method
+                emulator.delete_chars(n.max(1) as usize);
                 None
             }
             CsiCommand::InsertLine(n) => {
-                emulator.insert_lines(n.max(1) as usize); // Call as method
+                emulator.insert_lines(n.max(1) as usize);
                 None
             }
             CsiCommand::DeleteLine(n) => {
-                emulator.delete_lines(n.max(1) as usize); // Call as method
+                emulator.delete_lines(n.max(1) as usize);
                 None
             }
             CsiCommand::SetGraphicsRendition(attrs_vec) => {
-                emulator.handle_sgr_attributes(attrs_vec); // Call as method
+                emulator.handle_sgr_attributes(attrs_vec);
                 None
             }
             CsiCommand::SetMode(mode_num) => {
@@ -185,30 +185,30 @@ pub(super) fn process_ansi_command(
             CsiCommand::ResetModePrivate(mode_num) => {
                 emulator.handle_set_mode(Mode::DecPrivate(mode_num), ModeAction::Disable)
             }
-            CsiCommand::DeviceStatusReport(dsr_param) => {
-                if dsr_param == DSR_DEFAULT || dsr_param == DSR_REPORT_CURSOR_POSITION {
+            CsiCommand::DeviceStatusReport(dsr_param) => match dsr_param {
+                DSR_DEFAULT | DSR_REPORT_CURSOR_POSITION => {
                     let screen_ctx = emulator.current_screen_context();
                     let (abs_x, abs_y) =
                         emulator.cursor_controller.physical_screen_pos(&screen_ctx);
                     let response = format!("\x1B[{};{}R", abs_y + 1, abs_x + 1);
                     Some(EmulatorAction::WritePty(response.into_bytes()))
-                } else if dsr_param == DSR_STATUS_OK {
-                    Some(EmulatorAction::WritePty(DSR_RESPONSE_OK.to_vec()))
-                } else {
+                }
+                DSR_STATUS_OK => Some(EmulatorAction::WritePty(DSR_RESPONSE_OK.to_vec())),
+                _ => {
                     warn!("Unhandled DSR parameter: {}", dsr_param);
                     None
                 }
-            }
+            },
             CsiCommand::EraseCharacter(n) => {
-                emulator.erase_chars(n.max(1) as usize); // Call as method
+                emulator.erase_chars(n.max(1) as usize);
                 None
             }
             CsiCommand::ScrollUp(n) => {
-                emulator.scroll_up(n.max(1) as usize); // Call as method
+                emulator.scroll_up(n.max(1) as usize);
                 None
             }
             CsiCommand::ScrollDown(n) => {
-                emulator.scroll_down(n.max(1) as usize); // Call as method
+                emulator.scroll_down(n.max(1) as usize);
                 None
             }
             CsiCommand::SaveCursor | CsiCommand::SaveCursorAnsi => {
@@ -269,9 +269,9 @@ pub(super) fn process_ansi_command(
                 None
             }
         },
-        AnsiCommand::Osc(data) => emulator.handle_osc(data), // Call as method
+        AnsiCommand::Osc(data) => emulator.handle_osc(data),
         AnsiCommand::Print(ch) => {
-            emulator.print_char(ch); // Call as method
+            emulator.print_char(ch);
             None
         }
         _ => {
