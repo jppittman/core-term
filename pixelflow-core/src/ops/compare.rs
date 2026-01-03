@@ -170,6 +170,24 @@ pub struct SoftSelect<Mask, IfTrue, IfFalse> {
     pub if_false: IfFalse,
 }
 
+// Hermite interpolation coefficients for smoothstep: 3t² - 2t³
+const HERMITE_CUBIC: f32 = -2.0;
+const HERMITE_QUAD: f32 = 3.0;
+
+/// Smooth sigmoid via Hermite polynomial (smoothstep).
+/// t = clamp((diff/k + 1)/2, 0, 1)
+/// result = 3t² - 2t³
+#[inline(always)]
+fn smoothstep_sigmoid(diff: Jet2, sharpness: f32) -> Jet2 {
+    let k = Jet2::from_f32(sharpness);
+    let t = ((diff / k) + Jet2::from_f32(1.0)) / Jet2::from_f32(2.0);
+    let t = t.max(Jet2::from_f32(0.0)).min(Jet2::from_f32(1.0));
+
+    let t2 = t * t;
+    let t3 = t2 * t;
+    t3 * Jet2::from_f32(HERMITE_CUBIC) + t2 * Jet2::from_f32(HERMITE_QUAD)
+}
+
 impl<L, R> Manifold<Jet2> for SoftGt<L, R>
 where
     L: Manifold<Jet2, Output = Jet2>,
@@ -182,15 +200,7 @@ where
         let right_val = self.right.eval_raw(x, y, z, w);
         let diff = left_val - right_val;
 
-        // Smooth sigmoid via Hermite polynomial
-        // t = clamp((diff/k + 1)/2, 0, 1), then smoothstep: 3t² - 2t³
-        let k = Jet2::from_f32(self.sharpness);
-        let t = ((diff / k) + Jet2::from_f32(1.0)) / Jet2::from_f32(2.0);
-        let t = t.max(Jet2::from_f32(0.0)).min(Jet2::from_f32(1.0));
-
-        let t2 = t * t;
-        let t3 = t2 * t;
-        t3 * Jet2::from_f32(-2.0) + t2 * Jet2::from_f32(3.0)
+        smoothstep_sigmoid(diff, self.sharpness)
     }
 }
 
@@ -206,13 +216,7 @@ where
         let right_val = self.right.eval_raw(x, y, z, w);
         let diff = right_val - left_val; // Reversed for Lt
 
-        let k = Jet2::from_f32(self.sharpness);
-        let t = ((diff / k) + Jet2::from_f32(1.0)) / Jet2::from_f32(2.0);
-        let t = t.max(Jet2::from_f32(0.0)).min(Jet2::from_f32(1.0));
-
-        let t2 = t * t;
-        let t3 = t2 * t;
-        t3 * Jet2::from_f32(-2.0) + t2 * Jet2::from_f32(3.0)
+        smoothstep_sigmoid(diff, self.sharpness)
     }
 }
 
