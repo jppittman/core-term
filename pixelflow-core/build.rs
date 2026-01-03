@@ -3,6 +3,11 @@ fn main() {
     // This allows us to use cfg(pixelflow_avx512f) instead of cfg(target_feature = "avx512f"),
     // which doesn't work with target-cpu=native.
 
+    // Register custom cfg names to avoid warnings
+    println!("cargo::rustc-check-cfg=cfg(pixelflow_avx512f)");
+    println!("cargo::rustc-check-cfg=cfg(pixelflow_avx2)");
+    println!("cargo::rustc-check-cfg=cfg(pixelflow_neon)");
+
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx512f") {
