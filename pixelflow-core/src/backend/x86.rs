@@ -1240,12 +1240,13 @@ impl SimdOps for F32x16 {
     #[inline(always)]
     fn sequential(start: f32) -> Self {
         unsafe {
-            // Construct sequentially.
-            let mut arr = [0.0; 16];
-            for i in 0..16 {
-                arr[i] = start + i as f32;
-            }
-            Self(_mm512_loadu_ps(arr.as_ptr()))
+            // _mm512_set_ps args are in reverse order: e15, e14, ..., e1, e0
+            let base = _mm512_set1_ps(start);
+            let increments = _mm512_set_ps(
+                15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0,
+                7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0,
+            );
+            Self(_mm512_add_ps(base, increments))
         }
     }
 
