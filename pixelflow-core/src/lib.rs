@@ -183,34 +183,28 @@ pub use manifold::Differentiable;
 
 use backend::{Backend, MaskOps, SimdOps, SimdU32Ops};
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+// Use custom cfg flags emitted by build.rs for CPU feature detection.
+// This works with target-cpu=native unlike cfg(target_feature).
+#[cfg(all(target_arch = "x86_64", pixelflow_avx512f))]
 type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(all(target_arch = "x86_64", pixelflow_avx512f))]
 type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
 
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    target_feature = "avx2"
-))]
+#[cfg(all(target_arch = "x86_64", not(pixelflow_avx512f), pixelflow_avx2))]
 type NativeSimd = <backend::x86::Avx2 as Backend>::F32;
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    target_feature = "avx2"
-))]
+#[cfg(all(target_arch = "x86_64", not(pixelflow_avx512f), pixelflow_avx2))]
 type NativeU32Simd = <backend::x86::Avx2 as Backend>::U32;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
+    not(pixelflow_avx512f),
+    not(pixelflow_avx2)
 ))]
 type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
 #[cfg(all(
     target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
+    not(pixelflow_avx512f),
+    not(pixelflow_avx2)
 ))]
 type NativeU32Simd = <backend::x86::Sse2 as Backend>::U32;
 
