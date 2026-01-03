@@ -1,4 +1,4 @@
-// myterm/src/term/screen.rs
+// src/term/screen.rs
 
 //! Represents the state of the terminal screen, including display grids,
 //! scrollback, and styling attributes.
@@ -67,6 +67,14 @@ impl From<u16> for TabClearMode {
             }
         }
     }
+}
+
+/// Helper struct to encapsulate context needed for extracting selected text.
+struct SelectionContext<'a> {
+    norm_start: Point,
+    norm_end: Point,
+    grid: &'a Grid,
+    buffer: &'a mut String,
 }
 
 /// Represents the state of the terminal screen.
@@ -960,20 +968,16 @@ impl Screen {
         let mut selected_text_buffer = String::with_capacity(capacity);
         let grid_to_use = self.active_grid();
 
+        let ctx = SelectionContext {
+            norm_start: norm_start_point,
+            norm_end: norm_end_point,
+            grid: grid_to_use,
+            buffer: &mut selected_text_buffer,
+        };
+
         match self.selection.mode {
-            SelectionMode::Cell => self.get_selected_text_cell(
-                norm_start_point,
-                norm_end_point,
-                grid_to_use,
-                &mut selected_text_buffer,
-            ),
-            SelectionMode::Block => self.get_selected_text_block(
-                range,
-                norm_start_point,
-                norm_end_point,
-                grid_to_use,
-                &mut selected_text_buffer,
-            ),
+            SelectionMode::Cell => self.get_selected_text_cell(ctx),
+            SelectionMode::Block => self.get_selected_text_block(ctx),
         }
 
         if selected_text_buffer.is_empty() {
@@ -984,14 +988,13 @@ impl Screen {
     }
 
     /// Helper for retrieving text in `SelectionMode::Cell`.
-    fn get_selected_text_cell(
-        &self,
-        norm_start_point: Point,
-        norm_end_point: Point,
-        grid: &Grid,
-        buffer: &mut String,
-    ) {
+    fn get_selected_text_cell(&self, ctx: SelectionContext) {
         use crate::glyph::WIDE_CHAR_PLACEHOLDER;
+
+        let norm_start_point = ctx.norm_start;
+        let norm_end_point = ctx.norm_end;
+        let grid = ctx.grid;
+        let buffer = ctx.buffer;
 
         for y_abs in norm_start_point.y..=norm_end_point.y {
             if y_abs >= grid.len() {
@@ -1058,20 +1061,18 @@ impl Screen {
     }
 
     /// Helper for retrieving text in `SelectionMode::Block`.
-    fn get_selected_text_block(
-        &self,
-        range: &SelectionRange,
-        norm_start_point: Point,
-        norm_end_point: Point,
-        grid: &Grid,
-        buffer: &mut String,
-    ) {
+    fn get_selected_text_block(&self, ctx: SelectionContext) {
         use crate::glyph::WIDE_CHAR_PLACEHOLDER;
 
         // For block selection, we take the rectangular region defined by
         // the min/max x coordinates across all lines.
-        let min_x = std_min(range.start.x, range.end.x);
-        let max_x = max(range.start.x, range.end.x);
+        let min_x = std_min(ctx.norm_start.x, ctx.norm_end.x);
+        let max_x = max(ctx.norm_start.x, ctx.norm_end.x);
+
+        let norm_start_point = ctx.norm_start;
+        let norm_end_point = ctx.norm_end;
+        let grid = ctx.grid;
+        let buffer = ctx.buffer;
 
         for y in norm_start_point.y..=norm_end_point.y {
             if y >= grid.len() {
