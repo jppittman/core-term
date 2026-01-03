@@ -155,6 +155,9 @@ pub mod ops;
 /// Combinators (Select, Fix).
 pub mod combinators;
 
+/// Fractal manifolds (Mandelbrot, Julia, Burning Ship).
+pub mod fractals;
+
 /// Fluent API extensions.
 pub mod ext;
 
@@ -176,6 +179,9 @@ pub use variables::*;
 
 // Differentiable trait for manifolds with analytical gradients
 pub use manifold::Differentiable;
+
+// Fractal manifolds
+pub use fractals::{BurningShip, Julia, Mandelbrot};
 
 // ============================================================================
 // Field: The ONLY User-Facing SIMD Type

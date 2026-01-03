@@ -178,6 +178,9 @@ pub mod transform;
 pub use baked::Baked;
 pub use transform::Scale;
 
+// Re-export fractal types from pixelflow-core for convenience
+pub use pixelflow_core::fractals::{BurningShip, Julia, Mandelbrot};
+
 // Re-export fonts (user-facing types only; internal combinators like Affine/Sum stay in fonts::ttf)
 pub use fonts::{CachedGlyph, CachedText, Font, Glyph, GlyphCache};
 
