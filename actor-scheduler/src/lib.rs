@@ -91,9 +91,11 @@
 
 mod error;
 pub mod work_pool;
+pub mod mpmc_ring;
 
 pub use error::SendError;
 pub use work_pool::{WorkPoolActor, WorkPoolConfig};
+pub use mpmc_ring::{mpmc_ring, MpmcReceiver, MpmcSender, MpmcRing};
 
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, troupe};

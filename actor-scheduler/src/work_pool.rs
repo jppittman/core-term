@@ -71,10 +71,9 @@
 //! └────────────────────────────────────────────────────┘
 //! ```
 
-use crate::{Actor, ParkHint};
+use crate::{Actor, ParkHint, MpmcRing};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 /// Configuration for WorkPoolActor
@@ -117,9 +116,9 @@ impl Default for WorkPoolConfig {
 pub struct WorkPoolActor<T> {
     config: WorkPoolConfig,
 
-    // Shared queues (sender side for supervisor)
-    control_tx: Sender<T>,
-    data_tx: Sender<T>,
+    // Lock-free shared queues
+    control_ring: Arc<MpmcRing<T>>,
+    data_ring: Arc<MpmcRing<T>>,
 
     // Worker thread handles
     workers: Vec<JoinHandle<()>>,
@@ -154,20 +153,17 @@ where
     where
         F: Fn(T) + Send + Sync + 'static,
     {
-        let (control_tx, control_rx) = mpsc::channel();
-        let (data_tx, data_rx) = mpsc::channel();
+        // Lock-free rings (power-of-2 capacities)
+        let control_ring = Arc::new(MpmcRing::new(128));
+        let data_ring = Arc::new(MpmcRing::new(1024));
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_fn = Arc::new(worker_fn);
-
-        // Wrap receivers in Arc<Mutex> for sharing across workers
-        let control_rx = Arc::new(Mutex::new(control_rx));
-        let data_rx = Arc::new(Mutex::new(data_rx));
 
         // Spawn worker threads
         let mut workers = Vec::new();
         for worker_id in 0..config.num_workers {
-            let control_rx = Arc::clone(&control_rx);
-            let data_rx = Arc::clone(&data_rx);
+            let control_ring = Arc::clone(&control_ring);
+            let data_ring = Arc::clone(&data_ring);
             let shutdown = Arc::clone(&shutdown);
             let worker_fn = Arc::clone(&worker_fn);
 
@@ -180,8 +176,8 @@ where
                 .spawn(move || {
                     Self::worker_loop(
                         worker_id,
-                        control_rx,
-                        data_rx,
+                        control_ring,
+                        data_ring,
                         shutdown,
                         worker_fn,
                     );
@@ -193,18 +189,18 @@ where
 
         Self {
             config,
-            control_tx,
-            data_tx,
+            control_ring,
+            data_ring,
             workers,
             shutdown,
         }
     }
 
-    /// Worker thread loop - priority-aware work stealing
+    /// Worker thread loop - priority-aware lock-free work stealing
     fn worker_loop(
         _worker_id: usize,
-        control_rx: Arc<Mutex<Receiver<T>>>,
-        data_rx: Arc<Mutex<Receiver<T>>>,
+        control_ring: Arc<MpmcRing<T>>,
+        data_ring: Arc<MpmcRing<T>>,
         shutdown: Arc<AtomicBool>,
         worker_fn: Arc<dyn Fn(T) + Send + Sync>,
     ) {
@@ -214,26 +210,21 @@ where
                 return;
             }
 
-            // 1. Try Control queue first (priority) - non-blocking
-            if let Ok(guard) = control_rx.try_lock() {
-                if let Ok(task) = guard.try_recv() {
-                    drop(guard); // Release lock before processing
-                    worker_fn(task);
-                    continue;
-                }
+            // 1. Try Control queue first (priority) - lock-free!
+            if let Some(task) = control_ring.try_pop() {
+                worker_fn(task);
+                continue;
             }
 
-            // 2. Try Data queue - non-blocking
-            if let Ok(guard) = data_rx.try_lock() {
-                if let Ok(task) = guard.try_recv() {
-                    drop(guard); // Release lock before processing
-                    worker_fn(task);
-                    continue;
-                }
+            // 2. Try Data queue - lock-free!
+            if let Some(task) = data_ring.try_pop() {
+                worker_fn(task);
+                continue;
             }
 
-            // 3. No work available - yield and retry
-            thread::yield_now();
+            // 3. No work available - backoff
+            // TODO: Smarter backoff (exponential, then park)
+            std::hint::spin_loop();
         }
     }
 
@@ -248,19 +239,19 @@ where
     T: Send + 'static,
 {
     fn handle_control(&mut self, msg: T) {
-        // Send to Control channel - workers check this first
-        let _ = self.control_tx.send(msg);
+        // Push to Control ring - lock-free, workers check this first
+        self.control_ring.push(msg);
     }
 
     fn handle_management(&mut self, msg: T) {
-        // For now, route to data channel
-        // Could add separate management channel if needed
-        let _ = self.data_tx.send(msg);
+        // For now, route to data ring
+        // Could add separate management ring if needed
+        self.data_ring.push(msg);
     }
 
     fn handle_data(&mut self, msg: T) {
-        // Send to Data channel - workers steal from here
-        let _ = self.data_tx.send(msg);
+        // Push to Data ring - lock-free, workers steal from here
+        self.data_ring.push(msg);
     }
 
     fn park(&mut self, _hint: ParkHint) -> ParkHint {
