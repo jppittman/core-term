@@ -183,28 +183,40 @@ pub use manifold::Differentiable;
 
 use backend::{Backend, MaskOps, SimdOps, SimdU32Ops};
 
-// Use custom cfg flags emitted by build.rs for CPU feature detection.
-// This works with target-cpu=native unlike cfg(target_feature).
-#[cfg(all(target_arch = "x86_64", pixelflow_avx512f))]
+// Backend selection: Use target-cpu=native intrinsics with build.rs preference hints.
+// Build.rs detects the build machine's CPU and emits pixelflow_* flags for optimal selection.
+// The actual backend availability still requires target_feature (enabled by target-cpu=native).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
 type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
-#[cfg(all(target_arch = "x86_64", pixelflow_avx512f))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
 type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
-
-#[cfg(all(target_arch = "x86_64", not(pixelflow_avx512f), pixelflow_avx2))]
-type NativeSimd = <backend::x86::Avx2 as Backend>::F32;
-#[cfg(all(target_arch = "x86_64", not(pixelflow_avx512f), pixelflow_avx2))]
-type NativeU32Simd = <backend::x86::Avx2 as Backend>::U32;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(pixelflow_avx512f),
-    not(pixelflow_avx2)
+    target_feature = "avx2",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    pixelflow_avx2
+))]
+type NativeSimd = <backend::x86::Avx2 as Backend>::F32;
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    pixelflow_avx2
+))]
+type NativeU32Simd = <backend::x86::Avx2 as Backend>::U32;
+
+// Fallback to SSE2 (always available on x86_64)
+#[cfg(all(
+    target_arch = "x86_64",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    not(all(target_feature = "avx2", pixelflow_avx2))
 ))]
 type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
 #[cfg(all(
     target_arch = "x86_64",
-    not(pixelflow_avx512f),
-    not(pixelflow_avx2)
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    not(all(target_feature = "avx2", pixelflow_avx2))
 ))]
 type NativeU32Simd = <backend::x86::Sse2 as Backend>::U32;
 
