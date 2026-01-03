@@ -60,6 +60,26 @@ pub enum NamedColor {
     BrightWhite = 15,
 }
 
+// Precomputed RGB values for the 16 standard named colors
+const NAMED_RGB_LUT: [(u8, u8, u8); 16] = [
+    (0, 0, 0),       // Black
+    (205, 0, 0),     // Red
+    (0, 205, 0),     // Green
+    (205, 205, 0),   // Yellow
+    (0, 0, 238),     // Blue
+    (205, 0, 205),   // Magenta
+    (0, 205, 205),   // Cyan
+    (229, 229, 229), // White
+    (127, 127, 127), // BrightBlack
+    (255, 0, 0),     // BrightRed
+    (0, 255, 0),     // BrightGreen
+    (255, 255, 0),   // BrightYellow
+    (92, 92, 255),   // BrightBlue
+    (255, 0, 255),   // BrightMagenta
+    (0, 255, 255),   // BrightCyan
+    (255, 255, 255), // BrightWhite
+];
+
 impl NamedColor {
     /// Convert a u8 index (0-15) to a NamedColor.
     pub fn from_index(idx: u8) -> Self {
@@ -68,25 +88,9 @@ impl NamedColor {
     }
 
     /// Returns the RGB representation of this named color.
+    #[inline]
     pub fn to_rgb(self) -> (u8, u8, u8) {
-        match self {
-            NamedColor::Black => (0, 0, 0),
-            NamedColor::Red => (205, 0, 0),
-            NamedColor::Green => (0, 205, 0),
-            NamedColor::Yellow => (205, 205, 0),
-            NamedColor::Blue => (0, 0, 238),
-            NamedColor::Magenta => (205, 0, 205),
-            NamedColor::Cyan => (0, 205, 205),
-            NamedColor::White => (229, 229, 229),
-            NamedColor::BrightBlack => (127, 127, 127),
-            NamedColor::BrightRed => (255, 0, 0),
-            NamedColor::BrightGreen => (0, 255, 0),
-            NamedColor::BrightYellow => (255, 255, 0),
-            NamedColor::BrightBlue => (92, 92, 255),
-            NamedColor::BrightMagenta => (255, 0, 255),
-            NamedColor::BrightCyan => (0, 255, 255),
-            NamedColor::BrightWhite => (255, 255, 255),
-        }
+        NAMED_RGB_LUT[self as usize]
     }
 }
 
@@ -176,11 +180,53 @@ impl pixelflow_core::Manifold for Color {
 }
 
 // Constants for 256-color palette conversion
-const ANSI_NAMED_COLOR_COUNT: u8 = 16;
-const COLOR_CUBE_OFFSET: u8 = 16;
-const COLOR_CUBE_SIZE: u8 = 6;
-const COLOR_CUBE_TOTAL_COLORS: u8 = COLOR_CUBE_SIZE * COLOR_CUBE_SIZE * COLOR_CUBE_SIZE;
-const GRAYSCALE_OFFSET: u8 = COLOR_CUBE_OFFSET + COLOR_CUBE_TOTAL_COLORS;
+// const ANSI_NAMED_COLOR_COUNT: u8 = 16;
+// const COLOR_CUBE_OFFSET: u8 = 16;
+// const COLOR_CUBE_SIZE: u8 = 6;
+// const COLOR_CUBE_TOTAL_COLORS: u8 = COLOR_CUBE_SIZE * COLOR_CUBE_SIZE * COLOR_CUBE_SIZE;
+// const GRAYSCALE_OFFSET: u8 = COLOR_CUBE_OFFSET + COLOR_CUBE_TOTAL_COLORS;
+
+// Precomputed 256-color palette LUT
+// Generated to match the logic in the original From<Color> implementation
+const PALETTE_256_LUT: [(u8, u8, u8); 256] = {
+    let mut palette = [(0, 0, 0); 256];
+
+    // 0-15: Standard Named Colors
+    let mut i = 0;
+    while i < 16 {
+        palette[i] = NAMED_RGB_LUT[i];
+        i += 1;
+    }
+
+    // 16-231: 6x6x6 Color Cube
+    let mut r = 0;
+    while r < 6 {
+        let mut g = 0;
+        while g < 6 {
+            let mut b = 0;
+            while b < 6 {
+                let r_val = if r == 0 { 0 } else { r * 40 + 55 };
+                let g_val = if g == 0 { 0 } else { g * 40 + 55 };
+                let b_val = if b == 0 { 0 } else { b * 40 + 55 };
+                let idx = 16 + r * 36 + g * 6 + b;
+                palette[idx as usize] = (r_val, g_val, b_val);
+                b += 1;
+            }
+            g += 1;
+        }
+        r += 1;
+    }
+
+    // 232-255: Grayscale Ramp
+    let mut i = 0;
+    while i < 24 {
+        let level = i * 10 + 8;
+        palette[(232 + i) as usize] = (level, level, level);
+        i += 1;
+    }
+
+    palette
+};
 
 impl From<Color> for u32 {
     /// Convert a Color to a u32 pixel value (RGBA format: 0xAABBGGRR).
@@ -188,26 +234,7 @@ impl From<Color> for u32 {
         let (r, g, b) = match color {
             Color::Default => (0, 0, 0),
             Color::Named(named) => named.to_rgb(),
-            Color::Indexed(idx) => {
-                if idx < ANSI_NAMED_COLOR_COUNT {
-                    NamedColor::from_index(idx).to_rgb()
-                } else if idx < GRAYSCALE_OFFSET {
-                    // 6x6x6 Color Cube (indices 16-231)
-                    let cube_idx = idx - COLOR_CUBE_OFFSET;
-                    let r_comp = (cube_idx / (COLOR_CUBE_SIZE * COLOR_CUBE_SIZE)) % COLOR_CUBE_SIZE;
-                    let g_comp = (cube_idx / COLOR_CUBE_SIZE) % COLOR_CUBE_SIZE;
-                    let b_comp = cube_idx % COLOR_CUBE_SIZE;
-                    let r_val = if r_comp == 0 { 0 } else { r_comp * 40 + 55 };
-                    let g_val = if g_comp == 0 { 0 } else { g_comp * 40 + 55 };
-                    let b_val = if b_comp == 0 { 0 } else { b_comp * 40 + 55 };
-                    (r_val, g_val, b_val)
-                } else {
-                    // Grayscale ramp (indices 232-255)
-                    let gray_idx = idx - GRAYSCALE_OFFSET;
-                    let level = gray_idx * 10 + 8;
-                    (level, level, level)
-                }
-            }
+            Color::Indexed(idx) => PALETTE_256_LUT[idx as usize],
             Color::Rgb(r, g, b) => (r, g, b),
         };
         u32::from_le_bytes([r, g, b, 255])
@@ -552,5 +579,35 @@ mod tests {
         assert_eq!(bgra.g(), 0x22);
         assert_eq!(bgra.b(), 0x33);
         assert_eq!(bgra.a(), 0xFF);
+    }
+
+    #[test]
+    fn test_named_color_lut_consistency() {
+        // Verify a few keys to ensure LUT matches old manual values
+        assert_eq!(NamedColor::Black.to_rgb(), (0, 0, 0));
+        assert_eq!(NamedColor::Red.to_rgb(), (205, 0, 0));
+        assert_eq!(NamedColor::White.to_rgb(), (229, 229, 229));
+        assert_eq!(NamedColor::BrightWhite.to_rgb(), (255, 255, 255));
+    }
+
+    #[test]
+    fn test_palette_256_consistency() {
+        // Standard ANSI colors
+        assert_eq!(PALETTE_256_LUT[0], (0, 0, 0)); // Black
+        assert_eq!(PALETTE_256_LUT[1], (205, 0, 0)); // Red
+
+        // Cube colors
+        // Index 16 = 0,0,0 in cube -> (0,0,0) - Actually black is 0
+        assert_eq!(PALETTE_256_LUT[16], (0, 0, 0));
+
+        // Index 231 = 5,5,5 in cube -> (255, 255, 255)
+        // r=5, g=5, b=5 => 5*40+55 = 255
+        assert_eq!(PALETTE_256_LUT[231], (255, 255, 255));
+
+        // Grayscale ramp
+        // Index 232 -> level = 0*10+8 = 8
+        assert_eq!(PALETTE_256_LUT[232], (8, 8, 8));
+        // Index 255 -> level = 23*10+8 = 238
+        assert_eq!(PALETTE_256_LUT[255], (238, 238, 238));
     }
 }
