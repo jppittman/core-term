@@ -6,7 +6,10 @@ bake-eigen = "run --package xtask --release -- bake-eigen"
 
 [build]
 # Relaxed FP math for faster SIMD - allows FMA contraction and unsafe FP opts
+# IMPORTANT: Explicit target-feature needed for cfg(target_feature) to work!
+# target-cpu=native enables codegen but doesn't set cfg flags.
 rustflags = [
     "-C", "target-cpu=native",
+    "-C", "target-feature=+avx2,+avx512f,+avx512vl,+avx512bw,+avx512dq",
     "-C", "llvm-args=-fp-contract=fast",
 ]
