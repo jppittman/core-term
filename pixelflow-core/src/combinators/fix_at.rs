@@ -222,6 +222,164 @@ where
 }
 
 // ============================================================================
+// Two-State Variable Iteration (FixAt2)
+// ============================================================================
+
+/// Trait for type-level two-variable iteration.
+///
+/// This is the core mechanism for iterating two state variables (e.g., complex z = zr + i*zi)
+/// where X, Y pass through unchanged (carry c values) and Z, W carry state.
+pub trait IterateAt2<SeedZ, SeedW, StepZ, StepW> {
+    /// The resulting type for the Z output after N iterations.
+    type OutputZ: Manifold<Field>;
+    /// The resulting type for the W output after N iterations.
+    type OutputW: Manifold<Field>;
+
+    /// Build the Z output (e.g., real part).
+    fn build_z(seed_z: SeedZ, seed_w: SeedW, step_z: StepZ, step_w: StepW) -> Self::OutputZ;
+    /// Build the W output (e.g., imaginary part).
+    fn build_w(seed_z: SeedZ, seed_w: SeedW, step_z: StepZ, step_w: StepW) -> Self::OutputW;
+}
+
+// Base case: Zero iterations returns the seeds unchanged
+impl<SeedZ, SeedW, StepZ, StepW> IterateAt2<SeedZ, SeedW, StepZ, StepW> for Zero
+where
+    SeedZ: Manifold<Field, Output = Field> + Clone + Send + Sync,
+    SeedW: Manifold<Field, Output = Field> + Clone + Send + Sync,
+    StepZ: Clone + Send + Sync,
+    StepW: Clone + Send + Sync,
+{
+    type OutputZ = SeedZ;
+    type OutputW = SeedW;
+
+    #[inline(always)]
+    fn build_z(seed_z: SeedZ, _seed_w: SeedW, _step_z: StepZ, _step_w: StepW) -> Self::OutputZ {
+        seed_z
+    }
+
+    #[inline(always)]
+    fn build_w(_seed_z: SeedZ, seed_w: SeedW, _step_z: StepZ, _step_w: StepW) -> Self::OutputW {
+        seed_w
+    }
+}
+
+// Recursive case: Succ<N> applies step to the result of N iterations
+impl<N, SeedZ, SeedW, StepZ, StepW> IterateAt2<SeedZ, SeedW, StepZ, StepW> for Succ<N>
+where
+    N: IterateAt2<SeedZ, SeedW, StepZ, StepW>,
+    N::OutputZ: Manifold<Field, Output = Field> + Clone + Send + Sync,
+    N::OutputW: Manifold<Field, Output = Field> + Clone + Send + Sync,
+    SeedZ: Manifold<Field, Output = Field> + Clone + Send + Sync,
+    SeedW: Manifold<Field, Output = Field> + Clone + Send + Sync,
+    StepZ: Manifold<Field, Output = Field> + Clone + Send + Sync,
+    StepW: Manifold<Field, Output = Field> + Clone + Send + Sync,
+{
+    // Type expands: At { inner: StepZ, x: X, y: Y, z: N::OutputZ, w: N::OutputW }
+    type OutputZ = At<X, Y, N::OutputZ, N::OutputW, StepZ>;
+    type OutputW = At<X, Y, N::OutputZ, N::OutputW, StepW>;
+
+    #[inline(always)]
+    fn build_z(seed_z: SeedZ, seed_w: SeedW, step_z: StepZ, step_w: StepW) -> Self::OutputZ {
+        let prev_z = N::build_z(seed_z.clone(), seed_w.clone(), step_z.clone(), step_w.clone());
+        let prev_w = N::build_w(seed_z, seed_w, step_z.clone(), step_w);
+        At {
+            inner: step_z,
+            x: X,
+            y: Y,
+            z: prev_z,
+            w: prev_w,
+        }
+    }
+
+    #[inline(always)]
+    fn build_w(seed_z: SeedZ, seed_w: SeedW, step_z: StepZ, step_w: StepW) -> Self::OutputW {
+        let prev_z = N::build_z(seed_z.clone(), seed_w.clone(), step_z.clone(), step_w.clone());
+        let prev_w = N::build_w(seed_z, seed_w, step_z, step_w.clone());
+        At {
+            inner: step_w,
+            x: X,
+            y: Y,
+            z: prev_z,
+            w: prev_w,
+        }
+    }
+}
+
+/// Compile-time bounded two-variable iteration.
+///
+/// Applies `step_z` and `step_w` to `(seed_z, seed_w)` exactly N times.
+/// This is designed for complex number iteration where:
+/// - X, Y carry the constant c (cr, ci)
+/// - Z, W carry the state z (zr, zi)
+///
+/// # Example: Mandelbrot Step
+///
+/// ```ignore
+/// use pixelflow_core::combinators::fix_at::{FixAt2, N4};
+/// use pixelflow_core::combinators::bind::{ZR, ZI, CR, CI};
+///
+/// // z' = z² + c
+/// // zr' = zr² - zi² + cr
+/// // zi' = 2·zr·zi + ci
+/// let step_real = ZR * ZR - ZI * ZI + CR;
+/// let step_imag = ZR * ZI * 2.0 + CI;
+///
+/// // 4 iterations starting from (0, 0)
+/// let mandelbrot = FixAt2::<N4, _, _, _, _>::new(0.0f32, 0.0f32, step_real, step_imag);
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct FixAt2<N, SeedZ, SeedW, StepZ, StepW> {
+    _count: PhantomData<N>,
+    /// Initial real part (Z state).
+    pub seed_z: SeedZ,
+    /// Initial imaginary part (W state).
+    pub seed_w: SeedW,
+    /// Step function for real part.
+    pub step_z: StepZ,
+    /// Step function for imaginary part.
+    pub step_w: StepW,
+}
+
+impl<N, SeedZ, SeedW, StepZ, StepW> FixAt2<N, SeedZ, SeedW, StepZ, StepW>
+where
+    N: IterateAt2<SeedZ, SeedW, StepZ, StepW>,
+    SeedZ: Clone,
+    SeedW: Clone,
+    StepZ: Clone,
+    StepW: Clone,
+{
+    /// Create a new bounded two-variable iteration.
+    #[inline]
+    pub fn new(seed_z: SeedZ, seed_w: SeedW, step_z: StepZ, step_w: StepW) -> Self {
+        Self {
+            _count: PhantomData,
+            seed_z,
+            seed_w,
+            step_z,
+            step_w,
+        }
+    }
+
+    /// Expand to the Z output manifold.
+    #[inline(always)]
+    pub fn expand_z(self) -> N::OutputZ {
+        N::build_z(self.seed_z, self.seed_w, self.step_z, self.step_w)
+    }
+
+    /// Expand to the W output manifold.
+    #[inline(always)]
+    pub fn expand_w(self) -> N::OutputW
+    where
+        SeedZ: Clone,
+        SeedW: Clone,
+        StepZ: Clone,
+        StepW: Clone,
+    {
+        N::build_w(self.seed_z, self.seed_w, self.step_z, self.step_w)
+    }
+}
+
+// ============================================================================
 // Helper: Type-level addition for composing iterations
 // ============================================================================
 
@@ -396,5 +554,204 @@ mod tests {
         // 2 + 1 + 1 + 1 = 5
         assert_eq!(buf1[0], 5.0);
         assert_eq!(buf2[0], 5.0);
+    }
+
+    // ========================================================================
+    // FixAt2 Tests
+    // ========================================================================
+
+    #[test]
+    fn fix_at2_zero_iterations() {
+        // N0 iterations should return the seeds unchanged
+        let fix = FixAt2::<N0, _, _, _, _>::new(
+            3.0f32,  // seed_z
+            4.0f32,  // seed_w
+            Z + 1.0, // step_z (unused)
+            W + 1.0, // step_w (unused)
+        );
+
+        let z_out = fix.clone().expand_z();
+        let w_out = fix.expand_w();
+
+        let z_result = z_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let w_result = w_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        let mut buf = [0.0f32; PARALLELISM];
+        z_result.store(&mut buf);
+        assert_eq!(buf[0], 3.0);
+
+        w_result.store(&mut buf);
+        assert_eq!(buf[0], 4.0);
+    }
+
+    #[test]
+    fn fix_at2_one_iteration() {
+        // N1 iteration:
+        // z' = z + 1, w' = w + 2
+        // (3, 4) -> (4, 6)
+        let fix = FixAt2::<N1, _, _, _, _>::new(
+            3.0f32,  // seed_z
+            4.0f32,  // seed_w
+            Z + 1.0, // step_z
+            W + 2.0, // step_w
+        );
+
+        let z_out = fix.clone().expand_z();
+        let w_out = fix.expand_w();
+
+        let z_result = z_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let w_result = w_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        let mut buf = [0.0f32; PARALLELISM];
+        z_result.store(&mut buf);
+        assert_eq!(buf[0], 4.0);
+
+        w_result.store(&mut buf);
+        assert_eq!(buf[0], 6.0);
+    }
+
+    #[test]
+    fn fix_at2_three_iterations() {
+        // N3 iterations of doubling:
+        // z' = z * 2, w' = w * 2
+        // (1, 2) -> (2, 4) -> (4, 8) -> (8, 16)
+        let fix = FixAt2::<N3, _, _, _, _>::new(
+            1.0f32,  // seed_z
+            2.0f32,  // seed_w
+            Z * 2.0, // step_z
+            W * 2.0, // step_w
+        );
+
+        let z_out = fix.clone().expand_z();
+        let w_out = fix.expand_w();
+
+        let z_result = z_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let w_result = w_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        let mut buf = [0.0f32; PARALLELISM];
+        z_result.store(&mut buf);
+        assert_eq!(buf[0], 8.0);
+
+        w_result.store(&mut buf);
+        assert_eq!(buf[0], 16.0);
+    }
+
+    #[test]
+    fn fix_at2_complex_squaring() {
+        // Test complex multiplication: z² where z = zr + i*zi
+        // (zr + i*zi)² = zr² - zi² + 2i·zr·zi
+        // Real: zr² - zi²
+        // Imag: 2·zr·zi
+        //
+        // Starting with z = (1, 1) = 1 + i
+        // z² = (1-1) + 2i = 2i = (0, 2)
+        // z⁴ = (2i)² = -4 = (-4, 0)
+        // But we're squaring twice, so:
+        // (1,1) -> (0, 2) -> (-4, 0)
+
+        let step_real = Z * Z - W * W;
+        let step_imag = Z * W * 2.0;
+
+        let fix = FixAt2::<N2, _, _, _, _>::new(
+            1.0f32, // seed_z = zr = 1
+            1.0f32, // seed_w = zi = 1
+            step_real,
+            step_imag,
+        );
+
+        let z_out = fix.clone().expand_z();
+        let w_out = fix.expand_w();
+
+        let z_result = z_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let w_result = w_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        let mut buf = [0.0f32; PARALLELISM];
+        z_result.store(&mut buf);
+        assert_eq!(buf[0], -4.0);
+
+        w_result.store(&mut buf);
+        assert_eq!(buf[0], 0.0);
+    }
+
+    #[test]
+    fn fix_at2_with_constants_from_xy() {
+        // Test that X and Y pass through correctly (for Mandelbrot's c constant)
+        // z' = z + c where c comes from (X, Y)
+        // Starting at z = (0, 0), c = (1, 2)
+        // After 3 iterations: (0,0) -> (1,2) -> (2,4) -> (3,6)
+
+        let step_real = Z + X;
+        let step_imag = W + Y;
+
+        let fix = FixAt2::<N3, _, _, _, _>::new(
+            0.0f32, // seed_z
+            0.0f32, // seed_w
+            step_real,
+            step_imag,
+        );
+
+        let z_out = fix.clone().expand_z();
+        let w_out = fix.expand_w();
+
+        // Evaluate at c = (1, 2)
+        let z_result = z_out.eval_raw(
+            Field::from(1.0),
+            Field::from(2.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let w_result = w_out.eval_raw(
+            Field::from(1.0),
+            Field::from(2.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        let mut buf = [0.0f32; PARALLELISM];
+        z_result.store(&mut buf);
+        assert_eq!(buf[0], 3.0);
+
+        w_result.store(&mut buf);
+        assert_eq!(buf[0], 6.0);
     }
 }
