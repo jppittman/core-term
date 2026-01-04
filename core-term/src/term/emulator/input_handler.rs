@@ -3,9 +3,8 @@
 use super::{key_translator, FocusState, TerminalEmulator};
 use crate::term::{
     action::{EmulatorAction, UserInputAction},
-    constants::MIN_GRID_DIMENSION,
     snapshot::{Point, SelectionMode},
-    ControlEvent,
+    ControlEvent, MIN_GRID_DIMENSION,
 };
 use log::{debug, trace};
 

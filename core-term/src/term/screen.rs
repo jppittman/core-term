@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use crate::config::CONFIG;
 use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
-use crate::term::constants::MIN_GRID_DIMENSION;
 use crate::term::snapshot::{Point, Selection, SelectionMode, SelectionRange};
+use crate::term::MIN_GRID_DIMENSION;
 use log::{trace, warn};
 
 // Define a type alias for a single row in the grid
