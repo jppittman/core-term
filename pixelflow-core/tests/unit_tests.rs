@@ -654,7 +654,7 @@ mod map_tests {
 
     #[test]
     fn test_map_combinator() {
-        let doubled = Map::new(X, |v: Field| (v + v).constant());
+        let doubled = Map::new(X, X + X);
 
         let x = Field::from(5.0);
         let y = Field::from(0.0);
@@ -667,7 +667,7 @@ mod map_tests {
 
     #[test]
     fn test_map_via_extension() {
-        let squared = X.map(|v: Field| (v * v).constant());
+        let squared = X.map(X * X);
 
         let x = Field::from(4.0);
         let y = Field::from(0.0);
@@ -680,7 +680,7 @@ mod map_tests {
 
     #[test]
     fn test_map_clamp() {
-        let clamped = X.map(|v: Field| v.max(Field::from(0.0)).min(Field::from(1.0)).constant());
+        let clamped = X.map(X.max(0.0f32).min(1.0f32));
 
         // Test value in range
         let x = Field::from(0.5);
