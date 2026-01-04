@@ -7,7 +7,10 @@
 
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Abs, At, Differentiable, Field, Ge, Manifold, ManifoldExt, Select, W, X, Y, Z};
+use pixelflow_core::{
+    Abs, Add, At, Differentiable, Field, Ge, Manifold, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
+    Y, Z,
+};
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -35,6 +38,14 @@ pub fn __quad_kernel_definer([p0, p1, p2]: [[f32; 2]; 3]) -> QuadKernel {
 // Combinators
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Affine coordinate transform AST node.
+/// Computes: (X - tx) * a + (Y - ty) * b
+///
+/// Uses MulAdd fusion where possible: MulAdd<(X - tx), a, (Y - ty) * b>
+/// (Assuming MulAdd is A * B + C)
+pub type AffineTransform =
+    Add<Mul<Sub<X, f32>, f32>, Mul<Sub<Y, f32>, f32>>;
+
 /// Affine transform combinator.
 ///
 /// Transforms coordinates via inverse matrix before sampling inner manifold.
@@ -43,16 +54,38 @@ pub fn __quad_kernel_definer([p0, p1, p2]: [[f32; 2]; 3]) -> QuadKernel {
 #[derive(Clone, Debug)]
 pub struct Affine<M> {
     pub inner: M,
-    inv: [f32; 6], // [a b c d tx ty] inverted
+    trans_x: AffineTransform,
+    trans_y: AffineTransform,
 }
 
 /// Create an affine-transformed manifold.
 pub fn affine<M>(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Affine<M> {
     let det = a * d - b * c;
     let inv_det = if det.abs() < 1e-6 { 0.0 } else { 1.0 / det };
+
+    let inv_a = d * inv_det;
+    let inv_b = -b * inv_det;
+    let inv_c = -c * inv_det;
+    let inv_d = a * inv_det;
+    let inv_tx = tx;
+    let inv_ty = ty;
+
+    // x' = (X - tx) * a + (Y - ty) * b
+    let trans_x = Add(
+        Mul(Sub(X, inv_tx), inv_a),
+        Mul(Sub(Y, inv_ty), inv_b),
+    );
+
+    // y' = (X - tx) * c + (Y - ty) * d
+    let trans_y = Add(
+        Mul(Sub(X, inv_tx), inv_c),
+        Mul(Sub(Y, inv_ty), inv_d),
+    );
+
     Affine {
         inner,
-        inv: [d * inv_det, -b * inv_det, -c * inv_det, a * inv_det, tx, ty],
+        trans_x,
+        trans_y,
     }
 }
 
@@ -61,19 +94,13 @@ impl<M: Manifold<Field>> Manifold<Field> for Affine<M> {
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
-        let [a, b, c, d, tx, ty] = self.inv;
-        // Build coordinate transform AST
-        let x2 = (X - tx) * a + (Y - ty) * b;
-        let y2 = (X - tx) * c + (Y - ty) * d;
-        // Compose with At and evaluate
-        At {
-            inner: &self.inner,
-            x: x2,
-            y: y2,
-            z: Z,
-            w: W,
-        }
-        .eval_raw(x, y, z, w)
+        // Declarative coordinate transformation
+        // Evaluate the coordinate transform ASTs
+        let rx = self.trans_x.eval_raw(x, y, z, w);
+        let ry = self.trans_y.eval_raw(x, y, z, w);
+
+        // Pass transformed coordinates to inner manifold
+        self.inner.eval_raw(rx, ry, z, w)
     }
 }
 
@@ -82,19 +109,12 @@ impl<M: Manifold<Jet2>> Manifold<Jet2> for Affine<M> {
 
     #[inline(always)]
     fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Self::Output {
-        let [a, b, c, d, tx, ty] = self.inv;
-        // Build coordinate transform AST
-        let x2 = (X - tx) * a + (Y - ty) * b;
-        let y2 = (X - tx) * c + (Y - ty) * d;
-        // Compose with At and evaluate
-        At {
-            inner: &self.inner,
-            x: x2,
-            y: y2,
-            z: Z,
-            w: W,
-        }
-        .eval_raw(x, y, z, w)
+        // Declarative coordinate transformation works for Jet2 too
+        // because f32 constants in the AST evaluate to Jet2::constant()
+        let rx = self.trans_x.eval_raw(x, y, z, w);
+        let ry = self.trans_y.eval_raw(x, y, z, w);
+
+        self.inner.eval_raw(rx, ry, z, w)
     }
 }
 
