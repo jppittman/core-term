@@ -18,7 +18,9 @@ use crate::{
 
 use log::{debug, warn}; // Assuming logging is still desired
 
-// The main ANSI command processing function
+/// Processes a single ANSI command, modifying the emulator state.
+///
+/// Returns an `Option<EmulatorAction>` if the command requires an external action (e.g., writing to PTY).
 #[allow(clippy::too_many_lines)] // To be addressed by further refactoring if needed
 pub(super) fn process_ansi_command(
     emulator: &mut TerminalEmulator,
