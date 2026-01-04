@@ -3,6 +3,7 @@
 use super::{key_translator, FocusState, TerminalEmulator};
 use crate::term::{
     action::{EmulatorAction, UserInputAction},
+    constants::MIN_GRID_DIMENSION,
     snapshot::{Point, SelectionMode},
     ControlEvent,
 };
@@ -11,7 +12,6 @@ use log::{debug, trace};
 const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
 const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn process_user_input_action(
     emulator: &mut TerminalEmulator,
     action: UserInputAction,
@@ -19,71 +19,101 @@ pub(super) fn process_user_input_action(
     emulator.cursor_wrap_next = false;
 
     match action {
-        UserInputAction::FocusLost => emulator.focus_state = FocusState::Unfocused,
-        UserInputAction::FocusGained => emulator.focus_state = FocusState::Focused,
+        UserInputAction::FocusLost => {
+            emulator.focus_state = FocusState::Unfocused;
+            None
+        }
+        UserInputAction::FocusGained => {
+            emulator.focus_state = FocusState::Focused;
+            None
+        }
         UserInputAction::KeyInput {
             symbol,
             modifiers,
             text,
-        } => {
-            let bytes_to_send =
-                key_translator::translate_key_input(symbol, modifiers, text, &emulator.dec_modes);
-            if !bytes_to_send.is_empty() {
-                return Some(EmulatorAction::WritePty(bytes_to_send));
-            }
-        }
+        } => handle_key_input(emulator, symbol, modifiers, text),
         UserInputAction::StartSelection { x_px, y_px } => {
-            // Convert logical pixel coordinates to cell coordinates using Layout
-            if let Some((col, row)) = emulator.layout.pixels_to_cells(x_px, y_px) {
-                emulator.start_selection(Point { x: col, y: row }, SelectionMode::Cell);
-                return Some(EmulatorAction::RequestRedraw);
-            }
-            // If coordinates are outside the grid (e.g., in padding), ignore the event
+            handle_start_selection(emulator, x_px, y_px)
         }
         UserInputAction::ExtendSelection { x_px, y_px } => {
-            // Convert logical pixel coordinates to cell coordinates using Layout
-            if let Some((col, row)) = emulator.layout.pixels_to_cells(x_px, y_px) {
-                emulator.extend_selection(Point { x: col, y: row });
-                return Some(EmulatorAction::RequestRedraw);
-            }
-            // If coordinates are outside the grid, ignore the event
+            handle_extend_selection(emulator, x_px, y_px)
         }
         UserInputAction::ApplySelectionClear => {
             emulator.apply_selection_clear();
-            return Some(EmulatorAction::RequestRedraw);
+            Some(EmulatorAction::RequestRedraw)
         }
         UserInputAction::RequestClipboardPaste => {
             debug!(
                 "UserInputAction: RequestClipboardPaste received. Requesting clipboard content."
             );
-            return Some(EmulatorAction::RequestClipboardContent);
+            Some(EmulatorAction::RequestClipboardContent)
         }
         UserInputAction::RequestPrimaryPaste => {
             debug!("UserInputAction: RequestPrimaryPaste received. (Currently not fully implemented, forwarding to RequestClipboardContent)");
-            return Some(EmulatorAction::RequestClipboardContent);
+            Some(EmulatorAction::RequestClipboardContent)
         }
-        UserInputAction::InitiateCopy => {
-            if let Some(text) = emulator.get_selected_text() {
-                if !text.is_empty() {
-                    return Some(EmulatorAction::CopyToClipboard(text));
-                }
-            }
-            debug!("UserInputAction: InitiateCopy called but no text selected or selection empty.");
-        }
-        UserInputAction::PasteText(text_to_paste) => {
-            return handle_paste_text(emulator, &text_to_paste);
-        }
-        UserInputAction::RequestQuit => {
-            return Some(EmulatorAction::Quit);
-        }
+        UserInputAction::InitiateCopy => handle_initiate_copy(emulator),
+        UserInputAction::PasteText(text_to_paste) => handle_paste_text(emulator, &text_to_paste),
+        UserInputAction::RequestQuit => Some(EmulatorAction::Quit),
         // Add catch-all for other UserInputAction variants to satisfy exhaustiveness
         _ => {
             log::debug!(
                 "Unhandled UserInputAction variant in input_handler: {:?}",
                 action
             );
+            None
         }
     }
+}
+
+fn handle_key_input(
+    emulator: &mut TerminalEmulator,
+    symbol: pixelflow_runtime::input::KeySymbol,
+    modifiers: pixelflow_runtime::input::Modifiers,
+    text: Option<String>,
+) -> Option<EmulatorAction> {
+    let bytes_to_send =
+        key_translator::translate_key_input(symbol, modifiers, text, &emulator.dec_modes);
+    if !bytes_to_send.is_empty() {
+        Some(EmulatorAction::WritePty(bytes_to_send))
+    } else {
+        None
+    }
+}
+
+fn handle_start_selection(
+    emulator: &mut TerminalEmulator,
+    x_px: u16,
+    y_px: u16,
+) -> Option<EmulatorAction> {
+    if let Some((col, row)) = emulator.layout.pixels_to_cells(x_px, y_px) {
+        emulator.start_selection(Point { x: col, y: row }, SelectionMode::Cell);
+        Some(EmulatorAction::RequestRedraw)
+    } else {
+        None
+    }
+}
+
+fn handle_extend_selection(
+    emulator: &mut TerminalEmulator,
+    x_px: u16,
+    y_px: u16,
+) -> Option<EmulatorAction> {
+    if let Some((col, row)) = emulator.layout.pixels_to_cells(x_px, y_px) {
+        emulator.extend_selection(Point { x: col, y: row });
+        Some(EmulatorAction::RequestRedraw)
+    } else {
+        None
+    }
+}
+
+fn handle_initiate_copy(emulator: &mut TerminalEmulator) -> Option<EmulatorAction> {
+    if let Some(text) = emulator.get_selected_text() {
+        if !text.is_empty() {
+            return Some(EmulatorAction::CopyToClipboard(text));
+        }
+    }
+    debug!("UserInputAction: InitiateCopy called but no text selected or selection empty.");
     None
 }
 
@@ -126,10 +156,10 @@ pub(super) fn process_control_event(
         } => {
             // width_px and height_px are in logical pixels (engine handles scaling)
             // Calculate cols/rows using the emulator's Layout
-            let cols =
-                ((width_px as f64 / emulator.layout.cell_width_px.max(1) as f64) as usize).max(1);
-            let rows =
-                ((height_px as f64 / emulator.layout.cell_height_px.max(1) as f64) as usize).max(1);
+            let cols = ((width_px as f64 / emulator.layout.cell_width_px.max(1) as f64) as usize)
+                .max(MIN_GRID_DIMENSION);
+            let rows = ((height_px as f64 / emulator.layout.cell_height_px.max(1) as f64) as usize)
+                .max(MIN_GRID_DIMENSION);
 
             trace!(
                 "TerminalEmulator: ControlEvent::Resize to {}x{} cells ({}x{} logical px)",
