@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use crate::config::CONFIG;
 use crate::glyph::{AttrFlags, Attributes, ContentCell, Glyph};
+use crate::term::constants::MIN_GRID_DIMENSION;
 use crate::term::snapshot::{Point, Selection, SelectionMode, SelectionRange};
 use log::{trace, warn};
 
@@ -122,8 +123,8 @@ impl Screen {
     /// * `width` - The width of the screen in columns. Clamped to be at least 1.
     /// * `height` - The height of the screen in rows. Clamped to be at least 1.
     pub fn new(width: usize, height: usize) -> Self {
-        let w = width.max(1);
-        let h = height.max(1);
+        let w = width.max(MIN_GRID_DIMENSION);
+        let h = height.max(MIN_GRID_DIMENSION);
         let default_attributes = Attributes {
             fg: CONFIG.colors.foreground,
             bg: CONFIG.colors.background,
@@ -468,8 +469,8 @@ impl Screen {
     }
 
     pub fn resize(&mut self, new_width: usize, new_height: usize) {
-        let nw = new_width.max(1); // Ensure new width is at least 1
-        let nh = new_height.max(1); // Ensure new height is at least 1
+        let nw = new_width.max(MIN_GRID_DIMENSION); // Ensure new width is at least 1
+        let nh = new_height.max(MIN_GRID_DIMENSION); // Ensure new height is at least 1
 
         // Log the resize operation
         warn!(
