@@ -83,7 +83,7 @@
 //! 6. **Functor Operations**: `map` (apply a function to output)
 
 use crate::Manifold;
-use crate::combinators::{At, Map, Select};
+use crate::combinators::{At, ClosureMap, Map, Select};
 use crate::ops::{Abs, Add, Cos, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Rsqrt, Sin, Sqrt, Sub};
 
 use alloc::sync::Arc;
@@ -251,43 +251,34 @@ pub trait ManifoldExt: Manifold + Sized {
         self.eval_raw(zero, zero, zero, zero)
     }
 
-    /// Apply a function to the output of this manifold (functor `fmap`).
+    /// Transform the output of this manifold using another manifold.
     ///
-    /// This is a general-purpose escape hatch for applying arbitrary functions
-    /// to manifold outputs. The function is applied during evaluation.
-    ///
-    /// Note: Only available for manifolds that output `Field`.
+    /// This is the algebraic map operation. It applies `transform` to the output of `self`.
+    /// `self` output becomes the `X` coordinate for `transform`.
+    /// The `Y`, `Z`, and `W` coordinates are passed through unchanged.
     ///
     /// # Arguments
     ///
-    /// - `func`: A pure function `Field → Field`. Must be `Send + Sync` for thread safety.
+    /// - `transform`: A manifold to apply to the output. `X` in `transform` refers to `self` output.
     ///
     /// # Returns
     ///
-    /// A new manifold that first evaluates `self`, then passes the result through `func`.
+    /// A new manifold representing the transformation.
     ///
     /// # Example
     ///
     /// ```ignore
     /// use pixelflow_core::{ManifoldExt, X};
     ///
-    /// // Threshold: values > 0.5 become 1.0, else 0.0
-    /// let thresholded = (X * 0.5).map(|v| {
-    ///     if (v - 0.5).any() { 1.0.into() } else { 0.0.into() }
-    /// });
+    /// // Double the output
+    /// let doubled = X.map(X * 2.0);
     /// ```
-    ///
-    /// # Note
-    ///
-    /// `map` works with the IR (`Field`) directly. For high-level transformations,
-    /// prefer composing manifolds instead: `(X * 0.5).abs()` is more idiomatic
-    /// than `X.mul(0.5).map(|v| v.abs())`.
-    fn map<F>(self, func: F) -> Map<Self, F>
+    fn map<T>(self, transform: T) -> Map<Self, T>
     where
         Self: Manifold<crate::Field, Output = crate::Field>,
-        F: Fn(crate::Field) -> crate::Field + Send + Sync,
+        T: Manifold<crate::Field, Output = crate::Field>,
     {
-        Map::new(self, func)
+        Map::new(self, transform)
     }
 
     /// Lift this manifold's output to ray space via a covariant map.
@@ -307,12 +298,12 @@ pub trait ManifoldExt: Manifold + Sized {
     /// let ray_y = Y.lift(PathJet::from_slope);  // origin=0, direction=Y
     /// let ray_z = 1.0f32.lift(PathJet::from_slope);  // origin=0, direction=1 (forward)
     /// ```
-    fn lift<F>(self, func: F) -> Map<Self, F>
+    fn lift<F>(self, func: F) -> ClosureMap<Self, F>
     where
         Self: Manifold<crate::Field, Output = crate::Field>,
         F: Fn(crate::Field) -> crate::jet::PathJet<crate::Field> + Send + Sync,
     {
-        Map::new(self, func)
+        ClosureMap::new(self, func)
     }
 
     /// Add two manifolds.
