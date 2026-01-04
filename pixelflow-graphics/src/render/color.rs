@@ -97,18 +97,19 @@ impl pixelflow_core::Manifold for NamedColor {
     #[inline(always)]
     fn eval_raw(
         &self,
-        _x: pixelflow_core::Field,
-        _y: pixelflow_core::Field,
-        _z: pixelflow_core::Field,
-        _w: pixelflow_core::Field,
+        x: pixelflow_core::Field,
+        y: pixelflow_core::Field,
+        z: pixelflow_core::Field,
+        w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b) = self.to_rgb();
-        pixelflow_core::Discrete::pack(
-            pixelflow_core::Field::from(r as f32 / 255.0),
-            pixelflow_core::Field::from(g as f32 / 255.0),
-            pixelflow_core::Field::from(b as f32 / 255.0),
-            pixelflow_core::Field::from(1.0),
+        ColorManifold::new(
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            1.0f32,
         )
+        .eval_raw(x, y, z, w)
     }
 }
 
@@ -160,18 +161,13 @@ impl pixelflow_core::Manifold for Color {
     #[inline(always)]
     fn eval_raw(
         &self,
-        _x: pixelflow_core::Field,
-        _y: pixelflow_core::Field,
-        _z: pixelflow_core::Field,
-        _w: pixelflow_core::Field,
+        x: pixelflow_core::Field,
+        y: pixelflow_core::Field,
+        z: pixelflow_core::Field,
+        w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b, a) = self.to_f32_rgba();
-        pixelflow_core::Discrete::pack(
-            pixelflow_core::Field::from(r),
-            pixelflow_core::Field::from(g),
-            pixelflow_core::Field::from(b),
-            pixelflow_core::Field::from(a),
-        )
+        ColorManifold::new(r, g, b, a).eval_raw(x, y, z, w)
     }
 }
 
@@ -523,6 +519,7 @@ where
 // =============================================================================
 
 #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -552,5 +549,44 @@ mod tests {
         assert_eq!(bgra.g(), 0x22);
         assert_eq!(bgra.b(), 0x33);
         assert_eq!(bgra.a(), 0xFF);
+    }
+
+    #[test]
+    fn test_named_color_manifold() {
+        use pixelflow_core::{materialize_discrete, PARALLELISM};
+        let red = NamedColor::Red;
+        let mut out = vec![0u32; PARALLELISM];
+        materialize_discrete(&red, 0.0, 0.0, &mut out);
+
+        let val = out[0];
+        let r = (val & 0xFF) as f32 / 255.0;
+        let g = ((val >> 8) & 0xFF) as f32 / 255.0;
+        let b = ((val >> 16) & 0xFF) as f32 / 255.0;
+        let a = ((val >> 24) & 0xFF) as f32 / 255.0;
+
+        // Red is (205, 0, 0) -> (0.8039, 0, 0)
+        assert!((r - 205.0 / 255.0).abs() < 1e-2);
+        assert!((g - 0.0).abs() < 1e-2);
+        assert!((b - 0.0).abs() < 1e-2);
+        assert!((a - 1.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn test_color_manifold() {
+        use pixelflow_core::{materialize_discrete, PARALLELISM};
+        let c = Color::Rgb(10, 20, 30);
+        let mut out = vec![0u32; PARALLELISM];
+        materialize_discrete(&c, 0.0, 0.0, &mut out);
+
+        let val = out[0];
+        let r = (val & 0xFF) as f32 / 255.0;
+        let g = ((val >> 8) & 0xFF) as f32 / 255.0;
+        let b = ((val >> 16) & 0xFF) as f32 / 255.0;
+        let a = ((val >> 24) & 0xFF) as f32 / 255.0;
+
+        assert!((r - 10.0 / 255.0).abs() < 1e-2);
+        assert!((g - 20.0 / 255.0).abs() < 1e-2);
+        assert!((b - 30.0 / 255.0).abs() < 1e-2);
+        assert!((a - 1.0).abs() < 1e-2);
     }
 }
