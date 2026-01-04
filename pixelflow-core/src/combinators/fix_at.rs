@@ -42,7 +42,7 @@
 
 use core::marker::PhantomData;
 
-use crate::combinators::At;
+use crate::combinators::{At, Select};
 use crate::{Computational, Field, Manifold, W, X, Y, Z};
 
 // ============================================================================
@@ -376,6 +376,55 @@ where
         StepW: Clone,
     {
         N::build_w(self.seed_z, self.seed_w, self.step_z, self.step_w)
+    }
+
+    /// Add an escape condition for early exit.
+    ///
+    /// Wraps step functions in `Select`: when `escape` is true, the current
+    /// Z/W values are preserved (frozen). When false, the step is applied.
+    ///
+    /// This enables per-lane early exit for fractals - once a lane escapes
+    /// (e.g., |z|² > 4), it stops iterating and preserves its last value.
+    ///
+    /// # Example: Mandelbrot with Escape
+    ///
+    /// ```ignore
+    /// use pixelflow_core::combinators::{FixAt2, N32, ZR, ZI, CR, CI};
+    ///
+    /// let step_real = ZR * ZR - ZI * ZI + CR;
+    /// let step_imag = ZR * ZI * 2.0 + CI;
+    ///
+    /// // Escape when |z|² > 4
+    /// let escape = (ZR * ZR + ZI * ZI).gt(4.0);
+    ///
+    /// let mandelbrot = FixAt2::<N32, _, _, _, _>::new(0.0f32, 0.0f32, step_real, step_imag)
+    ///     .with_escape(escape);
+    /// ```
+    #[inline]
+    pub fn with_escape<Escape>(
+        self,
+        escape: Escape,
+    ) -> FixAt2<N, SeedZ, SeedW, Select<Escape, Z, StepZ>, Select<Escape, W, StepW>>
+    where
+        Escape: Clone,
+    {
+        FixAt2 {
+            _count: PhantomData,
+            seed_z: self.seed_z,
+            seed_w: self.seed_w,
+            // If escaped: keep current Z; else: apply step_z
+            step_z: Select {
+                cond: escape.clone(),
+                if_true: Z,
+                if_false: self.step_z,
+            },
+            // If escaped: keep current W; else: apply step_w
+            step_w: Select {
+                cond: escape,
+                if_true: W,
+                if_false: self.step_w,
+            },
+        }
     }
 }
 
@@ -753,5 +802,101 @@ mod tests {
 
         w_result.store(&mut buf);
         assert_eq!(buf[0], 6.0);
+    }
+
+    #[test]
+    fn fix_at2_with_escape() {
+        use crate::ops::Gt;
+
+        // Test escape behavior: stop iterating when |z|² > threshold
+        // We'll use a simple test: double z and w, but escape when z > 5
+        //
+        // Starting at (1, 1):
+        // Iter 1: z=2, w=2  (z <= 5, continue)
+        // Iter 2: z=4, w=4  (z <= 5, continue)
+        // Iter 3: z=8, w=8  (z > 5, ESCAPE - freeze at (8, 8))
+        // Iter 4: frozen at (8, 8)
+        // Iter 5: frozen at (8, 8)
+        //
+        // Without escape: (1,1) -> (2,2) -> (4,4) -> (8,8) -> (16,16) -> (32,32)
+
+        let step_z = Z * 2.0;
+        let step_w = W * 2.0;
+        let escape = Gt(Z, 5.0f32);  // Escape when Z > 5
+
+        let fix_with_escape = FixAt2::<N5, _, _, _, _>::new(1.0f32, 1.0f32, step_z, step_w)
+            .with_escape(escape);
+
+        let z_out = fix_with_escape.clone().expand_z();
+        let w_out = fix_with_escape.expand_w();
+
+        let z_result = z_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let w_result = w_out.eval_raw(
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        let mut buf = [0.0f32; PARALLELISM];
+        z_result.store(&mut buf);
+        // Should freeze at 8 (after 3rd iteration when z > 5)
+        assert_eq!(buf[0], 8.0);
+
+        w_result.store(&mut buf);
+        // W should also freeze at 8
+        assert_eq!(buf[0], 8.0);
+    }
+
+    #[test]
+    fn fix_at2_mandelbrot_escape() {
+        use crate::combinators::bind::{ZR, ZI, CR, CI};
+        use crate::ops::Gt;
+
+        // Test Mandelbrot-style escape: |z|² > 4
+        // Starting at z=0, c=(2, 0) which escapes immediately after first iter
+        //
+        // Iter 0: z = (0, 0)
+        // Iter 1: z = (0, 0)² + (2, 0) = (2, 0), |z|² = 4, borderline
+        // Iter 2: z = (2, 0)² + (2, 0) = (6, 0), |z|² = 36 > 4, ESCAPE
+
+        let step_real = ZR * ZR - ZI * ZI + CR;
+        let step_imag = ZR * ZI * 2.0 + CI;
+        let mag_sq = ZR * ZR + ZI * ZI;
+        let escape = Gt(mag_sq, 4.0f32);
+
+        let fix = FixAt2::<N4, _, _, _, _>::new(0.0f32, 0.0f32, step_real, step_imag)
+            .with_escape(escape);
+
+        let z_out = fix.clone().expand_z();
+        let w_out = fix.expand_w();
+
+        // Evaluate at c = (2, 0)
+        let z_result = z_out.eval_raw(
+            Field::from(2.0),  // cr
+            Field::from(0.0),  // ci
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let w_result = w_out.eval_raw(
+            Field::from(2.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+
+        let mut buf = [0.0f32; PARALLELISM];
+        z_result.store(&mut buf);
+        // Should freeze at 6 (after escaping at iter 2)
+        assert_eq!(buf[0], 6.0);
+
+        w_result.store(&mut buf);
+        // Imaginary part should be 0
+        assert_eq!(buf[0], 0.0);
     }
 }
