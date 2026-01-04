@@ -4,12 +4,12 @@
 //! This module provides:
 //! - **Semantic colors**: `Color` enum for high-level specification
 //! - **Pixel formats**: `Rgba8`, `Bgra8` for framebuffer storage
-//! - **Color manifolds**: `ColorManifold`, `Lift`, `ColorMap` for functional color composition
+//! - **Color manifolds**: `ColorManifold`, `Grayscale`, `ColorCube` for functional color composition
 //!
 //! For color manifolds, use `pixelflow_core::{Rgba, Red, Green, Blue, Alpha}`.
 
 use bitflags::bitflags;
-use pixelflow_core::{Discrete, Field, Manifold};
+use pixelflow_core::{At, Discrete, Field, Manifold};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -103,11 +103,12 @@ impl pixelflow_core::Manifold for NamedColor {
         w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b) = self.to_rgb();
-        ColorManifold::new(
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            1.0f32,
+        // Use ColorCube terminal object directly
+        ColorCube.at(
+            Field::from(r as f32 / 255.0),
+            Field::from(g as f32 / 255.0),
+            Field::from(b as f32 / 255.0),
+            Field::from(1.0),
         )
         .eval_raw(x, y, z, w)
     }
@@ -167,7 +168,13 @@ impl pixelflow_core::Manifold for Color {
         w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b, a) = self.to_f32_rgba();
-        ColorManifold::new(r, g, b, a).eval_raw(x, y, z, w)
+        ColorCube.at(
+            Field::from(r),
+            Field::from(g),
+            Field::from(b),
+            Field::from(a),
+        )
+        .eval_raw(x, y, z, w)
     }
 }
 
@@ -375,48 +382,20 @@ pub type WebPixel = Rgba8;
 // Color Manifolds
 // =============================================================================
 
-/// The RGBA color cube as a manifold.
+/// The RGBA color cube as a terminal object.
 ///
-/// `ColorCube` is the terminal object for color: it interprets its input
-/// coordinates as RGBA channels and packs them to `Discrete`.
+/// Every color manifold factors through ColorCube via At:
 ///
-/// - X = Red   (0.0 to 1.0)
-/// - Y = Green (0.0 to 1.0)
-/// - Z = Blue  (0.0 to 1.0)
-/// - W = Alpha (0.0 to 1.0)
-///
-/// # Philosophy
-///
-/// Colors ARE coordinates. Use `At` (the universal contramap) to navigate
-/// the color cube:
-///
-/// ```ignore
-/// use pixelflow_core::{At, X, Y};
-/// use pixelflow_graphics::ColorCube;
-///
-/// // Solid red
-/// let red = At { inner: ColorCube, x: 1.0, y: 0.0, z: 0.0, w: 1.0 };
-///
-/// // Gradient: red varies with screen X
-/// let gradient = At { inner: ColorCube, x: X / 255.0, y: 0.5, z: 0.5, w: 1.0 };
-///
-/// // Grayscale: same value for R, G, B
-/// let gray = At { inner: ColorCube, x: v, y: v, z: v, w: 1.0 };
-///
-/// // Blend two colors: coordinate arithmetic before At
-/// let blended = At {
-///     inner: ColorCube,
-///     x: t * r1 + (1.0 - t) * r2,
-///     y: t * g1 + (1.0 - t) * g2,
-///     z: t * b1 + (1.0 - t) * b2,
-///     w: t * a1 + (1.0 - t) * a2,
-/// };
+/// ```text
+///                    At<coords>
+/// YourColorType  ─────────────────→  ColorCube  ───→  Discrete
 /// ```
 ///
-/// # ColorCube vs ColorManifold
+/// # Universal Property
 ///
-/// - Use `ColorCube` with `At` when channel values are scalar expressions
-/// - Use `ColorManifold` when channels come from separate manifold trees
+/// For any manifold M that produces a color, there exists a unique
+/// factorization M = At<ColorCube, r, g, b, a> where r,g,b,a are
+/// the channel expressions.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ColorCube;
 
@@ -429,88 +408,73 @@ impl Manifold for ColorCube {
     }
 }
 
+impl ColorCube {
+    /// Create a color manifold from channel manifolds.
+    ///
+    /// This is a convenience constructor for `At<ColorCube, ...>`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use pixelflow_graphics::ColorCube;
+    /// use pixelflow_core::X;
+    ///
+    /// let grad = ColorCube.at(X, 0.0, 0.0, 1.0);
+    /// ```
+    #[inline(always)]
+    pub fn at<R, G, B, A>(
+        self,
+        r: R,
+        g: G,
+        b: B,
+        a: A,
+    ) -> At<R, G, B, A, Self> {
+        At {
+            inner: self,
+            x: r,
+            y: g,
+            z: b,
+            w: a,
+        }
+    }
+}
+
 /// Grayscale: lifts a scalar to R=G=B, A=1.
 ///
 /// Convenience for the common pattern:
 /// ```ignore
 /// At { inner: ColorCube, x: v, y: v, z: v, w: 1.0 }
 /// ```
-///
-/// # Example
-/// ```ignore
-/// use pixelflow_graphics::Grayscale;
-/// use pixelflow_core::X;
-///
-/// let gradient = Grayscale(X / 256.0);  // Black to white
-/// ```
-#[derive(Clone, Copy, Debug)]
-pub struct Grayscale<M>(pub M);
+pub type Grayscale<M> = At<M, M, M, Field, ColorCube>;
 
-impl<M: Manifold<Output = Field>> Manifold for Grayscale<M> {
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        let v = self.0.eval_raw(x, y, z, w);
-        Discrete::pack(v, v, v, Field::from(1.0))
+/// Create a grayscale manifold.
+#[allow(non_snake_case)]
+#[inline(always)]
+pub fn Grayscale<M: Manifold + Clone>(m: M) -> Grayscale<M> {
+    At {
+        inner: ColorCube,
+        x: m.clone(),
+        y: m.clone(),
+        z: m.clone(),
+        w: Field::from(1.0),
     }
 }
 
 /// Composes 4 Field manifolds into a single RGBA output.
 ///
-/// Unlike `ColorCube` which interprets input coordinates as colors,
-/// `ColorManifold` evaluates separate manifolds for each channel
-/// and packs the results.
-///
-/// # Use Cases
-///
-/// - Terminal grids with Select trees per channel
-/// - Any case where R, G, B, A come from separate computation trees
-///
-/// # Example
-/// ```ignore
-/// use pixelflow_graphics::ColorManifold;
-/// use pixelflow_core::X;
-///
-/// // Red channel varies with X, others constant
-/// let grad = ColorManifold::new(
-///     X / 255.0,    // R: gradient
-///     0.5f32,       // G: constant
-///     0.5f32,       // B: constant
-///     1.0f32,       // A: opaque
-/// );
-/// ```
-#[derive(Clone, Debug)]
-pub struct ColorManifold<R, G, B, A> {
-    r: R,
-    g: G,
-    b: B,
-    a: A,
-}
+/// Type alias for `At<R, G, B, A, ColorCube>`.
+pub type ColorManifold<R, G, B, A> = At<R, G, B, A, ColorCube>;
 
-impl<R, G, B, A> ColorManifold<R, G, B, A> {
-    /// Create a new color manifold from four channel manifolds.
-    pub fn new(r: R, g: G, b: B, a: A) -> Self {
-        Self { r, g, b, a }
-    }
-}
-
-impl<R, G, B, A> Manifold for ColorManifold<R, G, B, A>
-where
-    R: Manifold<Output = Field>,
-    G: Manifold<Output = Field>,
-    B: Manifold<Output = Field>,
-    A: Manifold<Output = Field>,
-{
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
-        let r = self.r.eval_raw(x, y, z, w);
-        let g = self.g.eval_raw(x, y, z, w);
-        let b = self.b.eval_raw(x, y, z, w);
-        let a = self.a.eval_raw(x, y, z, w);
-        Discrete::pack(r, g, b, a)
+/// Create a new color manifold from four channel manifolds.
+///
+/// This replaces `color_manifold`.
+#[inline(always)]
+pub fn color_manifold<R, G, B, A>(r: R, g: G, b: B, a: A) -> ColorManifold<R, G, B, A> {
+    At {
+        inner: ColorCube,
+        x: r,
+        y: g,
+        z: b,
+        w: a,
     }
 }
 
@@ -518,7 +482,6 @@ where
 // Tests
 // =============================================================================
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;
