@@ -41,22 +41,16 @@ pub fn __quad_kernel_definer([p0, p1, p2]: [[f32; 2]; 3]) -> QuadKernel {
 /// Affine coordinate transform AST node.
 /// Computes: (X - tx) * a + (Y - ty) * b
 ///
-/// Uses MulAdd fusion where possible: MulAdd<(X - tx), a, (Y - ty) * b>
-/// (Assuming MulAdd is A * B + C)
+/// Note: The compiler fuses this into `MulAdd`, so the type matches the fusion.
 pub type AffineTransform =
-    Add<Mul<Sub<X, f32>, f32>, Mul<Sub<Y, f32>, f32>>;
+    MulAdd<Sub<X, f32>, f32, Mul<Sub<Y, f32>, f32>>;
 
-/// Affine transform combinator.
+/// Affine transform combinator type alias.
 ///
 /// Transforms coordinates via inverse matrix before sampling inner manifold.
 /// x' = (x - tx) * a + (y - ty) * b
 /// y' = (x - tx) * c + (y - ty) * d
-#[derive(Clone, Debug)]
-pub struct Affine<M> {
-    pub inner: M,
-    trans_x: AffineTransform,
-    trans_y: AffineTransform,
-}
+pub type Affine<M> = At<AffineTransform, AffineTransform, Z, W, M>;
 
 /// Create an affine-transformed manifold.
 pub fn affine<M>(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Affine<M> {
@@ -71,50 +65,18 @@ pub fn affine<M>(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Affine<M> {
     let inv_ty = ty;
 
     // x' = (X - tx) * a + (Y - ty) * b
-    let trans_x = Add(
-        Mul(Sub(X, inv_tx), inv_a),
-        Mul(Sub(Y, inv_ty), inv_b),
-    );
+    let trans_x = (X - inv_tx) * inv_a + (Y - inv_ty) * inv_b;
 
     // y' = (X - tx) * c + (Y - ty) * d
-    let trans_y = Add(
-        Mul(Sub(X, inv_tx), inv_c),
-        Mul(Sub(Y, inv_ty), inv_d),
-    );
+    let trans_y = (X - inv_tx) * inv_c + (Y - inv_ty) * inv_d;
 
-    Affine {
+    // Construct At directly to avoid requiring M: Manifold bound for the type alias if it were a function
+    At {
         inner,
-        trans_x,
-        trans_y,
-    }
-}
-
-impl<M: Manifold<Field>> Manifold<Field> for Affine<M> {
-    type Output = M::Output;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
-        // Declarative coordinate transformation
-        // Evaluate the coordinate transform ASTs
-        let rx = self.trans_x.eval_raw(x, y, z, w);
-        let ry = self.trans_y.eval_raw(x, y, z, w);
-
-        // Pass transformed coordinates to inner manifold
-        self.inner.eval_raw(rx, ry, z, w)
-    }
-}
-
-impl<M: Manifold<Jet2>> Manifold<Jet2> for Affine<M> {
-    type Output = M::Output;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Self::Output {
-        // Declarative coordinate transformation works for Jet2 too
-        // because f32 constants in the AST evaluate to Jet2::constant()
-        let rx = self.trans_x.eval_raw(x, y, z, w);
-        let ry = self.trans_y.eval_raw(x, y, z, w);
-
-        self.inner.eval_raw(rx, ry, z, w)
+        x: trans_x,
+        y: trans_y,
+        z: Z,
+        w: W,
     }
 }
 
@@ -523,61 +485,6 @@ impl Manifold<Field> for Curve<3> {
                 .select(contrib1 + contrib2, 0.0f32)
                 .at(x, y, z, w)
                 .eval()
-        }
-    }
-}
-
-// Old Quad Jet2 implementation (for legacy Curve<3> benchmarking)
-impl Manifold<Jet2> for Curve<3> {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, _: Jet2, _: Jet2) -> Jet2 {
-        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
-        let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
-        let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
-        let zero = Jet2::constant(Field::from(0.0));
-        let one = Jet2::constant(Field::from(1.0));
-
-        let fzero = Field::from(0.0);
-        let eval_t = |t: Jet2| -> Jet2 {
-            let in_t = t.ge(zero) & t.lt(one);
-            if !in_t.val.any() {
-                return zero;
-            }
-            let x_int = (Jet2::constant(Field::from(ax)) * t + Jet2::constant(Field::from(bx))) * t
-                + Jet2::constant(Field::from(cx));
-            let dy_dt = Jet2::constant(Field::from(2.0 * ay)) * t + Jet2::constant(Field::from(by));
-            // In Y-down coordinates: dy > 0 means downward (above → below) → -1
-            let dir_mask = dy_dt.gt(zero);
-            let dir = (dir_mask & Jet2::constant(Field::from(-1.0))) | (!dir_mask & one);
-            let dist = x_int - x;
-            let grad_mag = (dist.dx * dist.dx + dist.dy * dist.dy)
-                .sqrt()
-                .max(Field::from(1e-6));
-            let coverage = (dist.val / grad_mag + Field::from(0.5))
-                .max(fzero)
-                .min(Field::from(1.0))
-                .eval_raw(fzero, fzero, fzero, fzero);
-            (in_t & (dir * Jet2::constant(coverage))) | (!in_t & zero)
-        };
-
-        if ay.abs() < 1e-6 {
-            if by.abs() < 1e-6 {
-                return zero;
-            }
-            eval_t((y - Jet2::constant(Field::from(cy))) / Jet2::constant(Field::from(by)))
-        } else {
-            let c_val = Jet2::constant(Field::from(cy)) - y;
-            let d = Jet2::constant(Field::from(by * by))
-                - Jet2::constant(Field::from(4.0 * ay)) * c_val;
-            let valid = d.ge(zero);
-            let sd = d.abs().sqrt();
-            let t1 =
-                (Jet2::constant(Field::from(-by)) - sd) / Jet2::constant(Field::from(2.0 * ay));
-            let t2 =
-                (Jet2::constant(Field::from(-by)) + sd) / Jet2::constant(Field::from(2.0 * ay));
-            (valid & (eval_t(t1) + eval_t(t2))) | (!valid & zero)
         }
     }
 }
