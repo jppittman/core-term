@@ -9,7 +9,7 @@
 //! The terminal grid is built as a binary search tree of Select combinators:
 //!
 //! ```text
-//! ColorManifold::new(
+//! color_manifold(
 //!   Select { cond: Lt(X, mid), if_true: left_r, if_false: right_r },
 //!   Select { cond: Lt(X, mid), if_true: left_g, if_false: right_g },
 //!   ...

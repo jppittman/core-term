@@ -9,7 +9,7 @@
 //! A terminal grid is built as a binary search tree of `Select` nodes:
 //!
 //! ```text
-//! ColorManifold::new(
+//! color_manifold(
 //!   Select { cond: Lt(X, mid), if_true: left_r, if_false: right_r },
 //!   Select { cond: Lt(X, mid), if_true: left_g, if_false: right_g },
 //!   ...
@@ -28,7 +28,7 @@
 //! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
 use pixelflow_core::{Field, Lt, Manifold, ManifoldExt, Select, X, Y};
-use pixelflow_graphics::render::color::ColorManifold;
+use pixelflow_graphics::render::color::{ColorManifold, color_manifold};
 
 // Re-export Color for solid color manifolds
 pub use pixelflow_graphics::render::color::Color;
@@ -177,7 +177,7 @@ pub fn build_grid<F: CellFactory>(
     let b = build_channel_tree::<F, 2>(factory, 0, cols, 0, rows, cell_w, cell_h);
     let a = build_channel_tree::<F, 3>(factory, 0, cols, 0, rows, cell_w, cell_h);
 
-    ColorManifold::new(r, g, b, a)
+    color_manifold(r, g, b, a)
 }
 
 /// Build a Select tree for a single color channel.
@@ -346,7 +346,7 @@ mod tests {
         );
 
         // Use ColorManifold to pack channels
-        let packed = ColorManifold::new(
+        let packed = color_manifold(
             CellR::new(cell.clone()),
             CellG::new(cell.clone()),
             CellB::new(cell.clone()),
