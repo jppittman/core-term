@@ -1,47 +1,83 @@
 //! # Map Combinator
 //!
-//! Transforms the output of a manifold.
-//! This is fmap for the Manifold functor.
+//! Transforms the output of a manifold using another manifold.
+//! This is the algebraic version of fmap.
 
 use crate::{Field, Manifold};
 
-/// Maps a function over a manifold's output (covariant functor).
+/// Maps a manifold transformation over a manifold's output.
 ///
-/// This is the functor `fmap` operation for manifolds.
-/// It transforms every output value while preserving the spatial structure.
+/// This transforms the output value of the inner manifold using the transformation manifold.
+/// The output of the inner manifold becomes the X coordinate for the transformation manifold.
+/// The Y, Z, and W coordinates are passed through unchanged, allowing context-aware mapping.
 ///
-/// ## Covariant Mapping
+/// # Semantics
 ///
-/// Map can change the output type, enabling conversions like:
-/// - `Field → Field` (same type)
-/// - `Field → PathJet<Field>` (lifting to ray space)
-/// - `Field → Discrete` (color packing)
+/// Given `inner` and `transform`:
+/// `result(x, y, z, w) = transform(inner(x, y, z, w), y, z, w)`
 ///
 /// # Example
 ///
 /// ```ignore
-/// // Double every output value (Field → Field)
-/// let doubled = Map::new(sdf, |v| v * 2.0);
+/// // Double every output value (Field -> Field)
+/// let doubled = Map::new(sdf, X * 2.0);
 ///
-/// // Convert screen coord to ray (Field → PathJet)
-/// let ray_x = Map::new(X, PathJet::from_slope);
+/// // Add the Y coordinate to the output
+/// let skewed = Map::new(sdf, X + Y);
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub struct Map<M, F> {
+pub struct Map<M, T> {
+    inner: M,
+    transform: T,
+}
+
+impl<M, T> Map<M, T> {
+    /// Create a new Map combinator.
+    #[inline(always)]
+    pub fn new(inner: M, transform: T) -> Self {
+        Self { inner, transform }
+    }
+}
+
+impl<I, M, T> Manifold<I> for Map<M, T>
+where
+    I: crate::numeric::Computational,
+    M: Manifold<I, Output = I>,
+    T: Manifold<I, Output = I>,
+{
+    type Output = I;
+
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        let val = self.inner.eval_raw(x, y, z, w);
+        // Map the output of inner to X of transform, pass others through
+        self.transform.eval_raw(val, y, z, w)
+    }
+}
+
+// ============================================================================
+// ClosureMap (Legacy/Functional Map)
+// ============================================================================
+
+/// Maps a Rust closure over a manifold's output.
+///
+/// This is used for transformations that cannot be expressed as manifolds,
+/// such as lifting to complex types like `PathJet` via factory functions.
+#[derive(Clone, Copy, Debug)]
+pub struct ClosureMap<M, F> {
     inner: M,
     func: F,
 }
 
-impl<M, F> Map<M, F> {
-    /// Create a new Map combinator.
+impl<M, F> ClosureMap<M, F> {
+    /// Create a new ClosureMap combinator.
     #[inline(always)]
     pub fn new(inner: M, func: F) -> Self {
         Self { inner, func }
     }
 }
 
-/// Field → Field mapping (backward compatible)
-impl<M, F> Manifold for Map<M, F>
+impl<M, F> Manifold for ClosureMap<M, F>
 where
     M: Manifold<Output = Field>,
     F: Fn(Field) -> Field + Send + Sync,
@@ -55,8 +91,8 @@ where
     }
 }
 
-/// Covariant map for Field → PathJet<Field>
-impl<M, F> Manifold<crate::jet::PathJet<Field>> for Map<M, F>
+/// Covariant map for Field -> PathJet<Field>
+impl<M, F> Manifold<crate::jet::PathJet<Field>> for ClosureMap<M, F>
 where
     M: Manifold<Field, Output = Field>,
     F: Fn(Field) -> crate::jet::PathJet<Field> + Send + Sync,

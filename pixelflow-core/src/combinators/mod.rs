@@ -13,7 +13,7 @@ pub mod texture;
 
 pub use at::{At, AtArray};
 pub use fix::Fix;
-pub use map::Map;
+pub use map::{ClosureMap, Map};
 pub use pack::Pack;
 pub use project::Project;
 pub use select::Select;
