@@ -31,6 +31,9 @@ use crate::ansi::commands::AnsiCommand;
 /// Default tab interval.
 pub const DEFAULT_TAB_INTERVAL: u8 = 8;
 
+/// Minimum dimension for the terminal grid (width or height) to prevent division by zero or invalid states.
+pub const MIN_GRID_DIMENSION: usize = 1;
+
 /// Inputs that the terminal emulator processes.
 ///
 /// This enum encapsulates the different kinds of data or events
@@ -100,4 +103,3 @@ mod tests;
 
 #[cfg(test)]
 mod core_tests;
-pub mod constants;
