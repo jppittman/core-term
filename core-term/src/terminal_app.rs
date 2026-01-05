@@ -12,8 +12,8 @@ use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
 use pixelflow_runtime::{
     EngineActorHandle, EngineEventControl, EngineEventData, EngineEventManagement,
-    PlatformColorCube,
 };
+use pixelflow_graphics::ColorCube as PlatformColorCube;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
 

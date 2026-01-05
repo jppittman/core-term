@@ -310,7 +310,7 @@ type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
 #[doc(hidden)]
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
-pub struct Field(NativeSimd);
+pub struct Field(pub(crate) NativeSimd);
 
 /// SIMD batch of packed RGBA pixels (intermediate representation).
 ///
