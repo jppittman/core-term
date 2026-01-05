@@ -200,15 +200,16 @@ impl FieldCondition for Field {
 // Select implementation for Field with FieldCondition (OPTIMIZED PATH)
 // ============================================================================
 
-impl<C, T, F> Manifold<Field> for Select<C, T, F>
+impl<C, T, F, O> Manifold<Field> for Select<C, T, F>
 where
+    O: crate::numeric::Selectable,
     C: FieldCondition,
-    T: Manifold<Field, Output = Field>,
-    F: Manifold<Field, Output = Field>,
+    T: Manifold<Field, Output = O>,
+    F: Manifold<Field, Output = O>,
 {
-    type Output = Field;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> O {
         // Get native mask directly - no float conversion!
         let mask = self.cond.eval_mask(x, y, z, w);
 
@@ -220,10 +221,13 @@ where
             return self.if_false.eval_raw(x, y, z, w);
         }
 
-        // Select with native mask - no float conversion!
+        // Select using Selectable trait
+        // Convert native mask back to Field (float mask) for the generic interface
+        let mask_field = Field(NativeSimd::mask_to_float(mask));
         let true_val = self.if_true.eval_raw(x, y, z, w);
         let false_val = self.if_false.eval_raw(x, y, z, w);
-        Field(NativeSimd::select(mask, true_val.0, false_val.0))
+
+        O::select_raw(mask_field, true_val, false_val)
     }
 }
 

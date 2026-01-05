@@ -171,9 +171,12 @@ pub mod patch;
 pub mod render;
 pub mod scene3d;
 pub mod shapes;
+pub mod spatial_bsp;
 pub mod subdiv;
 pub mod subdivision;
 pub mod transform;
+
+pub use spatial_bsp::{Positioned, SpatialBSP};
 
 pub use baked::Baked;
 pub use transform::Scale;
