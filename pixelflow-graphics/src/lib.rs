@@ -174,6 +174,7 @@ pub mod shapes;
 pub mod subdiv;
 pub mod subdivision;
 pub mod transform;
+pub mod spatial_bsp;
 
 pub use baked::Baked;
 pub use transform::Scale;
@@ -188,6 +189,9 @@ pub use render::color::{
 };
 pub use render::frame::Frame;
 pub use render::rasterizer::TensorShape;
+
+// Re-export spatial types
+pub use spatial_bsp::{Positioned, SpatialBSP};
 
 // Re-export core types for convenience
 // Field/Discrete are doc(hidden) - use manifolds instead of direct field manipulation

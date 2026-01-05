@@ -5,16 +5,25 @@ use crate::{
     term::modes::DecPrivateModes,
 };
 
+/// Parameters for key translation logic.
+/// Groups related arguments to avoid long function signatures.
+pub(super) struct KeyInputParams {
+    pub symbol: KeySymbol,
+    pub modifiers: Modifiers,
+    pub text: Option<String>,
+}
+
 #[rustfmt::skip]
 pub(super) fn translate_key_input(
-    symbol: KeySymbol,
-    modifiers: Modifiers,
-    text: Option<String>,
+    params: KeyInputParams,
     dec_modes: &DecPrivateModes,
 ) -> Vec<u8> {
     // Pre-allocate buffer for key sequence (most are < 16 bytes)
     // to avoid reallocation on push
     let mut bytes_to_send: Vec<u8> = Vec::with_capacity(16);
+    let symbol = params.symbol;
+    let modifiers = params.modifiers;
+    let text = params.text;
 
     // Handle Alt modifier by prepending ESC
     if modifiers.contains(Modifiers::ALT) {
@@ -164,17 +173,23 @@ mod tests {
     #[test]
     fn test_simple_chars() {
         let modes = DecPrivateModes::default();
+        let params = KeyInputParams {
+            symbol: KeySymbol::Char('a'),
+            modifiers: Modifiers::empty(),
+            text: Some("a".to_string()),
+        };
         assert_eq!(
-            translate_key_input(
-                KeySymbol::Char('a'),
-                Modifiers::empty(),
-                Some("a".to_string()),
-                &modes
-            ),
+            translate_key_input(params, &modes),
             vec![b'a']
         );
+
+        let params_enter = KeyInputParams {
+            symbol: KeySymbol::Enter,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Enter, Modifiers::empty(), None, &modes),
+            translate_key_input(params_enter, &modes),
             vec![b'\r']
         );
     }
@@ -183,13 +198,23 @@ mod tests {
     fn test_ctrl_chars() {
         let modes = DecPrivateModes::default();
         // Test Ctrl+c
+        let params_c = KeyInputParams {
+            symbol: KeySymbol::Char('c'),
+            modifiers: Modifiers::CONTROL,
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Char('c'), Modifiers::CONTROL, None, &modes),
+            translate_key_input(params_c, &modes),
             vec![0x03]
         );
         // Test Ctrl+Space
+        let params_space = KeyInputParams {
+            symbol: KeySymbol::Char(' '),
+            modifiers: Modifiers::CONTROL,
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Char(' '), Modifiers::CONTROL, None, &modes),
+            translate_key_input(params_space, &modes),
             vec![0x00]
         );
     }
@@ -197,8 +222,13 @@ mod tests {
     #[test]
     fn test_alt_chars() {
         let modes = DecPrivateModes::default();
+        let params = KeyInputParams {
+            symbol: KeySymbol::Char('a'),
+            modifiers: Modifiers::ALT,
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Char('a'), Modifiers::ALT, None, &modes),
+            translate_key_input(params, &modes),
             vec![0x1b, b'a']
         );
     }
@@ -207,20 +237,44 @@ mod tests {
     fn test_arrow_keys_normal_mode() {
         let mut modes = DecPrivateModes::default();
         modes.cursor_keys_app_mode = false;
+
+        let params_up = KeyInputParams {
+            symbol: KeySymbol::Up,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Up, Modifiers::empty(), None, &modes),
+            translate_key_input(params_up, &modes),
             b"\x1b[A".to_vec()
         );
+
+        let params_down = KeyInputParams {
+            symbol: KeySymbol::Down,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Down, Modifiers::empty(), None, &modes),
+            translate_key_input(params_down, &modes),
             b"\x1b[B".to_vec()
         );
+
+        let params_right = KeyInputParams {
+            symbol: KeySymbol::Right,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Right, Modifiers::empty(), None, &modes),
+            translate_key_input(params_right, &modes),
             b"\x1b[C".to_vec()
         );
+
+        let params_left = KeyInputParams {
+            symbol: KeySymbol::Left,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Left, Modifiers::empty(), None, &modes),
+            translate_key_input(params_left, &modes),
             b"\x1b[D".to_vec()
         );
     }
@@ -229,20 +283,44 @@ mod tests {
     fn test_arrow_keys_app_mode() {
         let mut modes = DecPrivateModes::default();
         modes.cursor_keys_app_mode = true;
+
+        let params_up = KeyInputParams {
+            symbol: KeySymbol::Up,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Up, Modifiers::empty(), None, &modes),
+            translate_key_input(params_up, &modes),
             b"\x1bOA".to_vec()
         );
+
+        let params_down = KeyInputParams {
+            symbol: KeySymbol::Down,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Down, Modifiers::empty(), None, &modes),
+            translate_key_input(params_down, &modes),
             b"\x1bOB".to_vec()
         );
+
+        let params_right = KeyInputParams {
+            symbol: KeySymbol::Right,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Right, Modifiers::empty(), None, &modes),
+            translate_key_input(params_right, &modes),
             b"\x1bOC".to_vec()
         );
+
+        let params_left = KeyInputParams {
+            symbol: KeySymbol::Left,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Left, Modifiers::empty(), None, &modes),
+            translate_key_input(params_left, &modes),
             b"\x1bOD".to_vec()
         );
     }
@@ -250,8 +328,13 @@ mod tests {
     #[test]
     fn test_shift_tab() {
         let modes = DecPrivateModes::default();
+        let params = KeyInputParams {
+            symbol: KeySymbol::Tab,
+            modifiers: Modifiers::SHIFT,
+            text: None,
+        };
         assert_eq!(
-            translate_key_input(KeySymbol::Tab, Modifiers::SHIFT, None, &modes),
+            translate_key_input(params, &modes),
             b"\x1b[Z".to_vec()
         );
     }
@@ -263,46 +346,46 @@ mod tests {
         let modes = DecPrivateModes::default();
 
         // Up arrow with macOS private use placeholder
+        let params_up = KeyInputParams {
+            symbol: KeySymbol::Up,
+            modifiers: Modifiers::empty(),
+            text: Some("\u{F700}".to_string()),
+        };
         assert_eq!(
-            translate_key_input(
-                KeySymbol::Up,
-                Modifiers::empty(),
-                Some("\u{F700}".to_string()), // macOS sends this for up arrow
-                &modes
-            ),
+            translate_key_input(params_up, &modes),
             b"\x1b[A".to_vec()
         );
 
         // Down arrow
+        let params_down = KeyInputParams {
+            symbol: KeySymbol::Down,
+            modifiers: Modifiers::empty(),
+            text: Some("\u{F701}".to_string()),
+        };
         assert_eq!(
-            translate_key_input(
-                KeySymbol::Down,
-                Modifiers::empty(),
-                Some("\u{F701}".to_string()), // macOS sends this for down arrow
-                &modes
-            ),
+            translate_key_input(params_down, &modes),
             b"\x1b[B".to_vec()
         );
 
         // Right arrow
+        let params_right = KeyInputParams {
+            symbol: KeySymbol::Right,
+            modifiers: Modifiers::empty(),
+            text: Some("\u{F703}".to_string()),
+        };
         assert_eq!(
-            translate_key_input(
-                KeySymbol::Right,
-                Modifiers::empty(),
-                Some("\u{F703}".to_string()), // macOS sends this for right arrow
-                &modes
-            ),
+            translate_key_input(params_right, &modes),
             b"\x1b[C".to_vec()
         );
 
         // Left arrow
+        let params_left = KeyInputParams {
+            symbol: KeySymbol::Left,
+            modifiers: Modifiers::empty(),
+            text: Some("\u{F702}".to_string()),
+        };
         assert_eq!(
-            translate_key_input(
-                KeySymbol::Left,
-                Modifiers::empty(),
-                Some("\u{F702}".to_string()), // macOS sends this for left arrow
-                &modes
-            ),
+            translate_key_input(params_left, &modes),
             b"\x1b[D".to_vec()
         );
     }

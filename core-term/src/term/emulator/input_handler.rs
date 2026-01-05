@@ -30,7 +30,14 @@ pub(super) fn process_user_input_action(
             symbol,
             modifiers,
             text,
-        } => handle_key_input(emulator, symbol, modifiers, text),
+        } => handle_key_input(
+            emulator,
+            key_translator::KeyInputParams {
+                symbol,
+                modifiers,
+                text,
+            },
+        ),
         UserInputAction::StartSelection { x_px, y_px } => {
             handle_start_selection(emulator, x_px, y_px)
         }
@@ -67,12 +74,9 @@ pub(super) fn process_user_input_action(
 
 fn handle_key_input(
     emulator: &mut TerminalEmulator,
-    symbol: pixelflow_runtime::input::KeySymbol,
-    modifiers: pixelflow_runtime::input::Modifiers,
-    text: Option<String>,
+    params: key_translator::KeyInputParams,
 ) -> Option<EmulatorAction> {
-    let bytes_to_send =
-        key_translator::translate_key_input(symbol, modifiers, text, &emulator.dec_modes);
+    let bytes_to_send = key_translator::translate_key_input(params, &emulator.dec_modes);
     if !bytes_to_send.is_empty() {
         Some(EmulatorAction::WritePty(bytes_to_send))
     } else {

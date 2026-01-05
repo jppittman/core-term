@@ -17,8 +17,7 @@
 //!
 //! This happens transparently - just use `Select { cond: Lt(...), ... }`.
 
-use crate::Field;
-use crate::Manifold;
+use crate::{Discrete, Field, Manifold};
 use crate::backend::{MaskOps, SimdOps};
 use crate::numeric::Numeric;
 use crate::ops::compare::{Ge, Gt, Le, Lt};
@@ -197,18 +196,47 @@ impl FieldCondition for Field {
 }
 
 // ============================================================================
+// Helper trait for types selectable with NativeMask
+// ============================================================================
+
+/// Trait for types that can be selected using a NativeMask.
+///
+/// This unifies Field (using NativeSimd::select) and Discrete (converting to Field mask).
+pub trait SelectableFromNativeMask: Copy + Send + Sync {
+    /// Select between two values using a native mask.
+    fn select_from_native(mask: NativeMask, t: Self, f: Self) -> Self;
+}
+
+impl SelectableFromNativeMask for Field {
+    #[inline(always)]
+    fn select_from_native(mask: NativeMask, t: Self, f: Self) -> Self {
+        Field(NativeSimd::select(mask, t.0, f.0))
+    }
+}
+
+impl SelectableFromNativeMask for Discrete {
+    #[inline(always)]
+    fn select_from_native(mask: NativeMask, t: Self, f: Self) -> Self {
+        // Convert native mask to float field for bitwise select
+        let mask_field = Field(NativeSimd::mask_to_float(mask));
+        Discrete::select(mask_field, t, f)
+    }
+}
+
+// ============================================================================
 // Select implementation for Field with FieldCondition (OPTIMIZED PATH)
 // ============================================================================
 
-impl<C, T, F> Manifold<Field> for Select<C, T, F>
+impl<C, T, F, O> Manifold<Field> for Select<C, T, F>
 where
     C: FieldCondition,
-    T: Manifold<Field, Output = Field>,
-    F: Manifold<Field, Output = Field>,
+    T: Manifold<Field, Output = O>,
+    F: Manifold<Field, Output = O>,
+    O: SelectableFromNativeMask,
 {
-    type Output = Field;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> O {
         // Get native mask directly - no float conversion!
         let mask = self.cond.eval_mask(x, y, z, w);
 
@@ -220,10 +248,10 @@ where
             return self.if_false.eval_raw(x, y, z, w);
         }
 
-        // Select with native mask - no float conversion!
+        // Select with native mask
         let true_val = self.if_true.eval_raw(x, y, z, w);
         let false_val = self.if_false.eval_raw(x, y, z, w);
-        Field(NativeSimd::select(mask, true_val.0, false_val.0))
+        O::select_from_native(mask, true_val, false_val)
     }
 }
 
