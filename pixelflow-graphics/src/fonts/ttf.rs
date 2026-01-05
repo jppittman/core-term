@@ -900,10 +900,14 @@ impl<'a> Font<'a> {
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
     pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         let g = self.glyph_by_id(id)?;
-        let scale = size / self.units_per_em as f32;
+        // Scale based on total font height (ascent + |descent|) instead of units_per_em
+        // This ensures descenders fit within the requested size
+        let total_height = self.ascent as f32 + self.descent.abs() as f32;
+        let scale = size / total_height;
         // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
         // so the top of the text is at Y=0 in screen coordinates.
         let y_offset = self.ascent as f32 * scale;
+
         Some(Glyph::Compound(Sum([affine(
             g,
             [scale, 0.0, 0.0, -scale, 0.0, y_offset],
@@ -967,6 +971,10 @@ impl<'a> Font<'a> {
         let y_min = r.i16()?;
         let x_max = r.i16()?;
         let y_max = r.i16()?;
+
+        if id == 36 { // ASCII 'A'
+            eprintln!("[DEBUG] compile id={}: bbox=[{}, {}, {}, {}]", id, x_min, y_min, x_max, y_max);
+        }
 
         let width = (x_max - x_min) as f32;
         let height = (y_max - y_min) as f32;
