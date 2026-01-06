@@ -197,22 +197,23 @@ impl FieldCondition for Field {
 }
 
 // ============================================================================
-// Select implementation for Field with FieldCondition (OPTIMIZED PATH)
+// Select implementation for Field with FieldCondition (Generic for any Selectable)
 // ============================================================================
 
-impl<C, T, F> Manifold<Field> for Select<C, T, F>
+impl<C, T, F, O> Manifold<Field> for Select<C, T, F>
 where
+    O: crate::numeric::Selectable,
     C: FieldCondition,
-    T: Manifold<Field, Output = Field>,
-    F: Manifold<Field, Output = Field>,
+    T: Manifold<Field, Output = O>,
+    F: Manifold<Field, Output = O>,
 {
-    type Output = Field;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        // Get native mask directly - no float conversion!
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> O {
+        // Get native mask directly
         let mask = self.cond.eval_mask(x, y, z, w);
 
-        // Early exit using native mask ops (free on AVX-512 k-registers)
+        // Early exit using native mask ops
         if mask.all() {
             return self.if_true.eval_raw(x, y, z, w);
         }
@@ -220,10 +221,13 @@ where
             return self.if_false.eval_raw(x, y, z, w);
         }
 
-        // Select with native mask - no float conversion!
         let true_val = self.if_true.eval_raw(x, y, z, w);
         let false_val = self.if_false.eval_raw(x, y, z, w);
-        Field(NativeSimd::select(mask, true_val.0, false_val.0))
+
+        // Convert native mask to float field for Selectable::select_raw
+        // This incurs a round-trip cost on AVX-512 but supports all Selectable types
+        let mask_field = Field(NativeSimd::mask_to_float(mask));
+        O::select_raw(mask_field, true_val, false_val)
     }
 }
 

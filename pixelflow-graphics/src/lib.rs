@@ -171,11 +171,13 @@ pub mod patch;
 pub mod render;
 pub mod scene3d;
 pub mod shapes;
+pub mod spatial_bsp;
 pub mod subdiv;
 pub mod subdivision;
 pub mod transform;
 
 pub use baked::Baked;
+pub use spatial_bsp::{Positioned, SpatialBSP};
 pub use transform::Scale;
 
 // Re-export fonts (user-facing types only; internal combinators like Affine/Sum stay in fonts::ttf)

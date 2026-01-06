@@ -78,6 +78,16 @@ struct SelectionContext<'a> {
     buffer: &'a mut String,
 }
 
+/// Helper struct for `trim_trailing_whitespace_if_needed` to reduce argument count.
+struct TrimContext<'a> {
+    norm_start: Point,
+    norm_end: Point,
+    y_abs: usize,
+    line_col_end: usize,
+    line_start_len: usize,
+    buffer: &'a mut String,
+}
+
 /// Represents the state of the terminal screen.
 ///
 /// Manages the primary and alternate display grids, scrollback buffer,
@@ -1046,14 +1056,14 @@ impl Screen {
             }
 
             // Trim trailing whitespace if needed
-            self.trim_trailing_whitespace_if_needed(
-                norm_start_point,
-                norm_end_point,
+            self.trim_trailing_whitespace_if_needed(TrimContext {
+                norm_start: norm_start_point,
+                norm_end: norm_end_point,
                 y_abs,
                 line_col_end,
                 line_start_len,
                 buffer,
-            );
+            });
 
             if y_abs < norm_end_point.y {
                 buffer.push('\n');
@@ -1098,30 +1108,22 @@ impl Screen {
     }
 
     /// Trims trailing whitespace from the buffer for the current line if conditions are met.
-    fn trim_trailing_whitespace_if_needed(
-        &self,
-        norm_start_point: Point,
-        norm_end_point: Point,
-        y_abs: usize,
-        line_col_end: usize,
-        line_start_len: usize,
-        buffer: &mut String,
-    ) {
+    fn trim_trailing_whitespace_if_needed(&self, ctx: TrimContext) {
         // Trim trailing whitespace if:
         // 1. It's a multi-line selection (norm_start_point.y != norm_end_point.y)
         // 2. This is NOT the last line of the multi-line selection (y_abs < norm_end_point.y)
         // 3. The selection on this line went all the way to the end of the screen width (line_col_end included self.width - 1)
-        if norm_start_point.y != norm_end_point.y
-            && y_abs < norm_end_point.y
-            && line_col_end >= self.width.saturating_sub(1)
+        if ctx.norm_start.y != ctx.norm_end.y
+            && ctx.y_abs < ctx.norm_end.y
+            && ctx.line_col_end >= self.width.saturating_sub(1)
         {
             // Check if selection extended to line end
             // Search backwards in the newly added segment of buffer
-            let current_line_len = buffer.len() - line_start_len;
+            let current_line_len = ctx.buffer.len() - ctx.line_start_len;
             if current_line_len > 0 {
                 let mut last_non_space_relative_idx = None;
                 // Scan backwards through the bytes we just added
-                let new_part = &buffer[line_start_len..];
+                let new_part = &ctx.buffer[ctx.line_start_len..];
                 if let Some(idx) = new_part.rfind(|c: char| c != ' ') {
                     last_non_space_relative_idx = Some(idx);
                 }
@@ -1130,10 +1132,11 @@ impl Screen {
                     // Find the byte index of the character *after* the last non-space char
                     // new_part[rel_idx] is the start of the char.
                     let char_len = new_part[rel_idx..].chars().next().map_or(1, |c| c.len_utf8());
-                    buffer.truncate(line_start_len + rel_idx + char_len);
+                    ctx.buffer
+                        .truncate(ctx.line_start_len + rel_idx + char_len);
                 } else {
                     // Line was all spaces
-                    buffer.truncate(line_start_len);
+                    ctx.buffer.truncate(ctx.line_start_len);
                 }
             }
         }
