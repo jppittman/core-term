@@ -296,7 +296,8 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
 
                 // Update clock thread
                 if let Some(ref tx) = self.clock_control {
-                    let _ = tx.send(ClockCommand::SetInterval(self.interval));
+                    tx.send(ClockCommand::SetInterval(self.interval))
+                        .expect("Failed to update clock thread interval");
                 }
             }
             VsyncCommand::RequestCurrentFPS(sender) => {
@@ -308,7 +309,8 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
             VsyncCommand::Shutdown => {
                 info!("VsyncActor: Shutting down");
                 if let Some(ref tx) = self.clock_control {
-                    let _ = tx.send(ClockCommand::Stop);
+                    tx.send(ClockCommand::Stop)
+                        .expect("Failed to stop clock thread on shutdown");
                 }
                 // Scheduler will exit when all senders are dropped
                 // We should probably drop our own handles if we held any that loop back?

@@ -106,13 +106,14 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
                 }
                 // Frame is now available - notify VSync that we can render again
                 // This is the proper place to add a token, not after render_and_present
-                let _ = self.vsync.send(Message::Data(RenderedResponse {
+                self.vsync.send(Message::Data(RenderedResponse {
                     frame_number: self.frame_number,
                     rendered_at: Instant::now(),
-                }));
+                })).expect("Failed to notify VSync of completed frame");
             }
             EngineControl::Quit => {
-                let _ = self.driver.send(Message::Control(DisplayControl::Shutdown));
+                self.driver.send(Message::Control(DisplayControl::Shutdown))
+                    .expect("Failed to send Shutdown to driver on Quit");
             }
             EngineControl::UpdateRefreshRate(_) => {
                 unimplemented!("UpdateRefreshRate not yet implemented");
@@ -143,38 +144,39 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
             }
             AppManagement::SetTitle(title) => {
                 self.title = title.clone();
-                let _ = self.driver.send(Message::Control(DisplayControl::SetTitle {
+                self.driver.send(Message::Control(DisplayControl::SetTitle {
                     id: WindowId::PRIMARY,
                     title,
-                }));
+                })).expect("Failed to send SetTitle to driver");
             }
             AppManagement::ResizeRequest(width, height) => {
-                let _ = self.driver.send(Message::Control(DisplayControl::SetSize {
+                self.driver.send(Message::Control(DisplayControl::SetSize {
                     id: WindowId::PRIMARY,
                     width,
                     height,
-                }));
+                })).expect("Failed to send SetSize to driver");
             }
             AppManagement::CopyToClipboard(text) => {
-                let _ = self
-                    .driver
-                    .send(Message::Control(DisplayControl::Copy { text }));
+                self.driver
+                    .send(Message::Control(DisplayControl::Copy { text }))
+                    .expect("Failed to send Copy to driver");
             }
             AppManagement::RequestPaste => {
-                let _ = self
-                    .driver
-                    .send(Message::Control(DisplayControl::RequestPaste));
+                self.driver
+                    .send(Message::Control(DisplayControl::RequestPaste))
+                    .expect("Failed to send RequestPaste to driver");
             }
             AppManagement::SetCursorIcon(icon) => {
-                let _ = self
-                    .driver
+                self.driver
                     .send(Message::Control(DisplayControl::SetCursor {
                         id: WindowId::PRIMARY,
                         cursor: icon,
-                    }));
+                    }))
+                    .expect("Failed to send SetCursor to driver");
             }
             AppManagement::Quit => {
-                let _ = self.driver.send(Message::Control(DisplayControl::Shutdown));
+                self.driver.send(Message::Control(DisplayControl::Shutdown))
+                    .expect("Failed to send Shutdown to driver on AppManagement::Quit");
             }
         }
     }
@@ -200,7 +202,7 @@ impl EngineHandler {
                         self.height,
                         self.title
                     );
-                    let _ = self.driver.send(Message::Management(DisplayMgmt::Create {
+                    self.driver.send(Message::Management(DisplayMgmt::Create {
                         id: WindowId::PRIMARY,
                         settings: WindowDescriptor {
                             width: self.width,
@@ -208,14 +210,15 @@ impl EngineHandler {
                             title: self.title.clone(),
                             resizable: true,
                         },
-                    }));
+                    })).expect("Failed to send Create window to driver");
                     self.window_created = true;
 
                     // Allocate the initial frame buffer
                     self.frame_buffer = Some(Frame::new(self.width, self.height));
 
                     // Start VSync now that we have content to render
-                    let _ = self.vsync.send(Message::Control(VsyncCommand::Start));
+                    self.vsync.send(Message::Control(VsyncCommand::Start))
+                        .expect("Failed to start VSync");
                     log::info!("VSync started - first frame will render on next tick");
                 }
                 // Don't render immediately - let VSync tick trigger the render
@@ -246,10 +249,10 @@ impl EngineHandler {
 
         // Send to driver for presentation (transfers ownership)
         let t1 = Instant::now();
-        let _ = self.driver.send(Message::Data(DisplayData::Present {
+        self.driver.send(Message::Data(DisplayData::Present {
             id: WindowId::PRIMARY,
             frame,
-        }));
+        })).expect("Failed to send frame to driver for presentation");
         let send_time = t1.elapsed();
 
         self.frame_number += 1;
@@ -291,9 +294,9 @@ impl EngineHandler {
                 }
                 // Forward resize event to app
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Control(EngineEventControl::Resize(
+                    app.send(EngineEvent::Control(EngineEventControl::Resize(
                         width_px, height_px,
-                    )));
+                    ))).expect("Failed to send Resize event to app");
                 }
             }
             DisplayEvent::Key {
@@ -303,44 +306,44 @@ impl EngineHandler {
                 ..
             } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Management(EngineEventManagement::KeyDown {
+                    app.send(EngineEvent::Management(EngineEventManagement::KeyDown {
                         key: symbol,
                         mods: modifiers,
                         text,
-                    }));
+                    })).expect("Failed to send KeyDown event to app");
                 }
             }
             DisplayEvent::MouseButtonPress { button, x, y, .. } => {
                 if let Some(app) = &self.app_handle {
                     let button = convert_mouse_button(button);
-                    let _ = app.send(EngineEvent::Management(EngineEventManagement::MouseClick {
+                    app.send(EngineEvent::Management(EngineEventManagement::MouseClick {
                         x: x as u32,
                         y: y as u32,
                         button,
-                    }));
+                    })).expect("Failed to send MouseClick event to app");
                 }
             }
             DisplayEvent::MouseButtonRelease { button, x, y, .. } => {
                 if let Some(app) = &self.app_handle {
                     let button = convert_mouse_button(button);
-                    let _ = app.send(EngineEvent::Management(
+                    app.send(EngineEvent::Management(
                         EngineEventManagement::MouseRelease {
                             x: x as u32,
                             y: y as u32,
                             button,
                         },
-                    ));
+                    )).expect("Failed to send MouseRelease event to app");
                 }
             }
             DisplayEvent::MouseMove {
                 x, y, modifiers, ..
             } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Management(EngineEventManagement::MouseMove {
+                    app.send(EngineEvent::Management(EngineEventManagement::MouseMove {
                         x: x as u32,
                         y: y as u32,
                         mods: modifiers,
-                    }));
+                    })).expect("Failed to send MouseMove event to app");
                 }
             }
             DisplayEvent::MouseScroll {
@@ -352,7 +355,7 @@ impl EngineHandler {
                 ..
             } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Management(
+                    app.send(EngineEvent::Management(
                         EngineEventManagement::MouseScroll {
                             x: x as u32,
                             y: y as u32,
@@ -360,36 +363,41 @@ impl EngineHandler {
                             dy,
                             mods: modifiers,
                         },
-                    ));
+                    )).expect("Failed to send MouseScroll event to app");
                 }
             }
             DisplayEvent::CloseRequested { .. } => {
                 log::info!("Close requested");
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Control(EngineEventControl::CloseRequested));
+                    app.send(EngineEvent::Control(EngineEventControl::CloseRequested))
+                        .expect("Failed to send CloseRequested event to app");
                 }
-                let _ = self.driver.send(Message::Control(DisplayControl::Shutdown));
+                self.driver.send(Message::Control(DisplayControl::Shutdown))
+                    .expect("Failed to send Shutdown to driver on CloseRequested");
             }
             DisplayEvent::FocusGained { .. } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Management(EngineEventManagement::FocusGained));
+                    app.send(EngineEvent::Management(EngineEventManagement::FocusGained))
+                        .expect("Failed to send FocusGained event to app");
                 }
             }
             DisplayEvent::FocusLost { .. } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Management(EngineEventManagement::FocusLost));
+                    app.send(EngineEvent::Management(EngineEventManagement::FocusLost))
+                        .expect("Failed to send FocusLost event to app");
                 }
             }
             DisplayEvent::PasteData { text } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Management(EngineEventManagement::Paste(text)));
+                    app.send(EngineEvent::Management(EngineEventManagement::Paste(text)))
+                        .expect("Failed to send Paste event to app");
                 }
             }
             DisplayEvent::ScaleChanged { scale, .. } => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.send(EngineEvent::Control(EngineEventControl::ScaleChanged(
+                    app.send(EngineEvent::Control(EngineEventControl::ScaleChanged(
                         scale,
-                    )));
+                    ))).expect("Failed to send ScaleChanged event to app");
                 }
             }
             DisplayEvent::ClipboardDataRequested => {
