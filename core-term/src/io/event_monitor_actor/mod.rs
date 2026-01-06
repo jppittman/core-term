@@ -151,6 +151,7 @@ mod write_thread;
 
 use crate::ansi::AnsiCommand;
 use crate::io::pty::NixPty;
+use crate::io::PtyCommand;
 use anyhow::{Context, Result};
 use log::*;
 use parser_thread::ParserThread;
@@ -179,7 +180,7 @@ impl EventMonitorActor {
     ///
     /// * `pty` - The PTY to monitor (owned by write thread)
     /// * `cmd_tx` - Channel to send parsed ANSI commands to app
-    /// * `pty_write_rx` - Channel to receive bytes to write to PTY
+    /// * `pty_cmd_rx` - Channel to receive PTY commands (writes and resizes)
     ///
     /// # Returns
     ///
@@ -187,7 +188,7 @@ impl EventMonitorActor {
     pub fn spawn(
         pty: NixPty,
         cmd_tx: SyncSender<Vec<AnsiCommand>>,
-        pty_write_rx: Receiver<Vec<u8>>,
+        pty_cmd_rx: Receiver<PtyCommand>,
     ) -> Result<Self> {
         use actor_scheduler::ActorScheduler;
 
@@ -220,9 +221,9 @@ impl EventMonitorActor {
         let parser_thread = ParserThread::spawn(parser_rx, cmd_tx, recycler_tx)
             .context("Failed to spawn PTY parser thread")?;
 
-        // Spawn write thread (owns primary PTY for writes and lifecycle management)
+        // Spawn write thread (owns primary PTY for writes, resizes, and lifecycle management)
         let write_thread =
-            WriteThread::spawn(pty, pty_write_rx).context("Failed to spawn PTY write thread")?;
+            WriteThread::spawn(pty, pty_cmd_rx).context("Failed to spawn PTY write thread")?;
 
         info!("EventMonitorActor spawned with read, parser, and write threads");
 

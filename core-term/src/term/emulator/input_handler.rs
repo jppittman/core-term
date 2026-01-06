@@ -168,7 +168,12 @@ pub(super) fn process_control_event(
                 height_px
             );
             emulator.resize(cols, rows);
-            None
+
+            // Signal orchestrator to resize the PTY so shell receives SIGWINCH
+            Some(EmulatorAction::ResizePty {
+                cols: cols as u16,
+                rows: rows as u16,
+            })
         }
         ControlEvent::PtyDataReady => {
             // Orchestrator wake-up signal, ignored by emulator
@@ -274,5 +279,84 @@ mod tests {
             }
             _ => panic!("Expected W at [1][0]"),
         }
+    }
+
+    #[test]
+    fn test_control_event_resize_returns_resize_pty_action() {
+        let mut emu = create_test_emu_for_input();
+
+        // Default cell size is 10x16 (from config)
+        // Resize to 1000x800 -> 100x50 cells
+        let resize_event = ControlEvent::Resize {
+            width_px: 1000,
+            height_px: 800,
+        };
+
+        let result = process_control_event(&mut emu, resize_event);
+
+        // Should return ResizePty action with calculated dimensions
+        assert_eq!(
+            result,
+            Some(EmulatorAction::ResizePty { cols: 100, rows: 50 }),
+            "Resize control event should return ResizePty action"
+        );
+
+        // Verify emulator was also resized
+        let snapshot = emu.get_render_snapshot().expect("Snapshot");
+        assert_eq!(
+            snapshot.dimensions,
+            (100, 50),
+            "Emulator dimensions should match"
+        );
+    }
+
+    #[test]
+    fn test_control_event_resize_minimum_dimensions() {
+        let mut emu = create_test_emu_for_input();
+
+        // Very small resize (should clamp to MIN_GRID_DIMENSION)
+        let resize_event = ControlEvent::Resize {
+            width_px: 1,
+            height_px: 1,
+        };
+
+        let result = process_control_event(&mut emu, resize_event);
+
+        // Should clamp to minimum dimensions
+        match result {
+            Some(EmulatorAction::ResizePty { cols, rows }) => {
+                assert!(
+                    cols >= MIN_GRID_DIMENSION as u16,
+                    "Cols {} should be >= MIN_GRID_DIMENSION {}",
+                    cols,
+                    MIN_GRID_DIMENSION
+                );
+                assert!(
+                    rows >= MIN_GRID_DIMENSION as u16,
+                    "Rows {} should be >= MIN_GRID_DIMENSION {}",
+                    rows,
+                    MIN_GRID_DIMENSION
+                );
+            }
+            other => panic!("Expected ResizePty action, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_control_event_request_snapshot_returns_none() {
+        let mut emu = create_test_emu_for_input();
+
+        let result = process_control_event(&mut emu, ControlEvent::RequestSnapshot);
+
+        assert_eq!(result, None, "RequestSnapshot should return None");
+    }
+
+    #[test]
+    fn test_control_event_pty_data_ready_returns_none() {
+        let mut emu = create_test_emu_for_input();
+
+        let result = process_control_event(&mut emu, ControlEvent::PtyDataReady);
+
+        assert_eq!(result, None, "PtyDataReady should return None");
     }
 }

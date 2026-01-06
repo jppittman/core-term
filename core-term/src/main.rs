@@ -168,10 +168,14 @@ fn main() -> anyhow::Result<()> {
     let term_rows = CONFIG.appearance.rows as usize;
     info!("Terminal dimensions: {}x{} cells", term_cols, term_rows);
 
-    // Create channel for PTY writes
-    // pty_write: app → write thread (raw bytes to write to PTY)
+    // Create channel for PTY commands (writes and resizes)
+    // pty_cmd: app → write thread (PtyCommand: Write or Resize)
     // PTY reads now go through priority channel created by spawn_terminal_app
-    let (pty_write_tx, pty_write_rx) = std::sync::mpsc::sync_channel(128);
+    use core_term::io::PtyCommand;
+    let (pty_cmd_tx, pty_cmd_rx): (
+        std::sync::mpsc::SyncSender<PtyCommand>,
+        std::sync::mpsc::Receiver<PtyCommand>,
+    ) = std::sync::mpsc::sync_channel(128);
 
     // Create terminal emulator
     let term_emulator = TerminalEmulator::new(term_cols, term_rows);
@@ -197,8 +201,8 @@ fn main() -> anyhow::Result<()> {
     // Phase 2: Get engine handle for app before spawning
     let engine_handle = troupe.engine_handle();
 
-    // Create PTY command channel
-    let (pty_cmd_tx, pty_cmd_rx) = std::sync::mpsc::sync_channel(128);
+    // Create channel for parsed ANSI commands (parser -> app)
+    let (ansi_cmd_tx, ansi_cmd_rx) = std::sync::mpsc::sync_channel(128);
 
     {
         use core_term::io::event_monitor_actor::EventMonitorActor;
@@ -208,8 +212,8 @@ fn main() -> anyhow::Result<()> {
         // Spawn terminal app with engine handle
         let params = TerminalAppParams {
             emulator: term_emulator,
-            pty_tx: pty_write_tx,
-            pty_rx: pty_cmd_rx,
+            pty_tx: pty_cmd_tx,
+            pty_rx: ansi_cmd_rx,
             config: core_term::config::Config::default(),
             engine_tx: engine_handle,
         };
@@ -227,7 +231,7 @@ fn main() -> anyhow::Result<()> {
         let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
         info!("Spawned PTY");
 
-        let _event_monitor_actor = EventMonitorActor::spawn(pty, pty_cmd_tx, pty_write_rx)
+        let _event_monitor_actor = EventMonitorActor::spawn(pty, ansi_cmd_tx, pty_cmd_rx)
             .context("Failed to spawn EventMonitorActor")?;
         info!("EventMonitorActor spawned successfully");
 

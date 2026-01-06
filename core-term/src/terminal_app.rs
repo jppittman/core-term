@@ -2,6 +2,7 @@ use crate::ansi::commands::AnsiCommand;
 use crate::color::Color;
 use crate::config::Config;
 use crate::glyph::Glyph;
+use crate::io::PtyCommand;
 use crate::term::TerminalEmulator;
 use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
 use pixelflow_core::{Add, At, Discrete, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z, Ge, Le, And};
@@ -53,7 +54,7 @@ type TerminalCellLeaf = At<
 /// terminal content via the engine handle.
 pub struct TerminalApp<P: Pixel> {
     pub emulator: TerminalEmulator,
-    pty_tx: SyncSender<Vec<u8>>,
+    pty_tx: SyncSender<PtyCommand>,
     pub pty_rx: Receiver<Vec<AnsiCommand>>,
     config: Config,
     engine_tx: EngineActorHandle<P>,
@@ -67,9 +68,9 @@ pub struct TerminalApp<P: Pixel> {
 pub struct TerminalAppParams<P: Pixel> {
     /// Terminal emulator instance.
     pub emulator: TerminalEmulator,
-    /// Channel to send data to PTY.
-    pub pty_tx: SyncSender<Vec<u8>>,
-    /// Channel to receive commands from PTY.
+    /// Channel to send commands to PTY (writes and resizes).
+    pub pty_tx: SyncSender<PtyCommand>,
+    /// Channel to receive parsed ANSI commands from PTY.
     pub pty_rx: Receiver<Vec<AnsiCommand>>,
     /// Application configuration.
     pub config: Config,
@@ -349,7 +350,7 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
     fn handle_control(&mut self, ctrl: EngineEventControl) {
         match ctrl {
             EngineEventControl::Resize(width_px, height_px) => {
-                use crate::term::{ControlEvent, EmulatorInput};
+                use crate::term::{ControlEvent, EmulatorAction, EmulatorInput};
                 // Convert u32 pixels to u16 for ControlEvent
                 // Saturate at u16::MAX to prevent overflow panics
                 let width_u16 = width_px.min(u16::MAX as u32) as u16;
@@ -359,7 +360,19 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                     width_px: width_u16,
                     height_px: height_u16,
                 });
-                self.emulator.interpret_input(input);
+
+                // Process the resize and handle the resulting action
+                if let Some(action) = self.emulator.interpret_input(input) {
+                    if let EmulatorAction::ResizePty { cols, rows } = action {
+                        // Send resize command to PTY write thread
+                        if let Err(e) = self.pty_tx.send(PtyCommand::Resize { cols, rows }) {
+                            log::warn!("Failed to send PTY resize command: {}", e);
+                        }
+                    }
+                }
+
+                // Request a redraw after resize
+                self.send_frame();
             }
             EngineEventControl::CloseRequested => {
                 // Handle close request - could signal quit to engine
@@ -384,7 +397,7 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                 if let Some(action) = self.emulator.interpret_input(input) {
                     match action {
                         EmulatorAction::WritePty(bytes) => {
-                            if let Err(e) = self.pty_tx.send(bytes) {
+                            if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
                                 log::warn!("Failed to send input to PTY: {}", e);
                             }
                         }
@@ -401,7 +414,7 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                             unimplemented!("EmulatorAction::RingBell not yet implemented");
                         }
                         EmulatorAction::RequestRedraw => {
-                            unimplemented!("EmulatorAction::RequestRedraw not yet implemented");
+                            self.send_frame();
                         }
                         EmulatorAction::SetCursorVisibility(_) => {
                             unimplemented!("EmulatorAction::SetCursorVisibility not yet implemented");
@@ -412,8 +425,11 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                         EmulatorAction::RequestClipboardContent => {
                             unimplemented!("EmulatorAction::RequestClipboardContent not yet implemented");
                         }
-                        EmulatorAction::ResizePty { .. } => {
-                            unimplemented!("EmulatorAction::ResizePty not yet implemented");
+                        EmulatorAction::ResizePty { cols, rows } => {
+                            // Send resize command to PTY write thread
+                            if let Err(e) = self.pty_tx.send(PtyCommand::Resize { cols, rows }) {
+                                log::warn!("Failed to send PTY resize command: {}", e);
+                            }
                         }
                     }
                 }
@@ -488,6 +504,7 @@ pub fn spawn_terminal_app<P: Pixel + 'static>(
 mod tests {
     use super::*;
     use crate::ansi::commands::AnsiCommand;
+    use crate::io::PtyCommand;
     use crate::term::{EmulatorInput, TerminalEmulator, UserInputAction};
     use actor_scheduler::{Actor, ParkHint};
     use pixelflow_runtime::input::{KeySymbol, Modifiers};
@@ -512,7 +529,7 @@ mod tests {
     // Helper to create a test instance
     fn create_test_app() -> (
         TerminalApp<DummyPixel>,
-        Receiver<Vec<u8>>,
+        Receiver<PtyCommand>,
         SyncSender<Vec<AnsiCommand>>,
         pixelflow_runtime::EngineActorHandle<DummyPixel>,
     ) {
@@ -538,7 +555,7 @@ mod tests {
 
     #[test]
     fn test_handle_control_resize() {
-        let (mut app, _pty_rx, _cmd_tx, _) = create_test_app();
+        let (mut app, pty_rx, _cmd_tx, _) = create_test_app();
 
         // Initial size is 80x24
         use crate::term::TerminalInterface;
@@ -558,6 +575,14 @@ mod tests {
             (100, 50),
             "Emulator should have resized to 100x50"
         );
+
+        // Verify PTY resize command was sent
+        let cmd = pty_rx.try_recv().expect("Should receive resize command");
+        assert_eq!(
+            cmd,
+            PtyCommand::Resize { cols: 100, rows: 50 },
+            "PTY resize command should match new dimensions"
+        );
     }
 
     #[test]
@@ -573,10 +598,10 @@ mod tests {
 
         app.handle_management(key_event);
 
-        // We expect 'a' to be sent to PTY
+        // We expect 'a' to be sent to PTY wrapped in PtyCommand::Write
         let received = pty_rx.try_recv();
         assert!(received.is_ok(), "Should receive data on PTY channel");
-        let bytes = received.unwrap();
-        assert_eq!(bytes, vec![b'a']);
+        let cmd = received.unwrap();
+        assert_eq!(cmd, PtyCommand::Write(vec![b'a']));
     }
 }
