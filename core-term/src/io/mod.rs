@@ -196,6 +196,44 @@ pub mod event_monitor_actor;
 pub mod pty;
 pub mod traits;
 
+/// Commands that can be sent to the PTY write thread.
+///
+/// The write thread handles both data writes and control operations like resize.
+/// This unified command type allows the terminal app to communicate all PTY operations
+/// through a single channel.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Send user input to the shell
+/// pty_tx.send(PtyCommand::Write(b"ls -la\n".to_vec()))?;
+///
+/// // Resize the PTY when window size changes
+/// pty_tx.send(PtyCommand::Resize { cols: 120, rows: 40 })?;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PtyCommand {
+    /// Write raw bytes to the PTY.
+    ///
+    /// These bytes are sent directly to the shell process via the PTY master FD.
+    Write(Vec<u8>),
+
+    /// Resize the PTY window.
+    ///
+    /// This triggers:
+    /// 1. `ioctl(TIOCSWINSZ)` to set the new window size
+    /// 2. `SIGWINCH` signal to notify the shell of the size change
+    ///
+    /// Full-screen programs (vim, less, top, etc.) will respond to SIGWINCH
+    /// by querying the new size and redrawing.
+    Resize {
+        /// Number of columns in the terminal grid.
+        cols: u16,
+        /// Number of rows in the terminal grid.
+        rows: u16,
+    },
+}
+
 #[cfg(test)]
 mod pty_tests;
 

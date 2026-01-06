@@ -722,3 +722,163 @@ fn roundtrip_sender_dropped_during_processing() {
     // Actor should finish processing current message
     assert_eq!(processed.load(Ordering::SeqCst), 1);
 }
+
+// =============================================================================
+// PTY Resize Actor Boundary Tests
+// =============================================================================
+
+use core_term::io::PtyCommand;
+
+/// Test that PtyCommand::Resize is properly sent and received at the actor boundary.
+/// This tests the channel contract between TerminalApp and WriteThread.
+#[test]
+fn pty_command_resize_delivery_at_actor_boundary() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
+
+    // Simulate sending resize command from TerminalApp
+    tx.send(PtyCommand::Resize { cols: 120, rows: 40 })
+        .expect("Should send resize command");
+
+    // Simulate receiving in WriteThread
+    let cmd = rx.recv_timeout(Duration::from_millis(100)).unwrap();
+
+    assert_eq!(cmd, PtyCommand::Resize { cols: 120, rows: 40 });
+}
+
+/// Test that multiple resize commands maintain ordering (FIFO).
+#[test]
+fn pty_command_resize_ordering_preserved() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
+
+    // Send multiple resize commands
+    tx.send(PtyCommand::Resize { cols: 80, rows: 24 }).unwrap();
+    tx.send(PtyCommand::Resize { cols: 120, rows: 40 }).unwrap();
+    tx.send(PtyCommand::Resize { cols: 200, rows: 60 }).unwrap();
+
+    // Verify FIFO order
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+        PtyCommand::Resize { cols: 80, rows: 24 }
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+        PtyCommand::Resize { cols: 120, rows: 40 }
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+        PtyCommand::Resize { cols: 200, rows: 60 }
+    );
+}
+
+/// Test that Write and Resize commands are correctly interleaved.
+#[test]
+fn pty_command_write_and_resize_interleaved() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
+
+    // Interleave write and resize commands
+    tx.send(PtyCommand::Write(b"hello".to_vec())).unwrap();
+    tx.send(PtyCommand::Resize { cols: 100, rows: 50 }).unwrap();
+    tx.send(PtyCommand::Write(b"world".to_vec())).unwrap();
+
+    // Verify interleaved order
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+        PtyCommand::Write(b"hello".to_vec())
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+        PtyCommand::Resize { cols: 100, rows: 50 }
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+        PtyCommand::Write(b"world".to_vec())
+    );
+}
+
+/// Test that sender drop properly signals channel closure.
+#[test]
+fn pty_command_channel_closure_on_sender_drop() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
+
+    tx.send(PtyCommand::Resize { cols: 80, rows: 24 }).unwrap();
+
+    drop(tx);
+
+    // First recv should succeed
+    assert!(rx.recv().is_ok());
+
+    // Second recv should fail (channel closed)
+    assert!(rx.recv().is_err());
+}
+
+/// Test resize command with extreme values (boundary conditions).
+#[test]
+fn pty_command_resize_boundary_values() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
+
+    // Minimum valid size
+    tx.send(PtyCommand::Resize { cols: 1, rows: 1 }).unwrap();
+
+    // Maximum u16 values
+    tx.send(PtyCommand::Resize {
+        cols: u16::MAX,
+        rows: u16::MAX,
+    })
+    .unwrap();
+
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+        PtyCommand::Resize { cols: 1, rows: 1 }
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(100)).unwrap(),
+        PtyCommand::Resize {
+            cols: u16::MAX,
+            rows: u16::MAX
+        }
+    );
+}
+
+/// Test that resize commands from multiple threads are all delivered.
+#[test]
+fn pty_command_resize_from_multiple_senders() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(32);
+
+    let tx1 = tx.clone();
+    let tx2 = tx.clone();
+
+    let h1 = thread::spawn(move || {
+        for i in 0..5 {
+            tx1.send(PtyCommand::Resize {
+                cols: 100 + i,
+                rows: 50,
+            })
+            .unwrap();
+        }
+    });
+
+    let h2 = thread::spawn(move || {
+        for i in 0..5 {
+            tx2.send(PtyCommand::Write(format!("msg{}", i).into_bytes()))
+                .unwrap();
+        }
+    });
+
+    h1.join().unwrap();
+    h2.join().unwrap();
+    drop(tx); // Drop original sender
+
+    // Count received commands
+    let mut resize_count = 0;
+    let mut write_count = 0;
+
+    while let Ok(cmd) = rx.try_recv() {
+        match cmd {
+            PtyCommand::Resize { .. } => resize_count += 1,
+            PtyCommand::Write(_) => write_count += 1,
+        }
+    }
+
+    assert_eq!(resize_count, 5, "Should receive 5 resize commands");
+    assert_eq!(write_count, 5, "Should receive 5 write commands");
+}
