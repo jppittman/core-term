@@ -76,12 +76,12 @@ pub fn actor_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Find body brace
     let mut body: Option<String> = None;
-    while let Some(tok) = tokens.next() {
-        if let TokenTree::Group(g) = tok {
-            if g.delimiter() == Delimiter::Brace {
-                body = Some(g.stream().to_string());
-                break;
-            }
+    for tok in tokens {
+        if let TokenTree::Group(g) = tok
+            && g.delimiter() == Delimiter::Brace
+        {
+            body = Some(g.stream().to_string());
+            break;
         }
     }
 
@@ -202,21 +202,21 @@ pub fn troupe(input: TokenStream) -> TokenStream {
 
         // Check for [attrs]
         let mut attrs = ActorAttrs::default();
-        if let Some(TokenTree::Group(g)) = tokens.peek() {
-            if g.delimiter() == Delimiter::Bracket {
-                let inner = g.stream().to_string();
-                attrs = parse_attrs(&inner);
-                tokens.next(); // consume the bracket group
-            }
+        if let Some(TokenTree::Group(g)) = tokens.peek()
+            && g.delimiter() == Delimiter::Bracket
+        {
+            let inner = g.stream().to_string();
+            attrs = parse_attrs(&inner);
+            tokens.next(); // consume the bracket group
         }
 
         actors.push((name, type_name, attrs.is_main, attrs.is_exposed));
 
         // Skip comma if present
-        if let Some(TokenTree::Punct(p)) = tokens.peek() {
-            if p.as_char() == ',' {
-                tokens.next();
-            }
+        if let Some(TokenTree::Punct(p)) = tokens.peek()
+            && p.as_char() == ','
+        {
+            tokens.next();
         }
     }
 

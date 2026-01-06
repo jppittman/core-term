@@ -340,7 +340,7 @@ impl SimdOps for F32x4 {
             let c3 = vdupq_n_f32(1.0588497);
             let c2 = vdupq_n_f32(-2.3600652);
             let c1 = vdupq_n_f32(2.8647557);
-            let c0 = vdupq_n_f32(-0.6366198);
+            let c0 = vdupq_n_f32(-core::f32::consts::FRAC_2_PI);
 
             // Horner's method using NEON FMA: vfmaq_f32(c, a, b) = a*b + c
             let poly = vfmaq_f32(c3, c4, f);

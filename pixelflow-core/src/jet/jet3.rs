@@ -607,9 +607,6 @@ impl Numeric for Jet3 {
 
     #[inline(always)]
     fn atan2(self, x: Self) -> Self {
-        // atan2(y, x) derivatives:
-        // ∂/∂y = x / (x² + y²)
-        // ∂/∂x = -y / (x² + y²)
         let r_sq = self.val * self.val + x.val * x.val;
         let inv_r_sq = Field::from(1.0) / r_sq;
         let dy_darg = x.val * inv_r_sq;
@@ -624,7 +621,6 @@ impl Numeric for Jet3 {
 
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
-        // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
         let inv_self = Field::from(1.0) / self.val;
@@ -650,8 +646,6 @@ impl Numeric for Jet3 {
 
     #[inline(always)]
     fn log2(self) -> Self {
-        // Chain rule: (log2 f)' = f' / (f * ln(2))
-        // log2(e) = 1/ln(2) ≈ 1.4426950408889634
         let log2_e = Field::from(1.4426950408889634);
         let inv_val = Field::from(1.0) / self.val;
         let deriv_coeff = inv_val * log2_e;
