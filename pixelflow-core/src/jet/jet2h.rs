@@ -716,85 +716,47 @@ impl Numeric for Jet2H {
 
     #[inline(always)]
     fn atan2(self, x: Self) -> Self {
-        // atan2(y, x) = atan(y/x)
-        // ∂/∂y = x / (x² + y²)
-        // ∂/∂x = -y / (x² + y²)
-        // Second derivatives more complex; see below
         let r_sq = self.val * self.val + x.val * x.val;
         let inv_r_sq = Field::from(1.0) / r_sq;
         let dy_darg = x.val * inv_r_sq;
         let dx_darg = self.val * inv_r_sq * Field::from(-1.0);
-
-        // Second derivatives: complex but doable
-        // d²atan2 = derivatives of (x * inv_r_sq, -y * inv_r_sq)
         let inv_r_fourth = inv_r_sq * inv_r_sq;
         let two = Field::from(2.0);
         let term = two * inv_r_fourth;
-
         let d_dy_darg_y = self.val * dy_darg * term * Field::from(-1.0);
         let d_dy_darg_x = inv_r_sq + x.val * x.val * term * Field::from(-1.0);
         let d_dx_darg_y = inv_r_sq * Field::from(-1.0) + self.val * self.val * term;
         let d_dx_darg_x = self.val * dx_darg * term;
-
         Self::new(
             self.val.atan2(x.val),
             self.dx * dy_darg + x.dx * dx_darg,
             self.dy * dy_darg + x.dy * dx_darg,
-            self.dxx * dy_darg
-                + self.dx * d_dy_darg_y * self.dx
-                + x.dxx * dx_darg
-                + x.dx * d_dx_darg_x * x.dx
-                + self.dx * x.dx * (d_dy_darg_x + d_dx_darg_y),
-            self.dxy * dy_darg
-                + self.dx * d_dy_darg_y * self.dy
-                + x.dxy * dx_darg
-                + x.dx * d_dx_darg_x * x.dy
-                + self.dy * x.dx * (d_dy_darg_x + d_dx_darg_y)
-                + self.dx * x.dy * (d_dy_darg_x + d_dx_darg_y),
-            self.dyy * dy_darg
-                + self.dy * d_dy_darg_y * self.dy
-                + x.dyy * dx_darg
-                + x.dy * d_dx_darg_x * x.dy
-                + self.dy * x.dy * (d_dy_darg_x + d_dx_darg_y),
+            self.dxx * dy_darg + self.dx * d_dy_darg_y * self.dx + x.dxx * dx_darg + x.dx * d_dx_darg_x * x.dx + self.dx * x.dx * (d_dy_darg_x + d_dx_darg_y),
+            self.dxy * dy_darg + self.dx * d_dy_darg_y * self.dy + x.dxy * dx_darg + x.dx * d_dx_darg_x * x.dy + self.dy * x.dx * (d_dy_darg_x + d_dx_darg_y) + self.dx * x.dy * (d_dy_darg_x + d_dx_darg_y),
+            self.dyy * dy_darg + self.dy * d_dy_darg_y * self.dy + x.dyy * dx_darg + x.dy * d_dx_darg_x * x.dy + self.dy * x.dy * (d_dy_darg_x + d_dx_darg_y),
         )
     }
 
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
-        // For f^g: (f^g)' = f^g * (g' * ln(f) + g * f'/f)
-        // Second derivative is complex; simplified version:
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
         let inv_self = Field::from(1.0) / self.val;
         let coeff = exp.val * inv_self;
         let two = Field::from(2.0);
-
         Self::new(
             val,
             val * (exp.dx * ln_base + coeff * self.dx),
             val * (exp.dy * ln_base + coeff * self.dy),
-            // Simplified Hessian (full version would be very complex)
-            self.dxx * val * coeff
-                + two * self.dx * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
-                + val * exp.dxx * ln_base
-                - self.dx * self.dx * val * inv_self * inv_self,
-            self.dxy * val * coeff
-                + self.dx * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
-                + self.dy * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
-                + val * exp.dxy * ln_base,
-            self.dyy * val * coeff
-                + two * self.dy * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
-                + val * exp.dyy * ln_base
-                - self.dy * self.dy * val * inv_self * inv_self,
+            self.dxx * val * coeff + two * self.dx * val * inv_self * (exp.dx * ln_base + coeff * self.dx) + val * exp.dxx * ln_base - self.dx * self.dx * val * inv_self * inv_self,
+            self.dxy * val * coeff + self.dx * val * inv_self * (exp.dy * ln_base + coeff * self.dy) + self.dy * val * inv_self * (exp.dx * ln_base + coeff * self.dx) + val * exp.dxy * ln_base,
+            self.dyy * val * coeff + two * self.dy * val * inv_self * (exp.dy * ln_base + coeff * self.dy) + val * exp.dyy * ln_base - self.dy * self.dy * val * inv_self * inv_self,
         )
     }
 
     #[inline(always)]
     fn exp(self) -> Self {
-        // exp(f)' = exp(f) * f'
-        // exp(f)'' = exp(f) * (f')² + exp(f) * f''
         let exp_val = self.val.exp();
-
         Self::new(
             exp_val,
             self.dx * exp_val,
@@ -807,13 +769,10 @@ impl Numeric for Jet2H {
 
     #[inline(always)]
     fn log2(self) -> Self {
-        // log2(f)' = f' / (f * ln(2)) = f' * log2(e) / f
-        // log2(f)'' = log2(e) * (f''/f - (f')²/f²)
         let log2_e = Field::from(1.4426950408889634);
         let inv_val = Field::from(1.0) / self.val;
         let inv_val_sq = inv_val * inv_val;
         let deriv_coeff = inv_val * log2_e;
-
         Self::new(
             self.val.log2(),
             self.dx * deriv_coeff,
@@ -854,7 +813,6 @@ impl Numeric for Jet2H {
         let inv_cube = inv_sq * inv;
         let neg_inv_sq = inv_sq * Field::from(-1.0);
         let two = Field::from(2.0);
-
         Self::new(
             inv,
             self.dx * neg_inv_sq,

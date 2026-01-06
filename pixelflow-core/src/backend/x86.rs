@@ -322,7 +322,7 @@ impl SimdOps for F32x4 {
             let c3 = _mm_set1_ps(1.0588497);
             let c2 = _mm_set1_ps(-2.3600652);
             let c1 = _mm_set1_ps(2.8647557);
-            let c0 = _mm_set1_ps(-0.6366198);
+            let c0 = _mm_set1_ps(-core::f32::consts::FRAC_2_PI);
 
             // Horner's method (no FMA on base SSE2, emulate with mul+add)
             let mut poly = _mm_add_ps(_mm_mul_ps(c4, f), c3);
@@ -853,7 +853,7 @@ impl SimdOps for F32x8 {
             let c3 = _mm256_set1_ps(1.0588497);
             let c2 = _mm256_set1_ps(-2.3600652);
             let c1 = _mm256_set1_ps(2.8647557);
-            let c0 = _mm256_set1_ps(-0.6366198);
+            let c0 = _mm256_set1_ps(-core::f32::consts::FRAC_2_PI);
 
             // Horner's method
             #[cfg(target_feature = "fma")]
@@ -1427,7 +1427,7 @@ impl SimdOps for F32x16 {
             let c3 = _mm512_set1_ps(1.0588497);
             let c2 = _mm512_set1_ps(-2.3600652);
             let c1 = _mm512_set1_ps(2.8647557);
-            let c0 = _mm512_set1_ps(-0.6366198);
+            let c0 = _mm512_set1_ps(-core::f32::consts::FRAC_2_PI);
 
             // Horner's method: ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
             let poly = _mm512_fmadd_ps(c4, f, c3);

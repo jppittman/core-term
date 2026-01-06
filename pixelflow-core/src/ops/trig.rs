@@ -27,10 +27,9 @@ fn eval<M: Manifold<Field, Output = Field>>(m: M) -> Field {
 // Constants (Computed at Compile Time)
 // ============================================================================
 
-const PI: f32 = 3.141592653589793f32;
-const TWO_PI: f32 = 6.283185307179586f32;
-const PI_2: f32 = 1.5707963267948966f32;
-const PI_4: f32 = 0.7853981633974483f32;
+const PI: f32 = core::f32::consts::PI;
+const TWO_PI: f32 = core::f32::consts::TAU;
+const PI_2: f32 = core::f32::consts::FRAC_PI_2;
 
 /// Precomputed: 1 / π (computed at compile time)
 const fn inv_pi() -> f32 {
