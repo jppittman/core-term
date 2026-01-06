@@ -174,6 +174,12 @@ pub mod shapes;
 pub mod spatial_bsp;
 pub mod subdiv;
 pub mod subdivision;
+
+// Re-export limit surface types
+pub use subdiv::{
+    build_face_surface, create_face_mesh, create_simple_face, BoundingBox, LimitPatch,
+    LimitSurface, LimitSurfaceGeometry,
+};
 pub mod transform;
 
 pub use spatial_bsp::{Positioned, SpatialBSP};

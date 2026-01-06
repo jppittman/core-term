@@ -56,8 +56,9 @@ mod coeffs;
 pub use coeffs::{get_eigen, EigenCoeffs, MAX_VALENCE};
 
 use pixelflow_core::combinators::{At, Select};
+use pixelflow_core::jet::Jet3;
 use pixelflow_core::ops::compare::Lt;
-use pixelflow_core::{Field, Manifold, X, Y};
+use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
 
 // ============================================================================
 // Regular Patch (Valence 4) - Standard B-Spline
@@ -338,6 +339,657 @@ pub fn bicubic(c: [f32; 16]) -> impl Manifold<Output = Field> {
 
     // P(u,v) = r0 + r1 + r2 + r3
     r0 + r1 + r2 + r3
+}
+
+// ============================================================================
+// Limit Surface Geometry (Raytracing)
+// ============================================================================
+
+/// Bounding box for quick ray rejection.
+#[derive(Clone, Copy, Debug)]
+pub struct BoundingBox {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+impl BoundingBox {
+    /// Create bounding box from control points.
+    pub fn from_points(points: &[[f32; 3]]) -> Self {
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for p in points {
+            for i in 0..3 {
+                min[i] = min[i].min(p[i]);
+                max[i] = max[i].max(p[i]);
+            }
+        }
+        // Expand slightly for numerical stability
+        let eps = 0.01;
+        for i in 0..3 {
+            min[i] -= eps;
+            max[i] += eps;
+        }
+        Self { min, max }
+    }
+
+    /// Ray-box intersection (returns t_min, t_max or None if miss).
+    #[inline]
+    pub fn intersect_ray(&self, origin: [f32; 3], dir: [f32; 3]) -> Option<(f32, f32)> {
+        let mut t_min = 0.0f32;
+        let mut t_max = f32::MAX;
+
+        for i in 0..3 {
+            if dir[i].abs() < 1e-10 {
+                if origin[i] < self.min[i] || origin[i] > self.max[i] {
+                    return None;
+                }
+            } else {
+                let inv_d = 1.0 / dir[i];
+                let t0 = (self.min[i] - origin[i]) * inv_d;
+                let t1 = (self.max[i] - origin[i]) * inv_d;
+                let (t0, t1) = if inv_d < 0.0 { (t1, t0) } else { (t0, t1) };
+                t_min = t_min.max(t0);
+                t_max = t_max.min(t1);
+                if t_max < t_min {
+                    return None;
+                }
+            }
+        }
+        Some((t_min, t_max))
+    }
+}
+
+/// A single limit surface patch with precomputed coefficients.
+#[derive(Clone)]
+pub struct LimitPatch {
+    /// Bicubic coefficients for X axis (3 subpatches × 16 coeffs)
+    pub coeffs_x: [[f32; 16]; 3],
+    /// Bicubic coefficients for Y axis
+    pub coeffs_y: [[f32; 16]; 3],
+    /// Bicubic coefficients for Z axis
+    pub coeffs_z: [[f32; 16]; 3],
+    /// Bounding box for quick rejection
+    pub bounds: BoundingBox,
+    /// Center in world space
+    pub center: [f32; 3],
+    /// Whether this is a regular (valence 4) patch
+    pub is_regular: bool,
+}
+
+impl LimitPatch {
+    /// Create a limit patch from control points using eigenstructure.
+    pub fn from_control_points(control_points: &[[f32; 3]], valence: usize) -> Option<Self> {
+        let eigen = get_eigen(valence)?;
+        let k = eigen.k;
+
+        // Project control points to eigenspace
+        let mut proj_x = vec![0.0f32; k];
+        let mut proj_y = vec![0.0f32; k];
+        let mut proj_z = vec![0.0f32; k];
+
+        for i in 0..k {
+            for j in 0..k.min(control_points.len()) {
+                let w = eigen.inv_eigen(j, i);
+                proj_x[i] += w * control_points[j][0];
+                proj_y[i] += w * control_points[j][1];
+                proj_z[i] += w * control_points[j][2];
+            }
+        }
+
+        // Precompute bicubic coefficients for each subpatch
+        let mut coeffs_x = [[0.0f32; 16]; 3];
+        let mut coeffs_y = [[0.0f32; 16]; 3];
+        let mut coeffs_z = [[0.0f32; 16]; 3];
+
+        for sub in 0..3 {
+            for c in 0..16 {
+                for basis in 0..k {
+                    let s = eigen.spline(sub, basis, c);
+                    coeffs_x[sub][c] += s * proj_x[basis];
+                    coeffs_y[sub][c] += s * proj_y[basis];
+                    coeffs_z[sub][c] += s * proj_z[basis];
+                }
+            }
+        }
+
+        // Compute center and bounds
+        let mut center = [0.0f32; 3];
+        for p in control_points.iter().take(k.min(control_points.len())) {
+            center[0] += p[0];
+            center[1] += p[1];
+            center[2] += p[2];
+        }
+        let n = k.min(control_points.len()) as f32;
+        center[0] /= n;
+        center[1] /= n;
+        center[2] /= n;
+
+        let bounds = BoundingBox::from_points(control_points);
+
+        Some(Self {
+            coeffs_x,
+            coeffs_y,
+            coeffs_z,
+            bounds,
+            center,
+            is_regular: valence == 4,
+        })
+    }
+
+    /// Evaluate the limit surface at (u, v).
+    #[inline]
+    pub fn eval(&self, u: f32, v: f32) -> [f32; 3] {
+        // Select subpatch and remap coordinates
+        let (sub, lu, lv) = if v < 0.5 {
+            (0, u * 2.0, v * 2.0)
+        } else if u < 0.5 {
+            (2, u * 2.0, v * 2.0 - 1.0)
+        } else {
+            (1, u * 2.0 - 1.0, v * 2.0 - 1.0)
+        };
+
+        [
+            eval_bicubic_scalar(&self.coeffs_x[sub], lu, lv),
+            eval_bicubic_scalar(&self.coeffs_y[sub], lu, lv),
+            eval_bicubic_scalar(&self.coeffs_z[sub], lu, lv),
+        ]
+    }
+
+    /// Evaluate with derivatives for normal computation.
+    #[inline]
+    pub fn eval_with_derivs(&self, u: f32, v: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
+        let (sub, lu, lv, scale) = if v < 0.5 {
+            (0, u * 2.0, v * 2.0, 2.0)
+        } else if u < 0.5 {
+            (2, u * 2.0, v * 2.0 - 1.0, 2.0)
+        } else {
+            (1, u * 2.0 - 1.0, v * 2.0 - 1.0, 2.0)
+        };
+
+        let (px, dpx_du, dpx_dv) = eval_bicubic_with_derivs(&self.coeffs_x[sub], lu, lv);
+        let (py, dpy_du, dpy_dv) = eval_bicubic_with_derivs(&self.coeffs_y[sub], lu, lv);
+        let (pz, dpz_du, dpz_dv) = eval_bicubic_with_derivs(&self.coeffs_z[sub], lu, lv);
+
+        // Scale derivatives by coordinate remapping
+        let pos = [px, py, pz];
+        let du = [dpx_du * scale, dpy_du * scale, dpz_du * scale];
+        let dv = [dpx_dv * scale, dpy_dv * scale, dpz_dv * scale];
+
+        (pos, du, dv)
+    }
+}
+
+/// Evaluate bicubic polynomial at (u, v) returning scalar.
+#[inline]
+fn eval_bicubic_scalar(coeffs: &[f32; 16], u: f32, v: f32) -> f32 {
+    let u2 = u * u;
+    let u3 = u2 * u;
+    let v2 = v * v;
+    let v3 = v2 * v;
+
+    let r0 = coeffs[0] + coeffs[1] * v + coeffs[2] * v2 + coeffs[3] * v3;
+    let r1 = coeffs[4] + coeffs[5] * v + coeffs[6] * v2 + coeffs[7] * v3;
+    let r2 = coeffs[8] + coeffs[9] * v + coeffs[10] * v2 + coeffs[11] * v3;
+    let r3 = coeffs[12] + coeffs[13] * v + coeffs[14] * v2 + coeffs[15] * v3;
+
+    r0 + r1 * u + r2 * u2 + r3 * u3
+}
+
+/// Evaluate bicubic polynomial with partial derivatives.
+#[inline]
+fn eval_bicubic_with_derivs(coeffs: &[f32; 16], u: f32, v: f32) -> (f32, f32, f32) {
+    let u2 = u * u;
+    let u3 = u2 * u;
+    let v2 = v * v;
+    let v3 = v2 * v;
+
+    // Value
+    let r0 = coeffs[0] + coeffs[1] * v + coeffs[2] * v2 + coeffs[3] * v3;
+    let r1 = coeffs[4] + coeffs[5] * v + coeffs[6] * v2 + coeffs[7] * v3;
+    let r2 = coeffs[8] + coeffs[9] * v + coeffs[10] * v2 + coeffs[11] * v3;
+    let r3 = coeffs[12] + coeffs[13] * v + coeffs[14] * v2 + coeffs[15] * v3;
+    let val = r0 + r1 * u + r2 * u2 + r3 * u3;
+
+    // dP/du = r1 + 2*r2*u + 3*r3*u²
+    let du = r1 + 2.0 * r2 * u + 3.0 * r3 * u2;
+
+    // dP/dv = d(coeffs[0..3] polynomial)/dv + ...
+    let dr0_dv = coeffs[1] + 2.0 * coeffs[2] * v + 3.0 * coeffs[3] * v2;
+    let dr1_dv = coeffs[5] + 2.0 * coeffs[6] * v + 3.0 * coeffs[7] * v2;
+    let dr2_dv = coeffs[9] + 2.0 * coeffs[10] * v + 3.0 * coeffs[11] * v2;
+    let dr3_dv = coeffs[13] + 2.0 * coeffs[14] * v + 3.0 * coeffs[15] * v2;
+    let dv = dr0_dv + dr1_dv * u + dr2_dv * u2 + dr3_dv * u3;
+
+    (val, du, dv)
+}
+
+/// Limit surface composed of multiple patches.
+#[derive(Clone)]
+pub struct LimitSurface {
+    /// All patches in the surface
+    pub patches: Vec<LimitPatch>,
+    /// Global bounding box
+    pub bounds: BoundingBox,
+}
+
+impl LimitSurface {
+    /// Create from a list of patches.
+    pub fn from_patches(patches: Vec<LimitPatch>) -> Self {
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for patch in &patches {
+            for i in 0..3 {
+                min[i] = min[i].min(patch.bounds.min[i]);
+                max[i] = max[i].max(patch.bounds.max[i]);
+            }
+        }
+        Self {
+            patches,
+            bounds: BoundingBox { min, max },
+        }
+    }
+}
+
+/// Limit surface geometry for raytracing.
+///
+/// Implements Newton iteration to find ray-surface intersections.
+#[derive(Clone)]
+pub struct LimitSurfaceGeometry {
+    /// The limit surface patches
+    pub surface: LimitSurface,
+    /// World transform: scale
+    pub scale: f32,
+    /// World transform: translation
+    pub offset: [f32; 3],
+}
+
+impl LimitSurfaceGeometry {
+    /// Create geometry from a limit surface.
+    pub fn new(surface: LimitSurface, scale: f32, offset: [f32; 3]) -> Self {
+        Self {
+            surface,
+            scale,
+            offset,
+        }
+    }
+
+    /// Find ray-patch intersection using Newton iteration.
+    ///
+    /// This is the full implementation for proper ray-surface intersection.
+    /// Currently unused - the Manifold impl uses a height-field approximation
+    /// for SIMD-friendly evaluation. Enable this for accurate single-ray queries.
+    #[allow(dead_code)]
+    fn intersect_patch(&self, patch: &LimitPatch, ray_o: [f32; 3], ray_d: [f32; 3]) -> Option<(f32, f32, f32)> {
+        // Quick bounding box test
+        let scaled_min = [
+            patch.bounds.min[0] * self.scale + self.offset[0],
+            patch.bounds.min[1] * self.scale + self.offset[1],
+            patch.bounds.min[2] * self.scale + self.offset[2],
+        ];
+        let scaled_max = [
+            patch.bounds.max[0] * self.scale + self.offset[0],
+            patch.bounds.max[1] * self.scale + self.offset[1],
+            patch.bounds.max[2] * self.scale + self.offset[2],
+        ];
+        let scaled_bounds = BoundingBox { min: scaled_min, max: scaled_max };
+
+        scaled_bounds.intersect_ray(ray_o, ray_d)?;
+
+        // Newton iteration for ray-patch intersection
+        // We solve: P(u,v) - (ray_o + t * ray_d) = 0
+        // Initial guess: center of patch
+        let mut u = 0.5f32;
+        let mut v = 0.5f32;
+
+        for _ in 0..8 {
+            let (pos, du, dv) = patch.eval_with_derivs(u, v);
+
+            // Transform to world space
+            let px = pos[0] * self.scale + self.offset[0];
+            let py = pos[1] * self.scale + self.offset[1];
+            let pz = pos[2] * self.scale + self.offset[2];
+
+            // Compute t for this (u,v)
+            // Find t that minimizes distance from P to ray
+            let dx = px - ray_o[0];
+            let dy = py - ray_o[1];
+            let dz = pz - ray_o[2];
+
+            let dot_rd = ray_d[0] * dx + ray_d[1] * dy + ray_d[2] * dz;
+            let dot_dd = ray_d[0] * ray_d[0] + ray_d[1] * ray_d[1] + ray_d[2] * ray_d[2];
+            let t = dot_rd / dot_dd.max(1e-10);
+
+            // Residual: P - (O + t*D)
+            let rx = px - (ray_o[0] + t * ray_d[0]);
+            let ry = py - (ray_o[1] + t * ray_d[1]);
+            let rz = pz - (ray_o[2] + t * ray_d[2]);
+
+            let residual = (rx * rx + ry * ry + rz * rz).sqrt();
+            if residual < 1e-5 && t > 1e-4 {
+                // Check if (u,v) is in valid range
+                if u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0 {
+                    return Some((t, u, v));
+                }
+            }
+
+            // Jacobian: dR/d(u,v) = dP/d(u,v) scaled
+            let dpu = [du[0] * self.scale, du[1] * self.scale, du[2] * self.scale];
+            let dpv = [dv[0] * self.scale, dv[1] * self.scale, dv[2] * self.scale];
+
+            // 2x2 system using least squares projection onto tangent plane
+            let a11 = dpu[0] * dpu[0] + dpu[1] * dpu[1] + dpu[2] * dpu[2];
+            let a12 = dpu[0] * dpv[0] + dpu[1] * dpv[1] + dpu[2] * dpv[2];
+            let a22 = dpv[0] * dpv[0] + dpv[1] * dpv[1] + dpv[2] * dpv[2];
+
+            let b1 = -(rx * dpu[0] + ry * dpu[1] + rz * dpu[2]);
+            let b2 = -(rx * dpv[0] + ry * dpv[1] + rz * dpv[2]);
+
+            let det = a11 * a22 - a12 * a12;
+            if det.abs() < 1e-10 {
+                break;
+            }
+
+            let delta_u = (a22 * b1 - a12 * b2) / det;
+            let delta_v = (a11 * b2 - a12 * b1) / det;
+
+            u += delta_u.clamp(-0.2, 0.2);
+            v += delta_v.clamp(-0.2, 0.2);
+
+            // Clamp to valid range
+            u = u.clamp(0.0, 1.0);
+            v = v.clamp(0.0, 1.0);
+        }
+
+        None
+    }
+}
+
+impl Manifold<Jet3> for LimitSurfaceGeometry {
+    type Output = Jet3;
+
+    #[inline]
+    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+        // Simplified intersection: project onto base plane, sample surface height
+        // This is a height-field style approach that works with SIMD lanes
+
+        // Hit base plane at y = offset[1] (center of surface)
+        let base_y = Field::from(self.offset[1]);
+        let t_plane = base_y / ry.val;
+
+        // World position at plane hit
+        let hit_x = rx.val * t_plane;
+        let hit_z = rz.val * t_plane;
+
+        // Map to patch coordinates
+        // Surface spans from offset - scale/2 to offset + scale/2
+        let half_scale = Field::from(self.scale * 0.5);
+        let center_x = Field::from(self.offset[0]);
+        let center_z = Field::from(self.offset[2]);
+        let scale_inv = Field::from(1.0 / self.scale);
+
+        // Normalize to [0, 1] over surface extent - collapse to Field
+        let u = ((hit_x - center_x + half_scale) * scale_inv).constant();
+        let v = ((hit_z - center_z + half_scale) * scale_inv).constant();
+
+        // Bounds check
+        let zero = Field::from(0.0);
+        let one = Field::from(1.0);
+        let in_bounds = u.ge(zero) & u.le(one) & v.ge(zero) & v.le(one);
+
+        // Sample surface height from center patch (patch 4 in 3x3 grid)
+        // For SIMD evaluation, we use a simplified height lookup
+        // The actual limit surface value would require per-lane evaluation
+        // Here we approximate with the center patch's value at the UV coords
+
+        // Get surface properties at center
+        let center_patch = if self.surface.patches.len() > 4 {
+            &self.surface.patches[4]
+        } else if !self.surface.patches.is_empty() {
+            &self.surface.patches[0]
+        } else {
+            return Jet3::constant(Field::from(-1.0));
+        };
+
+        // Sample Z height from patch (using parametric lookup)
+        // For proper SIMD, we'd need to evaluate the bicubic for all lanes
+        // Simplified: use center height + gradient approximation
+        let base_height = eval_bicubic_scalar(&center_patch.coeffs_z[1], 0.5, 0.5);
+        let dz_du = center_patch.coeffs_z[1][4]; // Linear term approximation
+        let dz_dv = center_patch.coeffs_z[1][1];
+
+        let half = Field::from(0.5);
+        let height_offset = (u - half) * Field::from(dz_du) + (v - half) * Field::from(dz_dv);
+        let surface_z = Field::from(base_height * self.scale) + height_offset * Field::from(self.scale);
+
+        // Effective Y at hit point
+        let surface_y = base_y + surface_z;
+        let t_hit = surface_y / ry.val;
+
+        // Return t with simple derivatives
+        let miss = Field::from(-1.0);
+        Jet3::new(
+            in_bounds.select(t_hit, miss),
+            in_bounds.select(rx.dx, miss),
+            in_bounds.select(ry.dy, miss),
+            Field::from(0.0),
+        )
+    }
+}
+
+/// Cross product helper for normal computation.
+#[allow(dead_code)]
+#[inline]
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+// ============================================================================
+// Face Mesh Generator
+// ============================================================================
+
+/// Create a simple face control cage.
+///
+/// This generates a low-poly face mesh suitable for subdivision.
+/// The mesh is oriented with Y-up, facing -Z direction.
+pub fn create_face_mesh() -> (Vec<[f32; 3]>, Vec<[usize; 4]>, Vec<usize>) {
+    // Symmetric face - vertices are mirrored across X=0
+    // Layout: nose at front, ears at sides, forehead up, chin down
+    let vertices = vec![
+        // Row 0: Top of head (y = 1.0)
+        [-0.3, 1.0, 0.0],   // 0: left temple
+        [0.0, 1.05, 0.0],   // 1: crown
+        [0.3, 1.0, 0.0],    // 2: right temple
+
+        // Row 1: Forehead (y = 0.7)
+        [-0.4, 0.7, 0.15],  // 3: left forehead
+        [-0.15, 0.75, 0.2], // 4: left-center forehead
+        [0.15, 0.75, 0.2],  // 5: right-center forehead
+        [0.4, 0.7, 0.15],   // 6: right forehead
+
+        // Row 2: Eyes (y = 0.4)
+        [-0.5, 0.4, 0.1],   // 7: left ear
+        [-0.35, 0.4, 0.25], // 8: left eye outer
+        [-0.15, 0.4, 0.3],  // 9: left eye inner
+        [0.0, 0.4, 0.35],   // 10: nose bridge
+        [0.15, 0.4, 0.3],   // 11: right eye inner
+        [0.35, 0.4, 0.25],  // 12: right eye outer
+        [0.5, 0.4, 0.1],    // 13: right ear
+
+        // Row 3: Cheeks/Nose (y = 0.1)
+        [-0.45, 0.1, 0.15], // 14: left jaw
+        [-0.3, 0.1, 0.3],   // 15: left cheek
+        [-0.1, 0.1, 0.4],   // 16: left nostril
+        [0.0, 0.1, 0.45],   // 17: nose tip
+        [0.1, 0.1, 0.4],    // 18: right nostril
+        [0.3, 0.1, 0.3],    // 19: right cheek
+        [0.45, 0.1, 0.15],  // 20: right jaw
+
+        // Row 4: Mouth (y = -0.2)
+        [-0.35, -0.2, 0.2], // 21: left mouth corner
+        [-0.1, -0.2, 0.35], // 22: upper lip left
+        [0.0, -0.2, 0.4],   // 23: upper lip center
+        [0.1, -0.2, 0.35],  // 24: upper lip right
+        [0.35, -0.2, 0.2],  // 25: right mouth corner
+
+        // Row 5: Chin (y = -0.5)
+        [-0.25, -0.5, 0.15], // 26: left chin
+        [0.0, -0.5, 0.25],   // 27: chin tip
+        [0.25, -0.5, 0.15],  // 28: right chin
+    ];
+
+    // Quad faces (CCW winding when viewed from front)
+    let faces = vec![
+        // Top row (crown)
+        [0, 3, 4, 1],
+        [1, 4, 5, 2],
+        [2, 5, 6, 2], // Degenerate for symmetry - will be proper quad
+
+        // Forehead to eyes
+        [3, 7, 8, 4],
+        [4, 8, 9, 5],
+        [5, 9, 10, 5], // Left side
+        [5, 10, 11, 5],
+        [5, 11, 12, 6],
+        [6, 12, 13, 6],
+
+        // Rework: proper quads for the face
+        // Eyes to cheeks
+        [7, 14, 15, 8],
+        [8, 15, 16, 9],
+        [9, 16, 17, 10],
+        [10, 17, 18, 11],
+        [11, 18, 19, 12],
+        [12, 19, 20, 13],
+
+        // Cheeks to mouth
+        [14, 21, 22, 15],
+        [15, 22, 23, 16],
+        [16, 23, 17, 17], // Center
+        [17, 23, 24, 18],
+        [18, 24, 25, 19],
+        [19, 25, 20, 20],
+
+        // Mouth to chin
+        [21, 26, 27, 22],
+        [22, 27, 23, 23],
+        [23, 27, 24, 24],
+        [24, 27, 28, 25],
+    ];
+
+    // Compute valences
+    let mut valence = vec![0usize; vertices.len()];
+    for face in &faces {
+        for &v in face {
+            if v < vertices.len() {
+                valence[v] += 1;
+            }
+        }
+    }
+
+    (vertices, faces, valence)
+}
+
+/// Create a simpler face mesh - just the front face portion.
+///
+/// Returns (vertices, faces, valences) for a minimal face control cage.
+pub fn create_simple_face() -> (Vec<[f32; 3]>, Vec<[usize; 4]>, Vec<usize>) {
+    // Simple 4x4 grid with face-like displacement
+    let mut vertices = Vec::with_capacity(16);
+
+    for row in 0..4 {
+        for col in 0..4 {
+            let x = (col as f32 - 1.5) * 0.4; // -0.6 to 0.6
+            let y = (1.5 - row as f32) * 0.4; // 0.6 to -0.6
+
+            // Face-like Z displacement
+            let nose_dist = ((col as f32 - 1.5).abs() + (row as f32 - 1.5).abs()) * 0.5;
+            let z = (1.0 - nose_dist * 0.3).max(0.0) * 0.3;
+
+            // Add eye sockets
+            let left_eye = (col == 1 && row == 1) as i32 as f32;
+            let right_eye = (col == 2 && row == 1) as i32 as f32;
+            let eye_depth = (left_eye + right_eye) * 0.1;
+
+            vertices.push([x, y, z - eye_depth]);
+        }
+    }
+
+    // 3x3 grid of quads
+    let mut faces = Vec::with_capacity(9);
+    for row in 0..3 {
+        for col in 0..3 {
+            let i = row * 4 + col;
+            faces.push([i, i + 1, i + 5, i + 4]);
+        }
+    }
+
+    // Compute valences
+    let mut valence = vec![0usize; vertices.len()];
+    for face in &faces {
+        for &v in face {
+            valence[v] += 1;
+        }
+    }
+
+    (vertices, faces, valence)
+}
+
+/// Build a LimitSurface from a face mesh.
+pub fn build_face_surface() -> LimitSurface {
+    let (vertices, faces, _valences) = create_simple_face();
+
+    let mut patches = Vec::with_capacity(faces.len());
+
+    for face in &faces {
+        // For now, use valence 4 for all patches (regular)
+        // In a full implementation, we'd check actual vertex valences
+        let control_points: Vec<[f32; 3]> = face.iter()
+            .map(|&i| vertices[i])
+            .collect();
+
+        // Expand to 16 control points for proper B-spline
+        // For a single quad, we replicate corners to approximate
+        let expanded = expand_quad_to_patch(&control_points);
+
+        if let Some(patch) = LimitPatch::from_control_points(&expanded, 4) {
+            patches.push(patch);
+        }
+    }
+
+    LimitSurface::from_patches(patches)
+}
+
+/// Expand a 4-point quad to a 16-point control mesh.
+///
+/// Uses corner positions and interpolates edges/interior.
+fn expand_quad_to_patch(corners: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    let mut points = vec![[0.0f32; 3]; 16];
+
+    // Bilinear interpolation for all 16 points
+    for row in 0..4 {
+        for col in 0..4 {
+            let u = col as f32 / 3.0;
+            let v = row as f32 / 3.0;
+
+            // Bilinear blend of corners
+            let p00 = corners[0];
+            let p10 = corners[1];
+            let p11 = corners[2];
+            let p01 = corners[3];
+
+            for i in 0..3 {
+                let p0 = p00[i] * (1.0 - u) + p10[i] * u;
+                let p1 = p01[i] * (1.0 - u) + p11[i] * u;
+                points[row * 4 + col][i] = p0 * (1.0 - v) + p1 * v;
+            }
+        }
+    }
+
+    points
 }
 
 #[cfg(test)]
