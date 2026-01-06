@@ -391,7 +391,8 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                         EmulatorAction::Quit => {
                             // Handle quit - send quit to engine
                             use pixelflow_runtime::api::public::AppManagement;
-                            let _ = self.engine_tx.send(Message::Management(AppManagement::Quit));
+                            self.engine_tx.send(Message::Management(AppManagement::Quit))
+                                .expect("Failed to send Quit to engine");
                         }
                         EmulatorAction::SetTitle(_) => {
                             unimplemented!("EmulatorAction::SetTitle not yet implemented");
