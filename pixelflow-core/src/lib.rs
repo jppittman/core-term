@@ -552,12 +552,6 @@ impl Field {
         ops::trig::cheby_atan2(self, x)
     }
 
-    /// Power function (per-lane via libm).
-    #[inline(always)]
-    pub(crate) fn pow(self, exp: Self) -> Self {
-        self.zip_lanes(exp, libm::powf)
-    }
-
     /// Exponential function.
     ///
     /// TODO(simd): Currently uses scalar fallback via map_lanes.
@@ -623,19 +617,6 @@ impl Field {
         }
         // Reconstruct from buffer
         Self::from_slice(&buf)
-    }
-
-    /// Apply a binary function to each pair of lanes.
-    #[inline(always)]
-    fn zip_lanes(self, other: Self, f: fn(f32, f32) -> f32) -> Self {
-        let mut buf_a = [0.0f32; PARALLELISM];
-        let mut buf_b = [0.0f32; PARALLELISM];
-        self.store(&mut buf_a);
-        other.store(&mut buf_b);
-        for i in 0..PARALLELISM {
-            buf_a[i] = f(buf_a[i], buf_b[i]);
-        }
-        Self::from_slice(&buf_a)
     }
 
     /// Load from a slice.
@@ -912,7 +893,15 @@ impl numeric::Numeric for Field {
 
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
-        Self::pow(self, exp)
+        // Store in temporary buffers and compute lane-wise
+        let mut buf_a = [0.0f32; PARALLELISM];
+        let mut buf_b = [0.0f32; PARALLELISM];
+        self.store(&mut buf_a);
+        exp.store(&mut buf_b);
+        for i in 0..PARALLELISM {
+            buf_a[i] = libm::powf(buf_a[i], buf_b[i]);
+        }
+        Self::from_slice(&buf_a)
     }
 
     #[inline(always)]
