@@ -114,8 +114,14 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
             EngineControl::Quit => {
                 let _ = self.driver.send(Message::Control(DisplayControl::Shutdown));
             }
-            _ => {
-                // Other control messages (UpdateRefreshRate, VsyncActorReady, DriverAck)
+            EngineControl::UpdateRefreshRate(_) => {
+                unimplemented!("UpdateRefreshRate not yet implemented");
+            }
+            EngineControl::VsyncActorReady(_) => {
+                unimplemented!("VsyncActorReady not yet implemented");
+            }
+            EngineControl::DriverAck => {
+                unimplemented!("DriverAck not yet implemented");
             }
         }
     }

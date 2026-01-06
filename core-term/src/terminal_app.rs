@@ -393,14 +393,51 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                             use pixelflow_runtime::api::public::AppManagement;
                             let _ = self.engine_tx.send(Message::Management(AppManagement::Quit));
                         }
-                        _ => {
-                            // Handle other actions (e.g., paste, copy, etc.) if necessary
+                        EmulatorAction::SetTitle(_) => {
+                            unimplemented!("EmulatorAction::SetTitle not yet implemented");
+                        }
+                        EmulatorAction::RingBell => {
+                            unimplemented!("EmulatorAction::RingBell not yet implemented");
+                        }
+                        EmulatorAction::RequestRedraw => {
+                            unimplemented!("EmulatorAction::RequestRedraw not yet implemented");
+                        }
+                        EmulatorAction::SetCursorVisibility(_) => {
+                            unimplemented!("EmulatorAction::SetCursorVisibility not yet implemented");
+                        }
+                        EmulatorAction::CopyToClipboard(_) => {
+                            unimplemented!("EmulatorAction::CopyToClipboard not yet implemented");
+                        }
+                        EmulatorAction::RequestClipboardContent => {
+                            unimplemented!("EmulatorAction::RequestClipboardContent not yet implemented");
+                        }
+                        EmulatorAction::ResizePty { .. } => {
+                            unimplemented!("EmulatorAction::ResizePty not yet implemented");
                         }
                     }
                 }
             }
-            // Add other event handling as needed
-            _ => {}
+            EngineEventManagement::MouseClick { .. } => {
+                unimplemented!("MouseClick not yet implemented");
+            }
+            EngineEventManagement::MouseRelease { .. } => {
+                unimplemented!("MouseRelease not yet implemented");
+            }
+            EngineEventManagement::MouseMove { .. } => {
+                unimplemented!("MouseMove not yet implemented");
+            }
+            EngineEventManagement::MouseScroll { .. } => {
+                unimplemented!("MouseScroll not yet implemented");
+            }
+            EngineEventManagement::FocusGained => {
+                unimplemented!("FocusGained not yet implemented");
+            }
+            EngineEventManagement::FocusLost => {
+                unimplemented!("FocusLost not yet implemented");
+            }
+            EngineEventManagement::Paste(_) => {
+                unimplemented!("Paste not yet implemented");
+            }
         }
     }
 
