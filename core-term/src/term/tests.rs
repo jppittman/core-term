@@ -6,7 +6,6 @@ use crate::glyph::{Attributes, ContentCell, Glyph};
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::term::{
-    modes::DecModeConstant, // For DECTCEM test
     snapshot::SelectionRange,
     AnsiCommand,
     ControlEvent,
@@ -23,10 +22,14 @@ use crate::term::{
     TerminalSnapshot,
     UserInputAction,
 };
+use crate::term::modes::{DecModeConstant, StandardModeConstant};
 use pixelflow_runtime::input::MouseButton; // For mouse input
 
 // Default scrollback for tests, can be adjusted.
 // const TEST_SCROLLBACK_LIMIT: usize = 100;
+
+const CELL_WIDTH: usize = 10;
+const CELL_HEIGHT: usize = 16;
 
 fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
     TerminalEmulator::new(cols, rows)
@@ -36,8 +39,8 @@ fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
 /// Uses default cell dimensions from CONFIG (10x16 px).
 fn resize_event(cols: usize, rows: usize) -> ControlEvent {
     ControlEvent::Resize {
-        width_px: (cols * 10) as u16,
-        height_px: (rows * 16) as u16,
+        width_px: (cols * CELL_WIDTH) as u16,
+        height_px: (rows * CELL_HEIGHT) as u16,
     }
 }
 
@@ -45,8 +48,8 @@ fn resize_event(cols: usize, rows: usize) -> ControlEvent {
 /// Uses default cell dimensions from CONFIG (10x16 px).
 fn start_selection_at(col: usize, row: usize) -> UserInputAction {
     UserInputAction::StartSelection {
-        x_px: (col * 10) as u16,
-        y_px: (row * 16) as u16,
+        x_px: (col * CELL_WIDTH) as u16,
+        y_px: (row * CELL_HEIGHT) as u16,
     }
 }
 
@@ -54,8 +57,8 @@ fn start_selection_at(col: usize, row: usize) -> UserInputAction {
 /// Uses default cell dimensions from CONFIG (10x16 px).
 fn extend_selection_to(col: usize, row: usize) -> UserInputAction {
     UserInputAction::ExtendSelection {
-        x_px: (col * 10) as u16,
-        y_px: (row * 16) as u16,
+        x_px: (col * CELL_WIDTH) as u16,
+        y_px: (row * CELL_HEIGHT) as u16,
     }
 }
 
@@ -224,7 +227,7 @@ fn test_newline_input() {
     let mut term = create_test_emulator(10, 2);
     // Enable Linefeed/Newline Mode (LNM)
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
-        20,
+        StandardModeConstant::LinefeedNewlineMode as u16,
     ))));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
@@ -821,8 +824,8 @@ fn test_snapshot_with_selection() {
             cell_attributes_underneath: Attributes::default(),
         }),
         selection,
-        cell_width_px: 10,
-        cell_height_px: 16,
+        cell_width_px: CELL_WIDTH,
+        cell_height_px: CELL_HEIGHT,
     };
 
     assert!(snapshot_with_selection.selection.range.is_some());
@@ -836,8 +839,8 @@ fn test_snapshot_with_selection() {
         lines: snapshot_with_selection.lines.clone(),
         cursor_state: snapshot_with_selection.cursor_state.clone(),
         selection: Selection::default(),
-        cell_width_px: 10,
-        cell_height_px: 16,
+        cell_width_px: CELL_WIDTH,
+        cell_height_px: CELL_HEIGHT,
     };
     assert!(snapshot_cleared.selection.range.is_none());
 }
@@ -1137,7 +1140,7 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     let mut emu = create_test_emulator(cols, rows);
     // Disable Linefeed/Newline Mode (LNM) - testing that LF doesn't do CR
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        CsiCommand::ResetMode(20),
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
     )));
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -1580,7 +1583,7 @@ mod paste_text_tests {
         let mut emu = create_test_emulator(20, 1);
         // Enable bracketed paste mode
         emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-            CsiCommand::SetModePrivate(2004),
+            CsiCommand::SetModePrivate(DecModeConstant::BracketedPaste as u16),
         )));
 
         let text_to_paste = "Pasted";
