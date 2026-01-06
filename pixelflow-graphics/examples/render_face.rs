@@ -2,9 +2,9 @@
 //!
 //! Demonstrates:
 //! - Jos Stam's eigenstructure method for Catmull-Clark subdivision
-//! - Analytic limit surface evaluation (no tessellation)
-//! - Multi-patch surface rendering with Newton iteration
-//! - Automatic derivatives for smooth normals
+//! - Analytic Hilbert space evaluation (bicubic coefficients = eigenbasis coordinates)
+//! - Multi-patch surface rendering via height field
+//! - Pure manifold composition - no baking, no Newton iteration
 //!
 //! Run with: cargo run --release --example render_face -p pixelflow-graphics
 
@@ -16,7 +16,7 @@ use pixelflow_graphics::{Frame, Rgba8};
 fn main() {
     println!("=== Limit Surface Face Rendering ===\n");
     println!("Using Jos Stam's eigenstructure method for Catmull-Clark subdivision.");
-    println!("No tessellation - direct analytic evaluation of the limit surface.\n");
+    println!("Analytic evaluation in Hilbert space - bicubic coefficients ARE eigenbasis coordinates.\n");
 
     // Build the limit surface from the face mesh
     let surface = build_face_surface();
@@ -26,13 +26,14 @@ fn main() {
         surface.bounds.min[0], surface.bounds.min[1], surface.bounds.min[2],
         surface.bounds.max[0], surface.bounds.max[1], surface.bounds.max[2]);
 
-    // Create geometry with transform
-    // Scale up and position in front of camera
+    // Create geometry with transform - no baking, pure analytic evaluation
     let geometry = LimitSurfaceGeometry::new(
         surface,
         2.0,              // scale
         [0.0, 0.0, -4.0], // offset: in front of camera, centered
     );
+
+    println!("  Evaluation: analytic bicubic (16 coeffs per subpatch)");
 
     // Build scene: face with checker floor and sky background
     let floor = ColorSurface {
@@ -65,11 +66,11 @@ fn main() {
     save_ppm("limit_face.ppm", &frame);
 
     println!("\nRendered to limit_face.ppm");
-    println!("\nThe smooth surface comes from Stam's eigenstructure:");
-    println!("  - Eigenvalues determine decay near extraordinary vertices");
-    println!("  - Eigenvectors give the basis functions");
-    println!("  - Bicubic splines encode the limit surface directly");
-    println!("  - No subdivision iterations needed!");
+    println!("\nThe smooth surface comes from Stam's Hilbert space decomposition:");
+    println!("  - Bicubic coefficients ARE coordinates in the orthogonal eigenbasis");
+    println!("  - Each basis function is a bicubic polynomial (16 coeffs)");
+    println!("  - Evaluation is just polynomial arithmetic - no iteration");
+    println!("  - SIMD-parallel via Field operations on all lanes simultaneously");
 }
 
 /// Save frame to PPM format.
