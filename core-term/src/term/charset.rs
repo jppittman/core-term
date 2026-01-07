@@ -16,6 +16,12 @@ pub enum CharacterSet {
     // Other character sets like DEC Supplemental, Portuguese, etc., could be added here.
 }
 
+/// Constants for G-set levels to avoid magic numbers.
+pub const G0: usize = 0;
+pub const G1: usize = 1;
+pub const G2: usize = 2;
+pub const G3: usize = 3;
+
 impl CharacterSet {
     /// Creates a `CharacterSet` from its character designator (e.g., 'B' for ASCII).
     ///
