@@ -60,7 +60,19 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use pixelflow_core::{Field, ManifoldExt, ShCoeffs};
+use pixelflow_core::{Field, Manifold, ManifoldExt, ShCoeffs};
+
+/// Internal helper to collapse manifold expressions to Field values.
+/// Used where intermediate AST collapse is needed for efficiency.
+#[inline(always)]
+fn collapse<M: Manifold<Field, Output = Field>>(m: M) -> Field {
+    m.eval_raw(
+        Field::from(0.0),
+        Field::from(0.0),
+        Field::from(0.0),
+        Field::from(0.0),
+    )
+}
 
 // ============================================================================
 // Feature Maps: The Bridge Between Attention and SH
@@ -97,7 +109,7 @@ impl FeatureMap for EluFeature {
         let zero = Field::from(0.0);
         let pos_part = x.max(zero);
         let neg_part = x.min(zero).exp();
-        (pos_part + neg_part).constant()
+        collapse(pos_part + neg_part)
     }
 
     fn dim(&self) -> usize {
@@ -225,30 +237,27 @@ impl ShFeatureMap<9> {
     pub fn project(x: Field, y: Field, z: Field) -> [Field; 9] {
         use pixelflow_core::SH_NORM;
 
-        let zero = Field::from(0.0);
-
         // Normalize direction - collapse intermediate AST
-        let r = (x * x + y * y + z * z).sqrt().constant();
-        let inv_r = (Field::from(1.0) / r).constant();
-        let nx = (x * inv_r).constant();
-        let ny = (y * inv_r).constant();
-        let nz = (z * inv_r).constant();
+        let r = collapse((x * x + y * y + z * z).sqrt());
+        let inv_r = collapse(Field::from(1.0) / r);
+        let nx = collapse(x * inv_r);
+        let ny = collapse(y * inv_r);
+        let nz = collapse(z * inv_r);
 
         // Compute all 9 SH basis functions - collapse each
         [
             // l=0
             Field::from(SH_NORM[0][0]),
             // l=1
-            (Field::from(SH_NORM[1][1]) * ny).constant(),
-            (Field::from(SH_NORM[1][0]) * nz).constant(),
-            (Field::from(SH_NORM[1][1]) * nx).constant(),
+            collapse(ny * SH_NORM[1][1]),
+            collapse(nz * SH_NORM[1][0]),
+            collapse(nx * SH_NORM[1][1]),
             // l=2
-            (Field::from(SH_NORM[2][2]) * nx * ny).constant(),
-            (Field::from(SH_NORM[2][1]) * ny * nz).constant(),
-            (Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)))
-                .constant(),
-            (Field::from(SH_NORM[2][1]) * nx * nz).constant(),
-            (Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny)).constant(),
+            collapse(nx * ny * SH_NORM[2][2]),
+            collapse(ny * nz * SH_NORM[2][1]),
+            collapse((nz * nz * 3.0 - 1.0) * SH_NORM[2][0]),
+            collapse(nx * nz * SH_NORM[2][1]),
+            collapse((nx * nx - ny * ny) * SH_NORM[2][2]),
         ]
     }
 }

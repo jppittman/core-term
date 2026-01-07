@@ -89,20 +89,6 @@ use crate::ops::{Abs, Add, Cos, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Rsqrt
 
 use alloc::sync::Arc;
 
-/// Internal helper: collapse a manifold to a Field value at origin.
-///
-/// This is used by Jet constructors that need to collapse AST expressions
-/// to concrete Field values during construction. Not deprecated because
-/// the compute graph is finalized by this point.
-#[inline(always)]
-pub(crate) fn collapse_at_origin<M>(m: &M) -> crate::Field
-where
-    M: Manifold<crate::Field, Output = crate::Field>,
-{
-    let zero = crate::Field::from(0.0);
-    m.eval_raw(zero, zero, zero, zero)
-}
-
 /// Type-erased manifold (returning Field), wrapped in a struct to allow trait implementations.
 ///
 /// Note: `BoxedManifold` is Field-specific because trait objects require a concrete type.
@@ -243,34 +229,6 @@ pub trait ManifoldExt: Manifold + Sized {
         let new_z = z.eval_raw(zero, zero, zero, zero);
         let new_w = w.eval_raw(zero, zero, zero, zero);
         self.eval_raw(new_x, new_y, new_z, new_w)
-    }
-
-    /// Collapse an AST expression to a concrete Field value.
-    ///
-    /// Evaluates at origin (0,0,0,0). Use this to force evaluation of
-    /// lazy arithmetic expressions when you need a concrete Field.
-    ///
-    /// Note: Only available for manifolds that output `Field`.
-    ///
-    /// Deprecated: Use `At { inner: expr, x: 0.0f32, y: 0.0f32, z: 0.0f32, w: 0.0f32 }`
-    /// to compose manifolds that evaluate at origin, keeping the computation graph intact.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let result = (x * x + y * y).sqrt().constant();
-    /// ```
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use At combinator with zero coordinates instead of eager evaluation"
-    )]
-    #[inline(always)]
-    fn constant(&self) -> crate::Field
-    where
-        Self: Manifold<crate::Field, Output = crate::Field>,
-    {
-        let zero = crate::Field::from(0.0);
-        self.eval_raw(zero, zero, zero, zero)
     }
 
     /// Transform the output of this manifold using another manifold.
@@ -509,6 +467,35 @@ pub trait ManifoldExt: Manifold + Sized {
             z,
             w,
         }
+    }
+
+    /// Collapse this manifold expression to a concrete Field value.
+    ///
+    /// Evaluates the manifold at the origin (0, 0, 0, 0) and returns the result.
+    /// This is used internally within PixelFlow to materialize intermediate
+    /// AST nodes into concrete Field values.
+    ///
+    /// Note: Only available for manifolds that output `Field`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pixelflow_core::{ManifoldExt, Field};
+    ///
+    /// let expression = Field::from(2.0) * Field::from(3.0);
+    /// let result: Field = expression.constant();  // result = 6.0
+    /// ```
+    #[inline(always)]
+    fn constant(self) -> crate::Field
+    where
+        Self: Manifold<crate::Field, Output = crate::Field>,
+    {
+        self.eval_raw(
+            crate::Field::from(0.0),
+            crate::Field::from(0.0),
+            crate::Field::from(0.0),
+            crate::Field::from(0.0),
+        )
     }
 
     /// Type-erase this manifold into a boxed trait object.

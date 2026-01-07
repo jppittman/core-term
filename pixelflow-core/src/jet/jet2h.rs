@@ -2,9 +2,14 @@
 
 use crate::Field;
 use crate::Manifold;
-use crate::ManifoldExt;
-use crate::ext::collapse_at_origin;
 use crate::numeric::{Computational, Numeric, Selectable};
+
+/// Internal helper to collapse manifold expressions to Field values.
+/// Used for jet arithmetic where expressions like `Field + Field` return combinators.
+#[inline(always)]
+fn collapse<M: Manifold<Field, Output = Field>>(m: M) -> Field {
+    m.eval_raw(Field::from(0.0), Field::from(0.0), Field::from(0.0), Field::from(0.0))
+}
 
 /// A 2-jet with Hessian: value, first derivatives, and second derivatives.
 ///
@@ -39,6 +44,21 @@ pub struct Jet2H {
 }
 
 impl Jet2H {
+    /// Create a constant jet (all derivatives are zero).
+    ///
+    /// Use this when you need a jet representing a constant value with no derivatives.
+    #[inline(always)]
+    pub fn constant(val: Field) -> Self {
+        Self {
+            val,
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
+    }
+
     /// Create a jet seeded for the X variable (∂x/∂x = 1, others = 0)
     #[inline(always)]
     pub fn x(val: Field) -> Self {
@@ -65,59 +85,6 @@ impl Jet2H {
         }
     }
 
-    /// Create a constant jet (no derivatives).
-    ///
-    /// Deprecated: Use `Jet2H::new(val, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32)` instead.
-    #[deprecated(since = "0.2.0", note = "Use Jet2H::new(val, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32) instead")]
-    #[inline(always)]
-    pub fn constant(val: Field) -> Self {
-        Self::const_internal(val)
-    }
-
-    /// Internal constant constructor (no deprecation warning).
-    #[inline(always)]
-    fn const_internal(val: Field) -> Self {
-        Self {
-            val,
-            dx: Field::from(0.0),
-            dy: Field::from(0.0),
-            dxx: Field::from(0.0),
-            dxy: Field::from(0.0),
-            dyy: Field::from(0.0),
-        }
-    }
-
-    /// Collapse manifold expressions into a Jet2H.
-    ///
-    /// Evaluates each component at origin to get concrete Field values.
-    /// Use sparingly - prefer keeping expressions as manifolds.
-    #[inline(always)]
-    pub fn new<V, Dx, Dy, Dxx, Dxy, Dyy>(
-        val: V,
-        dx: Dx,
-        dy: Dy,
-        dxx: Dxx,
-        dxy: Dxy,
-        dyy: Dyy,
-    ) -> Self
-    where
-        V: Manifold<Field, Output = Field>,
-        Dx: Manifold<Field, Output = Field>,
-        Dy: Manifold<Field, Output = Field>,
-        Dxx: Manifold<Field, Output = Field>,
-        Dxy: Manifold<Field, Output = Field>,
-        Dyy: Manifold<Field, Output = Field>,
-    {
-        Self {
-            val: collapse_at_origin(&val),
-            dx: collapse_at_origin(&dx),
-            dy: collapse_at_origin(&dy),
-            dxx: collapse_at_origin(&dxx),
-            dxy: collapse_at_origin(&dxy),
-            dyy: collapse_at_origin(&dyy),
-        }
-    }
-
     /// Raw select without early exit (pub(crate) only).
     #[inline(always)]
     pub(crate) fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
@@ -131,6 +98,27 @@ impl Jet2H {
         }
     }
 
+    /// Create a jet from manifold expressions, collapsing them to Field values.
+    #[inline(always)]
+    fn new<V, Dx, Dy, Dxx, Dxy, Dyy>(val: V, dx: Dx, dy: Dy, dxx: Dxx, dxy: Dxy, dyy: Dyy) -> Self
+    where
+        V: Manifold<Field, Output = Field>,
+        Dx: Manifold<Field, Output = Field>,
+        Dy: Manifold<Field, Output = Field>,
+        Dxx: Manifold<Field, Output = Field>,
+        Dxy: Manifold<Field, Output = Field>,
+        Dyy: Manifold<Field, Output = Field>,
+    {
+        Self {
+            val: collapse(val),
+            dx: collapse(dx),
+            dy: collapse(dy),
+            dxx: collapse(dxx),
+            dxy: collapse(dxy),
+            dyy: collapse(dyy),
+        }
+    }
+
     // ========================================================================
     // Public methods for comparison and math operations
     // ========================================================================
@@ -138,25 +126,53 @@ impl Jet2H {
     /// Less than comparison (returns mask jet).
     #[inline(always)]
     pub fn lt(self, rhs: Self) -> Self {
-        Self::const_internal(self.val.lt(rhs.val))
+        Self {
+            val: self.val.lt(rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     /// Less than or equal (returns mask jet).
     #[inline(always)]
     pub fn le(self, rhs: Self) -> Self {
-        Self::const_internal(self.val.le(rhs.val))
+        Self {
+            val: self.val.le(rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     /// Greater than comparison (returns mask jet).
     #[inline(always)]
     pub fn gt(self, rhs: Self) -> Self {
-        Self::const_internal(self.val.gt(rhs.val))
+        Self {
+            val: self.val.gt(rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     /// Greater than or equal (returns mask jet).
     #[inline(always)]
     pub fn ge(self, rhs: Self) -> Self {
-        Self::const_internal(self.val.ge(rhs.val))
+        Self {
+            val: self.val.ge(rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     /// Square root with first and second derivatives.
@@ -453,36 +469,46 @@ impl core::ops::Div for Jet2H {
         //       (g^(-1))'' = -g'' * g^(-2) + 2 * g'² * g^(-3)
 
         let inv_g = rhs.val.recip();
-        let inv_g_sq = inv_g * inv_g;
-        let inv_g_cube = inv_g_sq * inv_g;
+        let inv_g_sq = collapse(inv_g * inv_g);
+        let inv_g_cube = collapse(inv_g_sq * inv_g);
         let two = Field::from(2.0);
+        let neg_one = Field::from(-1.0);
 
         // First derivatives
-        let dx = self.dx * inv_g + self.val * rhs.dx * inv_g_sq * Field::from(-1.0);
-        let dy = self.dy * inv_g + self.val * rhs.dy * inv_g_sq * Field::from(-1.0);
+        let dx = collapse(self.dx * inv_g + self.val * rhs.dx * inv_g_sq * neg_one);
+        let dy = collapse(self.dy * inv_g + self.val * rhs.dy * inv_g_sq * neg_one);
 
         // Second derivatives
-        // d/dx[self.dx * inv_g + self.val * rhs.dx * inv_g_sq * (-1)]
-        // = self.dxx * inv_g + self.dx * (-rhs.dx * inv_g_sq)
-        //   + self.dx * rhs.dx * (-inv_g_sq) + self.val * rhs.dxx * (-inv_g_sq)
-        //   + self.val * rhs.dx * (-2 * rhs.dx * inv_g_cube)
-        let dxx = self.dxx * inv_g
-            + two * self.dx * rhs.dx * inv_g_sq * Field::from(-1.0)
-            + self.val * rhs.dxx * inv_g_sq * Field::from(-1.0)
-            + two * self.val * rhs.dx * rhs.dx * inv_g_cube;
+        let dxx = collapse(
+            self.dxx * inv_g
+                + two * self.dx * rhs.dx * inv_g_sq * neg_one
+                + self.val * rhs.dxx * inv_g_sq * neg_one
+                + two * self.val * rhs.dx * rhs.dx * inv_g_cube,
+        );
 
-        let dxy = self.dxy * inv_g
-            + self.dx * rhs.dy * inv_g_sq * Field::from(-1.0)
-            + self.dy * rhs.dx * inv_g_sq * Field::from(-1.0)
-            + self.val * rhs.dxy * inv_g_sq * Field::from(-1.0)
-            + two * self.val * rhs.dx * rhs.dy * inv_g_cube;
+        let dxy = collapse(
+            self.dxy * inv_g
+                + self.dx * rhs.dy * inv_g_sq * neg_one
+                + self.dy * rhs.dx * inv_g_sq * neg_one
+                + self.val * rhs.dxy * inv_g_sq * neg_one
+                + two * self.val * rhs.dx * rhs.dy * inv_g_cube,
+        );
 
-        let dyy = self.dyy * inv_g
-            + two * self.dy * rhs.dy * inv_g_sq * Field::from(-1.0)
-            + self.val * rhs.dyy * inv_g_sq * Field::from(-1.0)
-            + two * self.val * rhs.dy * rhs.dy * inv_g_cube;
+        let dyy = collapse(
+            self.dyy * inv_g
+                + two * self.dy * rhs.dy * inv_g_sq * neg_one
+                + self.val * rhs.dyy * inv_g_sq * neg_one
+                + two * self.val * rhs.dy * rhs.dy * inv_g_cube,
+        );
 
-        Self::new(self.val * inv_g, dx, dy, dxx, dxy, dyy)
+        Self {
+            val: collapse(self.val * inv_g),
+            dx,
+            dy,
+            dxx,
+            dxy,
+            dyy,
+        }
     }
 }
 
@@ -491,7 +517,14 @@ impl core::ops::BitAnd for Jet2H {
     #[inline(always)]
     fn bitand(self, rhs: Self) -> Self {
         // Bitwise AND on masks - derivatives are zero (step function)
-        Self::const_internal(self.val & rhs.val)
+        Self {
+            val: collapse(self.val & rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 }
 
@@ -500,7 +533,14 @@ impl core::ops::BitOr for Jet2H {
     #[inline(always)]
     fn bitor(self, rhs: Self) -> Self {
         // Bitwise OR on masks - derivatives are zero (step function)
-        Self::const_internal(self.val | rhs.val)
+        Self {
+            val: collapse(self.val | rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 }
 
@@ -526,12 +566,26 @@ impl core::ops::Not for Jet2H {
 impl Computational for Jet2H {
     #[inline(always)]
     fn from_f32(val: f32) -> Self {
-        Self::const_internal(Field::from(val))
+        Self {
+            val: Field::from(val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     #[inline(always)]
     fn sequential(start: f32) -> Self {
-        Self::const_internal(Field::sequential(start))
+        Self {
+            val: Field::sequential(start),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 }
 
@@ -626,22 +680,50 @@ impl Numeric for Jet2H {
 
     #[inline(always)]
     fn lt(self, rhs: Self) -> Self {
-        Self::const_internal(self.val.lt(rhs.val))
+        Self {
+            val: self.val.lt(rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     #[inline(always)]
     fn le(self, rhs: Self) -> Self {
-        Self::const_internal(self.val.le(rhs.val))
+        Self {
+            val: self.val.le(rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     #[inline(always)]
     fn gt(self, rhs: Self) -> Self {
-        Self::const_internal(self.val.gt(rhs.val))
+        Self {
+            val: self.val.gt(rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     #[inline(always)]
     fn ge(self, rhs: Self) -> Self {
-        Self::const_internal(self.val.ge(rhs.val))
+        Self {
+            val: self.val.ge(rhs.val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     #[inline(always)]
@@ -679,12 +761,26 @@ impl Numeric for Jet2H {
 
     #[inline(always)]
     fn from_i32(val: i32) -> Self {
-        Self::const_internal(Field::from(val))
+        Self {
+            val: Field::from(val),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     #[inline(always)]
     fn from_field(field: Field) -> Self {
-        Self::const_internal(field)
+        Self {
+            val: field,
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     #[inline(always)]
@@ -796,7 +892,14 @@ impl Numeric for Jet2H {
     #[inline(always)]
     fn floor(self) -> Self {
         // Floor is a step function - derivative is 0 almost everywhere
-        Self::const_internal(self.val.floor())
+        Self {
+            val: self.val.floor(),
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 
     #[inline(always)]
@@ -894,7 +997,14 @@ impl Numeric for Jet2H {
 impl From<Field> for Jet2H {
     #[inline(always)]
     fn from(val: Field) -> Self {
-        Self::const_internal(val)
+        Self {
+            val,
+            dx: Field::from(0.0),
+            dy: Field::from(0.0),
+            dxx: Field::from(0.0),
+            dxy: Field::from(0.0),
+            dyy: Field::from(0.0),
+        }
     }
 }
 
