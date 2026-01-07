@@ -39,7 +39,8 @@
 //! // Automatic differentiation
 //! let x = Jet2::x(3.0);
 //! let y = Jet2::y(4.0);
-//! let result = circle.eval_raw(x, y, Jet2::constant(0.0), ...);
+//! let zero = Jet2::new(0.0f32, 0.0f32, 0.0f32);
+//! let result = circle.eval_raw(x, y, zero, ...);
 //! // result contains: value, ∂/∂x, ∂/∂y
 //! ```
 //!
@@ -64,7 +65,7 @@
 //! // Evaluate with Jet2 (automatic differentiation)
 //! let x_jet = Jet2::x(3.0);
 //! let y_jet = Jet2::y(4.0);
-//! let zero = Jet2::constant(0.0);
+//! let zero = Jet2::new(0.0f32, 0.0f32, 0.0f32);
 //! let result = circle.eval_raw(x_jet, y_jet, zero, zero);
 //! // result.val = 4.0 (distance)
 //! // result.dx ≈ 0.6 (∂/∂x gradient)
@@ -87,6 +88,20 @@ use crate::combinators::{At, ClosureMap, Map, Select};
 use crate::ops::{Abs, Add, Cos, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Rsqrt, Sin, Sqrt, Sub};
 
 use alloc::sync::Arc;
+
+/// Internal helper: collapse a manifold to a Field value at origin.
+///
+/// This is used by Jet constructors that need to collapse AST expressions
+/// to concrete Field values during construction. Not deprecated because
+/// the compute graph is finalized by this point.
+#[inline(always)]
+pub(crate) fn collapse_at_origin<M>(m: &M) -> crate::Field
+where
+    M: Manifold<crate::Field, Output = crate::Field>,
+{
+    let zero = crate::Field::from(0.0);
+    m.eval_raw(zero, zero, zero, zero)
+}
 
 /// Type-erased manifold (returning Field), wrapped in a struct to allow trait implementations.
 ///
@@ -170,7 +185,7 @@ impl<R: Manifold> core::ops::Div<R> for BoxedManifold {
 /// // Evaluate with Jet2 for automatic differentiation
 /// let x = Jet2::x(5.0.into());
 /// let y = Jet2::y(3.0.into());
-/// let zero = Jet2::constant(0.0.into());
+/// let zero = Jet2::new(0.0f32, 0.0f32, 0.0f32);
 /// let result = expr.eval_raw(x, y, zero, zero);
 /// // result.val = 28, result.dx = 10 (∂/∂x of x² + y), result.dy = 1 (∂/∂y)
 /// ```
@@ -237,11 +252,18 @@ pub trait ManifoldExt: Manifold + Sized {
     ///
     /// Note: Only available for manifolds that output `Field`.
     ///
+    /// Deprecated: Use `At { inner: expr, x: 0.0f32, y: 0.0f32, z: 0.0f32, w: 0.0f32 }`
+    /// to compose manifolds that evaluate at origin, keeping the computation graph intact.
+    ///
     /// # Example
     ///
     /// ```ignore
     /// let result = (x * x + y * y).sqrt().constant();
     /// ```
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use At combinator with zero coordinates instead of eager evaluation"
+    )]
     #[inline(always)]
     fn constant(&self) -> crate::Field
     where

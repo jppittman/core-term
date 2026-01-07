@@ -594,11 +594,55 @@ impl LimitSurface {
 // Analytic Limit Surface Geometry (Hilbert Space Evaluation)
 // ============================================================================
 
-/// Limit surface geometry for raytracing via analytic evaluation.
+/// Height manifold for a single limit patch.
 ///
-/// Evaluates the limit surface directly using the eigenstructure decomposition
-/// in Hilbert space - the bicubic coefficients ARE the coordinates in the
-/// orthogonal eigenbasis. No baking, no textures, pure manifold composition.
+/// Returns the Y (height) coordinate of the limit surface at (u, v).
+/// Built as manifold composition - no eager evaluation, pure pull-based.
+#[inline]
+pub fn limit_patch_height(patch: &LimitPatch) -> impl Manifold<Output = Field> + '_ {
+    // Use the same subpatch selection pattern as axis_patch()
+    // but for height (Y coordinate) only
+    let sub0 = At {
+        inner: bicubic(patch.coeffs_y[0]),
+        x: X * 2.0,
+        y: Y * 2.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+    let sub1 = At {
+        inner: bicubic(patch.coeffs_y[1]),
+        x: X * 2.0 - 1.0,
+        y: Y * 2.0 - 1.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+    let sub2 = At {
+        inner: bicubic(patch.coeffs_y[2]),
+        x: X * 2.0,
+        y: Y * 2.0 - 1.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+
+    // v < 0.5 → sub0, else (u < 0.5 → sub2, else sub1)
+    Select {
+        cond: Lt(Y, 0.5f32),
+        if_true: sub0,
+        if_false: Select {
+            cond: Lt(X, 0.5f32),
+            if_true: sub2,
+            if_false: sub1,
+        },
+    }
+}
+
+/// Limit surface geometry for raytracing.
+///
+/// Wraps a LimitSurface and provides Manifold<Jet3> implementation
+/// for integration with the scene system.
+///
+/// Uses HeightFieldGeometry pattern internally - the height function
+/// is a composed manifold built from bicubic patches.
 #[derive(Clone)]
 pub struct LimitSurfaceGeometry {
     /// The limit surface with precomputed Hilbert space coordinates (bicubic coeffs)
@@ -614,6 +658,15 @@ impl LimitSurfaceGeometry {
     pub fn new(surface: LimitSurface, scale: f32, offset: [f32; 3]) -> Self {
         Self { surface, scale, offset }
     }
+
+    /// Get the height manifold for the center patch.
+    ///
+    /// Returns a composed manifold - pure pull-based, no eager evaluation.
+    pub fn height_manifold(&self) -> impl Manifold<Output = Field> + '_ {
+        let center_idx = self.surface.patches.len() / 2;
+        let patch = &self.surface.patches[center_idx.min(self.surface.patches.len() - 1)];
+        limit_patch_height(patch)
+    }
 }
 
 impl Manifold<Jet3> for LimitSurfaceGeometry {
@@ -621,139 +674,52 @@ impl Manifold<Jet3> for LimitSurfaceGeometry {
 
     #[inline]
     fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
-        // Analytic limit surface ray intersection.
-        // The bicubic coefficients are Hilbert space coordinates in the eigenbasis.
-        // We evaluate the bicubic polynomials directly using Field SIMD ops.
-        //
-        // Pattern: Build AST expressions, call .constant() to evaluate to Field.
+        // Build composed manifold for height.
+        let height = self.height_manifold();
 
-        // Step 1: Hit base plane at y = offset[1]
-        let base_y = Field::from(self.offset[1]);
-        let t_plane = (base_y / ry.val).constant();
+        // HeightFieldGeometry pattern: hit base plane, sample height, adjust t
+        let t_plane = Jet3::new(Field::from(self.offset[1]), 0.0f32, 0.0f32, 0.0f32) / ry;
+        let hit_x = rx * t_plane;
+        let hit_z = rz * t_plane;
 
-        // Step 2: World position at plane hit
-        let hit_x = (rx.val * t_plane).constant();
-        let hit_z = (rz.val * t_plane).constant();
-
-        // Step 3: Map world coords to surface UV [0, 1]
-        let half_scale = Field::from(self.scale * 0.5);
-        let center_x = Field::from(self.offset[0]);
-        let center_z = Field::from(self.offset[2]);
-        let scale_inv = Field::from(1.0 / self.scale);
-
-        // Build AST, collapse to Field via .constant()
-        let u = ((hit_x - center_x + half_scale) * scale_inv).constant();
-        let v = ((hit_z - center_z + half_scale) * scale_inv).constant();
-
-        // Step 4: Bounds check (ManifoldExt methods work on Field)
-        let zero = Field::from(0.0);
-        let one = Field::from(1.0);
-        let in_bounds = (u.ge(zero) & u.le(one) & v.ge(zero) & v.le(one)).constant();
-
-        // Step 5: Map to patch grid and local UV
-        let grid_size = (self.surface.patches.len() as f32).sqrt().ceil();
-        let grid_u = (u * Field::from(grid_size)).constant();
-        let grid_v = (v * Field::from(grid_size)).constant();
-
-        // Patch indices (clamped)
-        let grid_max = Field::from(grid_size - 1.0);
-        let patch_col = (grid_u.floor().max(zero).min(grid_max)).constant();
-        let patch_row = (grid_v.floor().max(zero).min(grid_max)).constant();
-
-        // Local UV within patch [0, 1]
-        let local_u = ((grid_u - patch_col).max(zero).min(one)).constant();
-        let local_v = ((grid_v - patch_row).max(zero).min(one)).constant();
-
-        // Step 6: Evaluate limit surface height analytically
-        // Use center patch for now (proper routing would need Select tree)
-        let center_idx = self.surface.patches.len() / 2;
-        let patch = &self.surface.patches[center_idx.min(self.surface.patches.len() - 1)];
-
-        // Select subpatch based on local UV
-        // Subpatch 0: v < 0.5, Subpatch 1: v >= 0.5 && u >= 0.5, Subpatch 2: v >= 0.5 && u < 0.5
+        // Map to (u, v) as composed expressions
+        let uv_scale = Field::from(1.0 / self.scale);
         let half = Field::from(0.5);
-        let two = Field::from(2.0);
+        let u_expr = (hit_x.val - Field::from(self.offset[0])) * uv_scale + half;
+        let v_expr = (hit_z.val - Field::from(self.offset[2])) * uv_scale + half;
 
-        let in_sub0 = local_v.lt(half).constant();
-        let in_sub1 = (local_v.ge(half) & local_u.ge(half)).constant();
-        // sub2 is the else case
+        // Bind UV expressions to height manifold via At (warp)
+        let h_at_uv = At {
+            inner: height,
+            x: u_expr,
+            y: v_expr,
+            z: 0.0f32,
+            w: 0.0f32,
+        };
 
-        // Remap to local subpatch coords [0, 1]
-        let sub0_u = (local_u * two).constant();
-        let sub0_v = (local_v * two).constant();
-        let sub1_u = (local_u * two - one).constant();
-        let sub1_v = (local_v * two - one).constant();
-        let sub2_u = (local_u * two).constant();
-        let sub2_v = (local_v * two - one).constant();
+        // Pull: evaluate height at origin (At handles coordinate warp)
+        let zero = Field::from(0.0);
+        let h = h_at_uv.eval_raw(zero, zero, zero, zero);
 
-        // Evaluate bicubic for Y (height) in each subpatch
-        let h0 = eval_bicubic_field(&patch.coeffs_y[0], sub0_u, sub0_v);
-        let h1 = eval_bicubic_field(&patch.coeffs_y[1], sub1_u, sub1_v);
-        let h2 = eval_bicubic_field(&patch.coeffs_y[2], sub2_u, sub2_v);
+        // Build final t expression
+        let effective_height = Field::from(self.offset[1]) + Field::from(self.scale) * h;
+        let t_hit = Jet3::new(effective_height, 0.0f32, 0.0f32, 0.0f32) / ry;
 
-        // Select correct subpatch result
-        let inner_select = in_sub1.select(h1, h2).constant();
-        let height_local = in_sub0.select(h0, inner_select).constant();
-
-        // Step 7: Transform height to world space and compute t
-        let height_world = (height_local * Field::from(self.scale) + base_y).constant();
-        let t_hit = (height_world / ry.val).constant();
-
-        // Return t with derivatives for antialiasing
+        // Bounds check (rebuild expressions - avoid sharing mutable state)
+        let one = Field::from(1.0);
+        let u_check = (hit_x.val - Field::from(self.offset[0])) * uv_scale + half;
+        let v_check = (hit_z.val - Field::from(self.offset[2])) * uv_scale + half;
+        let in_bounds = u_check.ge(zero) & u_check.le(one) & v_check.ge(zero) & v_check.le(one);
         let miss = Field::from(-1.0);
+
+        // Jet3::new accepts manifolds, evaluates internally
         Jet3::new(
-            in_bounds.select(t_hit, miss).constant(),
-            in_bounds.select(rx.dx, miss).constant(),
-            in_bounds.select(ry.dy, miss).constant(),
-            Field::from(0.0),
+            in_bounds.select(t_hit.val, miss),
+            in_bounds.select(t_hit.dx, miss),
+            in_bounds.select(t_hit.dy, miss),
+            in_bounds.select(t_hit.dz, miss),
         )
     }
-}
-
-/// Evaluate bicubic polynomial at Field coordinates.
-///
-/// This is the SIMD-parallel version of eval_bicubic_scalar.
-/// The coefficients are Hilbert space coordinates in the bicubic eigenbasis.
-/// Uses .constant() to collapse AST to Field.
-#[inline]
-fn eval_bicubic_field(coeffs: &[f32; 16], u: Field, v: Field) -> Field {
-    let u2 = (u * u).constant();
-    let u3 = (u2 * u).constant();
-    let v2 = (v * v).constant();
-    let v3 = (v2 * v).constant();
-
-    // Row 0: c[0] + c[1]*v + c[2]*v² + c[3]*v³
-    let r0 = (Field::from(coeffs[0])
-        + Field::from(coeffs[1]) * v
-        + Field::from(coeffs[2]) * v2
-        + Field::from(coeffs[3]) * v3)
-        .constant();
-
-    // Row 1: (c[4] + c[5]*v + c[6]*v² + c[7]*v³) * u
-    let r1 = ((Field::from(coeffs[4])
-        + Field::from(coeffs[5]) * v
-        + Field::from(coeffs[6]) * v2
-        + Field::from(coeffs[7]) * v3)
-        * u)
-        .constant();
-
-    // Row 2: (c[8] + c[9]*v + c[10]*v² + c[11]*v³) * u²
-    let r2 = ((Field::from(coeffs[8])
-        + Field::from(coeffs[9]) * v
-        + Field::from(coeffs[10]) * v2
-        + Field::from(coeffs[11]) * v3)
-        * u2)
-        .constant();
-
-    // Row 3: (c[12] + c[13]*v + c[14]*v² + c[15]*v³) * u³
-    let r3 = ((Field::from(coeffs[12])
-        + Field::from(coeffs[13]) * v
-        + Field::from(coeffs[14]) * v2
-        + Field::from(coeffs[15]) * v3)
-        * u3)
-        .constant();
-
-    (r0 + r1 + r2 + r3).constant()
 }
 
 // ============================================================================

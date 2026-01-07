@@ -3,6 +3,7 @@
 use crate::Field;
 use crate::Manifold;
 use crate::ManifoldExt;
+use crate::ext::collapse_at_origin;
 use crate::numeric::{Computational, Numeric, Selectable};
 
 /// A 2-jet with Hessian: value, first derivatives, and second derivatives.
@@ -64,9 +65,18 @@ impl Jet2H {
         }
     }
 
-    /// Create a constant jet (no derivatives)
+    /// Create a constant jet (no derivatives).
+    ///
+    /// Deprecated: Use `Jet2H::new(val, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32)` instead.
+    #[deprecated(since = "0.2.0", note = "Use Jet2H::new(val, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32) instead")]
     #[inline(always)]
     pub fn constant(val: Field) -> Self {
+        Self::const_internal(val)
+    }
+
+    /// Internal constant constructor (no deprecation warning).
+    #[inline(always)]
+    fn const_internal(val: Field) -> Self {
         Self {
             val,
             dx: Field::from(0.0),
@@ -99,12 +109,12 @@ impl Jet2H {
         Dyy: Manifold<Field, Output = Field>,
     {
         Self {
-            val: val.constant(),
-            dx: dx.constant(),
-            dy: dy.constant(),
-            dxx: dxx.constant(),
-            dxy: dxy.constant(),
-            dyy: dyy.constant(),
+            val: collapse_at_origin(&val),
+            dx: collapse_at_origin(&dx),
+            dy: collapse_at_origin(&dy),
+            dxx: collapse_at_origin(&dxx),
+            dxy: collapse_at_origin(&dxy),
+            dyy: collapse_at_origin(&dyy),
         }
     }
 
@@ -128,25 +138,25 @@ impl Jet2H {
     /// Less than comparison (returns mask jet).
     #[inline(always)]
     pub fn lt(self, rhs: Self) -> Self {
-        Self::constant(self.val.lt(rhs.val))
+        Self::const_internal(self.val.lt(rhs.val))
     }
 
     /// Less than or equal (returns mask jet).
     #[inline(always)]
     pub fn le(self, rhs: Self) -> Self {
-        Self::constant(self.val.le(rhs.val))
+        Self::const_internal(self.val.le(rhs.val))
     }
 
     /// Greater than comparison (returns mask jet).
     #[inline(always)]
     pub fn gt(self, rhs: Self) -> Self {
-        Self::constant(self.val.gt(rhs.val))
+        Self::const_internal(self.val.gt(rhs.val))
     }
 
     /// Greater than or equal (returns mask jet).
     #[inline(always)]
     pub fn ge(self, rhs: Self) -> Self {
-        Self::constant(self.val.ge(rhs.val))
+        Self::const_internal(self.val.ge(rhs.val))
     }
 
     /// Square root with first and second derivatives.
@@ -481,7 +491,7 @@ impl core::ops::BitAnd for Jet2H {
     #[inline(always)]
     fn bitand(self, rhs: Self) -> Self {
         // Bitwise AND on masks - derivatives are zero (step function)
-        Self::constant(self.val & rhs.val)
+        Self::const_internal(self.val & rhs.val)
     }
 }
 
@@ -490,7 +500,7 @@ impl core::ops::BitOr for Jet2H {
     #[inline(always)]
     fn bitor(self, rhs: Self) -> Self {
         // Bitwise OR on masks - derivatives are zero (step function)
-        Self::constant(self.val | rhs.val)
+        Self::const_internal(self.val | rhs.val)
     }
 }
 
@@ -516,12 +526,12 @@ impl core::ops::Not for Jet2H {
 impl Computational for Jet2H {
     #[inline(always)]
     fn from_f32(val: f32) -> Self {
-        Self::constant(Field::from(val))
+        Self::const_internal(Field::from(val))
     }
 
     #[inline(always)]
     fn sequential(start: f32) -> Self {
-        Self::constant(Field::sequential(start))
+        Self::const_internal(Field::sequential(start))
     }
 }
 
@@ -616,22 +626,22 @@ impl Numeric for Jet2H {
 
     #[inline(always)]
     fn lt(self, rhs: Self) -> Self {
-        Self::constant(self.val.lt(rhs.val))
+        Self::const_internal(self.val.lt(rhs.val))
     }
 
     #[inline(always)]
     fn le(self, rhs: Self) -> Self {
-        Self::constant(self.val.le(rhs.val))
+        Self::const_internal(self.val.le(rhs.val))
     }
 
     #[inline(always)]
     fn gt(self, rhs: Self) -> Self {
-        Self::constant(self.val.gt(rhs.val))
+        Self::const_internal(self.val.gt(rhs.val))
     }
 
     #[inline(always)]
     fn ge(self, rhs: Self) -> Self {
-        Self::constant(self.val.ge(rhs.val))
+        Self::const_internal(self.val.ge(rhs.val))
     }
 
     #[inline(always)]
@@ -669,12 +679,12 @@ impl Numeric for Jet2H {
 
     #[inline(always)]
     fn from_i32(val: i32) -> Self {
-        Self::constant(Field::from(val))
+        Self::const_internal(Field::from(val))
     }
 
     #[inline(always)]
     fn from_field(field: Field) -> Self {
-        Self::constant(field)
+        Self::const_internal(field)
     }
 
     #[inline(always)]
@@ -786,7 +796,7 @@ impl Numeric for Jet2H {
     #[inline(always)]
     fn floor(self) -> Self {
         // Floor is a step function - derivative is 0 almost everywhere
-        Self::constant(self.val.floor())
+        Self::const_internal(self.val.floor())
     }
 
     #[inline(always)]
@@ -884,7 +894,7 @@ impl Numeric for Jet2H {
 impl From<Field> for Jet2H {
     #[inline(always)]
     fn from(val: Field) -> Self {
-        Self::constant(val)
+        Self::const_internal(val)
     }
 }
 
