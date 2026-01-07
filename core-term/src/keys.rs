@@ -7,7 +7,7 @@ pub use pixelflow_runtime::input::{KeySymbol, Modifiers};
 
 /// Maps a given key symbol and modifiers to a `UserInputAction` based on the provided configuration.
 ///
-/// It iterates through the keybindings defined in `config.keybindings.bindings`.
+/// It looks up the keybinding in `config.keybindings.map`.
 /// If a match is found, it returns a clone of the corresponding `UserInputAction`.
 /// Otherwise, it returns `None`.
 pub fn map_key_event_to_action(
@@ -15,17 +15,15 @@ pub fn map_key_event_to_action(
     modifiers: Modifiers,
     config: &Config,
 ) -> Option<UserInputAction> {
-    config.keybindings.bindings.iter().find_map(|binding| {
-        // Use the passed config
-        if binding.key == key_symbol && binding.mods == modifiers {
-            debug!(
-                "Keybinding: {:?} + {:?} => {:?}",
-                binding.mods, binding.key, &binding.action
-            );
-            return Some(binding.action.clone());
-        }
+    if let Some(action) = config.keybindings.map.get(&(key_symbol, modifiers)) {
+        debug!(
+            "Keybinding: {:?} + {:?} => {:?}",
+            modifiers, key_symbol, action
+        );
+        Some(action.clone())
+    } else {
         None
-    })
+    }
 }
 
 #[cfg(test)]
@@ -36,7 +34,7 @@ mod tests {
 
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
         let mut cfg = Config::default();
-        cfg.keybindings = KeybindingsConfig { bindings };
+        cfg.keybindings = KeybindingsConfig::from(bindings);
         cfg
     }
 
@@ -124,6 +122,7 @@ mod tests {
             },
         ];
         let config = config_with_bindings(bindings);
+        // The optimization logic (using `or_insert` in From<Vec>) ensures the first binding wins.
         let result = map_key_event_to_action(KeySymbol::Char('A'), Modifiers::ALT, &config);
         assert_eq!(result, Some(UserInputAction::RequestZoomIn));
     }

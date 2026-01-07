@@ -15,6 +15,7 @@ use crate::{
 use log::{error, info};
 use pixelflow_runtime::config::PerformanceConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -100,27 +101,56 @@ pub struct Keybinding {
 }
 
 /// Defines the configuration for all keybindings.
+///
+/// Optimized to use a HashMap for O(1) lookup at runtime, but serializes
+/// as a Vec<Keybinding> for configuration files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "Vec<Keybinding>", into = "Vec<Keybinding>")]
 pub struct KeybindingsConfig {
-    pub bindings: Vec<Keybinding>,
+    pub map: HashMap<(KeySymbol, Modifiers), UserInputAction>,
+}
+
+impl From<Vec<Keybinding>> for KeybindingsConfig {
+    fn from(bindings: Vec<Keybinding>) -> Self {
+        let mut map = HashMap::with_capacity(bindings.len());
+        for b in bindings {
+            // First match wins logic from original linear search is preserved
+            // by only inserting if not present?
+            // Wait, original was find_map, so first match wins.
+            // HashMap insert overwrites. So to preserve "first match wins" with a map,
+            // we should insert in REVERSE order or check before insert.
+            // Since we iterate forward, we should use `entry().or_insert()`.
+            map.entry((b.key, b.mods)).or_insert(b.action);
+        }
+        KeybindingsConfig { map }
+    }
+}
+
+impl From<KeybindingsConfig> for Vec<Keybinding> {
+    fn from(config: KeybindingsConfig) -> Self {
+        config
+            .map
+            .into_iter()
+            .map(|((key, mods), action)| Keybinding { key, mods, action })
+            .collect()
+    }
 }
 
 impl Default for KeybindingsConfig {
     fn default() -> Self {
-        KeybindingsConfig {
-            bindings: vec![
-                Keybinding {
-                    key: KeySymbol::Char('\u{3}'),
-                    mods: Modifiers::CONTROL | Modifiers::SHIFT,
-                    action: UserInputAction::InitiateCopy,
-                },
-                Keybinding {
-                    key: KeySymbol::Char('\u{16}'),
-                    mods: Modifiers::CONTROL | Modifiers::SHIFT,
-                    action: UserInputAction::RequestClipboardPaste,
-                },
-            ],
-        }
+        let bindings = vec![
+            Keybinding {
+                key: KeySymbol::Char('\u{3}'),
+                mods: Modifiers::CONTROL | Modifiers::SHIFT,
+                action: UserInputAction::InitiateCopy,
+            },
+            Keybinding {
+                key: KeySymbol::Char('\u{16}'),
+                mods: Modifiers::CONTROL | Modifiers::SHIFT,
+                action: UserInputAction::RequestClipboardPaste,
+            },
+        ];
+        KeybindingsConfig::from(bindings)
     }
 }
 
