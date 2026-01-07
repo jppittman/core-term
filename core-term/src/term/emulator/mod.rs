@@ -17,7 +17,7 @@ use crate::{
             // MouseEventType, // Unused
             // UserInputAction, // Unused
         },
-        charset::CharacterSet,
+        charset::{CharacterSet, G0},
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
         layout::Layout,
         modes::DecPrivateModes,
@@ -89,7 +89,7 @@ impl TerminalEmulator {
                 CharacterSet::Ascii, // G3
             ],
             focus_state: FocusState::Focused,
-            active_charset_g_level: 0, // Default to G0
+            active_charset_g_level: G0, // Default to G0
             cursor_wrap_next: false,
             layout,
         }
