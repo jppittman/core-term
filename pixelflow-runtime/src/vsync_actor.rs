@@ -102,6 +102,7 @@ pub struct VsyncActor {
 }
 
 const MAX_TOKENS: u32 = 3;
+const DATA_LANE_SIZE: usize = 1024;
 
 impl VsyncActor {
     /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.
@@ -183,8 +184,8 @@ impl VsyncActor {
     ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement> {
         let (handle, mut scheduler) =
             actor_scheduler::create_actor::<RenderedResponse, VsyncCommand, VsyncManagement>(
-                1024, // Data buffer (RenderedResponse)
-                None, // No wake handler
+                DATA_LANE_SIZE, // Data buffer (RenderedResponse)
+                None,           // No wake handler
             );
 
         // We need to pass the handle to new(), so we clone it
