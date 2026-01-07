@@ -81,12 +81,26 @@ impl<G: Manifold<Output = Field> + Clone, const CHANNEL: usize> Manifold
 
     #[inline(always)]
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let zero = Field::from(0.0);
+        // Evaluate glyph coverage at the given coordinates
         let coverage = self.cell.glyph.eval_raw(x, y, z, w);
-        let c = coverage.max(zero).min(Field::from(1.0)).constant();
-        let omc = Field::from(1.0) - c;
-        (c * Field::from(self.cell.fg[CHANNEL]) + omc * Field::from(self.cell.bg[CHANNEL]))
-            .constant()
+
+        // Clamp coverage to [0, 1] range
+        let zero = Field::from(0.0);
+        let one = Field::from(1.0);
+        let c = coverage.max(zero).min(one);
+
+        // Extract channel colors as Fields
+        let fg = Field::from(self.cell.fg[CHANNEL]);
+        let bg = Field::from(self.cell.bg[CHANNEL]);
+
+        // Alpha blend: c * fg + (1-c) * bg = c * (fg - bg) + bg
+        // Build expression tree without premature evaluation
+        let fg_minus_bg = fg - bg;
+        let blend_offset = c * fg_minus_bg;
+        let result = blend_offset + bg;
+
+        // Evaluate the composition at origin since it's coordinate-independent
+        result.constant()
     }
 }
 

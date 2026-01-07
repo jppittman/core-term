@@ -232,16 +232,44 @@ pub trait ManifoldExt: Manifold + Sized {
 
     /// Collapse an AST expression to a concrete Field value.
     ///
+    /// **DEPRECATED:** This API is being phased out. In most cases, calling `.constant()`
+    /// indicates that you're building manifold AST nodes when you should be using
+    /// direct Field operations or manifold composition.
+    ///
     /// Evaluates at origin (0,0,0,0). Use this to force evaluation of
     /// lazy arithmetic expressions when you need a concrete Field.
     ///
     /// Note: Only available for manifolds that output `Field`.
     ///
-    /// # Example
+    /// # Migration Guide
+    ///
+    /// **If you're building expressions to evaluate at varying coordinates:**
+    /// - Don't call `.constant()` - compose manifolds and evaluate at actual coordinates
+    /// - Use manifold combinators (`.at()`, `.select()`, `.map()`) instead
+    ///
+    /// **If you're inside `eval_raw` and doing arithmetic on Fields:**
+    /// - Field arithmetic creates AST nodes due to operator overloading
+    /// - Only call `.constant()` when the expression truly doesn't depend on coordinates
+    /// - Consider if you should be composing manifolds instead of implementing `eval_raw`
+    ///
+    /// **If you're extracting a constant value:**
+    /// - Use `eval(0.0, 0.0, 0.0, 0.0)` to be explicit about evaluation at origin
+    ///
+    /// # Example (Deprecated Usage)
     ///
     /// ```ignore
+    /// // ❌ Building AST only to immediately collapse it
     /// let result = (x * x + y * y).sqrt().constant();
+    ///
+    /// // ✅ Better: Compose manifolds, evaluate at actual coordinates
+    /// let sdf = (X * X + Y * Y).sqrt();
+    /// let value = sdf.eval(3.0, 4.0, 0.0, 0.0);  // Explicit coordinate evaluation
     /// ```
+    #[deprecated(
+        since = "0.2.0",
+        note = "Prefer manifold composition over premature AST collapse. \
+                See migration guide in documentation."
+    )]
     #[inline(always)]
     fn constant(&self) -> crate::Field
     where
