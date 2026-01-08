@@ -4,6 +4,15 @@
 
 use log::warn; // For logging warnings, if any future logic needs it.
 
+/// G0 character set index (0).
+pub const G0: usize = 0;
+/// G1 character set index (1).
+pub const G1: usize = 1;
+/// G2 character set index (2).
+pub const G2: usize = 2;
+/// G3 character set index (3).
+pub const G3: usize = 3;
+
 /// Represents the G0, G1, G2, G3 character sets that can be designated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CharacterSet {
