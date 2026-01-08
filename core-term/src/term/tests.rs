@@ -6,7 +6,7 @@ use crate::glyph::{Attributes, ContentCell, Glyph};
 use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::term::{
-    modes::DecModeConstant, // For DECTCEM test
+    modes::{DecModeConstant, StandardModeConstant}, // For DECTCEM test
     snapshot::SelectionRange,
     AnsiCommand,
     ControlEvent,
@@ -224,7 +224,7 @@ fn test_newline_input() {
     let mut term = create_test_emulator(10, 2);
     // Enable Linefeed/Newline Mode (LNM)
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
-        20,
+        StandardModeConstant::LinefeedNewlineMode as u16,
     ))));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
@@ -1137,7 +1137,7 @@ fn test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     let mut emu = create_test_emulator(cols, rows);
     // Disable Linefeed/Newline Mode (LNM) - testing that LF doesn't do CR
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        CsiCommand::ResetMode(20),
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
     )));
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -1580,7 +1580,7 @@ mod paste_text_tests {
         let mut emu = create_test_emulator(20, 1);
         // Enable bracketed paste mode
         emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-            CsiCommand::SetModePrivate(2004),
+            CsiCommand::SetModePrivate(DecModeConstant::BracketedPaste as u16),
         )));
 
         let text_to_paste = "Pasted";
