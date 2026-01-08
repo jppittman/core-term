@@ -99,6 +99,15 @@ pub const DSR_DEFAULT: u16 = 0;
 pub const DSR_STATUS_OK: u16 = 5;
 pub const DSR_REPORT_CURSOR_POSITION: u16 = 6;
 
+// --- DECSCUSR Cursor Style Constants ---
+pub const DECSCUSR_DEFAULT: u16 = 0;
+pub const DECSCUSR_BLINKING_BLOCK: u16 = 1;
+pub const DECSCUSR_STEADY_BLOCK: u16 = 2;
+pub const DECSCUSR_BLINKING_UNDERLINE: u16 = 3;
+pub const DECSCUSR_STEADY_UNDERLINE: u16 = 4;
+pub const DECSCUSR_BLINKING_BAR: u16 = 5;
+pub const DECSCUSR_STEADY_BAR: u16 = 6;
+
 // --- Device Attribute Responses ---
 /// Response to Primary Device Attributes (DA1) request (CSI c), identifying as a VT102-compatible terminal.
 pub const DA1_RESPONSE_VT102: &[u8] = b"\x1b[?6c";

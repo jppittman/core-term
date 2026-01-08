@@ -6,6 +6,10 @@
 //! abstracting away the complexities of different terminal modes like Origin Mode (DECOM)
 //! from the main terminal emulation logic.
 
+use crate::ansi::commands::{
+    DECSCUSR_BLINKING_BAR, DECSCUSR_BLINKING_BLOCK, DECSCUSR_BLINKING_UNDERLINE, DECSCUSR_DEFAULT,
+    DECSCUSR_STEADY_BAR, DECSCUSR_STEADY_BLOCK, DECSCUSR_STEADY_UNDERLINE,
+};
 use crate::term::cursor_visibility::CursorVisibility;
 use crate::{config, glyph::Attributes};
 use anyhow::{anyhow, Result};
@@ -36,13 +40,13 @@ impl CursorShape {
     /// Handles unknown codes by defaulting and logging a warning.
     pub fn from_decscusr_code(code: u16) -> Self {
         match code {
-            0 => CursorShape::default(),
-            1 => CursorShape::BlinkingBlock,
-            2 => CursorShape::SteadyBlock,
-            3 => CursorShape::BlinkingUnderline,
-            4 => CursorShape::SteadyUnderline,
-            5 => CursorShape::BlinkingBar,
-            6 => CursorShape::SteadyBar,
+            DECSCUSR_DEFAULT => CursorShape::default(),
+            DECSCUSR_BLINKING_BLOCK => CursorShape::BlinkingBlock,
+            DECSCUSR_STEADY_BLOCK => CursorShape::SteadyBlock,
+            DECSCUSR_BLINKING_UNDERLINE => CursorShape::BlinkingUnderline,
+            DECSCUSR_STEADY_UNDERLINE => CursorShape::SteadyUnderline,
+            DECSCUSR_BLINKING_BAR => CursorShape::BlinkingBar,
+            DECSCUSR_STEADY_BAR => CursorShape::SteadyBar,
             _ => {
                 warn!(
                     //
