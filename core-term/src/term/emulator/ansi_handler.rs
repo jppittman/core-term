@@ -8,7 +8,7 @@ use crate::{
     },
     term::{
         action::EmulatorAction,
-        charset::CharacterSet,
+        charset::{CharacterSet, G0, G1, G2, G3},
         cursor::CursorShape,
         emulator::FocusState,
         modes::{EraseMode, Mode, ModeAction},
@@ -49,11 +49,11 @@ pub(super) fn process_ansi_command(
                 None
             }
             C0Control::SO => {
-                emulator.set_g_level(1);
+                emulator.set_g_level(G1);
                 None
             }
             C0Control::SI => {
-                emulator.set_g_level(0);
+                emulator.set_g_level(G0);
                 None
             }
             C0Control::BEL => Some(EmulatorAction::RingBell),
@@ -91,16 +91,16 @@ pub(super) fn process_ansi_command(
             }
             EscCommand::SelectCharacterSet(intermediate_char, final_char) => {
                 let g_idx = match intermediate_char {
-                    '(' => 0,
-                    ')' => 1,
-                    '*' => 2,
-                    '+' => 3,
+                    '(' => G0,
+                    ')' => G1,
+                    '*' => G2,
+                    '+' => G3,
                     _ => {
                         warn!(
                             "Unsupported G-set designator intermediate: {}",
                             intermediate_char
                         );
-                        0
+                        G0
                     }
                 };
                 emulator.designate_character_set(g_idx, CharacterSet::from_char(final_char));
