@@ -81,23 +81,23 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
 
     fn handle_control(&mut self, ctrl: EngineControl<PlatformPixel>) {
         match ctrl {
-            EngineControl::VSync { .. } => {
-                // VSync tick - re-render if we have a manifold and a frame buffer
-                let can_render = self.current_manifold.is_some()
-                    && self.window_created
-                    && self.frame_buffer.is_some();
+            EngineControl::VSync { timestamp, target_timestamp, refresh_interval } => {
+                // VSync tick - render stored manifold if ready
+                // Note: App sends frames eagerly when PTY data arrives (out of band),
+                // so we just render whatever manifold we have stored
+                let can_render = self.window_created && self.frame_buffer.is_some();
 
                 if can_render {
                     if let Some(ref manifold) = self.current_manifold {
                         self.render_and_present(manifold.clone());
+                    } else {
+                        // No manifold to render - return token
+                        self.return_vsync_token();
                     }
                 } else {
-                    // CRITICAL: Can't render - return token immediately to prevent token leak
-                    // Without this, VSync consumes a token but no render happens, so no
-                    // PresentComplete arrives, so no RenderedResponse sent, so token never returned
+                    // Can't render (no window or frame buffer) - return token
                     log::trace!(
-                        "VSync tick skipped (manifold={} window={} frame={}), returning token",
-                        self.current_manifold.is_some(),
+                        "VSync tick skipped (window={} frame={}), returning token",
                         self.window_created,
                         self.frame_buffer.is_some()
                     );
@@ -206,8 +206,8 @@ impl EngineHandler {
     fn handle_app_data(&mut self, app_data: AppData<PlatformPixel>) {
         match app_data {
             AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
-                // Store the manifold for VSync-driven re-rendering
-                self.current_manifold = Some(manifold);
+                // Store the manifold
+                self.current_manifold = Some(manifold.clone());
 
                 // Create window and start VSync if this is the first frame
                 if !self.window_created {
@@ -236,10 +236,15 @@ impl EngineHandler {
                         .expect("Failed to start VSync");
                     log::info!("VSync started - first frame will render on next tick");
                 }
-                // Don't render immediately - let VSync tick trigger the render
+
+                // Render immediately (this is in response to RequestFrame)
+                if self.window_created && self.frame_buffer.is_some() {
+                    self.render_and_present(manifold);
+                }
             }
             AppData::Skipped => {
-                // No rendering needed
+                // No rendering needed - but we still need to return the VSync token
+                self.return_vsync_token();
             }
             AppData::_Phantom(_) => {}
         }
