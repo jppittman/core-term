@@ -137,3 +137,113 @@ fn test_multiline_text() {
     assert_eq!(line2, "Line2");
     assert_eq!(line3, "Line3");
 }
+
+// =============================================================================
+// Grid Checksum Tests - Verify grid state actually changes
+// =============================================================================
+
+#[test]
+fn test_grid_checksum_changes_on_input() {
+    let mut harness = MinimalTestHarness::new();
+    
+    // Get initial checksum (empty grid)
+    let checksum1 = harness.compute_grid_checksum();
+    
+    // Print a character
+    harness.inject_ansi(AnsiCommand::Print('a'));
+    let checksum2 = harness.compute_grid_checksum();
+    
+    // Checksums should be DIFFERENT
+    assert_ne!(
+        checksum1, checksum2,
+        "Grid checksum should change after printing 'a'"
+    );
+    
+    // Print another character
+    harness.inject_ansi(AnsiCommand::Print('b'));
+    let checksum3 = harness.compute_grid_checksum();
+    
+    // Checksum should change again
+    assert_ne!(
+        checksum2, checksum3,
+        "Grid checksum should change after printing 'b'"
+    );
+    
+    // All three checksums should be unique
+    assert_ne!(checksum1, checksum3);
+}
+
+#[test]
+fn test_grid_checksum_stable_without_changes() {
+    let mut harness = MinimalTestHarness::new();
+    
+    // Print a character
+    harness.inject_ansi(AnsiCommand::Print('x'));
+    
+    // Get checksum twice without changes
+    let checksum1 = harness.compute_grid_checksum();
+    let checksum2 = harness.compute_grid_checksum();
+    
+    // Should be the same
+    assert_eq!(
+        checksum1, checksum2,
+        "Grid checksum should be stable when no changes made"
+    );
+}
+
+#[test]
+fn test_multiple_characters_change_checksum() {
+    let mut harness = MinimalTestHarness::new();
+    
+    let mut checksums = Vec::new();
+    
+    // Print "Hello" one character at a time, checking checksum after each
+    for ch in "Hello".chars() {
+        harness.inject_ansi(AnsiCommand::Print(ch));
+        checksums.push(harness.compute_grid_checksum());
+    }
+    
+    // All checksums should be unique
+    for i in 0..checksums.len() {
+        for j in (i+1)..checksums.len() {
+            assert_ne!(
+                checksums[i], checksums[j],
+                "Checksum after char {} should differ from char {}",
+                i, j
+            );
+        }
+    }
+}
+
+// =============================================================================
+// Bug Reproduction: Grid changes but render not triggered
+// =============================================================================
+
+#[test]
+fn test_bug_grid_changes_without_render_trigger() {
+    // This test documents the ACTUAL BUG:
+    // Grid state changes when ANSI commands are processed,
+    // but send_frame() is never called, so the display doesn't update.
+    
+    let mut harness = MinimalTestHarness::new();
+    
+    // Simulate PTY output being processed in park()
+    // In the real app, park() calls:
+    //   self.emulator.interpret_input(EmulatorInput::Ansi(cmd))
+    // But it NEVER calls send_frame() afterward!
+    
+    harness.inject_ansi(AnsiCommand::Print('a'));
+    let checksum_after_a = harness.compute_grid_checksum();
+    
+    harness.inject_ansi(AnsiCommand::Print('b'));  
+    let checksum_after_b = harness.compute_grid_checksum();
+    
+    // Grid DOES change (this passes)
+    assert_ne!(checksum_after_a, checksum_after_b,
+               "BUG CONFIRMED: Grid changes but no render triggered");
+    
+    // But in the real app, park() doesn't call send_frame(),
+    // so the manifold is never rebuilt and the frame checksum stays the same!
+    
+    // THE FIX: park() should call self.send_frame() after processing PTY output
+}
