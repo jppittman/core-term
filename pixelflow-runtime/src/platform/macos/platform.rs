@@ -65,15 +65,19 @@ impl PlatformOps for MetalOps {
         match msg {
             DisplayData::Present { id, frame } => {
                 log::trace!("MetalOps: Presenting frame for window {:?}", id);
-                if let Some(win) = self.windows.get_mut(&id) {
+                // CRITICAL: Always return frame to engine, even if window not found
+                let returned_frame = if let Some(win) = self.windows.get_mut(&id) {
                     // Present returns the frame after blitting
-                    let returned_frame = win.present(frame);
-                    // Return the frame to the engine for reuse
-                    self.event_tx
-                        .send(Message::Control(EngineControl::PresentComplete(
-                            returned_frame,
-                        ))).expect("Failed to send PresentComplete to engine");
-                }
+                    win.present(frame)
+                } else {
+                    log::warn!("MetalOps: Window {:?} not found, returning frame without presenting", id);
+                    frame
+                };
+                // Return the frame to the engine for reuse
+                self.event_tx
+                    .send(Message::Control(EngineControl::PresentComplete(
+                        returned_frame,
+                    ))).expect("Failed to send PresentComplete to engine");
             }
         }
     }

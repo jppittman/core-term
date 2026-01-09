@@ -12,6 +12,7 @@ use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::error::RuntimeError;
 use ipc::SharedRingBuffer;
+use log::error;
 use js_sys::SharedArrayBuffer;
 use pixelflow_render::color::Rgba;
 use pixelflow_render::Frame;
@@ -187,9 +188,12 @@ impl WebState {
                         return Ok(());
                     }
                     DriverCommand::Present { frame, .. } => {
-                        if let Ok(frame) = self.handle_present(frame) {
-                            let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
+                        // CRITICAL: Always return frame to avoid deadlock, even on error
+                        let (returned_frame, result) = self.handle_present(frame);
+                        if let Err(e) = result {
+                            error!("Web: Present failed: {:?}", e);
                         }
+                        let _ = engine_tx.send(EngineCommand::PresentComplete(returned_frame));
                     }
                     DriverCommand::SetTitle { .. } => {
                         // Not supported in worker context
@@ -220,16 +224,16 @@ impl WebState {
         }
     }
 
-    fn handle_present(&mut self, frame: Frame<Rgba>) -> Result<Frame<Rgba>, RuntimeError> {
+    fn handle_present(&mut self, frame: Frame<Rgba>) -> (Frame<Rgba>, Result<(), RuntimeError>) {
         let data = frame.as_bytes();
-        let image_data =
-            ImageData::new_with_u8_clamped_array_and_sh(Clamped(data), frame.width, frame.height)
-                .map_err(|e| RuntimeError::WebImageDataError(format!("{:?}", e)))?;
+        let result = ImageData::new_with_u8_clamped_array_and_sh(Clamped(data), frame.width, frame.height)
+            .map_err(|e| RuntimeError::WebImageDataError(format!("{:?}", e)))
+            .and_then(|image_data| {
+                self.context
+                    .put_image_data(&image_data, 0.0, 0.0)
+                    .map_err(|e| RuntimeError::WebPutImageError(format!("{:?}", e)))
+            });
 
-        self.context
-            .put_image_data(&image_data, 0.0, 0.0)
-            .map_err(|e| RuntimeError::WebPutImageError(format!("{:?}", e)))?;
-
-        Ok(frame)
+        (frame, result)
     }
 }
