@@ -8,7 +8,7 @@
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{
-    Abs, Add, At, Differentiable, Field, Ge, Manifold, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
+    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
     Y, Z,
 };
 use std::sync::Arc;

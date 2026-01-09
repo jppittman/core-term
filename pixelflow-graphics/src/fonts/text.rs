@@ -4,7 +4,6 @@
 
 use super::ttf::{Font, Glyph, LineKernel, QuadKernel, Line, Quad, Sum};
 use crate::transform::Translate;
-use pixelflow_core::{Field, Manifold};
 use std::sync::Arc;
 
 /// Create a text manifold from a string.
