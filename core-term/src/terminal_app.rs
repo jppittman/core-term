@@ -341,8 +341,9 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
     fn handle_data(&mut self, data: EngineEventData) {
         match data {
             EngineEventData::RequestFrame { .. } => {
-                // Engine is requesting a frame - build and send it
-                self.send_frame();
+                // We send frames eagerly when PTY data arrives (in park()),
+                // so RequestFrame events are just ignored here.
+                // This ensures low latency at lower frame rates.
             }
         }
     }
@@ -470,11 +471,19 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
             }
         }
 
-        // CRITICAL FIX: If we processed PTY output, the grid state changed.
-        // We MUST call send_frame() to rebuild the manifold and trigger a render.
-        // Without this, grid updates but display never refreshes!
+        // Send frames eagerly when PTY data arrives (out of band from VSync).
+        // This ensures low latency, especially at lower frame rates.
+        // Check dirty lines to avoid sending frames when nothing changed.
         if found_data {
-            self.send_frame();
+            let has_dirty_lines = if let Some(snapshot) = self.emulator.get_render_snapshot() {
+                snapshot.lines.iter().any(|line| line.is_dirty)
+            } else {
+                false
+            };
+
+            if has_dirty_lines {
+                self.send_frame();
+            }
         }
 
         // If we found data, keep polling. Otherwise block on actor messages.
