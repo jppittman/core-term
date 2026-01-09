@@ -9,7 +9,7 @@ use crate::display::messages::{DisplayEvent, WindowId};
 use crate::error::RuntimeError;
 use crate::input::{KeySymbol, Modifiers};
 use crate::platform::waker::{EventLoopWaker, X11Waker};
-use log::{info, trace};
+use log::{error, info, trace};
 use pixelflow_graphics::render::color::Bgra8;
 
 // Type alias for backward compatibility
@@ -342,10 +342,12 @@ impl X11State {
                         return Ok(());
                     }
                     DriverCommand::Present { frame, .. } => {
-                        let result = self.handle_present(frame);
-                        if let Ok(frame) = result {
-                            let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
+                        // CRITICAL: Always return frame to avoid deadlock, even on error
+                        let (returned_frame, result) = self.handle_present(frame);
+                        if let Err(e) = result {
+                            error!("X11: Present failed: {:?}", e);
                         }
+                        let _ = engine_tx.send(EngineCommand::PresentComplete(returned_frame));
                     }
                     DriverCommand::SetTitle { title, .. } => {
                         self.handle_set_title(&title);
@@ -605,8 +607,8 @@ impl X11State {
 
     // --- Command handlers ---
 
-    fn handle_present(&mut self, frame: Frame<Bgra>) -> Result<Frame<Bgra>, RuntimeError> {
-        unsafe {
+    fn handle_present(&mut self, frame: Frame<Bgra>) -> (Frame<Bgra>, Result<(), RuntimeError>) {
+        let result = unsafe {
             let depth = xlib::XDefaultDepth(self.display, self.screen);
             let visual = xlib::XDefaultVisual(self.display, self.screen);
             let data_ptr = frame.data.as_ptr() as *mut i8;
@@ -625,7 +627,7 @@ impl X11State {
             );
 
             if image.is_null() {
-                return Err(RuntimeError::XCreateImageFailed);
+                return (frame, Err(RuntimeError::XCreateImageFailed));
             }
 
             xlib::XPutImage(
@@ -644,9 +646,11 @@ impl X11State {
             (*image).data = ptr::null_mut();
             xlib::XDestroyImage(image);
             xlib::XFlush(self.display);
-        }
 
-        Ok(frame)
+            Ok(())
+        };
+
+        (frame, result)
     }
 
     fn handle_set_size(&mut self, width: u32, height: u32) {
