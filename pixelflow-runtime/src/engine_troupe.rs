@@ -83,10 +83,25 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
         match ctrl {
             EngineControl::VSync { .. } => {
                 // VSync tick - re-render if we have a manifold and a frame buffer
-                if let Some(ref manifold) = self.current_manifold {
-                    if self.window_created && self.frame_buffer.is_some() {
+                let can_render = self.current_manifold.is_some()
+                    && self.window_created
+                    && self.frame_buffer.is_some();
+
+                if can_render {
+                    if let Some(ref manifold) = self.current_manifold {
                         self.render_and_present(manifold.clone());
                     }
+                } else {
+                    // CRITICAL: Can't render - return token immediately to prevent token leak
+                    // Without this, VSync consumes a token but no render happens, so no
+                    // PresentComplete arrives, so no RenderedResponse sent, so token never returned
+                    log::trace!(
+                        "VSync tick skipped (manifold={} window={} frame={}), returning token",
+                        self.current_manifold.is_some(),
+                        self.window_created,
+                        self.frame_buffer.is_some()
+                    );
+                    self.return_vsync_token();
                 }
             }
             EngineControl::PresentComplete(frame) => {
@@ -230,11 +245,25 @@ impl EngineHandler {
         }
     }
 
+    /// Return a VSync token without rendering (for skipped frames)
+    fn return_vsync_token(&mut self) {
+        self.vsync.send(Message::Data(RenderedResponse {
+            frame_number: self.frame_number,
+            rendered_at: Instant::now(),
+        })).expect("Failed to return VSync token");
+    }
+
     /// Rasterize manifold and present to driver, then notify VSync.
     fn render_and_present(&mut self, manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>) {
         // Take the frame buffer (driver will return it via PresentComplete)
         let Some(mut frame) = self.frame_buffer.take() else {
             // No frame available - skip this render (waiting for driver to return one)
+            // CRITICAL: Return token to prevent leak. Frame is still in-flight from
+            // a previous render, so when that PresentComplete arrives, it will return
+            // another token. This means we return TWO tokens (one here, one from the
+            // in-flight frame), which correctly accounts for both VSync ticks.
+            log::trace!("Frame buffer unavailable, returning token without rendering");
+            self.return_vsync_token();
             return;
         };
 
