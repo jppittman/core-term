@@ -470,6 +470,13 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
             }
         }
 
+        // CRITICAL FIX: If we processed PTY output, the grid state changed.
+        // We MUST call send_frame() to rebuild the manifold and trigger a render.
+        // Without this, grid updates but display never refreshes!
+        if found_data {
+            self.send_frame();
+        }
+
         // If we found data, keep polling. Otherwise block on actor messages.
         if found_data {
             ParkHint::Poll
