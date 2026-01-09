@@ -226,6 +226,8 @@ pub struct Stripe {
     pub start_y: usize,
     /// Ending Y coordinate (exclusive).
     pub end_y: usize,
+    /// Width of the stripe (stride).
+    pub width: usize,
 }
 
 /// Software rasterizer entry point.
@@ -243,16 +245,16 @@ where
     execute_stripe(
         manifold,
         target,
-        shape.width,
         Stripe {
             start_y: 0,
             end_y: shape.height,
+            width: shape.width,
         },
     );
 }
 
 /// Render a specific row range into the target buffer.
-pub fn execute_stripe<P, M>(manifold: &M, target: &mut [P], width: usize, stripe: Stripe)
+pub fn execute_stripe<P, M>(manifold: &M, target: &mut [P], stripe: Stripe)
 where
     P: Pixel,
     M: Manifold<Output = Discrete> + ?Sized,
@@ -260,13 +262,13 @@ where
     let mut packed = [0u32; PARALLELISM];
 
     for (row_idx, y) in (stripe.start_y..stripe.end_y).enumerate() {
-        let row_offset = row_idx * width;
+        let row_offset = row_idx * stripe.width;
         let mut x = 0;
 
         let ys = Field::from(y as f32 + 0.5);
 
         // SIMD Hot Path - process PARALLELISM pixels at a time
-        while x + PARALLELISM <= width {
+        while x + PARALLELISM <= stripe.width {
             let xs = Field::sequential(x as f32 + 0.5);
 
             // Use materialize_discrete_fields to evaluate and store
@@ -281,7 +283,7 @@ where
         }
 
         // Scalar Fallback (Tail) - handle remaining pixels one at a time
-        while x < width {
+        while x < stripe.width {
             let fx = x as f32 + 0.5;
             let fy = y as f32 + 0.5;
 

@@ -272,10 +272,10 @@ pub fn render_parallel_pooled<P, M>(
                 execute_stripe(
                     &m_clone,
                     row_slice,
-                    width,
                     Stripe {
                         start_y: row,
                         end_y: row + 1,
+                        width,
                     },
                 );
 
@@ -336,7 +336,15 @@ pub fn render_parallel<P, M>(
             std::thread::Builder::new()
                 .stack_size(STACK_SIZE)
                 .spawn_scoped(s, move || {
-                    execute_stripe(manifold, chunk, shape.width, Stripe { start_y, end_y });
+                    execute_stripe(
+                        manifold,
+                        chunk,
+                        Stripe {
+                            start_y,
+                            end_y,
+                            width: shape.width,
+                        },
+                    );
                 })
                 .expect("Failed to spawn render thread");
         }
@@ -394,10 +402,10 @@ pub fn render_work_stealing<P, M>(
                         execute_stripe(
                             manifold,
                             row_slice,
-                            width,
                             Stripe {
                                 start_y: row,
                                 end_y: row + 1,
+                                width,
                             },
                         );
                     }
