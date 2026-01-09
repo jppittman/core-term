@@ -26,10 +26,10 @@ fn test_parallel_rasterization_matches_sequential() {
             execute_stripe(
                 &color,
                 top,
-                width,
                 Stripe {
                     start_y: 0,
                     end_y: mid_y,
+                    width,
                 },
             );
         });
@@ -37,10 +37,10 @@ fn test_parallel_rasterization_matches_sequential() {
             execute_stripe(
                 &color,
                 bottom,
-                width,
                 Stripe {
                     start_y: mid_y,
                     end_y: height,
+                    width,
                 },
             );
         });
