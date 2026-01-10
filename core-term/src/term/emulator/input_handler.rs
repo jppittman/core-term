@@ -226,16 +226,15 @@ mod tests {
         let snapshot = snapshot_option.as_ref().expect("Snapshot was None");
         // Print the actual screen content for debugging
         for (r, line) in snapshot.lines.iter().enumerate() {
-            let line_str: String = line
-                .cells
-                .iter()
-                .map(|glyph_wrapper| match glyph_wrapper {
-                    crate::glyph::Glyph::Single(cell) | crate::glyph::Glyph::WidePrimary(cell) => {
-                        cell.c
-                    }
-                    crate::glyph::Glyph::WideSpacer => crate::glyph::WIDE_CHAR_PLACEHOLDER,
-                })
-                .collect();
+            let line_str: String =
+                line.cells
+                    .iter()
+                    .map(|glyph_wrapper| match glyph_wrapper {
+                        crate::glyph::Glyph::Single(cell)
+                        | crate::glyph::Glyph::WidePrimary(cell) => cell.c,
+                        crate::glyph::Glyph::WideSpacer => crate::glyph::WIDE_CHAR_PLACEHOLDER,
+                    })
+                    .collect();
             println!("Actual line {}: '{}'", r, line_str);
         }
         println!(
@@ -297,7 +296,10 @@ mod tests {
         // Should return ResizePty action with calculated dimensions
         assert_eq!(
             result,
-            Some(EmulatorAction::ResizePty { cols: 100, rows: 50 }),
+            Some(EmulatorAction::ResizePty {
+                cols: 100,
+                rows: 50
+            }),
             "Resize control event should return ResizePty action"
         );
 

@@ -517,7 +517,7 @@ fn it_should_print_ascii_over_wide_char_that_straddles_line_end_after_wrap() {
 #[test]
 fn it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off() {
     let mut term = create_test_emulator(10, 3); // LNM is off by default
-    // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
+                                                // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetMode(20),
     )));
@@ -555,7 +555,7 @@ fn it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off() {
 #[test]
 fn it_should_scroll_up_and_move_cursor_down_keeping_column_on_line_feed_at_bottom_if_lnm_is_off() {
     let mut term = create_test_emulator(5, 2); // LNM is off by default
-    // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
+                                               // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::ResetMode(20),
     )));
@@ -1978,7 +1978,7 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('3'))); // Fills line 0: "123"
     assert_eq!(term.cursor_controller.logical_pos(), (3, 0)); // Corrected: logical_pos is (x,y) -> (3,0)
-    // After filling line, next char will wrap
+                                                              // After filling line, next char will wrap
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('4'))); // Wraps to line 1
     assert_screen_state(
         &term.get_render_snapshot().expect("Snapshot was None"),
@@ -1997,7 +1997,7 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
     ))); // Cursor to (1,2) on line "4  "
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('5'))); // Prints '5' at (1,2). Line "4 5". Cursor (1,3).
     assert_eq!(term.cursor_controller.logical_pos(), (3, 1)); // Corrected: logical_pos is (x,y) -> (3,1)
-    // With autowrap off, cursor stays at right edge
+                                                              // With autowrap off, cursor stays at right edge
 
     // Try to print past end of line with autowrap off
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('6')));

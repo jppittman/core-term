@@ -70,14 +70,18 @@ impl PlatformOps for MetalOps {
                     // Present returns the frame after blitting
                     win.present(frame)
                 } else {
-                    log::warn!("MetalOps: Window {:?} not found, returning frame without presenting", id);
+                    log::warn!(
+                        "MetalOps: Window {:?} not found, returning frame without presenting",
+                        id
+                    );
                     frame
                 };
                 // Return the frame to the engine for reuse
                 self.event_tx
                     .send(Message::Control(EngineControl::PresentComplete(
                         returned_frame,
-                    ))).expect("Failed to send PresentComplete to engine");
+                    )))
+                    .expect("Failed to send PresentComplete to engine");
             }
         }
     }
@@ -148,14 +152,16 @@ impl PlatformOps for MetalOps {
                         self.window_map.insert(ptr as usize, id);
 
                         // Emit WindowCreated event so Engine knows initial size
-                        self.event_tx.send(Message::Data(EngineData::FromDriver(
-                            DisplayEvent::WindowCreated {
-                                id,
-                                width_px: width,
-                                height_px: height,
-                                scale,
-                            },
-                        ))).expect("Failed to send WindowCreated event to engine");
+                        self.event_tx
+                            .send(Message::Data(EngineData::FromDriver(
+                                DisplayEvent::WindowCreated {
+                                    id,
+                                    width_px: width,
+                                    height_px: height,
+                                    scale,
+                                },
+                            )))
+                            .expect("Failed to send WindowCreated event to engine");
                     }
                     Err(e) => {
                         // Log error?
@@ -196,13 +202,15 @@ impl PlatformOps for MetalOps {
             // Poll for window resize
             for (id, window) in self.windows.iter_mut() {
                 if let Some((width, height)) = window.poll_resize() {
-                    self.event_tx.send(Message::Data(EngineData::FromDriver(
-                        DisplayEvent::Resized {
-                            id: *id,
-                            width_px: width,
-                            height_px: height,
-                        },
-                    ))).expect("Failed to send Resized event to engine");
+                    self.event_tx
+                        .send(Message::Data(EngineData::FromDriver(
+                            DisplayEvent::Resized {
+                                id: *id,
+                                width_px: width,
+                                height_px: height,
+                            },
+                        )))
+                        .expect("Failed to send Resized event to engine");
                 }
             }
 

@@ -21,7 +21,11 @@ where
     M: Manifold<C, Output = Jet2> + Clone + 'static,
     C: Computational + From<Field> + Send + Sync + 'static,
 {
-    AACoverage { manifold, _phantom: std::marker::PhantomData }.boxed()
+    AACoverage {
+        manifold,
+        _phantom: std::marker::PhantomData,
+    }
+    .boxed()
 }
 
 /// Antialiased coverage manifold using gradients from Jet2.
@@ -40,7 +44,9 @@ where
 
     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
         // Convert Field coordinates to the manifold's coordinate type and evaluate
-        let result = self.manifold.eval_raw(C::from(x), C::from(y), C::from(z), C::from(w));
+        let result = self
+            .manifold
+            .eval_raw(C::from(x), C::from(y), C::from(z), C::from(w));
 
         // Gradient magnitude = how many SDF units per pixel
         let grad_mag = (result.dx * result.dx + result.dy * result.dy).sqrt();

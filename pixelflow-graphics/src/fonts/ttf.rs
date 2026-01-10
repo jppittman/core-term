@@ -8,7 +8,7 @@
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{
-    Abs, Add, At, Differentiable, Field, Ge, Manifold, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
+    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
     Y, Z,
 };
 use std::sync::Arc;
@@ -42,8 +42,7 @@ pub fn __quad_kernel_definer([p0, p1, p2]: [[f32; 2]; 3]) -> QuadKernel {
 /// Computes: (X - tx) * a + (Y - ty) * b
 ///
 /// Note: The compiler fuses this into `MulAdd`, so the type matches the fusion.
-pub type AffineTransform =
-    MulAdd<Sub<X, f32>, f32, Mul<Sub<Y, f32>, f32>>;
+pub type AffineTransform = MulAdd<Sub<X, f32>, f32, Mul<Sub<Y, f32>, f32>>;
 
 /// Affine transform combinator type alias.
 ///
@@ -148,11 +147,7 @@ pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
 /// from the point, then sums winding contributions based on crossing direction.
 #[inline]
 #[define_opaque(QuadKernel)]
-fn quadratic_winding(
-    [x0, y0]: [f32; 2],
-    [x1, y1]: [f32; 2],
-    [x2, y2]: [f32; 2],
-) -> QuadKernel {
+fn quadratic_winding([x0, y0]: [f32; 2], [x1, y1]: [f32; 2], [x2, y2]: [f32; 2]) -> QuadKernel {
     let ay = y0 - 2.0 * y1 + y2;
     let by = 2.0 * (y1 - y0);
     let ax = x0 - 2.0 * x1 + x2;
@@ -230,7 +225,10 @@ impl<K, D> Quad<K, D> {
     /// Create a quad with explicit kernels (for advanced use).
     #[inline(always)]
     pub fn with_kernels(kernel: K, derivative_kernel: D) -> Self {
-        Self { kernel, derivative_kernel }
+        Self {
+            kernel,
+            derivative_kernel,
+        }
     }
 }
 
@@ -499,7 +497,6 @@ pub struct Geometry<L, Q> {
     pub lines: Arc<[L]>,
     pub quads: Arc<[Q]>,
 }
-
 
 impl<L: Manifold<Field, Output = Field>, Q: Manifold<Field, Output = Field>> Manifold<Field>
     for Geometry<L, Q>
@@ -886,11 +883,18 @@ impl<'a> Font<'a> {
 
     /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
-    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    pub fn glyph_by_id(
+        &self,
+        id: u16,
+    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         self.compile(id)
     }
 
-    pub fn glyph_scaled(&self, ch: char, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    pub fn glyph_scaled(
+        &self,
+        ch: char,
+        size: f32,
+    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         let id = self.cmap.lookup(ch as u32)?;
         self.glyph_scaled_by_id(id, size)
     }
@@ -898,7 +902,11 @@ impl<'a> Font<'a> {
     /// Get scaled glyph by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
-    pub fn glyph_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    pub fn glyph_scaled_by_id(
+        &self,
+        id: u16,
+        size: f32,
+    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         let g = self.glyph_by_id(id)?;
         // Scale based on total font height (ascent + |descent|) instead of units_per_em
         // This ensures descenders fit within the requested size
@@ -972,8 +980,12 @@ impl<'a> Font<'a> {
         let x_max = r.i16()?;
         let y_max = r.i16()?;
 
-        if id == 36 { // ASCII 'A'
-            eprintln!("[DEBUG] compile id={}: bbox=[{}, {}, {}, {}]", id, x_min, y_min, x_max, y_max);
+        if id == 36 {
+            // ASCII 'A'
+            eprintln!(
+                "[DEBUG] compile id={}: bbox=[{}, {}, {}, {}]",
+                id, x_min, y_min, x_max, y_max
+            );
         }
 
         let width = (x_max - x_min) as f32;
@@ -1120,7 +1132,11 @@ impl<'a> Font<'a> {
     }
 }
 
-fn push_segs(pts: &[(f32, f32, bool)], lines: &mut Vec<Line<LineKernel>>, quads: &mut Vec<Quad<QuadKernel, LineKernel>>) {
+fn push_segs(
+    pts: &[(f32, f32, bool)],
+    lines: &mut Vec<Line<LineKernel>>,
+    quads: &mut Vec<Quad<QuadKernel, LineKernel>>,
+) {
     if pts.is_empty() {
         return;
     }

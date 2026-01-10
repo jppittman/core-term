@@ -12,8 +12,8 @@ use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::error::RuntimeError;
 use ipc::SharedRingBuffer;
-use log::error;
 use js_sys::SharedArrayBuffer;
+use log::error;
 use pixelflow_render::color::Rgba;
 use pixelflow_render::Frame;
 use std::cell::RefCell;
@@ -226,13 +226,14 @@ impl WebState {
 
     fn handle_present(&mut self, frame: Frame<Rgba>) -> (Frame<Rgba>, Result<(), RuntimeError>) {
         let data = frame.as_bytes();
-        let result = ImageData::new_with_u8_clamped_array_and_sh(Clamped(data), frame.width, frame.height)
-            .map_err(|e| RuntimeError::WebImageDataError(format!("{:?}", e)))
-            .and_then(|image_data| {
-                self.context
-                    .put_image_data(&image_data, 0.0, 0.0)
-                    .map_err(|e| RuntimeError::WebPutImageError(format!("{:?}", e)))
-            });
+        let result =
+            ImageData::new_with_u8_clamped_array_and_sh(Clamped(data), frame.width, frame.height)
+                .map_err(|e| RuntimeError::WebImageDataError(format!("{:?}", e)))
+                .and_then(|image_data| {
+                    self.context
+                        .put_image_data(&image_data, 0.0, 0.0)
+                        .map_err(|e| RuntimeError::WebPutImageError(format!("{:?}", e)))
+                });
 
         (frame, result)
     }

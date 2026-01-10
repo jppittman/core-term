@@ -1,7 +1,7 @@
 //! Debug font rendering
 
-use pixelflow_graphics::fonts::Font;
 use pixelflow_core::{Field, Manifold};
+use pixelflow_graphics::fonts::Font;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
@@ -13,8 +13,10 @@ fn debug_glyph_coverage() {
     let glyph = font.glyph_scaled('A', 32.0).unwrap();
 
     println!("\nTesting glyph 'A' at size 32:");
-    println!("Font ascent={}, descent={}, units_per_em={}",
-             font.ascent, font.descent, font.units_per_em);
+    println!(
+        "Font ascent={}, descent={}, units_per_em={}",
+        font.ascent, font.descent, font.units_per_em
+    );
 
     // Just verify we can evaluate the glyph without panicking
     // Field is SIMD so we can't easily extract individual values
@@ -22,7 +24,7 @@ fn debug_glyph_coverage() {
         Field::from(16.0),
         Field::from(16.0),
         Field::from(0.0),
-        Field::from(0.0)
+        Field::from(0.0),
     );
 
     println!("Glyph evaluation successful");

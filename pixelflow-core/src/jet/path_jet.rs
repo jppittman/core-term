@@ -21,8 +21,8 @@
 //! - `val` = that component of the ray origin
 //! - `dir` = that component of the ray direction
 
-use crate::numeric::{Computational, Numeric, Selectable};
 use crate::Field;
+use crate::numeric::{Computational, Numeric, Selectable};
 use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Sub};
 
 /// A coordinate in ray space, carrying both origin and direction.

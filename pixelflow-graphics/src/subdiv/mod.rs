@@ -66,10 +66,10 @@ use pixelflow_core::{Field, Manifold, X, Y};
 /// Uniform cubic B-spline basis coefficients in power form.
 /// B_i(t) = Σⱼ BASIS[i][j] * t^j
 const BSPLINE_BASIS: [[f32; 4]; 4] = [
-    [1.0 / 6.0, -3.0 / 6.0, 3.0 / 6.0, -1.0 / 6.0],  // B0 = (1-t)³/6
-    [4.0 / 6.0, 0.0, -6.0 / 6.0, 3.0 / 6.0],          // B1 = (3t³ - 6t² + 4)/6
-    [1.0 / 6.0, 3.0 / 6.0, 3.0 / 6.0, -3.0 / 6.0],   // B2 = (-3t³ + 3t² + 3t + 1)/6
-    [0.0, 0.0, 0.0, 1.0 / 6.0],                        // B3 = t³/6
+    [1.0 / 6.0, -3.0 / 6.0, 3.0 / 6.0, -1.0 / 6.0], // B0 = (1-t)³/6
+    [4.0 / 6.0, 0.0, -6.0 / 6.0, 3.0 / 6.0],        // B1 = (3t³ - 6t² + 4)/6
+    [1.0 / 6.0, 3.0 / 6.0, 3.0 / 6.0, -3.0 / 6.0],  // B2 = (-3t³ + 3t² + 3t + 1)/6
+    [0.0, 0.0, 0.0, 1.0 / 6.0],                     // B3 = t³/6
 ];
 
 /// Evaluate a bicubic B-spline patch.
@@ -518,8 +518,7 @@ mod tests {
         let mut final_coeffs = [0.0f32; 16];
         for coeff_idx in 0..16 {
             for basis in 0..16 {
-                final_coeffs[coeff_idx] +=
-                    eigen.spline(0, basis, coeff_idx) * projected_col[basis];
+                final_coeffs[coeff_idx] += eigen.spline(0, basis, coeff_idx) * projected_col[basis];
             }
         }
         println!("Final coeffs (transposed): {:?}", &final_coeffs[..4]);
@@ -529,10 +528,7 @@ mod tests {
         let poly = bicubic(final_coeffs);
         let val_center = eval_scalar(&poly, 0.5, 0.5);
         let val_corner = eval_scalar(&poly, 0.0, 0.0);
-        println!(
-            "φ₀(0.5, 0.5) = {}, φ₀(0, 0) = {}",
-            val_center, val_corner
-        );
+        println!("φ₀(0.5, 0.5) = {}, φ₀(0, 0) = {}", val_center, val_corner);
 
         // Check sum of bases for each subpatch
         for subpatch in 0..3 {
@@ -545,7 +541,10 @@ mod tests {
                 let basis_poly = bicubic(basis_coeffs);
                 sum_at_center += eval_scalar(&basis_poly, 0.5, 0.5);
             }
-            println!("Subpatch {}: sum of bases at (0.5, 0.5) = {}", subpatch, sum_at_center);
+            println!(
+                "Subpatch {}: sum of bases at (0.5, 0.5) = {}",
+                subpatch, sum_at_center
+            );
         }
 
         // The key insight: Stam's method requires TILING the parameter space.

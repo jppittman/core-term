@@ -731,9 +731,22 @@ impl Numeric for Jet2H {
             self.val.atan2(x.val),
             self.dx * dy_darg + x.dx * dx_darg,
             self.dy * dy_darg + x.dy * dx_darg,
-            self.dxx * dy_darg + self.dx * d_dy_darg_y * self.dx + x.dxx * dx_darg + x.dx * d_dx_darg_x * x.dx + self.dx * x.dx * (d_dy_darg_x + d_dx_darg_y),
-            self.dxy * dy_darg + self.dx * d_dy_darg_y * self.dy + x.dxy * dx_darg + x.dx * d_dx_darg_x * x.dy + self.dy * x.dx * (d_dy_darg_x + d_dx_darg_y) + self.dx * x.dy * (d_dy_darg_x + d_dx_darg_y),
-            self.dyy * dy_darg + self.dy * d_dy_darg_y * self.dy + x.dyy * dx_darg + x.dy * d_dx_darg_x * x.dy + self.dy * x.dy * (d_dy_darg_x + d_dx_darg_y),
+            self.dxx * dy_darg
+                + self.dx * d_dy_darg_y * self.dx
+                + x.dxx * dx_darg
+                + x.dx * d_dx_darg_x * x.dx
+                + self.dx * x.dx * (d_dy_darg_x + d_dx_darg_y),
+            self.dxy * dy_darg
+                + self.dx * d_dy_darg_y * self.dy
+                + x.dxy * dx_darg
+                + x.dx * d_dx_darg_x * x.dy
+                + self.dy * x.dx * (d_dy_darg_x + d_dx_darg_y)
+                + self.dx * x.dy * (d_dy_darg_x + d_dx_darg_y),
+            self.dyy * dy_darg
+                + self.dy * d_dy_darg_y * self.dy
+                + x.dyy * dx_darg
+                + x.dy * d_dx_darg_x * x.dy
+                + self.dy * x.dy * (d_dy_darg_x + d_dx_darg_y),
         )
     }
 
@@ -748,9 +761,18 @@ impl Numeric for Jet2H {
             val,
             val * (exp.dx * ln_base + coeff * self.dx),
             val * (exp.dy * ln_base + coeff * self.dy),
-            self.dxx * val * coeff + two * self.dx * val * inv_self * (exp.dx * ln_base + coeff * self.dx) + val * exp.dxx * ln_base - self.dx * self.dx * val * inv_self * inv_self,
-            self.dxy * val * coeff + self.dx * val * inv_self * (exp.dy * ln_base + coeff * self.dy) + self.dy * val * inv_self * (exp.dx * ln_base + coeff * self.dx) + val * exp.dxy * ln_base,
-            self.dyy * val * coeff + two * self.dy * val * inv_self * (exp.dy * ln_base + coeff * self.dy) + val * exp.dyy * ln_base - self.dy * self.dy * val * inv_self * inv_self,
+            self.dxx * val * coeff
+                + two * self.dx * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
+                + val * exp.dxx * ln_base
+                - self.dx * self.dx * val * inv_self * inv_self,
+            self.dxy * val * coeff
+                + self.dx * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
+                + self.dy * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
+                + val * exp.dxy * ln_base,
+            self.dyy * val * coeff
+                + two * self.dy * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
+                + val * exp.dyy * ln_base
+                - self.dy * self.dy * val * inv_self * inv_self,
         )
     }
 

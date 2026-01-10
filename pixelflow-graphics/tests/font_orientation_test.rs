@@ -3,7 +3,7 @@
 //! This is a regression test for the font Y-axis orientation bug where
 //! glyphs were rendering upside-down.
 
-use pixelflow_graphics::fonts::{Font, text};
+use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 

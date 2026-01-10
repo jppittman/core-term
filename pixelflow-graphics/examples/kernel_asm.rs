@@ -1,10 +1,14 @@
 use pixelflow_core::{Field, Manifold};
-use pixelflow_graphics::fonts::ttf::{Geometry, Line, LineKernel, Quad, QuadKernel, make_line};
+use pixelflow_graphics::fonts::ttf::{make_line, Geometry, Line, LineKernel, Quad, QuadKernel};
 use std::hint::black_box;
 
 // Prevent LTO from removing the function we want to inspect
 #[inline(never)]
-fn run_kernel(geo: &Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>>, x: Field, y: Field) -> Field {
+fn run_kernel(
+    geo: &Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>>,
+    x: Field,
+    y: Field,
+) -> Field {
     geo.eval_raw(x, y, Field::from(0.0), Field::from(0.0))
 }
 

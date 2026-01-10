@@ -88,8 +88,11 @@ mod tests {
         let write_thread = WriteThread::spawn(pty, rx).expect("Failed to spawn write thread");
 
         // Send resize command
-        tx.send(PtyCommand::Resize { cols: 120, rows: 40 })
-            .expect("Failed to send resize");
+        tx.send(PtyCommand::Resize {
+            cols: 120,
+            rows: 40,
+        })
+        .expect("Failed to send resize");
 
         // Send some data
         tx.send(PtyCommand::Write(b"hello".to_vec()))

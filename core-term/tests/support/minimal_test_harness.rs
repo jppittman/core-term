@@ -53,21 +53,21 @@ impl MinimalTestHarness {
     pub fn compute_grid_checksum(&mut self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let snapshot = match self.get_snapshot() {
             Some(s) => s,
             None => return 0,
         };
-        
+
         let mut hasher = DefaultHasher::new();
-        
+
         // Hash all visible characters
         for line in &snapshot.lines {
             for cell in line.cells.iter() {
                 cell.display_char().hash(&mut hasher);
             }
         }
-        
+
         hasher.finish()
     }
 }

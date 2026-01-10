@@ -132,8 +132,7 @@ impl<L> SpatialBSP<L> {
         }
 
         // Find bounding box of all items
-        let (mut min_x, mut min_y, mut max_x, mut max_y) =
-            (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for item in &items {
             min_x = min_x.min(item.bounds.0);
             min_y = min_y.min(item.bounds.1);
@@ -521,7 +520,10 @@ mod tests {
         let bsp = SpatialBSP::from_positioned(items);
 
         assert_eq!(bsp.leaf_count(), 3);
-        assert!(bsp.interior_count() >= 2, "Binary tree needs n-1 interior nodes");
+        assert!(
+            bsp.interior_count() >= 2,
+            "Binary tree needs n-1 interior nodes"
+        );
     }
 
     #[test]
@@ -664,7 +666,13 @@ mod tests {
             let bsp = SpatialBSP::from_positioned(items);
 
             assert_eq!(bsp.leaf_count(), n);
-            assert_eq!(bsp.interior_count(), n - 1, "Binary tree with {} leaves should have {} interiors", n, n - 1);
+            assert_eq!(
+                bsp.interior_count(),
+                n - 1,
+                "Binary tree with {} leaves should have {} interiors",
+                n,
+                n - 1
+            );
         }
     }
 
@@ -800,10 +808,10 @@ mod tests {
 
         // Test center of each quadrant
         let test_points = [
-            (25.0, 25.0),   // Q1
-            (75.0, 25.0),   // Q2
-            (25.0, 75.0),   // Q3
-            (75.0, 75.0),   // Q4
+            (25.0, 25.0), // Q1
+            (75.0, 25.0), // Q2
+            (25.0, 75.0), // Q3
+            (75.0, 75.0), // Q4
         ];
 
         for (x, y) in test_points {
@@ -880,9 +888,12 @@ mod tests {
         let root = &bsp.interiors[2];
 
         // At least one child should be an interior node
-        let has_interior_child = matches!(root.left, NodeRef::Interior(_))
-            || matches!(root.right, NodeRef::Interior(_));
-        assert!(has_interior_child, "3-level tree should have interior children");
+        let has_interior_child =
+            matches!(root.left, NodeRef::Interior(_)) || matches!(root.right, NodeRef::Interior(_));
+        assert!(
+            has_interior_child,
+            "3-level tree should have interior children"
+        );
     }
 
     // ========================================================================
@@ -1043,8 +1054,11 @@ mod tests {
         let root = &bsp.interiors[0];
 
         // Threshold should be between 40.0 and 60.0 (in the gap)
-        assert!(root.threshold >= 40.0 && root.threshold <= 60.0,
-            "Threshold {} should be in gap [40, 60]", root.threshold);
+        assert!(
+            root.threshold >= 40.0 && root.threshold <= 60.0,
+            "Threshold {} should be in gap [40, 60]",
+            root.threshold
+        );
     }
 
     #[test]
@@ -1065,8 +1079,11 @@ mod tests {
         let root = &bsp.interiors[0];
 
         // Threshold should be at or very close to 50.0
-        assert!((root.threshold - 50.0).abs() < 1.0,
-            "Threshold {} should be near touching point 50.0", root.threshold);
+        assert!(
+            (root.threshold - 50.0).abs() < 1.0,
+            "Threshold {} should be near touching point 50.0",
+            root.threshold
+        );
     }
 
     #[test]
@@ -1484,19 +1501,19 @@ mod tests {
         // Create items with known centers
         let items = vec![
             Positioned {
-                bounds: (0.0, 0.0, 10.0, 10.0),   // center: (5, 5)
+                bounds: (0.0, 0.0, 10.0, 10.0), // center: (5, 5)
                 leaf: SolidColor::new(255, 0, 0, 255),
             },
             Positioned {
-                bounds: (20.0, 0.0, 30.0, 10.0),  // center: (25, 5)
+                bounds: (20.0, 0.0, 30.0, 10.0), // center: (25, 5)
                 leaf: SolidColor::new(0, 255, 0, 255),
             },
             Positioned {
-                bounds: (40.0, 0.0, 50.0, 10.0),  // center: (45, 5)
+                bounds: (40.0, 0.0, 50.0, 10.0), // center: (45, 5)
                 leaf: SolidColor::new(0, 0, 255, 255),
             },
             Positioned {
-                bounds: (60.0, 0.0, 70.0, 10.0),  // center: (65, 5)
+                bounds: (60.0, 0.0, 70.0, 10.0), // center: (65, 5)
                 leaf: SolidColor::new(255, 255, 0, 255),
             },
         ];
@@ -1505,12 +1522,7 @@ mod tests {
         let bsp = SpatialBSP::from_positioned(items);
 
         // Verify each interior node's threshold correctly partitions
-        fn verify_partition<L>(
-            bsp: &SpatialBSP<L>,
-            node: NodeRef,
-            centers: &[f32],
-            depth: usize,
-        ) {
+        fn verify_partition<L>(bsp: &SpatialBSP<L>, node: NodeRef, centers: &[f32], depth: usize) {
             if let NodeRef::Interior(i) = node {
                 let interior = &bsp.interiors[i as usize];
                 let threshold = interior.threshold;
@@ -1598,8 +1610,16 @@ mod tests {
             let left_is_self = matches!(interior.left, NodeRef::Interior(i) if i as usize == idx);
             let right_is_self = matches!(interior.right, NodeRef::Interior(i) if i as usize == idx);
 
-            assert!(!left_is_self, "Interior {} points to itself as left child", idx);
-            assert!(!right_is_self, "Interior {} points to itself as right child", idx);
+            assert!(
+                !left_is_self,
+                "Interior {} points to itself as left child",
+                idx
+            );
+            assert!(
+                !right_is_self,
+                "Interior {} points to itself as right child",
+                idx
+            );
 
             // Left and right should not be identical
             match (interior.left, interior.right) {
@@ -1607,7 +1627,11 @@ mod tests {
                     assert_ne!(l, r, "Interior {} has identical left/right children", idx);
                 }
                 (NodeRef::Leaf(l), NodeRef::Leaf(r)) => {
-                    assert_ne!(l, r, "Interior {} has identical left/right leaf children", idx);
+                    assert_ne!(
+                        l, r,
+                        "Interior {} has identical left/right leaf children",
+                        idx
+                    );
                 }
                 _ => {} // One interior, one leaf - always distinct
             }
@@ -1678,7 +1702,15 @@ mod tests {
     fn single_item_has_exactly_one_leaf_zero_interiors() {
         let bsp = SpatialBSP::single(SolidColor::new(255, 0, 0, 255));
 
-        assert_eq!(bsp.interior_count(), 0, "Single-item tree must have exactly 0 interiors");
-        assert_eq!(bsp.leaf_count(), 1, "Single-item tree must have exactly 1 leaf");
+        assert_eq!(
+            bsp.interior_count(),
+            0,
+            "Single-item tree must have exactly 0 interiors"
+        );
+        assert_eq!(
+            bsp.leaf_count(),
+            1,
+            "Single-item tree must have exactly 1 leaf"
+        );
     }
 }

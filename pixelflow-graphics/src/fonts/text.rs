@@ -2,9 +2,8 @@
 //!
 //! We map a string into a Sum of Translated, Scaled Glyphs.
 
-use super::ttf::{Font, Glyph, LineKernel, QuadKernel, Line, Quad, Sum};
+use super::ttf::{Font, Glyph, Line, LineKernel, Quad, QuadKernel, Sum};
 use crate::transform::Translate;
-use pixelflow_core::{Field, Manifold};
 use std::sync::Arc;
 
 /// Create a text manifold from a string.
@@ -13,7 +12,11 @@ use std::sync::Arc;
 /// lifting each character into the Manifold category.
 ///
 /// Returns a Sum of translated glyphs.
-pub fn text(font: &Font, text_str: &str, size: f32) -> Sum<Translate<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>>> {
+pub fn text(
+    font: &Font,
+    text_str: &str,
+    size: f32,
+) -> Sum<Translate<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>>> {
     // The Scan: Accumulate X position while mapping chars to glyphs
     // Optimized to perform a single CMAP lookup per character
     let mut cursor = 0.0;

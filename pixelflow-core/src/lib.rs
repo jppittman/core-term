@@ -1330,9 +1330,15 @@ mod tests {
         // Let's make a buffer of indices.
         let mut indices_buf = [0.0f32; PARALLELISM];
         indices_buf[0] = 0.0;
-        if PARALLELISM > 1 { indices_buf[1] = 1.9; }
-        if PARALLELISM > 2 { indices_buf[2] = 2.1; }
-        if PARALLELISM > 3 { indices_buf[3] = 4.0; }
+        if PARALLELISM > 1 {
+            indices_buf[1] = 1.9;
+        }
+        if PARALLELISM > 2 {
+            indices_buf[2] = 2.1;
+        }
+        if PARALLELISM > 3 {
+            indices_buf[3] = 4.0;
+        }
 
         let indices = Field::from_slice(&indices_buf);
         let result = Field::gather(&data, indices);
@@ -1341,8 +1347,14 @@ mod tests {
         result.store(&mut out);
 
         assert_eq!(out[0], 10.0);
-        if PARALLELISM > 1 { assert_eq!(out[1], 20.0); } // 1.9 -> 1
-        if PARALLELISM > 2 { assert_eq!(out[2], 30.0); } // 2.1 -> 2
-        if PARALLELISM > 3 { assert_eq!(out[3], 50.0); } // 4.0 -> 4
+        if PARALLELISM > 1 {
+            assert_eq!(out[1], 20.0);
+        } // 1.9 -> 1
+        if PARALLELISM > 2 {
+            assert_eq!(out[2], 30.0);
+        } // 2.1 -> 2
+        if PARALLELISM > 3 {
+            assert_eq!(out[3], 50.0);
+        } // 4.0 -> 4
     }
 }

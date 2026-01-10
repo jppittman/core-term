@@ -1,10 +1,12 @@
 //! Linux platform implementation.
 //!
-//! This module provides a stub implementation for Linux.
-//! The actual X11 driver uses the older DisplayDriver architecture.
+//! Bridge to X11DisplayDriver using the new PlatformOps trait.
 
 use crate::api::private::EngineActorHandle;
-use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
+use crate::channel::{DriverCommand, EngineSender};
+use crate::display::driver::DisplayDriver as OldDisplayDriver;
+use crate::display::drivers::X11DisplayDriver;
+use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt, WindowId};
 use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
 use actor_scheduler::ParkHint;
@@ -13,36 +15,139 @@ use pixelflow_graphics::render::color::Bgra8;
 /// Linux platform pixel type (BGRA for X11).
 pub type LinuxPixel = Bgra8;
 
-/// Linux platform operations (X11-based).
+/// Linux platform operations - bridges to X11DisplayDriver.
 pub struct LinuxOps {
-    #[allow(dead_code)]
     engine_handle: EngineActorHandle<LinuxPixel>,
+    driver: Option<X11DisplayDriver>,
+    engine_sender: Option<EngineSender<LinuxPixel>>,
 }
 
 impl LinuxOps {
     /// Create new Linux platform ops.
     pub fn new(engine_handle: EngineActorHandle<LinuxPixel>) -> Result<Self, RuntimeError> {
-        Ok(Self { engine_handle })
+        Ok(Self {
+            engine_handle,
+            driver: None,
+            engine_sender: None,
+        })
     }
 }
 
 impl PlatformOps for LinuxOps {
     type Pixel = LinuxPixel;
 
-    fn handle_data(&mut self, _data: DisplayData<Self::Pixel>) {
-        // TODO: Implement X11 data handling
+    fn handle_data(&mut self, data: DisplayData<Self::Pixel>) {
+        match data {
+            DisplayData::Present { frame, .. } => {
+                if let Some(driver) = &self.driver {
+                    driver
+                        .send(DriverCommand::Present {
+                            id: WindowId::PRIMARY,
+                            frame,
+                        })
+                        .expect("Failed to send Present to X11 driver");
+                }
+            }
+        }
     }
 
-    fn handle_control(&mut self, _ctrl: DisplayControl) {
-        // TODO: Implement X11 control handling
+    fn handle_control(&mut self, ctrl: DisplayControl) {
+        if let Some(driver) = &self.driver {
+            match ctrl {
+                DisplayControl::Shutdown => {
+                    driver
+                        .send(DriverCommand::Shutdown)
+                        .expect("Failed to send Shutdown to X11 driver");
+                }
+                DisplayControl::SetTitle { title, .. } => {
+                    driver
+                        .send(DriverCommand::SetTitle {
+                            id: WindowId::PRIMARY,
+                            title,
+                        })
+                        .expect("Failed to send SetTitle to X11 driver");
+                }
+                DisplayControl::SetSize { width, height, .. } => {
+                    driver
+                        .send(DriverCommand::SetSize {
+                            id: WindowId::PRIMARY,
+                            width,
+                            height,
+                        })
+                        .expect("Failed to send SetSize to X11 driver");
+                }
+                DisplayControl::Copy { text } => {
+                    driver
+                        .send(DriverCommand::CopyToClipboard(text))
+                        .expect("Failed to send CopyToClipboard to X11 driver");
+                }
+                DisplayControl::RequestPaste => {
+                    driver
+                        .send(DriverCommand::RequestPaste)
+                        .expect("Failed to send RequestPaste to X11 driver");
+                }
+                DisplayControl::SetCursor { cursor, .. } => {
+                    driver
+                        .send(DriverCommand::SetCursorIcon { icon: cursor })
+                        .expect("Failed to send SetCursorIcon to X11 driver");
+                }
+                DisplayControl::Bell => {
+                    driver
+                        .send(DriverCommand::Bell)
+                        .expect("Failed to send Bell to X11 driver");
+                }
+                DisplayControl::SetVisible { .. } | DisplayControl::RequestRedraw { .. } => {
+                    // Not implemented for Linux yet
+                }
+            }
+        }
     }
 
-    fn handle_management(&mut self, _mgmt: DisplayMgmt) {
-        // TODO: Implement X11 management handling
+    fn handle_management(&mut self, mgmt: DisplayMgmt) {
+        match mgmt {
+            DisplayMgmt::Create { id, settings } => {
+                let engine_handle = self.engine_handle.clone();
+                self.engine_sender = Some(engine_handle.clone());
+
+                // Create X11 driver directly with the engine handle (ActorHandle)
+                let driver =
+                    X11DisplayDriver::new(engine_handle).expect("Failed to create X11 driver");
+
+                // Send CreateWindow command
+                driver
+                    .send(DriverCommand::CreateWindow {
+                        id,
+                        width: settings.width,
+                        height: settings.height,
+                        title: settings.title.clone(),
+                    })
+                    .expect("Failed to send CreateWindow");
+
+                // Spawn X11 event loop on separate thread
+                // IMPORTANT: The original driver must be moved to the thread, as clones cannot run()
+                let driver_for_ops = driver.clone();
+                std::thread::Builder::new()
+                    .name("x11-event-loop".to_string())
+                    .spawn(move || {
+                        driver.run().expect("X11 driver failed");
+                    })
+                    .expect("Failed to spawn X11 event loop");
+
+                self.driver = Some(driver_for_ops);
+            }
+            DisplayMgmt::Destroy { .. } => {
+                if let Some(driver) = &self.driver {
+                    driver
+                        .send(DriverCommand::Shutdown)
+                        .expect("Failed to send Shutdown to X11 driver on Destroy");
+                }
+                self.driver = None;
+            }
+        }
     }
 
     fn park(&mut self, hint: ParkHint) -> ParkHint {
-        // Simple sleep-based parking for now
+        // Simple sleep-based parking
         match hint {
             ParkHint::Poll => {
                 // Poll mode - return immediately

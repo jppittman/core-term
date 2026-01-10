@@ -128,9 +128,7 @@ fn assert_screen_state(
                 // cell_attrs prefixed with _
                 Glyph::Single(cell) => (cell.c, cell.attr),
                 Glyph::WidePrimary(cell) => (cell.c, cell.attr),
-                Glyph::WideSpacer => {
-                    (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default())
-                }
+                Glyph::WideSpacer => (crate::glyph::WIDE_CHAR_PLACEHOLDER, Attributes::default()),
             };
 
             assert_eq!(

@@ -243,7 +243,9 @@ fn bake_eigen() {
     out.push_str("//! Do not edit manually.\n");
     out.push_str("//!\n");
     out.push_str("//! Source: Stam, \"Exact Evaluation of Catmull-Clark Subdivision Surfaces\"\n");
-    out.push_str("//! Data from: https://www.dgp.toronto.edu/~stam/reality/Research/SubdivEval/\n\n");
+    out.push_str(
+        "//! Data from: https://www.dgp.toronto.edu/~stam/reality/Research/SubdivEval/\n\n",
+    );
 
     out.push_str("/// Maximum supported valence.\n");
     out.push_str(&format!("pub const MAX_VALENCE: usize = {};\n\n", nmax));
@@ -267,7 +269,9 @@ fn bake_eigen() {
     out.push_str("impl EigenCoeffs {\n");
     out.push_str("    /// Get spline coefficient for subpatch, basis, and coefficient index.\n");
     out.push_str("    #[inline]\n");
-    out.push_str("    pub fn spline(&self, subpatch: usize, basis: usize, coeff: usize) -> f32 {\n");
+    out.push_str(
+        "    pub fn spline(&self, subpatch: usize, basis: usize, coeff: usize) -> f32 {\n",
+    );
     out.push_str("        self.spline_coeffs[subpatch * self.k * 16 + basis * 16 + coeff]\n");
     out.push_str("    }\n\n");
     out.push_str("    /// Get inverse eigenvector matrix element.\n");
