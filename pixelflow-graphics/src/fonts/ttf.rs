@@ -972,10 +972,6 @@ impl<'a> Font<'a> {
         let x_max = r.i16()?;
         let y_max = r.i16()?;
 
-        if id == 36 { // ASCII 'A'
-            eprintln!("[DEBUG] compile id={}: bbox=[{}, {}, {}, {}]", id, x_min, y_min, x_max, y_max);
-        }
-
         let width = (x_max - x_min) as f32;
         let height = (y_max - y_min) as f32;
         let max_dim = width.max(height).max(1.0); // Avoid div by 0
