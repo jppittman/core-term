@@ -15,7 +15,11 @@ pub fn eval_quad_kernel(quad: &Quad<QuadKernel, LineKernel>, x: Field, y: Field)
 
 /// Also test Line for comparison
 #[inline(never)]
-pub fn eval_line_kernel(line: &pixelflow_graphics::fonts::ttf::Line<LineKernel>, x: Field, y: Field) -> Field {
+pub fn eval_line_kernel(
+    line: &pixelflow_graphics::fonts::ttf::Line<LineKernel>,
+    x: Field,
+    y: Field,
+) -> Field {
     line.eval_raw(x, y, Field::from(0.0), Field::from(0.0))
 }
 

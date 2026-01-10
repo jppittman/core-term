@@ -1141,8 +1141,7 @@ fn it_should_process_charset_special_designators() {
         assert_eq!(
             commands,
             vec![AnsiCommand::Esc(EscCommand::SelectCharacterSet(
-                '(',
-                designator
+                '(', designator
             ))],
             "ESC ( {} ({}) should be a valid charset designator",
             designator,

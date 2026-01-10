@@ -968,9 +968,10 @@ impl Screen {
         let est_rows = norm_end_point.y.saturating_sub(norm_start_point.y) + 1;
         let est_cols = match self.selection.mode {
             SelectionMode::Cell => self.width, // Rough upper bound per row
-            SelectionMode::Block => max(range.start.x, range.end.x)
-                .saturating_sub(std_min(range.start.x, range.end.x))
-                + 1,
+            SelectionMode::Block => {
+                max(range.start.x, range.end.x).saturating_sub(std_min(range.start.x, range.end.x))
+                    + 1
+            }
         };
         let capacity = est_rows.saturating_mul(est_cols + 1); // +1 for newlines
         let mut selected_text_buffer = String::with_capacity(capacity);
@@ -1135,7 +1136,10 @@ impl Screen {
                 if let Some(rel_idx) = last_non_space_relative_idx {
                     // Find the byte index of the character *after* the last non-space char
                     // new_part[rel_idx] is the start of the char.
-                    let char_len = new_part[rel_idx..].chars().next().map_or(1, |c| c.len_utf8());
+                    let char_len = new_part[rel_idx..]
+                        .chars()
+                        .next()
+                        .map_or(1, |c| c.len_utf8());
                     buffer.truncate(info.line_start_len + rel_idx + char_len);
                 } else {
                     // Line was all spaces

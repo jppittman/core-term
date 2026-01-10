@@ -7,8 +7,8 @@
 //! - Winding number calculation errors
 
 use pixelflow_core::{materialize_discrete, PARALLELISM};
-use pixelflow_graphics::fonts::ttf::{Geometry, Line, LineKernel, Quad, QuadKernel, make_line};
-use pixelflow_graphics::fonts::{Font, text};
+use pixelflow_graphics::fonts::ttf::{make_line, Geometry, Line, LineKernel, Quad, QuadKernel};
+use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::{execute, TensorShape};
 use std::sync::Arc;

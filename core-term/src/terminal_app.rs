@@ -385,11 +385,26 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
 
     fn handle_control(&mut self, ctrl: EngineEventControl) {
         match ctrl {
-            EngineEventControl::WindowCreated { id, width_px, height_px, scale } => {
-                log::info!("Window created: id={}, {}x{}, scale={}", id.0, width_px, height_px, scale);
+            EngineEventControl::WindowCreated {
+                id,
+                width_px,
+                height_px,
+                scale,
+            } => {
+                log::info!(
+                    "Window created: id={}, {}x{}, scale={}",
+                    id.0,
+                    width_px,
+                    height_px,
+                    scale
+                );
                 unimplemented!("WindowCreated handler - need to start VSync and setup render loop");
             }
-            EngineEventControl::Resized { id: _, width_px, height_px } => {
+            EngineEventControl::Resized {
+                id: _,
+                width_px,
+                height_px,
+            } => {
                 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput};
                 // Convert u32 pixels to u16 for ControlEvent
                 // Saturate at u16::MAX to prevent overflow panics
@@ -418,7 +433,11 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                 unimplemented!("CloseRequested handler - need to cleanup and shutdown");
             }
             EngineEventControl::ScaleChanged { id, scale } => {
-                log::warn!("ScaleChanged: id={}, scale={} - NOT IMPLEMENTED", id.0, scale);
+                log::warn!(
+                    "ScaleChanged: id={}, scale={} - NOT IMPLEMENTED",
+                    id.0,
+                    scale
+                );
                 unimplemented!("ScaleChanged handler - need to adjust font sizes and redraw");
             }
         }

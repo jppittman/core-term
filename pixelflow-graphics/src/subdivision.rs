@@ -160,7 +160,7 @@ impl SubdivisionPatch {
         // B2(t) = (-3t³ + 3t² + 3t + 1) / 6
         // B3(t) = t³ / 6
 
-        let bu0 = u1 * u1 * u1 / six;
+        let _bu0 = u1 * u1 * u1 / six;
         let bu1 = (u3 * Jet3::constant(Field::from(3.0)) - u2 * Jet3::constant(Field::from(6.0))
             + Jet3::constant(Field::from(4.0)))
             / six;
@@ -169,9 +169,9 @@ impl SubdivisionPatch {
             + u * Jet3::constant(Field::from(3.0))
             + Jet3::constant(Field::from(1.0)))
             / six;
-        let bu3 = u3 / six;
+        let _bu3 = u3 / six;
 
-        let bv0 = v1 * v1 * v1 / six;
+        let _bv0 = v1 * v1 * v1 / six;
         let bv1 = (v3 * Jet3::constant(Field::from(3.0)) - v2 * Jet3::constant(Field::from(6.0))
             + Jet3::constant(Field::from(4.0)))
             / six;
@@ -180,7 +180,7 @@ impl SubdivisionPatch {
             + v * Jet3::constant(Field::from(3.0))
             + Jet3::constant(Field::from(1.0)))
             / six;
-        let bv3 = v3 / six;
+        let _bv3 = v3 / six;
 
         // For a single quad, we only have 4 control points
         // Map them to the central 4 of the 16-point B-spline patch
@@ -197,7 +197,7 @@ impl SubdivisionPatch {
         let w11 = bu2 * bv2;
         let w01 = bu1 * bv2;
 
-        let zero = Jet3::constant(Field::from(0.0));
+        let _zero = Jet3::constant(Field::from(0.0));
         let px = w00 * Jet3::constant(Field::from(p0.x))
             + w10 * Jet3::constant(Field::from(p1.x))
             + w11 * Jet3::constant(Field::from(p2.x))

@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use pixelflow_core::{Field, Manifold};
 use pixelflow_graphics::{
-    fonts::ttf::{Curve, loop_blinn_quad},
+    fonts::ttf::{loop_blinn_quad, Curve},
     render::rasterizer::{execute, TensorShape},
     Font, Grayscale, Rgba8,
 };
@@ -73,9 +73,7 @@ fn bench_geometry_comparison(c: &mut Criterion) {
         let total_pixels = size_px * size_px;
         group.throughput(Throughput::Elements(total_pixels as u64));
 
-        let glyph = pf_font
-            .glyph_scaled(*char_code, size_px as f32)
-            .unwrap();
+        let glyph = pf_font.glyph_scaled(*char_code, size_px as f32).unwrap();
 
         let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
         let shape = TensorShape::new(size_px as usize, size_px as usize);

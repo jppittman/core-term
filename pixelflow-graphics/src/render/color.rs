@@ -104,13 +104,14 @@ impl pixelflow_core::Manifold for NamedColor {
     ) -> pixelflow_core::Discrete {
         let (r, g, b) = self.to_rgb();
         // Use ColorCube terminal object directly
-        ColorCube.at(
-            Field::from(r as f32 / 255.0),
-            Field::from(g as f32 / 255.0),
-            Field::from(b as f32 / 255.0),
-            Field::from(1.0),
-        )
-        .eval_raw(x, y, z, w)
+        ColorCube
+            .at(
+                Field::from(r as f32 / 255.0),
+                Field::from(g as f32 / 255.0),
+                Field::from(b as f32 / 255.0),
+                Field::from(1.0),
+            )
+            .eval_raw(x, y, z, w)
     }
 }
 
@@ -168,13 +169,14 @@ impl pixelflow_core::Manifold for Color {
         w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b, a) = self.to_f32_rgba();
-        ColorCube.at(
-            Field::from(r),
-            Field::from(g),
-            Field::from(b),
-            Field::from(a),
-        )
-        .eval_raw(x, y, z, w)
+        ColorCube
+            .at(
+                Field::from(r),
+                Field::from(g),
+                Field::from(b),
+                Field::from(a),
+            )
+            .eval_raw(x, y, z, w)
     }
 }
 
@@ -421,13 +423,7 @@ impl ColorCube {
     /// let grad = ColorCube.at(X, 0.0, 0.0, 1.0);
     /// ```
     #[inline(always)]
-    pub fn at<R, G, B, A>(
-        self,
-        r: R,
-        g: G,
-        b: B,
-        a: A,
-    ) -> At<R, G, B, A, Self> {
+    pub fn at<R, G, B, A>(self, r: R, g: G, b: B, a: A) -> At<R, G, B, A, Self> {
         At {
             inner: self,
             x: r,

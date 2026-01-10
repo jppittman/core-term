@@ -736,13 +736,22 @@ fn pty_command_resize_delivery_at_actor_boundary() {
     let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
 
     // Simulate sending resize command from TerminalApp
-    tx.send(PtyCommand::Resize { cols: 120, rows: 40 })
-        .expect("Should send resize command");
+    tx.send(PtyCommand::Resize {
+        cols: 120,
+        rows: 40,
+    })
+    .expect("Should send resize command");
 
     // Simulate receiving in WriteThread
     let cmd = rx.recv_timeout(Duration::from_millis(100)).unwrap();
 
-    assert_eq!(cmd, PtyCommand::Resize { cols: 120, rows: 40 });
+    assert_eq!(
+        cmd,
+        PtyCommand::Resize {
+            cols: 120,
+            rows: 40
+        }
+    );
 }
 
 /// Test that multiple resize commands maintain ordering (FIFO).
@@ -752,8 +761,16 @@ fn pty_command_resize_ordering_preserved() {
 
     // Send multiple resize commands
     tx.send(PtyCommand::Resize { cols: 80, rows: 24 }).unwrap();
-    tx.send(PtyCommand::Resize { cols: 120, rows: 40 }).unwrap();
-    tx.send(PtyCommand::Resize { cols: 200, rows: 60 }).unwrap();
+    tx.send(PtyCommand::Resize {
+        cols: 120,
+        rows: 40,
+    })
+    .unwrap();
+    tx.send(PtyCommand::Resize {
+        cols: 200,
+        rows: 60,
+    })
+    .unwrap();
 
     // Verify FIFO order
     assert_eq!(
@@ -762,11 +779,17 @@ fn pty_command_resize_ordering_preserved() {
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize { cols: 120, rows: 40 }
+        PtyCommand::Resize {
+            cols: 120,
+            rows: 40
+        }
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize { cols: 200, rows: 60 }
+        PtyCommand::Resize {
+            cols: 200,
+            rows: 60
+        }
     );
 }
 
@@ -777,7 +800,11 @@ fn pty_command_write_and_resize_interleaved() {
 
     // Interleave write and resize commands
     tx.send(PtyCommand::Write(b"hello".to_vec())).unwrap();
-    tx.send(PtyCommand::Resize { cols: 100, rows: 50 }).unwrap();
+    tx.send(PtyCommand::Resize {
+        cols: 100,
+        rows: 50,
+    })
+    .unwrap();
     tx.send(PtyCommand::Write(b"world".to_vec())).unwrap();
 
     // Verify interleaved order
@@ -787,7 +814,10 @@ fn pty_command_write_and_resize_interleaved() {
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize { cols: 100, rows: 50 }
+        PtyCommand::Resize {
+            cols: 100,
+            rows: 50
+        }
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),

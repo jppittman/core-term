@@ -220,6 +220,15 @@ fn main() -> anyhow::Result<()> {
         let (app_handle, _app_thread_handle) =
             spawn_terminal_app(params).context("Failed to spawn terminal app")?;
 
+        // Register app handle with engine so it can receive events
+        use actor_scheduler::Message;
+        use pixelflow_runtime::AppManagement;
+        let app_arc = std::sync::Arc::new(app_handle.clone());
+        troupe
+            .engine_handle()
+            .send(Message::Management(AppManagement::RegisterApp(app_arc)))
+            .context("Failed to register app handle")?;
+
         // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
         let pty_config = PtyConfig {

@@ -140,11 +140,8 @@ impl TerminalEmulator {
                 );
 
                 if physical_x + 1 < screen_ctx.width {
-                    self.screen.set_glyph(
-                        physical_x + 1,
-                        physical_y,
-                        Glyph::WideSpacer,
-                    );
+                    self.screen
+                        .set_glyph(physical_x + 1, physical_y, Glyph::WideSpacer);
                     // Line is already marked dirty from the primary character.
                 } else {
                     // This case implies a wide char was printed at the exact last column.

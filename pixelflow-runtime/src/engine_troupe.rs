@@ -107,7 +107,9 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
                     .expect("Failed to send Shutdown to driver on Quit");
             }
             EngineControl::UpdateRefreshRate(rr) => {
-                self.vsync.send(VsyncCommand::UpdateRefreshRate(rr)).expect("failed to update refresh rate");
+                self.vsync
+                    .send(VsyncCommand::UpdateRefreshRate(rr))
+                    .expect("failed to update refresh rate");
             }
             EngineControl::VsyncActorReady(handle) => {
                 self.vsync = handle;
@@ -122,10 +124,7 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
         match mgmt {
             AppManagement::Configure(config) => {
                 self.render_threads = config.performance.render_threads;
-                log::info!(
-                    "Engine configured: {} render threads",
-                    self.render_threads
-                );
+                log::info!("Engine configured: {} render threads", self.render_threads);
             }
             AppManagement::SetTitle(title) => {
                 self.driver
@@ -176,10 +175,12 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
                     descriptor.height,
                     descriptor.title
                 );
-                self.driver.send(Message::Management(DisplayMgmt::Create {
-                    id,
-                    settings: descriptor,
-                })).expect("Failed to relay CreateWindow to driver");
+                self.driver
+                    .send(Message::Management(DisplayMgmt::Create {
+                        id,
+                        settings: descriptor,
+                    }))
+                    .expect("Failed to relay CreateWindow to driver");
             }
             AppManagement::Quit => {
                 self.driver
@@ -279,7 +280,13 @@ impl EngineHandler {
                 height_px,
                 scale,
             } => {
-                log::info!("Relaying WindowCreated: id={}, {}x{}, scale={}", id.0, width_px, height_px, scale);
+                log::info!(
+                    "Relaying WindowCreated: id={}, {}x{}, scale={}",
+                    id.0,
+                    width_px,
+                    height_px,
+                    scale
+                );
 
                 // Allocate initial frame buffer for this window
                 self.frame_buffer = Some(Frame::new(width_px, height_px));
@@ -291,7 +298,8 @@ impl EngineHandler {
                         width_px,
                         height_px,
                         scale,
-                    })).expect("Failed to relay WindowCreated event to app");
+                    }))
+                    .expect("Failed to relay WindowCreated event to app");
                 }
             }
             DisplayEvent::Resized {

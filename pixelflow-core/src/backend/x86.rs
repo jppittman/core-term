@@ -311,10 +311,7 @@ impl SimdOps for F32x4 {
             // Extract mantissa in [1, 2): (bits & 0x007FFFFF) | 0x3F800000
             let mant_mask = _mm_set1_epi32(0x007FFFFF);
             let one_bits = _mm_set1_epi32(0x3F800000);
-            let f = _mm_castsi128_ps(_mm_or_si128(
-                _mm_and_si128(x_i32, mant_mask),
-                one_bits,
-            ));
+            let f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Remez minimax polynomial for log2(f), f ∈ [1, 2)
             // Degree 4, max error ~10^-7
@@ -1243,8 +1240,8 @@ impl SimdOps for F32x16 {
             // _mm512_set_ps args are in reverse order: e15, e14, ..., e1, e0
             let base = _mm512_set1_ps(start);
             let increments = _mm512_set_ps(
-                15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0,
-                7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0,
+                15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0,
+                0.0,
             );
             Self(_mm512_add_ps(base, increments))
         }

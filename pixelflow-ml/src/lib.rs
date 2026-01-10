@@ -225,7 +225,7 @@ impl ShFeatureMap<9> {
     pub fn project(x: Field, y: Field, z: Field) -> [Field; 9] {
         use pixelflow_core::SH_NORM;
 
-        let zero = Field::from(0.0);
+        let _zero = Field::from(0.0);
 
         // Normalize direction - collapse intermediate AST
         let r = (x * x + y * y + z * z).sqrt().constant();
