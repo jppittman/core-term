@@ -5,29 +5,28 @@ use crate::glyph::Glyph;
 use crate::io::PtyCommand;
 use crate::term::TerminalEmulator;
 use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
-use pixelflow_core::{Add, At, Discrete, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z, Ge, Le, And};
+use pixelflow_core::{
+    Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
+};
 use pixelflow_graphics::fonts::loader::{LoadedFont, MmapSource};
 use pixelflow_graphics::render::Pixel;
+use pixelflow_graphics::ColorCube as PlatformColorCube;
 use pixelflow_graphics::{CachedGlyph, GlyphCache, Positioned, SpatialBSP};
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
 use pixelflow_runtime::{
     EngineActorHandle, EngineEventControl, EngineEventData, EngineEventManagement,
 };
-use pixelflow_graphics::ColorCube as PlatformColorCube;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::Arc;
 
 /// Path to the embedded font file
 const FONT_PATH: &str = "pixelflow-graphics/assets/NotoSansMono-Regular.ttf";
 
 /// Bounded glyph manifold (returns coverage in [0,1], 0 if out of bounds).
 /// Select<Cond, CachedGlyph, f32>
-type BoundedGlyph = Select<
-    And<And<And<Ge<X, f32>, Le<X, f32>>, Ge<Y, f32>>, Le<Y, f32>>,
-    CachedGlyph,
-    f32
->;
+type BoundedGlyph =
+    Select<And<And<And<Ge<X, f32>, Le<X, f32>>, Ge<Y, f32>>, Le<Y, f32>>, CachedGlyph, f32>;
 
 /// Positioned glyph manifold
 type PositionedGlyph = At<Sub<X, f32>, Sub<Y, f32>, Z, W, BoundedGlyph>;
@@ -41,11 +40,11 @@ type BlendedChannel = At<f32, f32, PositionedGlyph, f32, LerpManifold>;
 
 /// Concrete leaf type: a terminal cell with background and foreground blending.
 type TerminalCellLeaf = At<
-    BlendedChannel,     // R
-    BlendedChannel,     // G
-    BlendedChannel,     // B
-    f32,                // A
-    PlatformColorCube,  // M
+    BlendedChannel,    // R
+    BlendedChannel,    // G
+    BlendedChannel,    // B
+    f32,               // A
+    PlatformColorCube, // M
 >;
 
 /// Terminal application implementing Actor trait.
@@ -77,7 +76,6 @@ pub struct TerminalAppParams<P: Pixel> {
     /// Handle to the engine actor.
     pub engine_tx: EngineActorHandle<P>,
 }
-
 
 impl<P: Pixel> TerminalApp<P> {
     /// Helper to create a positioned terminal cell with background blending.
@@ -119,9 +117,27 @@ impl<P: Pixel> TerminalApp<P> {
         // Note: we use positioned (which is a Manifold) as the Z coordinate
         // The At combinator expects manifolds for coordinates.
         // Also note: f32 constants are auto-lifted to Manifolds.
-        let r = At { inner: lerp, x: bg[0], y: fg[0], z: positioned.clone(), w: 0.0 };
-        let g = At { inner: lerp, x: bg[1], y: fg[1], z: positioned.clone(), w: 0.0 };
-        let b = At { inner: lerp, x: bg[2], y: fg[2], z: positioned, w: 0.0 };
+        let r = At {
+            inner: lerp,
+            x: bg[0],
+            y: fg[0],
+            z: positioned.clone(),
+            w: 0.0,
+        };
+        let g = At {
+            inner: lerp,
+            x: bg[1],
+            y: fg[1],
+            z: positioned.clone(),
+            w: 0.0,
+        };
+        let b = At {
+            inner: lerp,
+            x: bg[2],
+            y: fg[2],
+            z: positioned,
+            w: 0.0,
+        };
 
         // Pack into platform color cube
         let blended = At {
@@ -134,8 +150,10 @@ impl<P: Pixel> TerminalApp<P> {
 
         // Only show the cell (including background) when pixel is in bounds
         // When out of bounds, return transparent black
-        let in_bounds = X.ge(offset_x) & X.le(offset_x + cell_width) &
-                       Y.ge(offset_y) & Y.le(offset_y + cell_height);
+        let in_bounds = X.ge(offset_x)
+            & X.le(offset_x + cell_width)
+            & Y.ge(offset_y)
+            & Y.le(offset_y + cell_height);
 
         // Create a transparent black color (all zeros)
         let transparent = At {
@@ -146,17 +164,21 @@ impl<P: Pixel> TerminalApp<P> {
             w: 0.0,
         };
 
-        Select { cond: in_bounds, if_true: blended, if_false: transparent }
+        Select {
+            cond: in_bounds,
+            if_true: blended,
+            if_false: transparent,
+        }
     }
 
     /// Creates a new terminal app.
     pub fn new(params: TerminalAppParams<P>) -> Self {
         // Memory-map the font file
         // Try workspace-relative path first, then crate-relative (for tests)
-        let source = MmapSource::open(FONT_PATH).or_else(|_| {
-            MmapSource::open(&format!("../{}", FONT_PATH))
-        }).expect("Failed to open font file");
-        
+        let source = MmapSource::open(FONT_PATH)
+            .or_else(|_| MmapSource::open(&format!("../{}", FONT_PATH)))
+            .expect("Failed to open font file");
+
         let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));
 
         // Create glyph cache and pre-warm with ASCII
@@ -180,9 +202,13 @@ impl<P: Pixel> TerminalApp<P> {
         app
     }
 
-
     /// Build a render manifold from the current terminal state.
-    fn build_manifold(&mut self) -> (Arc<dyn Manifold<Output = Discrete> + Send + Sync>, (f32, f32)) {
+    fn build_manifold(
+        &mut self,
+    ) -> (
+        Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
+        (f32, f32),
+    ) {
         // Get terminal snapshot
         let snapshot = match self.emulator.get_render_snapshot() {
             Some(s) => s,
@@ -207,7 +233,6 @@ impl<P: Pixel> TerminalApp<P> {
         let grid_width = cols as f32 * cell_width;
         let grid_height = rows as f32 * cell_height;
 
-
         // Default colors
         let default_fg = self.config.colors.foreground;
         let default_bg = self.config.colors.background;
@@ -224,8 +249,16 @@ impl<P: Pixel> TerminalApp<P> {
 
                 let (ch, fg_color, cell_bg) = match glyph {
                     Glyph::Single(cc) | Glyph::WidePrimary(cc) => {
-                        let fg = if cc.attr.fg == Color::Default { default_fg } else { cc.attr.fg };
-                        let bg = if cc.attr.bg == Color::Default { default_bg } else { cc.attr.bg };
+                        let fg = if cc.attr.fg == Color::Default {
+                            default_fg
+                        } else {
+                            cc.attr.fg
+                        };
+                        let bg = if cc.attr.bg == Color::Default {
+                            default_bg
+                        } else {
+                            cc.attr.bg
+                        };
                         (cc.c, fg, bg)
                     }
                     Glyph::WideSpacer => continue, // Skip spacers
@@ -239,7 +272,10 @@ impl<P: Pixel> TerminalApp<P> {
                 */
 
                 // Get cached glyph - glyph_scaled now accounts for descenders
-                if let Some(cached) = self.glyph_cache.get(&self.loaded_font.font(), ch, cell_height) {
+                if let Some(cached) =
+                    self.glyph_cache
+                        .get(&self.loaded_font.font(), ch, cell_height)
+                {
                     let (fg_r, fg_g, fg_b, fg_a) = fg_color.to_f32_rgba();
                     let (bg_r, bg_g, bg_b, bg_a) = cell_bg.to_f32_rgba();
 
@@ -255,7 +291,7 @@ impl<P: Pixel> TerminalApp<P> {
                             cell_width,
                             cell_height,
                             [fg_r, fg_g, fg_b, fg_a],
-                            [bg_r, bg_g, bg_b, bg_a]
+                            [bg_r, bg_g, bg_b, bg_a],
                         ),
                     });
                 }
@@ -290,10 +326,7 @@ impl<P: Pixel> TerminalApp<P> {
 
         // Build top-level vertical BSP from row items
         let top_bsp = SpatialBSP::from_positioned(row_items);
-        (
-            Arc::new(top_bsp),
-            (grid_width, grid_height),
-        )
+        (Arc::new(top_bsp), (grid_width, grid_height))
     }
 
     /// Send a rendered frame to the engine.
@@ -328,7 +361,10 @@ impl<P: Pixel> TerminalApp<P> {
         let data = AppData::RenderSurface(Arc::new(scene));
         eprintln!("[TERM] Scene Arc created");
         eprintln!("[TERM] sending to engine");
-        if let Err(e) = self.engine_tx.send(Message::Data(EngineData::FromApp(data))) {
+        if let Err(e) = self
+            .engine_tx
+            .send(Message::Data(EngineData::FromApp(data)))
+        {
             log::warn!("Failed to send frame to engine: {}", e);
         }
         eprintln!("[TERM] send_frame() complete");
@@ -341,16 +377,19 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
     fn handle_data(&mut self, data: EngineEventData) {
         match data {
             EngineEventData::RequestFrame { .. } => {
-                // We send frames eagerly when PTY data arrives (in park()),
-                // so RequestFrame events are just ignored here.
-                // This ensures low latency at lower frame rates.
+                // Engine is requesting a frame - build and send it
+                self.send_frame();
             }
         }
     }
 
     fn handle_control(&mut self, ctrl: EngineEventControl) {
         match ctrl {
-            EngineEventControl::Resize(width_px, height_px) => {
+            EngineEventControl::WindowCreated { id, width_px, height_px, scale } => {
+                log::info!("Window created: id={}, {}x{}, scale={}", id.0, width_px, height_px, scale);
+                unimplemented!("WindowCreated handler - need to start VSync and setup render loop");
+            }
+            EngineEventControl::Resized { id: _, width_px, height_px } => {
                 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput};
                 // Convert u32 pixels to u16 for ControlEvent
                 // Saturate at u16::MAX to prevent overflow panics
@@ -376,10 +415,11 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                 self.send_frame();
             }
             EngineEventControl::CloseRequested => {
-                // Handle close request - could signal quit to engine
+                unimplemented!("CloseRequested handler - need to cleanup and shutdown");
             }
-            EngineEventControl::ScaleChanged(_scale) => {
-                // Handle scale change
+            EngineEventControl::ScaleChanged { id, scale } => {
+                log::warn!("ScaleChanged: id={}, scale={} - NOT IMPLEMENTED", id.0, scale);
+                unimplemented!("ScaleChanged handler - need to adjust font sizes and redraw");
             }
         }
     }
@@ -405,7 +445,8 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                         EmulatorAction::Quit => {
                             // Handle quit - send quit to engine
                             use pixelflow_runtime::api::public::AppManagement;
-                            self.engine_tx.send(Message::Management(AppManagement::Quit))
+                            self.engine_tx
+                                .send(Message::Management(AppManagement::Quit))
                                 .expect("Failed to send Quit to engine");
                         }
                         EmulatorAction::SetTitle(_) => {
@@ -418,13 +459,17 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                             self.send_frame();
                         }
                         EmulatorAction::SetCursorVisibility(_) => {
-                            unimplemented!("EmulatorAction::SetCursorVisibility not yet implemented");
+                            unimplemented!(
+                                "EmulatorAction::SetCursorVisibility not yet implemented"
+                            );
                         }
                         EmulatorAction::CopyToClipboard(_) => {
                             unimplemented!("EmulatorAction::CopyToClipboard not yet implemented");
                         }
                         EmulatorAction::RequestClipboardContent => {
-                            unimplemented!("EmulatorAction::RequestClipboardContent not yet implemented");
+                            unimplemented!(
+                                "EmulatorAction::RequestClipboardContent not yet implemented"
+                            );
                         }
                         EmulatorAction::ResizePty { cols, rows } => {
                             // Send resize command to PTY write thread
@@ -435,26 +480,61 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                     }
                 }
             }
-            EngineEventManagement::MouseClick { .. } => {
-                unimplemented!("MouseClick not yet implemented");
+            EngineEventManagement::MouseClick { button, x, y } => {
+                let col = (x / self.config.appearance.cell_width_px as u32) as usize;
+                let row = (y / self.config.appearance.cell_height_px as u32) as usize;
+                log::trace!(
+                    "Mouse click: button={:?} at cell ({}, {})",
+                    button,
+                    col,
+                    row
+                );
+                // TODO: Handle mouse tracking modes, selection
             }
-            EngineEventManagement::MouseRelease { .. } => {
-                unimplemented!("MouseRelease not yet implemented");
+            EngineEventManagement::MouseRelease { button, x, y } => {
+                let col = (x / self.config.appearance.cell_width_px as u32) as usize;
+                let row = (y / self.config.appearance.cell_height_px as u32) as usize;
+                log::trace!(
+                    "Mouse release: button={:?} at cell ({}, {})",
+                    button,
+                    col,
+                    row
+                );
+                // TODO: Handle mouse tracking modes, end selection
             }
-            EngineEventManagement::MouseMove { .. } => {
-                unimplemented!("MouseMove not yet implemented");
+            EngineEventManagement::MouseMove { x, y, mods: _ } => {
+                let col = (x / self.config.appearance.cell_width_px as u32) as usize;
+                let row = (y / self.config.appearance.cell_height_px as u32) as usize;
+                log::trace!("Mouse move: cell ({}, {})", col, row);
+                // TODO: Handle mouse tracking modes, drag selection
             }
-            EngineEventManagement::MouseScroll { .. } => {
-                unimplemented!("MouseScroll not yet implemented");
+            EngineEventManagement::MouseScroll {
+                x: _,
+                y: _,
+                dx,
+                dy,
+                mods: _,
+            } => {
+                log::trace!("Mouse scroll: delta=({}, {})", dx, dy);
+                // TODO: Implement scrollback navigation
+                // Should modify viewport offset and trigger redraw
             }
             EngineEventManagement::FocusGained => {
-                unimplemented!("FocusGained not yet implemented");
+                log::trace!("Focus gained");
+                // Some applications care about focus for bracketed paste mode
+                // Could send \x1b[I if bracketed paste is enabled
             }
             EngineEventManagement::FocusLost => {
-                unimplemented!("FocusLost not yet implemented");
+                log::trace!("Focus lost");
+                // Some applications care about focus for bracketed paste mode
+                // Could send \x1b[O if bracketed paste is enabled
             }
-            EngineEventManagement::Paste(_) => {
-                unimplemented!("Paste not yet implemented");
+            EngineEventManagement::Paste(text) => {
+                log::trace!("Paste: {} bytes", text.len());
+                // Send pasted text to PTY
+                self.pty_tx
+                    .send(PtyCommand::Write(text.into_bytes()))
+                    .expect("Failed to send paste to PTY");
             }
         }
     }
@@ -473,17 +553,8 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
 
         // Send frames eagerly when PTY data arrives (out of band from VSync).
         // This ensures low latency, especially at lower frame rates.
-        // Check dirty lines to avoid sending frames when nothing changed.
         if found_data {
-            let has_dirty_lines = if let Some(snapshot) = self.emulator.get_render_snapshot() {
-                snapshot.lines.iter().any(|line| line.is_dirty)
-            } else {
-                false
-            };
-
-            if has_dirty_lines {
-                self.send_frame();
-            }
+            self.send_frame();
         }
 
         // If we found data, keep polling. Otherwise block on actor messages.
@@ -596,7 +667,10 @@ mod tests {
         let cmd = pty_rx.try_recv().expect("Should receive resize command");
         assert_eq!(
             cmd,
-            PtyCommand::Resize { cols: 100, rows: 50 },
+            PtyCommand::Resize {
+                cols: 100,
+                rows: 50
+            },
             "PTY resize command should match new dimensions"
         );
     }

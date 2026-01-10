@@ -1,6 +1,15 @@
 use crate::input::{KeySymbol, Modifiers, MouseButton};
 // use pixelflow_render::Frame;
 
+/// Window ID wrapper for identifying windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WindowId(pub u64);
+
+impl WindowId {
+    /// Primary window ID (for single-window applications).
+    pub const PRIMARY: Self = Self(0);
+}
+
 /// Events sent from the Engine to the Application.
 ///
 /// The Engine emits events to communicate state changes and requests to the application.
@@ -37,23 +46,46 @@ pub enum EngineEvent {
 /// Control events from the Engine (window state changes).
 #[derive(Debug, Clone)]
 pub enum EngineEventControl {
+    /// Window was created by the driver.
+    ///
+    /// # Contract
+    ///
+    /// **Engine**: Relays WindowCreated event from driver to app.
+    ///
+    /// **Application**: Window is now ready for rendering. Should start VSync and begin sending frames.
+    ///
+    /// # Arguments
+    ///
+    /// - `id`: Window identifier for future references
+    /// - `width_px`: Width in physical pixels
+    /// - `height_px`: Height in physical pixels
+    /// - `scale`: DPI scale factor
+    WindowCreated {
+        id: WindowId,
+        width_px: u32,
+        height_px: u32,
+        scale: f64,
+    },
+
     /// Window has been resized.
     ///
     /// # Contract
     ///
-    /// **Engine**: Provides the new size in logical pixels.
+    /// **Engine**: Relays resize event from driver to app.
     ///
     /// **Application**: Should update its render target size and send new frames.
     /// The application may receive multiple `Resize` events before rendering a frame.
     ///
     /// # Arguments
     ///
-    /// - Width and height in logical pixels (before DPI scaling)
-    ///
-    /// # Example Use
-    ///
-    /// Update the manifest/render surface dimensions when this event arrives.
-    Resize(u32, u32),
+    /// - `id`: Window identifier
+    /// - `width_px`: Width in physical pixels
+    /// - `height_px`: Height in physical pixels
+    Resized {
+        id: WindowId,
+        width_px: u32,
+        height_px: u32,
+    },
 
     /// User requested to close the window.
     ///
@@ -74,15 +106,16 @@ pub enum EngineEventControl {
     ///
     /// # Contract
     ///
-    /// **Engine**: The window moved to a monitor with different DPI or OS settings changed.
+    /// **Engine**: Relays scale change event from driver to app.
     ///
     /// **Application**: May need to rerender at new resolution or adjust font sizes.
     /// The scale factor affects how logical pixels map to physical pixels.
     ///
     /// # Arguments
     ///
-    /// - Scale factor (e.g., 1.0 = 96 DPI, 2.0 = 192 DPI on high-DPI displays)
-    ScaleChanged(f64),
+    /// - `id`: Window identifier
+    /// - `scale`: Scale factor (e.g., 1.0 = 96 DPI, 2.0 = 192 DPI on high-DPI displays)
+    ScaleChanged { id: WindowId, scale: f64 },
 }
 
 /// Management events from the Engine (input and interactions).
@@ -389,16 +422,48 @@ impl Application
 }
 
 /// Application management commands (change title, etc.)
-#[derive(Debug, Clone)]
 pub enum AppManagement {
     /// Configure the engine with initial settings (sent on startup).
     Configure(crate::config::EngineConfig),
+    /// Register the application handle so the engine can send events back to the app.
+    RegisterApp(std::sync::Arc<dyn Application + Send + Sync>),
+    /// Request window creation.
+    ///
+    /// # Contract
+    ///
+    /// **Sender** (Application): Requests a new window with the specified settings.
+    ///
+    /// **Receiver** (Engine): Relays the request to the driver. Driver will create the window,
+    /// assign an ID, and respond with WindowCreated event containing the assigned ID.
+    CreateWindow(WindowDescriptor),
     SetTitle(String),
     ResizeRequest(u32, u32),
     CopyToClipboard(String),
     RequestPaste,
     SetCursorIcon(CursorIcon),
     Quit,
+}
+
+impl std::fmt::Debug for AppManagement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppManagement::Configure(config) => f.debug_tuple("Configure").field(config).finish(),
+            AppManagement::RegisterApp(_) => f.debug_tuple("RegisterApp").field(&"<app>").finish(),
+            AppManagement::CreateWindow(descriptor) => {
+                f.debug_tuple("CreateWindow").field(descriptor).finish()
+            }
+            AppManagement::SetTitle(s) => f.debug_tuple("SetTitle").field(s).finish(),
+            AppManagement::ResizeRequest(w, h) => {
+                f.debug_tuple("ResizeRequest").field(&(w, h)).finish()
+            }
+            AppManagement::CopyToClipboard(s) => f.debug_tuple("CopyToClipboard").field(s).finish(),
+            AppManagement::RequestPaste => f.write_str("RequestPaste"),
+            AppManagement::SetCursorIcon(icon) => {
+                f.debug_tuple("SetCursorIcon").field(icon).finish()
+            }
+            AppManagement::Quit => f.write_str("Quit"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
