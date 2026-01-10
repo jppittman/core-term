@@ -95,84 +95,13 @@ impl TerminalEmulator {
             (physical_x, physical_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
         }
         // Place the character glyph on the screen.
-        let glyph_attrs = self.cursor_controller.attributes();
-        if physical_y < self.screen.height {
-            // Ensure y is within bounds before writing
-
-            // Before setting the new glyph, check if the old glyph was a WIDE_CHAR_PRIMARY.
-            // If so, and the new char is not wide or is different, clear the old spacer.
-            if physical_y < screen_ctx.height && physical_x < screen_ctx.width {
-                // Bounds check for old_glyph_at_pos
-                let old_glyph_at_pos = self.screen.active_grid()[physical_y][physical_x];
-                if matches!(old_glyph_at_pos, Glyph::WidePrimary(_)) {
-                    // If the new char isn't wide, or if it is but we're overwriting,
-                    // we must clear the old spacer.
-                    // We check old_glyph_at_pos.c by accessing the ContentCell inside WidePrimary variant if needed,
-                    // but since we are changing to new Glyph enums, direct comparison of ch_to_print might be different.
-                    // The condition `char_width != 2` should cover cases where new char is not wide.
-                    // If new char is wide, `Glyph::WidePrimary(ContentCell { c: ch_to_print, .. })` will overwrite.
-                    // So, we only need to clear the spacer if the old one was WidePrimary and new is not (or different, implicitly handled by overwrite).
-                    let clear_spacer = match old_glyph_at_pos {
-                        Glyph::WidePrimary(cell) => char_width != 2 || cell.c != ch_to_print,
-                        _ => false, // Not a WidePrimary, so no spacer to clear based on this logic.
-                    };
-
-                    if clear_spacer && physical_x + 1 < screen_ctx.width {
-                        // Using default_space() for simplicity, assuming default attributes are desired.
-                        // If specific default_attrs are needed, they should be defined as per original code.
-                        let default_glyph = Glyph::Single(ContentCell::default_space());
-                        self.screen
-                            .set_glyph(physical_x + 1, physical_y, default_glyph);
-                        // Line will be marked dirty anyway by the new char.
-                    }
-                }
-            }
-
-            // If it's a wide character, place a placeholder and set flags.
-            if char_width == 2 {
-                self.screen.set_glyph(
-                    physical_x,
-                    physical_y,
-                    Glyph::WidePrimary(ContentCell {
-                        c: ch_to_print,
-                        attr: glyph_attrs,
-                    }),
-                );
-
-                if physical_x + 1 < screen_ctx.width {
-                    self.screen.set_glyph(
-                        physical_x + 1,
-                        physical_y,
-                        Glyph::WideSpacer,
-                    );
-                    // Line is already marked dirty from the primary character.
-                } else {
-                    // This case implies a wide char was printed at the exact last column.
-                    // The WidePrimary is set, but no spacer is placed.
-                    // The cursor advancement logic below will handle cursor_wrap_next.
-                    trace!(
-                        "Wide char placeholder for '{}' at ({},{}) could not be placed as it's at the edge of screen (width {}). Only primary part written.",
-                        ch_to_print, physical_x, physical_y, screen_ctx.width
-                    );
-                }
-            } else {
-                // char_width == 1
-                self.screen.set_glyph(
-                    physical_x,
-                    physical_y,
-                    Glyph::Single(ContentCell {
-                        c: ch_to_print,
-                        attr: glyph_attrs,
-                    }),
-                );
-            }
-            self.screen.mark_line_dirty(physical_y); // Mark line dirty via screen method.
-        } else {
-            warn!(
-                "print_char: Attempted to print at physical_y {} out of bounds (height {})",
-                physical_y, self.screen.height
-            );
-        }
+        self.place_char_glyph(
+            physical_x,
+            physical_y,
+            ch_to_print,
+            char_width,
+            &screen_ctx,
+        );
 
         // Advance the logical cursor position by the character's width.
         // self.cursor_controller.move_right uses the current logical position and advances it.
@@ -189,5 +118,99 @@ impl TerminalEmulator {
             log::trace!("cursor_wrap_next set to true. final_logical_x: {}, screen_ctx.width: {}, autowrap: {}",
                       final_logical_x, screen_ctx.width, self.dec_modes.autowrap_mode);
         }
+    }
+
+    /// Places the character glyph on the screen, handling wide characters and dirty flagging.
+    ///
+    /// This method encapsulates the logic for ensuring valid bounds, clearing old wide-character spacers
+    /// if necessary, and setting the new glyph(s).
+    fn place_char_glyph(
+        &mut self,
+        physical_x: usize,
+        physical_y: usize,
+        ch_to_print: char,
+        char_width: usize,
+        screen_ctx: &crate::term::cursor::ScreenContext,
+    ) {
+        let glyph_attrs = self.cursor_controller.attributes();
+
+        if physical_y >= self.screen.height {
+            warn!(
+                "print_char: Attempted to print at physical_y {} out of bounds (height {})",
+                physical_y, self.screen.height
+            );
+            return;
+        }
+
+        // Ensure y is within bounds before writing (implicitly checked above but logic follows)
+
+        // Before setting the new glyph, check if the old glyph was a WIDE_CHAR_PRIMARY.
+        // If so, and the new char is not wide or is different, clear the old spacer.
+        if physical_y < screen_ctx.height && physical_x < screen_ctx.width {
+            // Bounds check for old_glyph_at_pos
+            let old_glyph_at_pos = self.screen.active_grid()[physical_y][physical_x];
+            if matches!(old_glyph_at_pos, Glyph::WidePrimary(_)) {
+                // If the new char isn't wide, or if it is but we're overwriting,
+                // we must clear the old spacer.
+                // We check old_glyph_at_pos.c by accessing the ContentCell inside WidePrimary variant if needed,
+                // but since we are changing to new Glyph enums, direct comparison of ch_to_print might be different.
+                // The condition `char_width != 2` should cover cases where new char is not wide.
+                // If new char is wide, `Glyph::WidePrimary(ContentCell { c: ch_to_print, .. })` will overwrite.
+                // So, we only need to clear the spacer if the old one was WidePrimary and new is not (or different, implicitly handled by overwrite).
+                let clear_spacer = match old_glyph_at_pos {
+                    Glyph::WidePrimary(cell) => char_width != 2 || cell.c != ch_to_print,
+                    _ => false, // Not a WidePrimary, so no spacer to clear based on this logic.
+                };
+
+                if clear_spacer && physical_x + 1 < screen_ctx.width {
+                    // Using default_space() for simplicity, assuming default attributes are desired.
+                    // If specific default_attrs are needed, they should be defined as per original code.
+                    let default_glyph = Glyph::Single(ContentCell::default_space());
+                    self.screen
+                        .set_glyph(physical_x + 1, physical_y, default_glyph);
+                    // Line will be marked dirty anyway by the new char.
+                }
+            }
+        }
+
+        // If it's a wide character, place a placeholder and set flags.
+        if char_width == 2 {
+            self.screen.set_glyph(
+                physical_x,
+                physical_y,
+                Glyph::WidePrimary(ContentCell {
+                    c: ch_to_print,
+                    attr: glyph_attrs,
+                }),
+            );
+
+            if physical_x + 1 < screen_ctx.width {
+                self.screen.set_glyph(
+                    physical_x + 1,
+                    physical_y,
+                    Glyph::WideSpacer,
+                );
+                // Line is already marked dirty from the primary character.
+            } else {
+                // This case implies a wide char was printed at the exact last column.
+                // The WidePrimary is set, but no spacer is placed.
+                // The cursor advancement logic below will handle cursor_wrap_next.
+                trace!(
+                    "Wide char placeholder for '{}' at ({},{}) could not be placed as it's at the edge of screen (width {}). Only primary part written.",
+                    ch_to_print, physical_x, physical_y, screen_ctx.width
+                );
+            }
+        } else {
+            // char_width == 1
+            self.screen.set_glyph(
+                physical_x,
+                physical_y,
+                Glyph::Single(ContentCell {
+                    c: ch_to_print,
+                    attr: glyph_attrs,
+                }),
+            );
+        }
+        self.screen.mark_line_dirty(physical_y); // Mark line dirty via screen method.
     }
 }
