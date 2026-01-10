@@ -6,13 +6,8 @@ use std::sync::Arc;
 use crate::api::public::CursorIcon;
 // use crate::input::MouseButton;
 
-/// Window ID wrapper
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct WindowId(pub u64);
-
-impl WindowId {
-    pub const PRIMARY: Self = Self(0);
-}
+// Re-export WindowId from public API for backward compatibility
+pub use crate::api::public::WindowId;
 
 use crate::display::messages::DisplayEvent;
 

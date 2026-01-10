@@ -1,9 +1,9 @@
 //! Engine Troupe - Render pipeline actor coordination using troupe! macro.
 
-use crate::api::private::{EngineControl, EngineData, WindowId};
+use crate::api::private::{EngineControl, EngineData};
 use crate::api::public::{
-    AppData, AppManagement, Application, EngineEvent, EngineEventControl, EngineEventManagement,
-    WindowDescriptor,
+    AppData, AppManagement, Application, EngineEvent, EngineEventControl, EngineEventData,
+    EngineEventManagement, WindowId,
 };
 use crate::config::EngineConfig;
 use crate::display::driver::DriverActor;
@@ -29,17 +29,7 @@ pub struct EngineHandler {
     /// Handle to the vsync actor (for feedback loop).
     vsync: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
     /// Handle to the application (for event forwarding).
-    app_handle: Option<Box<dyn Application>>,
-    /// Whether we've created a window yet.
-    window_created: bool,
-    /// Current window width in pixels.
-    width: u32,
-    /// Current window height in pixels.
-    height: u32,
-    /// Window title.
-    title: String,
-    /// Current manifold to render (if any).
-    current_manifold: Option<Arc<dyn Manifold<Output = Discrete> + Send + Sync>>,
+    app_handle: Option<Arc<dyn Application + Send + Sync>>,
     /// Frame counter for VSync feedback.
     frame_number: u64,
     /// Reusable frame buffer (returned by driver after presentation).
@@ -81,60 +71,46 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
 
     fn handle_control(&mut self, ctrl: EngineControl<PlatformPixel>) {
         match ctrl {
-            EngineControl::VSync { timestamp, target_timestamp, refresh_interval } => {
-                // VSync tick - render stored manifold if ready
-                // Note: App sends frames eagerly when PTY data arrives (out of band),
-                // so we just render whatever manifold we have stored
-                let can_render = self.window_created && self.frame_buffer.is_some();
-
-                if can_render {
-                    if let Some(ref manifold) = self.current_manifold {
-                        self.render_and_present(manifold.clone());
-                    } else {
-                        // No manifold to render - return token
-                        self.return_vsync_token();
-                    }
+            EngineControl::VSync {
+                timestamp,
+                target_timestamp,
+                refresh_interval,
+            } => {
+                // VSync tick - request frame from application
+                // App will respond with AppData::RenderSurface which triggers immediate render
+                if let Some(app) = &self.app_handle {
+                    app.send(EngineEvent::Data(EngineEventData::RequestFrame {
+                        timestamp,
+                        target_timestamp,
+                        refresh_interval,
+                    }))
+                    .expect("failed to send to app. it probably crashed");
                 } else {
-                    // Can't render (no window or frame buffer) - return token
-                    log::trace!(
-                        "VSync tick skipped (window={} frame={}), returning token",
-                        self.window_created,
-                        self.frame_buffer.is_some()
-                    );
                     self.return_vsync_token();
                 }
             }
             EngineControl::PresentComplete(frame) => {
-                // Driver returned the frame - check if size still matches
-                if frame.width == self.width as usize && frame.height == self.height as usize {
-                    self.frame_buffer = Some(frame);
-                } else {
-                    // Window was resized while frame was in-flight, reallocate
-                    log::debug!(
-                        "Frame size mismatch: {}x{} vs {}x{}, reallocating",
-                        frame.width,
-                        frame.height,
-                        self.width,
-                        self.height
-                    );
-                    self.frame_buffer = Some(Frame::new(self.width, self.height));
-                }
+                // Driver returned the frame - store it for next render
+                self.frame_buffer = Some(frame);
+
                 // Frame is now available - notify VSync that we can render again
-                // This is the proper place to add a token, not after render_and_present
-                self.vsync.send(Message::Data(RenderedResponse {
-                    frame_number: self.frame_number,
-                    rendered_at: Instant::now(),
-                })).expect("Failed to notify VSync of completed frame");
+                self.vsync
+                    .send(Message::Data(RenderedResponse {
+                        frame_number: self.frame_number,
+                        rendered_at: Instant::now(),
+                    }))
+                    .expect("Failed to notify VSync of completed frame");
             }
             EngineControl::Quit => {
-                self.driver.send(Message::Control(DisplayControl::Shutdown))
+                self.driver
+                    .send(Message::Control(DisplayControl::Shutdown))
                     .expect("Failed to send Shutdown to driver on Quit");
             }
-            EngineControl::UpdateRefreshRate(_) => {
-                unimplemented!("UpdateRefreshRate not yet implemented");
+            EngineControl::UpdateRefreshRate(rr) => {
+                self.vsync.send(VsyncCommand::UpdateRefreshRate(rr)).expect("failed to update refresh rate");
             }
-            EngineControl::VsyncActorReady(_) => {
-                unimplemented!("VsyncActorReady not yet implemented");
+            EngineControl::VsyncActorReady(handle) => {
+                self.vsync = handle;
             }
             EngineControl::DriverAck => {
                 unimplemented!("DriverAck not yet implemented");
@@ -145,31 +121,28 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
     fn handle_management(&mut self, mgmt: AppManagement) {
         match mgmt {
             AppManagement::Configure(config) => {
-                self.width = config.window.width;
-                self.height = config.window.height;
-                self.title = config.window.title.clone();
                 self.render_threads = config.performance.render_threads;
                 log::info!(
-                    "Engine configured: {}x{} \"{}\" ({} render threads)",
-                    self.width,
-                    self.height,
-                    self.title,
+                    "Engine configured: {} render threads",
                     self.render_threads
                 );
             }
             AppManagement::SetTitle(title) => {
-                self.title = title.clone();
-                self.driver.send(Message::Control(DisplayControl::SetTitle {
-                    id: WindowId::PRIMARY,
-                    title,
-                })).expect("Failed to send SetTitle to driver");
+                self.driver
+                    .send(Message::Control(DisplayControl::SetTitle {
+                        id: WindowId::PRIMARY,
+                        title,
+                    }))
+                    .expect("Failed to relay SetTitle to driver");
             }
             AppManagement::ResizeRequest(width, height) => {
-                self.driver.send(Message::Control(DisplayControl::SetSize {
-                    id: WindowId::PRIMARY,
-                    width,
-                    height,
-                })).expect("Failed to send SetSize to driver");
+                self.driver
+                    .send(Message::Control(DisplayControl::SetSize {
+                        id: WindowId::PRIMARY,
+                        width,
+                        height,
+                    }))
+                    .expect("Failed to send SetSize to driver");
             }
             AppManagement::CopyToClipboard(text) => {
                 self.driver
@@ -189,15 +162,36 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
                     }))
                     .expect("Failed to send SetCursor to driver");
             }
+            AppManagement::RegisterApp(app) => {
+                log::info!("Application handle registered");
+                self.app_handle = Some(app);
+            }
+            AppManagement::CreateWindow(descriptor) => {
+                // Engine assigns the window ID (for now, just use PRIMARY for single window)
+                let id = WindowId::PRIMARY;
+                log::info!(
+                    "Relaying CreateWindow request: assigning id={}, {}x{} \"{}\"",
+                    id.0,
+                    descriptor.width,
+                    descriptor.height,
+                    descriptor.title
+                );
+                self.driver.send(Message::Management(DisplayMgmt::Create {
+                    id,
+                    settings: descriptor,
+                })).expect("Failed to relay CreateWindow to driver");
+            }
             AppManagement::Quit => {
-                self.driver.send(Message::Control(DisplayControl::Shutdown))
+                self.driver
+                    .send(Message::Control(DisplayControl::Shutdown))
                     .expect("Failed to send Shutdown to driver on AppManagement::Quit");
             }
         }
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
-        hint
+    fn park(&mut self, _hint: ParkHint) -> ParkHint {
+        // engine has no external channels which might be busy
+        ParkHint::Wait
     }
 }
 
@@ -206,44 +200,18 @@ impl EngineHandler {
     fn handle_app_data(&mut self, app_data: AppData<PlatformPixel>) {
         match app_data {
             AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
-                // Store the manifold
-                self.current_manifold = Some(manifold.clone());
-
-                // Create window and start VSync if this is the first frame
-                if !self.window_created {
-                    log::info!(
-                        "Creating window: {}x{} \"{}\"",
-                        self.width,
-                        self.height,
-                        self.title
-                    );
-                    self.driver.send(Message::Management(DisplayMgmt::Create {
-                        id: WindowId::PRIMARY,
-                        settings: WindowDescriptor {
-                            width: self.width,
-                            height: self.height,
-                            title: self.title.clone(),
-                            resizable: true,
-                        },
-                    })).expect("Failed to send Create window to driver");
-                    self.window_created = true;
-
-                    // Allocate the initial frame buffer
-                    self.frame_buffer = Some(Frame::new(self.width, self.height));
-
-                    // Start VSync now that we have content to render
-                    self.vsync.send(Message::Control(VsyncCommand::Start))
-                        .expect("Failed to start VSync");
-                    log::info!("VSync started - first frame will render on next tick");
-                }
-
-                // Render immediately (this is in response to RequestFrame)
-                if self.window_created && self.frame_buffer.is_some() {
+                // Render if we have a frame buffer available
+                if self.frame_buffer.is_some() {
                     self.render_and_present(manifold);
+                } else {
+                    // No frame buffer available - either window not created yet or frame in-flight
+                    // Always return token to avoid leaks
+                    log::trace!("Frame buffer unavailable, returning token without rendering");
+                    self.return_vsync_token();
                 }
             }
             AppData::Skipped => {
-                // No rendering needed - but we still need to return the VSync token
+                // App says nothing to render - return token
                 self.return_vsync_token();
             }
             AppData::_Phantom(_) => {}
@@ -252,10 +220,12 @@ impl EngineHandler {
 
     /// Return a VSync token without rendering (for skipped frames)
     fn return_vsync_token(&mut self) {
-        self.vsync.send(Message::Data(RenderedResponse {
-            frame_number: self.frame_number,
-            rendered_at: Instant::now(),
-        })).expect("Failed to return VSync token");
+        self.vsync
+            .send(Message::Data(RenderedResponse {
+                frame_number: self.frame_number,
+                rendered_at: Instant::now(),
+            }))
+            .expect("Failed to return VSync token");
     }
 
     /// Rasterize manifold and present to driver, then notify VSync.
@@ -263,10 +233,6 @@ impl EngineHandler {
         // Take the frame buffer (driver will return it via PresentComplete)
         let Some(mut frame) = self.frame_buffer.take() else {
             // No frame available - skip this render (waiting for driver to return one)
-            // CRITICAL: Return token to prevent leak. Frame is still in-flight from
-            // a previous render, so when that PresentComplete arrives, it will return
-            // another token. This means we return TWO tokens (one here, one from the
-            // in-flight frame), which correctly accounts for both VSync ticks.
             log::trace!("Frame buffer unavailable, returning token without rendering");
             self.return_vsync_token();
             return;
@@ -274,7 +240,7 @@ impl EngineHandler {
 
         // Rasterize the manifold into the frame (work-stealing parallelism)
         let t0 = Instant::now();
-        let shape = TensorShape::new(self.width as usize, self.height as usize);
+        let shape = TensorShape::new(frame.width, frame.height);
         let options = RenderOptions {
             num_threads: self.render_threads,
         };
@@ -283,10 +249,12 @@ impl EngineHandler {
 
         // Send to driver for presentation (transfers ownership)
         let t1 = Instant::now();
-        self.driver.send(Message::Data(DisplayData::Present {
-            id: WindowId::PRIMARY,
-            frame,
-        })).expect("Failed to send frame to driver for presentation");
+        self.driver
+            .send(Message::Data(DisplayData::Present {
+                id: WindowId::PRIMARY,
+                frame,
+            }))
+            .expect("Failed to send frame to driver for presentation");
         let send_time = t1.elapsed();
 
         self.frame_number += 1;
@@ -306,31 +274,44 @@ impl EngineHandler {
     fn handle_driver_event(&mut self, event: DisplayEvent) {
         match event {
             DisplayEvent::WindowCreated {
+                id,
                 width_px,
                 height_px,
-                ..
+                scale,
             } => {
-                log::info!("Window created: {}x{}", width_px, height_px);
-                self.width = width_px;
-                self.height = height_px;
+                log::info!("Relaying WindowCreated: id={}, {}x{}, scale={}", id.0, width_px, height_px, scale);
+
+                // Allocate initial frame buffer for this window
+                self.frame_buffer = Some(Frame::new(width_px, height_px));
+
+                // Relay WindowCreated event to app
+                if let Some(app) = &self.app_handle {
+                    app.send(EngineEvent::Control(EngineEventControl::WindowCreated {
+                        id,
+                        width_px,
+                        height_px,
+                        scale,
+                    })).expect("Failed to relay WindowCreated event to app");
+                }
             }
             DisplayEvent::Resized {
+                id,
                 width_px,
                 height_px,
-                ..
             } => {
-                log::info!("Window resized: {}x{}", width_px, height_px);
-                self.width = width_px;
-                self.height = height_px;
+                log::info!("Relaying Resized: id={}, {}x{}", id.0, width_px, height_px);
+
                 // Reallocate frame buffer for new size
-                if self.frame_buffer.is_some() {
-                    self.frame_buffer = Some(Frame::new(width_px, height_px));
-                }
-                // Forward resize event to app
+                self.frame_buffer = Some(Frame::new(width_px, height_px));
+
+                // Relay resize event to app
                 if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Control(EngineEventControl::Resize(
-                        width_px, height_px,
-                    ))).expect("Failed to send Resize event to app");
+                    app.send(EngineEvent::Control(EngineEventControl::Resized {
+                        id,
+                        width_px,
+                        height_px,
+                    }))
+                    .expect("Failed to relay Resized event to app");
                 }
             }
             DisplayEvent::Key {
@@ -344,7 +325,8 @@ impl EngineHandler {
                         key: symbol,
                         mods: modifiers,
                         text,
-                    })).expect("Failed to send KeyDown event to app");
+                    }))
+                    .expect("Failed to send KeyDown event to app");
                 }
             }
             DisplayEvent::MouseButtonPress { button, x, y, .. } => {
@@ -354,7 +336,8 @@ impl EngineHandler {
                         x: x as u32,
                         y: y as u32,
                         button,
-                    })).expect("Failed to send MouseClick event to app");
+                    }))
+                    .expect("Failed to send MouseClick event to app");
                 }
             }
             DisplayEvent::MouseButtonRelease { button, x, y, .. } => {
@@ -366,7 +349,8 @@ impl EngineHandler {
                             y: y as u32,
                             button,
                         },
-                    )).expect("Failed to send MouseRelease event to app");
+                    ))
+                    .expect("Failed to send MouseRelease event to app");
                 }
             }
             DisplayEvent::MouseMove {
@@ -377,7 +361,8 @@ impl EngineHandler {
                         x: x as u32,
                         y: y as u32,
                         mods: modifiers,
-                    })).expect("Failed to send MouseMove event to app");
+                    }))
+                    .expect("Failed to send MouseMove event to app");
                 }
             }
             DisplayEvent::MouseScroll {
@@ -397,7 +382,8 @@ impl EngineHandler {
                             dy,
                             mods: modifiers,
                         },
-                    )).expect("Failed to send MouseScroll event to app");
+                    ))
+                    .expect("Failed to send MouseScroll event to app");
                 }
             }
             DisplayEvent::CloseRequested { .. } => {
@@ -406,7 +392,8 @@ impl EngineHandler {
                     app.send(EngineEvent::Control(EngineEventControl::CloseRequested))
                         .expect("Failed to send CloseRequested event to app");
                 }
-                self.driver.send(Message::Control(DisplayControl::Shutdown))
+                self.driver
+                    .send(Message::Control(DisplayControl::Shutdown))
                     .expect("Failed to send Shutdown to driver on CloseRequested");
             }
             DisplayEvent::FocusGained { .. } => {
@@ -427,11 +414,14 @@ impl EngineHandler {
                         .expect("Failed to send Paste event to app");
                 }
             }
-            DisplayEvent::ScaleChanged { scale, .. } => {
+            DisplayEvent::ScaleChanged { id, scale } => {
+                log::info!("Relaying ScaleChanged: id={}, scale={}", id.0, scale);
                 if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Control(EngineEventControl::ScaleChanged(
+                    app.send(EngineEvent::Control(EngineEventControl::ScaleChanged {
+                        id,
                         scale,
-                    ))).expect("Failed to send ScaleChanged event to app");
+                    }))
+                    .expect("Failed to relay ScaleChanged event to app");
                 }
             }
             DisplayEvent::ClipboardDataRequested => {
@@ -461,11 +451,6 @@ impl<'a> TroupeActor<'a, Directory> for EngineHandler {
             driver: dir.driver.clone(),
             vsync: dir.vsync.clone(),
             app_handle: None,
-            window_created: false,
-            width: 800, // Default, will be set by Configure message
-            height: 600,
-            title: "PixelFlow".to_string(),
-            current_manifold: None,
             frame_number: 0,
             frame_buffer: None,
             render_threads: 1, // Default, will be set by Configure message
