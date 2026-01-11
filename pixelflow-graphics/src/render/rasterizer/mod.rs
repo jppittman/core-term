@@ -188,9 +188,17 @@ use pixelflow_core::{
 
 pub mod parallel;
 pub(crate) mod pool;
+pub mod actor;
+pub mod messages;
 
 // Public API - simplified to single rasterize function
 pub use parallel::rasterize;
+
+// Actor-based API for asynchronous rendering
+pub use actor::RasterizerActor;
+pub use messages::{
+    RasterConfig, RasterControl, RasterManagement, RenderRequest, RenderResponse,
+};
 
 /// A wrapper that adapts a continuous manifold for rasterization.
 #[derive(Clone, Copy, Debug)]
