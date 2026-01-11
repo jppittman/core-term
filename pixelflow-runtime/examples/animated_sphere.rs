@@ -15,6 +15,7 @@ use pixelflow_graphics::scene3d::{
 };
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
+use pixelflow_runtime::platform::PlatformColorCube;
 use pixelflow_runtime::{EngineConfig, EngineTroupe, WindowConfig};
 use std::sync::Arc;
 use std::time::Instant;
@@ -141,8 +142,8 @@ fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
     // Background: floor with checkerboard
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -1.0 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<PlatformColorCube>::default(),
+        background: ColorSky::<PlatformColorCube>::default(),
     };
 
     // Animated sphere using the algebra: center.x = sin(w * freq) * amp

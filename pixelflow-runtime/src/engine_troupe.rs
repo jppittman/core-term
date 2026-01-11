@@ -13,7 +13,7 @@ use crate::error::RuntimeError;
 use crate::input::MouseButton;
 use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
-    RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
+    return_vsync_token, RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
 use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ActorStatus, TroupeActor};
 use pixelflow_core::{Discrete, Manifold};
@@ -36,6 +36,9 @@ pub struct EngineHandler {
     frame_buffer: Option<Frame<PlatformPixel>>,
     /// Number of render threads for work-stealing parallelism.
     render_threads: usize,
+    /// Latest manifold from app - always keep the most recent, drop old ones.
+    /// App sends manifolds fast (cheap algebra), engine rasterizes slow (expensive).
+    pending_manifold: Option<Arc<dyn Manifold<Output = Discrete> + Send + Sync>>,
 }
 
 // ActorTypes impls - required for troupe! macro
@@ -71,8 +74,8 @@ impl Actor<EngineData, EngineControl, AppManagement>
                 target_timestamp,
                 refresh_interval,
             } => {
-                // VSync tick - request frame from application
-                // App will respond with AppData::RenderSurface which triggers immediate render
+                // ALWAYS request frame from app (app builds compute graphs fast)
+                // Token bucket is now managed atomically by VSync
                 if let Some(app) = &self.app_handle {
                     app.send(EngineEvent::Data(EngineEventData::RequestFrame {
                         timestamp,
@@ -80,21 +83,27 @@ impl Actor<EngineData, EngineControl, AppManagement>
                         refresh_interval,
                     }))
                     .expect("failed to send to app. it probably crashed");
-                } else {
-                    self.return_vsync_token();
                 }
+                // If no app registered, VSync won't get token back and will self-throttle
             }
             EngineData::PresentComplete(frame) => {
                 // Driver returned the frame - store it for next render
                 self.frame_buffer = Some(frame);
 
-                // Frame is now available - notify VSync that we can render again
+                // Notify VSync for FPS tracking (actual rasterization completion)
                 self.vsync
                     .send(Message::Data(RenderedResponse {
                         frame_number: self.frame_number,
                         rendered_at: Instant::now(),
                     }))
                     .expect("Failed to notify VSync of completed frame");
+
+                // If we have a pending manifold, render it immediately (catch-up)
+                if self.pending_manifold.is_some() {
+                    let manifold = self.pending_manifold.take().unwrap();
+                    log::trace!("Engine: Catching up - rendering pending manifold");
+                    self.render_and_present(manifold);
+                }
             }
         }
     }
@@ -201,40 +210,38 @@ impl EngineHandler {
     fn handle_app_data(&mut self, app_data: AppData) {
         match app_data {
             AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
-                // Render if we have a frame buffer available
+                // Return token to VSync bucket - app has provided compute graph (fast)
+                // This allows VSync to keep requesting at 60Hz regardless of rasterization speed
+                return_vsync_token();
+
+                // Store the latest manifold (overwrites previous - always use most recent)
+                // App builds manifolds fast, engine rasterizes slow
+                self.pending_manifold = Some(manifold);
+
+                // Try to render if we have a frame buffer
                 if self.frame_buffer.is_some() {
+                    let manifold = self.pending_manifold.take().unwrap();
+                    log::trace!("Engine: Starting render");
                     self.render_and_present(manifold);
                 } else {
-                    // No frame buffer unavailable - either window not created yet or frame in-flight
-                    // Always return token to avoid leaks
-                    log::trace!("Frame buffer unavailable, returning token without rendering");
-                    self.return_vsync_token();
+                    // No frame buffer - manifold stays pending until PresentComplete
+                    log::trace!("Engine: Manifold pending, waiting for frame buffer");
                 }
             }
             AppData::Skipped => {
-                // App says nothing to render - return token
-                self.return_vsync_token();
+                // App says nothing to render - return token anyway
+                return_vsync_token();
             }
         }
     }
 
-    /// Return a VSync token without rendering (for skipped frames)
-    fn return_vsync_token(&mut self) {
-        self.vsync
-            .send(Message::Data(RenderedResponse {
-                frame_number: self.frame_number,
-                rendered_at: Instant::now(),
-            }))
-            .expect("Failed to return VSync token");
-    }
-
-    /// Rasterize manifold and present to driver, then notify VSync.
+    /// Rasterize manifold and present to driver, then notify VSync for FPS tracking.
     fn render_and_present(&mut self, manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>) {
         // Take the frame buffer (driver will return it via PresentComplete)
         let Some(mut frame) = self.frame_buffer.take() else {
-            // No frame available - skip this render (waiting for driver to return one)
-            log::trace!("Frame buffer unavailable, returning token without rendering");
-            self.return_vsync_token();
+            // No frame available - put manifold back in pending and skip render
+            self.pending_manifold = Some(manifold);
+            log::trace!("Frame buffer unavailable, manifold returned to pending");
             return;
         };
 
@@ -458,6 +465,7 @@ impl<'a> TroupeActor<'a, Directory> for EngineHandler {
             frame_number: 0,
             frame_buffer: None,
             render_threads: 1, // Default, will be set by Configure message
+            pending_manifold: None,
         }
     }
 }

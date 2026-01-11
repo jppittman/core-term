@@ -11,9 +11,55 @@
 
 use actor_scheduler::{Actor, ActorHandle};
 use log::info;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// Global VSync token bucket - controls frame request rate.
+/// VSync decrements before sending ticks, engine/app increments when manifold ready.
+/// This is separate from FPS measurement (which counts actual rasterization).
+static VSYNC_TOKEN_BUCKET: AtomicU32 = AtomicU32::new(MAX_TOKENS);
+
+/// Try to consume a VSync token. Returns true if token was available.
+#[inline]
+pub(crate) fn try_consume_vsync_token() -> bool {
+    VSYNC_TOKEN_BUCKET
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |tokens| {
+            if tokens > 0 {
+                Some(tokens - 1)
+            } else {
+                None
+            }
+        })
+        .is_ok()
+}
+
+/// Return a VSync token to the bucket (up to MAX_TOKENS).
+#[inline]
+pub(crate) fn return_vsync_token() {
+    let prev = VSYNC_TOKEN_BUCKET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |tokens| {
+        if tokens < MAX_TOKENS {
+            Some(tokens + 1)
+        } else {
+            None
+        }
+    });
+
+    // Rate-limit warning to 1% of calls to avoid log spam
+    if prev.is_err() {
+        static WARN_COUNTER: AtomicU32 = AtomicU32::new(0);
+        if WARN_COUNTER.fetch_add(1, Ordering::Relaxed) % 100 == 0 {
+            log::warn!("VSync token bucket already at max capacity");
+        }
+    }
+}
+
+/// Get current token count (for debugging).
+#[inline]
+pub(crate) fn vsync_token_count() -> u32 {
+    VSYNC_TOKEN_BUCKET.load(Ordering::Relaxed)
+}
 
 
 /// Configuration for VsyncActor
@@ -88,10 +134,7 @@ pub struct VsyncActor {
     running: bool,
     next_vsync: Instant,
 
-    // Token bucket for adaptive frame pacing
-    tokens: u32,
-
-    // FPS tracking
+    // FPS tracking (actual rasterization rate, not token rate)
     frame_count: u64,
     fps_start: Instant,
     last_fps: f64,
@@ -111,7 +154,6 @@ impl VsyncActor {
             interval: Duration::from_secs_f64(1.0 / 60.0),
             running: false,
             next_vsync: Instant::now(),
-            tokens: MAX_TOKENS,
             frame_count: 0,
             fps_start: Instant::now(),
             last_fps: 0.0,
@@ -165,7 +207,6 @@ impl VsyncActor {
             interval,
             running: false,
             next_vsync: Instant::now(),
-            tokens: MAX_TOKENS,
             frame_count: 0,
             fps_start: Instant::now(),
             last_fps: 0.0,
@@ -220,13 +261,6 @@ impl VsyncActor {
             }))
             .is_ok()
         {
-            // Consume token after successful send
-            self.tokens -= 1;
-            log::trace!(
-                "VsyncActor: VSync sent, token consumed, {} remaining",
-                self.tokens
-            );
-
             // Calculate next vsync (no cumulative drift)
             self.next_vsync = timestamp + self.interval;
         } else {
@@ -246,13 +280,23 @@ impl VsyncActor {
     }
 
     fn handle_tick(&mut self) {
-        if self.running && self.tokens > 0 {
-            let now = Instant::now();
+        if !self.running {
+            return;
+        }
 
-            // If it's time for next vsync (or close enough/past due), send it
-            // With clock thread, we are roughly at the right time.
-            if now >= self.next_vsync {
+        let now = Instant::now();
+
+        // If it's time for next vsync (or close enough/past due), check token bucket and send
+        if now >= self.next_vsync {
+            if try_consume_vsync_token() {
+                log::trace!(
+                    "VsyncActor: Token consumed, {} remaining",
+                    vsync_token_count()
+                );
                 self.send_vsync();
+            } else {
+                // No tokens available - backpressure engaged
+                log::trace!("VsyncActor: No tokens available, skipping vsync");
             }
         }
     }
@@ -260,17 +304,13 @@ impl VsyncActor {
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
     fn handle_data(&mut self, response: RenderedResponse) {
-        // Received frame rendered feedback - add token
-        if self.tokens < MAX_TOKENS {
-            self.tokens += 1;
-            log::trace!(
-                "VsyncActor: Token added (frame {}), now have {} tokens",
-                response.frame_number,
-                self.tokens
-            );
-        }
-        // Count actual rendered frames for accurate FPS
+        // Count actual rendered frames for accurate FPS measurement
+        // (Token management is now handled via atomic bucket)
         self.frame_count += 1;
+        log::trace!(
+            "VsyncActor: Frame {} rendered",
+            response.frame_number
+        );
         self.update_fps();
     }
 

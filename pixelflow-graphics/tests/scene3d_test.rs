@@ -8,7 +8,7 @@
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt};
-use pixelflow_graphics::render::color::Rgba8;
+use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 use pixelflow_graphics::scene3d::{
@@ -297,8 +297,8 @@ fn test_color_chrome_sphere() {
     // World = floor + sky (using Color* types that output Discrete)
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -1.0 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<RgbaColorCube>::default(),
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     // Scene = chrome sphere reflecting world
@@ -549,8 +549,8 @@ fn test_mullet_vs_3channel_comparison() {
 
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -1.0 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<RgbaColorCube>::default(),
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     let new_renderer = ColorScreenRemap {
@@ -643,8 +643,8 @@ fn test_work_stealing_benchmark() {
     // Build scene
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -1.0 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<RgbaColorCube>::default(),
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     let scene = ColorSurface {

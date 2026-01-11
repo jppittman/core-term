@@ -1027,11 +1027,28 @@ impl Manifold<Jet3> for Sky {
     }
 }
 
-/// Color Sky: Blue gradient, outputs packed RGBA.
+/// Color Sky: Blue gradient, generic over ColorCube for platform-specific byte order.
+///
+/// Generic over `C` to support different pixel formats (RGBA, BGRA).
+/// Use `ColorSky<RgbaColorCube>` for RGBA byte order (macOS, Web).
+/// Use `ColorSky<BgraColorCube>` for BGRA byte order (Linux X11).
 #[derive(Clone, Copy)]
-pub struct ColorSky;
+pub struct ColorSky<C> {
+    _cube: core::marker::PhantomData<C>,
+}
 
-impl Manifold<Jet3> for ColorSky {
+impl<C> Default for ColorSky<C> {
+    fn default() -> Self {
+        Self {
+            _cube: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<C> Manifold<Jet3> for ColorSky<C>
+where
+    C: Manifold<Field, Output = Discrete> + Default,
+{
     type Output = Discrete;
 
     #[inline]
@@ -1044,15 +1061,34 @@ impl Manifold<Jet3> for ColorSky {
         let b = (Field::from(1.0) - t * Field::from(0.2)).constant();
         let a = Field::from(1.0);
 
-        Discrete::pack(r, g, b, a)
+        // Use generic ColorCube instead of hardcoded pack()
+        // This respects platform-specific byte ordering
+        C::default().eval_raw(r, g, b, a)
     }
 }
 
-/// Color Checker: Warm/cool checker with AA, outputs packed RGBA.
+/// Color Checker: Warm/cool checker with AA, generic over ColorCube for platform-specific byte order.
+///
+/// Generic over `C` to support different pixel formats (RGBA, BGRA).
+/// Use `ColorChecker<RgbaColorCube>` for RGBA byte order (macOS, Web).
+/// Use `ColorChecker<BgraColorCube>` for BGRA byte order (Linux X11).
 #[derive(Clone, Copy)]
-pub struct ColorChecker;
+pub struct ColorChecker<C> {
+    _cube: core::marker::PhantomData<C>,
+}
 
-impl Manifold<Jet3> for ColorChecker {
+impl<C> Default for ColorChecker<C> {
+    fn default() -> Self {
+        Self {
+            _cube: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<C> Manifold<Jet3> for ColorChecker<C>
+where
+    C: Manifold<Field, Output = Discrete> + Default,
+{
     type Output = Discrete;
 
     #[inline]
@@ -1100,6 +1136,8 @@ impl Manifold<Jet3> for ColorChecker {
         let b = (b_base * coverage + b_neighbor * one_minus_cov).constant();
         let a = Field::from(1.0);
 
-        Discrete::pack(r, g, b, a)
+        // Use generic ColorCube instead of hardcoded pack()
+        // This respects platform-specific byte ordering
+        C::default().eval_raw(r, g, b, a)
     }
 }
