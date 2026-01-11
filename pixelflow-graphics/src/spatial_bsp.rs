@@ -736,6 +736,8 @@ mod tests {
 
     #[test]
     fn eval_respects_spatial_partitioning() {
+        use pixelflow_core::{materialize_discrete, PARALLELISM};
+
         // Create a simple 2-region split at x=50
         let items = vec![
             Positioned {
@@ -750,21 +752,16 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
 
-        // Sample left region - should not panic
-        let _left_result = bsp.eval_raw(
-            Field::from(25.0),
-            Field::from(50.0),
-            Field::from(0.0),
-            Field::from(0.0),
-        );
+        // Sample left and right regions - should produce different output
+        let mut left_pixels = [0u32; PARALLELISM];
+        let mut right_pixels = [0u32; PARALLELISM];
 
-        // Sample right region - should not panic
-        let _right_result = bsp.eval_raw(
-            Field::from(75.0),
-            Field::from(50.0),
-            Field::from(0.0),
-            Field::from(0.0),
-        );
+        materialize_discrete(&bsp, 25.0, 50.0, &mut left_pixels);
+        materialize_discrete(&bsp, 75.0, 50.0, &mut right_pixels);
+
+        // Regions must return different values (they have different colors)
+        assert_ne!(left_pixels[0], right_pixels[0],
+            "Left and right regions must evaluate to different colors");
     }
 
     #[test]
@@ -792,6 +789,8 @@ mod tests {
 
     #[test]
     fn quadtree_like_structure_four_quadrants() {
+        use pixelflow_core::{materialize_discrete, PARALLELISM};
+
         // Create 4 quadrants to test 2D partitioning
         let items = vec![
             Positioned {
@@ -814,7 +813,7 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
 
-        // Test center of each quadrant
+        // Test centers of each quadrant - each should produce a unique value
         let test_points = [
             (25.0, 25.0), // Q1
             (75.0, 25.0), // Q2
@@ -822,16 +821,20 @@ mod tests {
             (75.0, 75.0), // Q4
         ];
 
+        let mut results = Vec::new();
         for (x, y) in test_points {
-            let result = bsp.eval_raw(
-                Field::from(x),
-                Field::from(y),
-                Field::from(0.0),
-                Field::from(0.0),
-            );
+            let mut pixels = [0u32; PARALLELISM];
+            materialize_discrete(&bsp, x, y, &mut pixels);
+            results.push(pixels[0]);
+        }
 
-            // Just verify it doesn't panic and returns some value
-            let _ = result;
+        // Each quadrant must return a distinct value
+        for i in 0..results.len() {
+            for j in (i + 1)..results.len() {
+                assert_ne!(results[i], results[j],
+                    "Quadrant {} and {} must have different colors",
+                    i, j);
+            }
         }
     }
 
