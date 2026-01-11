@@ -6,7 +6,7 @@
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, X, Y};
 use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 use pixelflow_graphics::transform::{Scale, Translate};
 use std::fs::File;
 use std::io::Write;
@@ -63,7 +63,7 @@ fn e2e_render_gradient() {
     let mut frame = Frame::<Rgba8>::new(WIDTH, HEIGHT);
     let shape = TensorShape::new(WIDTH as usize, HEIGHT as usize);
 
-    execute(&scene, frame.as_slice_mut(), shape);
+    rasterize(&scene, frame.as_slice_mut(), shape);
 
     // Verify some pixels
     // Top-left should be dark (low R, low G, high B due to gradient formula)
@@ -140,7 +140,7 @@ fn e2e_render_radial_gradient() {
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
     let shape = TensorShape::new(SIZE as usize, SIZE as usize);
 
-    execute(&radial, frame.as_slice_mut(), shape);
+    rasterize(&radial, frame.as_slice_mut(), shape);
 
     // Center should be bright (close to white)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
@@ -207,7 +207,7 @@ fn e2e_render_circle() {
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
     let shape = TensorShape::new(SIZE as usize, SIZE as usize);
 
-    execute(&scene, frame.as_slice_mut(), shape);
+    rasterize(&scene, frame.as_slice_mut(), shape);
 
     // Center should be white (inside circle = 1.0)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
@@ -243,7 +243,7 @@ fn e2e_solid_color_renders_correctly() {
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
     let shape = TensorShape::new(SIZE as usize, SIZE as usize);
 
-    execute(&cyan, frame.as_slice_mut(), shape);
+    rasterize(&cyan, frame.as_slice_mut(), shape);
 
     // Every pixel should be bright cyan (0, 255, 255)
     for (i, pixel) in frame.data.iter().enumerate() {

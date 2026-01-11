@@ -1,5 +1,5 @@
-//! Parallel rasterization with thread spawning.
+//! Parallel rasterization with work-stealing.
 //!
 //! Re-exports parallel rendering from pixelflow-graphics.
 
-pub use pixelflow_graphics::render::rasterizer::{render_parallel, RenderOptions};
+pub use pixelflow_graphics::render::rasterizer::rasterize;
