@@ -8,3 +8,18 @@ bench = false
 
 [dependencies]
 actor-scheduler-macros = { path = "../actor-scheduler-macros" }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bench_latency"
+harness = false
+
+[[bench]]
+name = "bench_throughput"
+harness = false
+
+[[bench]]
+name = "bench_adversarial"
+harness = false

@@ -614,7 +614,7 @@ mod tests {
     use crate::term::{EmulatorInput, TerminalEmulator, UserInputAction};
     use actor_scheduler::{Actor, ParkHint};
     use pixelflow_runtime::input::{KeySymbol, Modifiers};
-    use pixelflow_runtime::{EngineEventControl, EngineEventManagement};
+    use pixelflow_runtime::{EngineEventControl, EngineEventManagement, WindowId};
     use std::sync::mpsc::{Receiver, SyncSender};
 
     // Define a DummyPixel struct for testing
@@ -671,7 +671,11 @@ mod tests {
         // Send resize event
         // Default config: cell width 10, height 16.
         // Resize to 1000x800 -> 100x50 cells.
-        let resize_event = EngineEventControl::Resize(1000, 800);
+        let resize_event = EngineEventControl::Resized {
+            id: WindowId(0),
+            width_px: 1000,
+            height_px: 800,
+        };
         app.handle_control(resize_event);
 
         // Verify resize via snapshot

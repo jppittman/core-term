@@ -286,8 +286,12 @@ fn cursor_icon_variants() {
 
 #[test]
 fn engine_event_control_resize() {
-    let event = EngineEvent::Control(EngineEventControl::Resize(1920, 1080));
-    if let EngineEvent::Control(EngineEventControl::Resize(w, h)) = event {
+    let event = EngineEvent::Control(EngineEventControl::Resized {
+        id: WindowId(0),
+        width_px: 1920,
+        height_px: 1080,
+    });
+    if let EngineEvent::Control(EngineEventControl::Resized { width_px: w, height_px: h, .. }) = event {
         assert_eq!(w, 1920);
         assert_eq!(h, 1080);
     } else {
@@ -297,8 +301,11 @@ fn engine_event_control_resize() {
 
 #[test]
 fn engine_event_control_scale_changed() {
-    let event = EngineEvent::Control(EngineEventControl::ScaleChanged(2.0));
-    if let EngineEvent::Control(EngineEventControl::ScaleChanged(scale)) = event {
+    let event = EngineEvent::Control(EngineEventControl::ScaleChanged {
+        id: WindowId(0),
+        scale: 2.0,
+    });
+    if let EngineEvent::Control(EngineEventControl::ScaleChanged { scale, .. }) = event {
         assert!((scale - 2.0).abs() < 0.001);
     } else {
         panic!("Wrong variant");
