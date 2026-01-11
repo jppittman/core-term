@@ -26,9 +26,9 @@
 //! ```
 
 use super::messages::{RasterConfig, RasterControl, RasterManagement, RenderRequest, RenderResponse};
-use super::{rasterize, TensorShape};
+use super::rasterize;
 use crate::render::Pixel;
-use actor_scheduler::{Actor, ActorStatus};
+use actor_scheduler::{Actor, ActorStatus, SystemStatus, ActorTypes};
 use std::time::Instant;
 
 /// Rasterizer actor for parallel frame rendering.
@@ -43,6 +43,12 @@ pub struct RasterizerActor<P: Pixel> {
     paused: bool,
     /// Phantom data to tie the pixel type.
     _phantom: std::marker::PhantomData<P>,
+}
+
+impl<P: Pixel + Send + 'static> ActorTypes for RasterizerActor<P> {
+    type Data = RenderRequest<P>;
+    type Control = RasterControl;
+    type Management = RasterManagement;
 }
 
 impl<P: Pixel> RasterizerActor<P> {
@@ -83,21 +89,18 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
         let RenderRequest {
             manifold,
             mut frame,
-            width,
-            height,
             response_tx,
         } = request;
 
         // Render the frame
         let start = Instant::now();
-        let shape = TensorShape::new(width, height);
-        rasterize(&manifold, frame.as_slice_mut(), shape, self.num_threads);
+        rasterize(&manifold, &mut frame, self.num_threads);
         let render_time = start.elapsed();
 
         log::trace!(
             "Rendered {}x{} frame in {:?} ({} threads)",
-            width,
-            height,
+            frame.width,
+            frame.height,
             render_time,
             self.num_threads
         );
@@ -109,10 +112,6 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
 
     fn handle_control(&mut self, ctrl: RasterControl) {
         match ctrl {
-            RasterControl::Shutdown => {
-                log::info!("Rasterizer actor shutting down");
-                // Shutdown is handled by the scheduler, nothing to do here
-            }
             RasterControl::Pause => {
                 log::info!("Rasterizer paused");
                 self.paused = true;
@@ -141,9 +140,9 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
         }
     }
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
         // No external work to do during park, just wait for messages
-        hint
+        ActorStatus::Idle
     }
 }
 
@@ -174,8 +173,6 @@ mod tests {
         let request = RenderRequest {
             manifold: Arc::new(red),
             frame,
-            width: 64,
-            height: 64,
             response_tx,
         };
 
@@ -196,7 +193,7 @@ mod tests {
 
         // Shutdown
         handle
-            .send(Message::Control(RasterControl::Shutdown))
+            .send(Message::Shutdown)
             .expect("Failed to send shutdown");
 
         actor_thread.join().expect("Actor thread panicked");
@@ -234,7 +231,7 @@ mod tests {
 
         // Shutdown
         handle
-            .send(Message::Control(RasterControl::Shutdown))
+            .send(Message::Shutdown)
             .expect("Failed to send shutdown");
 
         actor_thread.join().expect("Actor thread panicked");
@@ -263,8 +260,6 @@ mod tests {
         let request = RenderRequest {
             manifold: Arc::new(blue),
             frame,
-            width: 32,
-            height: 32,
             response_tx,
         };
 
@@ -284,7 +279,7 @@ mod tests {
 
         // Shutdown
         handle
-            .send(Message::Control(RasterControl::Shutdown))
+            .send(Message::Shutdown)
             .expect("Failed to send shutdown");
 
         actor_thread.join().expect("Actor thread panicked");

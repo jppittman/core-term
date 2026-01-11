@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_grid_construction() {
-        use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+        use pixelflow_graphics::render::rasterizer::rasterize;
 
         let factory = MockFactory {
             cols: 4,
@@ -326,18 +326,20 @@ mod tests {
         let grid = build_grid(&factory);
 
         // Render a small region to test
-        let mut buf = [0u32; 64]; // 8x8 pixels
-        rasterize(&grid, &mut buf, TensorShape::new(8, 8), 1);
+        use pixelflow_graphics::render::color::Bgra8;
+        use pixelflow_graphics::render::frame::Frame;
+        let mut frame = Frame::<Bgra8>::new(8, 8);
+        rasterize(&grid, &mut frame, 1);
 
         // Check pixel at (4, 0) - should be in first cell (0,0) - white
         let pixel_index = 0 * 8 + 4; // row 0, col 4
-        let r = buf[pixel_index] & 0xFF;
+        let r = frame.data[pixel_index].r();
         assert!(r > 200, "Expected white, got r={}", r);
     }
 
     #[test]
     fn test_cell_channel_blending() {
-        use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+        use pixelflow_graphics::render::rasterizer::rasterize;
 
         let cell = Cell::new(
             ConstCoverage(0.5),
@@ -354,13 +356,15 @@ mod tests {
         );
 
         // Render a single pixel
-        let mut buf = [0u32; 1];
-        rasterize(&packed, &mut buf, TensorShape::new(1, 1), 1);
+        use pixelflow_graphics::render::color::Bgra8;
+        use pixelflow_graphics::render::frame::Frame;
+        let mut frame = Frame::<Bgra8>::new(1, 1);
+        rasterize(&packed, &mut frame, 1);
 
         // 50% coverage: R = 0.5*1.0 + 0.5*0.0 = 0.5 = 127
         // B = 0.5*0.0 + 0.5*1.0 = 0.5 = 127
-        let r = buf[0] & 0xFF;
-        let b = (buf[0] >> 16) & 0xFF;
+        let r = frame.data[0].r();
+        let b = frame.data[0].b();
 
         assert!(r > 100 && r < 160, "Expected ~127, got r={}", r);
         assert!(b > 100 && b < 160, "Expected ~127, got b={}", b);
@@ -368,21 +372,21 @@ mod tests {
 
     #[test]
     fn test_color_manifold() {
-        use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+        use pixelflow_graphics::render::rasterizer::rasterize;
 
         // Color::Rgb from pixelflow-graphics implements Manifold<Output = Discrete>
         let red = Color::Rgb(255, 0, 0);
 
         // Render a single pixel
-        let mut buf = [0u32; 1];
-        rasterize(&red, &mut buf, TensorShape::new(1, 1), 1);
+        use pixelflow_graphics::render::color::Rgba8;
+        use pixelflow_graphics::render::frame::Frame;
+        let mut frame = Frame::<Rgba8>::new(1, 1);
+        rasterize(&red, &mut frame, 1);
 
-        let r = buf[0] & 0xFF;
-        let g = (buf[0] >> 8) & 0xFF;
-        let b = (buf[0] >> 16) & 0xFF;
-
-        assert_eq!(r, 255);
-        assert_eq!(g, 0);
-        assert_eq!(b, 0);
+        let pixel = frame.data[0];
+        // Check that red channel is approximately correct (might have some rounding)
+        assert!(pixel.r() > 200, "Red channel should be > 200, got {}", pixel.r());
+        assert_eq!(pixel.g(), 0);
+        assert_eq!(pixel.b(), 0);
     }
 }

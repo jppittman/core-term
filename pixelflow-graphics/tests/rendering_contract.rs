@@ -2,21 +2,22 @@
 //!
 //! TODO: These tests need updating for the new Color manifold system.
 
-use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::color::Rgba8;
+use pixelflow_graphics::render::frame::Frame;
+use pixelflow_graphics::render::rasterizer::rasterize;
 
 #[test]
 fn verify_color_manifold_renders() {
+    use pixelflow_graphics::render::{Color, NamedColor};
     // A solid red color manifold
     let red = Color::Named(NamedColor::Red);
 
-    let mut target = vec![Rgba8::default(); 4 * 4];
-    let shape = TensorShape::new(4, 4);
+    let mut frame = Frame::<Rgba8>::new(4, 4);
 
-    rasterize(&red, &mut target, shape, 1);
+    rasterize(&red, &mut frame, 1);
 
     // All pixels should be red
-    for pixel in &target {
+    for pixel in &frame.data {
         assert_eq!(pixel.r(), 205); // ANSI Red
         assert_eq!(pixel.g(), 0);
         assert_eq!(pixel.b(), 0);
@@ -26,14 +27,14 @@ fn verify_color_manifold_renders() {
 
 #[test]
 fn verify_named_color_manifold_renders() {
+    use pixelflow_graphics::render::NamedColor;
     let blue = NamedColor::Blue;
 
-    let mut target = vec![Rgba8::default(); 2 * 2];
-    let shape = TensorShape::new(2, 2);
+    let mut frame = Frame::<Rgba8>::new(2, 2);
 
-    rasterize(&blue, &mut target, shape, 1);
+    rasterize(&blue, &mut frame, 1);
 
-    for pixel in &target {
+    for pixel in &frame.data {
         assert_eq!(pixel.r(), 0);
         assert_eq!(pixel.g(), 0);
         assert_eq!(pixel.b(), 238); // ANSI Blue

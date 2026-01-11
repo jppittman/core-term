@@ -13,17 +13,9 @@
 //!      ↑
 //!  [Render] ← Proxy ← [Snapshot] ← Worker
 //! ```
-//!
-//! # Message Contract
-//!
-//! - **Proxy → Worker (AppEvent)**: Engine sends events (user input, resize, shutdown)
-//! - **Worker → Proxy (Snapshot)**: App sends rendered frame
-//! - **Proxy → Worker (RenderRequest)**: Engine asks for next frame
-//!
-//! The proxy acts as a bridge: it translates engine events into app events,
-//! collects snapshots from the app, and materializes them for display.
 
-use pixelflow_runtime::EngineEvent;
+use crate::ansi::commands::AnsiCommand;
+use pixelflow_runtime::{EngineEvent, EngineEventData};
 
 /// Messages sent from proxy (engine thread) to worker (app thread).
 ///
@@ -134,4 +126,13 @@ pub struct RenderRequest {
     pub width_px: u32,
     /// Height in logical pixels (before DPI scaling)
     pub height_px: u32,
+}
+
+/// Unified data message for TerminalApp (combines Engine and PTY streams).
+#[derive(Debug, Clone)]
+pub enum TerminalData {
+    /// Data event from the engine (frame request).
+    Engine(EngineEventData),
+    /// Data from the PTY (ANSI commands).
+    Pty(Vec<AnsiCommand>),
 }

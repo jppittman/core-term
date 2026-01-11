@@ -151,6 +151,7 @@ mod write_thread;
 
 use crate::ansi::AnsiCommand;
 use crate::io::pty::NixPty;
+use crate::io::traits::PtySender;
 use crate::io::PtyCommand;
 use anyhow::{Context, Result};
 use log::*;
@@ -187,7 +188,7 @@ impl EventMonitorActor {
     /// Returns `Self` (handle to all threads for cleanup)
     pub fn spawn(
         pty: NixPty,
-        cmd_tx: SyncSender<Vec<AnsiCommand>>,
+        cmd_tx: Box<dyn PtySender>,
         pty_cmd_rx: Receiver<PtyCommand>,
     ) -> Result<Self> {
         use actor_scheduler::ActorScheduler;

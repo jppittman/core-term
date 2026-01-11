@@ -25,7 +25,7 @@ impl Actor<i32, (), ()> for CountingActor {
         self.mgmt_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, hint: SystemStatus) -> ActorStatus {
         hint
     }
 }

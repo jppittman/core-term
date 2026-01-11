@@ -1,5 +1,5 @@
 // Test: troupe! macro should handle generic types
-use actor_scheduler::{Actor, ActorTypes, ActorStatus, TroupeActor};
+use actor_scheduler::{Actor, ActorScheduler, ActorTypes, TroupeActor, Message, ActorStatus, SystemStatus};
 
 struct Platform;
 struct DriverActor<P> {
@@ -10,8 +10,8 @@ impl<P> Actor<(), (), ()> for DriverActor<P> {
     fn handle_data(&mut self, _: ()) {}
     fn handle_control(&mut self, _: ()) {}
     fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-        hint
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 

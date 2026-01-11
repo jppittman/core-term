@@ -184,12 +184,11 @@
 //! This simplifies usage: you can always call the parallel version with dynamic thread count.
 
 use super::{execute, execute_stripe};
-use super::pool::ThreadPool;
-use super::{Stripe, TensorShape};
+use super::Stripe;
 use crate::render::color::Pixel;
+use crate::Frame;
 use pixelflow_core::{Discrete, Manifold};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 /// Configuration for parallel rendering.
 ///
@@ -201,7 +200,7 @@ use std::sync::Arc;
 ///
 /// ```ignore
 /// let options = RenderOptions { num_threads: 4 };
-/// render_parallel(&manifold, &mut buffer, shape, options);
+/// render_parallel(&manifold, &mut buffer, options);
 /// ```
 #[derive(Copy, Clone, Debug)]
 pub struct RenderOptions {
@@ -222,105 +221,37 @@ struct SendPtr<T>(*mut T);
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
 
-/// Render with parallel rasterization using a persistent thread pool.
-///
-/// Workers compete for rows from a shared atomic counter - same dynamic
-/// load balancing as render_work_stealing but using persistent threads.
-///
-/// # Safety
-/// This function uses `unsafe` to share stack buffers with worker threads.
-/// It uses atomic counting to ensure all rows complete before returning.
-pub fn render_parallel_pooled<P, M>(
-    pool: &ThreadPool,
-    manifold: &M,
-    buffer: &mut [P],
-    shape: TensorShape,
-) where
-    P: Pixel + Send,
-    M: Manifold<Output = Discrete> + Clone + Sync + 'static,
-{
-    let num_threads = pool.size();
-    if num_threads <= 1 {
-        execute(manifold, buffer, shape);
-        return;
-    }
-
-    let buffer_ptr = buffer.as_mut_ptr();
-    let next_row = Arc::new(AtomicUsize::new(0));
-    let rows_done = Arc::new(AtomicUsize::new(0));
-    let height = shape.height;
-    let width = shape.width;
-
-    // Dispatch N workers that COMPETE for rows
-    for _ in 0..num_threads {
-        let m_clone = manifold.clone();
-        let next = Arc::clone(&next_row);
-        let done = Arc::clone(&rows_done);
-        let send_ptr = SendPtr(buffer_ptr);
-
-        pool.submit(move || {
-            let ptr = send_ptr;
-            loop {
-                // Compete for next row
-                let row = next.fetch_add(1, Ordering::Relaxed);
-                if row >= height {
-                    break;
-                }
-
-                // Process this row
-                let offset = row * width;
-                let row_slice = unsafe { std::slice::from_raw_parts_mut(ptr.0.add(offset), width) };
-                execute_stripe(
-                    &m_clone,
-                    row_slice,
-                    Stripe {
-                        start_y: row,
-                        end_y: row + 1,
-                        width,
-                    },
-                );
-
-                // Mark done
-                done.fetch_add(1, Ordering::Release);
-            }
-        });
-    }
-
-    // Wait for all rows to complete
-    while rows_done.load(Ordering::Acquire) < height {
-        std::hint::spin_loop();
-    }
-}
-
 /// Render with parallel rasterization (spawns new threads).
 pub fn render_parallel<P, M>(
     manifold: &M,
-    buffer: &mut [P],
-    shape: TensorShape,
+    frame: &mut Frame<P>,
     options: RenderOptions,
 ) where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {
+    let width = frame.width;
+    let height = frame.height;
+
     if options.num_threads <= 1 {
-        execute(manifold, buffer, shape);
+        execute(manifold, frame);
         return;
     }
 
     // Partitioning
-    let rows_per_thread = shape.height / options.num_threads;
-    let remainder = shape.height % options.num_threads;
+    let rows_per_thread = height / options.num_threads;
+    let remainder = height % options.num_threads;
 
     // Split buffer into disjoint slices - Rust can verify safety!
     let mut buffer_chunks = Vec::with_capacity(options.num_threads);
-    let mut remaining = buffer;
+    let mut remaining = frame.as_slice_mut();
     let mut start_y = 0;
 
     for i in 0..options.num_threads {
         let extra = if i < remainder { 1 } else { 0 };
         let rows = rows_per_thread + extra;
         let end_y = start_y + rows;
-        let stripe_len = rows * shape.width;
+        let stripe_len = rows * width;
 
         let (chunk, rest) = remaining.split_at_mut(stripe_len);
         buffer_chunks.push((chunk, start_y, end_y));
@@ -343,7 +274,7 @@ pub fn render_parallel<P, M>(
                         Stripe {
                             start_y,
                             end_y,
-                            width: shape.width,
+                            width,
                         },
                     );
                 })
@@ -358,25 +289,25 @@ pub fn render_parallel<P, M>(
 /// no allocations. Just raw atomics and scoped threads.
 pub fn render_work_stealing<P, M>(
     manifold: &M,
-    buffer: &mut [P],
-    shape: TensorShape,
+    frame: &mut Frame<P>,
     options: RenderOptions,
 ) where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {
-    if options.num_threads <= 1 || shape.height <= 1 {
-        execute(manifold, buffer, shape);
+    let width = frame.width;
+    let height = frame.height;
+
+    if options.num_threads <= 1 || height <= 1 {
+        execute(manifold, frame);
         return;
     }
 
     // Atomic counter - threads race to grab rows
     let next_row = AtomicUsize::new(0);
-    let width = shape.width;
-    let height = shape.height;
 
     // Wrap raw pointer for Send
-    let buffer_ptr = SendPtr(buffer.as_mut_ptr());
+    let buffer_ptr = SendPtr(frame.data.as_mut_ptr());
 
     // 2MB stack per thread (needed for deep 3D scene recursion)
     const STACK_SIZE: usize = 2 * 1024 * 1024;
@@ -453,12 +384,11 @@ pub fn render_work_stealing<P, M>(
 /// - Values > core count cause contention with minimal benefit
 pub fn rasterize<P, M>(
     manifold: &M,
-    buffer: &mut [P],
-    shape: TensorShape,
+    frame: &mut Frame<P>,
     num_threads: usize,
 ) where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {
-    render_work_stealing(manifold, buffer, shape, RenderOptions { num_threads })
+    render_work_stealing(manifold, frame, RenderOptions { num_threads })
 }

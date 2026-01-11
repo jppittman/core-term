@@ -17,11 +17,11 @@ pub use messages::DisplayEvent;
 pub use platform::Platform;
 
 // Re-export the active display driver for convenience
-// #[cfg(use_cocoa_display)]
-// pub use drivers::MetalDisplayDriver;
+#[cfg(use_cocoa_display)]
+pub use drivers::MetalDisplayDriver;
 
-#[cfg(use_x11_display)]
-pub use drivers::X11DisplayDriver;
+// #[cfg(use_x11_display)]
+// pub use drivers::X11DisplayDriver;
 
 #[cfg(use_headless_display)]
 pub use drivers::HeadlessDisplayDriver;

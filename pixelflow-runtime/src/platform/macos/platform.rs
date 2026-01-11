@@ -7,7 +7,7 @@ use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
 use crate::platform::PlatformPixel;
-use actor_scheduler::{Message, ActorStatus};
+use actor_scheduler::{ActorStatus, Message, SystemStatus};
 
 use std::collections::HashMap;
 
@@ -180,17 +180,17 @@ impl PlatformOps for MetalOps {
         }
     }
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, status: SystemStatus) -> ActorStatus {
         // Logic for event loop interaction
         // The CocoaWaker posts an NSEvent when messages arrive, so distantFuture is safe.
         unsafe {
-            let until_date = match hint {
-                ActorStatus::Idle => {
+            let until_date = match status {
+                SystemStatus::Idle => {
                     // Block until an event arrives (waker will post NSEvent when messages come)
                     let cls = sys::class(b"NSDate\0");
                     sys::send(cls, sys::sel(b"distantFuture\0"))
                 }
-                ActorStatus::Busy => {
+                SystemStatus::Busy => {
                     // Immediate return
                     let cls = sys::class(b"NSDate\0");
                     sys::send(cls, sys::sel(b"distantPast\0"))
@@ -260,6 +260,7 @@ impl PlatformOps for MetalOps {
                 self.app.send_event(event);
             }
         }
-        hint
+        // Always return Idle since we block inside next_event when needed
+        ActorStatus::Idle
     }
 }

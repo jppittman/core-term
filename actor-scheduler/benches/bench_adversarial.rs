@@ -23,7 +23,7 @@ impl Actor<i32, (), ()> for CountingActor {
 
     fn handle_management(&mut self, _mgmt: ()) {}
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, hint: SystemStatus) -> ActorStatus {
         hint
     }
 }
@@ -228,7 +228,7 @@ fn bench_slow_receiver_backpressure(c: &mut Criterion) {
 
                 fn handle_management(&mut self, _mgmt: ()) {}
 
-                fn park(&mut self, hint: ActorStatus) -> ActorStatus {
+                fn park(&mut self, hint: SystemStatus) -> ActorStatus {
                     hint
                 }
             }

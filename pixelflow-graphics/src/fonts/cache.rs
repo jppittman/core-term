@@ -37,7 +37,7 @@
 
 use crate::render::color::Pixel;
 use crate::render::frame::Frame;
-use crate::render::rasterizer::{execute, TensorShape};
+use crate::render::rasterizer::execute;
 use crate::Rgba8;
 use pixelflow_core::{Field, Manifold, Texture};
 use std::collections::HashMap;
@@ -84,7 +84,7 @@ impl CachedGlyph {
         // Rasterize glyph to RGBA frame using Grayscale (coverage → grayscale)
         let lifted = Grayscale(glyph.clone());
         let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
-        execute(&lifted, frame.as_slice_mut(), TensorShape::new(size, size));
+        execute(&lifted, &mut frame);
 
         // Extract coverage from red channel (Lift produces uniform gray)
         let mut data = Vec::with_capacity(size * size);

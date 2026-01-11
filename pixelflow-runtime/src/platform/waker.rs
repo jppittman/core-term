@@ -67,6 +67,12 @@ mod x11_waker {
         }
     }
 
+    impl actor_scheduler::WakeHandler for X11Waker {
+        fn wake(&self) {
+            <Self as EventLoopWaker>::wake(self).expect("Failed to wake X11 event loop");
+        }
+    }
+
     impl X11Waker {
         /// Create a new uninitialized waker.
         ///
@@ -146,7 +152,7 @@ mod cocoa_waker {
 
     impl actor_scheduler::WakeHandler for CocoaWaker {
         fn wake(&self) {
-            let _ = <Self as EventLoopWaker>::wake(self);
+            <Self as EventLoopWaker>::wake(self).expect("Failed to wake Cocoa event loop");
         }
     }
 

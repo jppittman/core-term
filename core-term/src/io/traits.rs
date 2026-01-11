@@ -9,3 +9,10 @@ pub trait EventSource: std::io::Read + std::os::unix::io::AsRawFd + Send {}
 // Auto-implement for any type that satisfies the bounds
 #[cfg(unix)]
 impl<T> EventSource for T where T: std::io::Read + std::os::unix::io::AsRawFd + Send {}
+
+use crate::ansi::AnsiCommand;
+
+/// Trait for sending parsed ANSI commands to the application.
+pub trait PtySender: Send {
+    fn send(&self, cmds: Vec<AnsiCommand>) -> Result<(), anyhow::Error>;
+}

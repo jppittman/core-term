@@ -1,5 +1,5 @@
 // Test: troupe! macro with simple actor type
-use actor_scheduler::{Actor, ActorTypes, ActorStatus, TroupeActor};
+use actor_scheduler::{Actor, ActorScheduler, ActorTypes, TroupeActor, Message, ActorStatus, SystemStatus};
 
 struct SimpleActor;
 
@@ -7,8 +7,8 @@ impl Actor<(), (), ()> for SimpleActor {
     fn handle_data(&mut self, _: ()) {}
     fn handle_control(&mut self, _: ()) {}
     fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-        hint
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 

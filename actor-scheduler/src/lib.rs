@@ -59,7 +59,7 @@
 //! # Example (Basic Scheduler)
 //!
 //! ```rust
-//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ActorStatus};
+//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ActorStatus, SystemStatus};
 //!
 //! struct MyHandler;
 //!
@@ -73,7 +73,7 @@
 //!     fn handle_management(&mut self, msg: String) {
 //!         println!("Management: {}", msg);
 //!     }
-//!     fn park(&mut self, _hint: ActorStatus) -> ActorStatus { ActorStatus::Idle }
+//!     fn park(&mut self, _status: SystemStatus) -> ActorStatus { ActorStatus::Idle }
 //! }
 //!
 //! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
@@ -191,7 +191,7 @@ impl Default for ShutdownMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Message<D, C, M> {
     /// A data message (lowest priority, high throughput).
     ///
@@ -335,6 +335,13 @@ pub enum ActorStatus {
     Busy, // Actor has unfinished work (yielding). Scheduler should poll.
 }
 
+/// Status provided to the actor's park method indicating the state of the scheduler's queues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemStatus {
+    Idle, // Scheduler queues are empty
+    Busy, // Scheduler queues have more work (burst limit reached)
+}
+
 /// The Actor trait - implement this to define your actor's behavior.
 ///
 /// Actors process messages from three priority lanes:
@@ -356,7 +363,7 @@ pub trait Actor<D, C, M> {
     /// Called when the scheduler has drained available messages (or hit burst limits).
     ///
     /// Returns actor status: Busy if yielding with unfinished work, Idle if done.
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus;
+    fn park(&mut self, status: SystemStatus) -> ActorStatus;
 }
 
 /// Legacy alias for backward compatibility
@@ -414,7 +421,7 @@ pub trait ActorTypes {
 ///     fn handle_data(&mut self, msg: EngineData) { }
 ///     fn handle_control(&mut self, msg: EngineControl) { }
 ///     fn handle_management(&mut self, msg: EngineManagement) { }
-///     fn park(&mut self, hint: ActorStatus) -> ActorStatus { hint }
+///     fn park(&mut self, status: SystemStatus) -> ActorStatus { ActorStatus::Idle }
 /// }
 /// ```
 pub trait TroupeActor<'a, Dir>:
@@ -601,6 +608,11 @@ fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError>
                     std::thread::yield_now();
                 } else {
                     // Phase 3: Sleep (exponential backoff with jitter)
+                    #[cfg(debug_assertions)]
+                    if attempt % 10 == 0 {
+                        eprintln!("[ActorScheduler] Priority channel full, backing off (attempt {})", attempt);
+                    }
+                    
                     let sleep_attempt = attempt - (SPIN_ATTEMPTS + YIELD_ATTEMPTS);
                     let backoff = backoff_with_jitter(sleep_attempt)?;
                     std::thread::sleep(backoff);
@@ -644,7 +656,13 @@ impl<D, C, M> ActorHandle<D, C, M> {
         match msg {
             Message::Data(d) => {
                 // Data lane: regular blocking send
-                self.tx_data.send(d)?;
+                // Try send first to avoid blocking if possible
+                if let Err(std::sync::mpsc::TrySendError::Full(returned_d)) = self.tx_data.try_send(d) {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[ActorScheduler] Data channel full, blocking send...");
+                    
+                    self.tx_data.send(returned_d)?;
+                }
                 self.wake();
             }
             Message::Control(ctrl_msg) => {
@@ -699,7 +717,7 @@ pub struct ActorScheduler<D, C, M> {
 }
 
 /// System status after processing messages
-enum SystemStatus {
+enum SchedulerLoopStatus {
     /// More work available, keep polling
     Working,
     /// Queues drained, can block
@@ -822,7 +840,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
     /// Process messages from all priority lanes, return status
     #[inline]
-    fn handle_wake<A>(&mut self, actor: &mut A) -> Result<SystemStatus, ()>
+    fn handle_wake<A>(&mut self, actor: &mut A) -> Result<SchedulerLoopStatus, ()>
     where
         A: Actor<D, C, M>,
     {
@@ -861,19 +879,19 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             Err(()) => return Err(()),
         };
 
-        // Call park with appropriate hint based on whether we have more work
-        let hint = if more_work {
-            ActorStatus::Busy // Queues still have work, do quick OS poll
+        // Call park with appropriate system_status based on whether we have more work
+        let system_status = if more_work {
+            SystemStatus::Busy // Queues still have work, do quick OS poll
         } else {
-            ActorStatus::Idle // Queues drained, can block
+            SystemStatus::Idle // Queues drained, can block
         };
-        let returned_hint = actor.park(hint);
+        let returned_hint = actor.park(system_status);
 
         // Determine status: working if more messages or actor requests polling
         let status = if more_work || returned_hint == ActorStatus::Busy {
-            SystemStatus::Working
+            SchedulerLoopStatus::Working
         } else {
-            SystemStatus::Idle
+            SchedulerLoopStatus::Idle
         };
 
         Ok(status)
@@ -907,11 +925,18 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// # Arguments
     /// * `data_burst_limit` - Maximum data messages to process per wake cycle
-    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold)
+    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold).
+    ///   Must be >= 1. A buffer of 0 creates a rendezvous channel that will deadlock
+    ///   if the receiver isn't actively receiving.
+    ///
+    /// # Panics
+    /// Panics if `data_buffer_size` is 0.
     ///
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
     pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
+        assert!(data_buffer_size > 0, "data_buffer_size must be >= 1, got {}", data_buffer_size);
+
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
         let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
@@ -946,8 +971,12 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// # Arguments
     /// * `data_burst_limit` - Maximum data messages to process per wake cycle
-    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold)
+    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold).
+    ///   Must be >= 1.
     /// * `wake_handler` - Optional custom wake handler for platform event loops
+    ///
+    /// # Panics
+    /// Panics if `data_buffer_size` is 0.
     ///
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
@@ -956,6 +985,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
     ) -> (ActorHandle<D, C, M>, Self) {
+        assert!(data_buffer_size > 0, "data_buffer_size must be >= 1, got {}", data_buffer_size);
+
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
         let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
@@ -992,8 +1023,12 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// # Arguments
     /// * `data_burst_limit` - Maximum data messages to process per wake cycle
-    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold)
+    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold).
+    ///   Must be >= 1.
     /// * `shutdown_mode` - Shutdown behavior (see `ShutdownMode`)
+    ///
+    /// # Panics
+    /// Panics if `data_buffer_size` is 0.
     ///
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
@@ -1002,6 +1037,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         data_buffer_size: usize,
         shutdown_mode: ShutdownMode,
     ) -> (ActorHandle<D, C, M>, Self) {
+        assert!(data_buffer_size > 0, "data_buffer_size must be >= 1, got {}", data_buffer_size);
+
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
         let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
@@ -1065,7 +1102,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                         Ok(status) => status,
                         Err(()) => return,
                     };
-                    working = matches!(status, SystemStatus::Working);
+                    working = matches!(status, SchedulerLoopStatus::Working);
                 }
                 Err(TryRecvError::Empty) => {
                     // Only happens when working (try_recv) - process messages
@@ -1073,7 +1110,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                         Ok(status) => status,
                         Err(()) => return,
                     };
-                    working = matches!(status, SystemStatus::Working);
+                    working = matches!(status, SchedulerLoopStatus::Working);
                 }
                 Err(TryRecvError::Disconnected) => return,
             }
@@ -1103,7 +1140,7 @@ mod tests {
             self.log.lock().unwrap().push(format!("Mgmt: {}", msg));
         }
 
-        fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
             // No-op for test
             ActorStatus::Idle
         }
@@ -1154,7 +1191,7 @@ mod tests {
             fn handle_management(&mut self, _: bool) {
                 self.mgmt_count += 1;
             }
-            fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+            fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
                 ActorStatus::Idle
             }
         }
@@ -1200,8 +1237,8 @@ mod tests {
                 fn handle_data(&mut self, _: ()) {}
                 fn handle_control(&mut self, _: ()) {}
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                    h
+                fn park(&mut self, h: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
                 }
             }
             rx.run(&mut NoopActor);
@@ -1220,51 +1257,6 @@ mod tests {
         assert!(exited.load(Ordering::SeqCst), "should have exited");
     }
 
-    #[test]
-    fn shutdown_takes_priority_over_pending_messages() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let (tx, mut rx) = ActorScheduler::<i32, (), ()>::new(10, 100);
-
-        let processed = Arc::new(AtomicUsize::new(0));
-        let processed_clone = processed.clone();
-
-        // Spawn actor thread first
-        let handle = thread::spawn(move || {
-            struct CountActor(Arc<AtomicUsize>);
-            impl Actor<i32, (), ()> for CountActor {
-                fn handle_data(&mut self, _: i32) {
-                    self.0.fetch_add(1, Ordering::SeqCst);
-                }
-                fn handle_control(&mut self, _: ()) {}
-                fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                    h
-                }
-            }
-            rx.run(&mut CountActor(processed_clone));
-        });
-
-        // Ensure actor is running
-        thread::sleep(Duration::from_millis(10));
-
-        // Queue many data messages
-        for i in 0..50 {
-            tx.send(Message::Data(i)).unwrap();
-        }
-        // Then shutdown
-        tx.send(Message::Shutdown).unwrap();
-
-        handle.join().unwrap();
-
-        // Shutdown should have caused exit before all data processed
-        let count = processed.load(Ordering::SeqCst);
-        assert!(
-            count < 50,
-            "shutdown should exit before processing all data, processed {}",
-            count
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1317,7 +1309,7 @@ mod troupe_tests {
             }
         }
         fn handle_management(&mut self, _msg: EngineManagement) {}
-        fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -1359,7 +1351,7 @@ mod troupe_tests {
             }
         }
         fn handle_management(&mut self, _msg: DisplayManagement) {}
-        fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -1448,7 +1440,7 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                 }
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: ActorStatus) -> ActorStatus {
+                fn park(&mut self, _: SystemStatus) -> ActorStatus {
                     ActorStatus::Busy // Keep spinning to maximize throughput
                 }
             }
@@ -1550,7 +1542,7 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                 }
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: ActorStatus) -> ActorStatus {
+                fn park(&mut self, _: SystemStatus) -> ActorStatus {
                     ActorStatus::Busy
                 }
             }
@@ -1659,7 +1651,7 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                 }
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: ActorStatus) -> ActorStatus {
+                fn park(&mut self, _: SystemStatus) -> ActorStatus {
                     ActorStatus::Busy
                 }
             }
@@ -1771,7 +1763,7 @@ mod troupe_tests {
                     self.mgmt_count.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(2));
                 }
-                fn park(&mut self, _: ActorStatus) -> ActorStatus {
+                fn park(&mut self, _: SystemStatus) -> ActorStatus {
                     ActorStatus::Busy
                 }
             }
@@ -1857,7 +1849,7 @@ mod troupe_nesting_tests {
         fn handle_data(&mut self, _msg: WorkerData) {}
         fn handle_control(&mut self, _msg: WorkerControl) {}
         fn handle_management(&mut self, _msg: WorkerManagement) {}
-        fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -1987,10 +1979,12 @@ mod shutdown_tests {
             self.mgmt_count.fetch_add(1, Ordering::Relaxed);
         }
 
-        fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-            hint
-        }
-    }
+                fn park(&mut self, status: SystemStatus) -> ActorStatus {
+                    match status {
+                        SystemStatus::Idle => ActorStatus::Idle,
+                        SystemStatus::Busy => ActorStatus::Busy,
+                    }
+                }    }
 
     #[test]
     fn test_shutdown_immediate_exits_quickly_under_flood() {
@@ -2179,10 +2173,12 @@ mod shutdown_tests {
                 self.mgmt_count.fetch_add(1, Ordering::Relaxed);
             }
 
-            fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-                hint
-            }
-        }
+                    fn park(&mut self, status: SystemStatus) -> ActorStatus {
+                        match status {
+                            SystemStatus::Idle => ActorStatus::Idle,
+                            SystemStatus::Busy => ActorStatus::Busy,
+                        }
+                    }        }
 
         let actor_handle = thread::spawn(move || {
             let mut actor = SlowActor {

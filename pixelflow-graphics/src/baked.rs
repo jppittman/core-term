@@ -7,7 +7,7 @@
 
 use crate::render::color::Pixel;
 use crate::render::frame::Frame;
-use crate::render::rasterizer::{execute, TensorShape};
+use crate::render::rasterizer::execute;
 use pixelflow_core::{Discrete, Field, Manifold, Texture};
 
 /// A color manifold baked to a texture cache.
@@ -58,11 +58,7 @@ where
     pub fn new(source: M, width: usize, height: usize) -> Self {
         // First rasterize to a Frame
         let mut frame = Frame::<P>::new(width as u32, height as u32);
-        execute(
-            &source,
-            frame.as_slice_mut(),
-            TensorShape::new(width, height),
-        );
+        execute(&source, &mut frame);
 
         // Extract channels to separate f32 buffers
         let mut r_data = Vec::with_capacity(width * height);

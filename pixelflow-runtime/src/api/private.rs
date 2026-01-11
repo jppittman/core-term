@@ -1,9 +1,10 @@
 use actor_scheduler::{ActorHandle, ActorScheduler};
-use pixelflow_graphics::render::Frame;
-use pixelflow_graphics::Pixel;
+use pixelflow_graphics::render::frame::Frame;
+use pixelflow_graphics::render::rasterizer::RenderResponse;
 use std::sync::Arc;
 
 use crate::api::public::CursorIcon;
+use crate::pixel::PlatformPixel;
 // use crate::input::MouseButton;
 
 // Re-export WindowId from public API for backward compatibility
@@ -13,7 +14,7 @@ use crate::display::messages::DisplayEvent;
 
 /// Commands sent to the Display Driver.
 #[derive(Debug)]
-pub enum DriverCommand<P: Pixel> {
+pub enum DriverCommand {
     CreateWindow {
         id: WindowId,
         width: u32,
@@ -26,7 +27,7 @@ pub enum DriverCommand<P: Pixel> {
     Shutdown,
     Present {
         id: WindowId,
-        frame: Frame<P>,
+        frame: Frame<PlatformPixel>,
     },
     SetTitle {
         id: WindowId,
@@ -55,7 +56,8 @@ pub enum EngineData {
         target_timestamp: std::time::Instant,
         refresh_interval: std::time::Duration,
     },
-    PresentComplete(Frame<crate::platform::PlatformPixel>),
+    PresentComplete(Frame<PlatformPixel>),
+    RenderComplete(RenderResponse<PlatformPixel>),
 }
 
 impl From<crate::api::public::AppData> for EngineData {

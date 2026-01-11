@@ -1,15 +1,12 @@
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use crate::display::ops::PlatformOps;
-use actor_scheduler::{Actor, ActorStatus};
-use pixelflow_graphics::Pixel;
+use actor_scheduler::{Actor, ActorStatus, SystemStatus};
 
 /// The Platform Trait.
 /// Implementers must be an Actor that handles display messages.
 pub trait Platform:
-    Actor<DisplayData<Self::Pixel>, DisplayControl, DisplayMgmt> + Send + 'static
+    Actor<DisplayData, DisplayControl, DisplayMgmt> + Send + 'static
 {
-    /// The pixel format required by this platform.
-    type Pixel: Pixel;
 }
 
 /// A generic wrapper that turns any `PlatformOps` implementation into a `Platform` Actor.
@@ -23,10 +20,10 @@ impl<Ops: PlatformOps> PlatformActor<Ops> {
     }
 }
 
-impl<Ops: PlatformOps> Actor<DisplayData<Ops::Pixel>, DisplayControl, DisplayMgmt>
+impl<Ops: PlatformOps> Actor<DisplayData, DisplayControl, DisplayMgmt>
     for PlatformActor<Ops>
 {
-    fn handle_data(&mut self, msg: DisplayData<Ops::Pixel>) {
+    fn handle_data(&mut self, msg: DisplayData) {
         self.ops.handle_data(msg);
     }
 
@@ -38,11 +35,9 @@ impl<Ops: PlatformOps> Actor<DisplayData<Ops::Pixel>, DisplayControl, DisplayMgm
         self.ops.handle_management(msg);
     }
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-        self.ops.park(hint)
+    fn park(&mut self, status: SystemStatus) -> ActorStatus {
+        self.ops.park(status)
     }
 }
 
-impl<Ops: PlatformOps> Platform for PlatformActor<Ops> {
-    type Pixel = Ops::Pixel;
-}
+impl<Ops: PlatformOps> Platform for PlatformActor<Ops> {}

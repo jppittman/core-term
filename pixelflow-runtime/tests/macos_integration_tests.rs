@@ -36,8 +36,8 @@ mod tests {
 
         fn handle_control(&mut self, _msg: EngineControl<PlatformPixel>) {}
         fn handle_management(&mut self, _msg: AppManagement) {}
-        fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-            hint
+        fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
         }
     }
 
@@ -75,7 +75,7 @@ mod tests {
 
         // 5. Emulate run loop step (Platform)
         // This should trigger window creation and send event to Engine
-        ops.park(ActorStatus::Busy);
+        ops.park(SystemStatus::Busy);
 
         // Give some time for message passing
         thread::sleep(Duration::from_millis(100));

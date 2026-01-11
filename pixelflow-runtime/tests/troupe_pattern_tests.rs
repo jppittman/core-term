@@ -13,7 +13,7 @@
 //! generates code that's hard to test in isolation.
 
 use actor_scheduler::{
-    Actor, ActorHandle, ActorScheduler, ActorTypes, Message, ActorStatus, TroupeActor,
+    Actor, ActorHandle, ActorScheduler, ActorTypes, Message, ActorStatus, SystemStatus, TroupeActor,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -103,8 +103,8 @@ impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
 
     fn handle_management(&mut self, _: AlphaManagement) {}
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-        hint
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 
@@ -151,8 +151,8 @@ impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
 
     fn handle_management(&mut self, _: BetaManagement) {}
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-        hint
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 
@@ -345,8 +345,8 @@ fn all_actor_threads_exit_on_channel_close() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         alpha_s.run(&mut NoopActor);
@@ -359,8 +359,8 @@ fn all_actor_threads_exit_on_channel_close() {
             fn handle_data(&mut self, _: BetaData) {}
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         beta_s.run(&mut NoopActor);
@@ -403,8 +403,8 @@ fn actor_thread_panic_isolated() {
             }
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -421,8 +421,8 @@ fn actor_thread_panic_isolated() {
             }
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         beta_s.run(&mut CountActor(beta_count_clone));
@@ -495,8 +495,8 @@ fn circular_messaging_does_not_deadlock() {
                 }
             }
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         alpha_s.run(&mut PingActor {
@@ -525,8 +525,8 @@ fn circular_messaging_does_not_deadlock() {
                 }
             }
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         beta_s.run(&mut PongActor {
@@ -579,8 +579,8 @@ fn cloned_directory_handles_work_independently() {
             }
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         alpha_s.run(&mut CountActor(count_clone));
@@ -641,8 +641,8 @@ fn actors_can_coordinate_startup_with_barrier() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         alpha_s.run(&mut NoopActor);
@@ -659,8 +659,8 @@ fn actors_can_coordinate_startup_with_barrier() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         beta_s.run(&mut NoopActor);
@@ -704,8 +704,8 @@ fn shutdown_message_causes_actor_exit() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         alpha_s.run(&mut NoopActor);
@@ -743,8 +743,8 @@ fn shutdown_works_with_multiple_actors() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         alpha_s.run(&mut NoopActor);
@@ -757,8 +757,8 @@ fn shutdown_works_with_multiple_actors() {
             fn handle_data(&mut self, _: BetaData) {}
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
         beta_s.run(&mut NoopActor);

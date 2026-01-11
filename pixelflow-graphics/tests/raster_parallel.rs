@@ -1,7 +1,8 @@
 //! Tests for parallel rasterization.
 
 use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::frame::Frame;
+use pixelflow_graphics::render::rasterizer::rasterize;
 
 #[test]
 fn test_parallel_rasterization_matches_sequential() {
@@ -10,14 +11,13 @@ fn test_parallel_rasterization_matches_sequential() {
     let color = Color::Named(NamedColor::Green);
 
     // Sequential rendering
-    let mut seq_buffer = vec![Rgba8::default(); width * height];
-    let shape = TensorShape::new(width, height);
-    rasterize(&color, &mut seq_buffer, shape, 1);
+    let mut seq_frame = Frame::<Rgba8>::new(width as u32, height as u32);
+    rasterize(&color, &mut seq_frame, 1);
 
     // Parallel rendering with 4 threads
-    let mut par_buffer = vec![Rgba8::default(); width * height];
-    rasterize(&color, &mut par_buffer, shape, 4);
+    let mut par_frame = Frame::<Rgba8>::new(width as u32, height as u32);
+    rasterize(&color, &mut par_frame, 4);
 
     // Results should be identical
-    assert_eq!(seq_buffer, par_buffer);
+    assert_eq!(seq_frame.data, par_frame.data);
 }

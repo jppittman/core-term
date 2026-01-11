@@ -8,7 +8,7 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
@@ -116,10 +116,6 @@ fn main() {
     // Build the scene using mullet architecture (geometry once, colors as packed Discrete)
     let scene = build_scene();
 
-    let shape = TensorShape {
-        width: W,
-        height: H,
-    };
     let num_cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -130,14 +126,14 @@ fn main() {
     // Warm-up run
     {
         let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-        rasterize(&scene, frame.as_slice_mut(), shape, 1);
+        rasterize(&scene, &mut frame, 1);
     }
 
     // Single-threaded benchmark
     let single_time = {
         let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
         let start = Instant::now();
-        rasterize(&scene, frame.as_slice_mut(), shape, 1);
+        rasterize(&scene, &mut frame, 1);
         let elapsed = start.elapsed();
 
         let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
@@ -168,7 +164,7 @@ fn main() {
         let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
 
         let start = Instant::now();
-        rasterize(&scene, frame.as_slice_mut(), shape, *threads);
+        rasterize(&scene, &mut frame, *threads);
         let elapsed = start.elapsed();
 
         let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;

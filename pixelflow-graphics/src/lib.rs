@@ -190,7 +190,7 @@ pub use render::color::{
     PlatformColorCube, Rgba8, RgbaColorCube, WebPixel, X11Pixel,
 };
 pub use render::frame::Frame;
-pub use render::rasterizer::TensorShape;
+pub use render::rasterizer::rasterize;
 
 // Re-export core types for convenience
 // Field/Discrete are doc(hidden) - use manifolds instead of direct field manipulation

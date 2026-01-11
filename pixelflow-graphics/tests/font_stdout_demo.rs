@@ -4,7 +4,8 @@
 
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::frame::Frame;
+use pixelflow_graphics::render::rasterizer::rasterize;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
@@ -30,14 +31,15 @@ fn demo_single_glyph_rasterization() {
 
     let width = 40;
     let height = 45;
-    let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
+    let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
     rasterize(
         &color_manifold,
-        &mut pixels,
-        TensorShape::new(width, height),
+        &mut frame,
         1,
     );
+    
+    let pixels = frame.data;
 
     println!("ASCII render of 'A' ({}x{}):", width, height);
     println!();
@@ -73,15 +75,15 @@ fn demo_text_rasterization_with_frame() {
     // Create a framebuffer
     let width = 100;
     let height = 30;
-    let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
+    let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
     // Rasterize!
     rasterize(
         &color_manifold,
-        &mut pixels,
-        TensorShape::new(width, height),
+        &mut frame,
         1,
     );
+    let pixels = frame.data;
 
     // Print as ASCII art
     println!("Rasterized 'HELLO' ({}x{}):", width, height);
@@ -119,14 +121,14 @@ fn demo_alphabet_rasterization() {
 
     let width = 180;
     let height = 24;
-    let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
+    let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
     rasterize(
         &color_manifold,
-        &mut pixels,
-        TensorShape::new(width, height),
+        &mut frame,
         1,
     );
+    let pixels = frame.data;
 
     let chars = [' ', '.', ':', '+', '#', '@'];
 
@@ -147,13 +149,13 @@ fn demo_alphabet_rasterization() {
     let glyph2 = text(&font, "NOPQRSTUVWXYZ", 16.0);
     let color_manifold2 = Grayscale(glyph2);
 
-    let mut pixels2: Vec<Rgba8> = vec![Rgba8::default(); width * height];
+    let mut frame2 = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(
         &color_manifold2,
-        &mut pixels2,
-        TensorShape::new(width, height),
+        &mut frame2,
         1,
     );
+    let pixels2 = frame2.data;
 
     println!("NOPQRSTUVWXYZ:");
     for y in 0..height {
