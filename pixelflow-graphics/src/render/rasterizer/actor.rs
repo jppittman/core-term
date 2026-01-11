@@ -28,7 +28,7 @@
 use super::messages::{RasterConfig, RasterControl, RasterManagement, RenderRequest, RenderResponse};
 use super::{rasterize, TensorShape};
 use crate::render::Pixel;
-use actor_scheduler::{Actor, ParkHint};
+use actor_scheduler::{Actor, ActorStatus};
 use std::time::Instant;
 
 /// Rasterizer actor for parallel frame rendering.
@@ -141,7 +141,7 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
         }
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         // No external work to do during park, just wait for messages
         hint
     }

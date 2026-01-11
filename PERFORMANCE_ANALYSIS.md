@@ -545,39 +545,7 @@ Analysis identified **8 additional performance anti-patterns** beyond the color 
 
 ## Critical Issues
 
-### 1. N+1 CMAP Lookups in Text Rendering
-
-**Location:** `pixelflow-graphics/src/fonts/text.rs:30-35`
-**Severity:** HIGH
-**Impact:** 2x CMAP table traversals per text line
-
-```rust
-// CURRENT: Two CMAP lookups per character
-let stream = text.chars().map(|ch| {
-    (
-        font.glyph_scaled(ch, size).unwrap_or(Glyph::Empty),  // CMAP lookup #1
-        font.advance_scaled(ch, size).unwrap_or(0.0),         // CMAP lookup #2
-    )
-});
-```
-
-The `glyph_scaled()` and `advance_scaled()` methods each perform an independent CMAP lookup:
-- `glyph_scaled()` → `glyph()` → `cmap.lookup(ch as u32)` (ttf.rs:753)
-- `advance_scaled()` → `advance()` → `cmap.lookup(ch as u32)` (ttf.rs:774)
-
-**Optimized pattern exists:** `CachedText::new()` in `cache.rs:293-317` demonstrates the correct approach:
-```rust
-for ch in text.chars() {
-    let Some(id) = font.cmap_lookup(ch) else { continue; };  // Single lookup
-    // Reuse 'id' for kerning, advance, etc.
-}
-```
-
-**Recommendation:** Refactor `Text::new()` to use `cmap_lookup()` once per character, then call `glyph_by_id()` and `advance_by_id()` (both already exist in ttf.rs:758, 782).
-
----
-
-### 2. Linear Keybinding Search
+### 1. Linear Keybinding Search
 
 **Location:** `core-term/src/keys.rs:18-28`
 **Severity:** MEDIUM
@@ -600,84 +568,29 @@ pub fn map_key_event_to_action(...) -> Option<UserInputAction> {
 
 ---
 
-### 3. Range Allocations in UTF-8 Decoder
-
-**Location:** `core-term/src/ansi/lexer.rs:85-94`
-**Severity:** MEDIUM
-**Impact:** 6 range allocations per byte in hot ANSI parsing loop
-
-```rust
-fn decode_first_byte(&mut self, byte: u8) -> Utf8DecodeResult {
-    // These are created on EVERY byte:
-    let utf8_ascii_range: RangeInclusive<u8> = 0x00..=UTF8_ASCII_MAX;
-    let utf8_2_byte_start_range: RangeInclusive<u8> = UTF8_2_BYTE_MIN..=0xDF;
-    let utf8_3_byte_start_range: RangeInclusive<u8> = UTF8_3_BYTE_MIN..=0xEF;
-    // ... more ranges
-}
-```
-
-**Recommendation:** Define ranges as `const` at module level:
-```rust
-const UTF8_ASCII_RANGE: RangeInclusive<u8> = 0x00..=0x7F;
-const UTF8_2_BYTE_RANGE: RangeInclusive<u8> = 0xC2..=0xDF;
-// etc.
-```
-
----
-
 ## High Priority Issues
 
-### 4. 256-Color Palette Computed Per Conversion
+### 2. 256-Color Palette Computed Per Conversion
 
 **Location:** `pixelflow-graphics/src/render/color.rs:194-209`
 **Severity:** MEDIUM
 **Impact:** Arithmetic per color cell (4,800+ times per frame for colored text)
 
-```rust
-} else if idx < GRAYSCALE_OFFSET {
-    // 6x6x6 Color Cube - computed each time
-    let cube_idx = idx - COLOR_CUBE_OFFSET;
-    let r_comp = (cube_idx / (COLOR_CUBE_SIZE * COLOR_CUBE_SIZE)) % COLOR_CUBE_SIZE;
-    let g_comp = (cube_idx / COLOR_CUBE_SIZE) % COLOR_CUBE_SIZE;
-    let b_comp = cube_idx % COLOR_CUBE_SIZE;
-    // ... more arithmetic
-}
-```
-
 **Recommendation:** Create a static lookup table:
-```rust
-static PALETTE_256: [(u8, u8, u8); 256] = /* precomputed */;
-```
 
-This trades ~768 bytes of memory for eliminating division/modulo operations per pixel.
+Ensuring compliance with the style guide, no magic numbers maintain readability
 
----
-
-### 5. NamedColor Match in Manifold Evaluation
+### 3. NamedColor Match in Manifold Evaluation
 
 **Location:** `pixelflow-graphics/src/render/color.rs:105`
 **Severity:** MEDIUM
 **Impact:** 16-way match per named color cell during rendering
 
-```rust
-fn eval_raw(&self, ...) -> Discrete {
-    let (r, g, b) = self.to_rgb();  // 16-way match inside
-    // ...
-}
-```
-
-**Recommendation:** Cache RGB values in a static array indexed by enum discriminant:
-```rust
-static NAMED_RGB: [(u8, u8, u8); 16] = [
-    (0, 0, 0),       // Black
-    (205, 0, 0),     // Red
-    // ...
-];
-```
+Validate that llvm is not smart enough to turn this match into a LUT, and if it isn't figure out a way to make it obvious to llvm that this can be a jump table.
 
 ---
 
-### 6. Glyph Clone on Cache Hit
+### 4. Glyph Clone on Cache Hit
 
 **Location:** `pixelflow-graphics/src/fonts/cache.rs:192`
 **Severity:** LOW-MEDIUM
@@ -692,12 +605,11 @@ if let Some(cached) = self.entries.get(&key) {
 While Arc cloning is cheap, at 155 FPS with ~100 glyphs per frame, this is ~15,000 atomic increments/second.
 
 **Recommendation:** Consider returning `&CachedGlyph` with lifetime, or use `Rc` for single-threaded paths.
+// NB this is probably a non issue. Graph construction and rendering/rasterization are asynchronous. We could always return the baked glyph though if you want it.
 
 ---
 
-## Lower Priority Issues
-
-### 7. String Allocations in Key Translation
+### 5. String Allocations in Key Translation
 
 **Location:** `core-term/src/term/emulator/key_translator.rs:270-303`
 **Severity:** LOW
@@ -715,10 +627,9 @@ KeySymbol::Up => Some(Cow::Borrowed("\u{F700}")),
 
 ---
 
-### 8. ANSI Response String Allocation
+### 6. ANSI Response String Allocation
 
 **Location:** `core-term/src/term/emulator/ansi_handler.rs:253`
-**Severity:** LOW
 **Impact:** Minor allocation per device attribute query
 
 ```rust
@@ -739,8 +650,6 @@ let response = b"\x1b[?6c".to_vec();
 | 1 | N+1 CMAP lookups | fonts/text.rs:30-35 | HIGH | Low (refactor) |
 | 2 | Linear keybinding search | keys.rs:18-28 | MEDIUM | Low (HashMap) |
 | 3 | Range allocations in lexer | ansi/lexer.rs:85-94 | MEDIUM | Low (const) |
-| 4 | 256-color palette math | render/color.rs:194-209 | MEDIUM | Low (LUT) |
-| 5 | NamedColor match overhead | render/color.rs:105 | MEDIUM | Low (LUT) |
 | 6 | Glyph cache cloning | fonts/cache.rs:192 | LOW-MED | Medium |
 | 7 | Key translation strings | key_translator.rs:270+ | LOW | Low (Cow) |
 | 8 | ANSI response string | ansi_handler.rs:253 | LOW | Trivial |
@@ -751,7 +660,6 @@ let response = b"\x1b[?6c".to_vec();
 
 1. **Issue #1** (N+1 CMAP) - Highest ROI, affects every text render
 2. **Issue #3** (Range allocs) - Simple const refactor, high frequency path
-3. **Issues #4 + #5** (Color LUTs) - Combined fix, one static array each
 4. **Issue #2** (Keybinding HashMap) - O(1) vs O(n), affects responsiveness
 5. Remaining issues as time permits
 

@@ -3,7 +3,7 @@
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold};
-use pixelflow_graphics::render::color::Rgba8;
+use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 use pixelflow_graphics::scene3d::{
@@ -77,8 +77,8 @@ fn test_sphere_on_floor() {
     // Floor + sky as the world (background)
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -0.5 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<RgbaColorCube>::default(),
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     // Chrome sphere at (0.0, 0.5, 4.0) with radius 1.0, reflecting the world
@@ -152,7 +152,7 @@ fn test_sphere_on_matte_floor() {
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -0.5 },
         material: SolidGray,
-        background: ColorSky,
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     // Matte gray sphere at (0.0, 0.5, 4.0) with radius 1.0
@@ -210,8 +210,8 @@ fn test_chrome_sphere_on_checkerboard() {
     // Floor with checkerboard pattern + sky background
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -0.5 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<RgbaColorCube>::default(),
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     // Chrome sphere at (0.0, 0.5, 4.0) reflecting the checkerboard floor

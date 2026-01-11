@@ -23,7 +23,7 @@ pub type PlatformPixel = pixelflow_graphics::render::color::Bgra8;
 pub type PlatformPixel = pixelflow_graphics::render::color::Rgba8;
 
 // Platform-appropriate ColorCube (re-export from pixelflow-graphics)
-pub use pixelflow_graphics::PlatformColorCube;
+pub type ColorCube = pixelflow_graphics::PlatformColorCube;
 
 pub type PlatformDriver = crate::display::driver::DriverActor<ActivePlatform>;
 
