@@ -412,22 +412,32 @@ mod tests {
 
     #[test]
     fn test_cached_glyph_eval() {
+        use pixelflow_core::Field;
+
         let font = Font::parse(FONT_DATA).unwrap();
         let glyph = font.glyph_scaled('A', 32.0).unwrap();
         let cached = CachedGlyph::new(&glyph, 32);
 
-        // Should be able to evaluate without panicking
-        let x = Field::from(16.0);
-        let y = Field::from(16.0);
+        // Sample center and edge of glyph - should evaluate without panic
+        let x_center = Field::from(16.0);
+        let y_center = Field::from(16.0);
+        let x_edge = Field::from(2.0);
+        let y_edge = Field::from(2.0);
         let z = Field::from(0.0);
         let w = Field::from(0.0);
 
-        // Just verify it doesn't panic - the result is a valid Field
-        let _result = cached.eval_raw(x, y, z, w);
+        // Both should evaluate successfully
+        let _center_sdf = cached.eval_raw(x_center, y_center, z, w);
+        let _edge_sdf = cached.eval_raw(x_edge, y_edge, z, w);
+
+        // If we got here without panicking, evaluation is working
+        // (Can't directly inspect Field values per library design)
     }
 
     #[test]
     fn test_cached_text_creation() {
+        use pixelflow_core::Field;
+
         let font = Font::parse(FONT_DATA).unwrap();
         let mut cache = GlyphCache::new();
 
@@ -436,13 +446,17 @@ mod tests {
         // Should have cached glyphs for H, e, l, o (l appears twice)
         assert_eq!(cache.len(), 4);
 
-        // Should be evaluable without panicking
-        let x = Field::from(8.0);
+        // Sample rendered text at different positions - should evaluate without panic
+        let x_left = Field::from(8.0);
         let y = Field::from(8.0);
+        let x_right = Field::from(50.0);
         let z = Field::from(0.0);
         let w = Field::from(0.0);
 
-        let _result = text.eval_raw(x, y, z, w);
+        let _left_sdf = text.eval_raw(x_left, y, z, w);
+        let _right_sdf = text.eval_raw(x_right, y, z, w);
+
+        // If we got here without panicking, text evaluation works
     }
 
     #[test]
