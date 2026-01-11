@@ -412,31 +412,42 @@ mod tests {
 
     #[test]
     fn test_cached_glyph_eval() {
-        use pixelflow_core::Field;
+        use pixelflow_core::combinators::{At, Texture};
 
         let font = Font::parse(FONT_DATA).unwrap();
         let glyph = font.glyph_scaled('A', 32.0).unwrap();
         let cached = CachedGlyph::new(&glyph, 32);
 
-        // Sample center and edge of glyph - should evaluate without panic
-        let x_center = Field::from(16.0);
-        let y_center = Field::from(16.0);
-        let x_edge = Field::from(2.0);
-        let y_edge = Field::from(2.0);
-        let z = Field::from(0.0);
-        let w = Field::from(0.0);
+        // Use At to bind coordinates, Texture to extract SDF values
+        let center_bound = At {
+            inner: &cached,
+            x: 16.0,
+            y: 16.0,
+            z: 0.0,
+            w: 0.0,
+        };
+        let center_tex = Texture::from_manifold(&center_bound, 1, 1);
 
-        // Both should evaluate successfully
-        let _center_sdf = cached.eval_raw(x_center, y_center, z, w);
-        let _edge_sdf = cached.eval_raw(x_edge, y_edge, z, w);
+        let edge_bound = At {
+            inner: &cached,
+            x: 2.0,
+            y: 2.0,
+            z: 0.0,
+            w: 0.0,
+        };
+        let edge_tex = Texture::from_manifold(&edge_bound, 1, 1);
 
-        // If we got here without panicking, evaluation is working
-        // (Can't directly inspect Field values per library design)
+        // Extract SDF values - center should have non-zero SDF
+        let center_sdf = center_tex.data()[0];
+        let edge_sdf = edge_tex.data()[0];
+
+        // Glyph center should have some non-zero SDF value
+        assert!(center_sdf.is_finite(), "Glyph SDF must produce finite value at center");
     }
 
     #[test]
     fn test_cached_text_creation() {
-        use pixelflow_core::Field;
+        use pixelflow_core::combinators::{At, Texture};
 
         let font = Font::parse(FONT_DATA).unwrap();
         let mut cache = GlyphCache::new();
@@ -446,17 +457,32 @@ mod tests {
         // Should have cached glyphs for H, e, l, o (l appears twice)
         assert_eq!(cache.len(), 4);
 
-        // Sample rendered text at different positions - should evaluate without panic
-        let x_left = Field::from(8.0);
-        let y = Field::from(8.0);
-        let x_right = Field::from(50.0);
-        let z = Field::from(0.0);
-        let w = Field::from(0.0);
+        // Use At to bind coordinates, Texture to extract text SDF values
+        let left_bound = At {
+            inner: &text,
+            x: 8.0,
+            y: 8.0,
+            z: 0.0,
+            w: 0.0,
+        };
+        let left_tex = Texture::from_manifold(&left_bound, 1, 1);
 
-        let _left_sdf = text.eval_raw(x_left, y, z, w);
-        let _right_sdf = text.eval_raw(x_right, y, z, w);
+        let right_bound = At {
+            inner: &text,
+            x: 50.0,
+            y: 8.0,
+            z: 0.0,
+            w: 0.0,
+        };
+        let right_tex = Texture::from_manifold(&right_bound, 1, 1);
 
-        // If we got here without panicking, text evaluation works
+        // Extract SDF values at different positions
+        let left_sdf = left_tex.data()[0];
+        let right_sdf = right_tex.data()[0];
+
+        // Both must produce finite SDF values
+        assert!(left_sdf.is_finite(), "Text SDF must produce finite value on text");
+        assert!(right_sdf.is_finite(), "Text SDF must produce finite value at different position");
     }
 
     #[test]
