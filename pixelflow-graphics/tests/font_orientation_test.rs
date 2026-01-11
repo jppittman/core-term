@@ -5,7 +5,7 @@
 
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions, TensorShape};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
@@ -54,7 +54,7 @@ fn letter_a_apex_is_at_top() {
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
-        1,
+        RenderOptions::default(),
     );
 
     // Debug: print the rendered 'A'
@@ -146,7 +146,7 @@ fn letter_a_has_crossbar() {
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
-        1,
+        RenderOptions::default(),
     );
 
     let threshold = 32;
@@ -216,7 +216,7 @@ fn letter_v_point_is_at_bottom() {
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
-        1,
+        RenderOptions::default(),
     );
 
     // Find the vertical bounds (use threshold 32 for cleaner edges)

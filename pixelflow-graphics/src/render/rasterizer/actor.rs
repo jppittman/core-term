@@ -26,7 +26,7 @@
 //! ```
 
 use super::messages::{RasterConfig, RasterControl, RasterManagement, RenderRequest, RenderResponse};
-use super::{rasterize, TensorShape};
+use super::{rasterize, RenderOptions, TensorShape};
 use crate::render::Pixel;
 use actor_scheduler::{Actor, ActorStatus};
 use std::time::Instant;
@@ -91,7 +91,10 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
         // Render the frame
         let start = Instant::now();
         let shape = TensorShape::new(width, height);
-        rasterize(&manifold, frame.as_slice_mut(), shape, self.num_threads);
+        let options = RenderOptions {
+            num_threads: self.num_threads,
+        };
+        rasterize(&manifold, frame.as_slice_mut(), shape, options);
         let render_time = start.elapsed();
 
         log::trace!(

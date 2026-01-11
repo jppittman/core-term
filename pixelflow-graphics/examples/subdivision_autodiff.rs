@@ -7,7 +7,7 @@
 //! - No finite differences, no extra evaluations
 
 use pixelflow_graphics::mesh::{Point3, QuadMesh};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions, TensorShape};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
@@ -63,7 +63,7 @@ fn main() {
         &scene,
         frame.as_slice_mut(),
         TensorShape::new(width as usize, height as usize),
-        1,
+        RenderOptions::default(),
     );
 
     // Save to PPM (simple format, no dependencies)

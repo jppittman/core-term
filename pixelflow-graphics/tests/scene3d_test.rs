@@ -10,7 +10,7 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt};
 use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions, TensorShape};
 use pixelflow_graphics::scene3d::{
     Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
     Reflect, ScreenToDir, Sky, Surface,
@@ -136,7 +136,7 @@ fn test_chrome_unit_sphere() {
             width: W,
             height: H,
         },
-        1,
+        RenderOptions::default(),
     );
 
     // Save PPM
@@ -210,7 +210,7 @@ fn test_sky_only() {
             width: W,
             height: H,
         },
-        1,
+        RenderOptions::default(),
     );
 
     // Save
@@ -261,7 +261,7 @@ fn test_floor_only() {
             width: W,
             height: H,
         },
-        1,
+        RenderOptions::default(),
     );
 
     // Save
@@ -354,7 +354,7 @@ fn test_color_chrome_sphere() {
             width: W,
             height: H,
         },
-        1,
+        RenderOptions::default(),
     );
     let elapsed = start.elapsed();
     let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
@@ -515,7 +515,7 @@ fn test_mullet_vs_3channel_comparison() {
             width: W,
             height: H,
         },
-        1,
+        RenderOptions::default(),
     );
     let old_elapsed = old_start.elapsed();
 
@@ -577,7 +577,7 @@ fn test_mullet_vs_3channel_comparison() {
             width: W,
             height: H,
         },
-        1,
+        RenderOptions::default(),
     );
     let new_elapsed = new_start.elapsed();
 
@@ -694,13 +694,23 @@ fn test_work_stealing_benchmark() {
     // Single-threaded baseline
     let mut frame1 = Frame::<Rgba8>::new(W as u32, H as u32);
     let start1 = std::time::Instant::now();
-    rasterize(&renderable, frame1.as_slice_mut(), shape, 1);
+    rasterize(
+        &renderable,
+        frame1.as_slice_mut(),
+        shape,
+        RenderOptions::default(),
+    );
     let single = start1.elapsed();
 
     // Work-stealing with 12 threads
     let mut frame2 = Frame::<Rgba8>::new(W as u32, H as u32);
     let start2 = std::time::Instant::now();
-    rasterize(&renderable, frame2.as_slice_mut(), shape, 12);
+    rasterize(
+        &renderable,
+        frame2.as_slice_mut(),
+        shape,
+        RenderOptions { num_threads: 12 },
+    );
     let parallel = start2.elapsed();
 
     let speedup = single.as_secs_f64() / parallel.as_secs_f64();
