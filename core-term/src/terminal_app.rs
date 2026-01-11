@@ -9,7 +9,7 @@ use pixelflow_core::{
     Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
 };
 use pixelflow_graphics::fonts::loader::{LoadedFont, MmapSource};
-use pixelflow_runtime::platform::PlatformColorCube;
+use pixelflow_runtime::platform::ColorCube;
 use pixelflow_graphics::{CachedGlyph, GlyphCache, Positioned, SpatialBSP};
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
@@ -44,7 +44,7 @@ type TerminalCellLeaf = At<
     BlendedChannel,    // G
     BlendedChannel,    // B
     f32,               // A
-    PlatformColorCube, // M
+    ColorCube, // M
 >;
 
 /// Terminal application implementing Actor trait.
@@ -143,7 +143,7 @@ impl TerminalApp {
 
         // Pack into platform color cube
         let blended = At {
-            inner: PlatformColorCube::default(),
+            inner: ColorCube::default(),
             x: r,
             y: g,
             z: b,
@@ -159,7 +159,7 @@ impl TerminalApp {
 
         // Create a transparent black color (all zeros)
         let transparent = At {
-            inner: PlatformColorCube::default(),
+            inner: ColorCube::default(),
             x: 0.0,
             y: 0.0,
             z: 0.0,
@@ -213,7 +213,7 @@ impl TerminalApp {
                 let (r, g, b, a) = self.config.colors.background.to_f32_rgba();
                 return (
                     Arc::new(At {
-                        inner: PlatformColorCube::default(),
+                        inner: ColorCube::default(),
                         x: r,
                         y: g,
                         z: b,
@@ -311,7 +311,7 @@ impl TerminalApp {
             let (r, g, b, a) = default_bg.to_f32_rgba();
             return (
                 Arc::new(At {
-                    inner: PlatformColorCube::default(),
+                    inner: ColorCube::default(),
                     x: r,
                     y: g,
                     z: b,
@@ -334,7 +334,7 @@ impl TerminalApp {
         let default_bg = self.config.colors.background;
         let (r, g, b, a) = default_bg.to_f32_rgba();
         let background = At {
-            inner: PlatformColorCube::default(),
+            inner: ColorCube::default(),
             x: r,
             y: g,
             z: b,

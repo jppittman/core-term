@@ -19,6 +19,7 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
+use pixelflow_runtime::platform::ColorCube;
 
 /// Sphere at given center with radius (local to this example).
 #[derive(Clone, Copy)]
@@ -76,8 +77,8 @@ impl<M: Manifold<Output = Discrete>> Manifold for ScreenRemap<M> {
 fn build_scene() -> impl Manifold<Output = Discrete> + Send + Sync + Clone {
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -1.0 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<ColorCube>::default(),
+        background: ColorSky::<ColorCube>::default(),
     };
 
     let scene = ColorSurface {

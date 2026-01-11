@@ -5,6 +5,7 @@
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold};
+use pixelflow_graphics::render::color::RgbaColorCube;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
@@ -71,8 +72,8 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
 pub fn eval_one_pixel(x: Field, y: Field) -> Discrete {
     let world = ColorSurface {
         geometry: PlaneGeometry { height: -1.0 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<RgbaColorCube>::default(),
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     let scene = ColorSurface {

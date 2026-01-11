@@ -12,6 +12,7 @@ use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
 use pixelflow_graphics::subdivision::{SubdivisionGeometry, SubdivisionPatch};
+use pixelflow_graphics::render::color::RgbaColorCube;
 use pixelflow_graphics::{Frame, Rgba8};
 
 fn main() {
@@ -40,14 +41,14 @@ fn main() {
     // Build scene: subdivision surface with checker floor and sky
     let floor = ColorSurface {
         geometry: pixelflow_graphics::scene3d::PlaneGeometry { height: -2.0 },
-        material: ColorChecker,
-        background: ColorSky,
+        material: ColorChecker::<RgbaColorCube>::default(),
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     let surface = ColorSurface {
         geometry,
         material: ColorReflect { inner: floor },
-        background: ColorSky,
+        background: ColorSky::<RgbaColorCube>::default(),
     };
 
     let scene = ColorScreenToDir { inner: surface };
