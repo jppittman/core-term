@@ -3,7 +3,8 @@
 //! Driver struct is just cmd_tx - trivially Clone.
 //! run() reads Configure, creates X11 resources, runs event loop.
 
-use crate::channel::{DriverCommand, EngineCommand, EngineSender};
+use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData, EngineControl};
+use actor_scheduler::Message;
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::error::RuntimeError;
@@ -56,7 +57,7 @@ impl SelectionAtoms {
 // --- Run State (only original driver has this) ---
 struct RunState {
     cmd_rx: Receiver<DriverCommand<Bgra>>,
-    engine_tx: EngineSender<Bgra>,
+    engine_tx: EngineSender,
 }
 
 // --- Display Driver ---
@@ -84,7 +85,7 @@ impl Clone for X11DisplayDriver {
 impl DisplayDriver for X11DisplayDriver {
     type Pixel = Bgra;
 
-    fn new(engine_tx: EngineSender<Bgra>) -> Result<Self, RuntimeError> {
+    fn new(engine_tx: EngineSender) -> Result<Self, RuntimeError> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -129,7 +130,7 @@ impl DisplayDriver for X11DisplayDriver {
 
 fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Bgra>>,
-    engine_tx: &EngineSender<Bgra>,
+    engine_tx: &EngineSender,
     waker: &X11Waker,
 ) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
@@ -249,12 +250,12 @@ fn run_event_loop(
         );
 
         // Send WindowCreated event
-        let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+        let _ = engine_tx.send(Message::Data(EngineData::FromDriver(DisplayEvent::WindowCreated {
             id: window_id,
             width_px: width,
             height_px: height,
             scale: state.scale_factor,
-        }));
+        })));
 
         state.event_loop(cmd_rx, engine_tx)
         // X11State::drop() handles cleanup
@@ -324,7 +325,7 @@ impl X11State {
     fn event_loop(
         &mut self,
         cmd_rx: &Receiver<DriverCommand<Bgra>>,
-        engine_tx: &EngineSender<Bgra>,
+        engine_tx: &EngineSender,
     ) -> Result<(), RuntimeError> {
         loop {
             // 1. Process all pending commands first
@@ -347,7 +348,7 @@ impl X11State {
                         if let Err(e) = result {
                             error!("X11: Present failed: {:?}", e);
                         }
-                        let _ = engine_tx.send(EngineCommand::PresentComplete(returned_frame));
+                        let _ = engine_tx.send(Message::Control(EngineControl::PresentComplete(returned_frame)));
                     }
                     DriverCommand::SetTitle { title, .. } => {
                         self.handle_set_title(&title);
@@ -381,7 +382,7 @@ impl X11State {
                             info!("X11: CloseRequested, exiting event loop");
                             return Ok(());
                         }
-                        let _ = engine_tx.send(EngineCommand::DisplayEvent(display_event));
+                        let _ = engine_tx.send(Message::Data(EngineData::FromDriver(display_event)));
                     }
                 }
             }
@@ -396,7 +397,7 @@ impl X11State {
                         info!("X11: CloseRequested, exiting event loop");
                         return Ok(());
                     }
-                    let _ = engine_tx.send(EngineCommand::DisplayEvent(display_event));
+                    let _ = engine_tx.send(Message::Data(EngineData::FromDriver(display_event)));
                 }
             }
         }

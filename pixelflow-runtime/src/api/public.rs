@@ -285,7 +285,7 @@ pub enum EngineEventData {
 ///
 /// The pixel type `P` is kept for API compatibility but is unused in practice.
 /// All rendering is done via manifolds that produce `Discrete` (packed RGBA u32 pixels).
-pub enum AppData<P: pixelflow_graphics::Pixel> {
+pub enum AppData {
     /// Render a manifold (continuous surface) to the window.
     ///
     /// # Contract
@@ -387,17 +387,14 @@ pub enum AppData<P: pixelflow_graphics::Pixel> {
     /// previous frame is still correct.
     Skipped,
 
-    #[doc(hidden)]
-    _Phantom(std::marker::PhantomData<P>),
 }
 
-impl<P: pixelflow_graphics::Pixel> std::fmt::Debug for AppData<P> {
+impl std::fmt::Debug for AppData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RenderSurface(_) => f.debug_tuple("RenderSurface").finish(),
             Self::RenderSurfaceU32(_) => f.debug_tuple("RenderSurfaceU32").finish(),
             Self::Skipped => f.debug_tuple("Skipped").finish(),
-            Self::_Phantom(_) => f.debug_tuple("_Phantom").finish(),
         }
     }
 }
@@ -490,5 +487,111 @@ impl Default for WindowDescriptor {
             title: "PixelFlow".into(),
             resizable: true,
         }
+    }
+}
+
+/// Unregistered engine handle - can ONLY register an application.
+///
+/// This handle enforces correct initialization: you must call `register()`
+/// before you can send frames or management commands. This makes improper
+/// initialization inexpressible at the type level.
+pub struct UnregisteredEngineHandle {
+    inner: actor_scheduler::ActorHandle<
+        crate::api::private::EngineData,
+        crate::api::private::EngineControl,
+        AppManagement,
+    >,
+}
+
+impl UnregisteredEngineHandle {
+    /// Create from raw actor handle (internal use only)
+    pub(crate) fn new(
+        handle: actor_scheduler::ActorHandle<
+            crate::api::private::EngineData,
+            crate::api::private::EngineControl,
+            AppManagement,
+        >,
+    ) -> Self {
+        Self { inner: handle }
+    }
+
+    /// Register application and create window.
+    ///
+    /// This atomically sends both RegisterApp and CreateWindow messages,
+    /// ensuring the engine knows about your app before creating the window.
+    ///
+    /// Returns a full `EngineHandle` that can send frames and commands.
+    ///
+    /// The app will receive `WindowCreated` event via its control channel
+    /// when the window is ready.
+    pub fn register(
+        self,
+        app: std::sync::Arc<dyn Application + Send + Sync>,
+        window: WindowDescriptor,
+    ) -> Result<EngineHandle, crate::error::RuntimeError> {
+        use actor_scheduler::Message;
+
+        // Send RegisterApp first
+        self.inner
+            .send(Message::Management(AppManagement::RegisterApp(app)))
+            .map_err(|e| crate::error::RuntimeError::InitError(format!("Failed to register app: {}", e)))?;
+
+        // Then send CreateWindow
+        self.inner
+            .send(Message::Management(AppManagement::CreateWindow(window)))
+            .map_err(|e| crate::error::RuntimeError::InitError(format!("Failed to create window: {}", e)))?;
+
+        // Return full handle
+        Ok(EngineHandle { inner: self.inner })
+    }
+}
+
+/// Registered engine handle - full access to engine API.
+///
+/// This handle is returned by `UnregisteredEngineHandle::register()` and
+/// provides all engine functionality (sending frames, management commands).
+pub struct EngineHandle {
+    inner: actor_scheduler::ActorHandle<
+        crate::api::private::EngineData,
+        crate::api::private::EngineControl,
+        AppManagement,
+    >,
+}
+
+impl Clone for EngineHandle {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl EngineHandle {
+    /// Test-only constructor for creating EngineHandle directly.
+    ///
+    /// This bypasses the registration API for testing purposes only.
+    #[doc(hidden)]
+    pub fn new_for_test(
+        inner: actor_scheduler::ActorHandle<
+            crate::api::private::EngineData,
+            crate::api::private::EngineControl,
+            AppManagement,
+        >,
+    ) -> Self {
+        Self { inner }
+    }
+
+    /// Send a message to the engine (delegates to inner ActorHandle).
+    ///
+    /// This allows EngineHandle to be used anywhere ActorHandle is expected.
+    pub fn send(
+        &self,
+        msg: actor_scheduler::Message<
+            crate::api::private::EngineData,
+            crate::api::private::EngineControl,
+            AppManagement,
+        >,
+    ) -> Result<(), actor_scheduler::SendError> {
+        self.inner.send(msg)
     }
 }

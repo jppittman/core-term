@@ -184,7 +184,26 @@ fn main() -> anyhow::Result<()> {
     };
 
     let troupe = EngineTroupe::with_config(config)?;
-    let engine_handle = troupe.engine_handle();
+    let unregistered_handle = troupe.engine_handle();
+
+    // Create a dummy app that ignores events
+    struct DummyApp;
+    impl pixelflow_runtime::Application for DummyApp {
+        fn send(&self, _event: pixelflow_runtime::EngineEvent) -> Result<(), pixelflow_runtime::RuntimeError> {
+            Ok(())
+        }
+    }
+
+    // Register app and create window
+    use pixelflow_runtime::WindowDescriptor;
+    let window = WindowDescriptor {
+        width: WIDTH,
+        height: HEIGHT,
+        title: "Animated Sphere".into(),
+        resizable: false,
+    };
+    let engine_handle = unregistered_handle.register(Arc::new(DummyApp), window)?;
+
     let scene = build_scene();
     let start = Instant::now();
 

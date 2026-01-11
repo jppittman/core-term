@@ -40,8 +40,8 @@ pub struct EngineHandler {
 
 // ActorTypes impls - required for troupe! macro
 impl ActorTypes for EngineHandler {
-    type Data = EngineData<PlatformPixel>;
-    type Control = EngineControl<PlatformPixel>;
+    type Data = EngineData;
+    type Control = EngineControl;
     type Management = AppManagement;
 }
 
@@ -59,17 +59,17 @@ actor_scheduler::troupe! {
 }
 
 // Implement Actor for EngineHandler
-impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
+impl Actor<EngineData, EngineControl, AppManagement>
     for EngineHandler
 {
-    fn handle_data(&mut self, data: EngineData<PlatformPixel>) {
+    fn handle_data(&mut self, data: EngineData) {
         match data {
             EngineData::FromApp(app_data) => self.handle_app_data(app_data),
             EngineData::FromDriver(event) => self.handle_driver_event(event),
         }
     }
 
-    fn handle_control(&mut self, ctrl: EngineControl<PlatformPixel>) {
+    fn handle_control(&mut self, ctrl: EngineControl) {
         match ctrl {
             EngineControl::VSync {
                 timestamp,
@@ -198,14 +198,14 @@ impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagemen
 
 impl EngineHandler {
     /// Handle app data messages (render surfaces, etc.)
-    fn handle_app_data(&mut self, app_data: AppData<PlatformPixel>) {
+    fn handle_app_data(&mut self, app_data: AppData) {
         match app_data {
             AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
                 // Render if we have a frame buffer available
                 if self.frame_buffer.is_some() {
                     self.render_and_present(manifold);
                 } else {
-                    // No frame buffer available - either window not created yet or frame in-flight
+                    // No frame buffer unavailable - either window not created yet or frame in-flight
                     // Always return token to avoid leaks
                     log::trace!("Frame buffer unavailable, returning token without rendering");
                     self.return_vsync_token();
@@ -215,7 +215,6 @@ impl EngineHandler {
                 // App says nothing to render - return token
                 self.return_vsync_token();
             }
-            AppData::_Phantom(_) => {}
         }
     }
 
@@ -524,15 +523,12 @@ impl Troupe {
         Ok(troupe)
     }
 
-    /// Get a handle to the engine actor for external components to communicate with.
-    pub fn engine_handle(
-        &self,
-    ) -> actor_scheduler::ActorHandle<
-        EngineData<PlatformPixel>,
-        EngineControl<PlatformPixel>,
-        AppManagement,
-    > {
-        self.directory().engine.clone()
+    /// Get an unregistered engine handle.
+    ///
+    /// You must call `register()` on this handle before you can use the engine.
+    /// This ensures proper initialization (app registration + window creation).
+    pub fn engine_handle(&self) -> crate::api::public::UnregisteredEngineHandle {
+        crate::api::public::UnregisteredEngineHandle::new(self.directory().engine.clone())
     }
 }
 

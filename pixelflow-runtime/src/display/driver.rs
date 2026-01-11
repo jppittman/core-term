@@ -1,6 +1,6 @@
 use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use super::platform::Platform;
-use crate::channel::{DriverCommand, EngineSender};
+use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender};
 use crate::error::RuntimeError;
 use actor_scheduler::{Actor, ParkHint};
 use pixelflow_graphics::Pixel;
@@ -13,7 +13,7 @@ pub trait DisplayDriver: Clone + Send {
     type Pixel: Pixel;
 
     /// Create a new driver with the given engine sender.
-    fn new(engine_tx: EngineSender<Self::Pixel>) -> Result<Self, RuntimeError>;
+    fn new(engine_tx: EngineSender) -> Result<Self, RuntimeError>;
 
     /// Send a command to the driver.
     fn send(&self, cmd: DriverCommand<Self::Pixel>) -> Result<(), RuntimeError>;

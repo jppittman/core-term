@@ -3,7 +3,7 @@
 //! Bridge to X11DisplayDriver using the new PlatformOps trait.
 
 use crate::api::private::EngineActorHandle;
-use crate::channel::{DriverCommand, EngineSender};
+use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender};
 use crate::display::driver::DisplayDriver as OldDisplayDriver;
 use crate::display::drivers::X11DisplayDriver;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt, WindowId};
@@ -17,14 +17,14 @@ pub type LinuxPixel = Bgra8;
 
 /// Linux platform operations - bridges to X11DisplayDriver.
 pub struct LinuxOps {
-    engine_handle: EngineActorHandle<LinuxPixel>,
+    engine_handle: EngineActorHandle,
     driver: Option<X11DisplayDriver>,
-    engine_sender: Option<EngineSender<LinuxPixel>>,
+    engine_sender: Option<EngineSender>,
 }
 
 impl LinuxOps {
     /// Create new Linux platform ops.
-    pub fn new(engine_handle: EngineActorHandle<LinuxPixel>) -> Result<Self, RuntimeError> {
+    pub fn new(engine_handle: EngineActorHandle) -> Result<Self, RuntimeError> {
         Ok(Self {
             engine_handle,
             driver: None,

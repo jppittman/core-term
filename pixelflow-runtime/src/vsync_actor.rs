@@ -15,7 +15,6 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::platform::PlatformPixel;
 
 /// Configuration for VsyncActor
 #[derive(Debug, Clone)]
@@ -64,7 +63,7 @@ pub enum VsyncManagement {
     /// Configure the vsync actor (set refresh rate, engine handle, etc.)
     SetConfig {
         config: VsyncConfig,
-        engine_handle: crate::api::private::EngineActorHandle<crate::platform::PlatformPixel>,
+        engine_handle: crate::api::private::EngineActorHandle,
         self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
     },
 }
@@ -81,7 +80,7 @@ enum ClockCommand {
 
 /// VSync actor - generates periodic vsync timing signals.
 pub struct VsyncActor {
-    engine_handle: Option<crate::api::private::EngineActorHandle<PlatformPixel>>,
+    engine_handle: Option<crate::api::private::EngineActorHandle>,
 
     // VSync state
     refresh_rate: f64,
@@ -123,7 +122,7 @@ impl VsyncActor {
     /// Create a new VsyncActor. Takes the handle to itself (for the clock thread).
     pub fn new(
         refresh_rate: f64,
-        engine_handle: crate::api::private::EngineActorHandle<PlatformPixel>,
+        engine_handle: crate::api::private::EngineActorHandle,
         self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
     ) -> Self {
         let interval = Duration::from_secs_f64(1.0 / refresh_rate);
@@ -179,7 +178,7 @@ impl VsyncActor {
     /// Returns an ActorHandle that can be used to send commands and responses.
     pub fn spawn(
         refresh_rate: f64,
-        engine_handle: crate::api::private::EngineActorHandle<PlatformPixel>,
+        engine_handle: crate::api::private::EngineActorHandle,
     ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement> {
         let (handle, mut scheduler) =
             actor_scheduler::create_actor::<RenderedResponse, VsyncCommand, VsyncManagement>(
