@@ -103,8 +103,8 @@ impl pixelflow_core::Manifold for NamedColor {
         w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b) = self.to_rgb();
-        // Use ColorCube terminal object directly
-        ColorCube
+        // Use RGBA ColorCube terminal object directly
+        RgbaColorCube::default()
             .at(
                 Field::from(r as f32 / 255.0),
                 Field::from(g as f32 / 255.0),
@@ -169,7 +169,7 @@ impl pixelflow_core::Manifold for Color {
         w: pixelflow_core::Field,
     ) -> pixelflow_core::Discrete {
         let (r, g, b, a) = self.to_f32_rgba();
-        ColorCube
+        RgbaColorCube::default()
             .at(
                 Field::from(r),
                 Field::from(g),
@@ -398,29 +398,94 @@ pub type WebPixel = Rgba8;
 /// For any manifold M that produces a color, there exists a unique
 /// factorization M = At<ColorCube, r, g, b, a> where r,g,b,a are
 /// the channel expressions.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ColorCube;
+///
+/// # Generic Parameters
+///
+/// - `RedVar`: Coordinate variable for red channel (X for RGBA, Z for BGRA)
+/// - `GreenVar`: Coordinate variable for green channel (Y for both)
+/// - `BlueVar`: Coordinate variable for blue channel (Z for RGBA, X for BGRA)
+/// - `AlphaVar`: Coordinate variable for alpha channel (W for both)
+#[derive(Clone, Copy, Debug)]
+pub struct ColorCube<RedVar, GreenVar, BlueVar, AlphaVar> {
+    _phantom: core::marker::PhantomData<(RedVar, GreenVar, BlueVar, AlphaVar)>,
+}
 
-impl Manifold for ColorCube {
+impl<R, G, B, A> Default for ColorCube<R, G, B, A> {
+    fn default() -> Self {
+        Self {
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<R, G, B, A> Manifold for ColorCube<R, G, B, A>
+where
+    R: Manifold<Output = Field> + Default,
+    G: Manifold<Output = Field> + Default,
+    B: Manifold<Output = Field> + Default,
+    A: Manifold<Output = Field> + Default,
+{
     type Output = Discrete;
 
     #[inline(always)]
-    fn eval_raw(&self, r: Field, g: Field, b: Field, a: Field) -> Discrete {
+    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+        // Evaluate each channel variable to extract the appropriate coordinate
+        let r = R::default().eval_raw(x, y, z, w);
+        let g = G::default().eval_raw(x, y, z, w);
+        let b = B::default().eval_raw(x, y, z, w);
+        let a = A::default().eval_raw(x, y, z, w);
+
+        // pack() always produces RGBA byte order
+        // Channel swapping happens via the variable mapping above
         Discrete::pack(r, g, b, a)
     }
 }
 
-impl ColorCube {
+/// RGBA byte order color cube (macOS, most platforms).
+///
+/// Maps coordinates to channels: X→Red, Y→Green, Z→Blue, W→Alpha
+pub type RgbaColorCube = ColorCube<
+    pixelflow_core::variables::X,
+    pixelflow_core::variables::Y,
+    pixelflow_core::variables::Z,
+    pixelflow_core::variables::W,
+>;
+
+/// BGRA byte order color cube (Linux/X11).
+///
+/// Maps coordinates to channels: Z→Red, Y→Green, X→Blue, W→Alpha
+pub type BgraColorCube = ColorCube<
+    pixelflow_core::variables::Z,
+    pixelflow_core::variables::Y,
+    pixelflow_core::variables::X,
+    pixelflow_core::variables::W,
+>;
+
+/// Platform-appropriate ColorCube (handles byte order based on target OS).
+///
+/// - macOS: RGBA byte order
+/// - Linux: BGRA byte order (X11)
+/// - Other: RGBA byte order (default)
+#[cfg(target_os = "macos")]
+pub type PlatformColorCube = RgbaColorCube;
+
+#[cfg(target_os = "linux")]
+pub type PlatformColorCube = BgraColorCube;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub type PlatformColorCube = RgbaColorCube;
+
+impl<RedVar, GreenVar, BlueVar, AlphaVar> ColorCube<RedVar, GreenVar, BlueVar, AlphaVar> {
     /// Create a color manifold from channel manifolds.
     ///
     /// This is a convenience constructor for `At<ColorCube, ...>`.
     ///
     /// # Example
     /// ```ignore
-    /// use pixelflow_graphics::ColorCube;
+    /// use pixelflow_graphics::RgbaColorCube;
     /// use pixelflow_core::X;
     ///
-    /// let grad = ColorCube.at(X, 0.0, 0.0, 1.0);
+    /// let grad = RgbaColorCube::default().at(X, 0.0, 0.0, 1.0);
     /// ```
     #[inline(always)]
     pub fn at<R, G, B, A>(self, r: R, g: G, b: B, a: A) -> At<R, G, B, A, Self> {
@@ -438,16 +503,19 @@ impl ColorCube {
 ///
 /// Convenience for the common pattern:
 /// ```ignore
-/// At { inner: ColorCube, x: v, y: v, z: v, w: 1.0 }
+/// At { inner: RgbaColorCube, x: v, y: v, z: v, w: 1.0 }
 /// ```
-pub type Grayscale<M> = At<M, M, M, Field, ColorCube>;
+///
+/// Defaults to RGBA byte order. For platform-specific byte order, use the
+/// runtime's PlatformColorCube re-export.
+pub type Grayscale<M> = At<M, M, M, Field, RgbaColorCube>;
 
-/// Create a grayscale manifold.
+/// Create a grayscale manifold (RGBA byte order).
 #[allow(non_snake_case)]
 #[inline(always)]
 pub fn Grayscale<M: Manifold + Clone>(m: M) -> Grayscale<M> {
     At {
-        inner: ColorCube,
+        inner: RgbaColorCube::default(),
         x: m.clone(),
         y: m.clone(),
         z: m.clone(),
@@ -457,16 +525,19 @@ pub fn Grayscale<M: Manifold + Clone>(m: M) -> Grayscale<M> {
 
 /// Composes 4 Field manifolds into a single RGBA output.
 ///
-/// Type alias for `At<R, G, B, A, ColorCube>`.
-pub type ColorManifold<R, G, B, A> = At<R, G, B, A, ColorCube>;
+/// Type alias for `At<R, G, B, A, RgbaColorCube>`.
+///
+/// Defaults to RGBA byte order. For platform-specific byte order, use the
+/// runtime's PlatformColorCube re-export.
+pub type ColorManifold<R, G, B, A> = At<R, G, B, A, RgbaColorCube>;
 
-/// Create a new color manifold from four channel manifolds.
+/// Create a new color manifold from four channel manifolds (RGBA byte order).
 ///
 /// This replaces `color_manifold`.
 #[inline(always)]
 pub fn color_manifold<R, G, B, A>(r: R, g: G, b: B, a: A) -> ColorManifold<R, G, B, A> {
     At {
-        inner: ColorCube,
+        inner: RgbaColorCube::default(),
         x: r,
         y: g,
         z: b,

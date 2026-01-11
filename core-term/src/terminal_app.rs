@@ -9,7 +9,7 @@ use pixelflow_core::{
     Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
 };
 use pixelflow_graphics::fonts::loader::{LoadedFont, MmapSource};
-use pixelflow_graphics::ColorCube as PlatformColorCube;
+use pixelflow_runtime::platform::PlatformColorCube;
 use pixelflow_graphics::{CachedGlyph, GlyphCache, Positioned, SpatialBSP};
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;

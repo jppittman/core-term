@@ -22,6 +22,9 @@ pub type PlatformPixel = pixelflow_graphics::render::color::Bgra8;
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub type PlatformPixel = pixelflow_graphics::render::color::Rgba8;
 
+// Platform-appropriate ColorCube (re-export from pixelflow-graphics)
+pub use pixelflow_graphics::PlatformColorCube;
+
 pub type PlatformDriver = crate::display::driver::DriverActor<ActivePlatform>;
 
 // Re-export platform-specific types
