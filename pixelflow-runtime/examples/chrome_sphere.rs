@@ -8,9 +8,7 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::{
-    execute, render_parallel, RenderOptions, TensorShape,
-};
+use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
@@ -131,14 +129,14 @@ fn main() {
     // Warm-up run
     {
         let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-        execute(&scene, frame.as_slice_mut(), shape);
+        rasterize(&scene, frame.as_slice_mut(), shape, 1);
     }
 
     // Single-threaded benchmark
     let single_time = {
         let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
         let start = Instant::now();
-        execute(&scene, frame.as_slice_mut(), shape);
+        rasterize(&scene, frame.as_slice_mut(), shape, 1);
         let elapsed = start.elapsed();
 
         let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
@@ -167,12 +165,9 @@ fn main() {
     // Parallel benchmarks with different thread counts
     for threads in [2, 4, 8, num_cpus].iter().filter(|&&t| t <= num_cpus) {
         let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-        let options = RenderOptions {
-            num_threads: *threads,
-        };
 
         let start = Instant::now();
-        render_parallel(&scene, frame.as_slice_mut(), shape, options);
+        rasterize(&scene, frame.as_slice_mut(), shape, *threads);
         let elapsed = start.elapsed();
 
         let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;

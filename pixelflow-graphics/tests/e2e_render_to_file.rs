@@ -63,7 +63,7 @@ fn e2e_render_gradient() {
     let mut frame = Frame::<Rgba8>::new(WIDTH, HEIGHT);
     let shape = TensorShape::new(WIDTH as usize, HEIGHT as usize);
 
-    rasterize(&scene, frame.as_slice_mut(), shape);
+    rasterize(&scene, frame.as_slice_mut(), shape, 1);
 
     // Verify some pixels
     // Top-left should be dark (low R, low G, high B due to gradient formula)
@@ -140,7 +140,7 @@ fn e2e_render_radial_gradient() {
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
     let shape = TensorShape::new(SIZE as usize, SIZE as usize);
 
-    rasterize(&radial, frame.as_slice_mut(), shape);
+    rasterize(&radial, frame.as_slice_mut(), shape, 1);
 
     // Center should be bright (close to white)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
@@ -207,7 +207,7 @@ fn e2e_render_circle() {
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
     let shape = TensorShape::new(SIZE as usize, SIZE as usize);
 
-    rasterize(&scene, frame.as_slice_mut(), shape);
+    rasterize(&scene, frame.as_slice_mut(), shape, 1);
 
     // Center should be white (inside circle = 1.0)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
@@ -243,7 +243,7 @@ fn e2e_solid_color_renders_correctly() {
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
     let shape = TensorShape::new(SIZE as usize, SIZE as usize);
 
-    rasterize(&cyan, frame.as_slice_mut(), shape);
+    rasterize(&cyan, frame.as_slice_mut(), shape, 1);
 
     // Every pixel should be bright cyan (0, 255, 255)
     for (i, pixel) in frame.data.iter().enumerate() {
@@ -309,10 +309,11 @@ fn e2e_frame_operations() {
     }
 
     // Render something
-    execute(
+    rasterize(
         &NamedColor::Red,
         frame.as_slice_mut(),
         TensorShape::new(SIZE as usize, SIZE as usize),
+        1,
     );
 
     // Now all should be red

@@ -99,13 +99,14 @@ fn test_sphere_on_floor() {
     };
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    execute(
+    rasterize(
         &renderable,
         frame.as_slice_mut(),
         TensorShape {
             width: W,
             height: H,
         },
+        1,
     );
 
     // Save PPM
@@ -171,13 +172,14 @@ fn test_sphere_on_matte_floor() {
     };
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    execute(
+    rasterize(
         &renderable,
         frame.as_slice_mut(),
         TensorShape {
             width: W,
             height: H,
         },
+        1,
     );
 
     // Save PPM
@@ -229,13 +231,14 @@ fn test_chrome_sphere_on_checkerboard() {
     };
 
     let mut frame = Frame::<Rgba8>::new(WIDTH as u32, HEIGHT as u32);
-    execute(
+    rasterize(
         &renderable,
         frame.as_slice_mut(),
         TensorShape {
             width: WIDTH,
             height: HEIGHT,
         },
+        1,
     );
 
     // Save PPM

@@ -1,8 +1,7 @@
 //! Tests for parallel rasterization.
 
 use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
-use pixelflow_graphics::render::rasterizer::{rasterize, execute_stripe, Stripe, TensorShape};
-use std::thread;
+use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 
 #[test]
 fn test_parallel_rasterization_matches_sequential() {
@@ -10,41 +9,15 @@ fn test_parallel_rasterization_matches_sequential() {
     let height = 100;
     let color = Color::Named(NamedColor::Green);
 
+    // Sequential rendering
     let mut seq_buffer = vec![Rgba8::default(); width * height];
     let shape = TensorShape::new(width, height);
     rasterize(&color, &mut seq_buffer, shape, 1);
 
+    // Parallel rendering with 4 threads
     let mut par_buffer = vec![Rgba8::default(); width * height];
+    rasterize(&color, &mut par_buffer, shape, 4);
 
-    // Split into 2 stripes
-    let mid_y = height / 2;
-
-    let (top, bottom) = par_buffer.split_at_mut(mid_y * width);
-
-    thread::scope(|s| {
-        s.spawn(|| {
-            execute_stripe(
-                &color,
-                top,
-                Stripe {
-                    start_y: 0,
-                    end_y: mid_y,
-                    width,
-                },
-            );
-        });
-        s.spawn(|| {
-            execute_stripe(
-                &color,
-                bottom,
-                Stripe {
-                    start_y: mid_y,
-                    end_y: height,
-                    width,
-                },
-            );
-        });
-    });
-
+    // Results should be identical
     assert_eq!(seq_buffer, par_buffer);
 }
