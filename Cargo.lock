@@ -805,6 +805,7 @@ dependencies = [
 name = "pixelflow-graphics"
 version = "0.1.0"
 dependencies = [
+ "actor-scheduler",
  "bitflags 2.9.1",
  "criterion",
  "freetype-rs",
