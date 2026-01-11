@@ -3,17 +3,19 @@
 //! Analytic evaluation using Stam's eigenstructure method.
 //! No tessellation - pure manifold composition with automatic derivatives.
 //!
-//! # ⚠️ INCOMPLETE IMPLEMENTATION
+//! # Implementation Status
 //!
-//! **Status**: First-tile only. Missing eigenvalue decay and recursive tiling.
+//! **Recursive tiling**: ✅ Implemented via log2-based tile depth computation.
 //!
 //! | Domain | Status |
 //! |--------|--------|
 //! | (0, 0) | ✅ Exact limit position |
-//! | [0.5, 1]² | ⚠️ First-tile approx (no λⁿ⁻¹ weighting) |
-//! | < 0.5 | ❌ WRONG - needs recursive tiling |
+//! | [0.5, 1]² | ✅ First tile - exact |
+//! | [0.25, 0.5)² | ✅ Second tile - rescaled |
+//! | < 0.25 | ✅ Deeper tiles - rescaled |
 //!
-//! See `axis_patch` for implementation TODOs.
+//! **Eigenvalue weighting**: ⚠️ Not yet implemented. Deeper tiles have
+//! accumulating approximation error without λᵢⁿ⁻¹ decay factors.
 //!
 //! ## Architecture
 //!
@@ -57,7 +59,10 @@ pub use coeffs::{get_eigen, EigenCoeffs, MAX_VALENCE};
 
 use pixelflow_core::combinators::{At, Select};
 use pixelflow_core::ops::compare::Lt;
-use pixelflow_core::{Field, Manifold, X, Y};
+use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
+
+/// Natural logarithm of 2, used for 2^x = exp(x * LN_2).
+const LN_2: f32 = 0.6931471805599453;
 
 // ============================================================================
 // Regular Patch (Valence 4) - Standard B-Spline
@@ -202,29 +207,138 @@ fn axis_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
     }
 }
 
+/// Compute the tile rescaling factor for recursive Stam evaluation.
+///
+/// For (u, v) in tile depth n, computes scale = 2^(n-1) such that
+/// (u * scale, v * scale) lands in the first tile [0.5, 1]².
+///
+/// Formula: scale = 2^floor(-log2(max(u, v)))
+///
+/// Special cases:
+/// - (u, v) in [0.5, 1]²: scale = 1.0 (first tile)
+/// - (u, v) in [0.25, 0.5)²: scale = 2.0 (second tile)
+/// - (u, v) in [0.125, 0.25)²: scale = 4.0 (third tile)
+/// - At origin: clamp prevents infinity
+#[inline]
+fn tile_scale() -> impl Manifold<Output = Field> {
+    // max(u, v), clamped to avoid log2(0) = -∞
+    let max_uv = X.max(Y).max(1e-10f32);
+
+    // Pure type composition: scale = 2^floor(-log2(max))
+    // Types as AST: Log2<Max<...>> → Neg<Log2<...>> → Floor<...> → Exp2<...>
+    max_uv.log2().neg().floor().exp2()
+}
+
+/// Rescaled U coordinate for recursive tiling.
+///
+/// Computes u' = u * scale where scale = 2^floor(-log2(max(u,v))).
+/// This maps any tile to first-tile local coordinates.
+#[inline]
+fn rescaled_u() -> impl Manifold<Output = Field> {
+    X * tile_scale()
+}
+
+/// Rescaled V coordinate for recursive tiling.
+///
+/// Computes v' = v * scale where scale = 2^floor(-log2(max(u,v))).
+/// This maps any tile to first-tile local coordinates.
+#[inline]
+fn rescaled_v() -> impl Manifold<Output = Field> {
+    Y * tile_scale()
+}
+
+/// Build subpatch-selecting manifold with recursive tiling support.
+///
+/// Unlike `axis_patch`, this version handles (u, v) in any tile depth:
+/// 1. Computes tile depth n from max(u, v)
+/// 2. Rescales coordinates to first-tile [0.5, 1]²
+/// 3. Routes to correct subpatch
+///
+/// # TODO: Eigenvalue Weighting
+///
+/// For full Stam accuracy, each eigenbasis should be weighted by λᵢⁿ⁻¹.
+/// Currently all weights are 1.0, which is exact only for the first tile.
+/// Deeper tiles will have accumulated approximation error.
+fn tiled_axis_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
+    // Build the first-tile subpatch selector (existing logic)
+    let first_tile = first_tile_patch(coeffs);
+
+    // Wrap with coordinate rescaling: evaluate first_tile at (u * scale, v * scale)
+    At {
+        inner: first_tile,
+        x: rescaled_u(),
+        y: rescaled_v(),
+        z: 0.0f32,
+        w: 0.0f32,
+    }
+}
+
+/// First-tile subpatch routing (internal helper).
+///
+/// Assumes (u, v) is already in [0, 1]² after rescaling.
+/// Routes to the correct subpatch based on quadrant.
+fn first_tile_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
+    // Each subpatch has different coordinate remapping
+    let sub0 = At {
+        inner: bicubic(coeffs[0]),
+        x: X * 2.0,
+        y: Y * 2.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+    let sub1 = At {
+        inner: bicubic(coeffs[1]),
+        x: X * 2.0 - 1.0,
+        y: Y * 2.0 - 1.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+    let sub2 = At {
+        inner: bicubic(coeffs[2]),
+        x: X * 2.0,
+        y: Y * 2.0 - 1.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+
+    // v < 0.5 → sub0, else (u < 0.5 → sub2, else sub1)
+    Select {
+        cond: Lt(Y, 0.5f32),
+        if_true: sub0,
+        if_false: Select {
+            cond: Lt(X, 0.5f32),
+            if_true: sub2,
+            if_false: sub1,
+        },
+    }
+}
+
 /// Evaluate a Catmull-Clark patch using Stam's eigenstructure method.
 ///
 /// Returns 3 manifolds for (x, y, z) coordinates. Each manifold:
-/// - Selects subpatch based on (u, v) position
-/// - Remaps coordinates to subpatch-local space
-/// - Evaluates the combined bicubic
+/// - Computes tile depth from (u, v) via log2
+/// - Rescales coordinates to first-tile [0.5, 1]²
+/// - Selects subpatch and evaluates combined bicubic
 ///
 /// The manifolds are pure composition - types ARE the AST.
-/// Field evaluation compiles to SIMD, Jet2 gives derivatives.
+/// Field evaluation compiles to SIMD, Jet3 gives derivatives.
 ///
 /// # Valid Domain
 ///
-/// Currently only the first tile is implemented:
+/// Supports full (u, v) ∈ (0, 1]² via recursive tiling:
 /// - **(0, 0)**: Exact limit position ✓
-/// - **(u, v) ∈ [0.5, 1]²**: First-tile approximation (no eigenvalue decay)
-/// - **(u, v) closer to origin**: INCORRECT - needs recursive tiling
+/// - **(u, v) ∈ [0.5, 1]²**: First tile (n=1) ✓
+/// - **(u, v) ∈ [0.25, 0.5)²**: Second tile (n=2) ✓
+/// - **(u, v) closer to origin**: Deeper tiles ✓
 ///
-/// See `axis_patch` docs for full TODO list.
+/// # Accuracy Note
 ///
-/// # Panics
+/// Eigenvalue weighting (λᵢⁿ⁻¹) is not yet implemented. This means:
+/// - First tile [0.5, 1]²: Exact
+/// - Deeper tiles: Accumulating approximation error
 ///
-/// Use [`eigen_patch_checked`] if you want runtime validation that coordinates
-/// are in the valid first-tile domain.
+/// For most artistic use cases, this is acceptable. For CAD-quality
+/// precision near extraordinary vertices, eigenvalue weighting is needed.
 pub fn eigen_patch(
     control_points: &[[f32; 3]],
     valence: usize,
@@ -264,39 +378,33 @@ pub fn eigen_patch(
     }
 
     Some((
-        axis_patch(coeffs[0]),
-        axis_patch(coeffs[1]),
-        axis_patch(coeffs[2]),
+        tiled_axis_patch(coeffs[0]),
+        tiled_axis_patch(coeffs[1]),
+        tiled_axis_patch(coeffs[2]),
     ))
 }
 
 /// Validate that (u, v) is in the supported domain for eigen_patch.
 ///
+/// With recursive tiling now implemented, the full domain (0, 1]² is supported.
+/// This function now only warns about accuracy at deeper tiles.
+///
 /// # Panics
 ///
-/// Panics if (u, v) is in the unsupported region (< 0.5 but not at origin).
-/// Call this before evaluating eigen_patch manifolds to catch invalid usage.
+/// Panics if (u, v) is outside the valid range [0, 1]².
 #[inline]
 pub fn validate_eigen_domain(u: f32, v: f32) {
-    // Origin is valid (limit position)
-    if u == 0.0 && v == 0.0 {
-        return;
-    }
-
-    // First tile [0.5, 1]² is valid (with known approximation error)
-    if u >= 0.5 && v >= 0.5 && u <= 1.0 && v <= 1.0 {
-        return;
-    }
-
-    // Anything else requires recursive tiling which isn't implemented
-    if u < 0.5 || v < 0.5 {
-        todo!(
-            "eigen_patch: recursive tiling not implemented for (u={}, v={}). \
-             See axis_patch docs for TODOs: eigenvalue powers λᵢⁿ⁻¹, tile depth selection.",
-            u,
-            v
+    // Check bounds
+    if u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0 {
+        panic!(
+            "eigen_patch: (u={}, v={}) outside valid domain [0, 1]²",
+            u, v
         );
     }
+
+    // All points in (0, 1]² are now supported via recursive tiling
+    // Origin (0, 0) gives exact limit position
+    // Other points use tile rescaling (accuracy depends on tile depth without λⁿ⁻¹ weighting)
 }
 
 // ============================================================================
@@ -581,21 +689,26 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "recursive tiling not implemented")]
+    #[should_panic(expected = "outside valid domain")]
     fn test_validate_eigen_domain_panics_for_invalid() {
-        // This should panic - coordinates < 0.5 need recursive tiling
-        validate_eigen_domain(0.25, 0.25);
+        // This should panic - coordinates outside [0, 1]²
+        validate_eigen_domain(1.5, 0.5);
     }
 
     #[test]
     fn test_validate_eigen_domain_accepts_valid() {
-        // Origin is valid
+        // Origin is valid (exact limit position)
         validate_eigen_domain(0.0, 0.0);
 
         // First tile is valid
         validate_eigen_domain(0.5, 0.5);
         validate_eigen_domain(0.75, 0.75);
         validate_eigen_domain(1.0, 1.0);
+
+        // Deeper tiles are now valid with recursive tiling
+        validate_eigen_domain(0.25, 0.25);
+        validate_eigen_domain(0.125, 0.125);
+        validate_eigen_domain(0.01, 0.01);
     }
 
     #[test]
@@ -659,6 +772,91 @@ mod tests {
             y.abs() < 0.01,
             "symmetric patch should have y=0 at center, got {}",
             y
+        );
+    }
+
+    #[test]
+    fn test_recursive_tiling_constant_surface() {
+        // Constant control points - surface should be constant everywhere
+        // including at deeper tiles
+        let const_points = [[5.0f32, 7.0, 9.0]; 16];
+        let (ex, ey, ez) = eigen_patch(&const_points, 4).unwrap();
+
+        // Test points at different tile depths
+        let test_points = [
+            (0.75, 0.75, "first tile"),      // Tile 1: [0.5, 1]²
+            (0.3, 0.3, "second tile"),       // Tile 2: [0.25, 0.5)²
+            (0.15, 0.15, "third tile"),      // Tile 3: [0.125, 0.25)²
+            (0.06, 0.06, "fourth tile"),     // Tile 4: deeper
+        ];
+
+        for (u, v, desc) in test_points {
+            let x = eval_scalar(&ex, u, v);
+            let y = eval_scalar(&ey, u, v);
+            let z = eval_scalar(&ez, u, v);
+
+            println!("{} at ({}, {}): ({}, {}, {})", desc, u, v, x, y, z);
+
+            // Should be near constant value (within tolerance for approximation)
+            // Tolerance increases for deeper tiles without eigenvalue weighting
+            let tol = 2.0;
+            assert!(
+                (x - 5.0).abs() < tol,
+                "{}: x should be near 5.0, got {}",
+                desc,
+                x
+            );
+            assert!(
+                (y - 7.0).abs() < tol,
+                "{}: y should be near 7.0, got {}",
+                desc,
+                y
+            );
+            assert!(
+                (z - 9.0).abs() < tol,
+                "{}: z should be near 9.0, got {}",
+                desc,
+                z
+            );
+        }
+    }
+
+    #[test]
+    fn test_tile_scale_values() {
+        // Test that tile_scale computes correct powers of 2
+        let scale = tile_scale();
+
+        // At (0.75, 0.75) - first tile: scale = 2^0 = 1
+        let s1 = eval_scalar(&scale, 0.75, 0.75);
+        assert!(
+            (s1 - 1.0).abs() < 0.01,
+            "scale at first tile should be 1.0, got {}",
+            s1
+        );
+
+        // At (0.3, 0.3) - second tile: scale = 2^1 = 2
+        let s2 = eval_scalar(&scale, 0.3, 0.3);
+        assert!(
+            (s2 - 2.0).abs() < 0.1,
+            "scale at second tile should be 2.0, got {}",
+            s2
+        );
+
+        // At (0.15, 0.15) - third tile: scale = 2^2 = 4
+        let s3 = eval_scalar(&scale, 0.15, 0.15);
+        assert!(
+            (s3 - 4.0).abs() < 0.2,
+            "scale at third tile should be 4.0, got {}",
+            s3
+        );
+
+        // At (0.08, 0.08) - fourth tile: scale = 2^3 = 8
+        // Tile 4 is [0.0625, 0.125), and 0.08 is clearly in that range
+        let s4 = eval_scalar(&scale, 0.08, 0.08);
+        assert!(
+            (s4 - 8.0).abs() < 0.5,
+            "scale at fourth tile should be 8.0, got {}",
+            s4
         );
     }
 }

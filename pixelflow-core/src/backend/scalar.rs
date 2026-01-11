@@ -200,6 +200,11 @@ impl SimdOps for ScalarF32 {
     fn log2(self) -> Self {
         Self(libm::log2f(self.0))
     }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        Self(libm::exp2f(self.0))
+    }
 }
 
 // ============================================================================

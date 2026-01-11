@@ -84,7 +84,10 @@
 
 use crate::Manifold;
 use crate::combinators::{At, ClosureMap, Map, Select};
-use crate::ops::{Abs, Add, Cos, Div, Floor, Ge, Gt, Le, Lt, Max, Min, Mul, Rsqrt, Sin, Sqrt, Sub};
+use crate::ops::{
+    Abs, Add, Cos, Div, Exp2, Floor, Ge, Gt, Le, Log2, Lt, Max, Min, Mul, Neg, Rsqrt, Sin, Sqrt,
+    Sub,
+};
 
 use alloc::sync::Arc;
 
@@ -331,6 +334,11 @@ pub trait ManifoldExt: Manifold + Sized {
         Sqrt(self)
     }
 
+    /// Negation (-x).
+    fn neg(self) -> Neg<Self> {
+        Neg(self)
+    }
+
     /// Reciprocal square root (1/sqrt(x)).
     fn rsqrt(self) -> Rsqrt<Self> {
         Rsqrt(self)
@@ -354,6 +362,16 @@ pub trait ManifoldExt: Manifold + Sized {
     /// Cosine function.
     fn cos(self) -> Cos<Self> {
         Cos(self)
+    }
+
+    /// Base-2 logarithm.
+    fn log2(self) -> Log2<Self> {
+        Log2(self)
+    }
+
+    /// Base-2 exponential (2^x).
+    fn exp2(self) -> Exp2<Self> {
+        Exp2(self)
     }
 
     /// Element-wise maximum.

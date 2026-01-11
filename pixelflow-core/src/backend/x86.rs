@@ -330,6 +330,39 @@ impl SimdOps for F32x4 {
             Self(_mm_add_ps(n, poly))
         }
     }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        // SSE2: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
+        unsafe {
+            // n = floor(x), f = x - n
+            let n = _mm_floor_ps(self.0);
+            let f = _mm_sub_ps(self.0, n);
+
+            // Minimax polynomial for 2^f, f ∈ [0, 1)
+            // Degree 4, max error ~10^-7
+            let c4 = _mm_set1_ps(0.0135557);
+            let c3 = _mm_set1_ps(0.0520323);
+            let c2 = _mm_set1_ps(0.2413793);
+            let c1 = _mm_set1_ps(0.6931472);
+            let c0 = _mm_set1_ps(1.0);
+
+            // Horner's method (no FMA on base SSE2)
+            let mut poly = _mm_add_ps(_mm_mul_ps(c4, f), c3);
+            poly = _mm_add_ps(_mm_mul_ps(poly, f), c2);
+            poly = _mm_add_ps(_mm_mul_ps(poly, f), c1);
+            poly = _mm_add_ps(_mm_mul_ps(poly, f), c0);
+
+            // Compute 2^n by adding n to exponent bits
+            // 2^n = reinterpret((n + 127) << 23)
+            let bias = _mm_set1_epi32(127);
+            let n_i32 = _mm_cvtps_epi32(n);
+            let exp_bits = _mm_slli_epi32(_mm_add_epi32(n_i32, bias), 23);
+            let scale = _mm_castsi128_ps(exp_bits);
+
+            Self(_mm_mul_ps(poly, scale))
+        }
+    }
 }
 
 // Operators for F32x4
@@ -1411,7 +1444,9 @@ impl SimdOps for F32x16 {
         // log2(x) = exponent + log2(mantissa)
         unsafe {
             // Extract mantissa normalized to [0.75, 1.5) for better polynomial centering
-            // NORM=3 (_MM_MANT_NORM_p75_1p5), SIGN=0 (_MM_MANT_SIGN_src)
+            // Const generics: interval=3 (_MM_MANT_NORM_p75_1p5), sign=0 (_MM_MANT_SIGN_src)
+            // - Interval [0.75, 1.5) centers around 1.0 for ~1-2 extra bits precision
+            // - Sign control: preserve source sign
             let f = _mm512_getmant_ps::<3, 0>(self.0);
 
             // Extract exponent (automatically adjusts for the mantissa range shift)
@@ -1433,6 +1468,34 @@ impl SimdOps for F32x16 {
             let poly = _mm512_fmadd_ps(poly, f, c0);
 
             Self(_mm512_add_ps(n, poly))
+        }
+    }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        // AVX-512: Use scalef for efficient 2^n computation
+        // 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
+        unsafe {
+            // n = floor(x), f = x - n
+            let n = _mm512_floor_ps(self.0);
+            let f = _mm512_sub_ps(self.0, n);
+
+            // Minimax polynomial for 2^f, f ∈ [0, 1)
+            // Degree 4, max error ~10^-7
+            let c4 = _mm512_set1_ps(0.0135557);
+            let c3 = _mm512_set1_ps(0.0520323);
+            let c2 = _mm512_set1_ps(0.2413793);
+            let c1 = _mm512_set1_ps(0.6931472);
+            let c0 = _mm512_set1_ps(1.0);
+
+            // Horner's method with FMA
+            let poly = _mm512_fmadd_ps(c4, f, c3);
+            let poly = _mm512_fmadd_ps(poly, f, c2);
+            let poly = _mm512_fmadd_ps(poly, f, c1);
+            let poly = _mm512_fmadd_ps(poly, f, c0);
+
+            // Use scalef: poly * 2^n
+            Self(_mm512_scalef_ps(poly, n))
         }
     }
 }

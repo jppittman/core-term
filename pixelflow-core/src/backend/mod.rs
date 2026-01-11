@@ -163,6 +163,11 @@ pub trait SimdOps:
     /// Uses hardware getexp/getmant on AVX-512, bit manipulation + polynomial elsewhere.
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     fn log2(self) -> Self;
+
+    /// Base-2 exponential.
+    ///
+    /// Computes 2^x = exp(x * ln(2)).
+    fn exp2(self) -> Self;
 }
 
 /// SIMD operations for u32 (packed pixels).

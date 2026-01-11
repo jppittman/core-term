@@ -1,7 +1,5 @@
 //! Idiomatic pixelflow example to verify SIMD codegen
-use pixelflow_core::{
-    Discrete, Field, Manifold, ManifoldExt, PARALLELISM, X, Y, materialize_discrete,
-};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM, X, Y};
 
 #[inline(never)]
 pub fn render_circle(buffer: &mut [u32]) {
@@ -60,3 +58,4 @@ fn main() {
     let non_zero = buffer.iter().filter(|&&p| p != 0).count();
     println!("Rendered {} non-zero pixels", non_zero);
 }
+
