@@ -145,7 +145,7 @@ fn regression_glyph_ascent_offset() {
     let height = 120;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
 
-    execute(&lifted, &mut pixels, TensorShape::new(width, height));
+    rasterize(&lifted, &mut pixels, TensorShape::new(width, height));
 
     // Count non-black pixels (with AA, we have smooth gradients)
     let white_pixels = pixels.iter().filter(|p| p.r() > 0).count();
@@ -183,7 +183,7 @@ fn regression_text_rendering_pipeline() {
     let height = 30;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
 
-    execute(&lifted, &mut pixels, TensorShape::new(width, height));
+    rasterize(&lifted, &mut pixels, TensorShape::new(width, height));
 
     // Count pixels by brightness
     let bright_count = pixels.iter().filter(|p| p.r() > 128).count();

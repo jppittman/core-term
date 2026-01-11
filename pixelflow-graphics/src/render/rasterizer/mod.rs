@@ -188,7 +188,9 @@ use pixelflow_core::{
 
 pub mod parallel;
 pub(crate) mod pool;
-pub use parallel::{render_parallel, render_work_stealing, RenderOptions};
+
+// Public API - simplified to single rasterize function
+pub use parallel::rasterize;
 
 /// A wrapper that adapts a continuous manifold for rasterization.
 #[derive(Clone, Copy, Debug)]
@@ -230,11 +232,11 @@ pub struct Stripe {
     pub width: usize,
 }
 
-/// Software rasterizer entry point.
+/// Software rasterizer entry point (internal - single-threaded version).
 ///
 /// Takes a color manifold that outputs Discrete (packed u32 pixels)
 /// and writes them to the target buffer.
-pub fn execute<P, M>(manifold: &M, target: &mut [P], shape: TensorShape)
+pub(crate) fn execute<P, M>(manifold: &M, target: &mut [P], shape: TensorShape)
 where
     P: Pixel,
     M: Manifold<Output = Discrete> + ?Sized,
@@ -253,8 +255,8 @@ where
     );
 }
 
-/// Render a specific row range into the target buffer.
-pub fn execute_stripe<P, M>(manifold: &M, target: &mut [P], stripe: Stripe)
+/// Render a specific row range into the target buffer (internal).
+pub(super) fn execute_stripe<P, M>(manifold: &M, target: &mut [P], stripe: Stripe)
 where
     P: Pixel,
     M: Manifold<Output = Discrete> + ?Sized,

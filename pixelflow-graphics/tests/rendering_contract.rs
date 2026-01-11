@@ -3,7 +3,7 @@
 //! TODO: These tests need updating for the new Color manifold system.
 
 use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
-use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 
 #[test]
 fn verify_color_manifold_renders() {
@@ -13,7 +13,7 @@ fn verify_color_manifold_renders() {
     let mut target = vec![Rgba8::default(); 4 * 4];
     let shape = TensorShape::new(4, 4);
 
-    execute(&red, &mut target, shape);
+    rasterize(&red, &mut target, shape, 1);
 
     // All pixels should be red
     for pixel in &target {
@@ -31,7 +31,7 @@ fn verify_named_color_manifold_renders() {
     let mut target = vec![Rgba8::default(); 2 * 2];
     let shape = TensorShape::new(2, 2);
 
-    execute(&blue, &mut target, shape);
+    rasterize(&blue, &mut target, shape, 1);
 
     for pixel in &target {
         assert_eq!(pixel.r(), 0);

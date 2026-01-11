@@ -7,7 +7,7 @@ use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
 use pixelflow_graphics::{
-    render::rasterizer::{execute, render_work_stealing, RenderOptions, TensorShape},
+    render::rasterizer::{rasterize, TensorShape},
     CachedGlyph, CachedText, Color, ColorCube, Font, GlyphCache, Grayscale, NamedColor, Rgba8,
 };
 
@@ -191,7 +191,7 @@ fn bench_rasterize_solid_color(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&color, &mut buffer, shape);
+                    rasterize(&color, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -224,7 +224,7 @@ fn bench_rasterize_gradient(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&gradient, &mut buffer, shape);
+                    rasterize(&gradient, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -260,7 +260,7 @@ fn bench_rasterize_circle(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&circle, &mut buffer, shape);
+                    rasterize(&circle, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -289,7 +289,7 @@ fn bench_rasterize_glyph(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&colored, &mut buffer, shape);
+                    rasterize(&colored, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -305,7 +305,7 @@ fn bench_rasterize_glyph(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&colored, &mut buffer, shape);
+                    rasterize(&colored, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -338,7 +338,7 @@ fn bench_rasterize_glyph_aa(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&colored, &mut buffer, shape);
+                    rasterize(&colored, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -355,7 +355,7 @@ fn bench_rasterize_glyph_aa(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&colored, &mut buffer, shape);
+                    rasterize(&colored, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -632,7 +632,7 @@ fn bench_cached_vs_uncached_raster(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&colored, &mut buffer, shape);
+                    rasterize(&colored, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -650,7 +650,7 @@ fn bench_cached_vs_uncached_raster(c: &mut Criterion) {
                 let shape = TensorShape::new(size, size);
 
                 bencher.iter(|| {
-                    execute(&colored, &mut buffer, shape);
+                    rasterize(&colored, &mut buffer, shape, 1);
                     black_box(&buffer);
                 })
             },
@@ -693,7 +693,7 @@ fn bench_cached_text(c: &mut Criterion) {
         let shape = TensorShape::new(width, height);
 
         bencher.iter(|| {
-            execute(&colored, &mut buffer, shape);
+            rasterize(&colored, &mut buffer, shape, 1);
             black_box(&buffer);
         })
     });
@@ -731,7 +731,7 @@ fn bench_text_rendering(c: &mut Criterion) {
         let shape = TensorShape::new(64, 64);
 
         bencher.iter(|| {
-            execute(&colored, &mut buffer, shape);
+            rasterize(&colored, &mut buffer, shape, 1);
             black_box(&buffer);
         })
     });
@@ -743,7 +743,7 @@ fn bench_text_rendering(c: &mut Criterion) {
                 let colored = Grayscale(glyph);
                 let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); 32 * 32];
                 let shape = TensorShape::new(32, 32);
-                execute(&colored, &mut buffer, shape);
+                rasterize(&colored, &mut buffer, shape, 1);
                 black_box(&buffer);
             }
         })
@@ -897,7 +897,7 @@ fn bench_scene3d(c: &mut Criterion) {
         let shape = TensorShape::new(w, h);
 
         bencher.iter(|| {
-            execute(&renderable, frame.as_slice_mut(), shape);
+            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
             black_box(&frame);
         })
     });
@@ -921,7 +921,7 @@ fn bench_scene3d(c: &mut Criterion) {
         let shape = TensorShape::new(w, h);
 
         bencher.iter(|| {
-            execute(&renderable, frame.as_slice_mut(), shape);
+            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
             black_box(&frame);
         })
     });
@@ -945,7 +945,7 @@ fn bench_scene3d(c: &mut Criterion) {
         let shape = TensorShape::new(w, h);
 
         bencher.iter(|| {
-            execute(&renderable, frame.as_slice_mut(), shape);
+            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
             black_box(&frame);
         })
     });
@@ -1010,7 +1010,7 @@ fn bench_scene3d(c: &mut Criterion) {
         let shape = TensorShape::new(w_hd, h_hd);
 
         bencher.iter(|| {
-            execute(&renderable, frame.as_slice_mut(), shape);
+            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
             black_box(&frame);
         })
     });
@@ -1044,7 +1044,7 @@ fn bench_scene3d(c: &mut Criterion) {
         let shape = TensorShape::new(w, h);
 
         bencher.iter(|| {
-            execute(&renderable, frame.as_slice_mut(), shape);
+            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
             black_box(&frame);
         })
     });
@@ -1085,10 +1085,9 @@ fn bench_scene3d(c: &mut Criterion) {
 
             let mut frame = Frame::<Rgba8>::new(w_hd as u32, h_hd as u32);
             let shape = TensorShape::new(w_hd, h_hd);
-            let options = RenderOptions { num_threads };
 
             bencher.iter(|| {
-                render_work_stealing(&renderable, frame.as_slice_mut(), shape, options);
+                rasterize(&renderable, frame.as_slice_mut(), shape, num_threads);
                 black_box(&frame);
             })
         },
@@ -1201,9 +1200,8 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
         &format!("work_stealing_atomic_{}t", num_threads),
         |bencher| {
             let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
-            let options = RenderOptions { num_threads };
             bencher.iter(|| {
-                render_work_stealing(&renderable, frame.as_slice_mut(), shape, options);
+                rasterize(&renderable, frame.as_slice_mut(), shape, num_threads);
                 black_box(&frame);
             })
         },
@@ -1213,7 +1211,7 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
     group.bench_function("single_threaded", |bencher| {
         let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
         bencher.iter(|| {
-            execute(&renderable, frame.as_slice_mut(), shape);
+            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
             black_box(&frame);
         })
     });
