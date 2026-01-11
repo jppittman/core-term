@@ -89,7 +89,7 @@
 //!
 //! **Example usage**:
 //! ```ignore
-//! render_work_stealing(&manifold, &mut buffer, shape, 4);
+//! render_work_stealing(&manifold, &mut buffer, shape, RenderOptions { num_threads: 4 });
 //! ```
 //!
 //! ## Strategy 3: Thread Pool (`render_parallel_pooled`)
@@ -427,16 +427,17 @@ pub fn render_work_stealing<P, M>(
 /// - `manifold`: Color manifold that outputs `Discrete` (packed u32 RGBA pixels)
 /// - `buffer`: Target pixel buffer (must be at least `shape.width * shape.height` elements)
 /// - `shape`: Dimensions of the framebuffer
-/// - `num_threads`: Number of worker threads (0 or 1 = single-threaded)
+/// - `options`: Configuration for parallel rendering
 ///
 /// # Example
 ///
 /// ```ignore
-/// use pixelflow_graphics::render::{rasterize, TensorShape};
+/// use pixelflow_graphics::render::{rasterize, RenderOptions, TensorShape};
 ///
 /// let shape = TensorShape::new(1920, 1080);
 /// let mut framebuffer = vec![Rgba8(0); shape.width * shape.height];
-/// rasterize(&color_manifold, &mut framebuffer, shape, 4);
+/// let options = RenderOptions { num_threads: 4 };
+/// rasterize(&color_manifold, &mut framebuffer, shape, options);
 /// ```
 ///
 /// # Performance
@@ -455,10 +456,10 @@ pub fn rasterize<P, M>(
     manifold: &M,
     buffer: &mut [P],
     shape: TensorShape,
-    num_threads: usize,
+    options: RenderOptions,
 ) where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {
-    render_work_stealing(manifold, buffer, shape, RenderOptions { num_threads })
+    render_work_stealing(manifold, buffer, shape, options)
 }

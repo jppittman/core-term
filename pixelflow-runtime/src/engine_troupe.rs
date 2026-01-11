@@ -17,7 +17,7 @@ use crate::vsync_actor::{
 };
 use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ActorStatus, TroupeActor};
 use pixelflow_core::{Discrete, Manifold};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions, TensorShape};
 use pixelflow_graphics::render::Frame;
 use std::sync::Arc;
 use std::time::Instant;
@@ -248,7 +248,10 @@ impl EngineHandler {
         // Rasterize the manifold into the frame (work-stealing parallelism)
         let t0 = Instant::now();
         let shape = TensorShape::new(frame.width, frame.height);
-        rasterize(&manifold, frame.as_slice_mut(), shape, self.render_threads);
+        let options = RenderOptions {
+            num_threads: self.render_threads,
+        };
+        rasterize(&manifold, frame.as_slice_mut(), shape, options);
         let render_time = t0.elapsed();
 
         // Send to driver for presentation (transfers ownership)

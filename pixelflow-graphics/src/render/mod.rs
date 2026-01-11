@@ -11,4 +11,4 @@ pub use color::{
 };
 pub use frame::Frame;
 pub use pixel::Pixel;
-pub use rasterizer::{rasterize, TensorShape};
+pub use rasterizer::{rasterize, RenderOptions, TensorShape};

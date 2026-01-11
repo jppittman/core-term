@@ -4,7 +4,7 @@
 
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions, TensorShape};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
@@ -36,7 +36,7 @@ fn demo_single_glyph_rasterization() {
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
-        1,
+        RenderOptions::default(),
     );
 
     println!("ASCII render of 'A' ({}x{}):", width, height);
@@ -80,7 +80,7 @@ fn demo_text_rasterization_with_frame() {
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
-        1,
+        RenderOptions::default(),
     );
 
     // Print as ASCII art
@@ -125,7 +125,7 @@ fn demo_alphabet_rasterization() {
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
-        1,
+        RenderOptions::default(),
     );
 
     let chars = [' ', '.', ':', '+', '#', '@'];
@@ -152,7 +152,7 @@ fn demo_alphabet_rasterization() {
         &color_manifold2,
         &mut pixels2,
         TensorShape::new(width, height),
-        1,
+        RenderOptions::default(),
     );
 
     println!("NOPQRSTUVWXYZ:");
