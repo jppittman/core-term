@@ -197,10 +197,11 @@ mod tests {
         // Enable bracketed paste mode via public API (CSI ? 2004 h)
         // This ensures we test the mode setting logic and state representation contract
         // rather than modifying internal fields directly.
-        // TODO: Refactor to use the true public API (message passing via interpret_input) and
-        // consider restricting handle_set_mode visibility to pub(super) or private if feasible.
-        use crate::term::modes::{Mode, ModeAction};
-        emu.handle_set_mode(Mode::DecPrivate(2004), ModeAction::Enable);
+        use crate::ansi::commands::{AnsiCommand, CsiCommand};
+        use crate::term::EmulatorInput;
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+            CsiCommand::SetModePrivate(2004),
+        )));
 
         let text_to_paste = "Hello\nWorld".to_string();
         let action = UserInputAction::PasteText(text_to_paste.clone());
