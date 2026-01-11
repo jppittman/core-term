@@ -10,7 +10,7 @@
 //! Note: Some tests require the actor to run in a thread, which means
 //! we test through the public message interface rather than internal state.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -123,7 +123,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
         }
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
@@ -716,7 +716,7 @@ fn shutdown_stops_processing_immediately() {
             }
             fn handle_control(&mut self, _: VsyncCommand) {}
             fn handle_management(&mut self, _: VsyncManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }

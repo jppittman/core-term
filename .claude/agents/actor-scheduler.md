@@ -17,7 +17,7 @@ Multi-priority actor model with three lanes: Control > Management > Data. Lock-f
 - `troupe!` macro — Generates actor groups with Directory, ExposedHandles, and lifecycle
 - `actor_impl` macro — Transforms impl blocks into TroupeActor impls
 - `ShutdownMode` enum — Three graceful shutdown strategies
-- `ParkHint` enum — Controls actor behavior (Wait vs Poll)
+- `ActorStatus` enum — Controls actor behavior (Idle vs Busy)
 - `SendError` type — Timeout or Unknown (receiver disconnected)
 - `WakeHandler` trait — Platform-specific wake mechanisms (e.g., NSEvent on macOS)
 
@@ -88,14 +88,14 @@ Three graceful shutdown strategies via `ShutdownMode`:
 | `DrainControl` | Process control+management, drop data |
 | `DrainAll { timeout }` | Process all with timeout fallback |
 
-### Park Hints
+### Actor Status
 
-`ParkHint` controls actor behavior during `park()`:
+`ActorStatus` returned from `park()` hints the scheduler about blocking behavior:
 
-| Hint | Behavior |
-|------|----------|
-| `Wait` | Block until messages arrive (0% CPU) |
-| `Poll` | Process pending OS events immediately |
+| Status | Behavior |
+|--------|----------|
+| `Idle` | Actor has no unfinished work, scheduler can block (0% CPU) |
+| `Busy` | Actor has unfinished work (yielding), scheduler should poll |
 
 ### Backoff Algorithm
 
@@ -183,6 +183,6 @@ These generate `From` impls so you can write `handle.send(my_msg)` without wrapp
 
 - **Don't use Control for high-volume data** — It's unbounded, will OOM
 - **Don't block in handlers** — Use async/spawn for slow work
-- **Don't ignore park hints** — Platform integration depends on them
+- **Don't ignore actor status** — Platform integration depends on correct Busy/Idle hints
 - **Don't send Shutdown unless you mean it** — Immediate exit
 - **Don't implement Actor without ActorTypes** — troupe! macro won't work

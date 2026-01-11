@@ -1,4 +1,4 @@
-use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -23,7 +23,7 @@ impl Actor<i32, (), ()> for CountingActor {
 
     fn handle_management(&mut self, _mgmt: ()) {}
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
@@ -228,7 +228,7 @@ fn bench_slow_receiver_backpressure(c: &mut Criterion) {
 
                 fn handle_management(&mut self, _mgmt: ()) {}
 
-                fn park(&mut self, hint: ParkHint) -> ParkHint {
+                fn park(&mut self, hint: ActorStatus) -> ActorStatus {
                     hint
                 }
             }

@@ -367,10 +367,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
         }
     }
 
-    fn park(&mut self, _hint: actor_scheduler::ParkHint) -> actor_scheduler::ParkHint {
+    fn park(&mut self, _hint: actor_scheduler::ActorStatus) -> actor_scheduler::ActorStatus {
         // No-op. We are driven by the clock thread messages.
         // The scheduler will block on the mailbox (doorbell) automatically.
-        actor_scheduler::ParkHint::Wait
+        actor_scheduler::ActorStatus::Idle
     }
 }
 

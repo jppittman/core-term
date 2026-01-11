@@ -1,6 +1,6 @@
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use crate::display::ops::PlatformOps;
-use actor_scheduler::{Actor, ParkHint};
+use actor_scheduler::{Actor, ActorStatus};
 use pixelflow_graphics::Pixel;
 
 /// The Platform Trait.
@@ -38,7 +38,7 @@ impl<Ops: PlatformOps> Actor<DisplayData<Ops::Pixel>, DisplayControl, DisplayMgm
         self.ops.handle_management(msg);
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         self.ops.park(hint)
     }
 }

@@ -59,7 +59,7 @@
 //! # Example (Basic Scheduler)
 //!
 //! ```rust
-//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ParkHint};
+//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ActorStatus};
 //!
 //! struct MyHandler;
 //!
@@ -73,7 +73,7 @@
 //!     fn handle_management(&mut self, msg: String) {
 //!         println!("Management: {}", msg);
 //!     }
-//!     fn park(&mut self, _hint: ParkHint) -> ParkHint { ParkHint::Wait }
+//!     fn park(&mut self, _hint: ActorStatus) -> ActorStatus { ActorStatus::Idle }
 //! }
 //!
 //! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
@@ -328,11 +328,11 @@ macro_rules! impl_management_message {
     };
 }
 
-/// Hint tells the OS loop how aggressive it should be
+/// Actor status returned from park() to hint the scheduler about blocking behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParkHint {
-    Wait, // Queues empty. Sleep until OS event or Wake signal. (0% CPU)
-    Poll, // Queues busy. Process pending OS events and return immediately.
+pub enum ActorStatus {
+    Idle, // Actor has no unfinished work. Scheduler can block. (0% CPU)
+    Busy, // Actor has unfinished work (yielding). Scheduler should poll.
 }
 
 /// The Actor trait - implement this to define your actor's behavior.
@@ -355,8 +355,8 @@ pub trait Actor<D, C, M> {
     /// The "Hook" where the Actor creates the bridge to the OS.
     /// Called when the scheduler has drained available messages (or hit burst limits).
     ///
-    /// Returns a hint about whether the scheduler should block or poll.
-    fn park(&mut self, hint: ParkHint) -> ParkHint;
+    /// Returns actor status: Busy if yielding with unfinished work, Idle if done.
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus;
 }
 
 /// Legacy alias for backward compatibility
@@ -414,7 +414,7 @@ pub trait ActorTypes {
 ///     fn handle_data(&mut self, msg: EngineData) { }
 ///     fn handle_control(&mut self, msg: EngineControl) { }
 ///     fn handle_management(&mut self, msg: EngineManagement) { }
-///     fn park(&mut self, hint: ParkHint) -> ParkHint { hint }
+///     fn park(&mut self, hint: ActorStatus) -> ActorStatus { hint }
 /// }
 /// ```
 pub trait TroupeActor<'a, Dir>:
@@ -863,14 +863,14 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
         // Call park with appropriate hint based on whether we have more work
         let hint = if more_work {
-            ParkHint::Poll // Queues still have work, do quick OS poll
+            ActorStatus::Busy // Queues still have work, do quick OS poll
         } else {
-            ParkHint::Wait // Queues drained, can block
+            ActorStatus::Idle // Queues drained, can block
         };
         let returned_hint = actor.park(hint);
 
         // Determine status: working if more messages or actor requests polling
-        let status = if more_work || returned_hint == ParkHint::Poll {
+        let status = if more_work || returned_hint == ActorStatus::Busy {
             SystemStatus::Working
         } else {
             SystemStatus::Idle
@@ -1103,9 +1103,9 @@ mod tests {
             self.log.lock().unwrap().push(format!("Mgmt: {}", msg));
         }
 
-        fn park(&mut self, _hint: ParkHint) -> ParkHint {
+        fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
             // No-op for test
-            ParkHint::Wait
+            ActorStatus::Idle
         }
     }
 
@@ -1154,8 +1154,8 @@ mod tests {
             fn handle_management(&mut self, _: bool) {
                 self.mgmt_count += 1;
             }
-            fn park(&mut self, _hint: ParkHint) -> ParkHint {
-                ParkHint::Wait
+            fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+                ActorStatus::Idle
             }
         }
 
@@ -1200,7 +1200,7 @@ mod tests {
                 fn handle_data(&mut self, _: ()) {}
                 fn handle_control(&mut self, _: ()) {}
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: ParkHint) -> ParkHint {
+                fn park(&mut self, h: ActorStatus) -> ActorStatus {
                     h
                 }
             }
@@ -1238,7 +1238,7 @@ mod tests {
                 }
                 fn handle_control(&mut self, _: ()) {}
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: ParkHint) -> ParkHint {
+                fn park(&mut self, h: ActorStatus) -> ActorStatus {
                     h
                 }
             }
@@ -1317,8 +1317,8 @@ mod troupe_tests {
             }
         }
         fn handle_management(&mut self, _msg: EngineManagement) {}
-        fn park(&mut self, _hint: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+            ActorStatus::Idle
         }
     }
 
@@ -1359,8 +1359,8 @@ mod troupe_tests {
             }
         }
         fn handle_management(&mut self, _msg: DisplayManagement) {}
-        fn park(&mut self, _hint: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+            ActorStatus::Idle
         }
     }
 
@@ -1448,8 +1448,8 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                 }
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: ParkHint) -> ParkHint {
-                    ParkHint::Poll // Keep spinning to maximize throughput
+                fn park(&mut self, _: ActorStatus) -> ActorStatus {
+                    ActorStatus::Busy // Keep spinning to maximize throughput
                 }
             }
 
@@ -1550,8 +1550,8 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                 }
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: ParkHint) -> ParkHint {
-                    ParkHint::Poll
+                fn park(&mut self, _: ActorStatus) -> ActorStatus {
+                    ActorStatus::Busy
                 }
             }
 
@@ -1659,8 +1659,8 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                 }
                 fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: ParkHint) -> ParkHint {
-                    ParkHint::Poll
+                fn park(&mut self, _: ActorStatus) -> ActorStatus {
+                    ActorStatus::Busy
                 }
             }
 
@@ -1771,8 +1771,8 @@ mod troupe_tests {
                     self.mgmt_count.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(2));
                 }
-                fn park(&mut self, _: ParkHint) -> ParkHint {
-                    ParkHint::Poll
+                fn park(&mut self, _: ActorStatus) -> ActorStatus {
+                    ActorStatus::Busy
                 }
             }
 
@@ -1857,8 +1857,8 @@ mod troupe_nesting_tests {
         fn handle_data(&mut self, _msg: WorkerData) {}
         fn handle_control(&mut self, _msg: WorkerControl) {}
         fn handle_management(&mut self, _msg: WorkerManagement) {}
-        fn park(&mut self, _hint: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+            ActorStatus::Idle
         }
     }
 
@@ -1987,7 +1987,7 @@ mod shutdown_tests {
             self.mgmt_count.fetch_add(1, Ordering::Relaxed);
         }
 
-        fn park(&mut self, hint: ParkHint) -> ParkHint {
+        fn park(&mut self, hint: ActorStatus) -> ActorStatus {
             hint
         }
     }
@@ -2179,7 +2179,7 @@ mod shutdown_tests {
                 self.mgmt_count.fetch_add(1, Ordering::Relaxed);
             }
 
-            fn park(&mut self, hint: ParkHint) -> ParkHint {
+            fn park(&mut self, hint: ActorStatus) -> ActorStatus {
                 hint
             }
         }

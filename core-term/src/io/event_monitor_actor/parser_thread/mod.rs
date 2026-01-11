@@ -1,7 +1,7 @@
 // src/io/event_monitor_actor/parser_thread/mod.rs
 
 use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
-use actor_scheduler::{Actor, ActorScheduler, ParkHint};
+use actor_scheduler::{Actor, ActorScheduler, ActorStatus};
 use log::*;
 use std::sync::mpsc::{Sender, SyncSender};
 use std::thread::JoinHandle;
@@ -98,8 +98,8 @@ impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
         // No management messages
     }
 
-    fn park(&mut self, _hint: ParkHint) -> ParkHint {
+    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
         // No periodic tasks
-        ParkHint::Wait
+        ActorStatus::Idle
     }
 }

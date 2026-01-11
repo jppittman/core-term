@@ -9,7 +9,7 @@
 //!
 //! Each test documents the bug it's hunting for.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint, SendError};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SendError};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
@@ -104,7 +104,7 @@ fn zero_burst_limit_does_not_cause_infinite_loop() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -157,7 +157,7 @@ fn mass_sender_drop_does_not_cause_race() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -226,7 +226,7 @@ fn actor_panic_does_not_corrupt_state() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -270,7 +270,7 @@ fn continuous_control_eventually_processes_data() {
                 // No delay - we're testing priority, not processing time
             }
             fn handle_management(&mut self, _: String) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -298,7 +298,7 @@ fn continuous_control_eventually_processes_data() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: ParkHint::Poll causes CPU spin
+// POTENTIAL BUG: ActorStatus::Busy causes CPU spin
 // If actor always returns Poll, does it burn CPU?
 // ============================================================================
 
@@ -317,12 +317,12 @@ fn park_poll_does_not_spin_indefinitely() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _hint: ParkHint) -> ParkHint {
+            fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
                 let count = self.park_count.fetch_add(1, Ordering::SeqCst);
                 if count < self.max_parks {
-                    ParkHint::Poll // Keep spinning
+                    ActorStatus::Busy // Keep spinning
                 } else {
-                    ParkHint::Wait // Eventually stop
+                    ActorStatus::Idle // Eventually stop
                 }
             }
         }
@@ -369,7 +369,7 @@ fn slow_handler_backpressure_works() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -422,7 +422,7 @@ fn single_sender_fifo_ordering_maintained() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -514,7 +514,7 @@ fn concurrent_send_during_processing() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -567,7 +567,7 @@ fn doorbell_saturation_does_not_lose_messages() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -685,7 +685,7 @@ fn large_queue_does_not_cause_issues() {
             }
             fn handle_control(&mut self, _: String) {}
             fn handle_management(&mut self, _: String) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -724,7 +724,7 @@ fn shutdown_race_does_not_panic() {
                 fn handle_data(&mut self, _: i32) {}
                 fn handle_control(&mut self, _: i32) {}
                 fn handle_management(&mut self, _: i32) {}
-                fn park(&mut self, h: ParkHint) -> ParkHint {
+                fn park(&mut self, h: ActorStatus) -> ActorStatus {
                     h
                 }
             }
