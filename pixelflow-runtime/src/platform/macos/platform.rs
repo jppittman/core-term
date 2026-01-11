@@ -1,4 +1,4 @@
-use crate::api::private::{EngineActorHandle, EngineControl, EngineData, WindowId};
+use crate::api::private::{EngineActorHandle, EngineData, WindowId};
 use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt};
 use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
@@ -78,7 +78,7 @@ impl PlatformOps for MetalOps {
                 };
                 // Return the frame to the engine for reuse
                 self.event_tx
-                    .send(Message::Control(EngineControl::PresentComplete(
+                    .send(Message::Data(EngineData::PresentComplete(
                         returned_frame,
                     )))
                     .expect("Failed to send PresentComplete to engine");

@@ -66,12 +66,7 @@ impl Actor<EngineData, EngineControl, AppManagement>
         match data {
             EngineData::FromApp(app_data) => self.handle_app_data(app_data),
             EngineData::FromDriver(event) => self.handle_driver_event(event),
-        }
-    }
-
-    fn handle_control(&mut self, ctrl: EngineControl) {
-        match ctrl {
-            EngineControl::VSync {
+            EngineData::VSync {
                 timestamp,
                 target_timestamp,
                 refresh_interval,
@@ -89,7 +84,7 @@ impl Actor<EngineData, EngineControl, AppManagement>
                     self.return_vsync_token();
                 }
             }
-            EngineControl::PresentComplete(frame) => {
+            EngineData::PresentComplete(frame) => {
                 // Driver returned the frame - store it for next render
                 self.frame_buffer = Some(frame);
 
@@ -101,6 +96,11 @@ impl Actor<EngineData, EngineControl, AppManagement>
                     }))
                     .expect("Failed to notify VSync of completed frame");
             }
+        }
+    }
+
+    fn handle_control(&mut self, ctrl: EngineControl) {
+        match ctrl {
             EngineControl::Quit => {
                 self.driver
                     .send(Message::Control(DisplayControl::Shutdown))
