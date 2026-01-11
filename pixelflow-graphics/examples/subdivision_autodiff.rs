@@ -7,7 +7,7 @@
 //! - No finite differences, no extra evaluations
 
 use pixelflow_graphics::mesh::{Point3, QuadMesh};
-use pixelflow_graphics::render::{execute, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
@@ -58,10 +58,11 @@ fn main() {
     println!("\nRendering {}x{} image...", width, height);
 
     let mut frame = Frame::<Rgba8>::new(width, height);
-    execute(
+    rasterize(
         &scene,
         frame.as_slice_mut(),
         TensorShape::new(width as usize, height as usize),
+        1,
     );
 
     // Save to PPM (simple format, no dependencies)

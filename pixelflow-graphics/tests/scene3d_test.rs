@@ -515,7 +515,8 @@ fn test_mullet_vs_3channel_comparison() {
             width: W,
             height: H,
         },
-    , 1);
+        1,
+    );
     let old_elapsed = old_start.elapsed();
 
     // ============================================================
@@ -576,7 +577,8 @@ fn test_mullet_vs_3channel_comparison() {
             width: W,
             height: H,
         },
-    , 1);
+        1,
+    );
     let new_elapsed = new_start.elapsed();
 
     // ============================================================
@@ -713,5 +715,5 @@ fn test_work_stealing_benchmark() {
     assert_eq!(
         frame1.data, frame2.data,
         "Parallel output must match single-threaded"
-    , 1);
+    );
 }
