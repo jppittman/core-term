@@ -3,7 +3,7 @@
 //! Driver struct is just cmd_tx - trivially Clone.
 //! run() reads Configure, creates X11 resources, runs event loop.
 
-use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData, EngineControl};
+use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData};
 use actor_scheduler::Message;
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
@@ -348,7 +348,7 @@ impl X11State {
                         if let Err(e) = result {
                             error!("X11: Present failed: {:?}", e);
                         }
-                        let _ = engine_tx.send(Message::Control(EngineControl::PresentComplete(returned_frame)));
+                        let _ = engine_tx.send(Message::Data(EngineData::PresentComplete(returned_frame)));
                     }
                     DriverCommand::SetTitle { title, .. } => {
                         self.handle_set_title(&title);

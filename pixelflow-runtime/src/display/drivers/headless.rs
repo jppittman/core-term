@@ -5,7 +5,7 @@
 //! Driver struct is just cmd_tx - trivially Clone.
 //! run() reads CreateWindow, runs a simple event loop.
 
-use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData, EngineControl};
+use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData};
 use actor_scheduler::Message;
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
@@ -122,7 +122,7 @@ fn run_event_loop(
             }
             DriverCommand::Present { frame, .. } => {
                 // Just return the framebuffer
-                let _ = engine_tx.send(EngineCommand::PresentComplete(frame));
+                let _ = engine_tx.send(Message::Data(EngineData::PresentComplete(frame)));
             }
             DriverCommand::SetTitle { title, .. } => {
                 info!("Headless: SetTitle '{}'", title);

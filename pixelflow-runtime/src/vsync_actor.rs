@@ -209,14 +209,15 @@ impl VsyncActor {
         let timestamp = now;
         let target_timestamp = now + self.interval;
 
-        use crate::api::private::EngineControl;
+        use crate::api::private::EngineData;
+        use actor_scheduler::Message;
 
         if engine_handle
-            .send(EngineControl::VSync {
+            .send(Message::Data(EngineData::VSync {
                 timestamp,
                 target_timestamp,
                 refresh_interval: self.interval,
-            })
+            }))
             .is_ok()
         {
             // Consume token after successful send

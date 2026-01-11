@@ -45,11 +45,17 @@ pub enum DriverCommand<P: Pixel> {
     },
 }
 
-// Engine data message (high priority)
+// Engine data message (high throughput, frame timing)
 #[derive(Debug)]
 pub enum EngineData {
     FromDriver(DisplayEvent),
     FromApp(crate::api::public::AppData),
+    VSync {
+        timestamp: std::time::Instant,
+        target_timestamp: std::time::Instant,
+        refresh_interval: std::time::Duration,
+    },
+    PresentComplete(Frame<crate::platform::PlatformPixel>),
 }
 
 impl From<crate::api::public::AppData> for EngineData {
@@ -66,15 +72,9 @@ impl From<DisplayEvent>
     }
 }
 
-// Engine control message (low priority)
+// Engine control message (low frequency, configuration/lifecycle)
 #[derive(Debug, Default)]
 pub enum EngineControl {
-    PresentComplete(Frame<crate::platform::PlatformPixel>),
-    VSync {
-        timestamp: std::time::Instant,
-        target_timestamp: std::time::Instant,
-        refresh_interval: std::time::Duration,
-    },
     UpdateRefreshRate(f64),
     VsyncActorReady(
         actor_scheduler::ActorHandle<
@@ -86,14 +86,6 @@ pub enum EngineControl {
     #[default]
     Quit,
     DriverAck,
-}
-
-impl From<EngineControl>
-    for actor_scheduler::Message<EngineData, EngineControl, crate::api::public::AppManagement>
-{
-    fn from(ctrl: EngineControl) -> Self {
-        actor_scheduler::Message::Control(ctrl)
-    }
 }
 
 // For now, let's assume channel.rs was supposed to define them but the refactor moved them here.

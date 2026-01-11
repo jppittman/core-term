@@ -194,7 +194,7 @@ impl WebState {
                         if let Err(e) = result {
                             error!("Web: Present failed: {:?}", e);
                         }
-                        let _ = engine_tx.send(EngineCommand::PresentComplete(returned_frame));
+                        let _ = engine_tx.send(Message::Data(EngineData::PresentComplete(returned_frame)));
                     }
                     DriverCommand::SetTitle { .. } => {
                         // Not supported in worker context
