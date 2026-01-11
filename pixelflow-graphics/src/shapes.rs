@@ -148,9 +148,51 @@ pub fn annulus<F: Manifold<Output = Field>, B: Manifold<Output = Field>>(
     (inside_outer & outside_inner).select(fg, bg)
 }
 
+// ============================================================================
+// Static Manifold Definitions (const-constructible)
+// ============================================================================
+//
+// Since manifold types are just AST nodes (zero-sized or small structs),
+// they can be constructed as `const`. This enables reusable, static definitions.
+//
+// Note: We can't use operator overloading in const context (that requires
+// nightly's `const_trait_impl`), but struct literal construction works fine.
+
+use pixelflow_core::ops::{Add, Mul, Sqrt, Sub};
+use pixelflow_core::Lt;
+
+/// Unit circle distance squared: x² + y²
+/// Type encodes the computation; no runtime cost until evaluated.
+pub const UNIT_CIRCLE_DIST_SQ: Add<Mul<X, X>, Mul<Y, Y>> = Add(Mul(X, X), Mul(Y, Y));
+
+/// Unit circle SDF: sqrt(x² + y²) - 1.0
+/// Negative inside, zero on boundary, positive outside.
+pub const UNIT_CIRCLE_SDF: Sub<Sqrt<Add<Mul<X, X>, Mul<Y, Y>>>, f32> =
+    Sub(Sqrt(Add(Mul(X, X), Mul(Y, Y))), 1.0);
+
+/// Unit circle condition: x² + y² < 1.0
+/// Returns mask (all-1s inside, all-0s outside).
+pub const UNIT_CIRCLE_COND: Lt<Add<Mul<X, X>, Mul<Y, Y>>, f32> =
+    Lt(Add(Mul(X, X), Mul(Y, Y)), 1.0);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_core::combinators::{At, Texture};
+
+    /// Evaluate a scalar manifold at a point (via texture materialization).
+    fn eval_scalar<M: Manifold<Output = Field>>(m: &M, x: f32, y: f32) -> f32 {
+        // Bind coordinates with At, then materialize via 1x1 texture
+        let bound = At {
+            inner: m,
+            x,
+            y,
+            z: 0.0f32,
+            w: 0.0f32,
+        };
+        let tex = Texture::from_manifold(&bound, 1, 1);
+        tex.data()[0]
+    }
 
     #[test]
     fn circle_at_origin() {
@@ -162,5 +204,58 @@ mod tests {
     fn composition_works() {
         // circle inside square
         let _scene = square(circle(SOLID, 0.5f32), EMPTY);
+    }
+
+    #[test]
+    fn const_manifold_eval() {
+        // First test the distance squared (no sqrt)
+        let dist_sq_origin = eval_scalar(&UNIT_CIRCLE_DIST_SQ, 0.0, 0.0);
+        assert!(
+            dist_sq_origin.abs() < 0.001,
+            "dist_sq at origin should be 0.0, got {}",
+            dist_sq_origin
+        );
+
+        let dist_sq_edge = eval_scalar(&UNIT_CIRCLE_DIST_SQ, 1.0, 0.0);
+        assert!(
+            (dist_sq_edge - 1.0).abs() < 0.001,
+            "dist_sq at (1,0) should be 1.0, got {}",
+            dist_sq_edge
+        );
+
+        // Now test the full SDF (using relaxed tolerance for fast sqrt approximation)
+        let at_edge = eval_scalar(&UNIT_CIRCLE_SDF, 1.0, 0.0);
+        assert!(at_edge.abs() < 0.01, "SDF at edge should be ~0.0, got {}", at_edge);
+
+        let outside = eval_scalar(&UNIT_CIRCLE_SDF, 2.0, 0.0);
+        assert!(
+            (outside - 1.0).abs() < 0.01,
+            "SDF at (2,0) should be ~1.0, got {}",
+            outside
+        );
+
+        // Test sqrt(0) - this was a bug (returned NaN before fix)
+        let at_origin = eval_scalar(&UNIT_CIRCLE_SDF, 0.0, 0.0);
+        assert!(
+            (at_origin - (-1.0)).abs() < 0.01,
+            "SDF at origin should be -1.0, got {}",
+            at_origin
+        );
+    }
+
+    #[test]
+    fn const_condition_with_select() {
+        // Use the const condition with select to get 1.0 inside, 0.0 outside
+        let selected = UNIT_CIRCLE_COND.select(1.0f32, 0.0f32);
+
+        let inside = eval_scalar(&selected, 0.0, 0.0);
+        assert!(
+            (inside - 1.0).abs() < 0.001,
+            "Origin should be inside (1.0), got {}",
+            inside
+        );
+
+        let outside = eval_scalar(&selected, 2.0, 0.0);
+        assert!(outside.abs() < 0.001, "Point (2,0) should be outside (0.0), got {}", outside);
     }
 }

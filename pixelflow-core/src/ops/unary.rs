@@ -3,11 +3,15 @@
 //! AST nodes for unary ops: Sqrt, Abs, Floor, Sin, Min, Max.
 
 use crate::Manifold;
-use crate::numeric::Numeric;
+use crate::numeric::{Computational, Numeric};
 
 /// Square root.
 #[derive(Clone, Copy, Debug)]
 pub struct Sqrt<M>(pub M);
+
+/// Negation: -M
+#[derive(Clone, Copy, Debug)]
+pub struct Neg<M>(pub M);
 
 /// Absolute value.
 #[derive(Clone, Copy, Debug)]
@@ -30,6 +34,14 @@ pub struct Sin<M>(pub M);
 #[derive(Clone, Copy, Debug)]
 pub struct Cos<M>(pub M);
 
+/// Base-2 logarithm.
+#[derive(Clone, Copy, Debug)]
+pub struct Log2<M>(pub M);
+
+/// Base-2 exponential.
+#[derive(Clone, Copy, Debug)]
+pub struct Exp2<M>(pub M);
+
 /// Element-wise maximum.
 #[derive(Clone, Copy, Debug)]
 pub struct Max<L, R>(pub L, pub R);
@@ -48,6 +60,19 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w).sqrt()
+    }
+}
+
+impl<M, I> Manifold<I> for Neg<M>
+where
+    I: Numeric,
+    M: Manifold<I>,
+    M::Output: Numeric,
+{
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        <M::Output as Computational>::from_f32(0.0).raw_sub(self.0.eval_raw(x, y, z, w))
     }
 }
 
@@ -113,6 +138,32 @@ where
     #[inline(always)]
     fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
         self.0.eval_raw(x, y, z, w).cos()
+    }
+}
+
+impl<M, I> Manifold<I> for Log2<M>
+where
+    I: crate::numeric::Numeric,
+    M: Manifold<I>,
+    M::Output: crate::numeric::Numeric,
+{
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        self.0.eval_raw(x, y, z, w).log2()
+    }
+}
+
+impl<M, I> Manifold<I> for Exp2<M>
+where
+    I: crate::numeric::Numeric,
+    M: Manifold<I>,
+    M::Output: crate::numeric::Numeric,
+{
+    type Output = M::Output;
+    #[inline(always)]
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+        self.0.eval_raw(x, y, z, w).exp2()
     }
 }
 

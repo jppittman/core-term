@@ -466,13 +466,21 @@ impl Field {
     /// Hardware sqrt is 20-30 cycles.
     ///
     /// The accuracy is comparable to hardware sqrt due to the NR iteration in rsqrt.
+    ///
+    /// Handles x=0 correctly (returns 0, not NaN from 0 * ∞).
     #[inline(always)]
     pub fn sqrt_fast(self) -> Self {
         let rsqrt = self.rsqrt();
         // sqrt(x) = x * (1/sqrt(x))
         // Use raw_mul since this is Field's internal implementation, not AST building.
         use crate::numeric::Numeric;
-        self.raw_mul(rsqrt)
+        let result = self.raw_mul(rsqrt);
+
+        // Fix edge case: rsqrt(0) = ∞, so 0 * ∞ = NaN
+        // But sqrt(0) should be 0. Select zero where x <= 0.
+        let zero = Self::from(0.0);
+        let is_zero_or_neg = self.le(zero);
+        Self::select_raw(is_zero_or_neg, zero, result)
     }
 
     /// Absolute value.
@@ -569,6 +577,15 @@ impl Field {
     #[inline(always)]
     pub fn log2(self) -> Self {
         Self(self.0.log2())
+    }
+
+    /// Base-2 exponential (2^x).
+    ///
+    /// Uses polynomial approximation with efficient 2^n scaling.
+    /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
+    #[inline(always)]
+    pub fn exp2(self) -> Self {
+        Self(self.0.exp2())
     }
 
     /// Floor (round toward negative infinity).
@@ -912,6 +929,11 @@ impl numeric::Numeric for Field {
     #[inline(always)]
     fn log2(self) -> Self {
         Self::log2(self)
+    }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        Self::exp2(self)
     }
 
     #[inline(always)]

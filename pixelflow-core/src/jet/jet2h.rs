@@ -806,6 +806,24 @@ impl Numeric for Jet2H {
     }
 
     #[inline(always)]
+    fn exp2(self) -> Self {
+        // (2^f)' = f' * 2^f * ln(2)
+        // (2^f)'' = 2^f * ln(2) * (f'' + (f')² * ln(2))
+        let ln_2 = Field::from(0.6931471805599453);
+        let exp2_val = self.val.exp2();
+        let deriv_coeff = exp2_val * ln_2;
+
+        Self::new(
+            exp2_val,
+            self.dx * deriv_coeff,
+            self.dy * deriv_coeff,
+            deriv_coeff * (self.dxx + self.dx * self.dx * ln_2),
+            deriv_coeff * (self.dxy + self.dx * self.dy * ln_2),
+            deriv_coeff * (self.dyy + self.dy * self.dy * ln_2),
+        )
+    }
+
+    #[inline(always)]
     fn floor(self) -> Self {
         // Floor is a step function - derivative is 0 almost everywhere
         Self::constant(self.val.floor())

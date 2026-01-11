@@ -658,6 +658,21 @@ impl Numeric for Jet3 {
     }
 
     #[inline(always)]
+    fn exp2(self) -> Self {
+        // Chain rule: (2^f)' = f' * 2^f * ln(2)
+        // ln(2) ≈ 0.6931471805599453
+        let ln_2 = Field::from(0.6931471805599453);
+        let exp2_val = self.val.exp2();
+        let deriv_coeff = exp2_val * ln_2;
+        Self::new(
+            exp2_val,
+            self.dx * deriv_coeff,
+            self.dy * deriv_coeff,
+            self.dz * deriv_coeff,
+        )
+    }
+
+    #[inline(always)]
     fn floor(self) -> Self {
         Self::constant(self.val.floor())
     }

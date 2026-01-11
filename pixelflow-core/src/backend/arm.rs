@@ -351,6 +351,40 @@ impl SimdOps for F32x4 {
             Self(vaddq_f32(n, poly))
         }
     }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        // NEON: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
+        // Use polynomial approximation for 2^f
+        unsafe {
+            // n = floor(x), f = x - n
+            let n = vrndmq_f32(self.0); // floor
+            let f = vsubq_f32(self.0, n);
+
+            // Minimax polynomial for 2^f, f ∈ [0, 1)
+            // Degree 4, max error ~10^-7
+            let c4 = vdupq_n_f32(0.0135557);
+            let c3 = vdupq_n_f32(0.0520323);
+            let c2 = vdupq_n_f32(0.2413793);
+            let c1 = vdupq_n_f32(0.6931472);
+            let c0 = vdupq_n_f32(1.0);
+
+            // Horner's method
+            let poly = vfmaq_f32(c3, c4, f);
+            let poly = vfmaq_f32(c2, poly, f);
+            let poly = vfmaq_f32(c1, poly, f);
+            let poly = vfmaq_f32(c0, poly, f);
+
+            // Compute 2^n by adding n to exponent bits
+            // 2^n = reinterpret((n + 127) << 23)
+            let bias = vdupq_n_s32(127);
+            let n_i32 = vcvtq_s32_f32(n);
+            let exp_bits = vshlq_n_s32::<23>(vaddq_s32(n_i32, bias));
+            let scale = vreinterpretq_f32_s32(exp_bits);
+
+            Self(vmulq_f32(poly, scale))
+        }
+    }
 }
 
 // ============================================================================

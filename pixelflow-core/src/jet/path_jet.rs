@@ -373,6 +373,14 @@ where
     }
 
     #[inline(always)]
+    fn exp2(self) -> Self {
+        Self {
+            val: self.val.exp2(),
+            dir: self.dir.exp2(),
+        }
+    }
+
+    #[inline(always)]
     fn floor(self) -> Self {
         Self {
             val: self.val.floor(),
