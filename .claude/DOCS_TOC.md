@@ -12,7 +12,7 @@ Auto-generated TOC of `cargo doc` output. Use this to find types, traits, and mo
 
 **Traits:** Actor,ActorTypes,TroupeActor,WakeHandler
 
-**Enums:** Message,ParkHint,SendError
+**Enums:** ActorStatus,Message,SendError
 
 **Functions:** create_actor
 

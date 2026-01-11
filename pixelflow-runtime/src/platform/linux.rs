@@ -9,7 +9,7 @@ use crate::display::drivers::X11DisplayDriver;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt, WindowId};
 use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
-use actor_scheduler::ParkHint;
+use actor_scheduler::ActorStatus;
 use pixelflow_graphics::render::color::Bgra8;
 
 /// Linux platform pixel type (BGRA for X11).
@@ -146,13 +146,13 @@ impl PlatformOps for LinuxOps {
         }
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         // Simple sleep-based parking
         match hint {
-            ParkHint::Poll => {
+            ActorStatus::Busy => {
                 // Poll mode - return immediately
             }
-            ParkHint::Wait => {
+            ActorStatus::Idle => {
                 // Wait mode - sleep a bit to avoid busy-looping
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }

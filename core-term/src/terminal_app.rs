@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::glyph::Glyph;
 use crate::io::PtyCommand;
 use crate::term::TerminalEmulator;
-use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
 use pixelflow_core::{
     Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
 };
@@ -555,7 +555,7 @@ impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for Termi
         }
     }
 
-    fn park(&mut self, _hint: ParkHint) -> ParkHint {
+    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
         // Drain any queued ANSI commands from PTY
         use crate::term::EmulatorInput;
 
@@ -575,9 +575,9 @@ impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for Termi
 
         // If we found data, keep polling. Otherwise block on actor messages.
         if found_data {
-            ParkHint::Poll
+            ActorStatus::Busy
         } else {
-            ParkHint::Wait
+            ActorStatus::Idle
         }
     }
 }
@@ -650,7 +650,7 @@ mod tests {
     use crate::ansi::commands::AnsiCommand;
     use crate::io::PtyCommand;
     use crate::term::{EmulatorInput, TerminalEmulator, UserInputAction};
-    use actor_scheduler::{Actor, ParkHint};
+    use actor_scheduler::{Actor, ActorStatus};
     use pixelflow_runtime::input::{KeySymbol, Modifiers};
     use pixelflow_runtime::{EngineEventControl, EngineEventManagement, WindowId};
     use std::sync::mpsc::{Receiver, SyncSender};

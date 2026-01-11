@@ -3,7 +3,7 @@
 //! These tests verify the scheduler behaves correctly under heavy load,
 //! concurrent access, and various edge conditions.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
@@ -29,8 +29,8 @@ impl Actor<u64, u64, u64> for CountingHandler {
     fn handle_management(&mut self, _msg: u64) {
         self.mgmt_count.fetch_add(1, Ordering::SeqCst);
     }
-    fn park(&mut self, _hint: ParkHint) -> ParkHint {
-        ParkHint::Wait
+    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 
@@ -46,8 +46,8 @@ impl Actor<u64, u64, u64> for SlowHandler {
     }
     fn handle_control(&mut self, _msg: u64) {}
     fn handle_management(&mut self, _msg: u64) {}
-    fn park(&mut self, _hint: ParkHint) -> ParkHint {
-        ParkHint::Wait
+    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 
@@ -57,8 +57,8 @@ impl Actor<(), (), ()> for NoOpHandler {
     fn handle_data(&mut self, _: ()) {}
     fn handle_control(&mut self, _: ()) {}
     fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, _hint: ParkHint) -> ParkHint {
-        ParkHint::Wait
+    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 
@@ -318,8 +318,8 @@ fn burst_limit_prevents_data_starvation() {
         fn handle_management(&mut self, _: u64) {
             self.mgmt_processed.fetch_add(1, Ordering::SeqCst);
         }
-        fn park(&mut self, _: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+            ActorStatus::Idle
         }
     }
 
@@ -376,8 +376,8 @@ fn concurrent_clone_and_send() {
         }
         fn handle_control(&mut self, _: u64) {}
         fn handle_management(&mut self, _: u64) {}
-        fn park(&mut self, _: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+            ActorStatus::Idle
         }
     }
 
@@ -454,8 +454,8 @@ fn large_messages_work() {
         }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: ParkHint) -> ParkHint {
-            ParkHint::Wait
+        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+            ActorStatus::Idle
         }
     }
 

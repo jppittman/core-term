@@ -1,6 +1,6 @@
 #[cfg(target_os = "macos")]
 mod tests {
-    use actor_scheduler::{Actor, ParkHint};
+    use actor_scheduler::{Actor, ActorStatus};
     use pixelflow_runtime::api::private::{
         create_engine_actor, EngineControl, EngineData, WindowId,
     };
@@ -36,7 +36,7 @@ mod tests {
 
         fn handle_control(&mut self, _msg: EngineControl<PlatformPixel>) {}
         fn handle_management(&mut self, _msg: AppManagement) {}
-        fn park(&mut self, hint: ParkHint) -> ParkHint {
+        fn park(&mut self, hint: ActorStatus) -> ActorStatus {
             hint
         }
     }
@@ -75,7 +75,7 @@ mod tests {
 
         // 5. Emulate run loop step (Platform)
         // This should trigger window creation and send event to Engine
-        ops.park(ParkHint::Poll);
+        ops.park(ActorStatus::Busy);
 
         // Give some time for message passing
         thread::sleep(Duration::from_millis(100));

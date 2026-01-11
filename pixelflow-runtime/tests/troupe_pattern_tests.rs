@@ -13,7 +13,7 @@
 //! generates code that's hard to test in isolation.
 
 use actor_scheduler::{
-    Actor, ActorHandle, ActorScheduler, ActorTypes, Message, ParkHint, TroupeActor,
+    Actor, ActorHandle, ActorScheduler, ActorTypes, Message, ActorStatus, TroupeActor,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -103,7 +103,7 @@ impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
 
     fn handle_management(&mut self, _: AlphaManagement) {}
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
@@ -151,7 +151,7 @@ impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
 
     fn handle_management(&mut self, _: BetaManagement) {}
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
@@ -345,7 +345,7 @@ fn all_actor_threads_exit_on_channel_close() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -359,7 +359,7 @@ fn all_actor_threads_exit_on_channel_close() {
             fn handle_data(&mut self, _: BetaData) {}
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -403,7 +403,7 @@ fn actor_thread_panic_isolated() {
             }
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -421,7 +421,7 @@ fn actor_thread_panic_isolated() {
             }
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -495,7 +495,7 @@ fn circular_messaging_does_not_deadlock() {
                 }
             }
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -525,7 +525,7 @@ fn circular_messaging_does_not_deadlock() {
                 }
             }
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -579,7 +579,7 @@ fn cloned_directory_handles_work_independently() {
             }
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -641,7 +641,7 @@ fn actors_can_coordinate_startup_with_barrier() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -659,7 +659,7 @@ fn actors_can_coordinate_startup_with_barrier() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -704,7 +704,7 @@ fn shutdown_message_causes_actor_exit() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -743,7 +743,7 @@ fn shutdown_works_with_multiple_actors() {
             fn handle_data(&mut self, _: AlphaData) {}
             fn handle_control(&mut self, _: AlphaControl) {}
             fn handle_management(&mut self, _: AlphaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -757,7 +757,7 @@ fn shutdown_works_with_multiple_actors() {
             fn handle_data(&mut self, _: BetaData) {}
             fn handle_control(&mut self, _: BetaControl) {}
             fn handle_management(&mut self, _: BetaManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
