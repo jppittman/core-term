@@ -1,8 +1,8 @@
 //! Priority Channel - A multi-priority message passing system
 //!
 //! This crate provides a message scheduler with three priority levels:
-//! - **Control**: Highest priority, unlimited drain
-//! - **Management**: Medium priority, unlimited drain
+//! - **Control**: Highest priority, burst-limited to prevent starvation
+//! - **Management**: Medium priority, burst-limited
 //! - **Data**: Lowest priority, burst-limited with backpressure
 //!
 //! # Architecture
@@ -100,7 +100,7 @@ use std::sync::{
     Arc,
     mpsc::{self, Receiver, SyncSender, TryRecvError},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The types of messages supported by the scheduler.
 ///
@@ -131,10 +131,10 @@ use std::time::{Duration, Instant};
 /// **Purpose**: Time-critical control messages that need immediate attention.
 ///
 /// **Contract**:
-/// - **Sender**: Never blocks; has unlimited buffer
-/// - **Receiver**: Drains before Management and Data messages
-/// - **Guarantee**: Guaranteed delivery (unlimited queue)
-/// - **Ordering**: FIFO within lane, always processed before Data/Management
+/// - **Sender**: Retries with exponential backoff if buffer full (prevents slow-loris attacks)
+/// - **Receiver**: Drains before Management and Data, with burst limit to prevent starvation
+/// - **Guarantee**: Best-effort priority delivery (bounded buffer with backoff)
+/// - **Ordering**: FIFO within lane, typically processed before Data/Management
 ///
 /// **Example**: User input (keypresses, mouse), window resize, close requests
 ///
@@ -143,30 +143,54 @@ use std::time::{Duration, Instant};
 /// **Purpose**: Configuration and lifecycle messages.
 ///
 /// **Contract**:
-/// - **Sender**: Never blocks; has unlimited buffer
-/// - **Receiver**: Drains between Control and Data
-/// - **Guarantee**: Guaranteed delivery (unlimited queue)
+/// - **Sender**: Retries with exponential backoff if buffer full
+/// - **Receiver**: Drains between Control and Data, with burst limiting
+/// - **Guarantee**: Best-effort delivery (bounded buffer with backoff)
 /// - **Ordering**: FIFO within lane
 ///
 /// **Example**: Configuration changes, resource allocation, subscription/unsubscription
 ///
 /// # Scheduling Strategy
 ///
-/// The scheduler drains messages in priority order:
+/// The scheduler drains messages in priority order with burst limits:
 ///
 /// ```text
 /// Loop:
-///   1. Drain all Control messages (may block or spin until all drained)
-///   2. Drain all Management messages
-///   3. Drain up to N Data messages (burst limit to prevent starvation)
-///   4. Call park() - let actor/OS do other work
-///   5. Repeat
+///   1. Drain Control messages (capped at burst limit)
+///   2. Drain Management messages (capped at burst limit)
+///   3. Drain Control messages again (priority recheck)
+///   4. Drain Data messages (capped at burst limit)
+///   5. Call park() - let actor/OS do other work
+///   6. Repeat
 /// ```
 ///
-/// This ensures:
-/// - Control messages are NEVER delayed by data processing
-/// - Management messages get attention even if data is continuously flowing
-/// - Data can't starve other lanes (burst limit)
+/// This provides best-effort priority with starvation protection:
+/// - Control messages typically process before Data/Management
+/// - All lanes are burst-limited to prevent monopolization
+/// - No cross-lane ordering guarantees - only best-effort priority
+/// - Protection against slow-loris attacks (poorly-behaved senders can't drown channels)
+///
+/// Configurable shutdown behavior per actor via `ShutdownMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownMode {
+    /// Exit immediately, drop all pending messages (default, current behavior)
+    Immediate,
+
+    /// Drain control+management lanes, drop data
+    /// Use for actors where control/management cleanup is critical
+    DrainControl,
+
+    /// Process all pending messages before exit (with timeout fallback)
+    /// Use for actors that must process all messages (e.g., logging, persistence)
+    DrainAll { timeout: std::time::Duration },
+}
+
+impl Default for ShutdownMode {
+    fn default() -> Self {
+        ShutdownMode::Immediate
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message<D, C, M> {
     /// A data message (lowest priority, high throughput).
@@ -195,28 +219,28 @@ pub enum Message<D, C, M> {
     /// # Contract
     ///
     /// **Sender**:
-    /// - NEVER blocks (unlimited buffer)
-    /// - Use for messages that can't wait (user input, resize events)
-    /// - Should not over-use; reserve for truly time-critical operations
+    /// - Retries with exponential backoff if buffer is full
+    /// - Use for messages that need priority (user input, resize events)
+    /// - Backoff prevents poorly-behaved senders from monopolizing the channel
     ///
     /// **Receiver** (Actor):
     /// - Will receive via `handle_control()`
-    /// - Guaranteed to be processed before Data/Management messages
-    /// - If the actor isn't running, message queues indefinitely (unbounded buffer)
+    /// - Best-effort priority processing before Data/Management messages
+    /// - Draining is burst-limited to prevent starvation of other lanes
     ///
     /// # Example
     ///
     /// ```ignore
-    /// // User clicked the close button - this must be processed immediately
+    /// // User clicked the close button - this should be processed with priority
     /// tx.send(Message::Control(CloseRequested))?;
-    /// // Never blocks; queues if actor is busy
+    /// // Retries with backoff if buffer full
     /// ```
     ///
-    /// # Warning: Unbounded Queue
+    /// # Backpressure
     ///
-    /// Control messages have unlimited buffer. If the actor is slow, Control messages
-    /// can pile up indefinitely, consuming memory. Use Control sparingly and only for
-    /// messages that truly can't be delayed.
+    /// Control messages use a bounded buffer with exponential backoff on retry.
+    /// If senders overwhelm the receiver, they will experience increasing delays.
+    /// This prevents poorly-behaved senders from monopolizing the control channel.
     Control(C),
 
     /// A management message (medium priority, configuration/lifecycle).
@@ -224,14 +248,14 @@ pub enum Message<D, C, M> {
     /// # Contract
     ///
     /// **Sender**:
-    /// - NEVER blocks (unlimited buffer)
+    /// - Retries with exponential backoff if buffer is full
     /// - Use for lifecycle and configuration (create, destroy, configure)
     /// - Lower priority than Control but higher than Data
     ///
     /// **Receiver** (Actor):
     /// - Will receive via `handle_management()`
-    /// - Guaranteed delivery (unbounded queue)
-    /// - Processed after Control but before Data messages
+    /// - Best-effort delivery (bounded buffer with backoff)
+    /// - Typically processed after Control but before Data messages
     ///
     /// # Example
     ///
@@ -441,13 +465,17 @@ pub trait WakeHandler: Send + Sync {
 }
 
 /// Maximum capacity for Control and Management lanes
-const CONTROL_MGMT_BUFFER_SIZE: usize = 128;
+/// Smaller buffer forces faster detection of overload scenarios
+const CONTROL_MGMT_BUFFER_SIZE: usize = 32;
 
-/// Minimum backoff duration when no messages are available
-const MIN_BACKOFF: Duration = Duration::from_micros(10);
+/// Minimum backoff duration when control/management channels are full
+/// High enough to prevent oscillation where senders retry faster than receiver can drain
+const MIN_BACKOFF: Duration = Duration::from_millis(1);
 
-/// Maximum backoff duration when no messages are available
-const MAX_BACKOFF: Duration = Duration::from_millis(500);
+/// Maximum backoff duration when control/management channels are full
+/// Large enough to guarantee the control channel can be fully drained (10x buffer size)
+/// At ~1µs per message, 320 messages = ~320µs, so 5s is extremely generous
+const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Calculate exponential backoff with jitter.
 ///
@@ -477,21 +505,34 @@ fn backoff_with_jitter(attempt: u32) -> Result<Duration, SendError> {
     }
 
     // Add jitter: random value between [0.5 * backoff, 1.0 * backoff]
-    // Using Instant hash for "randomness" (good enough for backoff jitter)
-    let now = Instant::now();
-    let hash = (now.elapsed().as_nanos() as u64).wrapping_mul(JITTER_HASH_CONSTANT);
+    // Use wall clock time for actual randomness (prevents thundering herd)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0));
+
+    // Mix nanoseconds with attempt number for better distribution across threads
+    let hash = (now.as_nanos() as u64 ^ (attempt as u64).wrapping_mul(0x517cc1b727220a95))
+        .wrapping_mul(JITTER_HASH_CONSTANT);
+
     let jitter_pct = JITTER_MIN_PCT + (hash % JITTER_RANGE);
     let jittered_micros = (backoff_micros * jitter_pct) / 100;
 
     Ok(Duration::from_micros(jittered_micros))
 }
 
+/// System messages - combines wake and shutdown into one channel
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum System {
+    /// Wake the scheduler to process messages
+    Wake,
+    /// Shutdown the scheduler
+    Shutdown,
+}
+
 /// A unified sender handle that routes messages to the scheduler with priority lanes.
 pub struct ActorHandle<D, C, M> {
-    // Doorbell channel (buffer: 1) - wake signal
-    tx_doorbell: SyncSender<()>,
-    // Shutdown channel (buffer: 1) - shutdown signal
-    tx_shutdown: SyncSender<()>,
+    // Doorbell channel (buffer: 1) - wake and shutdown signals
+    tx_doorbell: SyncSender<System>,
     // All lanes are bounded for backpressure
     tx_data: SyncSender<D>,
     tx_control: SyncSender<C>,
@@ -515,7 +556,6 @@ impl<D, C, M> Clone for ActorHandle<D, C, M> {
     fn clone(&self) -> Self {
         Self {
             tx_doorbell: self.tx_doorbell.clone(),
-            tx_shutdown: self.tx_shutdown.clone(),
             tx_data: self.tx_data.clone(),
             tx_control: self.tx_control.clone(),
             tx_mgmt: self.tx_mgmt.clone(),
@@ -524,7 +564,20 @@ impl<D, C, M> Clone for ActorHandle<D, C, M> {
     }
 }
 
+/// Number of immediate retries (spin) before yielding
+/// At ~10-20ns per spin, 100 spins = ~1-2µs (less than context switch cost)
+const SPIN_ATTEMPTS: u32 = 100;
+
+/// Number of yield attempts before escalating to sleep
+/// After hot spinning, cooperatively yield to let receiver process
+const YIELD_ATTEMPTS: u32 = 20;
+
 /// Send with retry and exponential backoff + jitter for fairness.
+///
+/// Backoff strategy:
+/// 1. Spin (immediate retry) for first few attempts
+/// 2. Yield (cooperative) for next few attempts
+/// 3. Sleep (blocking) with exponential backoff for remaining attempts
 ///
 /// Used for control and management lanes to prevent thundering herd when
 /// multiple senders compete for buffer space.
@@ -536,11 +589,24 @@ fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError>
         match tx.try_send(msg) {
             Ok(()) => return Ok(()),
             Err(TrySendError::Full(returned_msg)) => {
-                // Channel full - backoff with jitter for fairness
-                let backoff = backoff_with_jitter(attempt)?;
-                std::thread::sleep(backoff);
+                // Restore message for retry
+                msg = returned_msg;
+
+                // Backoff strategy: spin → yield → sleep
+                if attempt < SPIN_ATTEMPTS {
+                    // Phase 1: Spin (immediate retry, hot loop)
+                    // No sleep/yield - just retry immediately
+                } else if attempt < SPIN_ATTEMPTS + YIELD_ATTEMPTS {
+                    // Phase 2: Yield (cooperative, let other threads run)
+                    std::thread::yield_now();
+                } else {
+                    // Phase 3: Sleep (exponential backoff with jitter)
+                    let sleep_attempt = attempt - (SPIN_ATTEMPTS + YIELD_ATTEMPTS);
+                    let backoff = backoff_with_jitter(sleep_attempt)?;
+                    std::thread::sleep(backoff);
+                }
+
                 attempt = attempt.saturating_add(1);
-                msg = returned_msg; // Restore message for retry
             }
             Err(err) => {
                 // Disconnected - convert to our error type
@@ -549,6 +615,7 @@ fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError>
         }
     }
 }
+
 
 impl<D, C, M> ActorHandle<D, C, M> {
     /// Sends a message to the appropriate priority lane and wakes the scheduler.
@@ -567,6 +634,7 @@ impl<D, C, M> ActorHandle<D, C, M> {
     ///
     /// # Errors
     /// Returns `Err` only if the receiver has been dropped.
+    #[must_use]
     pub fn send<T: Into<Message<D, C, M>>>(&self, msg: T) -> Result<(), SendError> {
         let msg = msg.into();
         self.send_message(msg)
@@ -590,9 +658,14 @@ impl<D, C, M> ActorHandle<D, C, M> {
                 self.wake();
             }
             Message::Shutdown => {
-                // Shutdown: send signal and wake (try_send - drop if already pending)
-                let _ = self.tx_shutdown.try_send(());
-                self.wake();
+                // Shutdown: blocking send to guarantee delivery
+                // Actor must be running before calling this (doorbell will be drained)
+                self.tx_doorbell.send(System::Shutdown)?;
+
+                // Also call custom wake handler if present
+                if let Some(waker) = &self.wake_handler {
+                    waker.wake();
+                }
             }
         };
         Ok(())
@@ -609,23 +682,227 @@ impl<D, C, M> ActorHandle<D, C, M> {
         if let Some(waker) = &self.wake_handler {
             waker.wake();
         }
-
-        let _ = self.tx_doorbell.try_send(());
+        let _ = self.tx_doorbell.try_send(System::Wake);
     }
 }
 
 /// The receiver side that implements the priority scheduling logic.
 pub struct ActorScheduler<D, C, M> {
-    rx_doorbell: Receiver<()>, // Wake signal
-    rx_shutdown: Receiver<()>, // Shutdown signal
+    rx_doorbell: Receiver<System>, // Wake and shutdown signals
     rx_data: Receiver<D>,
     rx_control: Receiver<C>,
     rx_mgmt: Receiver<M>,
     data_burst_limit: usize,
     management_burst_limit: usize,
+    control_burst_limit: usize,
+    shutdown_mode: ShutdownMode,
+}
+
+/// System status after processing messages
+enum SystemStatus {
+    /// More work available, keep polling
+    Working,
+    /// Queues drained, can block
+    Idle,
 }
 
 impl<D, C, M> ActorScheduler<D, C, M> {
+    /// Functionally drain a channel up to a limit, applying a handler to each message.
+    ///
+    /// Returns true if the limit was reached (indicating more messages may be available).
+    fn drain_channel<T>(
+        rx: &Receiver<T>,
+        limit: usize,
+        mut handler: impl FnMut(T),
+    ) -> Result<bool, ()> {
+        use std::iter;
+
+        // Create an iterator that drains the channel until empty or disconnected
+        let messages = iter::from_fn(|| match rx.try_recv() {
+            Ok(msg) => Some(Ok(msg)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(())),
+        });
+
+        // Take up to `limit` messages and process them
+        let count = messages
+            .take(limit)
+            .try_fold(0, |count, result| {
+                result.map(|msg| {
+                    handler(msg);
+                    count + 1
+                })
+            })?;
+
+        // If we processed exactly `limit` messages, more might be available
+        Ok(count == limit)
+    }
+
+    /// Drain control and management channels without limit, ignoring data.
+    ///
+    /// Used for `ShutdownMode::DrainControl` to process critical cleanup messages
+    /// while dropping lower-priority data messages.
+    fn drain_control_and_management<A>(&mut self, actor: &mut A)
+    where
+        A: Actor<D, C, M>,
+    {
+        // Drain control completely - loop while more messages available
+        loop {
+            match Self::drain_channel(&self.rx_control, usize::MAX, |msg| {
+                actor.handle_control(msg)
+            }) {
+                Ok(true) => continue,  // More messages available, keep draining
+                Ok(false) => break,    // Channel empty
+                Err(()) => break,      // Channel disconnected
+            }
+        }
+
+        // Drain management completely
+        loop {
+            match Self::drain_channel(&self.rx_mgmt, usize::MAX, |msg| {
+                actor.handle_management(msg)
+            }) {
+                Ok(true) => continue,  // More messages available
+                Ok(false) => break,    // Channel empty
+                Err(()) => break,      // Channel disconnected
+            }
+        }
+
+        // Data messages are dropped (channels disconnected or ignored)
+    }
+
+    /// Drain all channels (control, management, data) with timeout fallback.
+    ///
+    /// Used for `ShutdownMode::DrainAll` to process all pending messages before shutdown.
+    /// If the timeout is exceeded, remaining messages are dropped.
+    fn drain_all_with_timeout<A>(&mut self, actor: &mut A, timeout: std::time::Duration)
+    where
+        A: Actor<D, C, M>,
+    {
+        use std::time::Instant;
+
+        let deadline = Instant::now() + timeout;
+        // Use small batches to check deadline frequently (every ~10 messages)
+        let batch_size = 10;
+
+        // Drain all lanes with priority order until deadline
+        loop {
+            // Drain control (in batches to check deadline frequently)
+            let control_more = Self::drain_channel(&self.rx_control, batch_size, |msg| {
+                actor.handle_control(msg)
+            });
+            if Instant::now() >= deadline {
+                return; // Timeout after control drain
+            }
+
+            // Drain management (in batches)
+            let mgmt_more = Self::drain_channel(&self.rx_mgmt, batch_size, |msg| {
+                actor.handle_management(msg)
+            });
+            if Instant::now() >= deadline {
+                return; // Timeout after management drain
+            }
+
+            // Drain data (in batches)
+            let data_more = Self::drain_channel(&self.rx_data, batch_size, |msg| {
+                actor.handle_data(msg)
+            });
+            if Instant::now() >= deadline {
+                return; // Timeout after data drain
+            }
+
+            // If all channels are either empty or disconnected, we're done
+            match (control_more, mgmt_more, data_more) {
+                (Ok(false), Ok(false), Ok(false)) => return, // All empty
+                (Err(()), Err(()), Err(())) => return,        // All disconnected
+                _ => {} // Continue draining (at least one has more messages)
+            }
+        }
+    }
+
+    /// Process messages from all priority lanes, return status
+    #[inline]
+    fn handle_wake<A>(&mut self, actor: &mut A) -> Result<SystemStatus, ()>
+    where
+        A: Actor<D, C, M>,
+    {
+        // Drain Control → Mgmt → Control → Data
+        // Control budget is split evenly between the two control runs to prevent double priority
+        let half_control = self.control_burst_limit / 2;
+
+        // Functional chaining: thread "more work" flags through the chain
+        // Exit early on Err (channel disconnected)
+        let result =
+            Self::drain_channel(&self.rx_control, half_control, |msg| {
+                actor.handle_control(msg)
+            })
+            .and_then(|control1_more| {
+                Self::drain_channel(&self.rx_mgmt, self.management_burst_limit, |msg| {
+                    actor.handle_management(msg)
+                })
+                .map(|mgmt_more| control1_more | mgmt_more)
+            })
+            .and_then(|more_so_far| {
+                Self::drain_channel(&self.rx_control, half_control, |msg| {
+                    actor.handle_control(msg)
+                })
+                .map(|control2_more| more_so_far | control2_more)
+            })
+            .and_then(|more_so_far| {
+                Self::drain_channel(&self.rx_data, self.data_burst_limit, |msg| {
+                    actor.handle_data(msg)
+                })
+                .map(|data_more| more_so_far | data_more)
+            });
+
+        // Exit if any channel disconnected
+        let more_work = match result {
+            Ok(more_work) => more_work,
+            Err(()) => return Err(()),
+        };
+
+        // Call park with appropriate hint based on whether we have more work
+        let hint = if more_work {
+            ParkHint::Poll // Queues still have work, do quick OS poll
+        } else {
+            ParkHint::Wait // Queues drained, can block
+        };
+        let returned_hint = actor.park(hint);
+
+        // Determine status: working if more messages or actor requests polling
+        let status = if more_work || returned_hint == ParkHint::Poll {
+            SystemStatus::Working
+        } else {
+            SystemStatus::Idle
+        };
+
+        Ok(status)
+    }
+
+    #[cold]
+    fn handle_shutdown<A>(&mut self, actor: &mut A)
+    where
+        A: Actor<D, C, M>,
+    {
+        // Handle shutdown signal immediately
+        match self.shutdown_mode {
+            ShutdownMode::Immediate => {
+                // Drop all pending messages, exit immediately
+                return;
+            }
+            ShutdownMode::DrainControl => {
+                // Drain control+management lanes, drop data
+                self.drain_control_and_management(actor);
+                return;
+            }
+            ShutdownMode::DrainAll { timeout } => {
+                // Process all pending messages with timeout fallback
+                self.drain_all_with_timeout(actor, timeout);
+                return;
+            }
+        }
+    }
+
     /// Create a new scheduler channel with priority lanes.
     ///
     /// # Arguments
@@ -636,14 +913,12 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
     pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
-        let (tx_shutdown, rx_shutdown) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
         let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
         let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
 
         let sender = ActorHandle {
             tx_doorbell,
-            tx_shutdown,
             tx_data,
             tx_control,
             tx_mgmt,
@@ -652,12 +927,13 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
         let receiver = ActorScheduler {
             rx_doorbell,
-            rx_shutdown,
             rx_data,
             rx_control,
             rx_mgmt,
             data_burst_limit,
             management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
+            control_burst_limit: CONTROL_MGMT_BUFFER_SIZE * 10,
+            shutdown_mode: ShutdownMode::default(),
         };
 
         (sender, receiver)
@@ -681,14 +957,12 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         wake_handler: Option<Arc<dyn WakeHandler>>,
     ) -> (ActorHandle<D, C, M>, Self) {
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
-        let (tx_shutdown, rx_shutdown) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
         let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
         let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
 
         let sender = ActorHandle {
             tx_doorbell,
-            tx_shutdown,
             tx_data,
             tx_control,
             tx_mgmt,
@@ -697,12 +971,59 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
         let receiver = ActorScheduler {
             rx_doorbell,
-            rx_shutdown,
             rx_data,
             rx_control,
             rx_mgmt,
             data_burst_limit,
             management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
+            control_burst_limit: CONTROL_MGMT_BUFFER_SIZE * 10,
+            shutdown_mode: ShutdownMode::default(),
+        };
+
+        (sender, receiver)
+    }
+
+    /// Create a new scheduler channel with configurable shutdown behavior.
+    ///
+    /// This variant allows specifying how the actor should behave on shutdown:
+    /// - `Immediate`: Drop all pending messages (default)
+    /// - `DrainControl`: Process control+management, drop data
+    /// - `DrainAll`: Process all messages with timeout fallback
+    ///
+    /// # Arguments
+    /// * `data_burst_limit` - Maximum data messages to process per wake cycle
+    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold)
+    /// * `shutdown_mode` - Shutdown behavior (see `ShutdownMode`)
+    ///
+    /// # Returns
+    /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
+    pub fn new_with_shutdown_mode(
+        data_burst_limit: usize,
+        data_buffer_size: usize,
+        shutdown_mode: ShutdownMode,
+    ) -> (ActorHandle<D, C, M>, Self) {
+        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
+        let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
+        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+
+        let sender = ActorHandle {
+            tx_doorbell,
+            tx_data,
+            tx_control,
+            tx_mgmt,
+            wake_handler: None,
+        };
+
+        let receiver = ActorScheduler {
+            rx_doorbell,
+            rx_data,
+            rx_control,
+            rx_mgmt,
+            data_burst_limit,
+            management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
+            control_burst_limit: CONTROL_MGMT_BUFFER_SIZE * 10,
+            shutdown_mode,
         };
 
         (sender, receiver)
@@ -721,76 +1042,50 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     where
         A: Actor<D, C, M>,
     {
+        use std::sync::mpsc::TryRecvError;
+
         loop {
+            // Block on doorbell - can be Wake or Shutdown signal
             match self.rx_doorbell.recv() {
-                Ok(()) => {}
-                Err(_) => return,
-            }
-
-            let mut keep_working = true;
-
-            while keep_working {
-                keep_working = false;
-
-                // Check shutdown first - highest priority, causes immediate exit
-                if self.rx_shutdown.try_recv().is_ok() {
+                Ok(System::Shutdown) => {
+                    self.handle_shutdown(actor);
                     return;
                 }
+                Ok(System::Wake) => {
+                    // Process messages, check status
+                    let status = match self.handle_wake(actor) {
+                        Ok(status) => status,
+                        Err(()) => return, // Channel disconnected
+                    };
 
-                while let Ok(ctrl_msg) = self.rx_control.try_recv() {
-                    actor.handle_control(ctrl_msg);
-                    keep_working = true;
-                }
-
-                let mut mgmt_count = 0;
-                while mgmt_count < self.management_burst_limit {
-                    match self.rx_mgmt.try_recv() {
-                        Ok(msg) => {
-                            actor.handle_management(msg);
-                            mgmt_count += 1;
+                    // If working, keep checking doorbell with try_recv
+                    if matches!(status, SystemStatus::Working) {
+                        loop {
+                            match self.rx_doorbell.try_recv() {
+                                Ok(System::Shutdown) => {
+                                    self.handle_shutdown(actor);
+                                    return;
+                                }
+                                Ok(System::Wake) => {
+                                    // Clear wake signal, already working
+                                }
+                                Err(TryRecvError::Empty) => {
+                                    // No signal, process messages
+                                    let status = match self.handle_wake(actor) {
+                                        Ok(status) => status,
+                                        Err(()) => return, // Channel disconnected
+                                    };
+                                    if matches!(status, SystemStatus::Idle) {
+                                        break; // Go back to blocking recv
+                                    }
+                                }
+                                Err(TryRecvError::Disconnected) => return,
+                            }
                         }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => return,
                     }
+                    // Else idle, go back to blocking recv() in next loop iteration
                 }
-                if mgmt_count >= self.management_burst_limit {
-                    keep_working = true;
-                }
-
-                // Check control between management and data for rough priority
-                while let Ok(ctrl_msg) = self.rx_control.try_recv() {
-                    actor.handle_control(ctrl_msg);
-                    keep_working = true;
-                }
-
-                let mut data_count = 0;
-                while data_count < self.data_burst_limit {
-                    match self.rx_data.try_recv() {
-                        Ok(msg) => {
-                            actor.handle_data(msg);
-                            data_count += 1;
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => return,
-                    }
-                }
-
-                if data_count >= self.data_burst_limit {
-                    keep_working = true;
-                }
-
-                // Call park with appropriate hint based on whether we'll loop again
-                let hint = if keep_working {
-                    ParkHint::Poll // Queues still have work, do quick OS poll
-                } else {
-                    ParkHint::Wait // Queues drained, can block
-                };
-                let returned_hint = actor.park(hint);
-
-                // Actor can override and request to keep looping
-                if returned_hint == ParkHint::Poll {
-                    keep_working = true;
-                }
+                Err(_) => return, // Channel disconnected
             }
         }
     }
@@ -944,13 +1239,7 @@ mod tests {
         let processed = Arc::new(AtomicUsize::new(0));
         let processed_clone = processed.clone();
 
-        // Queue many data messages
-        for i in 0..50 {
-            tx.send(Message::Data(i)).unwrap();
-        }
-        // Then shutdown
-        tx.send(Message::Shutdown).unwrap();
-
+        // Spawn actor thread first
         let handle = thread::spawn(move || {
             struct CountActor(Arc<AtomicUsize>);
             impl Actor<i32, (), ()> for CountActor {
@@ -965,6 +1254,16 @@ mod tests {
             }
             rx.run(&mut CountActor(processed_clone));
         });
+
+        // Ensure actor is running
+        thread::sleep(Duration::from_millis(10));
+
+        // Queue many data messages
+        for i in 0..50 {
+            tx.send(Message::Data(i)).unwrap();
+        }
+        // Then shutdown
+        tx.send(Message::Shutdown).unwrap();
 
         handle.join().unwrap();
 
@@ -1128,6 +1427,417 @@ mod troupe_tests {
             .send(Message::Control(EngineControl::Tick))
             .unwrap();
     }
+
+    /// Adversarial test: Malicious control sender trying to starve data lane
+    /// Uses CONTINUOUS flooding to ensure burst limiting works during active attack
+    #[test]
+    fn adversarial_control_flood_vs_data() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::thread;
+
+        let (tx, mut rx) = ActorScheduler::<i32, (), ()>::new(100, 100);
+
+        let control_processed = Arc::new(AtomicUsize::new(0));
+        let data_processed = Arc::new(AtomicUsize::new(0));
+        let stop_flooding = Arc::new(AtomicBool::new(false));
+
+        let cp = control_processed.clone();
+        let dp = data_processed.clone();
+
+        // Receiver thread
+        let receiver_handle = thread::spawn(move || {
+            struct TestActor {
+                control_count: Arc<AtomicUsize>,
+                data_count: Arc<AtomicUsize>,
+            }
+            impl Actor<i32, (), ()> for TestActor {
+                fn handle_control(&mut self, _: ()) {
+                    self.control_count.fetch_add(1, Ordering::Relaxed);
+                }
+                fn handle_data(&mut self, _: i32) {
+                    self.data_count.fetch_add(1, Ordering::Relaxed);
+                }
+                fn handle_management(&mut self, _: ()) {}
+                fn park(&mut self, _: ParkHint) -> ParkHint {
+                    ParkHint::Poll // Keep spinning to maximize throughput
+                }
+            }
+
+            let mut actor = TestActor {
+                control_count: cp,
+                data_count: dp,
+            };
+            rx.run(&mut actor);
+        });
+
+        // Malicious control sender: CONTINUOUS flood
+        let tx_control = tx.clone();
+        let stop_flag = stop_flooding.clone();
+        let control_sender = thread::spawn(move || {
+            let mut sent = 0;
+            while !stop_flag.load(Ordering::Relaxed) {
+                if tx_control.send(Message::Control(())).is_ok() {
+                    sent += 1;
+                }
+            }
+            sent
+        });
+
+        // Give flooder time to start
+        thread::sleep(Duration::from_millis(20));
+
+        // Well-behaved data sender sends DURING the flood
+        let tx_data = tx.clone();
+        let data_sender = thread::spawn(move || {
+            for i in 0..100 {
+                let _ = tx_data.send(Message::Data(i));
+            }
+        });
+
+        data_sender.join().unwrap();
+
+        // Let it run a bit more
+        thread::sleep(Duration::from_millis(50));
+
+        // Stop the flood
+        stop_flooding.store(true, Ordering::Relaxed);
+        let control_sent = control_sender.join().unwrap();
+
+        // Give receiver time to drain
+        thread::sleep(Duration::from_millis(50));
+        drop(tx);
+        receiver_handle.join().unwrap();
+
+        let control_count = control_processed.load(Ordering::Relaxed);
+        let data_count = data_processed.load(Ordering::Relaxed);
+
+        println!(
+            "Control flood vs data - Control sent: {}, processed: {}, Data processed: {}/100",
+            control_sent, control_count, data_count
+        );
+
+        // CRITICAL: Data must get through DURING continuous control flood
+        assert!(
+            data_count > 0,
+            "Data lane was completely starved during continuous control flood"
+        );
+
+        // With burst limiting, we should process a good portion of data
+        assert!(
+            data_count > 50,
+            "Burst limiting too weak - only {}/100 data processed during flood",
+            data_count
+        );
+    }
+
+    /// Adversarial test: Multiple bad actors teaming up to flood control
+    /// Uses CONTINUOUS flooding from multiple threads to test collusion resistance
+    #[test]
+    fn adversarial_multiple_control_flooders() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::thread;
+
+        let (tx, mut rx) = ActorScheduler::<i32, (), ()>::new(100, 100);
+
+        let control_processed = Arc::new(AtomicUsize::new(0));
+        let data_processed = Arc::new(AtomicUsize::new(0));
+        let stop_flooding = Arc::new(AtomicBool::new(false));
+
+        let cp = control_processed.clone();
+        let dp = data_processed.clone();
+
+        // Receiver thread
+        let receiver_handle = thread::spawn(move || {
+            struct TestActor {
+                control_count: Arc<AtomicUsize>,
+                data_count: Arc<AtomicUsize>,
+            }
+            impl Actor<i32, (), ()> for TestActor {
+                fn handle_control(&mut self, _: ()) {
+                    self.control_count.fetch_add(1, Ordering::Relaxed);
+                }
+                fn handle_data(&mut self, _: i32) {
+                    self.data_count.fetch_add(1, Ordering::Relaxed);
+                }
+                fn handle_management(&mut self, _: ()) {}
+                fn park(&mut self, _: ParkHint) -> ParkHint {
+                    ParkHint::Poll
+                }
+            }
+
+            let mut actor = TestActor {
+                control_count: cp,
+                data_count: dp,
+            };
+            rx.run(&mut actor);
+        });
+
+        // Spawn 5 malicious control senders - CONTINUOUS flooding
+        let mut control_handles = vec![];
+        for _ in 0..5 {
+            let tx_clone = tx.clone();
+            let stop_flag = stop_flooding.clone();
+            let handle = thread::spawn(move || {
+                let mut sent = 0;
+                while !stop_flag.load(Ordering::Relaxed) {
+                    if tx_clone.send(Message::Control(())).is_ok() {
+                        sent += 1;
+                    }
+                }
+                sent
+            });
+            control_handles.push(handle);
+        }
+
+        // Give flooders time to start
+        thread::sleep(Duration::from_millis(20));
+
+        // Well-behaved data sender sends DURING the coordinated attack
+        let tx_data = tx.clone();
+        let data_sender = thread::spawn(move || {
+            for i in 0..100 {
+                let _ = tx_data.send(Message::Data(i));
+            }
+        });
+
+        data_sender.join().unwrap();
+
+        // Let it run a bit more
+        thread::sleep(Duration::from_millis(50));
+
+        // Stop all flooders
+        stop_flooding.store(true, Ordering::Relaxed);
+        let mut total_control_sent = 0;
+        for handle in control_handles {
+            total_control_sent += handle.join().unwrap();
+        }
+
+        // Give receiver time to drain
+        thread::sleep(Duration::from_millis(50));
+        drop(tx);
+        receiver_handle.join().unwrap();
+
+        let control_count = control_processed.load(Ordering::Relaxed);
+        let data_count = data_processed.load(Ordering::Relaxed);
+
+        println!(
+            "Multiple attackers - Control sent: {}, processed: {}, Data: {}/100",
+            total_control_sent, control_count, data_count
+        );
+
+        // CRITICAL: Even with 5 coordinated attackers, data must get through
+        assert!(
+            data_count > 0,
+            "Data lane completely starved by coordinated control attack"
+        );
+
+        // With burst limiting, we should process a good portion despite 5 attackers
+        assert!(
+            data_count > 50,
+            "Burst limiting too weak against coordinated attack - only {}/100 data processed",
+            data_count
+        );
+    }
+
+    /// Adversarial test: Continuous control flood with concurrent data
+    /// Validates that burst limiting allows data through DURING active control flooding
+    #[test]
+    fn adversarial_continuous_control_flood() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::thread;
+
+        let (tx, mut rx) = ActorScheduler::<i32, (), ()>::new(100, 100);
+
+        let control_processed = Arc::new(AtomicUsize::new(0));
+        let data_processed = Arc::new(AtomicUsize::new(0));
+        let stop_flooding = Arc::new(AtomicBool::new(false));
+
+        let cp = control_processed.clone();
+        let dp = data_processed.clone();
+
+        // Receiver thread
+        let receiver_handle = thread::spawn(move || {
+            struct TestActor {
+                control_count: Arc<AtomicUsize>,
+                data_count: Arc<AtomicUsize>,
+            }
+            impl Actor<i32, (), ()> for TestActor {
+                fn handle_control(&mut self, _: ()) {
+                    self.control_count.fetch_add(1, Ordering::Relaxed);
+                }
+                fn handle_data(&mut self, _: i32) {
+                    self.data_count.fetch_add(1, Ordering::Relaxed);
+                }
+                fn handle_management(&mut self, _: ()) {}
+                fn park(&mut self, _: ParkHint) -> ParkHint {
+                    ParkHint::Poll
+                }
+            }
+
+            let mut actor = TestActor {
+                control_count: cp,
+                data_count: dp,
+            };
+            rx.run(&mut actor);
+        });
+
+        // Continuous control flooder - doesn't stop until flag is set
+        let tx_control = tx.clone();
+        let stop_flag = stop_flooding.clone();
+        let control_flooder = thread::spawn(move || {
+            let mut sent = 0;
+            while !stop_flag.load(Ordering::Relaxed) {
+                if tx_control.send(Message::Control(())).is_ok() {
+                    sent += 1;
+                }
+            }
+            sent
+        });
+
+        // Give flooder time to start flooding
+        thread::sleep(Duration::from_millis(50));
+
+        // Now send data messages WHILE control is flooding
+        let tx_data = tx.clone();
+        let data_sender = thread::spawn(move || {
+            for i in 0..100 {
+                let _ = tx_data.send(Message::Data(i));
+            }
+        });
+
+        // Wait for data to be sent
+        data_sender.join().unwrap();
+
+        // Let receiver process for a bit more
+        thread::sleep(Duration::from_millis(100));
+
+        // Stop the flooder
+        stop_flooding.store(true, Ordering::Relaxed);
+        let control_sent = control_flooder.join().unwrap();
+
+        // Give receiver time to drain
+        thread::sleep(Duration::from_millis(50));
+        drop(tx);
+        receiver_handle.join().unwrap();
+
+        let control_count = control_processed.load(Ordering::Relaxed);
+        let data_count = data_processed.load(Ordering::Relaxed);
+
+        println!(
+            "Continuous flood - Control sent: {}, processed: {}, Data processed: {}/100",
+            control_sent, control_count, data_count
+        );
+
+        // CRITICAL: Data must get through even during continuous control flooding
+        // This proves burst limiting prevents control monopolization
+        assert!(
+            data_count > 0,
+            "Burst limiting FAILED - data was starved during continuous control flood"
+        );
+
+        // We should process a significant portion of data despite the flood
+        assert!(
+            data_count > 50,
+            "Burst limiting is too weak - only {}/100 data messages processed",
+            data_count
+        );
+    }
+
+    /// Adversarial test: Slow receiver with many aggressive senders
+    /// Validates that backoff system prevents message loss even under heavy load
+    #[test]
+    fn adversarial_slow_receiver_resilience() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        // Small buffers to trigger backpressure
+        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 10);
+
+        let control_processed = Arc::new(AtomicUsize::new(0));
+        let mgmt_processed = Arc::new(AtomicUsize::new(0));
+        let data_processed = Arc::new(AtomicUsize::new(0));
+
+        let cp = control_processed.clone();
+        let mp = mgmt_processed.clone();
+        let dp = data_processed.clone();
+
+        // Slow receiver that processes steadily
+        let receiver_handle = thread::spawn(move || {
+            struct SlowActor {
+                control_count: Arc<AtomicUsize>,
+                mgmt_count: Arc<AtomicUsize>,
+                data_count: Arc<AtomicUsize>,
+            }
+            impl Actor<i32, i32, i32> for SlowActor {
+                fn handle_control(&mut self, _: i32) {
+                    self.control_count.fetch_add(1, Ordering::Relaxed);
+                    thread::sleep(Duration::from_millis(2));
+                }
+                fn handle_data(&mut self, _: i32) {
+                    self.data_count.fetch_add(1, Ordering::Relaxed);
+                    thread::sleep(Duration::from_millis(2));
+                }
+                fn handle_management(&mut self, _: i32) {
+                    self.mgmt_count.fetch_add(1, Ordering::Relaxed);
+                    thread::sleep(Duration::from_millis(2));
+                }
+                fn park(&mut self, _: ParkHint) -> ParkHint {
+                    ParkHint::Poll
+                }
+            }
+
+            let mut actor = SlowActor {
+                control_count: cp,
+                mgmt_count: mp,
+                data_count: dp,
+            };
+            rx.run(&mut actor);
+        });
+
+        // Spawn multiple aggressive senders
+        let mut sender_handles = vec![];
+        for sender_id in 0..3 {
+            let tx_clone = tx.clone();
+            let handle = thread::spawn(move || {
+                for i in 0..100 {
+                    let msg_val = sender_id * 1000 + i;
+                    // Flood all lanes - backoff should prevent loss
+                    let _ = tx_clone.send(Message::Control(msg_val));
+                    let _ = tx_clone.send(Message::Management(msg_val));
+                }
+            });
+            sender_handles.push(handle);
+        }
+
+        for handle in sender_handles {
+            handle.join().unwrap();
+        }
+
+        // Give receiver time to drain
+        thread::sleep(Duration::from_millis(1000));
+        drop(tx);
+        receiver_handle.join().unwrap();
+
+        let control_count = control_processed.load(Ordering::Relaxed);
+        let mgmt_count = mgmt_processed.load(Ordering::Relaxed);
+        let data_count = data_processed.load(Ordering::Relaxed);
+
+        println!(
+            "Slow receiver resilience - Control: {}, Mgmt: {}, Data: {}",
+            control_count, mgmt_count, data_count
+        );
+
+        // Backoff system should allow all messages to eventually get through
+        // 3 senders * 100 messages each = 300 per lane
+        assert_eq!(
+            control_count, 300,
+            "Backoff should allow all control messages through"
+        );
+        assert_eq!(
+            mgmt_count, 300,
+            "Backoff should allow all management messages through"
+        );
+    }
 }
 
 /// Test module for troupe nesting pattern
@@ -1255,5 +1965,272 @@ mod troupe_nesting_tests {
 
         // Just verify the type works
         let _: WorkerExposedHandles = exposed;
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::thread;
+    use std::time::Duration;
+
+    struct CountingActor {
+        data_count: Arc<AtomicUsize>,
+        control_count: Arc<AtomicUsize>,
+        mgmt_count: Arc<AtomicUsize>,
+    }
+
+    impl Actor<i32, (), ()> for CountingActor {
+        fn handle_data(&mut self, _: i32) {
+            self.data_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn handle_control(&mut self, _: ()) {
+            self.control_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn handle_management(&mut self, _: ()) {
+            self.mgmt_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn park(&mut self, hint: ParkHint) -> ParkHint {
+            hint
+        }
+    }
+
+    #[test]
+    fn test_shutdown_immediate_exits_quickly_under_flood() {
+        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
+            100,
+            100,
+            ShutdownMode::Immediate,
+        );
+
+        let data_count = Arc::new(AtomicUsize::new(0));
+        let control_count = Arc::new(AtomicUsize::new(0));
+        let mgmt_count = Arc::new(AtomicUsize::new(0));
+
+        let actor_data = data_count.clone();
+        let actor_control = control_count.clone();
+        let actor_mgmt = mgmt_count.clone();
+
+        let actor_handle = thread::spawn(move || {
+            let mut actor = CountingActor {
+                data_count: actor_data,
+                control_count: actor_control,
+                mgmt_count: actor_mgmt,
+            };
+            rx.run(&mut actor);
+        });
+
+        // Flood with data messages
+        for i in 0..1000 {
+            let _ = tx.send(Message::Data(i));
+        }
+
+        // Give time for messages to queue
+        thread::sleep(Duration::from_millis(10));
+
+        // Shutdown should return quickly even with backlog
+        let shutdown_start = std::time::Instant::now();
+        tx.send(Message::Shutdown).unwrap();
+        actor_handle.join().unwrap();
+        let shutdown_duration = shutdown_start.elapsed();
+
+        // Should shutdown within 100ms (fast, not waiting for drain)
+        assert!(
+            shutdown_duration < Duration::from_millis(100),
+            "Immediate shutdown should exit quickly, took {:?}",
+            shutdown_duration
+        );
+    }
+
+    #[test]
+    fn test_shutdown_drain_control_processes_control_and_mgmt() {
+        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
+            100,
+            100,
+            ShutdownMode::DrainControl,
+        );
+
+        let data_count = Arc::new(AtomicUsize::new(0));
+        let control_count = Arc::new(AtomicUsize::new(0));
+        let mgmt_count = Arc::new(AtomicUsize::new(0));
+
+        let actor_data = data_count.clone();
+        let actor_control = control_count.clone();
+        let actor_mgmt = mgmt_count.clone();
+
+        let actor_handle = thread::spawn(move || {
+            let mut actor = CountingActor {
+                data_count: actor_data,
+                control_count: actor_control,
+                mgmt_count: actor_mgmt,
+            };
+            rx.run(&mut actor);
+        });
+
+        // Send messages
+        for i in 0..50 {
+            tx.send(Message::Data(i)).unwrap();
+        }
+        for _ in 0..50 {
+            tx.send(Message::Control(())).unwrap();
+        }
+        for _ in 0..50 {
+            tx.send(Message::Management(())).unwrap();
+        }
+
+        // Give time for some to queue
+        thread::sleep(Duration::from_millis(10));
+
+        // Shutdown - should drain control+mgmt
+        tx.send(Message::Shutdown).unwrap();
+        actor_handle.join().unwrap();
+
+        // All control+mgmt should be processed, data may be dropped
+        let control = control_count.load(Ordering::Relaxed);
+        let mgmt = mgmt_count.load(Ordering::Relaxed);
+        let data = data_count.load(Ordering::Relaxed);
+
+        assert_eq!(control, 50, "All control messages should be processed");
+        assert_eq!(mgmt, 50, "All management messages should be processed");
+        // Data might be partially processed or dropped
+        assert!(data <= 50, "Data messages may be dropped");
+    }
+
+    #[test]
+    fn test_shutdown_drain_all_processes_everything() {
+        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
+            100,
+            100,
+            ShutdownMode::DrainAll {
+                timeout: Duration::from_secs(1),
+            },
+        );
+
+        let data_count = Arc::new(AtomicUsize::new(0));
+        let control_count = Arc::new(AtomicUsize::new(0));
+        let mgmt_count = Arc::new(AtomicUsize::new(0));
+
+        let actor_data = data_count.clone();
+        let actor_control = control_count.clone();
+        let actor_mgmt = mgmt_count.clone();
+
+        let actor_handle = thread::spawn(move || {
+            let mut actor = CountingActor {
+                data_count: actor_data,
+                control_count: actor_control,
+                mgmt_count: actor_mgmt,
+            };
+            rx.run(&mut actor);
+        });
+
+        // Send 100 of each type
+        for i in 0..100 {
+            tx.send(Message::Data(i)).unwrap();
+            tx.send(Message::Control(())).unwrap();
+            tx.send(Message::Management(())).unwrap();
+        }
+
+        // Give time for messages to queue
+        thread::sleep(Duration::from_millis(50));
+
+        // Shutdown - should drain all
+        tx.send(Message::Shutdown).unwrap();
+        actor_handle.join().unwrap();
+
+        // All messages should be processed
+        assert_eq!(data_count.load(Ordering::Relaxed), 100);
+        assert_eq!(control_count.load(Ordering::Relaxed), 100);
+        assert_eq!(mgmt_count.load(Ordering::Relaxed), 100);
+    }
+
+    #[test]
+    fn test_shutdown_drain_all_timeout_fallback() {
+        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
+            10,  // Small burst limit to check shutdown frequently
+            1000, // Large buffer to avoid blocking sends
+            ShutdownMode::DrainAll {
+                timeout: Duration::from_millis(50), // Short timeout
+            },
+        );
+
+        let data_count = Arc::new(AtomicUsize::new(0));
+        let control_count = Arc::new(AtomicUsize::new(0));
+        let mgmt_count = Arc::new(AtomicUsize::new(0));
+
+        let actor_data = data_count.clone();
+        let actor_control = control_count.clone();
+        let actor_mgmt = mgmt_count.clone();
+
+        // Slow actor that sleeps on each message
+        struct SlowActor {
+            data_count: Arc<AtomicUsize>,
+            control_count: Arc<AtomicUsize>,
+            mgmt_count: Arc<AtomicUsize>,
+        }
+
+        impl Actor<i32, (), ()> for SlowActor {
+            fn handle_data(&mut self, _: i32) {
+                thread::sleep(Duration::from_millis(1)); // Slow!
+                self.data_count.fetch_add(1, Ordering::Relaxed);
+            }
+
+            fn handle_control(&mut self, _: ()) {
+                self.control_count.fetch_add(1, Ordering::Relaxed);
+            }
+
+            fn handle_management(&mut self, _: ()) {
+                self.mgmt_count.fetch_add(1, Ordering::Relaxed);
+            }
+
+            fn park(&mut self, hint: ParkHint) -> ParkHint {
+                hint
+            }
+        }
+
+        let actor_handle = thread::spawn(move || {
+            let mut actor = SlowActor {
+                data_count: actor_data,
+                control_count: actor_control,
+                mgmt_count: actor_mgmt,
+            };
+            rx.run(&mut actor);
+        });
+
+        // Send 200 data messages (would take 200ms to process fully)
+        for i in 0..200 {
+            tx.send(Message::Data(i)).unwrap();
+        }
+
+        // Give actor time to start processing but not finish
+        thread::sleep(Duration::from_millis(5));
+
+        // Shutdown with 20ms timeout - should timeout before processing all 200
+        let shutdown_start = std::time::Instant::now();
+        tx.send(Message::Shutdown).unwrap();
+        actor_handle.join().unwrap();
+        let shutdown_duration = shutdown_start.elapsed();
+
+        // Shutdown should respect timeout (~50ms + overhead for normal run loop batch)
+        assert!(
+            shutdown_duration < Duration::from_millis(100),
+            "Timeout should limit shutdown duration, took {:?}",
+            shutdown_duration
+        );
+
+        // Should have processed SOME but definitely not all 200
+        let processed = data_count.load(Ordering::Relaxed);
+        assert!(
+            processed < 200,
+            "Timeout should prevent processing all messages, processed {}",
+            processed
+        );
+        assert!(processed > 10, "Should process at least some messages before timeout");
     }
 }

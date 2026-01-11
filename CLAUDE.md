@@ -1,12 +1,18 @@
 # CLAUDE.md - AI Assistant Guide for core-term
 
-## Critical Constraints
-
-- **NO TERMINAL LOGIC GOES IN PIXELFLOW.** PixelFlow is a general-purpose graphics library being extracted to its own crate/repo. Keep it terminal-agnostic.
 
 ## Project Overview
 
 **core-term** is a GPU-free terminal emulator built on PixelFlow, a pull-based functional graphics engine using CPU SIMD. The project demonstrates that elegant algebraic abstractions can achieve 155 FPS at 1080p on pure CPU.
+**pixelflow** is an eDSL built on rust isomorphic to the typed lambda calculus.
+**pixelflow-graphic** is graphic library built using the aforementioned eDSL.
+**pixelflow-runtime** offers a platform agnostic runtime for applications using pixelflow rendering.
+**actor-scheduler** offers a user space cooperative scheduler for actor model based libraries/applications
+
+## Critical Constraints
+
+- **NO TERMINAL LOGIC GOES IN PIXELFLOW.** PixelFlow is a general-purpose graphics library being extracted to its own crate/repo. Keep it terminal-agnostic.
+- Exporting direct manipulation of fields from pixelflow-core is strictly forbidden. Construct compute kernels at load time and render them.
 
 ### Philosophy
 
@@ -14,6 +20,7 @@
 - **SIMD as algebra**: `Field` wraps SIMD vectors (AVX-512/NEON/SSE2) transparently. Users write equations, compiler emits assembly.
 - **The Fixed Observer**: Camera is at origin. Movement is achieved by warping coordinate space.
 - **Types are shaders**: Combinator trees monomorphize into fused kernels with no runtime dispatch.
+- **Suckless Dependencies**: Keep dependencies to the bare, bare minimum. We probably need 1% of what they offer. This is something the suckless people got right. (no crossbeam)
 
 ## Workspace Structure
 
@@ -33,7 +40,7 @@ core-term/                  # Repository root
 ├── assets/                 # Fonts, resources
 ├── scripts/                # Development scripts
 ├── .github/workflows/      # CI/CD automation
-├── .claude/                # Claude Code configuration
+├── .claude/                # Claude Code configuration + table of contents
 ├── .agent/                 # Agent rules and configuration
 └── .jules/                 # Jules AI configuration
 ```
@@ -47,47 +54,26 @@ core-term/                  # Repository root
 
 These directories configure AI assistants to understand project conventions and constraints.
 
-## Crate Architecture
-
-```
-pixelflow-core        Pure algebra. Field, Manifold, no IO/colors.
-      ↓               The "lambda calculus" of the system.
-      ↓               SIMD backends: AVX-512, SSE2, NEON, scalar fallback.
-      ↓
-pixelflow-graphics    Colors, fonts, compositing, materialization.
-      ↓               Where algebra becomes pixels.
-      ↓
-pixelflow-ml          Linear Attention as Harmonic Global Illumination.
-      ↓               Experimental: unifying transformers & rendering.
-      ↓
-pixelflow-runtime     Windowing, input, render loop, display drivers.
-      ↓               Platform abstraction (macOS/Linux/Web).
-      ↓
-actor-scheduler       Priority message passing, troupe macro.
-      ↓               Three-lane scheduling (Control > Mgmt > Data).
-      ↓
-core-term             Terminal emulator application.
-                      ANSI parsing, PTY I/O, terminal state.
-```
-
 ### Key Crate Details
 
-| Crate | Edition | Purpose |
-|-------|---------|---------|
-| `pixelflow-core` | 2024 | `no_std` SIMD algebra. `Field`, `Manifold`, coordinate variables. Multi-backend (AVX-512/SSE2/NEON/scalar). |
-| `pixelflow-graphics` | 2021 | Font loading, colors (`Rgba8`, `Color`), rasterization, antialiasing. |
-| `pixelflow-ml` | 2024 | Experimental: Linear attention as spherical harmonics. Research on neural rendering. |
-| `pixelflow-runtime` | 2021 | Display drivers (macOS Cocoa, X11, headless, Metal, Web WASM), input handling, vsync. |
-| `actor-scheduler` | 2024 | Priority channels with `troupe!` macro for actor groups. Lock-free concurrency. |
-| `actor-scheduler-macros` | 2024 | Procedural macros for actor system. |
-| `core-term` | 2021 | Terminal application, PTY management, ANSI processing. First PixelFlow consumer. |
-| `xtask` | 2021 | Build tooling for bundling macOS app and running development tasks. |
+| Crate | Purpose |
+|-------|---------|
+| `pixelflow-core` | `no_std` SIMD algebra. `Field`, `Manifold`, coordinate variables. Multi-backend (AVX-512/SSE2/NEON/scalar). |
+| `pixelflow-graphics` | Font loading, colors (`Rgba8`, `Color`), rasterization, antialiasing. |
+| `pixelflow-ml` | Experimental: Linear attention as spherical harmonics. Research on neural rendering. |
+| `pixelflow-runtime` | Display drivers (macOS Cocoa, X11, headless, Metal, Web WASM), input handling, vsync. |
+| `actor-scheduler` | Priority channels with `troupe!` macro for actor groups. Lock-free concurrency. |
+| `actor-scheduler-macros` | Procedural macros for actor system. |
+| `core-term` | Terminal application, PTY management, ANSI processing. First PixelFlow consumer. |
+| `xtask` | Build tooling for bundling macOS app and running development tasks. |
 
 ## Core Concepts
 
 ### The Manifold Abstraction
 
-Everything is a `Manifold<Output = T>` - a function from coordinates to values:
+Everything is a `Manifold<Output = T>` - a profunctor from coordinates to values or a morphism on manifolds:
+dimap is broken up into covariant `map` and contramap `at`
+conditionals are performed using Select or postfix (ManifoldExt) `.select`
 
 ```rust
 // Manifold hierarchy (dimensional collapse):
@@ -100,28 +86,14 @@ trait Manifold {
 }
 ```
 
-### Six Eigenshaders
-
-All shaders compose from six primitives:
-1. **Warp** - Remap coordinates before sampling
-2. **Grade** - Linear transform on values (matrix + bias)
-3. **Lerp** - Continuous interpolation: `a + t*(b-a)`
-4. **Select** - Branchless conditional (discrete)
-5. **Fix** - Iteration as a dimension (fractals, simulation)
-6. **Compute** - Escape hatch (any closure is a Manifold)
-
 ### Actor Model
 
 Three-thread architecture for zero-latency input:
 
-```
-Main Thread (Display)     Orchestrator Thread      PTY I/O Thread
-├─ Cocoa/X11 event loop   ├─ Terminal state        ├─ kqueue/epoll
-├─ BackendEvent → channel ├─ ANSI parsing          ├─ PTY read/write
-└─ Render commands        └─ Render generation     └─ IOEvent → channel
-```
-
 Priority lanes: **Control > Management > Data**
+
+Control/Management prioritize latency over throughput.
+Control creates backpressure by timing out senders who are too aggressive. If the timeout exceeds a threshold, an error is returned, likely causing a crash.
 
 ## Development Workflow
 
@@ -158,13 +130,13 @@ cargo xtask bundle-run --features profiling
 
 The workspace defines three build profiles:
 
+0. **dev** - Fastest Compiles. opt-level=1 because the project crawls at opt-level=0
 1. **release** - Fast compile, good performance (opt-level=3, LTO, codegen-units=1)
 2. **bench** - For benchmarking (LTO, codegen-units=1)
 3. **dist** - Maximum optimization for distribution (LTO, strip, panic=abort)
 
 ### Toolchain
 
-- **Rust Nightly** required (see `rust-toolchain.toml`)
 - SIMD backend auto-detected at compile time via `build.rs` and target features
 - Platform features automatically selected based on OS (macOS Cocoa, Linux X11, Web WASM)
 
@@ -226,6 +198,9 @@ if status_code == 4 { ... }                 // Bad
 |------|---------|
 | `pixelflow-core/src/lib.rs` | Field, Manifold, SIMD type selection, re-exports |
 | `pixelflow-core/src/manifold.rs` | Core Manifold trait and dimensional hierarchy |
+| `pixelflow-core/src/ext.rs` | Manifold methods for ergonomic postfix notation |
+| `pixelflow-core/combinators/at.rs` | Struct version of contramap |
+| `pixelflow-core/combinators/select.rs` | struct version of conditional |
 | `pixelflow-core/src/backend/` | SIMD backend implementations (AVX-512, SSE2, NEON, scalar) |
 | `pixelflow-core/src/combinators/` | Six eigenshaders: Warp, Grade, Lerp, Select, Fix, Compute |
 | `pixelflow-core/src/jet/` | Automatic differentiation for antialiasing |
@@ -279,6 +254,7 @@ if status_code == 4 { ... }                 // Bad
 
 Detailed design docs in `docs/`:
 - `STYLE.md` - Coding style guide and conventions
+- `.claud/`  - Includes claude's auto generated repo TOC
 - `AUTODIFF_RENDERING.md` - Automatic differentiation for antialiasing
 - `MESSAGE_CUJ_COVERAGE.md` - Message passing critical user journeys
 - `gemini/` - Gemini AI integration documentation
@@ -287,19 +263,9 @@ Detailed design docs in `docs/`:
 
 - `README.md` - Project overview, philosophy, getting started
 - `CLAUDE.md` - This file: AI assistant development guide
-- `PERFORMANCE_ANALYSIS.md` - Performance profiling and optimization notes
-- `LICENSE.md` - MIT license
+- `LICENSE.md` - Apache license
 
 ## Common Patterns
-
-### Creating a Color Manifold
-
-```rust
-use pixelflow_graphics::{Color, NamedColor, Manifold};
-
-let red = Color::Named(NamedColor::Red);
-// Color implements Manifold<Output = Discrete>
-```
 
 ### Composing Manifolds
 
@@ -309,6 +275,9 @@ let warped = manifold.warp(|x, y, z, w| (x * 2.0, y * 2.0, z, w));
 
 // Select between two manifolds based on condition
 let selected = mask.select(if_true, if_false);
+
+// Variables as the symbol table
+let circle = (X * X + Y * Y + Z * Z).sqrt();
 ```
 
 ### Actor Message Sending
@@ -533,6 +502,9 @@ core-term/src/
 1. **NO terminal logic in PixelFlow** - Keep it general-purpose
 2. **Pull, not push** - Pixels sample, don't receive
 3. **Types are shaders** - Use type system for optimization
+    3a. Types are the AST
+    3b. Fields/Jets are the IR.
+    3c. variables.rs is the symbol table
 4. **Minimal public API** - Composition over exposure
 5. **Zero allocations** - No per-frame heap allocation
 6. **Platform on main thread** - Especially macOS Cocoa
