@@ -752,16 +752,29 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
 
-        // Sample left and right regions - should produce different output
+        // Materialize at two different spatial regions
         let mut left_pixels = [0u32; PARALLELISM];
         let mut right_pixels = [0u32; PARALLELISM];
 
         materialize_discrete(&bsp, 25.0, 50.0, &mut left_pixels);
         materialize_discrete(&bsp, 75.0, 50.0, &mut right_pixels);
 
-        // Regions must return different values (they have different colors)
-        assert_ne!(left_pixels[0], right_pixels[0],
-            "Left and right regions must evaluate to different colors");
+        // Verify we got red and blue specifically
+        let expected_red = {
+            let red_color = SolidColor::new(255, 0, 0, 255);
+            let mut buf = [0u32; PARALLELISM];
+            materialize_discrete(&red_color, 0.0, 0.0, &mut buf);
+            buf[0]
+        };
+        let expected_blue = {
+            let blue_color = SolidColor::new(0, 0, 255, 255);
+            let mut buf = [0u32; PARALLELISM];
+            materialize_discrete(&blue_color, 0.0, 0.0, &mut buf);
+            buf[0]
+        };
+
+        assert_eq!(left_pixels[0], expected_red, "Left region must be red");
+        assert_eq!(right_pixels[0], expected_blue, "Right region must be blue");
     }
 
     #[test]
