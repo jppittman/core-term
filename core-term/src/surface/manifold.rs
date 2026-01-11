@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_grid_construction() {
-        use pixelflow_graphics::render::{execute, TensorShape};
+        use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 
         let factory = MockFactory {
             cols: 4,
@@ -327,7 +327,7 @@ mod tests {
 
         // Render a small region to test
         let mut buf = [0u32; 64]; // 8x8 pixels
-        execute(&grid, &mut buf, TensorShape::new(8, 8));
+        rasterize(&grid, &mut buf, TensorShape::new(8, 8), 1);
 
         // Check pixel at (4, 0) - should be in first cell (0,0) - white
         let pixel_index = 0 * 8 + 4; // row 0, col 4
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_cell_channel_blending() {
-        use pixelflow_graphics::render::{execute, TensorShape};
+        use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 
         let cell = Cell::new(
             ConstCoverage(0.5),
@@ -355,7 +355,7 @@ mod tests {
 
         // Render a single pixel
         let mut buf = [0u32; 1];
-        execute(&packed, &mut buf, TensorShape::new(1, 1));
+        rasterize(&packed, &mut buf, TensorShape::new(1, 1), 1);
 
         // 50% coverage: R = 0.5*1.0 + 0.5*0.0 = 0.5 = 127
         // B = 0.5*0.0 + 0.5*1.0 = 0.5 = 127
@@ -368,14 +368,14 @@ mod tests {
 
     #[test]
     fn test_color_manifold() {
-        use pixelflow_graphics::render::{execute, TensorShape};
+        use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 
         // Color::Rgb from pixelflow-graphics implements Manifold<Output = Discrete>
         let red = Color::Rgb(255, 0, 0);
 
         // Render a single pixel
         let mut buf = [0u32; 1];
-        execute(&red, &mut buf, TensorShape::new(1, 1));
+        rasterize(&red, &mut buf, TensorShape::new(1, 1), 1);
 
         let r = buf[0] & 0xFF;
         let g = (buf[0] >> 8) & 0xFF;

@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use freetype::Library;
 use pixelflow_graphics::{
-    render::rasterizer::{execute, render_work_stealing, RenderOptions, TensorShape},
+    render::rasterizer::{rasterize, TensorShape},
     Font, Grayscale, Rgba8,
 };
 
@@ -61,7 +61,7 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
                 .glyph_scaled(black_box(char_code), size_px as f32)
                 .unwrap();
             let colored = Grayscale(glyph);
-            execute(&colored, &mut buffer, shape);
+            rasterize(&colored, &mut buffer, shape, 1);
             black_box(&buffer);
         })
     });
@@ -74,7 +74,7 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("pixelflow_cached", "64px_g"), |b| {
         b.iter(|| {
-            execute(&cached_colored, &mut buffer, shape);
+            rasterize(&cached_colored, &mut buffer, shape, 1);
             black_box(&buffer);
         })
     });
@@ -83,17 +83,15 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     // PixelFlow Setup (Parallel)
     // ------------------------------------------------------------------------
     group.bench_function(BenchmarkId::new("pixelflow_parallel_2", "64px_g"), |b| {
-        let options = RenderOptions { num_threads: 2 };
         b.iter(|| {
-            render_work_stealing(&cached_colored, &mut buffer, shape, options);
+            rasterize(&cached_colored, &mut buffer, shape, 2);
             black_box(&buffer);
         })
     });
 
     group.bench_function(BenchmarkId::new("pixelflow_parallel_4", "64px_g"), |b| {
-        let options = RenderOptions { num_threads: 4 };
         b.iter(|| {
-            render_work_stealing(&cached_colored, &mut buffer, shape, options);
+            rasterize(&cached_colored, &mut buffer, shape, 4);
             black_box(&buffer);
         })
     });
@@ -122,34 +120,31 @@ fn bench_heavy_workload(c: &mut Criterion) {
     // Serial
     group.bench_function(BenchmarkId::new("pixelflow_serial", "256px_@"), |b| {
         b.iter(|| {
-            execute(&colored, &mut buffer, shape);
+            rasterize(&colored, &mut buffer, shape, 1);
             black_box(&buffer);
         })
     });
 
     // Parallel 2
     group.bench_function(BenchmarkId::new("pixelflow_parallel_2", "256px_@"), |b| {
-        let options = RenderOptions { num_threads: 2 };
         b.iter(|| {
-            render_work_stealing(&colored, &mut buffer, shape, options);
+            rasterize(&colored, &mut buffer, shape, 2);
             black_box(&buffer);
         })
     });
 
     // Parallel 4
     group.bench_function(BenchmarkId::new("pixelflow_parallel_4", "256px_@"), |b| {
-        let options = RenderOptions { num_threads: 4 };
         b.iter(|| {
-            render_work_stealing(&colored, &mut buffer, shape, options);
+            rasterize(&colored, &mut buffer, shape, 4);
             black_box(&buffer);
         })
     });
 
     // Parallel 8
     group.bench_function(BenchmarkId::new("pixelflow_parallel_8", "256px_@"), |b| {
-        let options = RenderOptions { num_threads: 8 };
         b.iter(|| {
-            render_work_stealing(&colored, &mut buffer, shape, options);
+            rasterize(&colored, &mut buffer, shape, 8);
             black_box(&buffer);
         })
     });
@@ -198,7 +193,7 @@ fn bench_cold_start(c: &mut Criterion) {
                 .glyph_scaled(black_box(char_code), size_px as f32)
                 .unwrap();
             let colored = Grayscale(glyph);
-            execute(&colored, &mut buffer, shape);
+            rasterize(&colored, &mut buffer, shape, 1);
             black_box(&buffer);
         })
     });

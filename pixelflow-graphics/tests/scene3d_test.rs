@@ -10,7 +10,7 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::{execute, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 use pixelflow_graphics::scene3d::{
     Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
     Reflect, ScreenToDir, Sky, Surface,
@@ -129,13 +129,14 @@ fn test_chrome_unit_sphere() {
 
     // Render
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    execute(
+    rasterize(
         &renderable,
         frame.as_slice_mut(),
         TensorShape {
             width: W,
             height: H,
         },
+        1,
     );
 
     // Save PPM
@@ -202,13 +203,14 @@ fn test_sky_only() {
     let renderable = GrayToRgba { inner: screen };
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    execute(
+    rasterize(
         &renderable,
         frame.as_slice_mut(),
         TensorShape {
             width: W,
             height: H,
         },
+        1,
     );
 
     // Save
@@ -252,13 +254,14 @@ fn test_floor_only() {
     let renderable = GrayToRgba { inner: screen };
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    execute(
+    rasterize(
         &renderable,
         frame.as_slice_mut(),
         TensorShape {
             width: W,
             height: H,
         },
+        1,
     );
 
     // Save
@@ -344,13 +347,14 @@ fn test_color_chrome_sphere() {
     // Render
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let start = std::time::Instant::now();
-    execute(
+    rasterize(
         &renderable,
         frame.as_slice_mut(),
         TensorShape {
             width: W,
             height: H,
         },
+        1,
     );
     let elapsed = start.elapsed();
     let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
@@ -504,14 +508,14 @@ fn test_mullet_vs_3channel_comparison() {
 
     let mut old_frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let old_start = std::time::Instant::now();
-    execute(
+    rasterize(
         &old_renderer,
         old_frame.as_slice_mut(),
         TensorShape {
             width: W,
             height: H,
         },
-    );
+    , 1);
     let old_elapsed = old_start.elapsed();
 
     // ============================================================
@@ -565,14 +569,14 @@ fn test_mullet_vs_3channel_comparison() {
 
     let mut new_frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let new_start = std::time::Instant::now();
-    execute(
+    rasterize(
         &new_renderer,
         new_frame.as_slice_mut(),
         TensorShape {
             width: W,
             height: H,
         },
-    );
+    , 1);
     let new_elapsed = new_start.elapsed();
 
     // ============================================================
@@ -630,7 +634,6 @@ fn test_mullet_vs_3channel_comparison() {
 /// Benchmark: Compare work-stealing vs single-threaded at 1080p
 #[test]
 fn test_work_stealing_benchmark() {
-    use pixelflow_graphics::render::rasterizer::{render_work_stealing, RenderOptions};
 
     const W: usize = 1920;
     const H: usize = 1080;
@@ -689,14 +692,13 @@ fn test_work_stealing_benchmark() {
     // Single-threaded baseline
     let mut frame1 = Frame::<Rgba8>::new(W as u32, H as u32);
     let start1 = std::time::Instant::now();
-    execute(&renderable, frame1.as_slice_mut(), shape);
+    rasterize(&renderable, frame1.as_slice_mut(), shape, 1);
     let single = start1.elapsed();
 
     // Work-stealing with 12 threads
     let mut frame2 = Frame::<Rgba8>::new(W as u32, H as u32);
     let start2 = std::time::Instant::now();
-    let options = RenderOptions { num_threads: 12 };
-    render_work_stealing(&renderable, frame2.as_slice_mut(), shape, options);
+    rasterize(&renderable, frame2.as_slice_mut(), shape, 12);
     let parallel = start2.elapsed();
 
     let speedup = single.as_secs_f64() / parallel.as_secs_f64();
@@ -711,5 +713,5 @@ fn test_work_stealing_benchmark() {
     assert_eq!(
         frame1.data, frame2.data,
         "Parallel output must match single-threaded"
-    );
+    , 1);
 }
