@@ -9,11 +9,17 @@ Convert manifolds to renderable output. Colors, fonts, rasterization, shapes.
 ## What Lives Here
 
 - Color system: `Color`, `Rgba8`, `Bgra8`, `ColorCube`, `Grayscale`
-- Font rendering: `Font`, `Glyph`, `GlyphCache`, `CachedText`
-- Rasterization: `execute()`, `TensorShape`, parallel rendering
-- Shapes: `circle`, `square`, `rectangle` (manifold stencils)
-- 3D: `scene3d` module (experimental)
+- Font rendering: `Font`, `Glyph`, `GlyphCache`, `CachedText`, `GlyphExt` transforms
+- Rasterization: `execute()`, `execute_stripe()`, `TensorShape`, parallel rendering
+- Shapes: `circle`, `square`, `rectangle`, `ellipse`, `annulus`, `half_plane_x/y`
+- 3D: `scene3d` module (ray tracing, geometry, materials)
 - Transforms: `Scale`, coordinate remapping
+- Animation: `TimeShift`, `ScreenRemap`, `Oscillate`
+- Caching: `Baked<M, P>` — cache manifold results to texture
+- Mesh: `QuadMesh`, `Quad`, `Point3` with OBJ parsing
+- Subdivision: Catmull-Clark with eigenanalysis, `BezierPatch`
+- Spatial indexing: `SpatialBSP` for scene acceleration
+- Image: `Image` struct for 2D RGBA buffers
 
 ## Key Patterns
 
@@ -69,15 +75,27 @@ The rasterizer:
 | `render/color.rs` | Color types, ColorCube, Grayscale, pixel formats |
 | `render/rasterizer/mod.rs` | `execute()`, `TensorShape` |
 | `render/rasterizer/parallel.rs` | Multi-threaded rendering |
-| `render/aa.rs` | Antialiasing (gradient-based) |
+| `render/rasterizer/pool.rs` | Thread pool for parallel work |
+| `render/aa.rs` | Antialiasing (gradient-based via Jet2) |
 | `render/frame.rs` | Frame buffer management |
+| `render/pixel.rs` | `Pixel` trait for format operations |
 | `fonts/mod.rs` | Font loading, glyph types |
 | `fonts/cache.rs` | GlyphCache implementation |
+| `fonts/combinators.rs` | `GlyphExt` transforms (scale, slant, translate) |
 | `fonts/ttf.rs` | TTF parsing, curve evaluation |
 | `fonts/text.rs` | Text layout, CachedText |
-| `shapes.rs` | Shape stencils (circle, square, etc.) |
+| `shapes.rs` | Shape stencils (circle, square, ellipse, etc.) |
 | `transform.rs` | Scale and other transforms |
-| `scene3d.rs` | 3D scene graph (experimental) |
+| `animation.rs` | TimeShift, ScreenRemap, Oscillate |
+| `baked.rs` | Baked<M, P> — cache manifold to texture |
+| `image.rs` | Image struct, render_mask() |
+| `mesh.rs` | QuadMesh, Point3, OBJ parsing |
+| `patch.rs` | BezierPatch bicubic patches |
+| `spatial_bsp.rs` | SpatialBSP for scene indexing |
+| `subdivision.rs` | SubdivisionPatch with eigenanalysis |
+| `subdiv/mod.rs` | Catmull-Clark implementation |
+| `subdiv/coeffs.rs` | Precomputed eigenstructure data |
+| `scene3d.rs` | 3D scene graph, ray tracing |
 
 ## Invariants You Must Maintain
 

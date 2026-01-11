@@ -265,6 +265,38 @@ Detailed design docs in `docs/`:
 - `CLAUDE.md` - This file: AI assistant development guide
 - `LICENSE.md` - Apache license
 
+### Agent Context Files
+
+Specialized context files for AI agents live in `.claude/agents/`. Each file provides deep domain knowledge for working on specific parts of the codebase.
+
+#### Crate Engineers
+
+| Agent | Domain | Key Expertise |
+|-------|--------|---------------|
+| [`actor-scheduler.md`](.claude/agents/actor-scheduler.md) | Priority message passing | Three-lane messaging (Control/Management/Data), troupe pattern, backpressure |
+| [`pixelflow-core.md`](.claude/agents/pixelflow-core.md) | SIMD algebra | Manifold trait, operator AST, chained.rs impls, SIMD backends |
+| [`pixelflow-graphics.md`](.claude/agents/pixelflow-graphics.md) | Rendering | Colors as coordinates, glyph caching, rasterization pipeline |
+| [`pixelflow-runtime.md`](.claude/agents/pixelflow-runtime.md) | Platform layer | Display drivers, three-thread architecture, frame recycling |
+| [`pixelflow-ml.md`](.claude/agents/pixelflow-ml.md) | Neural/graphics research | Linear attention ≈ spherical harmonics, feature maps |
+| [`core-term.md`](.claude/agents/core-term.md) | Terminal emulator | ANSI parsing, PTY I/O, terminal state machine |
+
+#### Specialists
+
+| Agent | Role | When to Consult |
+|-------|------|-----------------|
+| [`algebraist.md`](.claude/agents/algebraist.md) | Category theory | Designing combinators, composition laws, variance |
+| [`numerics.md`](.claude/agents/numerics.md) | SIMD/performance | Optimization, automatic differentiation, precision |
+| [`language-mechanic.md`](.claude/agents/language-mechanic.md) | Rust type system | Trait bounds, impl conflicts, macro issues |
+
+#### Process Agents
+
+| Agent | Role | When to Use |
+|-------|------|-------------|
+| [`reviewer.md`](.claude/agents/reviewer.md) | Code review | PR review, updating agent files with new patterns |
+| [`refactor.md`](.claude/agents/refactor.md) | Incremental cleanup | Dead code removal, warning fixes, consistency |
+
+These agents provide targeted context for specific domains. Consult the appropriate agent when working in their area of expertise.
+
 ## Common Patterns
 
 ### Composing Manifolds

@@ -10,27 +10,39 @@ Terminal emulator built on PixelFlow. ANSI parsing, PTY management, terminal sta
 
 ## What Lives Here
 
-- ANSI escape sequence parser
-- Terminal grid/state machine
-- PTY I/O actors (kqueue/epoll)
-- Keyboard input handling
+- ANSI escape sequence parser (two-stage: lexer + parser)
+- Terminal emulator state machine (`TerminalEmulator`)
+- `TerminalInterface` trait abstracting emulator functionality
+- Terminal grid with primary/alternate buffers
+- PTY I/O actors (kqueue/epoll) — three-thread pipeline
+- Keyboard input handling with modifier support
 - Terminal surface (rendering bridge)
 - Color palette management
 - Glyph rendering integration
+- Snapshot system for thread-safe rendering (`TerminalSnapshot`)
 
 ## Module Structure
 
 | Module | Purpose |
 |--------|---------|
 | `ansi/` | ANSI escape sequence parser |
+| `ansi/lexer.rs` | UTF-8 decoder, C0 control detection |
+| `ansi/parser.rs` | State machine: Ground, ESC, CSI, OSC, DCS, PM, APC |
+| `ansi/commands.rs` | AnsiCommand enum, SGR constants |
 | `term/` | Terminal state machine, grid |
+| `term/emulator/` | TerminalEmulator sub-modules |
+| `term/emulator/ansi_handler.rs` | ANSI command processing |
+| `term/emulator/char_processor.rs` | Wide character support |
+| `term/emulator/cursor_handler.rs` | Cursor movement |
+| `term/emulator/mode_handler.rs` | DEC private modes |
+| `term/emulator/osc_handler.rs` | OS commands (title, clipboard) |
 | `io/` | PTY actors, event monitoring |
 | `surface/` | Terminal rendering surface |
 | `glyph.rs` | Glyph rendering |
 | `color.rs` | Terminal color palette |
 | `keys.rs` | Keyboard input handling |
-| `config.rs` | Terminal configuration |
-| `messages.rs` | Inter-actor messages |
+| `config.rs` | Terminal configuration (LazyLock<Config>) |
+| `messages.rs` | Inter-actor messages (AppEvent, Snapshot) |
 | `terminal_app.rs` | Top-level application actor |
 
 ## Key Patterns
@@ -45,15 +57,32 @@ The grid maintains:
 
 ANSI sequences modify this state.
 
-### PTY I/O via Actors
+### PTY I/O: Three-Thread Pipeline
 
 ```
-PTY I/O Thread          Orchestrator Thread
-├─ kqueue/epoll         ├─ Terminal state
-├─ Read from PTY        ├─ ANSI parsing
-├─ IOEvent → channel    └─ Grid updates
-└─ Write to PTY
+PTY (File Descriptor)
+├─ Read Thread           Parser Thread           Write Thread
+│  - kqueue/epoll       - CPU-intensive        - RAII PTY ownership
+│  - Nonblocking reads  - ANSI parsing          - Resize via TIOCSWINSZ
+│  - Buffer pooling     - Buffer recycling      - Handles shell output
+└─ ActorScheduler       - SyncSender to app     - Independent lifecycle
+   (backpressure)        (blocks app on parse)
 ```
+
+**Thread Communication**:
+- **Read → Parser**: ActorScheduler (Vec<u8> batches, burst-limited)
+- **Parser → App**: SyncSender (Vec<AnsiCommand>, blocking)
+- **App → Write**: Receiver (Vec<u8> to write)
+- **Parser → Read**: MPMC buffer recycling channel
+
+### Snapshot Architecture
+
+Rendering uses immutable snapshots for thread-safe communication:
+
+- `TerminalSnapshot` — lines, cursor, selection, dirty_lines
+- `SnapshotLine` — Arc-wrapped Vec<Glyph> for CoW
+- `Glyph` types: `Single`, `WidePrimary`, `WideSpacer`
+- Dirty tracking optimizes rendering by skipping unchanged lines
 
 ### Rendering Pipeline
 
@@ -68,16 +97,22 @@ The surface module bridges terminal state to PixelFlow manifolds.
 | File | Purpose |
 |------|---------|
 | `lib.rs` | Module exports |
+| `main.rs` | Entry point, CLI args (-c/--command) |
 | `terminal_app.rs` | Main application actor |
-| `ansi/parser.rs` | ANSI sequence parser |
+| `ansi/lexer.rs` | UTF-8 decoder, token generation |
+| `ansi/parser.rs` | ANSI sequence parser state machine |
+| `ansi/commands.rs` | AnsiCommand enum, SGR constants |
+| `term/emulator.rs` | TerminalEmulator struct |
 | `term/grid.rs` | Terminal grid implementation |
-| `term/cell.rs` | Cell representation |
+| `term/cell.rs` | Cell representation, Glyph types |
+| `term/snapshot.rs` | TerminalSnapshot for rendering |
 | `io/pty.rs` | PTY management |
 | `io/monitor.rs` | Event monitoring (kqueue/epoll) |
 | `surface/mod.rs` | Rendering surface |
+| `surface/terminal.rs` | TerminalSurface (placeholder pending migration) |
 | `glyph.rs` | Glyph rendering |
 | `color.rs` | Color palette |
-| `keys.rs` | Keyboard handling |
+| `keys.rs` | Keyboard handling, modifier translation |
 
 ## Invariants You Must Maintain
 

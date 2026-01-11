@@ -10,9 +10,13 @@ Platform abstraction, display drivers, actor-based threading, vsync coordination
 
 - Display drivers: Cocoa (macOS), X11 (Linux), Web (WASM), Headless
 - Platform code: Window creation, event handling, input
-- Actor orchestration: EngineTroupe, vsync actor
-- Frame management: ping-pong buffers, recycling
+- Actor orchestration: EngineTroupe, VsyncActor
+- Frame management: ping-pong buffers, recycling via `FramePacket`
 - Channel infrastructure for the engine
+- `PlatformOps` trait — Platform abstraction replacing legacy DisplayDriver
+- `EventLoopWaker` trait — Cross-thread signaling (X11Waker, CocoaWaker)
+- `EngineEvent` hierarchy — Control, Management, Data priority lanes
+- Input system: `KeySymbol`, `Modifiers`, mouse events
 
 ## Key Patterns
 
@@ -59,22 +63,65 @@ let (frame_tx, frame_rx) = create_frame_channel();
 let (recycle_tx, recycle_rx) = create_recycle_channel();
 ```
 
+**Arc<SyncSender<>> "Ghetto Borrow" Pattern:**
+```rust
+pub struct FramePacket<T> {
+    pub surface: T,
+    pub recycle_tx: Arc<SyncSender<FramePacket<T>>>,
+}
+```
+Each packet carries its own return channel — Arc clone is just a refcount bump.
+
+### Event Priority Lanes
+
+Engine events categorized by priority:
+- **Control**: Window state (WindowCreated, Resized, CloseRequested)
+- **Management**: User input (keyboard, mouse, clipboard)
+- **Data**: Frame requests (RequestFrame from vsync)
+
+Higher priority events processed first for responsive UI.
+
+### PlatformOps Trait
+
+New abstraction replacing legacy DisplayDriver:
+- Platform implementations provide `PlatformOps` trait
+- Wrapped by `PlatformActor<Ops>` to satisfy Actor interface
+- Methods: `handle_data()`, `handle_control()`, `handle_management()`, `park()`
+
+### VSync Clock Thread
+
+Dedicated clock thread for reliable timing:
+- Sends explicit `Tick` messages to VsyncActor
+- Prevents starvation of actor scheduler
+- Supports VRR displays with dynamic refresh rate
+
+### Event Loop Waker
+
+Cross-thread signaling for background threads:
+- **X11Waker**: Posts ClientMessage via XSendEvent
+- **CocoaWaker**: Posts NSEventTypeApplicationDefined to NSApp
+- Allows PTY/orchestrator threads to interrupt blocking event poll
+
 ## Key Files
 
 | File | Purpose |
 |------|---------|
 | `lib.rs` | Re-exports, WASM bindings |
-| `api/public.rs` | Public API types |
-| `api/private.rs` | Internal API |
+| `api/public.rs` | Public API: EngineEvent, WindowId, AppManagement |
+| `api/private.rs` | Internal: EngineData, EngineControl, DriverCommand |
 | `display/mod.rs` | Display trait, events |
+| `display/ops.rs` | PlatformOps trait abstraction |
 | `display/drivers/` | Platform-specific drivers |
 | `platform/macos/` | Cocoa integration, objc bindings |
 | `platform/linux.rs` | Linux/X11 platform code |
+| `platform/waker.rs` | EventLoopWaker, X11Waker, CocoaWaker |
 | `engine_troupe.rs` | Troupe-based engine orchestration |
+| `engine_troupe_v2.rs` | (WIP) Refactored troupe coordination |
 | `vsync_actor.rs` | Vsync timing coordination |
 | `channel.rs` | Engine channel infrastructure |
 | `frame.rs` | FramePacket, recycling channels |
 | `config.rs` | EngineConfig, WindowConfig |
+| `testing/mod.rs` | MockEngine for testing |
 
 ## Platform-Specific Notes
 

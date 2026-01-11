@@ -8,16 +8,44 @@ Pure algebra. `no_std`. Zero IO, no colors, no platform code. This is the lambda
 
 ## What Lives Here
 
-- `Manifold` trait — functions from 4D coords to values
+- `Manifold<I>` trait — Polymorphic functions from 4D coords to values (I = Field, Jet2, Jet3)
 - `Field` — SIMD batch of f32 (IR, not user-facing)
-- `Discrete` — SIMD batch of packed RGBA u32 (IR)
-- `Jet2/Jet3` — automatic differentiation types
+- `Discrete` — SIMD batch of packed RGBA u32 (IR, for color manifolds)
+- Automatic differentiation types:
+  - `Jet2` — value + 2D gradient (∂f/∂x, ∂f/∂y)
+  - `Jet2H` — value + 2D gradient + Hessian (∂²f/∂x², ∂²f/∂x∂y, ∂²f/∂y²)
+  - `Jet3` — value + 3D gradient (for surface normals)
+  - `PathJet` — origin + direction (ray space coordinates)
 - Coordinate variables: `X`, `Y`, `Z`, `W`
-- Operators: `Add`, `Mul`, `Sqrt`, etc. (types that build AST)
-- Combinators: `Select`, `Fix`, `Map`, `At` (warp)
+- Operators: `Add`, `Mul`, `Sqrt`, `Sin`, `Cos`, `Rsqrt`, `MulAdd`, `Max`, `Min`
+- Logic operators: `And`, `Or`, `BNot` (bitwise operations)
+- Comparison operators: `Lt`, `Gt`, `Le`, `Ge` (hard), `SoftLt`, `SoftGt`, `SoftSelect` (for Jet2 gradients)
+- Combinators: `Select`, `Fix`, `Map`, `At`, `Shift`, `Pack`, `Project`, `Texture`
+- Spherical harmonics: `SphericalHarmonic<L, M>`, `ShProject`, `ShReconstruct`
 - SIMD backends: AVX-512, AVX2, SSE2, NEON, scalar
+- Traits: `Computational`, `Numeric`, `Selectable`, `Differentiable`, `Vector`
+- `Axis` enum — Dimension constants (X, Y, Z, W) for vector indexing
+- `BoxedManifold` — Type-erased manifold via `Arc<dyn Manifold>`
 
 ## Key Patterns
+
+### Polymorphic Manifold Design
+
+The `Manifold` trait is polymorphic over the computational substrate:
+
+```rust
+pub trait Manifold<I: Computational> {
+    type Output;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output;
+}
+```
+
+The same expression tree evaluates with different `I`:
+- `Field` — Concrete SIMD values (AVX-512/SSE2/NEON)
+- `Jet2` — Automatic differentiation (value + gradients)
+- `Jet3` — 3D gradients for surface normals
+
+This enables gradient-based antialiasing without code duplication.
 
 ### Types ARE the AST
 
@@ -69,9 +97,28 @@ These have special impls that override the generic pattern.
 | `ops/chained.rs` | Operator chaining impls (the explosion) |
 | `ops/binary.rs` | Binary op Manifold impls |
 | `ops/unary.rs` | Unary op Manifold impls |
+| `ops/logic.rs` | Bitwise And, Or, BNot operators |
+| `ops/compare.rs` | Hard (Lt, Gt) and Soft (SoftLt, SoftSelect) comparisons |
+| `ops/trig.rs` | Chebyshev sin/cos approximations |
 | `combinators/` | Select, Fix, Map, At, etc. |
+| `combinators/shift.rs` | Shift (inverse of At) for translations |
+| `combinators/pack.rs` | Pack - fold vector to scalar |
+| `combinators/project.rs` | Project - extract one axis from vector |
+| `combinators/texture.rs` | Texture - sample from backing memory |
 | `jet/jet2.rs` | 2D automatic differentiation |
+| `jet/jet2h.rs` | 2D with Hessian |
+| `jet/jet3.rs` | 3D automatic differentiation |
 | `backend/` | SIMD implementations per architecture |
+| `backend/fastmath.rs` | Fast approximations with FastMathGuard |
+
+## Materialization Functions
+
+| Function | Purpose |
+|----------|---------|
+| `materialize<M, V>()` | Evaluate vector manifold, SoA→AoS transpose |
+| `materialize_discrete<M>()` | Evaluate color manifold to u32 pixels |
+| `materialize_discrete_fields<M>()` | Optimized with precomputed Fields |
+| `PARALLELISM` | Constant for SIMD lane count |
 
 ## Invariants You Must Maintain
 
