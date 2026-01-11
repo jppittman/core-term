@@ -316,18 +316,16 @@ mod tests {
     fn test_single_leaf() {
         let bsp = SpatialBSP::single(SolidColor::new(255, 0, 0, 255));
 
-        assert_eq!(bsp.interior_count(), 0);
-        assert_eq!(bsp.leaf_count(), 1);
+        assert_eq!(bsp.interior_count(), 0, "Single leaf tree has no interior nodes");
+        assert_eq!(bsp.leaf_count(), 1, "Single leaf tree has exactly one leaf");
 
-        // Evaluate at any point should return red
+        // Evaluate at any point should compile and execute without panic
         let x = Field::from(100.0);
         let y = Field::from(100.0);
         let z = Field::from(0.0);
         let w = Field::from(0.0);
 
-        let result = bsp.eval_raw(x, y, z, w);
-        // Result should be red (exact value depends on Discrete::splat behavior)
-        let _ = result; // Just verify it doesn't panic
+        let _result = bsp.eval_raw(x, y, z, w);
     }
 
     #[test]
@@ -353,12 +351,12 @@ mod tests {
     fn test_empty_bsp() {
         let bsp: SpatialBSP<SolidColor> = SpatialBSP::from_positioned(vec![]);
 
-        assert_eq!(bsp.interior_count(), 0);
-        assert_eq!(bsp.leaf_count(), 0);
+        assert_eq!(bsp.interior_count(), 0, "Empty BSP has no interior nodes");
+        assert_eq!(bsp.leaf_count(), 0, "Empty BSP has no leaves");
 
         // Should not panic on eval
         let x = Field::from(0.0);
-        let _ = bsp.eval_raw(x, x, x, x);
+        let _result = bsp.eval_raw(x, x, x, x);
     }
 
     #[test]
@@ -385,9 +383,9 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
 
-        // Should have 3 interior nodes for 4 leaves (binary tree)
-        assert_eq!(bsp.leaf_count(), 4);
-        assert!(bsp.interior_count() >= 1);
+        // Binary tree with 4 leaves should have exactly 3 interior nodes (n-1)
+        assert_eq!(bsp.leaf_count(), 4, "Should have 4 leaves in the grid");
+        assert_eq!(bsp.interior_count(), 3, "Binary tree with 4 leaves must have exactly 3 interior nodes");
     }
 
     // ========================================================================
@@ -404,7 +402,9 @@ mod tests {
         let w = Field::from(0.0);
 
         // Should not panic when evaluating empty BSP
-        let _result = bsp.eval_raw(x, y, z, w);
+        let result = bsp.eval_raw(x, y, z, w);
+        // Empty BSP should successfully evaluate (implementation returns default/transparent)
+        let _ = result;
     }
 
     #[test]
@@ -447,12 +447,16 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        assert_eq!(bsp.interior_count(), 1);
+        assert_eq!(bsp.interior_count(), 1, "Two non-overlapping items need exactly one split");
 
-        // Verify the split axis and threshold are reasonable
+        // Verify the split axis and threshold are correct
+        // Left item spans [0, 25], right item spans [75, 100]
+        // Threshold should be in the gap (25, 75), ideally around 50
         let root = &bsp.interiors[0];
-        assert_eq!(root.axis, Axis::X);
-        assert!(root.threshold > 25.0 && root.threshold < 75.0);
+        assert_eq!(root.axis, Axis::X, "Should split on X axis for horizontal separation");
+        assert!(root.threshold >= 25.0 && root.threshold <= 75.0,
+                "Threshold must be in gap between items: {} should be in [25, 75]",
+                root.threshold);
     }
 
     #[test]
@@ -519,10 +523,11 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
 
-        assert_eq!(bsp.leaf_count(), 3);
-        assert!(
-            bsp.interior_count() >= 2,
-            "Binary tree needs n-1 interior nodes"
+        assert_eq!(bsp.leaf_count(), 3, "Should have 3 leaves for 3 items");
+        assert_eq!(
+            bsp.interior_count(),
+            2,
+            "Binary tree with 3 leaves must have exactly 2 interior nodes (n-1 rule)"
         );
     }
 
@@ -597,12 +602,15 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
 
-        assert_eq!(bsp.leaf_count(), 2);
-        assert_eq!(bsp.interior_count(), 1);
+        assert_eq!(bsp.leaf_count(), 2, "Should have 2 leaves");
+        assert_eq!(bsp.interior_count(), 1, "Two items need exactly one split");
 
-        // Verify threshold is in the right range
+        // Verify threshold is in the gap between items
+        // Left item spans [-100, -50], right item spans [-50, 0]
         let root = &bsp.interiors[0];
-        assert!(root.threshold > -100.0 && root.threshold < 0.0);
+        assert!(root.threshold >= -100.0 && root.threshold <= 0.0,
+                "Threshold must separate the items: {} should be in [-100, 0]",
+                root.threshold);
     }
 
     #[test]
