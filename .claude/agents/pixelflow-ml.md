@@ -22,12 +22,14 @@ Both compress O(n²) or O(∞) interactions into O(n) via basis decomposition:
 
 ## What Lives Here
 
-- `FeatureMap` trait — Transforms for linear attention
-- `EluFeature` — Simple positive feature map
-- `RandomFourierFeature` — RBF kernel approximation
-- `HarmonicAttention` — SH-based attention layer
-- `ShFeatureMap` — Projects directions into SH space
-- `LinearAttention` — General linear attention layer
+- `FeatureMap` trait — Transforms for linear attention (`apply`, `dim`)
+- `EluFeature` — Simple positive feature map (φ(x) = ELU(x) + 1)
+- `RandomFourierFeature` — RBF kernel approximation via sin/cos pairs
+- `HarmonicAttention<NUM_COEFFS>` — SH-based attention with accumulate/query
+- `ShFeatureMap<9>` — Projects directions into 9-coefficient SH space (band 2)
+- `LinearAttention<F: FeatureMap>` — General linear attention with `kv_state` and `k_state`
+- `HarmonicAttentionIsGlobalIllumination` — Marker type documenting the correspondence
+- Types from pixelflow-core: `ShCoeffs<N>`, `Sh2` (alias for `ShCoeffs<9>`), `SH_NORM`
 
 ## Key Patterns
 
@@ -50,7 +52,14 @@ Accumulate key-value pairs like adding light sources:
 let mut attn: HarmonicAttention<9> = HarmonicAttention::new(value_dim);
 attn.accumulate(&key_sh, &value);  // Add a "light source"
 attn.query(&query_sh, &mut output);  // Compute "irradiance"
+attn.reset();  // Clear state for next batch
 ```
+
+`HarmonicAttention` stores:
+- `accumulated: Vec<ShCoeffs<NUM_COEFFS>>` — SH projections of key-value pairs
+- `denominator: ShCoeffs<NUM_COEFFS>` — Sum of all key features (for normalization)
+
+Numerical stability: Uses 1e-6 floor on denominator to prevent division by zero.
 
 ### SH Feature Projection
 
@@ -75,10 +84,13 @@ The entire crate is in `lib.rs` — it's a research prototype.
 
 ## Invariants You Must Maintain
 
-1. **`no_std`** — No std dependency
+1. **`no_std`** — No std dependency (only `extern crate alloc`)
 2. **Pure algebra** — No IO, no platform code
 3. **Depends only on pixelflow-core** — No graphics or runtime deps
 4. **Research quality** — API may be unstable
+5. **No per-frame allocations** — Initial Vec creation only, reuse state
+6. **Field.constant()** — Collapse Field AST for SIMD efficiency in tight loops
+7. **Numerical stability** — Clamp denominators (1e-6 floor in query)
 
 ## Research Directions
 

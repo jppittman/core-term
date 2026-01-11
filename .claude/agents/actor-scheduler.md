@@ -12,9 +12,14 @@ Multi-priority actor model with three lanes: Control > Management > Data. Lock-f
 - `ActorHandle` — Sender side (cloneable)
 - `ActorScheduler` — Receiver side (runs the loop)
 - `Actor` trait — Handler for messages
+- `ActorTypes` trait — Separates message type definition from Actor (enables troupe! macro without lifetimes)
 - `TroupeActor` trait — Actors with directory access
-- `troupe!` macro — Generates actor groups
-- Wake handling for platform integration
+- `troupe!` macro — Generates actor groups with Directory, ExposedHandles, and lifecycle
+- `actor_impl` macro — Transforms impl blocks into TroupeActor impls
+- `ShutdownMode` enum — Three graceful shutdown strategies
+- `ParkHint` enum — Controls actor behavior (Wait vs Poll)
+- `SendError` type — Timeout or Unknown (receiver disconnected)
+- `WakeHandler` trait — Platform-specific wake mechanisms (e.g., NSEvent on macOS)
 
 ## Key Patterns
 
@@ -71,6 +76,42 @@ pub struct EngineActor<'a> {
 
 // Can send to other actors
 self.dir.display.send(Message::Control(Render));
+```
+
+### Shutdown Modes
+
+Three graceful shutdown strategies via `ShutdownMode`:
+
+| Mode | Behavior |
+|------|----------|
+| `Immediate` | Drop all pending messages (default) |
+| `DrainControl` | Process control+management, drop data |
+| `DrainAll { timeout }` | Process all with timeout fallback |
+
+### Park Hints
+
+`ParkHint` controls actor behavior during `park()`:
+
+| Hint | Behavior |
+|------|----------|
+| `Wait` | Block until messages arrive (0% CPU) |
+| `Poll` | Process pending OS events immediately |
+
+### Backoff Algorithm
+
+Three-phase strategy for data lane congestion:
+
+1. **Spin**: 100 attempts (~1-2µs) — No syscalls
+2. **Yield**: 20 attempts — Cooperative, let other threads run
+3. **Sleep**: Exponential backoff with jitter (1ms to 5s) — Prevents thundering herd
+
+### Constructor Variants
+
+```rust
+ActorScheduler::new()                       // Basic creation
+ActorScheduler::new_with_wake_handler(wh)   // With platform wake handler
+ActorScheduler::new_with_shutdown_mode(sm)  // With custom shutdown
+create_actor()                              // Convenience function
 ```
 
 ## Key Files
@@ -130,9 +171,18 @@ These generate `From` impls so you can write `handle.send(my_msg)` without wrapp
 3. Verify burst limits aren't too aggressive
 4. Monitor queue depths for backpressure
 
+## Constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `CONTROL_MGMT_BUFFER_SIZE` | 32 | Control and Management buffer size |
+| Control burst limit | 320 | `CONTROL_MGMT_BUFFER_SIZE * 10` |
+| Backoff range | 1ms-5s | With jitter |
+
 ## Anti-Patterns to Avoid
 
 - **Don't use Control for high-volume data** — It's unbounded, will OOM
 - **Don't block in handlers** — Use async/spawn for slow work
 - **Don't ignore park hints** — Platform integration depends on them
 - **Don't send Shutdown unless you mean it** — Immediate exit
+- **Don't implement Actor without ActorTypes** — troupe! macro won't work
