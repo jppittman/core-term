@@ -1044,48 +1044,38 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     {
         use std::sync::mpsc::TryRecvError;
 
+        let mut working = false;
+
         loop {
-            // Block on doorbell - can be Wake or Shutdown signal
-            match self.rx_doorbell.recv() {
+            // Choose recv strategy: try_recv when working, blocking recv when idle
+            let signal = if working {
+                self.rx_doorbell.try_recv()
+            } else {
+                self.rx_doorbell.recv().map_err(|_| TryRecvError::Disconnected)
+            };
+
+            match signal {
                 Ok(System::Shutdown) => {
                     self.handle_shutdown(actor);
                     return;
                 }
                 Ok(System::Wake) => {
-                    // Process messages, check status
+                    // Clear wake signal, process messages
                     let status = match self.handle_wake(actor) {
                         Ok(status) => status,
-                        Err(()) => return, // Channel disconnected
+                        Err(()) => return,
                     };
-
-                    // If working, keep checking doorbell with try_recv
-                    if matches!(status, SystemStatus::Working) {
-                        loop {
-                            match self.rx_doorbell.try_recv() {
-                                Ok(System::Shutdown) => {
-                                    self.handle_shutdown(actor);
-                                    return;
-                                }
-                                Ok(System::Wake) => {
-                                    // Clear wake signal, already working
-                                }
-                                Err(TryRecvError::Empty) => {
-                                    // No signal, process messages
-                                    let status = match self.handle_wake(actor) {
-                                        Ok(status) => status,
-                                        Err(()) => return, // Channel disconnected
-                                    };
-                                    if matches!(status, SystemStatus::Idle) {
-                                        break; // Go back to blocking recv
-                                    }
-                                }
-                                Err(TryRecvError::Disconnected) => return,
-                            }
-                        }
-                    }
-                    // Else idle, go back to blocking recv() in next loop iteration
+                    working = matches!(status, SystemStatus::Working);
                 }
-                Err(_) => return, // Channel disconnected
+                Err(TryRecvError::Empty) => {
+                    // Only happens when working (try_recv) - process messages
+                    let status = match self.handle_wake(actor) {
+                        Ok(status) => status,
+                        Err(()) => return,
+                    };
+                    working = matches!(status, SystemStatus::Working);
+                }
+                Err(TryRecvError::Disconnected) => return,
             }
         }
     }
