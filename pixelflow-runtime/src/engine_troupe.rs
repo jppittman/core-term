@@ -15,7 +15,7 @@ use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
     RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
-use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ParkHint, TroupeActor};
+use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ActorStatus, TroupeActor};
 use pixelflow_core::{Discrete, Manifold};
 use pixelflow_graphics::render::rasterizer::{render_work_stealing, RenderOptions, TensorShape};
 use pixelflow_graphics::render::Frame;
@@ -190,9 +190,9 @@ impl Actor<EngineData, EngineControl, AppManagement>
         }
     }
 
-    fn park(&mut self, _hint: ParkHint) -> ParkHint {
+    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
         // engine has no external channels which might be busy
-        ParkHint::Wait
+        ActorStatus::Idle
     }
 }
 

@@ -7,7 +7,7 @@ use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
 use crate::platform::PlatformPixel;
-use actor_scheduler::{Message, ParkHint};
+use actor_scheduler::{Message, ActorStatus};
 
 use std::collections::HashMap;
 
@@ -180,17 +180,17 @@ impl PlatformOps for MetalOps {
         }
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         // Logic for event loop interaction
         // The CocoaWaker posts an NSEvent when messages arrive, so distantFuture is safe.
         unsafe {
             let until_date = match hint {
-                ParkHint::Wait => {
+                ActorStatus::Idle => {
                     // Block until an event arrives (waker will post NSEvent when messages come)
                     let cls = sys::class(b"NSDate\0");
                     sys::send(cls, sys::sel(b"distantFuture\0"))
                 }
-                ParkHint::Poll => {
+                ActorStatus::Busy => {
                     // Immediate return
                     let cls = sys::class(b"NSDate\0");
                     sys::send(cls, sys::sel(b"distantPast\0"))

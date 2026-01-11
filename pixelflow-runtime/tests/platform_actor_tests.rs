@@ -1,4 +1,4 @@
-use actor_scheduler::{Actor, ParkHint};
+use actor_scheduler::{Actor, ActorStatus};
 use pixelflow_graphics::render::Frame;
 use pixelflow_runtime::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use pixelflow_runtime::display::ops::PlatformOps;
@@ -55,7 +55,7 @@ impl PlatformOps for MockOps {
         }
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         self.push_log(&format!("Park {:?}", hint));
         hint
     }
@@ -92,7 +92,7 @@ fn test_platform_actor_delegation() {
     });
 
     // Test Park
-    actor.park(ParkHint::Poll);
+    actor.park(ActorStatus::Busy);
 
     // 4. Verify Log
     let log = log_ref.lock().unwrap();

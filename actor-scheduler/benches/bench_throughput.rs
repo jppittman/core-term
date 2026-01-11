@@ -1,4 +1,4 @@
-use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -25,7 +25,7 @@ impl Actor<i32, (), ()> for CountingActor {
         self.mgmt_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }

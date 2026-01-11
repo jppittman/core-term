@@ -5,13 +5,13 @@
 //! - Burst limiting for Data and Management lanes
 //! - Backpressure behavior for bounded channels
 //! - Channel disconnection handling
-//! - ParkHint behavior
+//! - ActorStatus behavior
 //! - Message ordering guarantees (FIFO within lanes)
 //! - Thread safety and concurrent access
 //!
 //! Following STYLE.md: tests focus on public API contracts, not implementation details.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint, SendError};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SendError};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
@@ -48,7 +48,7 @@ impl Actor<String, String, String> for OrderingActor {
             .push((format!("M:{}", msg), std::time::Instant::now()));
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
@@ -99,7 +99,7 @@ impl Actor<i32, i32, i32> for CountingActor {
         self.management_count.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
@@ -126,15 +126,15 @@ impl Actor<String, String, String> for SlowActor {
         self.processed.lock().unwrap().push(format!("M:{}", msg));
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
 
-/// Actor that tracks ParkHint calls.
+/// Actor that tracks ActorStatus calls.
 struct ParkTrackingActor {
-    park_hints: Arc<Mutex<Vec<ParkHint>>>,
-    override_hint: Option<ParkHint>,
+    park_hints: Arc<Mutex<Vec<ActorStatus>>>,
+    override_hint: Option<ActorStatus>,
 }
 
 impl Actor<(), (), ()> for ParkTrackingActor {
@@ -142,7 +142,7 @@ impl Actor<(), (), ()> for ParkTrackingActor {
     fn handle_control(&mut self, _msg: ()) {}
     fn handle_management(&mut self, _msg: ()) {}
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         self.park_hints.lock().unwrap().push(hint);
         self.override_hint.unwrap_or(hint)
     }
@@ -254,7 +254,7 @@ fn control_processed_before_management() {
                 self.management_seen = true;
             }
             fn handle_data(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -347,7 +347,7 @@ fn mixed_priority_messages_all_delivered() {
             fn handle_management(&mut self, _: i32) {
                 self.0 .2.fetch_add(1, Ordering::SeqCst);
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -403,7 +403,7 @@ fn no_starvation_with_continuous_high_priority() {
                 // High priority, but shouldn't starve data
             }
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -457,7 +457,7 @@ fn management_burst_limit_prevents_starvation() {
             fn handle_management(&mut self, _: String) {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -550,7 +550,7 @@ fn multiple_senders_all_messages_delivered() {
             fn handle_management(&mut self, _msg: i32) {
                 self.0.management_count.fetch_add(1, Ordering::SeqCst);
             }
-            fn park(&mut self, hint: ParkHint) -> ParkHint {
+            fn park(&mut self, hint: ActorStatus) -> ActorStatus {
                 hint
             }
         }
@@ -607,7 +607,7 @@ fn actor_run_exits_when_all_senders_dropped() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -664,7 +664,7 @@ fn cloned_handle_works_after_original_dropped() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -688,7 +688,7 @@ fn cloned_handle_works_after_original_dropped() {
 }
 
 // ============================================================================
-// ParkHint Tests
+// ActorStatus Tests
 // ============================================================================
 
 #[test]
@@ -715,7 +715,7 @@ fn park_hint_wait_when_queues_empty() {
     let hints = hints.lock().unwrap();
     // After processing the single message, queues are empty -> Wait hint
     assert!(
-        hints.contains(&ParkHint::Wait),
+        hints.contains(&ActorStatus::Idle),
         "Should have Wait hint when queues empty. Hints: {:?}",
         hints
     );
@@ -748,7 +748,7 @@ fn park_hint_poll_when_burst_limit_hit() {
     let hints = hints.lock().unwrap();
     // Should have Poll hints when burst limit is hit
     assert!(
-        hints.contains(&ParkHint::Poll),
+        hints.contains(&ActorStatus::Busy),
         "Should have Poll hint when burst limit hit. Hints: {:?}",
         hints
     );
@@ -763,7 +763,7 @@ fn actor_can_override_park_hint_to_poll() {
     let handle = thread::spawn(move || {
         let mut actor = ParkTrackingActor {
             park_hints: hints_clone,
-            override_hint: Some(ParkHint::Poll), // Always override to Poll
+            override_hint: Some(ActorStatus::Busy), // Always override to Poll
         };
         rx.run(&mut actor);
     });
@@ -823,7 +823,7 @@ fn different_message_types_per_lane() {
             fn handle_management(&mut self, _: std::time::Duration) {
                 self.0.lock().unwrap().2 = true;
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -868,7 +868,7 @@ fn handle_clone_is_independent() {
             fn handle_management(&mut self, _: i32) {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -917,7 +917,7 @@ fn high_throughput_single_sender() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -958,7 +958,7 @@ fn concurrent_senders_stress_test() {
             fn handle_management(&mut self, _: i32) {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -1035,7 +1035,7 @@ fn priority_maintained_when_both_lanes_have_messages() {
                 }
             }
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -1074,7 +1074,7 @@ fn empty_message_types_work() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -1111,7 +1111,7 @@ fn zero_size_type_messages() {
             fn handle_management(&mut self, _: ZST) {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -1149,7 +1149,7 @@ fn large_message_type_works() {
             }
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -1178,7 +1178,7 @@ fn immediate_shutdown_no_messages() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -1212,7 +1212,7 @@ fn custom_burst_and_buffer_sizes() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -1244,7 +1244,7 @@ fn large_burst_and_buffer_sizes() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ParkHint};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
 use pixelflow_runtime::vsync_actor::{
     RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
 };
@@ -61,7 +61,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker 
         }
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
@@ -170,7 +170,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
         }
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
 }
@@ -392,7 +392,7 @@ fn shutdown_command_stops_tick_processing() {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -458,7 +458,7 @@ fn fps_request_handles_dropped_receiver() {
                 }
             }
             fn handle_management(&mut self, _: VsyncManagement) {}
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
@@ -540,7 +540,7 @@ fn refresh_rate_update_during_ticks_is_safe() {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
             }
-            fn park(&mut self, h: ParkHint) -> ParkHint {
+            fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
         }
