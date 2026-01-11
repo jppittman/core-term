@@ -196,10 +196,10 @@ fn main() -> anyhow::Result<()> {
 
     // Phase 1: Create troupe (channels ready, no threads spawned yet)
     let troupe =
-        EngineTroupe::with_config(engine_config).context("Failed to create EngineTroupe")?;
+        EngineTroupe::with_config(engine_config.clone()).context("Failed to create EngineTroupe")?;
 
-    // Phase 2: Get engine handle for app before spawning
-    let engine_handle = troupe.engine_handle();
+    // Phase 2: Get unregistered engine handle
+    let unregistered_handle = troupe.engine_handle();
 
     // Create channel for parsed ANSI commands (parser -> app)
     let (ansi_cmd_tx, ansi_cmd_rx) = std::sync::mpsc::sync_channel(128);
@@ -209,25 +209,18 @@ fn main() -> anyhow::Result<()> {
         use core_term::io::pty::{NixPty, PtyConfig};
         use core_term::terminal_app::{spawn_terminal_app, TerminalAppParams};
 
-        // Spawn terminal app with engine handle
+        // Phase 3: Spawn terminal app with UNREGISTERED handle
+        // The app will call register() during its initialization
         let params = TerminalAppParams {
             emulator: term_emulator,
             pty_tx: pty_cmd_tx,
             pty_rx: ansi_cmd_rx,
             config: core_term::config::Config::default(),
-            engine_tx: engine_handle,
+            unregistered_engine: unregistered_handle,
+            window_config: engine_config.window.clone(),
         };
         let (app_handle, _app_thread_handle) =
             spawn_terminal_app(params).context("Failed to spawn terminal app")?;
-
-        // Register app handle with engine so it can receive events
-        use actor_scheduler::Message;
-        use pixelflow_runtime::AppManagement;
-        let app_arc = std::sync::Arc::new(app_handle.clone());
-        troupe
-            .engine_handle()
-            .send(Message::Management(AppManagement::RegisterApp(app_arc)))
-            .context("Failed to register app handle")?;
 
         // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();

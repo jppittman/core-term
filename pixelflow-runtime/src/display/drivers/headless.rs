@@ -5,7 +5,8 @@
 //! Driver struct is just cmd_tx - trivially Clone.
 //! run() reads CreateWindow, runs a simple event loop.
 
-use crate::channel::{DriverCommand, EngineCommand, EngineSender};
+use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData, EngineControl};
+use actor_scheduler::Message;
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::error::RuntimeError;
@@ -17,7 +18,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 // --- Run State (only original driver has this) ---
 struct RunState {
     cmd_rx: Receiver<DriverCommand<Rgba>>,
-    engine_tx: EngineSender<Rgba>,
+    engine_tx: EngineSender,
 }
 
 // --- Display Driver ---
@@ -43,7 +44,7 @@ impl Clone for HeadlessDisplayDriver {
 impl DisplayDriver for HeadlessDisplayDriver {
     type Pixel = Rgba;
 
-    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self, RuntimeError> {
+    fn new(engine_tx: EngineSender) -> Result<Self, RuntimeError> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -73,7 +74,7 @@ impl DisplayDriver for HeadlessDisplayDriver {
 
 fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Rgba>>,
-    engine_tx: &EngineSender<Rgba>,
+    engine_tx: &EngineSender,
 ) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
     let (window_id, width_px, height_px, title) = match cmd_rx

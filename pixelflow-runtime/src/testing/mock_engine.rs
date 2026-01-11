@@ -1,21 +1,20 @@
 use crate::api::private::{EngineActorHandle, EngineControl, EngineData};
 use crate::api::public::AppManagement; // Use public re-export
-use crate::platform::PlatformPixel;
 use actor_scheduler::{Actor, ParkHint};
 use std::sync::{Arc, Mutex};
 
 /// A recorded message received by the MockEngine.
 #[derive(Debug)]
 pub enum ReceivedMessage {
-    Data(EngineData<PlatformPixel>),
-    Control(EngineControl<PlatformPixel>),
+    Data(EngineData),
+    Control(EngineControl),
     Management(AppManagement),
 }
 
 /// A mock engine that captures messages sent to it suitable for unit testing actors.
 pub struct MockEngine {
     messages: Arc<Mutex<Vec<ReceivedMessage>>>,
-    handle: EngineActorHandle<PlatformPixel>,
+    handle: EngineActorHandle,
     _thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -31,8 +30,8 @@ impl MockEngine {
 
         // Create scheduler channels
         let (handle, mut scheduler) = actor_scheduler::create_actor::<
-            EngineData<PlatformPixel>,
-            EngineControl<PlatformPixel>,
+            EngineData,
+            EngineControl,
             AppManagement,
         >(100, None);
 
@@ -48,7 +47,7 @@ impl MockEngine {
         }
     }
 
-    pub fn handle(&self) -> EngineActorHandle<PlatformPixel> {
+    pub fn handle(&self) -> EngineActorHandle {
         self.handle.clone()
     }
 
@@ -62,17 +61,17 @@ struct MessageCollector {
     messages: Arc<Mutex<Vec<ReceivedMessage>>>,
 }
 
-impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement>
+impl Actor<EngineData, EngineControl, AppManagement>
     for MessageCollector
 {
-    fn handle_data(&mut self, msg: EngineData<PlatformPixel>) {
+    fn handle_data(&mut self, msg: EngineData) {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Data(msg));
     }
 
-    fn handle_control(&mut self, msg: EngineControl<PlatformPixel>) {
+    fn handle_control(&mut self, msg: EngineControl) {
         self.messages
             .lock()
             .unwrap()

@@ -7,7 +7,8 @@
 
 pub mod ipc;
 
-use crate::channel::{DriverCommand, EngineCommand, EngineSender};
+use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData, EngineControl};
+use actor_scheduler::Message;
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::error::RuntimeError;
@@ -34,7 +35,7 @@ pub fn init_resources(canvas: OffscreenCanvas, sab: SharedArrayBuffer, scale_fac
 // --- Run State (only original driver has this) ---
 struct RunState {
     cmd_rx: Receiver<DriverCommand<Rgba>>,
-    engine_tx: EngineSender<Rgba>,
+    engine_tx: EngineSender,
 }
 
 // --- Display Driver ---
@@ -60,7 +61,7 @@ impl Clone for WebDisplayDriver {
 impl DisplayDriver for WebDisplayDriver {
     type Pixel = Rgba;
 
-    fn new(engine_tx: EngineSender<Rgba>) -> Result<Self, RuntimeError> {
+    fn new(engine_tx: EngineSender) -> Result<Self, RuntimeError> {
         let (cmd_tx, cmd_rx) = sync_channel(16);
 
         Ok(Self {
@@ -90,7 +91,7 @@ impl DisplayDriver for WebDisplayDriver {
 
 fn run_event_loop(
     cmd_rx: &Receiver<DriverCommand<Rgba>>,
-    engine_tx: &EngineSender<Rgba>,
+    engine_tx: &EngineSender,
 ) -> Result<(), RuntimeError> {
     // 1. Read CreateWindow command first
     let (window_id, width_px, height_px) = match cmd_rx
@@ -155,7 +156,7 @@ impl WebState {
     fn event_loop(
         &mut self,
         cmd_rx: &Receiver<DriverCommand<Rgba>>,
-        engine_tx: &EngineSender<Rgba>,
+        engine_tx: &EngineSender,
     ) -> Result<(), RuntimeError> {
         loop {
             // 1. Poll IPC events (from main thread via SharedArrayBuffer)

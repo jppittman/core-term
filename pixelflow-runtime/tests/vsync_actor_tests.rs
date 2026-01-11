@@ -488,8 +488,8 @@ fn set_config_auto_starts_actor() {
 
     // We need dummy handles for SetConfig - create them but they won't be used
     let (engine_handle, _) = actor_scheduler::ActorScheduler::<
-        pixelflow_runtime::api::private::EngineData<pixelflow_runtime::platform::PlatformPixel>,
-        pixelflow_runtime::api::private::EngineControl<pixelflow_runtime::platform::PlatformPixel>,
+        pixelflow_runtime::api::private::EngineData,
+        pixelflow_runtime::api::private::EngineControl,
         pixelflow_runtime::api::public::AppManagement,
     >::new(10, 100);
 

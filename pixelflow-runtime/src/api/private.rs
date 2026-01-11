@@ -47,19 +47,19 @@ pub enum DriverCommand<P: Pixel> {
 
 // Engine data message (high priority)
 #[derive(Debug)]
-pub enum EngineData<P: Pixel> {
+pub enum EngineData {
     FromDriver(DisplayEvent),
-    FromApp(crate::api::public::AppData<P>),
+    FromApp(crate::api::public::AppData),
 }
 
-impl<P: Pixel> From<crate::api::public::AppData<P>> for EngineData<P> {
-    fn from(data: crate::api::public::AppData<P>) -> Self {
+impl From<crate::api::public::AppData> for EngineData {
+    fn from(data: crate::api::public::AppData) -> Self {
         EngineData::FromApp(data)
     }
 }
 
-impl<P: Pixel> From<DisplayEvent>
-    for actor_scheduler::Message<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>
+impl From<DisplayEvent>
+    for actor_scheduler::Message<EngineData, EngineControl, crate::api::public::AppManagement>
 {
     fn from(evt: DisplayEvent) -> Self {
         actor_scheduler::Message::Data(EngineData::FromDriver(evt))
@@ -68,8 +68,8 @@ impl<P: Pixel> From<DisplayEvent>
 
 // Engine control message (low priority)
 #[derive(Debug, Default)]
-pub enum EngineControl<P: Pixel> {
-    PresentComplete(Frame<P>),
+pub enum EngineControl {
+    PresentComplete(Frame<crate::platform::PlatformPixel>),
     VSync {
         timestamp: std::time::Instant,
         target_timestamp: std::time::Instant,
@@ -88,10 +88,10 @@ pub enum EngineControl<P: Pixel> {
     DriverAck,
 }
 
-impl<P: Pixel> From<EngineControl<P>>
-    for actor_scheduler::Message<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>
+impl From<EngineControl>
+    for actor_scheduler::Message<EngineData, EngineControl, crate::api::public::AppManagement>
 {
-    fn from(ctrl: EngineControl<P>) -> Self {
+    fn from(ctrl: EngineControl) -> Self {
         actor_scheduler::Message::Control(ctrl)
     }
 }
@@ -104,14 +104,14 @@ impl<P: Pixel> From<EngineControl<P>>
 pub const DISPLAY_EVENT_BUFFER_SIZE: usize = 256;
 pub const DISPLAY_EVENT_BURST_LIMIT: usize = 32;
 
-pub type EngineActorHandle<P> =
-    ActorHandle<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>;
-pub type EngineActorScheduler<P> =
-    ActorScheduler<EngineData<P>, EngineControl<P>, crate::api::public::AppManagement>;
+pub type EngineActorHandle =
+    ActorHandle<EngineData, EngineControl, crate::api::public::AppManagement>;
+pub type EngineActorScheduler =
+    ActorScheduler<EngineData, EngineControl, crate::api::public::AppManagement>;
 
-pub fn create_engine_actor<P: Pixel>(
+pub fn create_engine_actor(
     wake_handler: Option<Arc<dyn actor_scheduler::WakeHandler>>,
-) -> (EngineActorHandle<P>, EngineActorScheduler<P>) {
+) -> (EngineActorHandle, EngineActorScheduler) {
     // Note: wake_handler is no longer used by ActorScheduler::new
     // We should probably remove it from the signature in a future refactor,
     // but for now we keep it for backward compatibility and ignore it.

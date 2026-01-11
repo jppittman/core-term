@@ -2,7 +2,6 @@
 pub mod api;
 
 // Internal modules
-pub mod channel;
 pub mod config;
 pub mod display;
 pub mod engine_troupe;
@@ -30,11 +29,8 @@ pub use actor_scheduler::{Actor, ActorHandle, ActorScheduler, Message, SendError
 #[allow(unused_imports)]
 use api::private::*;
 
-// Re-export legacy types for backward compatibility (deprecated)
-pub use channel::{
-    create_engine_channels, AppManagement, DriverCommand, EngineActorHandle, EngineActorScheduler,
-    EngineChannels, EngineControl, EngineSender,
-};
+// Legacy re-exports (these should be moved to api::public or removed)
+// TODO: Clean up - EngineActorHandle/Scheduler are used by legacy platform code
 pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
 pub use display::messages::{DisplayControl, DisplayMgmt};
 
@@ -80,8 +76,8 @@ pub fn pixelflow_dispatch_event(
 // /// * `config` - Engine configuration.
 // pub fn run(
 //     app: impl Application + Send + 'static,
-//     engine_handle: api::private::EngineActorHandle<PlatformPixel>,
-//     scheduler: api::private::EngineActorScheduler<PlatformPixel>,
+//     engine_handle: api::private::EngineActorHandle,
+//     scheduler: api::private::EngineActorScheduler,
 //     config: EngineConfig,
 // ) -> anyhow::Result<()> {
 //     let platform = EnginePlatform::new(app, engine_handle, scheduler, config)?;

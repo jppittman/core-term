@@ -118,8 +118,26 @@ fn main() -> anyhow::Result<()> {
     // Phase 1: Create the troupe
     let troupe = EngineTroupe::with_config(config)?;
 
-    // Phase 2: Get engine handle
-    let engine_handle = troupe.engine_handle();
+    // Phase 2: Get unregistered engine handle
+    let unregistered_handle = troupe.engine_handle();
+
+    // Create a dummy app that ignores events
+    struct DummyApp;
+    impl pixelflow_runtime::Application for DummyApp {
+        fn send(&self, _event: pixelflow_runtime::EngineEvent) -> Result<(), pixelflow_runtime::RuntimeError> {
+            Ok(())
+        }
+    }
+
+    // Register app and create window
+    use pixelflow_runtime::WindowDescriptor;
+    let window = WindowDescriptor {
+        width: W,
+        height: H,
+        title: "Image Viewer".into(),
+        resizable: false,
+    };
+    let engine_handle = unregistered_handle.register(Arc::new(DummyApp), window)?;
 
     // Build our scene manifold
     let scene = build_scene();

@@ -22,13 +22,13 @@ pub struct MetalOps {
     // Note: NSWindow is a wrapper around Id, so we cast Id to usize or wrap generic
     window_map: HashMap<usize, WindowId>,
     // Handle to send events back to the engine
-    event_tx: EngineActorHandle<PlatformPixel>,
+    event_tx: EngineActorHandle,
 }
 
 unsafe impl Send for MetalOps {}
 
 impl MetalOps {
-    pub fn new(event_tx: EngineActorHandle<PlatformPixel>) -> Result<Self, RuntimeError> {
+    pub fn new(event_tx: EngineActorHandle) -> Result<Self, RuntimeError> {
         // Initialize Cocoa Application
         let app = unsafe {
             // Pool:

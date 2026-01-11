@@ -9,13 +9,13 @@ use pixelflow_core::{
     Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
 };
 use pixelflow_graphics::fonts::loader::{LoadedFont, MmapSource};
-use pixelflow_graphics::render::Pixel;
 use pixelflow_graphics::ColorCube as PlatformColorCube;
 use pixelflow_graphics::{CachedGlyph, GlyphCache, Positioned, SpatialBSP};
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
+use pixelflow_runtime::api::public::EngineHandle;
 use pixelflow_runtime::{
-    EngineActorHandle, EngineEventControl, EngineEventData, EngineEventManagement,
+    EngineEventControl, EngineEventData, EngineEventManagement,
 };
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
@@ -51,12 +51,12 @@ type TerminalCellLeaf = At<
 ///
 /// Receives engine events (frame requests, input) and responds with rendered
 /// terminal content via the engine handle.
-pub struct TerminalApp<P: Pixel> {
+pub struct TerminalApp {
     pub emulator: TerminalEmulator,
     pty_tx: SyncSender<PtyCommand>,
     pub pty_rx: Receiver<Vec<AnsiCommand>>,
     config: Config,
-    engine_tx: EngineActorHandle<P>,
+    engine_tx: EngineHandle,
     /// Memory-mapped font file.
     loaded_font: Arc<LoadedFont<MmapSource>>,
     /// Cached rasterized glyphs.
@@ -64,7 +64,7 @@ pub struct TerminalApp<P: Pixel> {
 }
 
 /// Parameters for constructing a TerminalApp.
-pub struct TerminalAppParams<P: Pixel> {
+pub struct TerminalAppParams {
     /// Terminal emulator instance.
     pub emulator: TerminalEmulator,
     /// Channel to send commands to PTY (writes and resizes).
@@ -73,11 +73,13 @@ pub struct TerminalAppParams<P: Pixel> {
     pub pty_rx: Receiver<Vec<AnsiCommand>>,
     /// Application configuration.
     pub config: Config,
-    /// Handle to the engine actor.
-    pub engine_tx: EngineActorHandle<P>,
+    /// Unregistered engine handle (app will call register()).
+    pub unregistered_engine: pixelflow_runtime::UnregisteredEngineHandle,
+    /// Window configuration for registration.
+    pub window_config: pixelflow_runtime::WindowConfig,
 }
 
-impl<P: Pixel> TerminalApp<P> {
+impl TerminalApp {
     /// Helper to create a positioned terminal cell with background blending.
     ///
     /// Composition: bg + cov * (fg - bg)
@@ -171,8 +173,8 @@ impl<P: Pixel> TerminalApp<P> {
         }
     }
 
-    /// Creates a new terminal app.
-    pub fn new(params: TerminalAppParams<P>) -> Self {
+    /// Creates a new terminal app (internal - use spawn_terminal_app instead).
+    fn new_registered(params: TerminalAppParamsRegistered) -> Self {
         // Memory-map the font file
         // Try workspace-relative path first, then crate-relative (for tests)
         let source = MmapSource::open(FONT_PATH)
@@ -186,7 +188,7 @@ impl<P: Pixel> TerminalApp<P> {
         let mut glyph_cache = GlyphCache::with_capacity(128);
         glyph_cache.warm_ascii(&loaded_font.font(), cell_height);
 
-        let mut app = Self {
+        Self {
             emulator: params.emulator,
             pty_tx: params.pty_tx,
             pty_rx: params.pty_rx,
@@ -194,12 +196,7 @@ impl<P: Pixel> TerminalApp<P> {
             engine_tx: params.engine_tx,
             loaded_font,
             glyph_cache,
-        };
-
-        // Send initial frame to kick off window creation and VSync
-        app.send_frame();
-
-        app
+        }
     }
 
     /// Build a render manifold from the current terminal state.
@@ -371,9 +368,7 @@ impl<P: Pixel> TerminalApp<P> {
     }
 }
 
-impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
-    for TerminalApp<P>
-{
+impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for TerminalApp {
     fn handle_data(&mut self, data: EngineEventData) {
         match data {
             EngineEventData::RequestFrame { .. } => {
@@ -392,13 +387,15 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
                 scale,
             } => {
                 log::info!(
-                    "Window created: id={}, {}x{}, scale={}",
+                    "[TERM] Window created: id={}, {}x{} pixels, scale={}",
                     id.0,
                     width_px,
                     height_px,
                     scale
                 );
-                unimplemented!("WindowCreated handler - need to start VSync and setup render loop");
+
+                // Window is now ready - send initial frame to start VSync loop
+                self.send_frame();
             }
             EngineEventControl::Resized {
                 id: _,
@@ -586,24 +583,65 @@ impl<P: Pixel> Actor<EngineEventData, EngineEventControl, EngineEventManagement>
 }
 
 /// Creates terminal app and spawns it in a thread.
-pub fn spawn_terminal_app<P: Pixel + 'static>(
-    params: TerminalAppParams<P>,
+///
+/// This function handles registration atomically:
+/// 1. Creates the app actor's channel
+/// 2. Registers the app with the engine (sends RegisterApp + CreateWindow)
+/// 3. Spawns the app thread with the registered engine handle
+pub fn spawn_terminal_app(
+    params: TerminalAppParams,
 ) -> std::io::Result<(
     actor_scheduler::ActorHandle<EngineEventData, EngineEventControl, EngineEventManagement>,
     std::thread::JoinHandle<()>,
 )> {
-    let (app_tx, mut app_rx) =
+    // Create app actor's channel
+    let (app_handle, mut app_rx) =
         ActorScheduler::<EngineEventData, EngineEventControl, EngineEventManagement>::new(10, 128);
 
-    let mut app = TerminalApp::new(params);
+    // Register with engine (sends RegisterApp + CreateWindow atomically)
+    use pixelflow_runtime::WindowDescriptor;
+    let window_descriptor = WindowDescriptor {
+        width: params.window_config.width,
+        height: params.window_config.height,
+        title: params.window_config.title.clone(),
+        resizable: true,
+    };
 
+    let app_arc = std::sync::Arc::new(app_handle.clone());
+    let engine_tx = params.unregistered_engine
+        .register(app_arc, window_descriptor)
+        .expect("Failed to register app with engine");
+
+    log::info!("[TERM] App registered with engine, window creation requested");
+
+    // Create app with registered engine handle
+    let app_params_registered = TerminalAppParamsRegistered {
+        emulator: params.emulator,
+        pty_tx: params.pty_tx,
+        pty_rx: params.pty_rx,
+        config: params.config,
+        engine_tx,
+    };
+
+    let mut app = TerminalApp::new_registered(app_params_registered);
+
+    // Spawn app thread
     let handle = std::thread::Builder::new()
         .name("terminal-app".to_string())
         .spawn(move || {
             app_rx.run(&mut app);
         })?;
 
-    Ok((app_tx, handle))
+    Ok((app_handle, handle))
+}
+
+/// Parameters after registration (internal use).
+struct TerminalAppParamsRegistered {
+    emulator: TerminalEmulator,
+    pty_tx: SyncSender<PtyCommand>,
+    pty_rx: Receiver<Vec<AnsiCommand>>,
+    config: Config,
+    engine_tx: EngineHandle,
 }
 
 #[cfg(test)]
@@ -634,10 +672,10 @@ mod tests {
 
     // Helper to create a test instance
     fn create_test_app() -> (
-        TerminalApp<DummyPixel>,
+        TerminalApp,
         Receiver<PtyCommand>,
         SyncSender<Vec<AnsiCommand>>,
-        pixelflow_runtime::EngineActorHandle<DummyPixel>,
+        pixelflow_runtime::api::private::EngineActorHandle,
     ) {
         let emulator = TerminalEmulator::new(80, 24);
         let (pty_tx, pty_rx) = std::sync::mpsc::sync_channel(128);
@@ -647,14 +685,14 @@ mod tests {
         let (engine_tx, _) = actor_scheduler::ActorScheduler::new(10, 10);
 
         let config = Config::default();
-        let params = TerminalAppParams {
+        let params = TerminalAppParamsRegistered {
             emulator,
             pty_tx,
             pty_rx: cmd_rx,
             config,
-            engine_tx: engine_tx.clone(),
+            engine_tx: EngineHandle::new_for_test(engine_tx.clone()),
         };
-        let app = TerminalApp::new(params);
+        let app = TerminalApp::new_registered(params);
 
         (app, pty_rx, cmd_tx, engine_tx)
     }
