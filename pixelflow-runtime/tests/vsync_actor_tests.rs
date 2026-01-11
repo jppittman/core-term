@@ -57,7 +57,8 @@ impl MockVsyncActor {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
-    fn handle_data(&mut self, response: RenderedResponse) {
+    fn handle_data(&mut self, response: RenderedResponse) -> Result<(), actor_scheduler::ActorError> {
+
         // Token replenishment on rendered response
         if self.tokens < MAX_TOKENS {
             self.tokens += 1;
@@ -66,9 +67,11 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
                 response.frame_number, self.tokens
             ));
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, cmd: VsyncCommand) {
+    fn handle_control(&mut self, cmd: VsyncCommand) -> Result<(), actor_scheduler::ActorError> {
+
         match cmd {
             VsyncCommand::Start => {
                 self.running = true;
@@ -91,9 +94,11 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
                 self.log("shutdown");
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> Result<(), actor_scheduler::ActorError> {
+
         match msg {
             VsyncManagement::Tick => {
                 if self.running && self.tokens > 0 {
@@ -121,6 +126,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
                 ));
             }
         }
+        Ok(())
     }
 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {
@@ -711,11 +717,13 @@ fn shutdown_stops_processing_immediately() {
     let handle = thread::spawn(move || {
         struct CountingActor(Arc<AtomicUsize>);
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for CountingActor {
-            fn handle_data(&mut self, _: RenderedResponse) {
+            fn handle_data(&mut self, _: RenderedResponse) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: VsyncCommand) {}
-            fn handle_management(&mut self, _: VsyncManagement) {}
+            fn handle_control(&mut self, _: VsyncCommand) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: VsyncManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }

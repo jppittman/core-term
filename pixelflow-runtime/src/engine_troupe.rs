@@ -62,7 +62,7 @@ actor_scheduler::troupe! {
 impl Actor<EngineData, EngineControl, AppManagement>
     for EngineHandler
 {
-    fn handle_data(&mut self, data: EngineData) {
+    fn handle_data(&mut self, data: EngineData) -> Result<(), actor_scheduler::ActorError> {
         match data {
             EngineData::FromApp(app_data) => self.handle_app_data(app_data),
             EngineData::FromDriver(event) => self.handle_driver_event(event),
@@ -97,9 +97,10 @@ impl Actor<EngineData, EngineControl, AppManagement>
                     .expect("Failed to notify VSync of completed frame");
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: EngineControl) {
+    fn handle_control(&mut self, ctrl: EngineControl) -> Result<(), actor_scheduler::ActorError> {
         match ctrl {
             EngineControl::Quit => {
                 self.driver
@@ -118,9 +119,10 @@ impl Actor<EngineData, EngineControl, AppManagement>
                 unimplemented!("DriverAck not yet implemented");
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: AppManagement) {
+    fn handle_management(&mut self, mgmt: AppManagement) -> Result<(), actor_scheduler::ActorError> {
         match mgmt {
             AppManagement::Configure(config) => {
                 self.render_threads = config.performance.render_threads;
@@ -188,6 +190,7 @@ impl Actor<EngineData, EngineControl, AppManagement>
                     .expect("Failed to send Shutdown to driver on AppManagement::Quit");
             }
         }
+        Ok(())
     }
 
     fn park(&mut self, _hint: ActorStatus) -> ActorStatus {

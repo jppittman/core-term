@@ -81,14 +81,17 @@ impl<'a, Dir: 'a> TroupeActor<'a, Dir> for AlphaActor<'a> {
 }
 
 impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
-    fn handle_data(&mut self, msg: AlphaData) {
+    fn handle_data(&mut self, msg: AlphaData) -> Result<(), actor_scheduler::ActorError> {
+
         self.log
             .lock()
             .unwrap()
             .push(format!("Alpha:Data:{}", msg.0));
+        Ok(())
     }
 
-    fn handle_control(&mut self, cmd: AlphaControl) {
+    fn handle_control(&mut self, cmd: AlphaControl) -> Result<(), actor_scheduler::ActorError> {
+
         match cmd {
             AlphaControl::Ping => {
                 self.log.lock().unwrap().push("Alpha:Ping".to_string());
@@ -99,13 +102,15 @@ impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
                 self.log.lock().unwrap().push("Alpha:Shutdown".to_string());
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, _: AlphaManagement) {}
+    fn handle_management(&mut self, _: AlphaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
+    Ok(())
 }
 
 struct BetaActor<'a> {
@@ -126,14 +131,17 @@ impl<'a, Dir: 'a> TroupeActor<'a, Dir> for BetaActor<'a> {
 }
 
 impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
-    fn handle_data(&mut self, msg: BetaData) {
+    fn handle_data(&mut self, msg: BetaData) -> Result<(), actor_scheduler::ActorError> {
+
         self.log
             .lock()
             .unwrap()
             .push(format!("Beta:Data:{}", msg.0));
+        Ok(())
     }
 
-    fn handle_control(&mut self, cmd: BetaControl) {
+    fn handle_control(&mut self, cmd: BetaControl) -> Result<(), actor_scheduler::ActorError> {
+
         match cmd {
             BetaControl::Pong => {
                 self.log.lock().unwrap().push("Beta:Pong".to_string());
@@ -147,13 +155,15 @@ impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
                 self.log.lock().unwrap().push("Beta:Shutdown".to_string());
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, _: BetaManagement) {}
+    fn handle_management(&mut self, _: BetaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
+    Ok(())
 }
 
 // ============================================================================
@@ -342,9 +352,9 @@ fn all_actor_threads_exit_on_channel_close() {
     let alpha_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
-            fn handle_data(&mut self, _: AlphaData) {}
-            fn handle_control(&mut self, _: AlphaControl) {}
-            fn handle_management(&mut self, _: AlphaManagement) {}
+            fn handle_data(&mut self, _: AlphaData) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, _: AlphaControl) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: AlphaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -356,9 +366,9 @@ fn all_actor_threads_exit_on_channel_close() {
     let beta_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<BetaData, BetaControl, BetaManagement> for NoopActor {
-            fn handle_data(&mut self, _: BetaData) {}
-            fn handle_control(&mut self, _: BetaControl) {}
-            fn handle_management(&mut self, _: BetaManagement) {}
+            fn handle_data(&mut self, _: BetaData) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, _: BetaControl) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: BetaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -398,11 +408,13 @@ fn actor_thread_panic_isolated() {
     let alpha_thread = thread::spawn(move || {
         struct PanicActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for PanicActor {
-            fn handle_data(&mut self, _: AlphaData) {
+            fn handle_data(&mut self, _: AlphaData) -> Result<(), actor_scheduler::ActorError> {
+
                 panic!("Alpha panics!");
+                Ok(())
             }
-            fn handle_control(&mut self, _: AlphaControl) {}
-            fn handle_management(&mut self, _: AlphaManagement) {}
+            fn handle_control(&mut self, _: AlphaControl) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: AlphaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -416,11 +428,13 @@ fn actor_thread_panic_isolated() {
     let beta_thread = thread::spawn(move || {
         struct CountActor(Arc<AtomicUsize>);
         impl Actor<BetaData, BetaControl, BetaManagement> for CountActor {
-            fn handle_data(&mut self, _: BetaData) {
+            fn handle_data(&mut self, _: BetaData) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: BetaControl) {}
-            fn handle_management(&mut self, _: BetaManagement) {}
+            fn handle_control(&mut self, _: BetaControl) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: BetaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -485,8 +499,9 @@ fn circular_messaging_does_not_deadlock() {
             max: usize,
         }
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for PingActor {
-            fn handle_data(&mut self, _: AlphaData) {}
-            fn handle_control(&mut self, cmd: AlphaControl) {
+            fn handle_data(&mut self, _: AlphaData) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, cmd: AlphaControl) -> Result<(), actor_scheduler::ActorError> {
+
                 if matches!(cmd, AlphaControl::Ping) {
                     let c = self.count.fetch_add(1, Ordering::SeqCst);
                     if c < self.max {
@@ -494,7 +509,7 @@ fn circular_messaging_does_not_deadlock() {
                     }
                 }
             }
-            fn handle_management(&mut self, _: AlphaManagement) {}
+            fn handle_management(&mut self, _: AlphaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -515,8 +530,9 @@ fn circular_messaging_does_not_deadlock() {
             max: usize,
         }
         impl Actor<BetaData, BetaControl, BetaManagement> for PongActor {
-            fn handle_data(&mut self, _: BetaData) {}
-            fn handle_control(&mut self, cmd: BetaControl) {
+            fn handle_data(&mut self, _: BetaData) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, cmd: BetaControl) -> Result<(), actor_scheduler::ActorError> {
+
                 if matches!(cmd, BetaControl::Pong) {
                     let c = self.count.fetch_add(1, Ordering::SeqCst);
                     if c < self.max {
@@ -524,7 +540,7 @@ fn circular_messaging_does_not_deadlock() {
                     }
                 }
             }
-            fn handle_management(&mut self, _: BetaManagement) {}
+            fn handle_management(&mut self, _: BetaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -574,11 +590,13 @@ fn cloned_directory_handles_work_independently() {
     let handle = thread::spawn(move || {
         struct CountActor(Arc<AtomicUsize>);
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for CountActor {
-            fn handle_data(&mut self, _: AlphaData) {
+            fn handle_data(&mut self, _: AlphaData) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: AlphaControl) {}
-            fn handle_management(&mut self, _: AlphaManagement) {}
+            fn handle_control(&mut self, _: AlphaControl) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: AlphaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -638,9 +656,9 @@ fn actors_can_coordinate_startup_with_barrier() {
 
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
-            fn handle_data(&mut self, _: ()) {}
-            fn handle_control(&mut self, _: ()) {}
-            fn handle_management(&mut self, _: ()) {}
+            fn handle_data(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -656,9 +674,9 @@ fn actors_can_coordinate_startup_with_barrier() {
 
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
-            fn handle_data(&mut self, _: ()) {}
-            fn handle_control(&mut self, _: ()) {}
-            fn handle_management(&mut self, _: ()) {}
+            fn handle_data(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -701,9 +719,9 @@ fn shutdown_message_causes_actor_exit() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
-            fn handle_data(&mut self, _: AlphaData) {}
-            fn handle_control(&mut self, _: AlphaControl) {}
-            fn handle_management(&mut self, _: AlphaManagement) {}
+            fn handle_data(&mut self, _: AlphaData) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, _: AlphaControl) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: AlphaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -740,9 +758,9 @@ fn shutdown_works_with_multiple_actors() {
     let alpha_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
-            fn handle_data(&mut self, _: AlphaData) {}
-            fn handle_control(&mut self, _: AlphaControl) {}
-            fn handle_management(&mut self, _: AlphaManagement) {}
+            fn handle_data(&mut self, _: AlphaData) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, _: AlphaControl) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: AlphaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -754,9 +772,9 @@ fn shutdown_works_with_multiple_actors() {
     let beta_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<BetaData, BetaControl, BetaManagement> for NoopActor {
-            fn handle_data(&mut self, _: BetaData) {}
-            fn handle_control(&mut self, _: BetaControl) {}
-            fn handle_management(&mut self, _: BetaManagement) {}
+            fn handle_data(&mut self, _: BetaData) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, _: BetaControl) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: BetaManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }

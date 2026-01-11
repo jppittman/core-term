@@ -23,13 +23,15 @@ struct RealParserActor {
 }
 
 impl Actor<Vec<u8>, (), ()> for RealParserActor {
-    fn handle_data(&mut self, data: Vec<u8>) {
+    fn handle_data(&mut self, data: Vec<u8>) -> Result<(), actor_scheduler::ActorError> {
+
         self.bytes_processed.fetch_add(data.len(), Ordering::SeqCst);
 
         let commands = self.parser.process_bytes(&data);
         if !commands.is_empty() {
             let _ = self.cmd_tx.send(commands);
         }
+        Ok(())
     }
 
     fn handle_control(&mut self, _: ()) {}

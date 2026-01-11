@@ -6,8 +6,8 @@ use pixelflow_graphics::Pixel;
 pub trait PlatformOps: Send + 'static {
     type Pixel: Pixel;
 
-    fn handle_data(&mut self, data: DisplayData<Self::Pixel>);
-    fn handle_control(&mut self, ctrl: DisplayControl);
-    fn handle_management(&mut self, mgmt: DisplayMgmt);
+    fn handle_data(&mut self, data: DisplayData<Self::Pixel>) -> Result<(), actor_scheduler::ActorError>;
+    fn handle_control(&mut self, ctrl: DisplayControl) -> Result<(), actor_scheduler::ActorError>;
+    fn handle_management(&mut self, mgmt: DisplayMgmt) -> Result<(), actor_scheduler::ActorError>;
     fn park(&mut self, hint: ActorStatus) -> ActorStatus;
 }

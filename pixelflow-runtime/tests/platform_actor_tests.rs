@@ -29,30 +29,36 @@ unsafe impl Send for MockOps {}
 impl PlatformOps for MockOps {
     type Pixel = u32;
 
-    fn handle_data(&mut self, msg: DisplayData<Self::Pixel>) {
+    fn handle_data(&mut self, msg: DisplayData<Self::Pixel>) -> Result<(), actor_scheduler::ActorError> {
+
         match msg {
             DisplayData::Present { id, .. } => {
                 self.push_log(&format!("Present {:?}", id));
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, msg: DisplayControl) {
+    fn handle_control(&mut self, msg: DisplayControl) -> Result<(), actor_scheduler::ActorError> {
+
         match msg {
             DisplayControl::SetTitle { id, title } => {
                 self.push_log(&format!("SetTitle {:?} {}", id, title));
             }
             _ => self.push_log(&format!("Control {:?}", msg)),
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: DisplayMgmt) {
+    fn handle_management(&mut self, msg: DisplayMgmt) -> Result<(), actor_scheduler::ActorError> {
+
         match msg {
             DisplayMgmt::Create { id, .. } => {
                 self.push_log(&format!("Create {:?}", id));
             }
             _ => self.push_log(&format!("Management {:?}", msg)),
         }
+        Ok(())
     }
 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {

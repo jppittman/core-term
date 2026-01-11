@@ -369,16 +369,17 @@ impl TerminalApp {
 }
 
 impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for TerminalApp {
-    fn handle_data(&mut self, data: EngineEventData) {
+    fn handle_data(&mut self, data: EngineEventData) -> Result<(), actor_scheduler::ActorError> {
         match data {
             EngineEventData::RequestFrame { .. } => {
                 // Engine is requesting a frame - build and send it
                 self.send_frame();
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: EngineEventControl) {
+    fn handle_control(&mut self, ctrl: EngineEventControl) -> Result<(), actor_scheduler::ActorError> {
         match ctrl {
             EngineEventControl::WindowCreated {
                 id,
@@ -438,9 +439,10 @@ impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for Termi
                 unimplemented!("ScaleChanged handler - need to adjust font sizes and redraw");
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: EngineEventManagement) {
+    fn handle_management(&mut self, mgmt: EngineEventManagement) -> Result<(), actor_scheduler::ActorError> {
         match mgmt {
             EngineEventManagement::KeyDown { key, mods, text } => {
                 use crate::term::{EmulatorAction, EmulatorInput, UserInputAction};
@@ -553,6 +555,7 @@ impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for Termi
                     .expect("Failed to send paste to PTY");
             }
         }
+        Ok(())
     }
 
     fn park(&mut self, _hint: ActorStatus) -> ActorStatus {

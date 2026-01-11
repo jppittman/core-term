@@ -67,11 +67,11 @@ struct ParserActor {
 }
 
 impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
-    fn handle_data(&mut self, data: Vec<u8>) {
+    fn handle_data(&mut self, data: Vec<u8>) -> Result<(), actor_scheduler::ActorError> {
         if data.is_empty() {
             // Even if empty, recycle it
             let _ = self.recycler_tx.send(data);
-            return;
+            return Ok(());
         }
 
         // Process raw bytes through ANSI parser (AnsiProcessor implements AnsiParser trait)
@@ -88,14 +88,17 @@ impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
                 warn!("Parser failed to send commands to app: {}", e);
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, _msg: NoControl) {
+    fn handle_control(&mut self, _msg: NoControl) -> Result<(), actor_scheduler::ActorError> {
         // No control messages
+        Ok(())
     }
 
-    fn handle_management(&mut self, _msg: NoManagement) {
+    fn handle_management(&mut self, _msg: NoManagement) -> Result<(), actor_scheduler::ActorError> {
         // No management messages
+        Ok(())
     }
 
     fn park(&mut self, _hint: ActorStatus) -> ActorStatus {

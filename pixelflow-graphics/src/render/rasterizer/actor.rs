@@ -28,7 +28,7 @@
 use super::messages::{RasterConfig, RasterControl, RasterManagement, RenderRequest, RenderResponse};
 use super::{rasterize, TensorShape};
 use crate::render::Pixel;
-use actor_scheduler::{Actor, ParkHint};
+use actor_scheduler::{Actor, ActorStatus};
 use std::time::Instant;
 
 /// Rasterizer actor for parallel frame rendering.
@@ -73,11 +73,11 @@ impl<P: Pixel> RasterizerActor<P> {
 impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
     for RasterizerActor<P>
 {
-    fn handle_data(&mut self, request: RenderRequest<P>) {
+    fn handle_data(&mut self, request: RenderRequest<P>) -> Result<(), actor_scheduler::ActorError> {
         // Skip rendering if paused
         if self.paused {
             log::debug!("Rasterizer paused, dropping render request");
-            return;
+            return Ok(());
         }
 
         let RenderRequest {
@@ -105,9 +105,10 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
         // Send response back (ignore errors if receiver dropped)
         let response = RenderResponse { frame, render_time };
         let _ = response_tx.send(response);
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: RasterControl) {
+    fn handle_control(&mut self, ctrl: RasterControl) -> Result<(), actor_scheduler::ActorError> {
         match ctrl {
             RasterControl::Shutdown => {
                 log::info!("Rasterizer actor shutting down");
@@ -122,9 +123,10 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
                 self.paused = false;
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: RasterManagement) {
+    fn handle_management(&mut self, mgmt: RasterManagement) -> Result<(), actor_scheduler::ActorError> {
         match mgmt {
             RasterManagement::SetThreadCount(count) => {
                 let new_count = count.max(1);
@@ -139,9 +141,10 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
                 let _ = response_tx.send(self.config());
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, hint: ParkHint) -> ParkHint {
+    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         // No external work to do during park, just wait for messages
         hint
     }

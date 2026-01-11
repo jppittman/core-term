@@ -61,7 +61,7 @@ impl MetalOps {
 impl PlatformOps for MetalOps {
     type Pixel = PlatformPixel;
 
-    fn handle_data(&mut self, msg: DisplayData<Self::Pixel>) {
+    fn handle_data(&mut self, msg: DisplayData<Self::Pixel>) -> Result<(), actor_scheduler::ActorError> {
         match msg {
             DisplayData::Present { id, frame } => {
                 log::trace!("MetalOps: Presenting frame for window {:?}", id);
@@ -84,9 +84,10 @@ impl PlatformOps for MetalOps {
                     .expect("Failed to send PresentComplete to engine");
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, msg: DisplayControl) {
+    fn handle_control(&mut self, msg: DisplayControl) -> Result<(), actor_scheduler::ActorError> {
         match msg {
             DisplayControl::SetTitle { id, title } => {
                 if let Some(win) = self.windows.get_mut(&id) {
@@ -136,9 +137,10 @@ impl PlatformOps for MetalOps {
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: DisplayMgmt) {
+    fn handle_management(&mut self, msg: DisplayMgmt) -> Result<(), actor_scheduler::ActorError> {
         match msg {
             DisplayMgmt::Create { id, settings } => {
                 match MacWindow::new(settings) {
@@ -178,6 +180,7 @@ impl PlatformOps for MetalOps {
                 }
             }
         }
+        Ok(())
     }
 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {

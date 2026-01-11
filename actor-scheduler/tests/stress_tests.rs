@@ -20,14 +20,17 @@ struct CountingHandler {
 }
 
 impl Actor<u64, u64, u64> for CountingHandler {
-    fn handle_data(&mut self, _msg: u64) {
+    fn handle_data(&mut self, _msg: u64) -> Result<(), actor_scheduler::ActorError> {
         self.data_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-    fn handle_control(&mut self, _msg: u64) {
+    fn handle_control(&mut self, _msg: u64) -> Result<(), actor_scheduler::ActorError> {
         self.ctrl_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-    fn handle_management(&mut self, _msg: u64) {
+    fn handle_management(&mut self, _msg: u64) -> Result<(), actor_scheduler::ActorError> {
         self.mgmt_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
     fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
         ActorStatus::Idle
@@ -40,12 +43,19 @@ struct SlowHandler {
 }
 
 impl Actor<u64, u64, u64> for SlowHandler {
-    fn handle_data(&mut self, _msg: u64) {
+    fn handle_data(&mut self, _msg: u64) -> Result<(), actor_scheduler::ActorError> {
         thread::sleep(self.delay);
         self.processed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-    fn handle_control(&mut self, _msg: u64) {}
-    fn handle_management(&mut self, _msg: u64) {}
+    fn handle_control(&mut self, _msg: u64) -> Result<(), actor_scheduler::ActorError> {
+    
+        Ok(())
+    }
+    fn handle_management(&mut self, _msg: u64) -> Result<(), actor_scheduler::ActorError> {
+    
+        Ok(())
+    }
     fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
         ActorStatus::Idle
     }
@@ -54,9 +64,15 @@ impl Actor<u64, u64, u64> for SlowHandler {
 struct NoOpHandler;
 
 impl Actor<(), (), ()> for NoOpHandler {
-    fn handle_data(&mut self, _: ()) {}
-    fn handle_control(&mut self, _: ()) {}
-    fn handle_management(&mut self, _: ()) {}
+    fn handle_data(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
+    fn handle_control(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
+    fn handle_management(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
     fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
         ActorStatus::Idle
     }
@@ -311,12 +327,17 @@ fn burst_limit_prevents_data_starvation() {
     }
 
     impl Actor<u64, u64, u64> for BurstHandler {
-        fn handle_data(&mut self, _: u64) {
+        fn handle_data(&mut self, _: u64) -> Result<(), actor_scheduler::ActorError> {
             self.data_processed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn handle_control(&mut self, _: u64) {}
-        fn handle_management(&mut self, _: u64) {
+        fn handle_control(&mut self, _: u64) -> Result<(), actor_scheduler::ActorError> {
+        
+        Ok(())
+    }
+        fn handle_management(&mut self, _: u64) -> Result<(), actor_scheduler::ActorError> {
             self.mgmt_processed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
         fn park(&mut self, _: ActorStatus) -> ActorStatus {
             ActorStatus::Idle
@@ -371,11 +392,18 @@ fn concurrent_clone_and_send() {
     }
 
     impl Actor<u64, u64, u64> for SimpleHandler {
-        fn handle_data(&mut self, _: u64) {
+        fn handle_data(&mut self, _: u64) -> Result<(), actor_scheduler::ActorError> {
             self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn handle_control(&mut self, _: u64) {}
-        fn handle_management(&mut self, _: u64) {}
+        fn handle_control(&mut self, _: u64) -> Result<(), actor_scheduler::ActorError> {
+        
+        Ok(())
+    }
+        fn handle_management(&mut self, _: u64) -> Result<(), actor_scheduler::ActorError> {
+        
+        Ok(())
+    }
         fn park(&mut self, _: ActorStatus) -> ActorStatus {
             ActorStatus::Idle
         }
@@ -447,13 +475,18 @@ fn large_messages_work() {
     }
 
     impl Actor<LargeMessage, (), ()> for LargeHandler {
-        fn handle_data(&mut self, msg: LargeMessage) {
+        fn handle_data(&mut self, msg: LargeMessage) -> Result<(), actor_scheduler::ActorError> {
             // Verify data integrity
             assert!(msg.data.iter().all(|&b| b == 42));
             self.received.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn handle_control(&mut self, _: ()) {}
-        fn handle_management(&mut self, _: ()) {}
+        fn handle_control(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+            Ok(())
+        }
         fn park(&mut self, _: ActorStatus) -> ActorStatus {
             ActorStatus::Idle
         }

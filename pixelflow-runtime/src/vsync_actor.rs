@@ -259,7 +259,7 @@ impl VsyncActor {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
-    fn handle_data(&mut self, response: RenderedResponse) {
+    fn handle_data(&mut self, response: RenderedResponse) -> Result<(), actor_scheduler::ActorError> {
         // Received frame rendered feedback - add token
         if self.tokens < MAX_TOKENS {
             self.tokens += 1;
@@ -272,9 +272,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
         // Count actual rendered frames for accurate FPS
         self.frame_count += 1;
         self.update_fps();
+        Ok(())
     }
 
-    fn handle_control(&mut self, cmd: VsyncCommand) {
+    fn handle_control(&mut self, cmd: VsyncCommand) -> Result<(), actor_scheduler::ActorError> {
         match cmd {
             VsyncCommand::Start => {
                 self.running = true;
@@ -317,9 +318,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 // But we don't hold loopback handles in struct, only for clock thread.
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> Result<(), actor_scheduler::ActorError> {
         match msg {
             VsyncManagement::Tick => self.handle_tick(),
             VsyncManagement::SetConfig {
@@ -365,6 +367,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self.clock_control = Some(clock_tx);
             }
         }
+        Ok(())
     }
 
     fn park(&mut self, _hint: actor_scheduler::ActorStatus) -> actor_scheduler::ActorStatus {

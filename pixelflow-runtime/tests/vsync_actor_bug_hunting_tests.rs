@@ -36,9 +36,10 @@ struct TickRateTracker {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker {
-    fn handle_data(&mut self, _: RenderedResponse) {}
+    fn handle_data(&mut self, _: RenderedResponse) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
 
-    fn handle_control(&mut self, cmd: VsyncCommand) {
+    fn handle_control(&mut self, cmd: VsyncCommand) -> Result<(), actor_scheduler::ActorError> {
+
         match cmd {
             VsyncCommand::Start => self.running = true,
             VsyncCommand::Stop => self.running = false,
@@ -47,7 +48,8 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker 
         }
     }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> Result<(), actor_scheduler::ActorError> {
+
         match msg {
             VsyncManagement::Tick => {
                 if self.running {
@@ -64,6 +66,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
+    Ok(())
 }
 
 #[test]
@@ -146,18 +149,21 @@ struct TokenTracker {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
-    fn handle_data(&mut self, _: RenderedResponse) {
+    fn handle_data(&mut self, _: RenderedResponse) -> Result<(), actor_scheduler::ActorError> {
+
         // Replenish token
         let prev = self.tokens.fetch_add(1, Ordering::SeqCst);
         if prev > 3 {
             // MAX_TOKENS is 3, should cap
             self.tokens.store(3, Ordering::SeqCst);
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, _: VsyncCommand) {}
+    fn handle_control(&mut self, _: VsyncCommand) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> Result<(), actor_scheduler::ActorError> {
+
         if matches!(msg, VsyncManagement::Tick) {
             let current = self.tokens.load(Ordering::SeqCst);
             if current > 0 {
@@ -173,6 +179,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }
+    Ok(())
 }
 
 #[test]
@@ -381,13 +388,15 @@ fn shutdown_command_stops_tick_processing() {
             shutdown: bool,
         }
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for ShutdownActor {
-            fn handle_data(&mut self, _: RenderedResponse) {}
-            fn handle_control(&mut self, cmd: VsyncCommand) {
+            fn handle_data(&mut self, _: RenderedResponse) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, cmd: VsyncCommand) -> Result<(), actor_scheduler::ActorError> {
+
                 if matches!(cmd, VsyncCommand::Shutdown) {
                     self.shutdown = true;
                 }
             }
-            fn handle_management(&mut self, msg: VsyncManagement) {
+            fn handle_management(&mut self, msg: VsyncManagement) -> Result<(), actor_scheduler::ActorError> {
+
                 if !self.shutdown && matches!(msg, VsyncManagement::Tick) {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
@@ -395,6 +404,7 @@ fn shutdown_command_stops_tick_processing() {
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
+            Ok(())
         }
         rx.run(&mut ShutdownActor {
             tick_count: tick_count_clone,
@@ -443,8 +453,9 @@ fn fps_request_handles_dropped_receiver() {
     let handle = thread::spawn(move || {
         struct FPSActor(Arc<Mutex<Vec<String>>>);
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for FPSActor {
-            fn handle_data(&mut self, _: RenderedResponse) {}
-            fn handle_control(&mut self, cmd: VsyncCommand) {
+            fn handle_data(&mut self, _: RenderedResponse) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, cmd: VsyncCommand) -> Result<(), actor_scheduler::ActorError> {
+
                 match cmd {
                     VsyncCommand::RequestCurrentFPS(sender) => {
                         let result = sender.send(60.0);
@@ -457,7 +468,7 @@ fn fps_request_handles_dropped_receiver() {
                     _ => {}
                 }
             }
-            fn handle_management(&mut self, _: VsyncManagement) {}
+            fn handle_management(&mut self, _: VsyncManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -527,15 +538,17 @@ fn refresh_rate_update_during_ticks_is_safe() {
             refresh_rate: f64,
         }
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for RateChangeActor {
-            fn handle_data(&mut self, _: RenderedResponse) {}
-            fn handle_control(&mut self, cmd: VsyncCommand) {
+            fn handle_data(&mut self, _: RenderedResponse) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, cmd: VsyncCommand) -> Result<(), actor_scheduler::ActorError> {
+
                 match cmd {
                     VsyncCommand::Start => self.running = true,
                     VsyncCommand::UpdateRefreshRate(r) => self.refresh_rate = r,
                     _ => {}
                 }
             }
-            fn handle_management(&mut self, msg: VsyncManagement) {
+            fn handle_management(&mut self, msg: VsyncManagement) -> Result<(), actor_scheduler::ActorError> {
+
                 if self.running && matches!(msg, VsyncManagement::Tick) {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
@@ -543,6 +556,7 @@ fn refresh_rate_update_during_ticks_is_safe() {
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
+            Ok(())
         }
         rx.run(&mut RateChangeActor {
             tick_count: tick_count_clone,

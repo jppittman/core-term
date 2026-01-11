@@ -28,14 +28,16 @@ mod tests {
 
     // Use generics as required by the Actor trait definition
     impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement> for MockEngine {
-        fn handle_data(&mut self, msg: EngineData<PlatformPixel>) {
+        fn handle_data(&mut self, msg: EngineData<PlatformPixel>) -> Result<(), actor_scheduler::ActorError> {
+
             if let EngineData::FromDriver(evt) = msg {
                 self.captured_events.lock().unwrap().push(evt);
             }
+            Ok(())
         }
 
-        fn handle_control(&mut self, _msg: EngineControl<PlatformPixel>) {}
-        fn handle_management(&mut self, _msg: AppManagement) {}
+        fn handle_control(&mut self, _msg: EngineControl<PlatformPixel>) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+        fn handle_management(&mut self, _msg: AppManagement) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
         fn park(&mut self, hint: ActorStatus) -> ActorStatus {
             hint
         }

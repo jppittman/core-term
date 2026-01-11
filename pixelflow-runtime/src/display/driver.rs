@@ -38,16 +38,19 @@ impl<P: Platform> DriverActor<P> {
 }
 
 impl<P: Platform> Actor<DisplayData<P::Pixel>, DisplayControl, DisplayMgmt> for DriverActor<P> {
-    fn handle_data(&mut self, data: DisplayData<P::Pixel>) {
-        self.platform.handle_data(data);
+    fn handle_data(&mut self, data: DisplayData<P::Pixel>) -> Result<(), actor_scheduler::ActorError> {
+        self.platform.handle_data(data)?;
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: DisplayControl) {
-        self.platform.handle_control(ctrl);
+    fn handle_control(&mut self, ctrl: DisplayControl) -> Result<(), actor_scheduler::ActorError> {
+        self.platform.handle_control(ctrl)?;
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: DisplayMgmt) {
-        self.platform.handle_management(mgmt);
+    fn handle_management(&mut self, mgmt: DisplayMgmt) -> Result<(), actor_scheduler::ActorError> {
+        self.platform.handle_management(mgmt)?;
+        Ok(())
     }
 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {

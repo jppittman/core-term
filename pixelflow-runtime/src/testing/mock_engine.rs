@@ -64,25 +64,28 @@ struct MessageCollector {
 impl Actor<EngineData, EngineControl, AppManagement>
     for MessageCollector
 {
-    fn handle_data(&mut self, msg: EngineData) {
+    fn handle_data(&mut self, msg: EngineData) -> Result<(), actor_scheduler::ActorError> {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Data(msg));
+        Ok(())
     }
 
-    fn handle_control(&mut self, msg: EngineControl) {
+    fn handle_control(&mut self, msg: EngineControl) -> Result<(), actor_scheduler::ActorError> {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Control(msg));
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: AppManagement) {
+    fn handle_management(&mut self, msg: AppManagement) -> Result<(), actor_scheduler::ActorError> {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Management(msg));
+        Ok(())
     }
 
     fn park(&mut self, _hint: ActorStatus) -> ActorStatus {

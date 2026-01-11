@@ -29,7 +29,8 @@ struct MockParserActor {
 }
 
 impl Actor<Vec<u8>, (), ()> for MockParserActor {
-    fn handle_data(&mut self, data: Vec<u8>) {
+    fn handle_data(&mut self, data: Vec<u8>) -> Result<(), actor_scheduler::ActorError> {
+
         self.bytes_received.fetch_add(data.len(), Ordering::SeqCst);
 
         // Simple mock parsing: convert bytes to Print commands
@@ -49,6 +50,7 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
         if !commands.is_empty() {
             let _ = self.cmd_tx.send(commands);
         }
+        Ok(())
     }
 
     fn handle_control(&mut self, _: ()) {}
@@ -381,12 +383,13 @@ fn cuj_pty04_sender_drop_terminates_receiver() {
     }
 
     impl Actor<u8, (), ()> for TerminationActor {
-        fn handle_data(&mut self, _: u8) {}
+        fn handle_data(&mut self, _: u8) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
         fn park(&mut self, _: ActorStatus) -> ActorStatus {
             ActorStatus::Idle
         }
+        Ok(())
     }
 
     impl Drop for TerminationActor {
@@ -450,16 +453,22 @@ struct MockTerminalAppActor {
 }
 
 impl Actor<MockEngineData, MockEngineControl, MockEngineManagement> for MockTerminalAppActor {
-    fn handle_data(&mut self, data: MockEngineData) {
+    fn handle_data(&mut self, data: MockEngineData) -> Result<(), actor_scheduler::ActorError> {
+
         self.data_events.lock().unwrap().push(data);
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: MockEngineControl) {
+    fn handle_control(&mut self, ctrl: MockEngineControl) -> Result<(), actor_scheduler::ActorError> {
+
         self.control_events.lock().unwrap().push(ctrl);
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: MockEngineManagement) {
+    fn handle_management(&mut self, mgmt: MockEngineManagement) -> Result<(), actor_scheduler::ActorError> {
+
         self.management_events.lock().unwrap().push(mgmt);
+        Ok(())
     }
 
     fn park(&mut self, _: ActorStatus) -> ActorStatus {
@@ -660,14 +669,20 @@ fn cuj_priority_control_before_management_before_data() {
     }
 
     impl Actor<String, String, String> for OrderRecordingActor {
-        fn handle_data(&mut self, msg: String) {
+        fn handle_data(&mut self, msg: String) -> Result<(), actor_scheduler::ActorError> {
+
             self.order.lock().unwrap().push(format!("D:{}", msg));
+            Ok(())
         }
-        fn handle_control(&mut self, msg: String) {
+        fn handle_control(&mut self, msg: String) -> Result<(), actor_scheduler::ActorError> {
+
             self.order.lock().unwrap().push(format!("C:{}", msg));
+            Ok(())
         }
-        fn handle_management(&mut self, msg: String) {
+        fn handle_management(&mut self, msg: String) -> Result<(), actor_scheduler::ActorError> {
+
             self.order.lock().unwrap().push(format!("M:{}", msg));
+            Ok(())
         }
         fn park(&mut self, _: ActorStatus) -> ActorStatus {
             ActorStatus::Idle
@@ -724,8 +739,10 @@ fn cuj_concurrent_senders_all_messages_delivered() {
     }
 
     impl Actor<usize, (), ()> for CountingActor {
-        fn handle_data(&mut self, _: usize) {
+        fn handle_data(&mut self, _: usize) -> Result<(), actor_scheduler::ActorError> {
+
             self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}

@@ -26,16 +26,16 @@ impl<Ops: PlatformOps> PlatformActor<Ops> {
 impl<Ops: PlatformOps> Actor<DisplayData<Ops::Pixel>, DisplayControl, DisplayMgmt>
     for PlatformActor<Ops>
 {
-    fn handle_data(&mut self, msg: DisplayData<Ops::Pixel>) {
-        self.ops.handle_data(msg);
+    fn handle_data(&mut self, msg: DisplayData<Ops::Pixel>) -> Result<(), actor_scheduler::ActorError> {
+        self.ops.handle_data(msg)
     }
 
-    fn handle_control(&mut self, msg: DisplayControl) {
-        self.ops.handle_control(msg);
+    fn handle_control(&mut self, msg: DisplayControl) -> Result<(), actor_scheduler::ActorError> {
+        self.ops.handle_control(msg)
     }
 
-    fn handle_management(&mut self, msg: DisplayMgmt) {
-        self.ops.handle_management(msg);
+    fn handle_management(&mut self, msg: DisplayMgmt) -> Result<(), actor_scheduler::ActorError> {
+        self.ops.handle_management(msg)
     }
 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {

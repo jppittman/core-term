@@ -99,11 +99,13 @@ fn zero_burst_limit_does_not_cause_infinite_loop() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
+            fn handle_control(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -152,11 +154,13 @@ fn mass_sender_drop_does_not_cause_race() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
+            fn handle_control(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -218,14 +222,16 @@ fn actor_panic_does_not_corrupt_state() {
             panic_at: usize,
         }
         impl Actor<i32, i32, i32> for PanicActor {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> {
+
                 self.count += 1;
                 if self.count == self.panic_at {
                     panic!("Intentional panic at message {}", self.count);
                 }
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
+            fn handle_control(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -263,16 +269,21 @@ fn continuous_control_eventually_processes_data() {
     let handle = thread::spawn(move || {
         struct StarvationTracker(Arc<AtomicBool>);
         impl Actor<String, String, String> for StarvationTracker {
-            fn handle_data(&mut self, _: String) {
+            fn handle_data(&mut self, _: String) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.store(true, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: String) {
+            fn handle_control(&mut self, _: String) -> Result<(), actor_scheduler::ActorError> {
+
                 // No delay - we're testing priority, not processing time
+                Ok(())
             }
-            fn handle_management(&mut self, _: String) {}
+            fn handle_management(&mut self, _: String) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
+            Ok(())
         }
         rx.run(&mut StarvationTracker(data_received_clone));
     });
@@ -314,9 +325,9 @@ fn park_poll_does_not_spin_indefinitely() {
             max_parks: usize,
         }
         impl Actor<(), (), ()> for SpinActor {
-            fn handle_data(&mut self, _: ()) {}
-            fn handle_control(&mut self, _: ()) {}
-            fn handle_management(&mut self, _: ()) {}
+            fn handle_data(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_control(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
                 let count = self.park_count.fetch_add(1, Ordering::SeqCst);
                 if count < self.max_parks {
@@ -363,12 +374,14 @@ fn slow_handler_backpressure_works() {
     let handle = thread::spawn(move || {
         struct SlowActor(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for SlowActor {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> {
+
                 thread::sleep(Duration::from_millis(50)); // Very slow
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
+            fn handle_control(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -417,11 +430,13 @@ fn single_sender_fifo_ordering_maintained() {
     let handle = thread::spawn(move || {
         struct OrderTracker(Arc<Mutex<Vec<i32>>>);
         impl Actor<i32, i32, i32> for OrderTracker {
-            fn handle_data(&mut self, msg: i32) {
+            fn handle_data(&mut self, msg: i32) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.lock().unwrap().push(msg);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
+            fn handle_control(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -507,13 +522,15 @@ fn concurrent_send_during_processing() {
     let handle = thread::spawn(move || {
         struct CountingActor(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for CountingActor {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> {
+
                 // Small delay to increase chance of concurrent send
                 thread::sleep(Duration::from_micros(100));
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
+            fn handle_control(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -562,11 +579,13 @@ fn doorbell_saturation_does_not_lose_messages() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
+            fn handle_control(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -680,11 +699,13 @@ fn large_queue_does_not_cause_issues() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<String, String, String> for Counter {
-            fn handle_data(&mut self, _: String) {
+            fn handle_data(&mut self, _: String) -> Result<(), actor_scheduler::ActorError> {
+
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: String) {}
-            fn handle_management(&mut self, _: String) {}
+            fn handle_control(&mut self, _: String) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+            fn handle_management(&mut self, _: String) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
             fn park(&mut self, h: ActorStatus) -> ActorStatus {
                 h
             }
@@ -721,9 +742,9 @@ fn shutdown_race_does_not_panic() {
         let handle = thread::spawn(move || {
             struct NoopActor;
             impl Actor<i32, i32, i32> for NoopActor {
-                fn handle_data(&mut self, _: i32) {}
-                fn handle_control(&mut self, _: i32) {}
-                fn handle_management(&mut self, _: i32) {}
+                fn handle_data(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+                fn handle_control(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+                fn handle_management(&mut self, _: i32) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
                 fn park(&mut self, h: ActorStatus) -> ActorStatus {
                     h
                 }

@@ -36,7 +36,7 @@ impl LinuxOps {
 impl PlatformOps for LinuxOps {
     type Pixel = LinuxPixel;
 
-    fn handle_data(&mut self, data: DisplayData<Self::Pixel>) {
+    fn handle_data(&mut self, data: DisplayData<Self::Pixel>) -> Result<(), actor_scheduler::ActorError> {
         match data {
             DisplayData::Present { frame, .. } => {
                 if let Some(driver) = &self.driver {
@@ -49,9 +49,10 @@ impl PlatformOps for LinuxOps {
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: DisplayControl) {
+    fn handle_control(&mut self, ctrl: DisplayControl) -> Result<(), actor_scheduler::ActorError> {
         if let Some(driver) = &self.driver {
             match ctrl {
                 DisplayControl::Shutdown => {
@@ -101,9 +102,10 @@ impl PlatformOps for LinuxOps {
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: DisplayMgmt) {
+    fn handle_management(&mut self, mgmt: DisplayMgmt) -> Result<(), actor_scheduler::ActorError> {
         match mgmt {
             DisplayMgmt::Create { id, settings } => {
                 let engine_handle = self.engine_handle.clone();
@@ -144,6 +146,7 @@ impl PlatformOps for LinuxOps {
                 self.driver = None;
             }
         }
+        Ok(())
     }
 
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {

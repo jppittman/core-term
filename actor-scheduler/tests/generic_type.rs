@@ -7,9 +7,15 @@ struct DriverActor<P> {
 }
 
 impl<P> Actor<(), (), ()> for DriverActor<P> {
-    fn handle_data(&mut self, _: ()) {}
-    fn handle_control(&mut self, _: ()) {}
-    fn handle_management(&mut self, _: ()) {}
+    fn handle_data(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
+    fn handle_control(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
+    fn handle_management(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }

@@ -4,9 +4,15 @@ use actor_scheduler::{Actor, ActorTypes, ActorStatus, TroupeActor};
 struct SimpleActor;
 
 impl Actor<(), (), ()> for SimpleActor {
-    fn handle_data(&mut self, _: ()) {}
-    fn handle_control(&mut self, _: ()) {}
-    fn handle_management(&mut self, _: ()) {}
+    fn handle_data(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
+    fn handle_control(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
+    fn handle_management(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> {
+        Ok(())
+    }
     fn park(&mut self, hint: ActorStatus) -> ActorStatus {
         hint
     }

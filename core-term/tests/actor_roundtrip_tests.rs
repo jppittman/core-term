@@ -30,7 +30,8 @@ enum TestAnsiCommand {
 }
 
 impl Actor<Vec<u8>, (), ()> for TestParserActor {
-    fn handle_data(&mut self, bytes: Vec<u8>) {
+    fn handle_data(&mut self, bytes: Vec<u8>) -> Result<(), actor_scheduler::ActorError> {
+
         self.bytes_processed
             .fetch_add(bytes.len(), Ordering::SeqCst);
 
@@ -57,10 +58,11 @@ impl Actor<Vec<u8>, (), ()> for TestParserActor {
         if !commands.is_empty() {
             let _ = self.output_tx.send(commands);
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, _: ()) {}
-    fn handle_management(&mut self, _: ()) {}
+    fn handle_control(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
+    fn handle_management(&mut self, _: ()) -> Result<(), actor_scheduler::ActorError> { Ok(()) }
 
     fn park(&mut self, _: ActorStatus) -> ActorStatus {
         ActorStatus::Idle
@@ -269,15 +271,18 @@ struct TestTerminalAppActor {
 }
 
 impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerminalAppActor {
-    fn handle_data(&mut self, data: TestEngineData) {
+    fn handle_data(&mut self, data: TestEngineData) -> Result<(), actor_scheduler::ActorError> {
+
         match data {
             TestEngineData::FrameRequest => {
                 self.frame_count.fetch_add(1, Ordering::SeqCst);
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: TestEngineControl) {
+    fn handle_control(&mut self, ctrl: TestEngineControl) -> Result<(), actor_scheduler::ActorError> {
+
         match ctrl {
             TestEngineControl::Resize(width, height) => {
                 self.resize_count.fetch_add(1, Ordering::SeqCst);
@@ -290,9 +295,11 @@ impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerm
                 // Handle close
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: TestEngineManagement) {
+    fn handle_management(&mut self, mgmt: TestEngineManagement) -> Result<(), actor_scheduler::ActorError> {
+
         match mgmt {
             TestEngineManagement::KeyPress(c) => {
                 self.keypress_count.fetch_add(1, Ordering::SeqCst);
@@ -313,6 +320,7 @@ impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerm
                 }
             }
         }
+        Ok(())
     }
 
     fn park(&mut self, _: ActorStatus) -> ActorStatus {
@@ -560,7 +568,8 @@ fn multi_actor_chain_roundtrip() {
     }
 
     impl Actor<Vec<TestAnsiCommand>, (), ()> for ForwardingActor {
-        fn handle_data(&mut self, cmds: Vec<TestAnsiCommand>) {
+        fn handle_data(&mut self, cmds: Vec<TestAnsiCommand>) -> Result<(), actor_scheduler::ActorError> {
+
             let text: String = cmds
                 .iter()
                 .filter_map(|cmd| match cmd {
@@ -571,6 +580,7 @@ fn multi_actor_chain_roundtrip() {
             if !text.is_empty() {
                 let _ = self.output_tx.send(text);
             }
+            Ok(())
         }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
@@ -633,11 +643,13 @@ fn roundtrip_handles_actor_panic_gracefully() {
     }
 
     impl Actor<String, (), ()> for PanickyActor {
-        fn handle_data(&mut self, _msg: String) {
+        fn handle_data(&mut self, _msg: String) -> Result<(), actor_scheduler::ActorError> {
+
             let count = self.message_count.fetch_add(1, Ordering::SeqCst) + 1;
             if count == self.panic_on_message {
                 panic!("Intentional panic for testing");
             }
+            Ok(())
         }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
@@ -689,10 +701,12 @@ fn roundtrip_sender_dropped_during_processing() {
             started: Arc<AtomicBool>,
         }
         impl Actor<usize, (), ()> for SlowActor {
-            fn handle_data(&mut self, _: usize) {
+            fn handle_data(&mut self, _: usize) -> Result<(), actor_scheduler::ActorError> {
+
                 self.started.store(true, Ordering::SeqCst);
                 thread::sleep(Duration::from_millis(50));
                 self.processed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
