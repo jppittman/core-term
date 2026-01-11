@@ -4,7 +4,7 @@
 
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::{execute, TensorShape};
+use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
@@ -32,10 +32,11 @@ fn demo_single_glyph_rasterization() {
     let height = 45;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
 
-    execute(
+    rasterize(
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
+        1,
     );
 
     println!("ASCII render of 'A' ({}x{}):", width, height);
@@ -75,10 +76,11 @@ fn demo_text_rasterization_with_frame() {
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
 
     // Rasterize!
-    execute(
+    rasterize(
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
+        1,
     );
 
     // Print as ASCII art
@@ -119,10 +121,11 @@ fn demo_alphabet_rasterization() {
     let height = 24;
     let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
 
-    execute(
+    rasterize(
         &color_manifold,
         &mut pixels,
         TensorShape::new(width, height),
+        1,
     );
 
     let chars = [' ', '.', ':', '+', '#', '@'];
@@ -145,10 +148,11 @@ fn demo_alphabet_rasterization() {
     let color_manifold2 = Grayscale(glyph2);
 
     let mut pixels2: Vec<Rgba8> = vec![Rgba8::default(); width * height];
-    execute(
+    rasterize(
         &color_manifold2,
         &mut pixels2,
         TensorShape::new(width, height),
+        1,
     );
 
     println!("NOPQRSTUVWXYZ:");
