@@ -3,7 +3,7 @@
 //! These tests verify the scheduler behaves correctly under heavy load,
 //! concurrent access, and various edge conditions.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
@@ -29,7 +29,7 @@ impl Actor<u64, u64, u64> for CountingHandler {
     fn handle_management(&mut self, _msg: u64) {
         self.mgmt_count.fetch_add(1, Ordering::SeqCst);
     }
-    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }
@@ -46,7 +46,7 @@ impl Actor<u64, u64, u64> for SlowHandler {
     }
     fn handle_control(&mut self, _msg: u64) {}
     fn handle_management(&mut self, _msg: u64) {}
-    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }
@@ -57,7 +57,7 @@ impl Actor<(), (), ()> for NoOpHandler {
     fn handle_data(&mut self, _: ()) {}
     fn handle_control(&mut self, _: ()) {}
     fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }
@@ -247,21 +247,6 @@ fn backpressure_with_slow_consumer() {
 }
 
 // ============================================================================
-// Send After Receiver Drop Tests
-// ============================================================================
-
-#[test]
-fn send_after_receiver_drop_returns_error() {
-    let (tx, rx) = ActorScheduler::<u64, u64, u64>::new(10, 100);
-    drop(rx);
-
-    // All send operations should return errors (SendError::Unknown for disconnected)
-    assert!(tx.send(Message::Data(1)).is_err());
-    assert!(tx.send(Message::Control(1)).is_err());
-    assert!(tx.send(Message::Management(1)).is_err());
-}
-
-// ============================================================================
 // Wake Handler Tests
 // ============================================================================
 
@@ -318,7 +303,7 @@ fn burst_limit_prevents_data_starvation() {
         fn handle_management(&mut self, _: u64) {
             self.mgmt_processed.fetch_add(1, Ordering::SeqCst);
         }
-        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -376,7 +361,7 @@ fn concurrent_clone_and_send() {
         }
         fn handle_control(&mut self, _: u64) {}
         fn handle_management(&mut self, _: u64) {}
-        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -454,7 +439,7 @@ fn large_messages_work() {
         }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }

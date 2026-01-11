@@ -46,11 +46,15 @@ fn display_control_clone_works() {
 
 #[test]
 fn display_event_window_created_carries_dimensions() {
+    use pixelflow_graphics::render::Frame;
+    use pixelflow_runtime::pixel::PlatformPixel;
+
     let event = DisplayEvent::WindowCreated {
         id: WindowId::PRIMARY,
         width_px: 1920,
         height_px: 1080,
         scale: 2.0,
+        frame: Frame::<PlatformPixel>::new(1920, 1080),
     };
 
     if let DisplayEvent::WindowCreated {
@@ -136,15 +140,14 @@ fn display_event_scroll_with_float_deltas() {
 }
 
 #[test]
-fn display_event_clone_works() {
+fn display_event_paste_data_works() {
     let event = DisplayEvent::PasteData {
         text: "Hello, clipboard!".to_string(),
     };
-    let cloned = event.clone();
-    if let DisplayEvent::PasteData { text } = cloned {
+    if let DisplayEvent::PasteData { text } = event {
         assert_eq!(text, "Hello, clipboard!");
     } else {
-        panic!("Clone failed");
+        panic!("PasteData variant check failed");
     }
 }
 
@@ -155,7 +158,6 @@ fn display_event_clone_works() {
 #[test]
 fn display_mgmt_create_window() {
     let mgmt = DisplayMgmt::Create {
-        id: WindowId::PRIMARY,
         settings: WindowDescriptor::default(),
     };
 

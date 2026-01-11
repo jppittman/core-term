@@ -1,6 +1,6 @@
 use crate::api::private::{EngineActorHandle, EngineControl, EngineData};
 use crate::api::public::AppManagement; // Use public re-export
-use actor_scheduler::{Actor, ActorStatus};
+use actor_scheduler::{Actor, ActorStatus, SystemStatus};
 use std::sync::{Arc, Mutex};
 
 /// A recorded message received by the MockEngine.
@@ -85,7 +85,7 @@ impl Actor<EngineData, EngineControl, AppManagement>
             .push(ReceivedMessage::Management(msg));
     }
 
-    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }

@@ -1,7 +1,8 @@
 // src/io/event_monitor_actor/parser_thread/mod.rs
 
 use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
-use actor_scheduler::{Actor, ActorScheduler, ActorStatus};
+use crate::io::traits::PtySender;
+use actor_scheduler::{Actor, ActorScheduler, ActorStatus, SystemStatus};
 use log::*;
 use std::sync::mpsc::{Sender, SyncSender};
 use std::thread::JoinHandle;
@@ -28,7 +29,7 @@ impl ParserThread {
     /// * `recycler_tx` - Sender for recycling buffers back to read thread
     pub fn spawn(
         mut rx: ActorScheduler<Vec<u8>, NoControl, NoManagement>,
-        cmd_tx: SyncSender<Vec<AnsiCommand>>,
+        cmd_tx: Box<dyn PtySender>,
         recycler_tx: Sender<Vec<u8>>,
     ) -> anyhow::Result<Self> {
         let handle = std::thread::Builder::new()
@@ -62,7 +63,7 @@ impl Drop for ParserThread {
 
 struct ParserActor {
     parser: AnsiProcessor,
-    cmd_tx: SyncSender<Vec<AnsiCommand>>,
+    cmd_tx: Box<dyn PtySender>,
     recycler_tx: Sender<Vec<u8>>,
 }
 
@@ -98,7 +99,7 @@ impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
         // No management messages
     }
 
-    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
         // No periodic tasks
         ActorStatus::Idle
     }

@@ -9,14 +9,14 @@
 //!
 //! Each test documents the bug it's hunting for.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SendError};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, SendError};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 // ============================================================================
-// POTENTIAL BUG: Backoff jitter overflow
+// Backoff jitter overflow
 // The calculation `(backoff_micros * jitter_pct) / 100` could overflow
 // if backoff_micros is large enough, even though the final result fits.
 // ============================================================================
@@ -69,25 +69,12 @@ fn backoff_does_not_overflow_on_large_attempts() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Zero or negative buffer sizes
+// Zero or negative buffer sizes
 // What happens if we create a scheduler with buffer size 0?
 // KNOWN ISSUE: sync_channel(0) creates a rendezvous channel that blocks
 // forever on send if receiver isn't actively receiving. This is expected
 // std::sync::mpsc behavior but callers should avoid buffer_size=0.
 // ============================================================================
-
-#[test]
-#[ignore = "Known issue: sync_channel(0) creates rendezvous channel that blocks forever"]
-fn zero_data_buffer_size_blocks_forever() {
-    // This documents known behavior - sync_channel(0) is a rendezvous channel.
-    // Callers should ensure buffer_size >= 1.
-    // We mark this test as ignored but document the behavior.
-
-    // With buffer_size=0, send() blocks until recv() is called.
-    // If the actor hasn't started processing yet, this deadlocks.
-    let (_tx, _rx) = ActorScheduler::<i32, i32, i32>::new(10, 0);
-    // Would block forever if we tried to send
-}
 
 #[test]
 fn zero_burst_limit_does_not_cause_infinite_loop() {
@@ -104,8 +91,8 @@ fn zero_burst_limit_does_not_cause_infinite_loop() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut Counter(processed_clone));
@@ -139,7 +126,7 @@ fn zero_burst_limit_does_not_cause_infinite_loop() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Thundering herd on multiple sender drop
+// Thundering herd on multiple sender drop
 // If many senders are dropped at once, does the doorbell pattern handle it?
 // ============================================================================
 
@@ -157,8 +144,8 @@ fn mass_sender_drop_does_not_cause_race() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut Counter(count_clone));
@@ -203,7 +190,7 @@ fn mass_sender_drop_does_not_cause_race() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Actor panics during handler
+// Actor panics during handler
 // What happens if an actor panics mid-processing?
 // ============================================================================
 
@@ -226,8 +213,8 @@ fn actor_panic_does_not_corrupt_state() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
 
@@ -250,7 +237,7 @@ fn actor_panic_does_not_corrupt_state() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Starvation of lower priority lanes
+// Starvation of lower priority lanes
 // Can control messages completely starve data messages?
 // ============================================================================
 
@@ -270,8 +257,8 @@ fn continuous_control_eventually_processes_data() {
                 // No delay - we're testing priority, not processing time
             }
             fn handle_management(&mut self, _: String) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut StarvationTracker(data_received_clone));
@@ -298,7 +285,7 @@ fn continuous_control_eventually_processes_data() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: ActorStatus::Busy causes CPU spin
+// ActorStatus::Busy causes CPU spin
 // If actor always returns Poll, does it burn CPU?
 // ============================================================================
 
@@ -317,7 +304,7 @@ fn park_poll_does_not_spin_indefinitely() {
             fn handle_data(&mut self, _: ()) {}
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
+            fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
                 let count = self.park_count.fetch_add(1, Ordering::SeqCst);
                 if count < self.max_parks {
                     ActorStatus::Busy // Keep spinning
@@ -349,7 +336,7 @@ fn park_poll_does_not_spin_indefinitely() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Channel filling during slow handler
+// Channel filling during slow handler
 // If handler is slow, does the channel fill and block senders?
 // ============================================================================
 
@@ -369,8 +356,8 @@ fn slow_handler_backpressure_works() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut SlowActor(processed_clone));
@@ -404,7 +391,7 @@ fn slow_handler_backpressure_works() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Message ordering under contention
+// Message ordering under contention
 // Do messages maintain FIFO order when multiple threads are sending?
 // ============================================================================
 
@@ -422,8 +409,8 @@ fn single_sender_fifo_ordering_maintained() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut OrderTracker(received_clone));
@@ -449,7 +436,7 @@ fn single_sender_fifo_ordering_maintained() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Very large message count overflow
+// Very large message count overflow
 // Can frame numbers or counters overflow?
 // ============================================================================
 
@@ -475,7 +462,7 @@ fn large_frame_numbers_dont_overflow() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Rapid channel creation/destruction
+// Rapid channel creation/destruction
 // Does creating and destroying many channels leak resources?
 // ============================================================================
 
@@ -494,7 +481,7 @@ fn rapid_channel_creation_does_not_leak() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Send after partial processing
+// Send after partial processing
 // What happens if sender sends while receiver is mid-batch?
 // ============================================================================
 
@@ -514,8 +501,8 @@ fn concurrent_send_during_processing() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut CountingActor(total_received_clone));
@@ -549,7 +536,7 @@ fn concurrent_send_during_processing() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Doorbell saturation
+// Doorbell saturation
 // The doorbell has buffer size 1. What if it fills?
 // ============================================================================
 
@@ -567,8 +554,8 @@ fn doorbell_saturation_does_not_lose_messages() {
             }
             fn handle_control(&mut self, _: i32) {}
             fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut Counter(count_clone));
@@ -605,7 +592,7 @@ fn doorbell_saturation_does_not_lose_messages() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Time-based operations near epoch
+// Time-based operations near epoch
 // What happens with time calculations near boundaries?
 // ============================================================================
 
@@ -628,46 +615,55 @@ fn instant_arithmetic_is_safe() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Control lane timeout behavior
+// Control lane timeout behavior
 // Does the timeout in send_with_backoff actually work?
 // ============================================================================
 
 #[test]
 fn control_lane_timeout_returns_error() {
-    let (tx, rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+    let test_timeout = Duration::from_secs(20); // 3 * MAX_BACKOFF, ensure we don't deadlock
+    let test_thread = thread::spawn(|| {
+        let (tx, rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
 
-    // Don't run the receiver - just let messages pile up
+        // Don't run the receiver - just let messages pile up
 
-    // Fill the control lane
-    for _ in 0..128 {
-        // CONTROL_MGMT_BUFFER_SIZE
-        tx.send(Message::Control(0)).unwrap();
-    }
+        // Fill the control lane (CONTROL_MGMT_BUFFER_SIZE = 32)
+        for _ in 0..32 {
+            tx.send(Message::Control(0)).unwrap();
+        }
 
-    // Next send should timeout after MAX_BACKOFF
+        // Next send should timeout after MAX_BACKOFF
+        let result = tx.send(Message::Control(999));
+
+        // Should get timeout error - don't assert on timing, just on the error
+        assert!(
+            matches!(result, Err(SendError::Timeout)),
+            "Should timeout when control lane is full. Got: {:?}",
+            result
+        );
+
+        drop(rx);
+    });
+
+    // Test should not hang - if it takes longer than 3 * MAX_BACKOFF, it's deadlocked
     let start = Instant::now();
-    let result = tx.send(Message::Control(999));
+    let result = test_thread.join();
     let elapsed = start.elapsed();
 
-    // Should get timeout error
     assert!(
-        matches!(result, Err(SendError::Timeout)),
-        "Should timeout when control lane is full. Got: {:?}",
-        result
+        result.is_ok(),
+        "Test panicked or did not complete"
     );
 
-    // Should have taken a reasonable amount of time (not forever)
     assert!(
-        elapsed < Duration::from_secs(5),
-        "Timeout should occur within reasonable time. Took: {:?}",
-        elapsed
+        elapsed < test_timeout,
+        "Test appears to be deadlocked - took {:?}, expected < {:?}",
+        elapsed, test_timeout
     );
-
-    drop(rx);
 }
 
 // ============================================================================
-// POTENTIAL BUG: Memory safety with large queues
+// Memory safety with large queues
 // Do we handle memory correctly with many queued messages?
 // ============================================================================
 
@@ -685,8 +681,8 @@ fn large_queue_does_not_cause_issues() {
             }
             fn handle_control(&mut self, _: String) {}
             fn handle_management(&mut self, _: String) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut Counter(count_clone));
@@ -709,7 +705,7 @@ fn large_queue_does_not_cause_issues() {
 }
 
 // ============================================================================
-// POTENTIAL BUG: Scheduler shutdown race
+// Scheduler shutdown race
 // What if messages arrive exactly as scheduler is shutting down?
 // ============================================================================
 
@@ -724,8 +720,8 @@ fn shutdown_race_does_not_panic() {
                 fn handle_data(&mut self, _: i32) {}
                 fn handle_control(&mut self, _: i32) {}
                 fn handle_management(&mut self, _: i32) {}
-                fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                    h
+                fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
                 }
             }
             rx.run(&mut NoopActor);

@@ -3,11 +3,34 @@ use crate::color::Color;
 use crate::config::Config;
 use crate::glyph::Glyph;
 use crate::io::PtyCommand;
+use crate::messages::TerminalData;
 use crate::term::TerminalEmulator;
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
+use actor_scheduler::{ActorHandle, Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
+use crate::io::traits::PtySender;
 use pixelflow_core::{
     Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
 };
+
+/// Adapter to send PTY commands to TerminalApp actor.
+pub struct TerminalAppSender {
+    handle: ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+}
+
+impl TerminalAppSender {
+    pub fn new(handle: ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>) -> Self {
+        Self { handle }
+    }
+}
+
+impl PtySender for TerminalAppSender {
+    fn send(&self, cmds: Vec<AnsiCommand>) -> Result<(), anyhow::Error> {
+        self.handle
+            .send(Message::Data(TerminalData::Pty(cmds)))
+            .map_err(|e| anyhow::anyhow!("Failed to send PTY data to app: {}", e))
+    }
+}
+
+/// Helper to create a positioned terminal cell with background blending.
 use pixelflow_graphics::fonts::loader::{LoadedFont, MmapSource};
 use pixelflow_runtime::platform::ColorCube;
 use pixelflow_graphics::{CachedGlyph, GlyphCache, Positioned, SpatialBSP};
@@ -54,7 +77,6 @@ type TerminalCellLeaf = At<
 pub struct TerminalApp {
     pub emulator: TerminalEmulator,
     pty_tx: SyncSender<PtyCommand>,
-    pub pty_rx: Receiver<Vec<AnsiCommand>>,
     config: Config,
     engine_tx: EngineHandle,
     /// Memory-mapped font file.
@@ -69,8 +91,6 @@ pub struct TerminalAppParams {
     pub emulator: TerminalEmulator,
     /// Channel to send commands to PTY (writes and resizes).
     pub pty_tx: SyncSender<PtyCommand>,
-    /// Channel to receive parsed ANSI commands from PTY.
-    pub pty_rx: Receiver<Vec<AnsiCommand>>,
     /// Application configuration.
     pub config: Config,
     /// Unregistered engine handle (app will call register()).
@@ -191,7 +211,6 @@ impl TerminalApp {
         Self {
             emulator: params.emulator,
             pty_tx: params.pty_tx,
-            pty_rx: params.pty_rx,
             config: params.config,
             engine_tx: params.engine_tx,
             loaded_font,
@@ -368,12 +387,22 @@ impl TerminalApp {
     }
 }
 
-impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for TerminalApp {
-    fn handle_data(&mut self, data: EngineEventData) {
+impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for TerminalApp {
+    fn handle_data(&mut self, data: TerminalData) {
         match data {
-            EngineEventData::RequestFrame { .. } => {
+            TerminalData::Engine(EngineEventData::RequestFrame { .. }) => {
                 // Engine is requesting a frame - build and send it
                 self.send_frame();
+            }
+            TerminalData::Pty(commands) => {
+                use crate::term::EmulatorInput;
+                // Process incoming ANSI commands
+                for cmd in commands {
+                    self.emulator.interpret_input(EmulatorInput::Ansi(cmd));
+                }
+                // We don't necessarily send a frame here anymore, relying on VSync (RequestFrame)
+                // or we could trigger a redraw if we want immediate feedback (but risk flooding)
+                // For now, let's just update state. The next RequestFrame will pick it up.
             }
         }
     }
@@ -555,30 +584,9 @@ impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for Termi
         }
     }
 
-    fn park(&mut self, _hint: ActorStatus) -> ActorStatus {
-        // Drain any queued ANSI commands from PTY
-        use crate::term::EmulatorInput;
-
-        let mut found_data = false;
-        while let Ok(commands) = self.pty_rx.try_recv() {
-            found_data = true;
-            for cmd in commands {
-                self.emulator.interpret_input(EmulatorInput::Ansi(cmd));
-            }
-        }
-
-        // Send frames eagerly when PTY data arrives (out of band from VSync).
-        // This ensures low latency, especially at lower frame rates.
-        if found_data {
-            self.send_frame();
-        }
-
-        // If we found data, keep polling. Otherwise block on actor messages.
-        if found_data {
-            ActorStatus::Busy
-        } else {
-            ActorStatus::Idle
-        }
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        // No polling needed - PTY data comes in via handle_data
+        ActorStatus::Idle
     }
 }
 
@@ -591,15 +599,32 @@ impl Actor<EngineEventData, EngineEventControl, EngineEventManagement> for Termi
 pub fn spawn_terminal_app(
     params: TerminalAppParams,
 ) -> std::io::Result<(
-    actor_scheduler::ActorHandle<EngineEventData, EngineEventControl, EngineEventManagement>,
+    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
     std::thread::JoinHandle<()>,
 )> {
     // Create app actor's channel
     let (app_handle, mut app_rx) =
-        ActorScheduler::<EngineEventData, EngineEventControl, EngineEventManagement>::new(10, 128);
+        ActorScheduler::<TerminalData, EngineEventControl, EngineEventManagement>::new(10, 128);
 
     // Register with engine (sends RegisterApp + CreateWindow atomically)
     use pixelflow_runtime::WindowDescriptor;
+    use pixelflow_runtime::api::public::{Application, EngineEvent};
+
+    struct TerminalAppAdapter {
+        handle: actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    }
+
+    impl Application for TerminalAppAdapter {
+        fn send(&self, event: EngineEvent) -> Result<(), pixelflow_runtime::error::RuntimeError> {
+            let msg = match event {
+                EngineEvent::Data(d) => Message::Data(TerminalData::Engine(d)),
+                EngineEvent::Control(c) => Message::Control(c),
+                EngineEvent::Management(m) => Message::Management(m),
+            };
+            self.handle.send(msg).map_err(|e| pixelflow_runtime::error::RuntimeError::EventSendError(e.to_string()))
+        }
+    }
+
     let window_descriptor = WindowDescriptor {
         width: params.window_config.width,
         height: params.window_config.height,
@@ -607,7 +632,7 @@ pub fn spawn_terminal_app(
         resizable: true,
     };
 
-    let app_arc = std::sync::Arc::new(app_handle.clone());
+    let app_arc = std::sync::Arc::new(TerminalAppAdapter { handle: app_handle.clone() });
     let engine_tx = params.unregistered_engine
         .register(app_arc, window_descriptor)
         .expect("Failed to register app with engine");
@@ -618,7 +643,6 @@ pub fn spawn_terminal_app(
     let app_params_registered = TerminalAppParamsRegistered {
         emulator: params.emulator,
         pty_tx: params.pty_tx,
-        pty_rx: params.pty_rx,
         config: params.config,
         engine_tx,
     };
@@ -639,7 +663,6 @@ pub fn spawn_terminal_app(
 struct TerminalAppParamsRegistered {
     emulator: TerminalEmulator,
     pty_tx: SyncSender<PtyCommand>,
-    pty_rx: Receiver<Vec<AnsiCommand>>,
     config: Config,
     engine_tx: EngineHandle,
 }
@@ -674,12 +697,10 @@ mod tests {
     fn create_test_app() -> (
         TerminalApp,
         Receiver<PtyCommand>,
-        SyncSender<Vec<AnsiCommand>>,
         pixelflow_runtime::api::private::EngineActorHandle,
     ) {
         let emulator = TerminalEmulator::new(80, 24);
         let (pty_tx, pty_rx) = std::sync::mpsc::sync_channel(128);
-        let (cmd_tx, cmd_rx) = std::sync::mpsc::sync_channel(128);
 
         // Create a dummy engine handle
         let (engine_tx, _) = actor_scheduler::ActorScheduler::new(10, 10);
@@ -688,18 +709,17 @@ mod tests {
         let params = TerminalAppParamsRegistered {
             emulator,
             pty_tx,
-            pty_rx: cmd_rx,
             config,
             engine_tx: EngineHandle::new_for_test(engine_tx.clone()),
         };
         let app = TerminalApp::new_registered(params);
 
-        (app, pty_rx, cmd_tx, engine_tx)
+        (app, pty_rx, engine_tx)
     }
 
     #[test]
     fn test_handle_control_resize() {
-        let (mut app, pty_rx, _cmd_tx, _) = create_test_app();
+        let (mut app, pty_rx, _) = create_test_app();
 
         // Initial size is 80x24
         use crate::term::TerminalInterface;
@@ -738,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_handle_management_keydown() {
-        let (mut app, pty_rx, _cmd_tx, _) = create_test_app();
+        let (mut app, pty_rx, _) = create_test_app();
 
         // Simulate KeyDown
         let key_event = EngineEventManagement::KeyDown {

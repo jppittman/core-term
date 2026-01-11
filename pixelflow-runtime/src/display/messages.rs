@@ -1,8 +1,8 @@
 pub use crate::api::private::WindowId;
 use crate::api::public::{CursorIcon, WindowDescriptor};
 use crate::input::{KeySymbol, Modifiers};
+use crate::pixel::PlatformPixel;
 use pixelflow_graphics::render::Frame;
-use pixelflow_graphics::Pixel;
 
 /// Data messages for the display driver (high throughput, high priority).
 ///
@@ -21,7 +21,7 @@ use pixelflow_graphics::Pixel;
 ///
 /// - **`Present`**: Render a frame to a window immediately
 #[derive(Debug)]
-pub enum DisplayData<P: Pixel> {
+pub enum DisplayData {
     /// Present a frame to a window.
     ///
     /// # Contract
@@ -50,7 +50,7 @@ pub enum DisplayData<P: Pixel> {
     ///
     /// This is a high-priority message. It can't be sent to a full buffer (will block),
     /// so ensure the display driver is running.
-    Present { id: WindowId, frame: Frame<P> },
+    Present { id: WindowId, frame: Frame<PlatformPixel> },
 }
 
 /// Control messages for the display driver (configuration and lifecycle).
@@ -275,7 +275,6 @@ pub enum DisplayMgmt {
     ///
     /// ```ignore
     /// tx.send(Message::Management(DisplayMgmt::Create {
-    ///     id: window_id,
     ///     settings: WindowDescriptor {
     ///         width: 800,
     ///         height: 600,
@@ -285,7 +284,6 @@ pub enum DisplayMgmt {
     /// // ... wait for DisplayEvent::WindowCreated ...
     /// ```
     Create {
-        id: WindowId,
         settings: WindowDescriptor,
     },
 
@@ -318,13 +316,14 @@ pub enum DisplayMgmt {
 }
 
 /// Events emitted by the display driver
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum DisplayEvent {
     WindowCreated {
         id: WindowId,
         width_px: u32,
         height_px: u32,
         scale: f64,
+        frame: Frame<PlatformPixel>,
     },
     WindowDestroyed {
         id: WindowId,
@@ -333,6 +332,7 @@ pub enum DisplayEvent {
         id: WindowId,
         width_px: u32,
         height_px: u32,
+        frame: Frame<PlatformPixel>,
     },
     ScaleChanged {
         id: WindowId,

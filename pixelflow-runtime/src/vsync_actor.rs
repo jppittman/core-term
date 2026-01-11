@@ -9,7 +9,7 @@
 //! the actor wakes up reliably regardless of other system load, without relying
 //! on blocking `park` calls that could stall the actor scheduler.
 
-use actor_scheduler::{Actor, ActorHandle};
+use actor_scheduler::{Actor, ActorHandle, SystemStatus};
 use log::info;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
@@ -407,9 +407,8 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
         }
     }
 
-    fn park(&mut self, _hint: actor_scheduler::ActorStatus) -> actor_scheduler::ActorStatus {
-        // No-op. We are driven by the clock thread messages.
-        // The scheduler will block on the mailbox (doorbell) automatically.
+    fn park(&mut self, _status: SystemStatus) -> actor_scheduler::ActorStatus {
+        // VSync is driven by internal clock thread sending messages
         actor_scheduler::ActorStatus::Idle
     }
 }

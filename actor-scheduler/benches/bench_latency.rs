@@ -24,7 +24,7 @@ impl Actor<(), (), ()> for LatencyActor {
         let _ = self.response_tx.send(());
     }
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
+    fn park(&mut self, hint: SystemStatus) -> ActorStatus {
         hint
     }
 }

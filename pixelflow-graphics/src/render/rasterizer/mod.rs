@@ -182,12 +182,12 @@
 //! Color manifolds output `Discrete` (packed u32 pixels) directly.
 
 use crate::render::color::Pixel;
+use crate::render::frame::Frame;
 use pixelflow_core::{
     materialize_discrete, materialize_discrete_fields, Discrete, Field, Manifold, PARALLELISM,
 };
 
 pub mod parallel;
-pub(crate) mod pool;
 pub mod actor;
 pub mod messages;
 
@@ -213,25 +213,9 @@ impl<M: Manifold> Manifold for Rasterize<M> {
     }
 }
 
-/// Dimensions and memory layout of a 2D tensor.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct TensorShape {
-    /// Width in pixels.
-    pub width: usize,
-    /// Height in pixels.
-    pub height: usize,
-}
-
-impl TensorShape {
-    /// Create a new TensorShape.
-    pub const fn new(width: usize, height: usize) -> Self {
-        Self { width, height }
-    }
-}
-
 /// A horizontal stripe of rows for parallel rendering.
 #[derive(Copy, Clone, Debug)]
-pub struct Stripe {
+pub(crate) struct Stripe {
     /// Starting Y coordinate.
     pub start_y: usize,
     /// Ending Y coordinate (exclusive).
@@ -244,27 +228,29 @@ pub struct Stripe {
 ///
 /// Takes a color manifold that outputs Discrete (packed u32 pixels)
 /// and writes them to the target buffer.
-pub(crate) fn execute<P, M>(manifold: &M, target: &mut [P], shape: TensorShape)
+pub(crate) fn execute<P, M>(manifold: &M, target: &mut Frame<P>)
 where
     P: Pixel,
     M: Manifold<Output = Discrete> + ?Sized,
 {
-    if shape.width == 0 || shape.height == 0 {
+    let width = target.width;
+    let height = target.height;
+    if width == 0 || height == 0 {
         return;
     }
     execute_stripe(
         manifold,
-        target,
+        target.as_slice_mut(),
         Stripe {
             start_y: 0,
-            end_y: shape.height,
-            width: shape.width,
+            end_y: height,
+            width,
         },
     );
 }
 
 /// Render a specific row range into the target buffer (internal).
-pub(super) fn execute_stripe<P, M>(manifold: &M, target: &mut [P], stripe: Stripe)
+pub(crate) fn execute_stripe<P, M>(manifold: &M, target: &mut [P], stripe: Stripe)
 where
     P: Pixel,
     M: Manifold<Output = Discrete> + ?Sized,

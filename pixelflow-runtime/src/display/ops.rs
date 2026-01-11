@@ -1,13 +1,10 @@
 use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
-use actor_scheduler::ActorStatus;
-use pixelflow_graphics::Pixel;
+use actor_scheduler::{ActorStatus, SystemStatus};
 
 /// Backend-specific operations for the display platform.
 pub trait PlatformOps: Send + 'static {
-    type Pixel: Pixel;
-
-    fn handle_data(&mut self, data: DisplayData<Self::Pixel>);
+    fn handle_data(&mut self, data: DisplayData);
     fn handle_control(&mut self, ctrl: DisplayControl);
     fn handle_management(&mut self, mgmt: DisplayMgmt);
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus;
+    fn park(&mut self, status: SystemStatus) -> ActorStatus;
 }

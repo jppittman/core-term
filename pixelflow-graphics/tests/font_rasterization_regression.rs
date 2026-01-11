@@ -10,7 +10,8 @@ use pixelflow_core::{materialize_discrete, PARALLELISM};
 use pixelflow_graphics::fonts::ttf::{make_line, Geometry, Line, LineKernel, Quad, QuadKernel};
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::frame::Frame;
+use pixelflow_graphics::render::rasterizer::rasterize;
 use std::sync::Arc;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
@@ -143,9 +144,11 @@ fn regression_glyph_ascent_offset() {
     // Create a framebuffer
     let width = 80;
     let height = 120;
-    let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
+    let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
-    rasterize(&lifted, &mut pixels, TensorShape::new(width, height), 1);
+    rasterize(&lifted, &mut frame, 1);
+    
+    let pixels = frame.data;
 
     // Count non-black pixels (with AA, we have smooth gradients)
     let white_pixels = pixels.iter().filter(|p| p.r() > 0).count();
@@ -181,9 +184,10 @@ fn regression_text_rendering_pipeline() {
 
     let width = 100;
     let height = 30;
-    let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
+    let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
-    rasterize(&lifted, &mut pixels, TensorShape::new(width, height), 1);
+    rasterize(&lifted, &mut frame, 1);
+    let pixels = frame.data;
 
     // Count pixels by brightness
     let bright_count = pixels.iter().filter(|p| p.r() > 128).count();

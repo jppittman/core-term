@@ -1,4 +1,4 @@
-use actor_scheduler::{Actor, ActorStatus};
+use actor_scheduler::{Actor, ActorStatus, SystemStatus};
 use pixelflow_graphics::render::Frame;
 use pixelflow_runtime::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use pixelflow_runtime::display::ops::PlatformOps;
@@ -27,9 +27,7 @@ impl MockOps {
 unsafe impl Send for MockOps {}
 
 impl PlatformOps for MockOps {
-    type Pixel = u32;
-
-    fn handle_data(&mut self, msg: DisplayData<Self::Pixel>) {
+    fn handle_data(&mut self, msg: DisplayData) {
         match msg {
             DisplayData::Present { id, .. } => {
                 self.push_log(&format!("Present {:?}", id));
@@ -48,16 +46,16 @@ impl PlatformOps for MockOps {
 
     fn handle_management(&mut self, msg: DisplayMgmt) {
         match msg {
-            DisplayMgmt::Create { id, .. } => {
-                self.push_log(&format!("Create {:?}", id));
+            DisplayMgmt::Create { .. } => {
+                self.push_log("Create");
             }
             _ => self.push_log(&format!("Management {:?}", msg)),
         }
     }
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-        self.push_log(&format!("Park {:?}", hint));
-        hint
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        self.push_log("Park");
+        ActorStatus::Idle
     }
 }
 
@@ -75,7 +73,6 @@ fn test_platform_actor_delegation() {
 
     // Test Management (Create)
     actor.handle_management(DisplayMgmt::Create {
-        id: pixelflow_runtime::api::private::WindowId(1),
         settings: Default::default(),
     });
 
@@ -92,13 +89,13 @@ fn test_platform_actor_delegation() {
     });
 
     // Test Park
-    actor.park(ActorStatus::Busy);
+    actor.park(SystemStatus::Busy);
 
     // 4. Verify Log
     let log = log_ref.lock().unwrap();
     assert_eq!(log.len(), 4);
-    assert!(log[0].contains("Create WindowId(1)"));
+    assert_eq!(log[0], "Create");
     assert!(log[1].contains("SetTitle WindowId(1) Test Window"));
     assert!(log[2].contains("Present WindowId(1)"));
-    assert!(log[3].contains("Park Poll"));
+    assert_eq!(log[3], "Park");
 }

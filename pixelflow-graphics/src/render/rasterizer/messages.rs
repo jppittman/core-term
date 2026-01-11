@@ -20,10 +20,6 @@ pub struct RenderRequest<P: Pixel> {
     pub manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
     /// The frame buffer to render into.
     pub frame: Frame<P>,
-    /// Width of the frame.
-    pub width: usize,
-    /// Height of the frame.
-    pub height: usize,
     /// Channel to send the completed frame back.
     pub response_tx: std::sync::mpsc::Sender<RenderResponse<P>>,
 }
@@ -42,11 +38,10 @@ pub struct RenderResponse<P: Pixel> {
 /// Control messages are processed before Management and Data messages.
 /// The Control lane uses sleep-based backoff to ensure fairness and prevent
 /// starvation of other message types.
-#[derive(Debug, Default, Clone, Copy)]
+///
+/// To shut down the scheduler, use `Message::Shutdown` directly, not a control message.
+#[derive(Debug, Clone, Copy)]
 pub enum RasterControl {
-    /// Shutdown the rasterizer actor.
-    #[default]
-    Shutdown,
     /// Pause rendering (stop processing Data messages).
     Pause,
     /// Resume rendering.

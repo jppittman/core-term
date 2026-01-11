@@ -8,6 +8,7 @@ pub mod engine_troupe;
 pub mod error;
 pub mod frame;
 pub mod input;
+pub mod pixel;
 pub mod platform;
 pub mod render_pool;
 pub mod testing;

@@ -5,7 +5,7 @@
 //!
 //! Following TDD principles: write tests first, uncover bugs, fix them.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -62,7 +62,7 @@ impl Actor<Vec<u8>, (), ()> for TestParserActor {
     fn handle_control(&mut self, _: ()) {}
     fn handle_management(&mut self, _: ()) {}
 
-    fn park(&mut self, _: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }
@@ -315,7 +315,7 @@ impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerm
         }
     }
 
-    fn park(&mut self, _: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }
@@ -574,7 +574,7 @@ fn multi_actor_chain_roundtrip() {
         }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -641,7 +641,7 @@ fn roundtrip_handles_actor_panic_gracefully() {
         }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -696,7 +696,7 @@ fn roundtrip_sender_dropped_during_processing() {
             }
             fn handle_control(&mut self, _: ()) {}
             fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _: ActorStatus) -> ActorStatus {
+            fn park(&mut self, _: SystemStatus) -> ActorStatus {
                 ActorStatus::Idle
             }
         }

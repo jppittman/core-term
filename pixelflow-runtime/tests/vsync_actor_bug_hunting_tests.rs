@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
 use pixelflow_runtime::vsync_actor::{
     RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
 };
@@ -61,8 +61,8 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker 
         }
     }
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-        hint
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 
@@ -170,8 +170,8 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
         }
     }
 
-    fn park(&mut self, hint: ActorStatus) -> ActorStatus {
-        hint
+    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
     }
 }
 
@@ -392,8 +392,8 @@ fn shutdown_command_stops_tick_processing() {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
             }
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut ShutdownActor {
@@ -458,8 +458,8 @@ fn fps_request_handles_dropped_receiver() {
                 }
             }
             fn handle_management(&mut self, _: VsyncManagement) {}
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut FPSActor(log_clone));
@@ -540,8 +540,8 @@ fn refresh_rate_update_during_ticks_is_safe() {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
             }
-            fn park(&mut self, h: ActorStatus) -> ActorStatus {
-                h
+            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+        ActorStatus::Idle
             }
         }
         rx.run(&mut RateChangeActor {

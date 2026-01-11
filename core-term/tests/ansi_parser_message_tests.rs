@@ -3,7 +3,7 @@
 //! These tests verify the complete message flow from raw bytes through
 //! the ANSI parser to the terminal app, using the real AnsiProcessor.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
 use core_term::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -34,7 +34,7 @@ impl Actor<Vec<u8>, (), ()> for RealParserActor {
 
     fn handle_control(&mut self, _: ()) {}
     fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, _: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }

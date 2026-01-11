@@ -2,7 +2,8 @@
 
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::rasterizer::{rasterize, TensorShape};
+use pixelflow_graphics::render::frame::Frame;
+use pixelflow_graphics::render::rasterizer::rasterize;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
@@ -51,13 +52,13 @@ fn debug_coverage_at_points() {
     // Render to a 40x45 buffer
     let width = 40;
     let height = 45;
-    let mut pixels: Vec<Rgba8> = vec![Rgba8::default(); width * height];
+    let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(
         &color_manifold,
-        &mut pixels,
-        TensorShape::new(width, height),
+        &mut frame,
         1,
     );
+    let pixels = frame.data;
 
     // Print cross-sections at different Y values
     println!("\nQuerying coverage at x=15 for various screen Y values:");

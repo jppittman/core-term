@@ -3,7 +3,7 @@
 //! These tests verify the message flows between actors in the core-term system.
 //! Each test covers a specific CUJ identified in MESSAGE_CUJ_COVERAGE.md.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -53,7 +53,7 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
 
     fn handle_control(&mut self, _: ()) {}
     fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, _: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }
@@ -384,7 +384,7 @@ fn cuj_pty04_sender_drop_terminates_receiver() {
         fn handle_data(&mut self, _: u8) {}
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -462,7 +462,7 @@ impl Actor<MockEngineData, MockEngineControl, MockEngineManagement> for MockTerm
         self.management_events.lock().unwrap().push(mgmt);
     }
 
-    fn park(&mut self, _: ActorStatus) -> ActorStatus {
+    fn park(&mut self, _: SystemStatus) -> ActorStatus {
         ActorStatus::Idle
     }
 }
@@ -669,7 +669,7 @@ fn cuj_priority_control_before_management_before_data() {
         fn handle_management(&mut self, msg: String) {
             self.order.lock().unwrap().push(format!("M:{}", msg));
         }
-        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }
@@ -729,7 +729,7 @@ fn cuj_concurrent_senders_all_messages_delivered() {
         }
         fn handle_control(&mut self, _: ()) {}
         fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: ActorStatus) -> ActorStatus {
+        fn park(&mut self, _: SystemStatus) -> ActorStatus {
             ActorStatus::Idle
         }
     }

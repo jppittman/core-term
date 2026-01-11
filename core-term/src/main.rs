@@ -201,26 +201,25 @@ fn main() -> anyhow::Result<()> {
     // Phase 2: Get unregistered engine handle
     let unregistered_handle = troupe.engine_handle();
 
-    // Create channel for parsed ANSI commands (parser -> app)
-    let (ansi_cmd_tx, ansi_cmd_rx) = std::sync::mpsc::sync_channel(128);
-
     {
         use core_term::io::event_monitor_actor::EventMonitorActor;
         use core_term::io::pty::{NixPty, PtyConfig};
-        use core_term::terminal_app::{spawn_terminal_app, TerminalAppParams};
+        use core_term::terminal_app::{spawn_terminal_app, TerminalAppParams, TerminalAppSender};
 
         // Phase 3: Spawn terminal app with UNREGISTERED handle
         // The app will call register() during its initialization
         let params = TerminalAppParams {
             emulator: term_emulator,
             pty_tx: pty_cmd_tx,
-            pty_rx: ansi_cmd_rx,
             config: core_term::config::Config::default(),
             unregistered_engine: unregistered_handle,
             window_config: engine_config.window.clone(),
         };
         let (app_handle, _app_thread_handle) =
             spawn_terminal_app(params).context("Failed to spawn terminal app")?;
+
+        // Create adapter for PTY parser to send to app
+        let app_sender = Box::new(TerminalAppSender::new(app_handle.clone()));
 
         // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
@@ -233,7 +232,7 @@ fn main() -> anyhow::Result<()> {
         let pty = NixPty::spawn_with_config(&pty_config).context("Failed to create NixPty")?;
         info!("Spawned PTY");
 
-        let _event_monitor_actor = EventMonitorActor::spawn(pty, ansi_cmd_tx, pty_cmd_rx)
+        let _event_monitor_actor = EventMonitorActor::spawn(pty, app_sender, pty_cmd_rx)
             .context("Failed to spawn EventMonitorActor")?;
         info!("EventMonitorActor spawned successfully");
 
