@@ -904,6 +904,46 @@ impl SimdOps for F32x8 {
             }
         }
     }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        unsafe {
+            // n = floor(x), f = x - n
+            let n = _mm256_floor_ps(self.0);
+            let f = _mm256_sub_ps(self.0, n);
+
+            // Minimax polynomial for 2^f, f ∈ [0, 1)
+            let c4 = _mm256_set1_ps(0.0135557);
+            let c3 = _mm256_set1_ps(0.0520323);
+            let c2 = _mm256_set1_ps(0.2413793);
+            let c1 = _mm256_set1_ps(0.6931472);
+            let c0 = _mm256_set1_ps(1.0);
+
+            // Horner's method
+            #[cfg(target_feature = "fma")]
+            let poly = {
+                let mut p = _mm256_fmadd_ps(c4, f, c3);
+                p = _mm256_fmadd_ps(p, f, c2);
+                p = _mm256_fmadd_ps(p, f, c1);
+                _mm256_fmadd_ps(p, f, c0)
+            };
+            #[cfg(not(target_feature = "fma"))]
+            let poly = {
+                let mut p = _mm256_add_ps(_mm256_mul_ps(c4, f), c3);
+                p = _mm256_add_ps(_mm256_mul_ps(p, f), c2);
+                p = _mm256_add_ps(_mm256_mul_ps(p, f), c1);
+                _mm256_add_ps(_mm256_mul_ps(p, f), c0)
+            };
+
+            // 2^n
+            let bias = _mm256_set1_epi32(127);
+            let n_i32 = _mm256_cvtps_epi32(n);
+            let exp_bits = _mm256_slli_epi32(_mm256_add_epi32(n_i32, bias), 23);
+            let scale = _mm256_castsi256_ps(exp_bits);
+
+            Self(_mm256_mul_ps(poly, scale))
+        }
+    }
 }
 
 #[cfg(target_feature = "avx2")]
