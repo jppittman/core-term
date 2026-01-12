@@ -5,10 +5,10 @@
 //! - Cargo features (display_cocoa, display_x11, display_headless)
 //! - Target OS defaults
 
-// #[cfg(use_cocoa_display)]
-// pub mod metal;
-// #[cfg(use_cocoa_display)]
-// pub use metal::MetalDisplayDriver;
+#[cfg(use_cocoa_display)]
+pub mod metal;
+#[cfg(use_cocoa_display)]
+pub use metal::MetalDisplayDriver;
 
 // #[cfg(use_x11_display)]
 // pub mod x11;

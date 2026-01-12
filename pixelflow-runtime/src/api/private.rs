@@ -10,7 +10,7 @@ use crate::pixel::PlatformPixel;
 // Re-export WindowId from public API for backward compatibility
 pub use crate::api::public::WindowId;
 
-use crate::display::messages::DisplayEvent;
+use crate::display::messages::{DisplayEvent, Window};
 
 /// Commands sent to the Display Driver.
 #[derive(Debug)]
@@ -47,7 +47,6 @@ pub enum DriverCommand {
 }
 
 // Engine data message (high throughput, frame timing)
-#[derive(Debug)]
 pub enum EngineData {
     FromDriver(DisplayEvent),
     FromApp(crate::api::public::AppData),
@@ -56,8 +55,37 @@ pub enum EngineData {
         target_timestamp: std::time::Instant,
         refresh_interval: std::time::Duration,
     },
-    PresentComplete(Frame<PlatformPixel>),
+    PresentComplete(Window),
+    /// Render complete - carries the render response (cooked frame + timing).
+    /// Window is reconstructed from pending_render metadata in the engine.
     RenderComplete(RenderResponse<PlatformPixel>),
+}
+
+impl std::fmt::Debug for EngineData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FromDriver(event) => f.debug_tuple("FromDriver").field(event).finish(),
+            Self::FromApp(data) => f.debug_tuple("FromApp").field(data).finish(),
+            Self::VSync {
+                timestamp,
+                target_timestamp,
+                refresh_interval,
+            } => f
+                .debug_struct("VSync")
+                .field("timestamp", timestamp)
+                .field("target_timestamp", target_timestamp)
+                .field("refresh_interval", refresh_interval)
+                .finish(),
+            Self::PresentComplete(window) => {
+                f.debug_tuple("PresentComplete").field(window).finish()
+            }
+            Self::RenderComplete(response) => f
+                .debug_struct("RenderComplete")
+                .field("render_time", &response.render_time)
+                .field("frame_size", &(response.frame.width, response.frame.height))
+                .finish(),
+        }
+    }
 }
 
 impl From<crate::api::public::AppData> for EngineData {
