@@ -370,14 +370,12 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self_handle,
             } => {
                 // Configure the vsync actor (called via Management after construction)
-                // Note: We don't auto-start - wait for explicit Start command from engine
                 self.engine_handle = Some(engine_handle);
                 self.refresh_rate = config.refresh_rate;
                 self.interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
-                self.running = false; // Don't auto-start
 
                 info!(
-                    "VsyncActor: Configured with {:.2} Hz (waiting for Start)",
+                    "VsyncActor: Configured with {:.2} Hz",
                     config.refresh_rate
                 );
 
@@ -405,6 +403,12 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                     .expect("Failed to spawn vsync clock thread");
 
                 self.clock_control = Some(clock_tx);
+
+                // Auto-start after configuration (clock thread is ready now)
+                // This avoids priority inversion where Start (Control) runs before SetConfig (Management)
+                self.running = true;
+                self.next_vsync = Instant::now();
+                info!("VsyncActor: Auto-started after configuration");
             }
         }
         Ok(())

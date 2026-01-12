@@ -126,7 +126,13 @@ impl Drop for ReadThread {
         // The WriteThread owns the PTY and will close it on drop, which should
         // wake up this read().
         if let Some(handle) = self.join_handle.take() {
-            let _ = handle.join();
+            if let Err(panic_payload) = handle.join() {
+                if std::thread::panicking() {
+                    eprintln!("Read thread panicked (during unwind): {:?}", panic_payload);
+                } else {
+                    std::panic::resume_unwind(panic_payload);
+                }
+            }
         }
     }
 }
