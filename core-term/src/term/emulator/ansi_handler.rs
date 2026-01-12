@@ -192,8 +192,11 @@ pub(super) fn process_ansi_command(
                     let screen_ctx = emulator.current_screen_context();
                     let (abs_x, abs_y) =
                         emulator.cursor_controller.physical_screen_pos(&screen_ctx);
-                    let response = format!("\x1B[{};{}R", abs_y + 1, abs_x + 1);
-                    Some(EmulatorAction::WritePty(response.into_bytes()))
+                    // Bolt Optimization: Avoid String allocation by writing directly to Vec
+                    use std::io::Write;
+                    let mut response = Vec::with_capacity(16);
+                    let _ = write!(&mut response, "\x1B[{};{}R", abs_y + 1, abs_x + 1);
+                    Some(EmulatorAction::WritePty(response))
                 }
                 DSR_STATUS_OK => Some(EmulatorAction::WritePty(DSR_RESPONSE_OK.to_vec())),
                 _ => {
