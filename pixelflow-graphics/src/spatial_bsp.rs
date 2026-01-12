@@ -131,20 +131,40 @@ impl<L> SpatialBSP<L> {
             return NodeRef::Leaf(idx);
         }
 
-        // Find bounding box of all items
+        // Find bounding box of all items and center extents
         let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        let (mut min_cx, mut min_cy, mut max_cx, mut max_cy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+
         for item in &items {
             min_x = min_x.min(item.bounds.0);
             min_y = min_y.min(item.bounds.1);
             max_x = max_x.max(item.bounds.2);
             max_y = max_y.max(item.bounds.3);
+
+            let cx = (item.bounds.0 + item.bounds.2) * 0.5;
+            let cy = (item.bounds.1 + item.bounds.3) * 0.5;
+            min_cx = min_cx.min(cx);
+            max_cx = max_cx.max(cx);
+            min_cy = min_cy.min(cy);
+            max_cy = max_cy.max(cy);
         }
 
-        // Split on larger dimension
+        // Choose split axis based on center distribution variance (spread)
+        // Fallback to bound dimensions if spreads are effectively zero (concentric items)
+        let extent_x = max_cx - min_cx;
+        let extent_y = max_cy - min_cy;
         let width = max_x - min_x;
         let height = max_y - min_y;
 
-        let (axis, threshold) = if width >= height {
+        let split_x = if extent_x > extent_y {
+            true
+        } else if extent_y > extent_x {
+            false
+        } else {
+            width >= height
+        };
+
+        let (axis, threshold) = if split_x {
             // Sort by X center, split at median
             items.sort_by(|a, b| {
                 let ca = (a.bounds.0 + a.bounds.2) / 2.0;
@@ -1736,5 +1756,48 @@ mod tests {
             1,
             "Single-item tree must have exactly 1 leaf"
         );
+    }
+
+    #[test]
+    fn test_stack_of_wide_strips() {
+        use pixelflow_core::{materialize_discrete, PARALLELISM};
+
+        // Create 2 wide, short items, stacked vertically.
+        // Item 1: (0, 0, 100, 10). Red.
+        // Item 2: (0, 10, 100, 20). Blue.
+        let items = vec![
+            Positioned {
+                bounds: (0.0, 0.0, 100.0, 10.0),
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+            Positioned {
+                bounds: (0.0, 10.0, 100.0, 20.0),
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+        ];
+
+        let bsp = SpatialBSP::from_positioned(items);
+
+        // Check Point in Item 1, Right side (x=75, y=5)
+        let mut pixels = [0u32; PARALLELISM];
+        materialize_discrete(&bsp, 75.0, 5.0, &mut pixels);
+        
+        let expected_red = {
+            let red = SolidColor::new(255, 0, 0, 255);
+            let mut buf = [0u32; PARALLELISM];
+            materialize_discrete(&red, 0.0, 0.0, &mut buf);
+            buf[0]
+        };
+        assert_eq!(pixels[0], expected_red, "Item 1 should be visible on right side");
+
+        // Check Point in Item 2, Left side (x=25, y=15)
+        materialize_discrete(&bsp, 25.0, 15.0, &mut pixels);
+        let expected_blue = {
+            let blue = SolidColor::new(0, 0, 255, 255);
+            let mut buf = [0u32; PARALLELISM];
+            materialize_discrete(&blue, 0.0, 0.0, &mut buf);
+            buf[0]
+        };
+        assert_eq!(pixels[0], expected_blue, "Item 2 should be visible on left side");
     }
 }
