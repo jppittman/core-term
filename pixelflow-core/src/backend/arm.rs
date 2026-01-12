@@ -276,9 +276,16 @@ impl SimdOps for F32x4 {
 
     #[inline(always)]
     fn rsqrt(self) -> Self {
-        // Fast reciprocal square root (~8 bits accuracy)
-        // Sufficient for AA coverage calculations
-        unsafe { Self(vrsqrteq_f32(self.0)) }
+        // NEON approximate reciprocal square root (~8 bits accuracy)
+        // One Newton-Raphson iteration improves to ~16 bits
+        unsafe {
+            let est = vrsqrteq_f32(self.0);
+            // Newton-Raphson: est = est * (3 - x * est^2) / 2
+            // vrsqrtsq_f32(x, y) computes (3 - x * y) / 2
+            let est_sq = vmulq_f32(est, est);
+            let refined = vmulq_f32(est, vrsqrtsq_f32(self.0, est_sq));
+            Self(refined)
+        }
     }
 
     #[inline(always)]

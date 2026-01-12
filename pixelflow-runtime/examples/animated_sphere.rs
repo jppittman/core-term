@@ -1,8 +1,12 @@
 //! Animated Chrome Sphere - windowed animation using the runtime.
 //!
-//! Demonstrates compositional animation:
-//! - `Oscillate<M>` wraps any Jet3 geometry and makes it oscillate based on W (time)
-//! - `TimeShift` advances W before evaluation (sets current time)
+//! Demonstrates the **pull-based rendering model**:
+//! - Engine sends `RequestFrame` events when ready for a new frame
+//! - App responds with a manifold computed at the requested timestamp
+//! - No busy loops, no sleeps - vsync drives the cadence
+//!
+//! Also demonstrates compositional animation:
+//! - `TimeShift<M>` wraps any manifold and translates W (time coordinate)
 //! - Animation is injected by wrapping existing geometry nodes
 
 use actor_scheduler::Message;
@@ -14,9 +18,9 @@ use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
 use pixelflow_runtime::api::private::EngineData;
-use pixelflow_runtime::api::public::AppData;
+use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventData};
 use pixelflow_runtime::platform::ColorCube;
-use pixelflow_runtime::{EngineConfig, EngineTroupe, WindowConfig};
+use pixelflow_runtime::{Application, EngineConfig, EngineTroupe, RuntimeError, WindowConfig};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -167,11 +171,69 @@ fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
     }
 }
 
+// ============================================================================
+// APPLICATION - Pull-based rendering
+// ============================================================================
+
+/// The animated sphere application.
+///
+/// Implements the pull-based rendering model:
+/// - Receives `RequestFrame` events from the engine
+/// - Responds with a manifold at the requested timestamp
+struct AnimatedSphereApp<S> {
+    /// The base scene (time-independent structure)
+    scene: S,
+    /// Animation start time
+    start: Instant,
+    /// Handle to send frames back to the engine
+    engine_handle: pixelflow_runtime::api::private::EngineActorHandle,
+}
+
+impl<S> Application for AnimatedSphereApp<S>
+where
+    S: Manifold<Output = Discrete> + Clone + Send + Sync + 'static,
+{
+    fn send(&self, event: EngineEvent) -> Result<(), RuntimeError> {
+        match event {
+            // Engine is ready for a frame - this is the pull!
+            EngineEvent::Data(EngineEventData::RequestFrame { timestamp, .. }) => {
+                log::debug!("App received RequestFrame");
+
+                // Compute elapsed time from animation start
+                let t = timestamp.duration_since(self.start).as_secs_f32();
+
+                // Build the scene at this moment in time
+                let timed_scene = TimeShift {
+                    inner: self.scene.clone(),
+                    t,
+                };
+
+                let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> = Arc::new(timed_scene);
+
+                // Send the frame back to the engine
+                log::debug!("App sending RenderSurface");
+                self.engine_handle
+                    .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
+                        arc,
+                    ))))
+                    .map_err(|e| RuntimeError::EventSendError(e.to_string()))?;
+            }
+            EngineEvent::Control(ctrl) => {
+                log::debug!("App received Control event: {:?}", ctrl);
+            }
+            _ => {
+                log::debug!("App received other event");
+            }
+        }
+        Ok(())
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    println!("Animated Chrome Sphere");
-    println!("======================");
+    println!("Animated Chrome Sphere (Pull-based)");
+    println!("====================================");
     println!("Resolution: {}x{}", WIDTH, HEIGHT);
     println!();
 
@@ -187,13 +249,20 @@ fn main() -> anyhow::Result<()> {
     let troupe = EngineTroupe::with_config(config)?;
     let unregistered_handle = troupe.engine_handle();
 
-    // Create a dummy app that ignores events
-    struct DummyApp;
-    impl pixelflow_runtime::Application for DummyApp {
-        fn send(&self, _event: pixelflow_runtime::EngineEvent) -> Result<(), pixelflow_runtime::RuntimeError> {
-            Ok(())
-        }
-    }
+    // Build the scene once - it's time-independent (W handles animation)
+    let scene = build_scene();
+    let start = Instant::now();
+
+    // Get the raw engine handle for sending frames back
+    // This must be obtained before registration (app needs it to respond to RequestFrame)
+    let engine_handle_for_app = troupe.raw_engine_handle();
+
+    // Create the pull-based app
+    let app = AnimatedSphereApp {
+        scene,
+        start,
+        engine_handle: engine_handle_for_app,
+    };
 
     // Register app and create window
     use pixelflow_runtime::WindowDescriptor;
@@ -203,36 +272,7 @@ fn main() -> anyhow::Result<()> {
         title: "Animated Sphere".into(),
         resizable: false,
     };
-    let engine_handle = unregistered_handle.register(Arc::new(DummyApp), window)?;
-
-    let scene = build_scene();
-    let start = Instant::now();
-
-    // Spawn thread to send animated frames
-    std::thread::spawn(move || {
-        loop {
-            let t = start.elapsed().as_secs_f32();
-
-            // Wrap scene with current time (translate W)
-            let timed_scene = TimeShift {
-                inner: scene.clone(),
-                t,
-            };
-
-            let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> = Arc::new(timed_scene);
-
-            if engine_handle
-                .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
-                    arc,
-                ))))
-                .is_err()
-            {
-                break; // Engine shut down
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(16)); // ~60fps
-        }
-    });
+    let _engine_handle = unregistered_handle.register(Arc::new(app), window)?;
 
     println!("Running... (close window to exit)");
     troupe.play().map_err(|e| anyhow::anyhow!("{}", e))?;

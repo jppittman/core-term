@@ -56,7 +56,15 @@ impl Drop for ParserThread {
         if let Some(handle) = self.join_handle.take() {
             // We can't easily interrupt the actor loop unless the channel closes.
             // The read thread dropping will close the sender, which will stop `rx.run()`.
-            let _ = handle.join();
+            if let Err(panic_payload) = handle.join() {
+                if std::thread::panicking() {
+                    // Already unwinding - can't double-panic, just log
+                    eprintln!("Parser thread panicked (during unwind): {:?}", panic_payload);
+                } else {
+                    // Propagate the panic - this is a fatal error
+                    std::panic::resume_unwind(panic_payload);
+                }
+            }
         }
     }
 }
@@ -70,8 +78,8 @@ struct ParserActor {
 impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
     fn handle_data(&mut self, data: Vec<u8>) -> HandlerResult {
         if data.is_empty() {
-            // Even if empty, recycle it
-            let _ = self.recycler_tx.send(data);
+            // Even if empty, recycle it (ignore error if read thread exited)
+            self.recycler_tx.send(data).ok();
             return Ok(());
         }
 
@@ -79,9 +87,8 @@ impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
         // process_bytes returns Vec<AnsiCommand>
         let commands = self.parser.process_bytes(&data);
 
-        // Recycle buffer
-        // We ignore the error because the read thread might have exited
-        let _ = self.recycler_tx.send(data);
+        // Recycle buffer back to read thread (ignore error if it exited)
+        self.recycler_tx.send(data).ok();
 
         if !commands.is_empty() {
             // Send batch of parsed commands to app

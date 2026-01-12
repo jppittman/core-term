@@ -61,7 +61,13 @@ impl Drop for WriteThread {
         // Closing the channel (which happens when SyncSender is dropped by owner)
         // will cause the loop to exit.
         if let Some(handle) = self.join_handle.take() {
-            let _ = handle.join();
+            if let Err(panic_payload) = handle.join() {
+                if std::thread::panicking() {
+                    eprintln!("Write thread panicked (during unwind): {:?}", panic_payload);
+                } else {
+                    std::panic::resume_unwind(panic_payload);
+                }
+            }
         }
     }
 }

@@ -47,9 +47,10 @@ impl<T: Send> FramePacket<T> {
     ///
     /// Consumes self and sends it through the recycle channel.
     /// The Arc clone is just a refcount bump - no data copied.
+    /// If the channel is closed (shutdown), the packet is simply dropped.
     pub fn recycle(self) {
         let tx = Arc::clone(&self.recycle_tx);
-        let _ = tx.send(self);
+        tx.send(self).ok();
     }
 }
 

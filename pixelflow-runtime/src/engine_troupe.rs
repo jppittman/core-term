@@ -303,17 +303,19 @@ impl EngineHandler {
     fn handle_app_data(&mut self, app_data: AppData) {
         match app_data {
             AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
+                log::debug!("Engine: Received RenderSurface from app");
                 // Return token to VSync bucket - app has provided compute graph (fast)
                 // This allows VSync to keep requesting at 60Hz regardless of rasterization speed
                 return_vsync_token();
 
                 if let Some(window) = self.window.take() {
                     // Window available - render immediately
+                    log::debug!("Engine: Window available, triggering render");
                     self.trigger_render_with_window(manifold, window);
                 } else {
                     // Window still with driver - queue manifold
                     self.pending_manifold = Some(manifold);
-                    log::trace!("Engine: Window busy, manifold queued");
+                    log::debug!("Engine: Window busy, manifold queued");
                 }
             }
             AppData::Skipped => {
@@ -402,6 +404,17 @@ impl EngineHandler {
 
                 // Receive initial window from driver
                 self.window = Some(window);
+                log::debug!("Engine: Window stored from WindowCreated");
+
+                // Check if we have a pending manifold waiting for this window
+                if let Some(manifold) = self.pending_manifold.take() {
+                    log::debug!("Engine: Found pending manifold, triggering render");
+                    if let Some(window) = self.window.take() {
+                        self.trigger_render_with_window(manifold, window);
+                    }
+                } else {
+                    log::debug!("Engine: No pending manifold");
+                }
 
                 // Relay WindowCreated event to app
                 if let Some(app) = &self.app_handle {
@@ -428,6 +441,13 @@ impl EngineHandler {
 
                 // Update window with new one from driver
                 self.window = Some(window);
+
+                // Check if we have a pending manifold waiting for this window
+                if let Some(manifold) = self.pending_manifold.take() {
+                    if let Some(window) = self.window.take() {
+                        self.trigger_render_with_window(manifold, window);
+                    }
+                }
 
                 // Relay resize event to app
                 if let Some(app) = &self.app_handle {
@@ -637,7 +657,7 @@ impl Troupe {
             )))
             .map_err(|e| RuntimeError::InitError(format!("Failed to configure engine: {}", e)))?;
 
-        // Configure vsync with target FPS
+        // Configure vsync with target FPS (auto-starts after configuration)
         dir.vsync
             .send(Message::Management(VsyncManagement::SetConfig {
                 config: VsyncConfig {
@@ -647,7 +667,7 @@ impl Troupe {
                 self_handle: dir.vsync.clone(),
             }))
             .map_err(|e| RuntimeError::InitError(format!("Failed to configure vsync: {}", e)))?;
-        let _ = dir.vsync.send(Message::Control(VsyncCommand::Start));
+
         Ok(troupe)
     }
 
@@ -657,5 +677,25 @@ impl Troupe {
     /// This ensures proper initialization (app registration + window creation).
     pub fn engine_handle(&self) -> crate::api::public::UnregisteredEngineHandle {
         crate::api::public::UnregisteredEngineHandle::new(self.directory().engine.clone())
+    }
+
+    /// Get the raw engine actor handle for advanced use cases.
+    ///
+    /// This is useful for pull-based rendering where the application needs
+    /// to hold a reference to the engine handle before registration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let troupe = EngineTroupe::with_config(config)?;
+    /// let raw_handle = troupe.raw_engine_handle();
+    ///
+    /// // App can now hold raw_handle to send frames back
+    /// let app = MyApp { engine_handle: raw_handle, ... };
+    /// let unregistered = troupe.engine_handle();
+    /// unregistered.register(Arc::new(app), window)?;
+    /// ```
+    pub fn raw_engine_handle(&self) -> crate::api::private::EngineActorHandle {
+        self.directory().engine.clone()
     }
 }
