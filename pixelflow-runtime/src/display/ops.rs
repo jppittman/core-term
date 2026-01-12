@@ -1,10 +1,10 @@
 use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
-use actor_scheduler::{ActorStatus, SystemStatus};
+use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, SystemStatus};
 
 /// Backend-specific operations for the display platform.
 pub trait PlatformOps: Send + 'static {
-    fn handle_data(&mut self, data: DisplayData);
-    fn handle_control(&mut self, ctrl: DisplayControl);
-    fn handle_management(&mut self, mgmt: DisplayMgmt);
-    fn park(&mut self, status: SystemStatus) -> ActorStatus;
+    fn handle_data(&mut self, data: DisplayData) -> HandlerResult;
+    fn handle_control(&mut self, ctrl: DisplayControl) -> HandlerResult;
+    fn handle_management(&mut self, mgmt: DisplayMgmt) -> HandlerResult;
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
 }

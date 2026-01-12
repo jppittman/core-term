@@ -15,7 +15,7 @@ use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
     return_vsync_token, RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
-use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ActorStatus, SystemStatus, TroupeActor};
+use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ActorStatus, HandlerError, HandlerResult, SystemStatus, TroupeActor};
 use pixelflow_core::{Discrete, Manifold};
 use pixelflow_graphics::render::rasterizer::{
     RasterizerActor, RasterizerHandle, RenderRequest, RenderResponse,
@@ -84,7 +84,7 @@ actor_scheduler::troupe! {
 impl Actor<EngineData, EngineControl, AppManagement>
     for EngineHandler
 {
-    fn handle_data(&mut self, data: EngineData) {
+    fn handle_data(&mut self, data: EngineData) -> HandlerResult {
         match data {
             EngineData::FromApp(app_data) => self.handle_app_data(app_data),
             EngineData::FromDriver(event) => self.handle_driver_event(event),
@@ -149,9 +149,10 @@ impl Actor<EngineData, EngineControl, AppManagement>
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: EngineControl) {
+    fn handle_control(&mut self, ctrl: EngineControl) -> HandlerResult {
         match ctrl {
             EngineControl::Quit => {
                 self.driver
@@ -170,9 +171,10 @@ impl Actor<EngineData, EngineControl, AppManagement>
                 unimplemented!("DriverAck not yet implemented");
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: AppManagement) {
+    fn handle_management(&mut self, mgmt: AppManagement) -> HandlerResult {
         match mgmt {
             AppManagement::Configure(config) => {
                 self.render_threads = config.performance.render_threads;
@@ -242,11 +244,12 @@ impl Actor<EngineData, EngineControl, AppManagement>
                     .expect("Failed to send Shutdown to driver on AppManagement::Quit");
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // engine has no external channels which might be busy
-        ActorStatus::Idle
+        Ok(ActorStatus::Idle)
     }
 }
 

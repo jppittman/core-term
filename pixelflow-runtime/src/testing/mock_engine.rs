@@ -1,6 +1,6 @@
 use crate::api::private::{EngineActorHandle, EngineControl, EngineData};
 use crate::api::public::AppManagement; // Use public re-export
-use actor_scheduler::{Actor, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus};
 use std::sync::{Arc, Mutex};
 
 /// A recorded message received by the MockEngine.
@@ -64,28 +64,31 @@ struct MessageCollector {
 impl Actor<EngineData, EngineControl, AppManagement>
     for MessageCollector
 {
-    fn handle_data(&mut self, msg: EngineData) {
+    fn handle_data(&mut self, msg: EngineData) -> HandlerResult {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Data(msg));
+        Ok(())
     }
 
-    fn handle_control(&mut self, msg: EngineControl) {
+    fn handle_control(&mut self, msg: EngineControl) -> HandlerResult {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Control(msg));
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: AppManagement) {
+    fn handle_management(&mut self, msg: AppManagement) -> HandlerResult {
         self.messages
             .lock()
             .unwrap()
             .push(ReceivedMessage::Management(msg));
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }

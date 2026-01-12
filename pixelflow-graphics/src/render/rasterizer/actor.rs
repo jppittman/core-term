@@ -38,7 +38,7 @@ use super::messages::{
 };
 use super::rasterize;
 use crate::render::Pixel;
-use actor_scheduler::{Actor, ActorScheduler, ActorStatus, ActorTypes, SystemStatus};
+use actor_scheduler::{Actor, ActorScheduler, ActorStatus, ActorTypes, HandlerError, HandlerResult, SystemStatus};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -148,11 +148,11 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
 impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
     for RasterizerActor<P>
 {
-    fn handle_data(&mut self, request: RenderRequest<P>) {
+    fn handle_data(&mut self, request: RenderRequest<P>) -> HandlerResult {
         // Skip rendering if paused
         if self.paused {
             log::debug!("Rasterizer paused, dropping render request");
-            return;
+            return Ok(());
         }
 
         let RenderRequest { manifold, mut frame } = request;
@@ -170,12 +170,19 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
             self.num_threads
         );
 
-        // Send response back (ignore errors if receiver dropped)
+        // Send response back - receiver may be dropped if display was shutdown
         let response = RenderResponse { frame, render_time };
-        let _ = self.response_tx.send(response);
+        match self.response_tx.send(response) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // Response receiver dropped is expected during shutdown
+                log::debug!("Render response receiver dropped");
+                Ok(())
+            }
+        }
     }
 
-    fn handle_control(&mut self, ctrl: RasterControl) {
+    fn handle_control(&mut self, ctrl: RasterControl) -> HandlerResult {
         match ctrl {
             RasterControl::Pause => {
                 log::info!("Rasterizer paused");
@@ -186,9 +193,10 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
                 self.paused = false;
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: RasterManagement) {
+    fn handle_management(&mut self, mgmt: RasterManagement) -> HandlerResult {
         match mgmt {
             RasterManagement::SetThreadCount(count) => {
                 let new_count = count.max(1);
@@ -200,14 +208,16 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
                 self.num_threads = new_count;
             }
             RasterManagement::GetConfig { response_tx } => {
-                let _ = response_tx.send(self.config());
+                // Receiver may be dropped if requester cancelled, that's fine
+                response_tx.send(self.config()).ok();
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // No external work to do during park, just wait for messages
-        ActorStatus::Idle
+        Ok(ActorStatus::Idle)
     }
 }
 

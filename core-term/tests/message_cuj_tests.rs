@@ -3,7 +3,7 @@
 //! These tests verify the message flows between actors in the core-term system.
 //! Each test covers a specific CUJ identified in MESSAGE_CUJ_COVERAGE.md.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -29,7 +29,7 @@ struct MockParserActor {
 }
 
 impl Actor<Vec<u8>, (), ()> for MockParserActor {
-    fn handle_data(&mut self, data: Vec<u8>) {
+    fn handle_data(&mut self, data: Vec<u8>) -> HandlerResult {
         self.bytes_received.fetch_add(data.len(), Ordering::SeqCst);
 
         // Simple mock parsing: convert bytes to Print commands
@@ -49,12 +49,13 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
         if !commands.is_empty() {
             let _ = self.cmd_tx.send(commands);
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, _: ()) {}
-    fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, _: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -381,11 +382,11 @@ fn cuj_pty04_sender_drop_terminates_receiver() {
     }
 
     impl Actor<u8, (), ()> for TerminationActor {
-        fn handle_data(&mut self, _: u8) {}
-        fn handle_control(&mut self, _: ()) {}
-        fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_data(&mut self, _: u8) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -450,20 +451,23 @@ struct MockTerminalAppActor {
 }
 
 impl Actor<MockEngineData, MockEngineControl, MockEngineManagement> for MockTerminalAppActor {
-    fn handle_data(&mut self, data: MockEngineData) {
+    fn handle_data(&mut self, data: MockEngineData) -> HandlerResult {
         self.data_events.lock().unwrap().push(data);
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: MockEngineControl) {
+    fn handle_control(&mut self, ctrl: MockEngineControl) -> HandlerResult {
         self.control_events.lock().unwrap().push(ctrl);
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: MockEngineManagement) {
+    fn handle_management(&mut self, mgmt: MockEngineManagement) -> HandlerResult {
         self.management_events.lock().unwrap().push(mgmt);
+        Ok(())
     }
 
-    fn park(&mut self, _: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -660,17 +664,20 @@ fn cuj_priority_control_before_management_before_data() {
     }
 
     impl Actor<String, String, String> for OrderRecordingActor {
-        fn handle_data(&mut self, msg: String) {
+        fn handle_data(&mut self, msg: String) -> HandlerResult {
             self.order.lock().unwrap().push(format!("D:{}", msg));
+            Ok(())
         }
-        fn handle_control(&mut self, msg: String) {
+        fn handle_control(&mut self, msg: String) -> HandlerResult {
             self.order.lock().unwrap().push(format!("C:{}", msg));
+            Ok(())
         }
-        fn handle_management(&mut self, msg: String) {
+        fn handle_management(&mut self, msg: String) -> HandlerResult {
             self.order.lock().unwrap().push(format!("M:{}", msg));
+            Ok(())
         }
-        fn park(&mut self, _: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -724,13 +731,14 @@ fn cuj_concurrent_senders_all_messages_delivered() {
     }
 
     impl Actor<usize, (), ()> for CountingActor {
-        fn handle_data(&mut self, _: usize) {
+        fn handle_data(&mut self, _: usize) -> HandlerResult {
             self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn handle_control(&mut self, _: ()) {}
-        fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 

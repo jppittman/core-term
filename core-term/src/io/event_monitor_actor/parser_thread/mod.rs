@@ -2,7 +2,7 @@
 
 use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use crate::io::traits::PtySender;
-use actor_scheduler::{Actor, ActorScheduler, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorScheduler, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use log::*;
 use std::sync::mpsc::{Sender, SyncSender};
 use std::thread::JoinHandle;
@@ -68,11 +68,11 @@ struct ParserActor {
 }
 
 impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
-    fn handle_data(&mut self, data: Vec<u8>) {
+    fn handle_data(&mut self, data: Vec<u8>) -> HandlerResult {
         if data.is_empty() {
             // Even if empty, recycle it
             let _ = self.recycler_tx.send(data);
-            return;
+            return Ok(());
         }
 
         // Process raw bytes through ANSI parser (AnsiProcessor implements AnsiParser trait)
@@ -89,18 +89,21 @@ impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
                 warn!("Parser failed to send commands to app: {}", e);
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, _msg: NoControl) {
+    fn handle_control(&mut self, _msg: NoControl) -> HandlerResult {
         // No control messages
+        Ok(())
     }
 
-    fn handle_management(&mut self, _msg: NoManagement) {
+    fn handle_management(&mut self, _msg: NoManagement) -> HandlerResult {
         // No management messages
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // No periodic tasks
-        ActorStatus::Idle
+        Ok(ActorStatus::Idle)
     }
 }

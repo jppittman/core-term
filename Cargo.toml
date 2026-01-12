@@ -3,6 +3,17 @@ members = ["core-term", "pixelflow-core", "pixelflow-graphics", "pixelflow-ml", 
 exclude = ["pixelflow-core/fuzz"]
 resolver = "2"
 
+# Workspace-wide lints - prevents swallowing errors with `let _ = `
+[workspace.lints.rust]
+# Treat unused Results as errors - forces explicit handling
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# Catches `let _ = expr` where expr is #[must_use] (Result, etc)
+let_underscore_must_use = "deny"
+# Warns about functions that should probably be #[must_use]
+must_use_candidate = "warn"
+
 # Normal release - fast compile, good perf
 [profile.release]
 opt-level = 3

@@ -1,14 +1,13 @@
 #[cfg(target_os = "macos")]
 mod tests {
-    use actor_scheduler::{Actor, ActorStatus};
+    use actor_scheduler::{Actor, ActorStatus, HandlerResult, HandlerError, SystemStatus};
     use pixelflow_runtime::api::private::{
-        create_engine_actor, EngineControl, EngineData, WindowId,
+        create_engine_actor, EngineControl, EngineData,
     };
     use pixelflow_runtime::api::public::{AppManagement, WindowDescriptor};
     use pixelflow_runtime::display::messages::{DisplayControl, DisplayMgmt};
     use pixelflow_runtime::display::ops::PlatformOps;
     use pixelflow_runtime::platform::macos::MetalOps;
-    use pixelflow_runtime::platform::PlatformPixel;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
@@ -27,17 +26,18 @@ mod tests {
     }
 
     // Use generics as required by the Actor trait definition
-    impl Actor<EngineData<PlatformPixel>, EngineControl<PlatformPixel>, AppManagement> for MockEngine {
-        fn handle_data(&mut self, msg: EngineData<PlatformPixel>) {
+    impl Actor<EngineData, EngineControl, AppManagement> for MockEngine {
+        fn handle_data(&mut self, msg: EngineData) -> HandlerResult {
             if let EngineData::FromDriver(evt) = msg {
                 self.captured_events.lock().unwrap().push(evt);
             }
+            Ok(())
         }
 
-        fn handle_control(&mut self, _msg: EngineControl<PlatformPixel>) {}
-        fn handle_management(&mut self, _msg: AppManagement) {}
-        fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+        fn handle_control(&mut self, _msg: EngineControl) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _msg: AppManagement) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -48,7 +48,7 @@ mod tests {
         let events_clone = events.clone();
 
         // 1. Create Engine Actor (Scheduler + Handle)
-        let (handle, mut scheduler) = create_engine_actor::<PlatformPixel>(None);
+        let (handle, mut scheduler) = create_engine_actor(None);
 
         // 2. Spawn Scheduler in background
         thread::spawn(move || {
@@ -60,7 +60,6 @@ mod tests {
         let mut ops = MetalOps::new(handle).expect("Failed to create MetalOps");
 
         // 4. Create a Window
-        let win_id = WindowId(1);
         let settings = WindowDescriptor {
             title: "Integration Test Window".to_string(),
             width: 800,
@@ -68,32 +67,35 @@ mod tests {
             ..Default::default()
         };
 
-        ops.handle_management(DisplayMgmt::Create {
-            id: win_id,
+        let _ = ops.handle_management(DisplayMgmt::Create {
             settings,
         });
 
         // 5. Emulate run loop step (Platform)
         // This should trigger window creation and send event to Engine
-        ops.park(SystemStatus::Busy);
+        let _ = ops.park(SystemStatus::Busy);
 
         // Give some time for message passing
         thread::sleep(Duration::from_millis(100));
 
         // 6. Verify Window Creation Event within MockEngine
         let captured = events.lock().unwrap();
-        let found = captured.iter().any(|e| matches!(
-            e,
-            pixelflow_runtime::display::messages::DisplayEvent::WindowCreated { id, .. } if *id == win_id
-        ));
+        let found_window_id = captured.iter().find_map(|e| {
+            if let pixelflow_runtime::display::messages::DisplayEvent::WindowCreated { window } = e {
+                Some(window.id)
+            } else {
+                None
+            }
+        });
         assert!(
-            found,
+            found_window_id.is_some(),
             "Expected WindowCreated event, found: {:?}",
             *captured
         );
 
         // 7. Update Window Title
-        ops.handle_control(DisplayControl::SetTitle {
+        let win_id = found_window_id.unwrap();
+        let _ = ops.handle_control(DisplayControl::SetTitle {
             id: win_id,
             title: "Updated Title".to_string(),
         });

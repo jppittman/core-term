@@ -112,8 +112,8 @@ fn create_macos_app_bundle() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let bundle_dir = Path::new(&manifest_dir).join("CoreTerm.app/Contents");
 
-    // Create bundle structure
-    let _ = fs::remove_dir_all(Path::new(&manifest_dir).join("CoreTerm.app"));
+    // Create bundle structure (cleanup old bundle if it exists - failure is OK)
+    fs::remove_dir_all(Path::new(&manifest_dir).join("CoreTerm.app")).ok();
     fs::create_dir_all(bundle_dir.join("MacOS")).expect("Failed to create MacOS directory");
     fs::create_dir_all(bundle_dir.join("Resources")).expect("Failed to create Resources directory");
 
