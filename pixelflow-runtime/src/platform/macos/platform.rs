@@ -1,5 +1,5 @@
 use crate::api::private::{EngineActorHandle, EngineData, WindowId};
-use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt};
+use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window};
 use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
 use crate::platform::macos::cocoa::{self, event_type, NSApplication, NSPasteboard};
@@ -8,6 +8,7 @@ use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
 use crate::platform::PlatformPixel;
 use actor_scheduler::{ActorStatus, Message, SystemStatus};
+use pixelflow_graphics::render::Frame;
 
 use std::collections::HashMap;
 
@@ -59,28 +60,23 @@ impl MetalOps {
 }
 
 impl PlatformOps for MetalOps {
-    type Pixel = PlatformPixel;
-
-    fn handle_data(&mut self, msg: DisplayData<Self::Pixel>) {
+    fn handle_data(&mut self, msg: DisplayData) {
         match msg {
-            DisplayData::Present { id, frame } => {
-                log::trace!("MetalOps: Presenting frame for window {:?}", id);
-                // CRITICAL: Always return frame to engine, even if window not found
-                let returned_frame = if let Some(win) = self.windows.get_mut(&id) {
+            DisplayData::Present { mut window } => {
+                log::trace!("MetalOps: Presenting frame for window {:?}", window.id);
+                // Present to the native window, get back the frame
+                if let Some(win) = self.windows.get_mut(&window.id) {
                     // Present returns the frame after blitting
-                    win.present(frame)
+                    window.frame = win.present(window.frame);
                 } else {
                     log::warn!(
-                        "MetalOps: Window {:?} not found, returning frame without presenting",
-                        id
+                        "MetalOps: Window {:?} not found, returning window without presenting",
+                        window.id
                     );
-                    frame
-                };
-                // Return the frame to the engine for reuse
+                }
+                // Return the window to the engine for reuse
                 self.event_tx
-                    .send(Message::Data(EngineData::PresentComplete(
-                        returned_frame,
-                    )))
+                    .send(Message::Data(EngineData::PresentComplete(window)))
                     .expect("Failed to send PresentComplete to engine");
             }
         }
@@ -140,7 +136,7 @@ impl PlatformOps for MetalOps {
 
     fn handle_management(&mut self, msg: DisplayMgmt) {
         match msg {
-            DisplayMgmt::Create { id, settings } => {
+            DisplayMgmt::Create { settings } => {
                 match MacWindow::new(settings) {
                     Ok(win) => {
                         let ptr = win.window.0;
@@ -148,23 +144,29 @@ impl PlatformOps for MetalOps {
                         let height = win.current_height;
                         let scale = win.scale_factor();
 
+                        // Generate window ID from pointer (like Linux does)
+                        let id = WindowId(ptr as u64);
+
                         self.windows.insert(id, win);
                         self.window_map.insert(ptr as usize, id);
+
+                        // Create Window with initial frame buffer
+                        let window = Window {
+                            id,
+                            frame: Frame::<PlatformPixel>::new(width, height),
+                            width_px: width,
+                            height_px: height,
+                            scale,
+                        };
 
                         // Emit WindowCreated event so Engine knows initial size
                         self.event_tx
                             .send(Message::Data(EngineData::FromDriver(
-                                DisplayEvent::WindowCreated {
-                                    id,
-                                    width_px: width,
-                                    height_px: height,
-                                    scale,
-                                },
+                                DisplayEvent::WindowCreated { window },
                             )))
                             .expect("Failed to send WindowCreated event to engine");
                     }
                     Err(e) => {
-                        // Log error?
                         eprintln!("Failed to create window: {}", e);
                     }
                 }
@@ -200,15 +202,19 @@ impl PlatformOps for MetalOps {
             let mode = cocoa::make_nsstring("kCFRunLoopDefaultMode");
 
             // Poll for window resize
-            for (id, window) in self.windows.iter_mut() {
-                if let Some((width, height)) = window.poll_resize() {
+            for (id, mac_window) in self.windows.iter_mut() {
+                if let Some((width, height)) = mac_window.poll_resize() {
+                    // Create new Window with resized frame buffer
+                    let window = Window {
+                        id: *id,
+                        frame: Frame::<PlatformPixel>::new(width, height),
+                        width_px: width,
+                        height_px: height,
+                        scale: mac_window.scale_factor(),
+                    };
                     self.event_tx
                         .send(Message::Data(EngineData::FromDriver(
-                            DisplayEvent::Resized {
-                                id: *id,
-                                width_px: width,
-                                height_px: height,
-                            },
+                            DisplayEvent::Resized { window },
                         )))
                         .expect("Failed to send Resized event to engine");
                 }

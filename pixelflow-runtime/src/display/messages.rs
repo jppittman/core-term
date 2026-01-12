@@ -4,6 +4,26 @@ use crate::input::{KeySymbol, Modifiers};
 use crate::pixel::PlatformPixel;
 use pixelflow_graphics::render::Frame;
 
+/// A window with its associated frame buffer.
+///
+/// This struct bundles the window identity with its rendering surface,
+/// ensuring the driver always has full context when presenting frames.
+/// The platform assigns the window ID (e.g., from the native window handle),
+/// and the frame buffer is owned by the window for the render loop.
+#[derive(Debug)]
+pub struct Window {
+    /// Platform-assigned window identifier.
+    pub id: WindowId,
+    /// Current frame buffer for rendering.
+    pub frame: Frame<PlatformPixel>,
+    /// Width in physical pixels.
+    pub width_px: u32,
+    /// Height in physical pixels.
+    pub height_px: u32,
+    /// Display scale factor (e.g., 2.0 for Retina).
+    pub scale: f64,
+}
+
 /// Data messages for the display driver (high throughput, high priority).
 ///
 /// Data messages are used for continuous, high-frequency operations like frame presentation.
@@ -22,35 +42,29 @@ use pixelflow_graphics::render::Frame;
 /// - **`Present`**: Render a frame to a window immediately
 #[derive(Debug)]
 pub enum DisplayData {
-    /// Present a frame to a window.
+    /// Present a window's frame buffer to the screen.
     ///
     /// # Contract
     ///
-    /// **Sender**: Promises to send only frames for windows that exist.
+    /// **Sender**: Provides a `Window` with rendered pixels in its frame buffer.
     ///
     /// **Receiver**: Promises to:
-    /// 1. Render the frame to the window identified by `id`
-    /// 2. Schedule the render for the next VSync if not already scheduled
+    /// 1. Blit the frame to the native window identified by `window.id`
+    /// 2. Return the `Window` via `PresentComplete` for reuse
     /// 3. NOT block the sender (use backpressure if buffer full)
     ///
     /// # Arguments
     ///
-    /// - `id`: Window identifier. Must have been created via `DisplayMgmt::Create`
-    /// - `frame`: Pixel data to render
+    /// - `window`: The window with its rendered frame buffer
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let frame = Frame::new(width, height);
-    /// // ... fill frame with pixels ...
-    /// tx.send(Message::Data(DisplayData::Present { id: window_id, frame }))?;
+    /// // Render into window.frame...
+    /// tx.send(Message::Data(DisplayData::Present { window }))?;
+    /// // Window is returned via PresentComplete after blitting
     /// ```
-    ///
-    /// # Performance Note
-    ///
-    /// This is a high-priority message. It can't be sent to a full buffer (will block),
-    /// so ensure the display driver is running.
-    Present { id: WindowId, frame: Frame<PlatformPixel> },
+    Present { window: Window },
 }
 
 /// Control messages for the display driver (configuration and lifecycle).
@@ -318,22 +332,17 @@ pub enum DisplayMgmt {
 /// Events emitted by the display driver
 #[derive(Debug)]
 pub enum DisplayEvent {
-    WindowCreated {
-        id: WindowId,
-        width_px: u32,
-        height_px: u32,
-        scale: f64,
-        frame: Frame<PlatformPixel>,
-    },
+    /// A new window was created by the platform.
+    ///
+    /// The `Window` contains the platform-assigned ID and initial frame buffer.
+    WindowCreated { window: Window },
     WindowDestroyed {
         id: WindowId,
     },
-    Resized {
-        id: WindowId,
-        width_px: u32,
-        height_px: u32,
-        frame: Frame<PlatformPixel>,
-    },
+    /// Window was resized (by user or programmatically).
+    ///
+    /// The `Window` contains an appropriately-sized frame buffer.
+    Resized { window: Window },
     ScaleChanged {
         id: WindowId,
         scale: f64,

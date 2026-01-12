@@ -365,25 +365,19 @@ impl TerminalApp {
         let (gw, gh) = grid_bounds;
         let cond = X.ge(0.0) & X.lt(gw) & Y.ge(0.0) & Y.lt(gh);
 
-        eprintln!("[TERM] Grid bounds: {}x{}", gw, gh);
-        eprintln!("[TERM] about to create Select scene");
         let scene = Select {
             cond,
             if_true: manifold,
             if_false: background,
         };
 
-        eprintln!("[TERM] Select created, wrapping in Arc");
         let data = AppData::RenderSurface(Arc::new(scene));
-        eprintln!("[TERM] Scene Arc created");
-        eprintln!("[TERM] sending to engine");
         if let Err(e) = self
             .engine_tx
             .send(Message::Data(EngineData::FromApp(data)))
         {
             log::warn!("Failed to send frame to engine: {}", e);
         }
-        eprintln!("[TERM] send_frame() complete");
     }
 }
 
@@ -459,12 +453,11 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 unimplemented!("CloseRequested handler - need to cleanup and shutdown");
             }
             EngineEventControl::ScaleChanged { id, scale } => {
-                log::warn!(
-                    "ScaleChanged: id={}, scale={} - NOT IMPLEMENTED",
+                unimplemented!(
+                    "ScaleChanged: id={}, scale={} - need to adjust font sizes and redraw",
                     id.0,
                     scale
                 );
-                unimplemented!("ScaleChanged handler - need to adjust font sizes and redraw");
             }
         }
     }
@@ -494,27 +487,23 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                                 .send(Message::Management(AppManagement::Quit))
                                 .expect("Failed to send Quit to engine");
                         }
-                        EmulatorAction::SetTitle(_) => {
-                            unimplemented!("EmulatorAction::SetTitle not yet implemented");
+                        EmulatorAction::SetTitle(_title) => {
+                            unimplemented!("EmulatorAction::SetTitle");
                         }
                         EmulatorAction::RingBell => {
-                            unimplemented!("EmulatorAction::RingBell not yet implemented");
+                            unimplemented!("EmulatorAction::RingBell");
                         }
                         EmulatorAction::RequestRedraw => {
                             self.send_frame();
                         }
-                        EmulatorAction::SetCursorVisibility(_) => {
-                            unimplemented!(
-                                "EmulatorAction::SetCursorVisibility not yet implemented"
-                            );
+                        EmulatorAction::SetCursorVisibility(_visible) => {
+                            unimplemented!("EmulatorAction::SetCursorVisibility");
                         }
-                        EmulatorAction::CopyToClipboard(_) => {
-                            unimplemented!("EmulatorAction::CopyToClipboard not yet implemented");
+                        EmulatorAction::CopyToClipboard(_text) => {
+                            unimplemented!("EmulatorAction::CopyToClipboard");
                         }
                         EmulatorAction::RequestClipboardContent => {
-                            unimplemented!(
-                                "EmulatorAction::RequestClipboardContent not yet implemented"
-                            );
+                            unimplemented!("EmulatorAction::RequestClipboardContent");
                         }
                         EmulatorAction::ResizePty { cols, rows } => {
                             // Send resize command to PTY write thread

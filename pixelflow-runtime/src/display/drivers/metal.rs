@@ -1,10 +1,11 @@
 //! Metal Display Driver (Type Alias)
 //!
-//! This module now just defines the type alias for the Generic Driver
-//! specialized for macOS.
+//! This module defines the type alias for the macOS display driver
+//! using the new PlatformActor architecture.
 
-use crate::display::generic::Driver;
-use crate::platform::macos::application::MacApplication;
-use crate::platform::macos::window::MacWindow;
+use crate::display::driver::DriverActor;
+use crate::display::platform::PlatformActor;
+use crate::platform::macos::platform::MetalOps;
 
-pub type MetalDisplayDriver = Driver<MacApplication>;
+/// The macOS display driver: DriverActor wrapping PlatformActor<MetalOps>.
+pub type MetalDisplayDriver = DriverActor<PlatformActor<MetalOps>>;

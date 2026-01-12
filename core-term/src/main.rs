@@ -82,6 +82,17 @@ fn get_secure_log_path() -> std::path::PathBuf {
 
 /// Main entry point for the `myterm` application.
 fn main() -> anyhow::Result<()> {
+    // Install panic hook FIRST - any panic in any thread kills the whole process
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("\n══════════════════════════════════════════");
+        eprintln!("FATAL: {}", info);
+        if std::env::var("RUST_BACKTRACE").is_ok() {
+            eprintln!("{}", std::backtrace::Backtrace::force_capture());
+        }
+        eprintln!("══════════════════════════════════════════\n");
+        std::process::exit(1);
+    }));
+
     let args = parse_args();
     use std::fs::OpenOptions;
 

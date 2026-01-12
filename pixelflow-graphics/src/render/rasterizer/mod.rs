@@ -194,10 +194,11 @@ pub mod messages;
 // Public API - simplified to single rasterize function
 pub use parallel::rasterize;
 
-// Actor-based API for asynchronous rendering
+// Actor-based API for asynchronous rendering with bootstrap pattern
 pub use actor::RasterizerActor;
 pub use messages::{
-    RasterConfig, RasterControl, RasterManagement, RenderRequest, RenderResponse,
+    RasterConfig, RasterControl, RasterManagement, RasterSetup, RasterizerHandle,
+    RasterizerSetupHandle, RenderRequest, RenderResponse,
 };
 
 /// A wrapper that adapts a continuous manifold for rasterization.

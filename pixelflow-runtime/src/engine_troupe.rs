@@ -7,7 +7,7 @@ use crate::api::public::{
 };
 use crate::config::EngineConfig;
 use crate::display::driver::DriverActor;
-use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt};
+use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window};
 use crate::display::platform::PlatformActor;
 use crate::error::RuntimeError;
 use crate::input::MouseButton;
@@ -17,10 +17,19 @@ use crate::vsync_actor::{
 };
 use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ActorStatus, SystemStatus, TroupeActor};
 use pixelflow_core::{Discrete, Manifold};
-use pixelflow_graphics::render::rasterizer::{RasterizerActor, RasterControl, RasterManagement, RenderRequest, RenderResponse};
-use pixelflow_graphics::render::Frame;
+use pixelflow_graphics::render::rasterizer::{
+    RasterizerActor, RasterizerHandle, RenderRequest, RenderResponse,
+};
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Metadata for a window being rendered (frame extracted, waiting for response).
+struct PendingRender {
+    id: crate::api::public::WindowId,
+    width_px: u32,
+    height_px: u32,
+    scale: f64,
+}
 
 /// Engine handler - coordinates app, rendering, display.
 pub struct EngineHandler {
@@ -28,16 +37,20 @@ pub struct EngineHandler {
     driver: ActorHandle<DisplayData, DisplayControl, DisplayMgmt>,
     /// Handle to the vsync actor (for feedback loop).
     vsync: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
-    /// Handle to the rasterizer actor.
-    rasterizer: ActorHandle<RenderRequest<PlatformPixel>, RasterControl, RasterManagement>,
-    /// Handle to self (to pass to rasterizer for response).
+    /// Handle to the rasterizer actor (set after bootstrap completes).
+    rasterizer: Option<RasterizerHandle<PlatformPixel>>,
+    /// Handle to self (for rasterizer response forwarding).
     self_handle: Option<ActorHandle<EngineData, EngineControl, AppManagement>>,
     /// Handle to the application (for event forwarding).
     app_handle: Option<Arc<dyn Application + Send + Sync>>,
     /// Frame counter for VSync feedback.
     frame_number: u64,
-    /// Reusable frame buffer (returned by driver after presentation).
-    frame_buffer: Option<Frame<PlatformPixel>>,
+    /// The active window (owns frame buffer, returned by driver after presentation).
+    window: Option<Window>,
+    /// Window metadata for the frame currently being rendered.
+    /// When we send a frame to the rasterizer, we store the window metadata here.
+    /// When the render completes, we combine the cooked frame with this metadata.
+    pending_render: Option<PendingRender>,
     /// Number of render threads for work-stealing parallelism.
     render_threads: usize,
     /// Latest manifold from app - always keep the most recent, drop old ones.
@@ -59,11 +72,12 @@ impl ActorTypes for DriverActor<ActivePlatform> {
 }
 
 // Generate troupe structures using macro
+// Note: Rasterizer is NOT in the troupe - it uses a bootstrap handshake pattern
+// that enforces type-level guarantees about initialization order.
 actor_scheduler::troupe! {
     driver: DriverActor<ActivePlatform> [main],
     engine: EngineHandler [expose],
     vsync: VsyncActor,
-    rasterizer: RasterizerActor<PlatformPixel>,
 }
 
 // Implement Actor for EngineHandler
@@ -90,43 +104,34 @@ impl Actor<EngineData, EngineControl, AppManagement>
                     .expect("failed to send to app. it probably crashed");
                 }
 
-                // Delegate rendering to rasterizer if we have a manifold and a buffer
+                // Delegate rendering to rasterizer if we have a manifold and a window
                 if let Some(manifold) = self.pending_manifold.take() {
-                    if let Some(frame) = self.frame_buffer.take() {
-                        // Create a bridge thread to forward the cooked frame back to engine actor
-                        // This is "send and forget" from EngineHandler's perspective.
-                        let engine_tx = self.self_handle.as_ref().unwrap().clone();
-                        let (response_tx, response_rx) = std::sync::mpsc::channel();
-                        
-                        // Spawn a one-shot bridge thread
-                        // TODO: Use a persistent bridge actor or callback in RasterizerActor
-                        std::thread::spawn(move || {
-                            if let Ok(response) = response_rx.recv() {
-                                let _ = engine_tx.send(Message::Data(EngineData::RenderComplete(response)));
-                            }
-                        });
-
-                        let request = RenderRequest {
-                            manifold,
-                            frame,
-                            response_tx,
-                        };
-
-                        if let Err(e) = self.rasterizer.send(Message::Data(request)) {
-                            log::warn!("Failed to send render request to rasterizer: {}", e);
-                        }
+                    if let Some(window) = self.window.take() {
+                        self.trigger_render_with_window(manifold, window);
                     } else {
-                        // Buffer unavailable, keep manifold pending
+                        // Window unavailable, keep manifold pending
                         self.pending_manifold = Some(manifold);
                     }
                 }
             }
             EngineData::RenderComplete(response) => {
-                self.present_cooked_frame(response);
+                // Reconstruct Window from pending_render metadata + cooked frame
+                if let Some(pending) = self.pending_render.take() {
+                    let window = Window {
+                        id: pending.id,
+                        frame: response.frame,
+                        width_px: pending.width_px,
+                        height_px: pending.height_px,
+                        scale: pending.scale,
+                    };
+                    self.present_cooked_frame(response.render_time, window);
+                } else {
+                    log::warn!("RenderComplete received but no pending_render metadata");
+                }
             }
-            EngineData::PresentComplete(frame) => {
-                // Driver returned the frame - store it for next render
-                self.frame_buffer = Some(frame);
+            EngineData::PresentComplete(window) => {
+                // Driver returned the window - store it for next render
+                self.window = Some(window);
 
                 // Notify VSync for FPS tracking (actual rasterization completion)
                 self.vsync
@@ -136,11 +141,11 @@ impl Actor<EngineData, EngineControl, AppManagement>
                     }))
                     .expect("Failed to notify VSync of completed frame");
 
-                // Check if we have a pending manifold waiting for this buffer
+                // Check if we have a pending manifold waiting for this window
                 if let Some(manifold) = self.pending_manifold.take() {
-                    let frame = self.frame_buffer.take().unwrap();
+                    let window = self.window.take().unwrap();
                     log::trace!("Engine: Catching up - rendering pending manifold");
-                    self.trigger_render(manifold, frame);
+                    self.trigger_render_with_window(manifold, window);
                 }
             }
         }
@@ -172,6 +177,9 @@ impl Actor<EngineData, EngineControl, AppManagement>
             AppManagement::Configure(config) => {
                 self.render_threads = config.performance.render_threads;
                 log::info!("Engine configured: {} render threads", self.render_threads);
+
+                // Spawn rasterizer with bootstrap pattern
+                self.spawn_rasterizer();
             }
             AppManagement::SetTitle(title) => {
                 self.driver
@@ -243,6 +251,51 @@ impl Actor<EngineData, EngineControl, AppManagement>
 }
 
 impl EngineHandler {
+    /// Spawn the rasterizer actor with bootstrap handshake.
+    ///
+    /// This sets up:
+    /// 1. The rasterizer actor thread
+    /// 2. A response channel for render results
+    /// 3. A forwarding thread that receives responses and sends them to the engine
+    fn spawn_rasterizer(&mut self) {
+        if self.rasterizer.is_some() {
+            log::warn!("Rasterizer already initialized");
+            return;
+        }
+
+        let engine_handle = self
+            .self_handle
+            .as_ref()
+            .expect("Engine self_handle not set")
+            .clone();
+
+        // Step 1: Spawn rasterizer with setup handle
+        let (setup_handle, _rasterizer_thread) =
+            RasterizerActor::<PlatformPixel>::spawn_with_setup(self.render_threads);
+
+        // Step 2: Create response channel (engine receives render results here)
+        let (response_tx, response_rx) = std::sync::mpsc::channel::<RenderResponse<PlatformPixel>>();
+
+        // Step 3: Start forwarding thread - receives responses and sends to engine
+        std::thread::spawn(move || {
+            log::debug!("Rasterizer response forwarding thread started");
+            while let Ok(response) = response_rx.recv() {
+                // Forward to engine as RenderComplete
+                if let Err(e) = engine_handle.send(Message::Data(EngineData::RenderComplete(response))) {
+                    log::warn!("Failed to forward render response to engine: {}", e);
+                    break;
+                }
+            }
+            log::debug!("Rasterizer response forwarding thread exiting");
+        });
+
+        // Step 4: Complete bootstrap - register response channel and get full handle
+        let rasterizer_handle = setup_handle.register(response_tx);
+
+        log::info!("Rasterizer actor initialized via bootstrap");
+        self.rasterizer = Some(rasterizer_handle);
+    }
+
     /// Handle app data messages (render surfaces, etc.)
     fn handle_app_data(&mut self, app_data: AppData) {
         match app_data {
@@ -251,13 +304,13 @@ impl EngineHandler {
                 // This allows VSync to keep requesting at 60Hz regardless of rasterization speed
                 return_vsync_token();
 
-                if let Some(frame) = self.frame_buffer.take() {
-                    // Frame buffer available - render immediately
-                    self.trigger_render(manifold, frame);
+                if let Some(window) = self.window.take() {
+                    // Window available - render immediately
+                    self.trigger_render_with_window(manifold, window);
                 } else {
-                    // Buffer still with driver - queue manifold
+                    // Window still with driver - queue manifold
                     self.pending_manifold = Some(manifold);
-                    log::trace!("Engine: Frame buffer busy, manifold queued");
+                    log::trace!("Engine: Window busy, manifold queued");
                 }
             }
             AppData::Skipped => {
@@ -267,49 +320,53 @@ impl EngineHandler {
         }
     }
 
-    /// Trigger asynchronous rendering on the rasterizer actor.
-    fn trigger_render(
-        &mut self, 
-        manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>, 
-        frame: Frame<PlatformPixel>
+    /// Trigger asynchronous rendering on the rasterizer actor with a Window.
+    fn trigger_render_with_window(
+        &mut self,
+        manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
+        window: Window,
     ) {
-        // Create a bridge thread to forward the cooked frame back to engine actor
-        // This is "send and forget" from EngineHandler's perspective.
-        let engine_tx = self.self_handle.as_ref().unwrap().clone();
-        let (response_tx, response_rx) = std::sync::mpsc::channel();
-        
-        std::thread::spawn(move || {
-            if let Ok(response) = response_rx.recv() {
-                let _ = engine_tx.send(Message::Data(EngineData::RenderComplete(response)));
-            }
+        // Extract frame from window for rasterization, store metadata for later
+        let Window {
+            id,
+            frame,
+            width_px,
+            height_px,
+            scale,
+        } = window;
+
+        // Store window metadata - will be combined with cooked frame when render completes
+        self.pending_render = Some(PendingRender {
+            id,
+            width_px,
+            height_px,
+            scale,
         });
 
-        let request = RenderRequest {
-            manifold,
-            frame,
-            response_tx,
-        };
+        // Build render request (no response_tx - rasterizer uses registered channel)
+        let request = RenderRequest { manifold, frame };
 
-        if let Err(e) = self.rasterizer.send(Message::Data(request)) {
-            log::warn!("Failed to send render request to rasterizer: {}", e);
-            // If failed, we lost the frame buffer! We should probably try to recover it or panic.
-            // But rasterizer shouldn't fail unless it panicked or closed.
+        // Send to rasterizer
+        if let Some(rasterizer) = &self.rasterizer {
+            if let Err(e) = rasterizer.send(Message::Data(request)) {
+                log::warn!("Failed to send render request to rasterizer: {}", e);
+                // Restore pending_render on failure so we don't lose the metadata
+                self.pending_render = None;
+            }
+        } else {
+            log::warn!("Rasterizer not initialized, dropping render request");
+            self.pending_render = None;
         }
     }
 
-    /// Present a cooked frame received from the rasterizer.
-    fn present_cooked_frame(&mut self, response: RenderResponse<PlatformPixel>) {
-        let frame = response.frame;
-        let render_time = response.render_time;
+    /// Present a window with cooked frame to the driver.
+    fn present_cooked_frame(&mut self, render_time: std::time::Duration, window: Window) {
 
-        // Send to driver for presentation (transfers ownership)
+        // Send window to driver for presentation (transfers ownership)
         let t1 = Instant::now();
         self.driver
-            .send(Message::Data(DisplayData::Present {
-                id: WindowId::PRIMARY, // TODO: Map correctly
-                frame,
-            }))
-            .expect("Failed to send frame to driver for presentation");
+            .send(Message::Data(DisplayData::Present { window }))
+            .expect("Failed to send window to driver for presentation");
         let send_time = t1.elapsed();
 
         self.frame_number += 1;
@@ -326,23 +383,22 @@ impl EngineHandler {
     /// Handle events from the display driver
     fn handle_driver_event(&mut self, event: DisplayEvent) {
         match event {
-            DisplayEvent::WindowCreated {
-                id,
-                width_px,
-                height_px,
-                scale,
-                frame,
-            } => {
+            DisplayEvent::WindowCreated { window } => {
                 log::info!(
                     "Relaying WindowCreated: id={}, {}x{}, scale={}",
-                    id.0,
-                    width_px,
-                    height_px,
-                    scale
+                    window.id.0,
+                    window.width_px,
+                    window.height_px,
+                    window.scale
                 );
 
-                // Receive initial frame buffer from driver
-                self.frame_buffer = Some(frame);
+                let id = window.id;
+                let width_px = window.width_px;
+                let height_px = window.height_px;
+                let scale = window.scale;
+
+                // Receive initial window from driver
+                self.window = Some(window);
 
                 // Relay WindowCreated event to app
                 if let Some(app) = &self.app_handle {
@@ -355,16 +411,20 @@ impl EngineHandler {
                     .expect("Failed to relay WindowCreated event to app");
                 }
             }
-            DisplayEvent::Resized {
-                id,
-                width_px,
-                height_px,
-                frame,
-            } => {
-                log::info!("Relaying Resized: id={}, {}x{}", id.0, width_px, height_px);
+            DisplayEvent::Resized { window } => {
+                log::info!(
+                    "Relaying Resized: id={}, {}x{}",
+                    window.id.0,
+                    window.width_px,
+                    window.height_px
+                );
 
-                // Update frame buffer with new one from driver
-                self.frame_buffer = Some(frame);
+                let id = window.id;
+                let width_px = window.width_px;
+                let height_px = window.height_px;
+
+                // Update window with new one from driver
+                self.window = Some(window);
 
                 // Relay resize event to app
                 if let Some(app) = &self.app_handle {
@@ -487,9 +547,10 @@ impl EngineHandler {
                 }
             }
             DisplayEvent::ClipboardDataRequested => {
-                // Ignore - driver is asking for clipboard data
+                unimplemented!("Clipboard data requested")
             }
             DisplayEvent::WindowDestroyed { .. } => {
+                unimplemented!("window destroyed, forward to app unimplemented");
                 // Window was destroyed
             }
         }
@@ -512,11 +573,12 @@ impl<'a> TroupeActor<'a, Directory> for EngineHandler {
         Self {
             driver: dir.driver.clone(),
             vsync: dir.vsync.clone(),
-            rasterizer: dir.rasterizer.clone(),
+            rasterizer: None, // Set up separately via bootstrap
             self_handle: Some(dir.engine.clone()),
             app_handle: None,
             frame_number: 0,
-            frame_buffer: None,
+            window: None,
+            pending_render: None,
             render_threads: 1, // Default, will be set by Configure message
             pending_manifold: None,
         }
@@ -544,13 +606,6 @@ impl<'a> TroupeActor<'a, Directory> for DriverActor<ActivePlatform> {
         {
             panic!("Unsupported platform");
         }
-    }
-}
-
-// Implement TroupeActor for RasterizerActor
-impl<'a> TroupeActor<'a, Directory> for RasterizerActor<PlatformPixel> {
-    fn new(_dir: &'a Directory) -> Self {
-        RasterizerActor::new(1) // Default threads, will be updated via Configure
     }
 }
 
@@ -589,7 +644,7 @@ impl Troupe {
                 self_handle: dir.vsync.clone(),
             }))
             .map_err(|e| RuntimeError::InitError(format!("Failed to configure vsync: {}", e)))?;
-
+        let _ = dir.vsync.send(Message::Control(VsyncCommand::Start));
         Ok(troupe)
     }
 
@@ -601,7 +656,3 @@ impl Troupe {
         crate::api::public::UnregisteredEngineHandle::new(self.directory().engine.clone())
     }
 }
-
-// TODO: Tests need updating for new EngineHandler struct
-// The upstream tests used EngineState which we replaced with direct fields + vsync feedback
-// Tests should be re-enabled once the struct is stabilized
