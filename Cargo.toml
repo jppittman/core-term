@@ -3,6 +3,11 @@ members = ["core-term", "pixelflow-core", "pixelflow-graphics", "pixelflow-ml", 
 exclude = ["pixelflow-core/fuzz"]
 resolver = "2"
 
+# Dev profile - use opt-level=2 because deep Manifold recursion causes
+# stack overflow without aggressive inlining. opt-level=1 isn't enough.
+[profile.dev]
+opt-level = 2
+
 # Workspace-wide lints - prevents swallowing errors with `let _ = `
 [workspace.lints.rust]
 # Treat unused Results as errors - forces explicit handling

@@ -266,7 +266,12 @@ impl PlatformOps for MetalOps {
                     }
                 }
 
-                self.app.send_event(event);
+                // Only route spatial events through Cocoa's responder chain.
+                // Keyboard/scroll events are fully owned by us - routing them
+                // through sendEvent: causes the system "bop" sound.
+                if event_type::is_spatial(ty) {
+                    self.app.send_event(event);
+                }
             }
         }
         // Always return Idle since we block inside next_event when needed

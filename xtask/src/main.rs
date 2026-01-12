@@ -72,12 +72,12 @@ fn bundle_run(extra_args: &[String]) {
     let workspace_root = find_workspace_root();
     println!("Workspace root: {}", workspace_root.display());
 
-    println!("Building core-term in release mode...");
+    println!("Building core-term in release mode (opt-level=3, LTO)...");
 
     // Build the project with extra args (e.g., --features profiling)
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&workspace_root); // Run from workspace root
-    cmd.args(["build", "--release"]);
+    cmd.args(["build", "--release", "-p", "core-term"]);
 
     // Filter out --release since we already added it
     let filtered_args: Vec<&String> = extra_args
@@ -106,6 +106,15 @@ fn bundle_run(extra_args: &[String]) {
         std::process::exit(1);
     }
 
+    // Verify binary size - release with LTO should be reasonably sized
+    let binary_size = fs::metadata(&binary_src)
+        .expect("Failed to get binary metadata")
+        .len();
+    println!(
+        "Binary size: {:.2} MB (release with LTO)",
+        binary_size as f64 / (1024.0 * 1024.0)
+    );
+
     println!("Copying binary to bundle...");
     fs::copy(&binary_src, &binary_dest).expect("Failed to copy binary to bundle");
 
@@ -122,15 +131,28 @@ fn bundle_run(extra_args: &[String]) {
 
     // Copy icon file to bundle Resources
     let icon_src = workspace_root.join("assets/icons/icon.icns");
-    let icon_dest = workspace_root.join("CoreTerm.app/Contents/Resources/icon.icns");
+    let resources_dir = workspace_root.join("CoreTerm.app/Contents/Resources");
+    let icon_dest = resources_dir.join("icon.icns");
+
+    fs::create_dir_all(&resources_dir).expect("Failed to create Resources directory");
 
     if icon_src.exists() {
         println!("Copying icon to bundle...");
-        fs::create_dir_all(icon_dest.parent().unwrap())
-            .expect("Failed to create Resources directory");
         fs::copy(&icon_src, &icon_dest).expect("Failed to copy icon to bundle");
     } else {
         println!("Warning: Icon not found at {}", icon_src.display());
+    }
+
+    // Copy font file to bundle Resources
+    let font_src = workspace_root.join("pixelflow-graphics/assets/NotoSansMono-Regular.ttf");
+    let font_dest = resources_dir.join("NotoSansMono-Regular.ttf");
+
+    if font_src.exists() {
+        println!("Copying font to bundle...");
+        fs::copy(&font_src, &font_dest).expect("Failed to copy font to bundle");
+    } else {
+        eprintln!("ERROR: Font not found at {}", font_src.display());
+        std::process::exit(1);
     }
 
     // Touch the app bundle to invalidate macOS icon cache

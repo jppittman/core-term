@@ -43,8 +43,49 @@ use pixelflow_runtime::{
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
 
-/// Path to the embedded font file
-const FONT_PATH: &str = "pixelflow-graphics/assets/NotoSansMono-Regular.ttf";
+/// Font filename (looked up in multiple locations)
+const FONT_FILENAME: &str = "NotoSansMono-Regular.ttf";
+
+/// Find the font file, trying multiple locations:
+/// 1. macOS app bundle Resources directory (for bundled app)
+/// 2. Workspace-relative path (for cargo run from workspace root)
+/// 3. Crate-relative path (for tests)
+fn find_font_path() -> std::path::PathBuf {
+    // Try bundle Resources directory first (macOS app bundle)
+    if let Ok(exe_path) = std::env::current_exe() {
+        // exe is at CoreTerm.app/Contents/MacOS/CoreTerm
+        // Resources is at CoreTerm.app/Contents/Resources/
+        if let Some(macos_dir) = exe_path.parent() {
+            let resources_dir = macos_dir.parent().map(|p| p.join("Resources"));
+            if let Some(resources) = resources_dir {
+                let bundle_font = resources.join(FONT_FILENAME);
+                if bundle_font.exists() {
+                    log::info!("Using bundled font: {}", bundle_font.display());
+                    return bundle_font;
+                }
+            }
+        }
+    }
+
+    // Try workspace-relative path (cargo run)
+    let workspace_path =
+        std::path::PathBuf::from(format!("pixelflow-graphics/assets/{}", FONT_FILENAME));
+    if workspace_path.exists() {
+        log::info!("Using workspace font: {}", workspace_path.display());
+        return workspace_path;
+    }
+
+    // Try crate-relative path (tests)
+    let crate_path =
+        std::path::PathBuf::from(format!("../pixelflow-graphics/assets/{}", FONT_FILENAME));
+    if crate_path.exists() {
+        log::info!("Using crate-relative font: {}", crate_path.display());
+        return crate_path;
+    }
+
+    // Return workspace path and let MmapSource::open fail with a good error
+    workspace_path
+}
 
 /// Bounded glyph manifold (returns coverage in [0,1], 0 if out of bounds).
 /// Select<Cond, CachedGlyph, f32>
@@ -207,11 +248,10 @@ impl TerminalApp {
 
     /// Creates a new terminal app (internal - use spawn_terminal_app instead).
     fn new_registered(params: TerminalAppParamsRegistered) -> Self {
-        // Memory-map the font file
-        // Try workspace-relative path first, then crate-relative (for tests)
-        let source = MmapSource::open(FONT_PATH)
-            .or_else(|_| MmapSource::open(&format!("../{}", FONT_PATH)))
-            .expect("Failed to open font file");
+        // Memory-map the font file from the appropriate location
+        let font_path = find_font_path();
+        let source = MmapSource::open(&font_path)
+            .unwrap_or_else(|e| panic!("Failed to open font file at {}: {}", font_path.display(), e));
 
         let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));
 
@@ -260,6 +300,15 @@ impl TerminalApp {
         let cell_height = snapshot.cell_height_px as f32;
         let grid_width = cols as f32 * cell_width;
         let grid_height = rows as f32 * cell_height;
+
+        // Debug: Log dimensions once per build
+        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::info!(
+                "Terminal snapshot: {}x{} cells, cell size {}x{} px, grid {}x{} px",
+                cols, rows, cell_width, cell_height, grid_width, grid_height
+            );
+        }
 
         // Default colors
         let default_fg = self.config.colors.foreground;
@@ -357,6 +406,10 @@ impl TerminalApp {
         }
 
         // Build top-level vertical BSP from row items
+        log::debug!(
+            "Building BSP with {} row_items (from {} rows), grid {}x{}",
+            row_items.len(), rows, grid_width, grid_height
+        );
         let top_bsp = SpatialBSP::from_positioned(row_items);
         (Arc::new(top_bsp), (grid_width, grid_height))
     }

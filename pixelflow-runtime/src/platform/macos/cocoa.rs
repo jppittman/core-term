@@ -339,4 +339,20 @@ pub mod event_type {
     pub const APP_KIT_DEFINED: u64 = 13;
     pub const SYSTEM_DEFINED: u64 = 14;
     pub const APPLICATION_DEFINED: u64 = 15;
+
+    /// Returns true if this event type is spatial (has window chrome component).
+    /// Spatial events need to go through sendEvent: for window management.
+    /// Pure input events (keyboard, scroll) are fully handled by us.
+    pub fn is_spatial(ty: u64) -> bool {
+        matches!(
+            ty,
+            LEFT_MOUSE_DOWN
+                | LEFT_MOUSE_UP
+                | RIGHT_MOUSE_DOWN
+                | RIGHT_MOUSE_UP
+                | MOUSE_MOVED
+                | LEFT_MOUSE_DRAGGED
+                | RIGHT_MOUSE_DRAGGED
+        )
+    }
 }
