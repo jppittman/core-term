@@ -5,7 +5,7 @@
 //!
 //! Following TDD principles: write tests first, uncover bugs, fix them.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -30,7 +30,7 @@ enum TestAnsiCommand {
 }
 
 impl Actor<Vec<u8>, (), ()> for TestParserActor {
-    fn handle_data(&mut self, bytes: Vec<u8>) {
+    fn handle_data(&mut self, bytes: Vec<u8>) -> HandlerResult {
         self.bytes_processed
             .fetch_add(bytes.len(), Ordering::SeqCst);
 
@@ -57,13 +57,14 @@ impl Actor<Vec<u8>, (), ()> for TestParserActor {
         if !commands.is_empty() {
             let _ = self.output_tx.send(commands);
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, _: ()) {}
-    fn handle_management(&mut self, _: ()) {}
+    fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
 
-    fn park(&mut self, _: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -269,15 +270,16 @@ struct TestTerminalAppActor {
 }
 
 impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerminalAppActor {
-    fn handle_data(&mut self, data: TestEngineData) {
+    fn handle_data(&mut self, data: TestEngineData) -> HandlerResult {
         match data {
             TestEngineData::FrameRequest => {
                 self.frame_count.fetch_add(1, Ordering::SeqCst);
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: TestEngineControl) {
+    fn handle_control(&mut self, ctrl: TestEngineControl) -> HandlerResult {
         match ctrl {
             TestEngineControl::Resize(width, height) => {
                 self.resize_count.fetch_add(1, Ordering::SeqCst);
@@ -290,9 +292,10 @@ impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerm
                 // Handle close
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: TestEngineManagement) {
+    fn handle_management(&mut self, mgmt: TestEngineManagement) -> HandlerResult {
         match mgmt {
             TestEngineManagement::KeyPress(c) => {
                 self.keypress_count.fetch_add(1, Ordering::SeqCst);
@@ -313,10 +316,11 @@ impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerm
                 }
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -560,7 +564,7 @@ fn multi_actor_chain_roundtrip() {
     }
 
     impl Actor<Vec<TestAnsiCommand>, (), ()> for ForwardingActor {
-        fn handle_data(&mut self, cmds: Vec<TestAnsiCommand>) {
+        fn handle_data(&mut self, cmds: Vec<TestAnsiCommand>) -> HandlerResult {
             let text: String = cmds
                 .iter()
                 .filter_map(|cmd| match cmd {
@@ -571,11 +575,12 @@ fn multi_actor_chain_roundtrip() {
             if !text.is_empty() {
                 let _ = self.output_tx.send(text);
             }
+            Ok(())
         }
-        fn handle_control(&mut self, _: ()) {}
-        fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -633,16 +638,17 @@ fn roundtrip_handles_actor_panic_gracefully() {
     }
 
     impl Actor<String, (), ()> for PanickyActor {
-        fn handle_data(&mut self, _msg: String) {
+        fn handle_data(&mut self, _msg: String) -> HandlerResult {
             let count = self.message_count.fetch_add(1, Ordering::SeqCst) + 1;
             if count == self.panic_on_message {
                 panic!("Intentional panic for testing");
             }
+            Ok(())
         }
-        fn handle_control(&mut self, _: ()) {}
-        fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -689,15 +695,16 @@ fn roundtrip_sender_dropped_during_processing() {
             started: Arc<AtomicBool>,
         }
         impl Actor<usize, (), ()> for SlowActor {
-            fn handle_data(&mut self, _: usize) {
+            fn handle_data(&mut self, _: usize) -> HandlerResult {
                 self.started.store(true, Ordering::SeqCst);
                 thread::sleep(Duration::from_millis(50));
                 self.processed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: ()) {}
-            fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _: SystemStatus) -> ActorStatus {
-                ActorStatus::Idle
+            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut SlowActor {

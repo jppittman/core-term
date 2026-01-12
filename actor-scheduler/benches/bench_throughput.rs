@@ -1,4 +1,4 @@
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -13,20 +13,23 @@ struct CountingActor {
 }
 
 impl Actor<i32, (), ()> for CountingActor {
-    fn handle_data(&mut self, _data: i32) {
+    fn handle_data(&mut self, _data: i32) -> HandlerResult {
         self.data_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
-    fn handle_control(&mut self, _ctrl: ()) {
+    fn handle_control(&mut self, _ctrl: ()) -> HandlerResult {
         self.control_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
-    fn handle_management(&mut self, _mgmt: ()) {
+    fn handle_management(&mut self, _mgmt: ()) -> HandlerResult {
         self.mgmt_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
-    fn park(&mut self, hint: SystemStatus) -> ActorStatus {
-        hint
+    fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(hint)
     }
 }
 

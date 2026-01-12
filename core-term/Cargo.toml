@@ -3,6 +3,9 @@ name = "core-term"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [lib]
 bench = false
 

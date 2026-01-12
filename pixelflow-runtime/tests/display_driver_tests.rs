@@ -47,26 +47,23 @@ fn display_control_clone_works() {
 #[test]
 fn display_event_window_created_carries_dimensions() {
     use pixelflow_graphics::render::Frame;
+    use pixelflow_runtime::display::messages::Window;
     use pixelflow_runtime::pixel::PlatformPixel;
 
     let event = DisplayEvent::WindowCreated {
-        id: WindowId::PRIMARY,
-        width_px: 1920,
-        height_px: 1080,
-        scale: 2.0,
-        frame: Frame::<PlatformPixel>::new(1920, 1080),
+        window: Window {
+            id: WindowId::PRIMARY,
+            width_px: 1920,
+            height_px: 1080,
+            scale: 2.0,
+            frame: Frame::<PlatformPixel>::new(1920, 1080),
+        },
     };
 
-    if let DisplayEvent::WindowCreated {
-        width_px,
-        height_px,
-        scale,
-        ..
-    } = event
-    {
-        assert_eq!(width_px, 1920);
-        assert_eq!(height_px, 1080);
-        assert!((scale - 2.0).abs() < 0.001);
+    if let DisplayEvent::WindowCreated { window } = event {
+        assert_eq!(window.width_px, 1920);
+        assert_eq!(window.height_px, 1080);
+        assert!((window.scale - 2.0).abs() < 0.001);
     } else {
         panic!("Wrong variant");
     }

@@ -10,7 +10,7 @@
 //! Note: Some tests require the actor to run in a thread, which means
 //! we test through the public message interface rather than internal state.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -57,7 +57,7 @@ impl MockVsyncActor {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
-    fn handle_data(&mut self, response: RenderedResponse) {
+    fn handle_data(&mut self, response: RenderedResponse) -> HandlerResult {
         // Token replenishment on rendered response
         if self.tokens < MAX_TOKENS {
             self.tokens += 1;
@@ -66,9 +66,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
                 response.frame_number, self.tokens
             ));
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, cmd: VsyncCommand) {
+    fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
         match cmd {
             VsyncCommand::Start => {
                 self.running = true;
@@ -91,9 +92,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
                 self.log("shutdown");
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> HandlerResult {
         match msg {
             VsyncManagement::Tick => {
                 if self.running && self.tokens > 0 {
@@ -121,10 +123,11 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
                 ));
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -711,13 +714,14 @@ fn shutdown_stops_processing_immediately() {
     let handle = thread::spawn(move || {
         struct CountingActor(Arc<AtomicUsize>);
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for CountingActor {
-            fn handle_data(&mut self, _: RenderedResponse) {
+            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: VsyncCommand) {}
-            fn handle_management(&mut self, _: VsyncManagement) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_control(&mut self, _: VsyncCommand) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut CountingActor(processed_clone));

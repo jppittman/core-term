@@ -9,7 +9,7 @@
 //! the actor wakes up reliably regardless of other system load, without relying
 //! on blocking `park` calls that could stall the actor scheduler.
 
-use actor_scheduler::{Actor, ActorHandle, SystemStatus};
+use actor_scheduler::{Actor, ActorHandle, HandlerError, HandlerResult, SystemStatus};
 use log::info;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
@@ -303,7 +303,7 @@ impl VsyncActor {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
-    fn handle_data(&mut self, response: RenderedResponse) {
+    fn handle_data(&mut self, response: RenderedResponse) -> HandlerResult {
         // Count actual rendered frames for accurate FPS measurement
         // (Token management is now handled via atomic bucket)
         self.frame_count += 1;
@@ -312,9 +312,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
             response.frame_number
         );
         self.update_fps();
+        Ok(())
     }
 
-    fn handle_control(&mut self, cmd: VsyncCommand) {
+    fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
         match cmd {
             VsyncCommand::Start => {
                 self.running = true;
@@ -357,9 +358,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 // But we don't hold loopback handles in struct, only for clock thread.
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> HandlerResult {
         match msg {
             VsyncManagement::Tick => self.handle_tick(),
             VsyncManagement::SetConfig {
@@ -405,11 +407,12 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self.clock_control = Some(clock_tx);
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> actor_scheduler::ActorStatus {
+    fn park(&mut self, _status: SystemStatus) -> Result<actor_scheduler::ActorStatus, HandlerError> {
         // VSync is driven by internal clock thread sending messages
-        actor_scheduler::ActorStatus::Idle
+        Ok(actor_scheduler::ActorStatus::Idle)
     }
 }
 

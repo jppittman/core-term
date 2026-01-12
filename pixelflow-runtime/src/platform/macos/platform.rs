@@ -7,7 +7,7 @@ use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
 use crate::platform::PlatformPixel;
-use actor_scheduler::{ActorStatus, Message, SystemStatus};
+use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, Message, SystemStatus};
 use pixelflow_graphics::render::Frame;
 
 use std::collections::HashMap;
@@ -60,7 +60,7 @@ impl MetalOps {
 }
 
 impl PlatformOps for MetalOps {
-    fn handle_data(&mut self, msg: DisplayData) {
+    fn handle_data(&mut self, msg: DisplayData) -> HandlerResult {
         match msg {
             DisplayData::Present { mut window } => {
                 log::trace!("MetalOps: Presenting frame for window {:?}", window.id);
@@ -80,9 +80,10 @@ impl PlatformOps for MetalOps {
                     .expect("Failed to send PresentComplete to engine");
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, msg: DisplayControl) {
+    fn handle_control(&mut self, msg: DisplayControl) -> HandlerResult {
         match msg {
             DisplayControl::SetTitle { id, title } => {
                 if let Some(win) = self.windows.get_mut(&id) {
@@ -132,9 +133,10 @@ impl PlatformOps for MetalOps {
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: DisplayMgmt) {
+    fn handle_management(&mut self, msg: DisplayMgmt) -> HandlerResult {
         match msg {
             DisplayMgmt::Create { settings } => {
                 match MacWindow::new(settings) {
@@ -180,9 +182,10 @@ impl PlatformOps for MetalOps {
                 }
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // Logic for event loop interaction
         // The CocoaWaker posts an NSEvent when messages arrive, so distantFuture is safe.
         unsafe {
@@ -267,6 +270,6 @@ impl PlatformOps for MetalOps {
             }
         }
         // Always return Idle since we block inside next_event when needed
-        ActorStatus::Idle
+        Ok(ActorStatus::Idle)
     }
 }

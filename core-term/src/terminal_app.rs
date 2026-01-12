@@ -5,7 +5,7 @@ use crate::glyph::Glyph;
 use crate::io::PtyCommand;
 use crate::messages::TerminalData;
 use crate::term::TerminalEmulator;
-use actor_scheduler::{ActorHandle, Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
+use actor_scheduler::{ActorHandle, Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use crate::io::traits::PtySender;
 use pixelflow_core::{
     Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
@@ -382,7 +382,7 @@ impl TerminalApp {
 }
 
 impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for TerminalApp {
-    fn handle_data(&mut self, data: TerminalData) {
+    fn handle_data(&mut self, data: TerminalData) -> HandlerResult {
         match data {
             TerminalData::Engine(EngineEventData::RequestFrame { .. }) => {
                 // Engine is requesting a frame - build and send it
@@ -399,9 +399,10 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 // For now, let's just update state. The next RequestFrame will pick it up.
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: EngineEventControl) {
+    fn handle_control(&mut self, ctrl: EngineEventControl) -> HandlerResult {
         match ctrl {
             EngineEventControl::WindowCreated {
                 id,
@@ -460,9 +461,10 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 );
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: EngineEventManagement) {
+    fn handle_management(&mut self, mgmt: EngineEventManagement) -> HandlerResult {
         match mgmt {
             EngineEventManagement::KeyDown { key, mods, text } => {
                 use crate::term::{EmulatorAction, EmulatorInput, UserInputAction};
@@ -571,11 +573,12 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     .expect("Failed to send paste to PTY");
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // No polling needed - PTY data comes in via handle_data
-        ActorStatus::Idle
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -683,16 +686,18 @@ mod tests {
     }
 
     // Helper to create a test instance
+    // Returns scheduler to keep doorbell channel alive during test
     fn create_test_app() -> (
         TerminalApp,
         Receiver<PtyCommand>,
         pixelflow_runtime::api::private::EngineActorHandle,
+        pixelflow_runtime::api::private::EngineActorScheduler,
     ) {
         let emulator = TerminalEmulator::new(80, 24);
         let (pty_tx, pty_rx) = std::sync::mpsc::sync_channel(128);
 
-        // Create a dummy engine handle
-        let (engine_tx, _) = actor_scheduler::ActorScheduler::new(10, 10);
+        // Create engine handle - keep scheduler alive to prevent doorbell disconnect
+        let (engine_tx, engine_scheduler) = actor_scheduler::ActorScheduler::new(10, 10);
 
         let config = Config::default();
         let params = TerminalAppParamsRegistered {
@@ -703,12 +708,12 @@ mod tests {
         };
         let app = TerminalApp::new_registered(params);
 
-        (app, pty_rx, engine_tx)
+        (app, pty_rx, engine_tx, engine_scheduler)
     }
 
     #[test]
     fn test_handle_control_resize() {
-        let (mut app, pty_rx, _) = create_test_app();
+        let (mut app, pty_rx, _, _scheduler) = create_test_app();
 
         // Initial size is 80x24
         use crate::term::TerminalInterface;
@@ -723,7 +728,7 @@ mod tests {
             width_px: 1000,
             height_px: 800,
         };
-        app.handle_control(resize_event);
+        let _ = app.handle_control(resize_event);
 
         // Verify resize via snapshot
         let snapshot_new = app.emulator.get_render_snapshot().expect("Snapshot");
@@ -747,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_handle_management_keydown() {
-        let (mut app, pty_rx, _) = create_test_app();
+        let (mut app, pty_rx, _, _scheduler) = create_test_app();
 
         // Simulate KeyDown
         let key_event = EngineEventManagement::KeyDown {
@@ -756,7 +761,7 @@ mod tests {
             text: Some("a".to_string()),
         };
 
-        app.handle_management(key_event);
+        let _ = app.handle_management(key_event);
 
         // We expect 'a' to be sent to PTY wrapped in PtyCommand::Write
         let received = pty_rx.try_recv();

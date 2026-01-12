@@ -3,7 +3,7 @@
 //! These tests verify the scheduler behaves correctly under heavy load,
 //! concurrent access, and various edge conditions.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
@@ -20,17 +20,20 @@ struct CountingHandler {
 }
 
 impl Actor<u64, u64, u64> for CountingHandler {
-    fn handle_data(&mut self, _msg: u64) {
+    fn handle_data(&mut self, _msg: u64) -> HandlerResult {
         self.data_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-    fn handle_control(&mut self, _msg: u64) {
+    fn handle_control(&mut self, _msg: u64) -> HandlerResult {
         self.ctrl_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-    fn handle_management(&mut self, _msg: u64) {
+    fn handle_management(&mut self, _msg: u64) -> HandlerResult {
         self.mgmt_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-    fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -40,25 +43,26 @@ struct SlowHandler {
 }
 
 impl Actor<u64, u64, u64> for SlowHandler {
-    fn handle_data(&mut self, _msg: u64) {
+    fn handle_data(&mut self, _msg: u64) -> HandlerResult {
         thread::sleep(self.delay);
         self.processed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
-    fn handle_control(&mut self, _msg: u64) {}
-    fn handle_management(&mut self, _msg: u64) {}
-    fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn handle_control(&mut self, _msg: u64) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _msg: u64) -> HandlerResult { Ok(()) }
+    fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
 struct NoOpHandler;
 
 impl Actor<(), (), ()> for NoOpHandler {
-    fn handle_data(&mut self, _: ()) {}
-    fn handle_control(&mut self, _: ()) {}
-    fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -183,9 +187,9 @@ fn rapid_channel_creation_does_not_leak() {
     // Create and drop many channels rapidly
     for _ in 0..1000 {
         let (tx, _rx) = ActorScheduler::<u64, u64, u64>::new(10, 100);
-        // Send a few messages
-        let _ = tx.send(Message::Data(1));
-        let _ = tx.send(Message::Control(2));
+        // Send a few messages (ignore errors - receiver not running)
+        tx.send(Message::Data(1)).ok();
+        tx.send(Message::Control(2)).ok();
         // Let it drop
     }
     // If we get here without running out of memory, the test passes
@@ -199,7 +203,7 @@ fn rapid_sender_clone_drop() {
     // Clone and drop handles rapidly - messages will queue but not block
     for _ in 0..1000 {
         let cloned = tx.clone();
-        let _ = cloned.send(Message::Data(42));
+        cloned.send(Message::Data(42)).ok();
         drop(cloned);
     }
 }
@@ -296,15 +300,17 @@ fn burst_limit_prevents_data_starvation() {
     }
 
     impl Actor<u64, u64, u64> for BurstHandler {
-        fn handle_data(&mut self, _: u64) {
+        fn handle_data(&mut self, _: u64) -> HandlerResult {
             self.data_processed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn handle_control(&mut self, _: u64) {}
-        fn handle_management(&mut self, _: u64) {
+        fn handle_control(&mut self, _: u64) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _: u64) -> HandlerResult {
             self.mgmt_processed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn park(&mut self, _: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -356,13 +362,14 @@ fn concurrent_clone_and_send() {
     }
 
     impl Actor<u64, u64, u64> for SimpleHandler {
-        fn handle_data(&mut self, _: u64) {
+        fn handle_data(&mut self, _: u64) -> HandlerResult {
             self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn handle_control(&mut self, _: u64) {}
-        fn handle_management(&mut self, _: u64) {}
-        fn park(&mut self, _: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_control(&mut self, _: u64) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _: u64) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -432,15 +439,16 @@ fn large_messages_work() {
     }
 
     impl Actor<LargeMessage, (), ()> for LargeHandler {
-        fn handle_data(&mut self, msg: LargeMessage) {
+        fn handle_data(&mut self, msg: LargeMessage) -> HandlerResult {
             // Verify data integrity
             assert!(msg.data.iter().all(|&b| b == 42));
             self.received.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
-        fn handle_control(&mut self, _: ()) {}
-        fn handle_management(&mut self, _: ()) {}
-        fn park(&mut self, _: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 

@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Linear Attention as Harmonic Global Illumination"
 
+[lints]
+workspace = true
+
 [lib]
 bench = false
 

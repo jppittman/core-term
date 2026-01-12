@@ -3,7 +3,7 @@
 //! These tests verify the complete message flow from raw bytes through
 //! the ANSI parser to the terminal app, using the real AnsiProcessor.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use core_term::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -23,19 +23,20 @@ struct RealParserActor {
 }
 
 impl Actor<Vec<u8>, (), ()> for RealParserActor {
-    fn handle_data(&mut self, data: Vec<u8>) {
+    fn handle_data(&mut self, data: Vec<u8>) -> HandlerResult {
         self.bytes_processed.fetch_add(data.len(), Ordering::SeqCst);
 
         let commands = self.parser.process_bytes(&data);
         if !commands.is_empty() {
             let _ = self.cmd_tx.send(commands);
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, _: ()) {}
-    fn handle_management(&mut self, _: ()) {}
-    fn park(&mut self, _: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 

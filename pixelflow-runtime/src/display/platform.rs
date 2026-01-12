@@ -1,6 +1,6 @@
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use crate::display::ops::PlatformOps;
-use actor_scheduler::{Actor, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus};
 
 /// The Platform Trait.
 /// Implementers must be an Actor that handles display messages.
@@ -23,19 +23,19 @@ impl<Ops: PlatformOps> PlatformActor<Ops> {
 impl<Ops: PlatformOps> Actor<DisplayData, DisplayControl, DisplayMgmt>
     for PlatformActor<Ops>
 {
-    fn handle_data(&mut self, msg: DisplayData) {
-        self.ops.handle_data(msg);
+    fn handle_data(&mut self, msg: DisplayData) -> HandlerResult {
+        self.ops.handle_data(msg)
     }
 
-    fn handle_control(&mut self, msg: DisplayControl) {
-        self.ops.handle_control(msg);
+    fn handle_control(&mut self, msg: DisplayControl) -> HandlerResult {
+        self.ops.handle_control(msg)
     }
 
-    fn handle_management(&mut self, msg: DisplayMgmt) {
-        self.ops.handle_management(msg);
+    fn handle_management(&mut self, msg: DisplayMgmt) -> HandlerResult {
+        self.ops.handle_management(msg)
     }
 
-    fn park(&mut self, status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         self.ops.park(status)
     }
 }

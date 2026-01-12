@@ -11,7 +11,7 @@
 //!
 //! Following STYLE.md: tests focus on public API contracts, not implementation details.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, SendError};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, SendError, HandlerResult, HandlerError};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
@@ -27,29 +27,32 @@ struct OrderingActor {
 }
 
 impl Actor<String, String, String> for OrderingActor {
-    fn handle_data(&mut self, msg: String) {
+    fn handle_data(&mut self, msg: String) -> HandlerResult {
         self.log
             .lock()
             .unwrap()
             .push((format!("D:{}", msg), std::time::Instant::now()));
+        Ok(())
     }
 
-    fn handle_control(&mut self, msg: String) {
+    fn handle_control(&mut self, msg: String) -> HandlerResult {
         self.log
             .lock()
             .unwrap()
             .push((format!("C:{}", msg), std::time::Instant::now()));
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: String) {
+    fn handle_management(&mut self, msg: String) -> HandlerResult {
         self.log
             .lock()
             .unwrap()
             .push((format!("M:{}", msg), std::time::Instant::now()));
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -87,20 +90,23 @@ impl CountingActor {
 }
 
 impl Actor<i32, i32, i32> for CountingActor {
-    fn handle_data(&mut self, _msg: i32) {
+    fn handle_data(&mut self, _msg: i32) -> HandlerResult {
         self.data_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
-    fn handle_control(&mut self, _msg: i32) {
+    fn handle_control(&mut self, _msg: i32) -> HandlerResult {
         self.control_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
-    fn handle_management(&mut self, _msg: i32) {
+    fn handle_management(&mut self, _msg: i32) -> HandlerResult {
         self.management_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -111,23 +117,26 @@ struct SlowActor {
 }
 
 impl Actor<String, String, String> for SlowActor {
-    fn handle_data(&mut self, msg: String) {
+    fn handle_data(&mut self, msg: String) -> HandlerResult {
         thread::sleep(self.delay);
         self.processed.lock().unwrap().push(format!("D:{}", msg));
+        Ok(())
     }
 
-    fn handle_control(&mut self, msg: String) {
+    fn handle_control(&mut self, msg: String) -> HandlerResult {
         thread::sleep(self.delay);
         self.processed.lock().unwrap().push(format!("C:{}", msg));
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: String) {
+    fn handle_management(&mut self, msg: String) -> HandlerResult {
         thread::sleep(self.delay);
         self.processed.lock().unwrap().push(format!("M:{}", msg));
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -138,13 +147,13 @@ struct ParkTrackingActor {
 }
 
 impl Actor<(), (), ()> for ParkTrackingActor {
-    fn handle_data(&mut self, _msg: ()) {}
-    fn handle_control(&mut self, _msg: ()) {}
-    fn handle_management(&mut self, _msg: ()) {}
+    fn handle_data(&mut self, _msg: ()) -> HandlerResult { Ok(()) }
+    fn handle_control(&mut self, _msg: ()) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _msg: ()) -> HandlerResult { Ok(()) }
 
-    fn park(&mut self, status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         self.park_hints.lock().unwrap().push(status);
-        self.return_status
+        Ok(self.return_status)
     }
 }
 
@@ -241,21 +250,23 @@ fn control_processed_before_management() {
             management_seen: bool,
         }
         impl Actor<(), (), ()> for FirstWinsActor {
-            fn handle_control(&mut self, _: ()) {
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
                 if !self.control_seen && !self.management_seen {
                     self.control_first.store(true, Ordering::SeqCst);
                 }
                 self.control_seen = true;
+                Ok(())
             }
-            fn handle_management(&mut self, _: ()) {
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
                 if !self.control_seen && !self.management_seen {
                     self.management_first.store(true, Ordering::SeqCst);
                 }
                 self.management_seen = true;
+                Ok(())
             }
-            fn handle_data(&mut self, _: ()) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         let mut actor = FirstWinsActor {
@@ -338,17 +349,20 @@ fn mixed_priority_messages_all_delivered() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<(AtomicUsize, AtomicUsize, AtomicUsize)>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0 .0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
                 self.0 .1.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_management(&mut self, _: i32) {
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
                 self.0 .2.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut Counter(counts_clone));
@@ -396,15 +410,17 @@ fn no_starvation_with_continuous_high_priority() {
             data_processed: Arc<AtomicBool>,
         }
         impl Actor<(), (), ()> for Tracker {
-            fn handle_data(&mut self, _: ()) {
+            fn handle_data(&mut self, _: ()) -> HandlerResult {
                 self.data_processed.store(true, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: ()) {
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
                 // High priority, but shouldn't starve data
+                Ok(())
             }
-            fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut Tracker {
@@ -448,17 +464,20 @@ fn management_burst_limit_prevents_starvation() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<String, String, String> for Counter {
-            fn handle_data(&mut self, _: String) {
+            fn handle_data(&mut self, _: String) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: String) {
+            fn handle_control(&mut self, _: String) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_management(&mut self, _: String) {
+            fn handle_management(&mut self, _: String) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut Counter(count_clone));
@@ -541,17 +560,20 @@ fn multiple_senders_all_messages_delivered() {
         // Create a wrapper that uses the Arc
         struct ArcCountingActor(Arc<CountingActor>);
         impl Actor<i32, i32, i32> for ArcCountingActor {
-            fn handle_data(&mut self, _msg: i32) {
+            fn handle_data(&mut self, _msg: i32) -> HandlerResult {
                 self.0.data_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _msg: i32) {
+            fn handle_control(&mut self, _msg: i32) -> HandlerResult {
                 self.0.control_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_management(&mut self, _msg: i32) {
+            fn handle_management(&mut self, _msg: i32) -> HandlerResult {
                 self.0.management_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
 
@@ -604,11 +626,11 @@ fn actor_run_exits_when_all_senders_dropped() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
-            fn handle_data(&mut self, _: ()) {}
-            fn handle_control(&mut self, _: ()) {}
-            fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut NoopActor);
@@ -640,13 +662,14 @@ fn cloned_handle_works_after_original_dropped() {
     let handle = thread::spawn(move || {
         struct CounterActor(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for CounterActor {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut CounterActor(count_clone));
@@ -795,17 +818,20 @@ fn different_message_types_per_lane() {
     let handle = thread::spawn(move || {
         struct TypedActor(Arc<Mutex<(bool, bool, bool)>>);
         impl Actor<Vec<u8>, HashMap<String, i32>, std::time::Duration> for TypedActor {
-            fn handle_data(&mut self, _: Vec<u8>) {
+            fn handle_data(&mut self, _: Vec<u8>) -> HandlerResult {
                 self.0.lock().unwrap().0 = true;
+                Ok(())
             }
-            fn handle_control(&mut self, _: HashMap<String, i32>) {
+            fn handle_control(&mut self, _: HashMap<String, i32>) -> HandlerResult {
                 self.0.lock().unwrap().1 = true;
+                Ok(())
             }
-            fn handle_management(&mut self, _: std::time::Duration) {
+            fn handle_management(&mut self, _: std::time::Duration) -> HandlerResult {
                 self.0.lock().unwrap().2 = true;
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut TypedActor(received_clone));
@@ -840,17 +866,20 @@ fn handle_clone_is_independent() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_management(&mut self, _: i32) {
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut Counter(count_clone));
@@ -893,13 +922,14 @@ fn high_throughput_single_sender() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut Counter(count_clone));
@@ -930,17 +960,20 @@ fn concurrent_senders_stress_test() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_management(&mut self, _: i32) {
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut Counter(count_clone));
@@ -1003,21 +1036,23 @@ fn priority_maintained_when_both_lanes_have_messages() {
             first: Arc<Mutex<Option<&'static str>>>,
         }
         impl Actor<i32, i32, i32> for FirstChecker {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 let mut first = self.first.lock().unwrap();
                 if first.is_none() {
                     *first = Some("data");
                 }
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
                 let mut first = self.first.lock().unwrap();
                 if first.is_none() {
                     *first = Some("control");
                 }
+                Ok(())
             }
-            fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut FirstChecker { first: first_clone });
@@ -1052,11 +1087,11 @@ fn empty_message_types_work() {
     let handle = thread::spawn(move || {
         struct UnitActor;
         impl Actor<(), (), ()> for UnitActor {
-            fn handle_data(&mut self, _: ()) {}
-            fn handle_control(&mut self, _: ()) {}
-            fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut UnitActor);
@@ -1083,17 +1118,20 @@ fn zero_size_type_messages() {
     let handle = thread::spawn(move || {
         struct ZSTActor(Arc<AtomicUsize>);
         impl Actor<ZST, ZST, ZST> for ZSTActor {
-            fn handle_data(&mut self, _: ZST) {
+            fn handle_data(&mut self, _: ZST) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: ZST) {
+            fn handle_control(&mut self, _: ZST) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_management(&mut self, _: ZST) {
+            fn handle_management(&mut self, _: ZST) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut ZSTActor(count_clone));
@@ -1125,13 +1163,14 @@ fn large_message_type_works() {
     let handle = thread::spawn(move || {
         struct LargeActor(Arc<AtomicUsize>);
         impl Actor<LargeMessage, (), ()> for LargeActor {
-            fn handle_data(&mut self, _: LargeMessage) {
+            fn handle_data(&mut self, _: LargeMessage) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: ()) {}
-            fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut LargeActor(count_clone));
@@ -1156,11 +1195,11 @@ fn immediate_shutdown_no_messages() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
-            fn handle_data(&mut self, _: ()) {}
-            fn handle_control(&mut self, _: ()) {}
-            fn handle_management(&mut self, _: ()) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut NoopActor);
@@ -1188,13 +1227,14 @@ fn custom_burst_and_buffer_sizes() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut Counter(count_clone));
@@ -1220,13 +1260,14 @@ fn large_burst_and_buffer_sizes() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
-            fn handle_control(&mut self, _: i32) {}
-            fn handle_management(&mut self, _: i32) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut Counter(count_clone));

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use pixelflow_runtime::vsync_actor::{
     RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
 };
@@ -36,18 +36,19 @@ struct TickRateTracker {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker {
-    fn handle_data(&mut self, _: RenderedResponse) {}
+    fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult { Ok(()) }
 
-    fn handle_control(&mut self, cmd: VsyncCommand) {
+    fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
         match cmd {
             VsyncCommand::Start => self.running = true,
             VsyncCommand::Stop => self.running = false,
             VsyncCommand::Shutdown => self.running = false,
             _ => {}
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> HandlerResult {
         match msg {
             VsyncManagement::Tick => {
                 if self.running {
@@ -59,10 +60,11 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker 
                 self.running = true;
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -146,18 +148,19 @@ struct TokenTracker {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
-    fn handle_data(&mut self, _: RenderedResponse) {
+    fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
         // Replenish token
         let prev = self.tokens.fetch_add(1, Ordering::SeqCst);
         if prev > 3 {
             // MAX_TOKENS is 3, should cap
             self.tokens.store(3, Ordering::SeqCst);
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, _: VsyncCommand) {}
+    fn handle_control(&mut self, _: VsyncCommand) -> HandlerResult { Ok(()) }
 
-    fn handle_management(&mut self, msg: VsyncManagement) {
+    fn handle_management(&mut self, msg: VsyncManagement) -> HandlerResult {
         if matches!(msg, VsyncManagement::Tick) {
             let current = self.tokens.load(Ordering::SeqCst);
             if current > 0 {
@@ -168,10 +171,11 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
                 }
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
     }
 }
 
@@ -381,19 +385,21 @@ fn shutdown_command_stops_tick_processing() {
             shutdown: bool,
         }
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for ShutdownActor {
-            fn handle_data(&mut self, _: RenderedResponse) {}
-            fn handle_control(&mut self, cmd: VsyncCommand) {
+            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
                 if matches!(cmd, VsyncCommand::Shutdown) {
                     self.shutdown = true;
                 }
+                Ok(())
             }
-            fn handle_management(&mut self, msg: VsyncManagement) {
+            fn handle_management(&mut self, msg: VsyncManagement) -> HandlerResult {
                 if !self.shutdown && matches!(msg, VsyncManagement::Tick) {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut ShutdownActor {
@@ -443,8 +449,8 @@ fn fps_request_handles_dropped_receiver() {
     let handle = thread::spawn(move || {
         struct FPSActor(Arc<Mutex<Vec<String>>>);
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for FPSActor {
-            fn handle_data(&mut self, _: RenderedResponse) {}
-            fn handle_control(&mut self, cmd: VsyncCommand) {
+            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
                 match cmd {
                     VsyncCommand::RequestCurrentFPS(sender) => {
                         let result = sender.send(60.0);
@@ -456,10 +462,11 @@ fn fps_request_handles_dropped_receiver() {
                     }
                     _ => {}
                 }
+                Ok(())
             }
-            fn handle_management(&mut self, _: VsyncManagement) {}
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut FPSActor(log_clone));
@@ -527,21 +534,23 @@ fn refresh_rate_update_during_ticks_is_safe() {
             refresh_rate: f64,
         }
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for RateChangeActor {
-            fn handle_data(&mut self, _: RenderedResponse) {}
-            fn handle_control(&mut self, cmd: VsyncCommand) {
+            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
                 match cmd {
                     VsyncCommand::Start => self.running = true,
                     VsyncCommand::UpdateRefreshRate(r) => self.refresh_rate = r,
                     _ => {}
                 }
+                Ok(())
             }
-            fn handle_management(&mut self, msg: VsyncManagement) {
+            fn handle_management(&mut self, msg: VsyncManagement) -> HandlerResult {
                 if self.running && matches!(msg, VsyncManagement::Tick) {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
                 }
+                Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
         rx.run(&mut RateChangeActor {

@@ -59,21 +59,24 @@
 //! # Example (Basic Scheduler)
 //!
 //! ```rust
-//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ActorStatus, SystemStatus};
+//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 //!
 //! struct MyHandler;
 //!
 //! impl SchedulerHandler<String, String, String> for MyHandler {
-//!     fn handle_data(&mut self, msg: String) {
+//!     fn handle_data(&mut self, msg: String) -> HandlerResult {
 //!         println!("Data: {}", msg);
+//!         Ok(())
 //!     }
-//!     fn handle_control(&mut self, msg: String) {
+//!     fn handle_control(&mut self, msg: String) -> HandlerResult {
 //!         println!("Control: {}", msg);
+//!         Ok(())
 //!     }
-//!     fn handle_management(&mut self, msg: String) {
+//!     fn handle_management(&mut self, msg: String) -> HandlerResult {
 //!         println!("Management: {}", msg);
+//!         Ok(())
 //!     }
-//!     fn park(&mut self, _status: SystemStatus) -> ActorStatus { ActorStatus::Idle }
+//!     fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> { Ok(ActorStatus::Idle) }
 //! }
 //!
 //! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
@@ -91,14 +94,15 @@
 
 mod error;
 
-pub use error::SendError;
+pub use error::{HandlerError, HandlerResult, SendError};
+use error::DrainStatus;
 
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, troupe};
 
 use std::sync::{
     Arc,
-    mpsc::{self, Receiver, SyncSender, TryRecvError},
+    mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
 };
 use std::time::Duration;
 
@@ -350,20 +354,32 @@ pub enum SystemStatus {
 /// - **Management** (M): Lifecycle and configuration messages
 pub trait Actor<D, C, M> {
     /// Handle a data message.
-    fn handle_data(&mut self, msg: D);
+    ///
+    /// Returns `Ok(())` on success, or a `HandlerError` on failure.
+    /// - `HandlerError::Temporary`: Scheduler logs and continues
+    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
+    fn handle_data(&mut self, msg: D) -> HandlerResult;
 
     /// Handle a control message.
-    /// The scheduler will exit when all senders are dropped.
-    fn handle_control(&mut self, msg: C);
+    ///
+    /// Returns `Ok(())` on success, or a `HandlerError` on failure.
+    /// - `HandlerError::Temporary`: Scheduler logs and continues
+    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
+    fn handle_control(&mut self, msg: C) -> HandlerResult;
 
     /// Handle a management message.
-    fn handle_management(&mut self, msg: M);
+    ///
+    /// Returns `Ok(())` on success, or a `HandlerError` on failure.
+    /// - `HandlerError::Temporary`: Scheduler logs and continues
+    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
+    fn handle_management(&mut self, msg: M) -> HandlerResult;
 
     /// The "Hook" where the Actor creates the bridge to the OS.
     /// Called when the scheduler has drained available messages (or hit burst limits).
     ///
     /// Returns actor status: Busy if yielding with unfinished work, Idle if done.
-    fn park(&mut self, status: SystemStatus) -> ActorStatus;
+    /// Can return `HandlerError::Fatal` to trigger shutdown.
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
 }
 
 /// Legacy alias for backward compatibility
@@ -700,7 +716,15 @@ impl<D, C, M> ActorHandle<D, C, M> {
         if let Some(waker) = &self.wake_handler {
             waker.wake();
         }
-        let _ = self.tx_doorbell.try_send(System::Wake);
+        match self.tx_doorbell.try_send(System::Wake) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                // Doorbell is bounded(1) - if full, a wake is already pending
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                panic!("Doorbell receiver disconnected - scheduler dropped unexpectedly");
+            }
+        }
     }
 }
 
@@ -725,53 +749,55 @@ enum SchedulerLoopStatus {
 }
 
 impl<D, C, M> ActorScheduler<D, C, M> {
-    /// Functionally drain a channel up to a limit, applying a handler to each message.
+    /// Drain a channel up to a limit, applying a handler to each message.
     ///
-    /// Returns true if the limit was reached (indicating more messages may be available).
+    /// Returns:
+    /// - `Ok(DrainStatus::Empty)` - Channel drained, no more messages
+    /// - `Ok(DrainStatus::More)` - Hit burst limit, more messages may exist
+    /// - `Ok(DrainStatus::Disconnected)` - Channel disconnected (normal shutdown)
+    /// - `Err(HandlerError)` - Handler failed, propagate error up
     fn drain_channel<T>(
         rx: &Receiver<T>,
         limit: usize,
-        mut handler: impl FnMut(T),
-    ) -> Result<bool, ()> {
-        use std::iter;
+        mut handler: impl FnMut(T) -> HandlerResult,
+    ) -> Result<DrainStatus, HandlerError> {
+        let mut count = 0;
 
-        // Create an iterator that drains the channel until empty or disconnected
-        let messages = iter::from_fn(|| match rx.try_recv() {
-            Ok(msg) => Some(Ok(msg)),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(Err(())),
-        });
+        loop {
+            if count >= limit {
+                return Ok(DrainStatus::More);
+            }
 
-        // Take up to `limit` messages and process them
-        let count = messages
-            .take(limit)
-            .try_fold(0, |count, result| {
-                result.map(|msg| {
-                    handler(msg);
-                    count + 1
-                })
-            })?;
-
-        // If we processed exactly `limit` messages, more might be available
-        Ok(count == limit)
+            match rx.try_recv() {
+                Ok(msg) => {
+                    handler(msg)?;
+                    count += 1;
+                }
+                Err(TryRecvError::Empty) => {
+                    return Ok(DrainStatus::Empty);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    return Ok(DrainStatus::Disconnected);
+                }
+            }
+        }
     }
 
     /// Drain control and management channels without limit, ignoring data.
     ///
     /// Used for `ShutdownMode::DrainControl` to process critical cleanup messages
     /// while dropping lower-priority data messages.
-    fn drain_control_and_management<A>(&mut self, actor: &mut A)
+    fn drain_control_and_management<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
     where
         A: Actor<D, C, M>,
     {
-        // Drain control completely - loop while more messages available
+        // Drain control completely
         loop {
             match Self::drain_channel(&self.rx_control, usize::MAX, |msg| {
                 actor.handle_control(msg)
-            }) {
-                Ok(true) => continue,  // More messages available, keep draining
-                Ok(false) => break,    // Channel empty
-                Err(()) => break,      // Channel disconnected
+            })? {
+                DrainStatus::More => continue,
+                DrainStatus::Empty | DrainStatus::Disconnected => break,
             }
         }
 
@@ -779,68 +805,73 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         loop {
             match Self::drain_channel(&self.rx_mgmt, usize::MAX, |msg| {
                 actor.handle_management(msg)
-            }) {
-                Ok(true) => continue,  // More messages available
-                Ok(false) => break,    // Channel empty
-                Err(()) => break,      // Channel disconnected
+            })? {
+                DrainStatus::More => continue,
+                DrainStatus::Empty | DrainStatus::Disconnected => break,
             }
         }
 
-        // Data messages are dropped (channels disconnected or ignored)
+        Ok(())
     }
 
     /// Drain all channels (control, management, data) with timeout fallback.
     ///
     /// Used for `ShutdownMode::DrainAll` to process all pending messages before shutdown.
     /// If the timeout is exceeded, remaining messages are dropped.
-    fn drain_all_with_timeout<A>(&mut self, actor: &mut A, timeout: std::time::Duration)
+    fn drain_all_with_timeout<A>(
+        &mut self,
+        actor: &mut A,
+        timeout: std::time::Duration,
+    ) -> Result<(), HandlerError>
     where
         A: Actor<D, C, M>,
     {
         use std::time::Instant;
 
         let deadline = Instant::now() + timeout;
-        // Use small batches to check deadline frequently (every ~10 messages)
         let batch_size = 10;
 
-        // Drain all lanes with priority order until deadline
         loop {
-            // Drain control (in batches to check deadline frequently)
-            let control_more = Self::drain_channel(&self.rx_control, batch_size, |msg| {
+            let control_status = Self::drain_channel(&self.rx_control, batch_size, |msg| {
                 actor.handle_control(msg)
-            });
+            })?;
             if Instant::now() >= deadline {
-                return; // Timeout after control drain
+                return Ok(());
             }
 
-            // Drain management (in batches)
-            let mgmt_more = Self::drain_channel(&self.rx_mgmt, batch_size, |msg| {
+            let mgmt_status = Self::drain_channel(&self.rx_mgmt, batch_size, |msg| {
                 actor.handle_management(msg)
-            });
+            })?;
             if Instant::now() >= deadline {
-                return; // Timeout after management drain
+                return Ok(());
             }
 
-            // Drain data (in batches)
-            let data_more = Self::drain_channel(&self.rx_data, batch_size, |msg| {
+            let data_status = Self::drain_channel(&self.rx_data, batch_size, |msg| {
                 actor.handle_data(msg)
-            });
+            })?;
             if Instant::now() >= deadline {
-                return; // Timeout after data drain
+                return Ok(());
             }
 
-            // If all channels are either empty or disconnected, we're done
-            match (control_more, mgmt_more, data_more) {
-                (Ok(false), Ok(false), Ok(false)) => return, // All empty
-                (Err(()), Err(()), Err(())) => return,        // All disconnected
-                _ => {} // Continue draining (at least one has more messages)
+            // Done when all channels are empty or disconnected
+            let all_done = !matches!(control_status, DrainStatus::More)
+                && !matches!(mgmt_status, DrainStatus::More)
+                && !matches!(data_status, DrainStatus::More);
+
+            if all_done {
+                return Ok(());
             }
         }
     }
 
-    /// Process messages from all priority lanes, return status
+    /// Process messages from all priority lanes, return status.
+    ///
+    /// Returns:
+    /// - `Ok(Some(status))` - Processed messages, continue with given status
+    /// - `Ok(None)` - All channels disconnected, normal shutdown
+    /// - `Err(HandlerError)` - Handler failed
     #[inline]
-    fn handle_wake<A>(&mut self, actor: &mut A) -> Result<SchedulerLoopStatus, ()>
+    fn handle_wake<A>(&mut self, actor: &mut A) -> Result<Option<SchedulerLoopStatus>, HandlerError>
     where
         A: Actor<D, C, M>,
     {
@@ -848,76 +879,67 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         // Control budget is split evenly between the two control runs to prevent double priority
         let half_control = self.control_burst_limit / 2;
 
-        // Functional chaining: thread "more work" flags through the chain
-        // Exit early on Err (channel disconnected)
-        let result =
-            Self::drain_channel(&self.rx_control, half_control, |msg| {
-                actor.handle_control(msg)
-            })
-            .and_then(|control1_more| {
-                Self::drain_channel(&self.rx_mgmt, self.management_burst_limit, |msg| {
-                    actor.handle_management(msg)
-                })
-                .map(|mgmt_more| control1_more | mgmt_more)
-            })
-            .and_then(|more_so_far| {
-                Self::drain_channel(&self.rx_control, half_control, |msg| {
-                    actor.handle_control(msg)
-                })
-                .map(|control2_more| more_so_far | control2_more)
-            })
-            .and_then(|more_so_far| {
-                Self::drain_channel(&self.rx_data, self.data_burst_limit, |msg| {
-                    actor.handle_data(msg)
-                })
-                .map(|data_more| more_so_far | data_more)
-            });
+        let control1 = Self::drain_channel(&self.rx_control, half_control, |msg| {
+            actor.handle_control(msg)
+        })?;
 
-        // Exit if any channel disconnected
-        let more_work = match result {
-            Ok(more_work) => more_work,
-            Err(()) => return Err(()),
-        };
+        let mgmt = Self::drain_channel(&self.rx_mgmt, self.management_burst_limit, |msg| {
+            actor.handle_management(msg)
+        })?;
 
-        // Call park with appropriate system_status based on whether we have more work
+        let control2 = Self::drain_channel(&self.rx_control, half_control, |msg| {
+            actor.handle_control(msg)
+        })?;
+
+        let data = Self::drain_channel(&self.rx_data, self.data_burst_limit, |msg| {
+            actor.handle_data(msg)
+        })?;
+
+        // All disconnected = normal shutdown
+        if matches!(
+            (&control1, &mgmt, &control2, &data),
+            (
+                DrainStatus::Disconnected,
+                DrainStatus::Disconnected,
+                DrainStatus::Disconnected,
+                DrainStatus::Disconnected
+            )
+        ) {
+            return Ok(None);
+        }
+
+        // Any channel hit burst limit = more work available
+        let more_work = matches!(control1, DrainStatus::More)
+            || matches!(mgmt, DrainStatus::More)
+            || matches!(control2, DrainStatus::More)
+            || matches!(data, DrainStatus::More);
+
         let system_status = if more_work {
-            SystemStatus::Busy // Queues still have work, do quick OS poll
+            SystemStatus::Busy
         } else {
-            SystemStatus::Idle // Queues drained, can block
+            SystemStatus::Idle
         };
-        let returned_hint = actor.park(system_status);
 
-        // Determine status: working if more messages or actor requests polling
+        let returned_hint = actor.park(system_status)?;
+
         let status = if more_work || returned_hint == ActorStatus::Busy {
             SchedulerLoopStatus::Working
         } else {
             SchedulerLoopStatus::Idle
         };
 
-        Ok(status)
+        Ok(Some(status))
     }
 
     #[cold]
-    fn handle_shutdown<A>(&mut self, actor: &mut A)
+    fn handle_shutdown<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
     where
         A: Actor<D, C, M>,
     {
-        // Handle shutdown signal immediately
         match self.shutdown_mode {
-            ShutdownMode::Immediate => {
-                // Drop all pending messages, exit immediately
-                return;
-            }
-            ShutdownMode::DrainControl => {
-                // Drain control+management lanes, drop data
-                self.drain_control_and_management(actor);
-                return;
-            }
-            ShutdownMode::DrainAll { timeout } => {
-                // Process all pending messages with timeout fallback
-                self.drain_all_with_timeout(actor, timeout);
-                return;
-            }
+            ShutdownMode::Immediate => Ok(()),
+            ShutdownMode::DrainControl => self.drain_control_and_management(actor),
+            ShutdownMode::DrainAll { timeout } => self.drain_all_with_timeout(actor, timeout),
         }
     }
 
@@ -1072,10 +1094,28 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// # Arguments
     /// * `actor` - Implementation of `Actor` trait
     ///
-    /// This method runs until:
-    /// - A `Shutdown` message is received (immediate exit, actor never sees it)
-    /// - All senders are dropped (channel disconnected)
+    /// # Exit conditions
+    /// - `Shutdown` message received → drains per shutdown_mode, returns
+    /// - All senders dropped → returns
+    /// - Handler returns `Recoverable` error → returns (supervisor can restart)
+    /// - Handler returns `Fatal` error → panics
     pub fn run<A>(&mut self, actor: &mut A)
+    where
+        A: Actor<D, C, M>,
+    {
+        if let Err(e) = self.run_inner(actor) {
+            match e {
+                HandlerError::Recoverable(_) => {
+                    // Return normally - supervisor can restart
+                }
+                HandlerError::Fatal(msg) => {
+                    panic!("Actor fatal error: {}", msg);
+                }
+            }
+        }
+    }
+
+    fn run_inner<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
     where
         A: Actor<D, C, M>,
     {
@@ -1084,7 +1124,6 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         let mut working = false;
 
         loop {
-            // Choose recv strategy: try_recv when working, blocking recv when idle
             let signal = if working {
                 self.rx_doorbell.try_recv()
             } else {
@@ -1093,26 +1132,18 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
             match signal {
                 Ok(System::Shutdown) => {
-                    self.handle_shutdown(actor);
-                    return;
+                    self.handle_shutdown(actor)?;
+                    return Ok(());
                 }
-                Ok(System::Wake) => {
-                    // Clear wake signal, process messages
-                    let status = match self.handle_wake(actor) {
-                        Ok(status) => status,
-                        Err(()) => return,
-                    };
-                    working = matches!(status, SchedulerLoopStatus::Working);
+                Ok(System::Wake) | Err(TryRecvError::Empty) => {
+                    match self.handle_wake(actor)? {
+                        Some(status) => {
+                            working = matches!(status, SchedulerLoopStatus::Working);
+                        }
+                        None => return Ok(()), // All channels disconnected
+                    }
                 }
-                Err(TryRecvError::Empty) => {
-                    // Only happens when working (try_recv) - process messages
-                    let status = match self.handle_wake(actor) {
-                        Ok(status) => status,
-                        Err(()) => return,
-                    };
-                    working = matches!(status, SchedulerLoopStatus::Working);
-                }
-                Err(TryRecvError::Disconnected) => return,
+                Err(TryRecvError::Disconnected) => return Ok(()),
             }
         }
     }
@@ -1130,19 +1161,21 @@ mod tests {
     }
 
     impl SchedulerHandler<String, String, String> for TestHandler {
-        fn handle_data(&mut self, msg: String) {
+        fn handle_data(&mut self, msg: String) -> HandlerResult {
             self.log.lock().unwrap().push(format!("Data: {}", msg));
+            Ok(())
         }
-        fn handle_control(&mut self, msg: String) {
+        fn handle_control(&mut self, msg: String) -> HandlerResult {
             self.log.lock().unwrap().push(format!("Ctrl: {}", msg));
+            Ok(())
         }
-        fn handle_management(&mut self, msg: String) {
+        fn handle_management(&mut self, msg: String) -> HandlerResult {
             self.log.lock().unwrap().push(format!("Mgmt: {}", msg));
+            Ok(())
         }
 
-        fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
-            // No-op for test
-            ActorStatus::Idle
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -1182,17 +1215,20 @@ mod tests {
         }
 
         impl SchedulerHandler<i32, String, bool> for CountingHandler {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.data_count += 1;
+                Ok(())
             }
-            fn handle_control(&mut self, _: String) {
+            fn handle_control(&mut self, _: String) -> HandlerResult {
                 self.ctrl_count += 1;
+                Ok(())
             }
-            fn handle_management(&mut self, _: bool) {
+            fn handle_management(&mut self, _: bool) -> HandlerResult {
                 self.mgmt_count += 1;
+                Ok(())
             }
-            fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
-                ActorStatus::Idle
+            fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
             }
         }
 
@@ -1234,11 +1270,11 @@ mod tests {
         let handle = thread::spawn(move || {
             struct NoopActor;
             impl Actor<(), (), ()> for NoopActor {
-                fn handle_data(&mut self, _: ()) {}
-                fn handle_control(&mut self, _: ()) {}
-                fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, h: SystemStatus) -> ActorStatus {
-        ActorStatus::Idle
+                fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                    Ok(ActorStatus::Idle)
                 }
             }
             rx.run(&mut NoopActor);
@@ -1294,23 +1330,23 @@ mod troupe_tests {
     }
 
     impl Actor<EngineData, EngineControl, EngineManagement> for EngineActor<'_> {
-        fn handle_data(&mut self, _msg: EngineData) {}
-        fn handle_control(&mut self, msg: EngineControl) {
+        fn handle_data(&mut self, _msg: EngineData) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, msg: EngineControl) -> HandlerResult {
             match msg {
                 EngineControl::Tick => {
                     self.tick_count.fetch_add(1, Ordering::SeqCst);
-                    // Tell display to render
-                    let _ = self
-                        .dir
+                    self.dir
                         .display
-                        .send(Message::Control(DisplayControl::Render));
+                        .send(Message::Control(DisplayControl::Render))
+                        .expect("Failed to send render command to display actor");
                 }
                 EngineControl::Shutdown => {}
             }
+            Ok(())
         }
-        fn handle_management(&mut self, _msg: EngineManagement) {}
-        fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_management(&mut self, _msg: EngineManagement) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -1334,25 +1370,25 @@ mod troupe_tests {
     }
 
     impl Actor<DisplayData, DisplayControl, DisplayManagement> for DisplayActor<'_> {
-        fn handle_data(&mut self, _msg: DisplayData) {}
-        fn handle_control(&mut self, msg: DisplayControl) {
+        fn handle_data(&mut self, _msg: DisplayData) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, msg: DisplayControl) -> HandlerResult {
             match msg {
                 DisplayControl::Render => {
                     let count = self.render_count.fetch_add(1, Ordering::SeqCst) + 1;
                     if count >= self.shutdown_after {
-                        // Signal shutdown to engine
-                        let _ = self
-                            .dir
+                        self.dir
                             .engine
-                            .send(Message::Control(EngineControl::Shutdown));
+                            .send(Message::Control(EngineControl::Shutdown))
+                            .expect("Failed to send shutdown to engine");
                     }
                 }
                 DisplayControl::Shutdown => {}
             }
+            Ok(())
         }
-        fn handle_management(&mut self, _msg: DisplayManagement) {}
-        fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_management(&mut self, _msg: DisplayManagement) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -1433,15 +1469,17 @@ mod troupe_tests {
                 data_count: Arc<AtomicUsize>,
             }
             impl Actor<i32, (), ()> for TestActor {
-                fn handle_control(&mut self, _: ()) {
+                fn handle_control(&mut self, _: ()) -> HandlerResult {
                     self.control_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
                 }
-                fn handle_data(&mut self, _: i32) {
+                fn handle_data(&mut self, _: i32) -> HandlerResult {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
                 }
-                fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: SystemStatus) -> ActorStatus {
-                    ActorStatus::Busy // Keep spinning to maximize throughput
+                fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                    Ok(ActorStatus::Busy) // Keep spinning to maximize throughput
                 }
             }
 
@@ -1535,15 +1573,17 @@ mod troupe_tests {
                 data_count: Arc<AtomicUsize>,
             }
             impl Actor<i32, (), ()> for TestActor {
-                fn handle_control(&mut self, _: ()) {
+                fn handle_control(&mut self, _: ()) -> HandlerResult {
                     self.control_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
                 }
-                fn handle_data(&mut self, _: i32) {
+                fn handle_data(&mut self, _: i32) -> HandlerResult {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
                 }
-                fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: SystemStatus) -> ActorStatus {
-                    ActorStatus::Busy
+                fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                    Ok(ActorStatus::Busy)
                 }
             }
 
@@ -1644,15 +1684,17 @@ mod troupe_tests {
                 data_count: Arc<AtomicUsize>,
             }
             impl Actor<i32, (), ()> for TestActor {
-                fn handle_control(&mut self, _: ()) {
+                fn handle_control(&mut self, _: ()) -> HandlerResult {
                     self.control_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
                 }
-                fn handle_data(&mut self, _: i32) {
+                fn handle_data(&mut self, _: i32) -> HandlerResult {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
                 }
-                fn handle_management(&mut self, _: ()) {}
-                fn park(&mut self, _: SystemStatus) -> ActorStatus {
-                    ActorStatus::Busy
+                fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                    Ok(ActorStatus::Busy)
                 }
             }
 
@@ -1751,20 +1793,23 @@ mod troupe_tests {
                 data_count: Arc<AtomicUsize>,
             }
             impl Actor<i32, i32, i32> for SlowActor {
-                fn handle_control(&mut self, _: i32) {
+                fn handle_control(&mut self, _: i32) -> HandlerResult {
                     self.control_count.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(2));
+                    Ok(())
                 }
-                fn handle_data(&mut self, _: i32) {
+                fn handle_data(&mut self, _: i32) -> HandlerResult {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(2));
+                    Ok(())
                 }
-                fn handle_management(&mut self, _: i32) {
+                fn handle_management(&mut self, _: i32) -> HandlerResult {
                     self.mgmt_count.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(2));
+                    Ok(())
                 }
-                fn park(&mut self, _: SystemStatus) -> ActorStatus {
-                    ActorStatus::Busy
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                    Ok(ActorStatus::Busy)
                 }
             }
 
@@ -1846,11 +1891,11 @@ mod troupe_nesting_tests {
     }
 
     impl Actor<WorkerData, WorkerControl, WorkerManagement> for WorkerActor<'_> {
-        fn handle_data(&mut self, _msg: WorkerData) {}
-        fn handle_control(&mut self, _msg: WorkerControl) {}
-        fn handle_management(&mut self, _msg: WorkerManagement) {}
-        fn park(&mut self, _hint: SystemStatus) -> ActorStatus {
-            ActorStatus::Idle
+        fn handle_data(&mut self, _msg: WorkerData) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _msg: WorkerControl) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _msg: WorkerManagement) -> HandlerResult { Ok(()) }
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
         }
     }
 
@@ -1967,24 +2012,28 @@ mod shutdown_tests {
     }
 
     impl Actor<i32, (), ()> for CountingActor {
-        fn handle_data(&mut self, _: i32) {
+        fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.data_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
 
-        fn handle_control(&mut self, _: ()) {
+        fn handle_control(&mut self, _: ()) -> HandlerResult {
             self.control_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
 
-        fn handle_management(&mut self, _: ()) {
+        fn handle_management(&mut self, _: ()) -> HandlerResult {
             self.mgmt_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
 
-                fn park(&mut self, status: SystemStatus) -> ActorStatus {
-                    match status {
-                        SystemStatus::Idle => ActorStatus::Idle,
-                        SystemStatus::Busy => ActorStatus::Busy,
-                    }
-                }    }
+        fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            match status {
+                SystemStatus::Idle => Ok(ActorStatus::Idle),
+                SystemStatus::Busy => Ok(ActorStatus::Busy),
+            }
+        }
+    }
 
     #[test]
     fn test_shutdown_immediate_exits_quickly_under_flood() {
@@ -2160,25 +2209,29 @@ mod shutdown_tests {
         }
 
         impl Actor<i32, (), ()> for SlowActor {
-            fn handle_data(&mut self, _: i32) {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
                 thread::sleep(Duration::from_millis(1)); // Slow!
                 self.data_count.fetch_add(1, Ordering::Relaxed);
+                Ok(())
             }
 
-            fn handle_control(&mut self, _: ()) {
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
                 self.control_count.fetch_add(1, Ordering::Relaxed);
+                Ok(())
             }
 
-            fn handle_management(&mut self, _: ()) {
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
                 self.mgmt_count.fetch_add(1, Ordering::Relaxed);
+                Ok(())
             }
 
-                    fn park(&mut self, status: SystemStatus) -> ActorStatus {
-                        match status {
-                            SystemStatus::Idle => ActorStatus::Idle,
-                            SystemStatus::Busy => ActorStatus::Busy,
-                        }
-                    }        }
+            fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                match status {
+                    SystemStatus::Idle => Ok(ActorStatus::Idle),
+                    SystemStatus::Busy => Ok(ActorStatus::Busy),
+                }
+            }
+        }
 
         let actor_handle = thread::spawn(move || {
             let mut actor = SlowActor {

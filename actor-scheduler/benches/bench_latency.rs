@@ -1,4 +1,4 @@
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus};
+use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -12,20 +12,22 @@ struct LatencyActor {
 }
 
 impl Actor<(), (), ()> for LatencyActor {
-    fn handle_data(&mut self, _: ()) {}
+    fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
 
-    fn handle_control(&mut self, _: ()) {
+    fn handle_control(&mut self, _: ()) -> HandlerResult {
         // Immediately signal completion
         let _ = self.response_tx.send(());
+        Ok(())
     }
 
-    fn handle_management(&mut self, _: ()) {
+    fn handle_management(&mut self, _: ()) -> HandlerResult {
         // Immediately signal completion
         let _ = self.response_tx.send(());
+        Ok(())
     }
 
-    fn park(&mut self, hint: SystemStatus) -> ActorStatus {
-        hint
+    fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(hint)
     }
 }
 

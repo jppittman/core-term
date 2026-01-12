@@ -2,7 +2,7 @@ use super::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use super::platform::Platform;
 use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender};
 use crate::error::RuntimeError;
-use actor_scheduler::{Actor, ActorStatus, SystemStatus};
+use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus};
 use pixelflow_graphics::Pixel;
 
 /// Legacy DisplayDriver trait for backward compatibility with old X11 driver code.
@@ -38,19 +38,19 @@ impl<P: Platform> DriverActor<P> {
 }
 
 impl<P: Platform> Actor<DisplayData, DisplayControl, DisplayMgmt> for DriverActor<P> {
-    fn handle_data(&mut self, data: DisplayData) {
-        self.platform.handle_data(data);
+    fn handle_data(&mut self, data: DisplayData) -> HandlerResult {
+        self.platform.handle_data(data)
     }
 
-    fn handle_control(&mut self, ctrl: DisplayControl) {
-        self.platform.handle_control(ctrl);
+    fn handle_control(&mut self, ctrl: DisplayControl) -> HandlerResult {
+        self.platform.handle_control(ctrl)
     }
 
-    fn handle_management(&mut self, mgmt: DisplayMgmt) {
-        self.platform.handle_management(mgmt);
+    fn handle_management(&mut self, mgmt: DisplayMgmt) -> HandlerResult {
+        self.platform.handle_management(mgmt)
     }
 
-    fn park(&mut self, status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // Delegate to platform's park - this is where OS event loop integration happens
         self.platform.park(status)
     }
