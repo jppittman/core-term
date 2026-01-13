@@ -35,8 +35,10 @@
 /// Types implementing this trait have `size_of::<T>() == 0` and are purely
 /// compile-time constructs with no runtime representation.
 ///
-/// All ZSTs automatically implement `Copy` as a supertrait requirement.
-pub trait Zst: Copy {}
+/// Note: All ZST types in pixelflow-core also implement `Copy` (via derives),
+/// but this trait does not require it as a supertrait. The trait is purely
+/// for identifying zero-sized types at compile time.
+pub trait Zst {}
 
 // ============================================================================
 // Base ZST Implementations
