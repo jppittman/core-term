@@ -99,34 +99,39 @@ pub struct TerminalAppParams {
     pub window_config: pixelflow_runtime::WindowConfig,
 }
 
+/// Parameters for creating a terminal cell.
+struct RenderCellParams {
+    glyph: CachedGlyph,
+    offset_x: f32,
+    offset_y: f32,
+    cell_width: f32,
+    cell_height: f32,
+    fg: [f32; 4],
+    bg: [f32; 4],
+}
+
 impl TerminalApp {
     /// Helper to create a positioned terminal cell with background blending.
     ///
     /// Composition: bg + cov * (fg - bg)
     #[inline(always)]
     fn make_terminal_cell(
-        glyph: CachedGlyph,
-        offset_x: f32,
-        offset_y: f32,
-        cell_width: f32,
-        cell_height: f32,
-        fg: [f32; 4],
-        bg: [f32; 4],
+        params: RenderCellParams,
     ) -> impl Manifold<Output = Discrete> + Clone {
         // Create bounded glyph in local coordinates [0, width] x [0, height]
         // IMPORTANT: Bound BEFORE translating to avoid evaluating every glyph for every pixel
-        let cond = X.ge(0.0) & X.le(cell_width) & Y.ge(0.0) & Y.le(cell_height);
+        let cond = X.ge(0.0) & X.le(params.cell_width) & Y.ge(0.0) & Y.le(params.cell_height);
         let bounded = Select {
             cond,
-            if_true: glyph,
+            if_true: params.glyph,
             if_false: 0.0f32,
         };
 
         // Position the glyph in global coordinates
         let positioned = At {
             inner: bounded,
-            x: X - offset_x,
-            y: Y - offset_y,
+            x: X - params.offset_x,
+            y: Y - params.offset_y,
             z: Z,
             w: W,
         };
@@ -141,22 +146,22 @@ impl TerminalApp {
         // Also note: f32 constants are auto-lifted to Manifolds.
         let r = At {
             inner: lerp,
-            x: bg[0],
-            y: fg[0],
+            x: params.bg[0],
+            y: params.fg[0],
             z: positioned.clone(),
             w: 0.0,
         };
         let g = At {
             inner: lerp,
-            x: bg[1],
-            y: fg[1],
+            x: params.bg[1],
+            y: params.fg[1],
             z: positioned.clone(),
             w: 0.0,
         };
         let b = At {
             inner: lerp,
-            x: bg[2],
-            y: fg[2],
+            x: params.bg[2],
+            y: params.fg[2],
             z: positioned,
             w: 0.0,
         };
@@ -172,10 +177,10 @@ impl TerminalApp {
 
         // Only show the cell (including background) when pixel is in bounds
         // When out of bounds, return transparent black
-        let in_bounds = X.ge(offset_x)
-            & X.le(offset_x + cell_width)
-            & Y.ge(offset_y)
-            & Y.le(offset_y + cell_height);
+        let in_bounds = X.ge(params.offset_x)
+            & X.le(params.offset_x + params.cell_width)
+            & Y.ge(params.offset_y)
+            & Y.le(params.offset_y + params.cell_height);
 
         // Create a transparent black color (all zeros)
         let transparent = At {
@@ -300,15 +305,15 @@ impl TerminalApp {
 
                     cell_items.push(Positioned {
                         bounds: (x, y, x + cell_width, y + cell_height),
-                        leaf: Self::make_terminal_cell(
-                            cached,
-                            x,
-                            y,
+                        leaf: Self::make_terminal_cell(RenderCellParams {
+                            glyph: cached,
+                            offset_x: x,
+                            offset_y: y,
                             cell_width,
                             cell_height,
-                            [fg_r, fg_g, fg_b, fg_a],
-                            [bg_r, bg_g, bg_b, bg_a],
-                        ),
+                            fg: [fg_r, fg_g, fg_b, fg_a],
+                            bg: [bg_r, bg_g, bg_b, bg_a],
+                        }),
                     });
                 }
             }
