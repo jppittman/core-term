@@ -313,20 +313,23 @@ impl SimdOps for F32x4 {
             let one_bits = _mm_set1_epi32(0x3F800000);
             let f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
-            // Remez minimax polynomial for log2(f), f ∈ [1, 2)
-            // Derived from t*(a + t*(b + t*(c + t*d))) where t = f-1
-            // Degree 4, max error ~2×10^-4
-            let c4 = _mm_set1_ps(-0.3610230);
-            let c3 = _mm_set1_ps(1.9258237);
-            let c2 = _mm_set1_ps(-4.3326806);
-            let c1 = _mm_set1_ps(5.7746771);
-            let c0 = _mm_set1_ps(-3.0067972);
+            // Convert to t = f - 1, so t ∈ [0, 1)
+            let one = _mm_set1_ps(1.0);
+            let t = _mm_sub_ps(f, one);
 
-            // Horner's method (no FMA on base SSE2, emulate with mul+add)
-            let mut poly = _mm_add_ps(_mm_mul_ps(c4, f), c3);
-            poly = _mm_add_ps(_mm_mul_ps(poly, f), c2);
-            poly = _mm_add_ps(_mm_mul_ps(poly, f), c1);
-            poly = _mm_add_ps(_mm_mul_ps(poly, f), c0);
+            // Remez minimax polynomial for log2(1+t), t ∈ [0, 1)
+            // Approximates: log2(1+t) = t * (c1 + t * (c2 + t * (c3 + t * c4)))
+            // Degree 4, max error ~2×10^-4
+            let c4 = _mm_set1_ps(-0.3606);
+            let c3 = _mm_set1_ps(0.4808);
+            let c2 = _mm_set1_ps(-0.7213);
+            let c1 = _mm_set1_ps(1.4427); // 1/ln(2)
+
+            // Horner's method: t * (c1 + t * (c2 + t * (c3 + t * c4)))
+            let mut poly = _mm_add_ps(_mm_mul_ps(c4, t), c3);
+            poly = _mm_add_ps(_mm_mul_ps(poly, t), c2);
+            poly = _mm_add_ps(_mm_mul_ps(poly, t), c1);
+            poly = _mm_mul_ps(poly, t); // Final multiply by t
 
             Self(_mm_add_ps(n, poly))
         }
@@ -867,13 +870,17 @@ impl SimdOps for F32x8 {
 
     #[inline(always)]
     fn log2(self) -> Self {
+        // AVX2: Use bit manipulation for exponent/mantissa extraction
+        // log2(x) = exponent + log2(mantissa) where mantissa ∈ [1, 2)
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
+            // Extract exponent: (bits >> 23) - 127
             let exp_bits = _mm256_srli_epi32(x_i32, 23);
             let bias = _mm256_set1_epi32(127);
             let n = _mm256_cvtepi32_ps(_mm256_sub_epi32(exp_bits, bias));
 
+            // Extract mantissa in [1, 2): (bits & 0x007FFFFF) | 0x3F800000
             let mant_mask = _mm256_set1_epi32(0x007FFFFF);
             let one_bits = _mm256_set1_epi32(0x3F800000);
             let f = _mm256_castsi256_ps(_mm256_or_si256(
@@ -881,30 +888,33 @@ impl SimdOps for F32x8 {
                 one_bits,
             ));
 
-            // Remez minimax polynomial for log2(f), f ∈ [1, 2)
-            // Derived from t*(a + t*(b + t*(c + t*d))) where t = f-1
-            // Degree 4, max error ~2×10^-4
-            let c4 = _mm256_set1_ps(-0.3610230);
-            let c3 = _mm256_set1_ps(1.9258237);
-            let c2 = _mm256_set1_ps(-4.3326806);
-            let c1 = _mm256_set1_ps(5.7746771);
-            let c0 = _mm256_set1_ps(-3.0067972);
+            // Convert to t = f - 1, so t ∈ [0, 1)
+            let one = _mm256_set1_ps(1.0);
+            let t = _mm256_sub_ps(f, one);
 
-            // Horner's method
+            // Remez minimax polynomial for log2(1+t), t ∈ [0, 1)
+            // Approximates: log2(1+t) = t * (c1 + t * (c2 + t * (c3 + t * c4)))
+            // Degree 4, max error ~2×10^-4
+            let c4 = _mm256_set1_ps(-0.3606);
+            let c3 = _mm256_set1_ps(0.4808);
+            let c2 = _mm256_set1_ps(-0.7213);
+            let c1 = _mm256_set1_ps(1.4427); // 1/ln(2)
+
+            // Horner's method: t * (c1 + t * (c2 + t * (c3 + t * c4)))
             #[cfg(target_feature = "fma")]
             {
-                let mut poly = _mm256_fmadd_ps(c4, f, c3);
-                poly = _mm256_fmadd_ps(poly, f, c2);
-                poly = _mm256_fmadd_ps(poly, f, c1);
-                poly = _mm256_fmadd_ps(poly, f, c0);
+                let mut poly = _mm256_fmadd_ps(c4, t, c3);
+                poly = _mm256_fmadd_ps(poly, t, c2);
+                poly = _mm256_fmadd_ps(poly, t, c1);
+                poly = _mm256_mul_ps(poly, t); // Final multiply by t
                 Self(_mm256_add_ps(n, poly))
             }
             #[cfg(not(target_feature = "fma"))]
             {
-                let mut poly = _mm256_add_ps(_mm256_mul_ps(c4, f), c3);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c2);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c1);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c0);
+                let mut poly = _mm256_add_ps(_mm256_mul_ps(c4, t), c3);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, t), c2);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, t), c1);
+                poly = _mm256_mul_ps(poly, t); // Final multiply by t
                 Self(_mm256_add_ps(n, poly))
             }
         }
@@ -1495,30 +1505,30 @@ impl SimdOps for F32x16 {
         // AVX-512: Use dedicated getexp/getmant intrinsics
         // log2(x) = exponent + log2(mantissa)
         unsafe {
-            // Extract mantissa normalized to [0.75, 1.5) for better polynomial centering
-            // Const generics: interval=3 (_MM_MANT_NORM_p75_1p5), sign=0 (_MM_MANT_SIGN_src)
-            // - Interval [0.75, 1.5) centers around 1.0 for ~1-2 extra bits precision
-            // - Sign control: preserve source sign
-            let f = _mm512_getmant_ps::<3, 0>(self.0);
+            // Extract mantissa normalized to [1, 2) - standard form for our polynomial
+            // Const generics: interval=0 (_MM_MANT_NORM_1_2), sign=0 (_MM_MANT_SIGN_src)
+            let f = _mm512_getmant_ps::<0, 0>(self.0);
 
-            // Extract exponent (automatically adjusts for the mantissa range shift)
+            // Extract exponent
             let n = _mm512_getexp_ps(self.0);
 
-            // Remez minimax polynomial for log2(f), f ∈ [0.75, 1.5)
-            // Derived from t*(a + t*(b + t*(c + t*d))) where t = f-1
-            // Same coefficients work for both [1, 2) and [0.75, 1.5) intervals
-            // Degree 4, max error ~2×10^-4
-            let c4 = _mm512_set1_ps(-0.3610230);
-            let c3 = _mm512_set1_ps(1.9258237);
-            let c2 = _mm512_set1_ps(-4.3326806);
-            let c1 = _mm512_set1_ps(5.7746771);
-            let c0 = _mm512_set1_ps(-3.0067972);
+            // Convert to t = f - 1, so t ∈ [0, 1)
+            let one = _mm512_set1_ps(1.0);
+            let t = _mm512_sub_ps(f, one);
 
-            // Horner's method: ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
-            let poly = _mm512_fmadd_ps(c4, f, c3);
-            let poly = _mm512_fmadd_ps(poly, f, c2);
-            let poly = _mm512_fmadd_ps(poly, f, c1);
-            let poly = _mm512_fmadd_ps(poly, f, c0);
+            // Remez minimax polynomial for log2(1+t), t ∈ [0, 1)
+            // Approximates: log2(1+t) = t * (c1 + t * (c2 + t * (c3 + t * c4)))
+            // Degree 4, max error ~2×10^-4
+            let c4 = _mm512_set1_ps(-0.3606);
+            let c3 = _mm512_set1_ps(0.4808);
+            let c2 = _mm512_set1_ps(-0.7213);
+            let c1 = _mm512_set1_ps(1.4427); // 1/ln(2)
+
+            // Horner's method: t * (c1 + t * (c2 + t * (c3 + t * c4)))
+            let poly = _mm512_fmadd_ps(c4, t, c3);
+            let poly = _mm512_fmadd_ps(poly, t, c2);
+            let poly = _mm512_fmadd_ps(poly, t, c1);
+            let poly = _mm512_mul_ps(poly, t); // Final multiply by t
 
             Self(_mm512_add_ps(n, poly))
         }

@@ -1379,4 +1379,55 @@ mod tests {
             assert_eq!(out[3], 50.0);
         } // 4.0 -> 4
     }
+
+    #[test]
+    fn test_field_log2() {
+
+        // Test Field::log2 directly with known values
+        let val_075 = Field::from(0.75);
+        let result_075 = val_075.log2();
+        let mut out = [0.0f32; PARALLELISM];
+        result_075.store(&mut out);
+        let expected_075 = 0.75f32.log2(); // ~-0.415
+        assert!(
+            (out[0] - expected_075).abs() < 0.01,
+            "log2(0.75) should be ~{}, got {}",
+            expected_075,
+            out[0]
+        );
+
+        // Test log2(1.5) which has exponent 0 and mantissa 1.5
+        let val_15 = Field::from(1.5);
+        let result_15 = val_15.log2();
+        result_15.store(&mut out);
+        let expected_15 = 1.5f32.log2(); // ~0.585
+        assert!(
+            (out[0] - expected_15).abs() < 0.01,
+            "log2(1.5) should be ~{}, got {}",
+            expected_15,
+            out[0]
+        );
+
+        // Test log2(2.0) which should be exactly 1.0
+        let val_2 = Field::from(2.0);
+        let result_2 = val_2.log2();
+        result_2.store(&mut out);
+        assert!(
+            (out[0] - 1.0).abs() < 0.01,
+            "log2(2.0) should be 1.0, got {}",
+            out[0]
+        );
+
+        // Test log2(0.5) which has exponent -1
+        let val_05 = Field::from(0.5);
+        let result_05 = val_05.log2();
+        result_05.store(&mut out);
+        let expected_05 = 0.5f32.log2(); // -1.0
+        assert!(
+            (out[0] - expected_05).abs() < 0.01,
+            "log2(0.5) should be ~{}, got {}",
+            expected_05,
+            out[0]
+        );
+    }
 }

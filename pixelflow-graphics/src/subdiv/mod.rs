@@ -859,4 +859,81 @@ mod tests {
             s4
         );
     }
+
+    #[test]
+    fn test_manifold_log2_step_by_step() {
+        // Test the manifold composition step by step to find where the bug is
+
+        // Test just log2(0.75) using a constant manifold
+        let log2_manifold = 0.75f32.log2();
+        let log2_val = eval_scalar(&log2_manifold, 0.0, 0.0);
+        assert!(
+            (log2_val - (-0.415)).abs() < 0.1,
+            "log2(0.75) should be ~-0.415, got {}",
+            log2_val
+        );
+
+        // Test neg(log2(0.75))
+        let neg_log2_manifold = 0.75f32.log2().neg();
+        let neg_log2_val = eval_scalar(&neg_log2_manifold, 0.0, 0.0);
+        assert!(
+            (neg_log2_val - 0.415).abs() < 0.1,
+            "-log2(0.75) should be ~0.415, got {}",
+            neg_log2_val
+        );
+
+        // Test floor(neg(log2(0.75)))
+        let floor_manifold = 0.75f32.log2().neg().floor();
+        let floor_val = eval_scalar(&floor_manifold, 0.0, 0.0);
+        assert!(
+            floor_val == 0.0,
+            "floor(~0.415) should be 0.0, got {}",
+            floor_val
+        );
+
+        // Test exp2(floor(neg(log2(0.75))))
+        let exp2_manifold = 0.75f32.log2().neg().floor().exp2();
+        let exp2_val = eval_scalar(&exp2_manifold, 0.0, 0.0);
+        assert!(
+            (exp2_val - 1.0).abs() < 0.01,
+            "exp2(0) should be 1.0, got {}",
+            exp2_val
+        );
+
+        // Now test with X and Y (coordinates) instead of constants
+        // eval_scalar binds coordinates via At, so X should resolve to 0.75
+        let x_val = eval_scalar(&X, 0.75, 0.75);
+        assert!(
+            (x_val - 0.75).abs() < 0.01,
+            "X at (0.75, 0.75) should be 0.75, got {}",
+            x_val
+        );
+
+        // Test max(X, Y) at (0.75, 0.75)
+        let max_xy = X.max(Y);
+        let max_val = eval_scalar(&max_xy, 0.75, 0.75);
+        assert!(
+            (max_val - 0.75).abs() < 0.01,
+            "max(X, Y) at (0.75, 0.75) should be 0.75, got {}",
+            max_val
+        );
+
+        // Test log2(max(X, Y)) at (0.75, 0.75)
+        let log2_xy = X.max(Y).log2();
+        let log2_xy_val = eval_scalar(&log2_xy, 0.75, 0.75);
+        assert!(
+            (log2_xy_val - (-0.415)).abs() < 0.1,
+            "log2(max(X, Y)) at (0.75, 0.75) should be ~-0.415, got {}",
+            log2_xy_val
+        );
+
+        // Test the full tile_scale at (0.75, 0.75)
+        let tile_scale = X.max(Y).max(1e-10f32).log2().neg().floor().exp2();
+        let tile_val = eval_scalar(&tile_scale, 0.75, 0.75);
+        assert!(
+            (tile_val - 1.0).abs() < 0.01,
+            "tile_scale at (0.75, 0.75) should be 1.0, got {}",
+            tile_val
+        );
+    }
 }
