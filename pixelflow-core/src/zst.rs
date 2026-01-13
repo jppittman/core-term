@@ -30,6 +30,51 @@
 //! assert_zst::<Add<X, Y>>();   // ✓ Add<X, Y> is a ZST (both operands are ZSTs)
 //! ```
 
+// ============================================================================
+// Sealed Trait Pattern
+// ============================================================================
+
+mod sealed {
+    /// Private sealed trait to prevent external implementations of Zst.
+    /// This allows us to use blanket implementations without orphan rule conflicts.
+    pub trait Sealed {}
+}
+
+// ============================================================================
+// Helper Traits for Operator Classification (Sealed)
+// ============================================================================
+
+/// Trait for binary operators that expose their operand types.
+/// This trait is sealed to ensure mutual exclusivity with UnaryOp and TernaryOp.
+pub trait BinaryOp: sealed::Sealed {
+    /// The left operand type.
+    type Left;
+    /// The right operand type.
+    type Right;
+}
+
+/// Trait for unary operators that expose their inner type.
+/// This trait is sealed to ensure mutual exclusivity with BinaryOp and TernaryOp.
+pub trait UnaryOp: sealed::Sealed {
+    /// The inner operand type.
+    type Inner;
+}
+
+/// Trait for ternary operators that expose their three operand types.
+/// This trait is sealed to ensure mutual exclusivity with BinaryOp and UnaryOp.
+pub trait TernaryOp: sealed::Sealed {
+    /// The first operand type.
+    type First;
+    /// The second operand type.
+    type Second;
+    /// The third operand type.
+    type Third;
+}
+
+// ============================================================================
+// Marker Trait
+// ============================================================================
+
 /// Marker trait for zero-sized types.
 ///
 /// Types implementing this trait have `size_of::<T>() == 0` and are purely
@@ -38,7 +83,79 @@
 /// Note: All ZST types in pixelflow-core also implement `Copy` (via derives),
 /// but this trait does not require it as a supertrait. The trait is purely
 /// for identifying zero-sized types at compile time.
-pub trait Zst {}
+///
+/// This trait is sealed and cannot be implemented outside this crate.
+pub trait Zst: sealed::Sealed {}
+
+// ============================================================================
+// Sealed Trait Implementations (Base ZST Types)
+// ============================================================================
+
+// Coordinate variables
+impl sealed::Sealed for crate::variables::X {}
+impl sealed::Sealed for crate::variables::Y {}
+impl sealed::Sealed for crate::variables::Z {}
+impl sealed::Sealed for crate::variables::W {}
+
+// Spherical harmonics
+impl<const L: usize, const M: i32> sealed::Sealed
+    for crate::combinators::SphericalHarmonic<L, M>
+{
+}
+impl<const L: usize> sealed::Sealed for crate::combinators::ZonalHarmonic<L> {}
+impl<const NUM_COEFFS: usize> sealed::Sealed for crate::combinators::ShProject<NUM_COEFFS> {}
+
+// Backend markers (internal, but technically ZSTs)
+impl sealed::Sealed for crate::backend::scalar::Scalar {}
+
+#[cfg(target_arch = "x86_64")]
+impl sealed::Sealed for crate::backend::x86::Sse2 {}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+impl sealed::Sealed for crate::backend::x86::Avx2 {}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+impl sealed::Sealed for crate::backend::x86::Avx512 {}
+
+#[cfg(target_arch = "aarch64")]
+impl sealed::Sealed for crate::backend::arm::Neon {}
+
+// Seal all operators (they get Zst from blanket impls below)
+impl<L, R> sealed::Sealed for crate::ops::Add<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Sub<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Mul<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Div<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Max<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Min<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::MulRsqrt<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Lt<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Gt<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Le<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Ge<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::SoftGt<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::SoftLt<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::And<L, R> {}
+impl<L, R> sealed::Sealed for crate::ops::Or<L, R> {}
+impl<M> sealed::Sealed for crate::ops::Sqrt<M> {}
+impl<M> sealed::Sealed for crate::ops::Abs<M> {}
+impl<M> sealed::Sealed for crate::ops::Floor<M> {}
+impl<M> sealed::Sealed for crate::ops::Rsqrt<M> {}
+impl<M> sealed::Sealed for crate::ops::Sin<M> {}
+impl<M> sealed::Sealed for crate::ops::Cos<M> {}
+impl<M> sealed::Sealed for crate::ops::Log2<M> {}
+impl<M> sealed::Sealed for crate::ops::Exp2<M> {}
+impl<M> sealed::Sealed for crate::ops::Neg<M> {}
+impl<M> sealed::Sealed for crate::ops::BNot<M> {}
+impl<A, B, C> sealed::Sealed for crate::ops::MulAdd<A, B, C> {}
+impl<Acc, Val, Mask> sealed::Sealed for crate::ops::AddMasked<Acc, Val, Mask> {}
+impl<Mask, IfTrue, IfFalse> sealed::Sealed for crate::ops::SoftSelect<Mask, IfTrue, IfFalse> {}
+
+// Seal combinators
+impl<C, T, F> sealed::Sealed for crate::combinators::Select<C, T, F> {}
+impl<M, T> sealed::Sealed for crate::combinators::Map<M, T> {}
+impl<M, D> sealed::Sealed for crate::combinators::Project<M, D> {}
+impl<Cx, Cy, Cz, Cw, M> sealed::Sealed for crate::combinators::At<Cx, Cy, Cz, Cw, M> {}
+impl<Seed, Step, Done> sealed::Sealed for crate::combinators::Fix<Seed, Step, Done> {}
 
 // ============================================================================
 // Base ZST Implementations
@@ -71,8 +188,128 @@ impl crate::Zst for crate::backend::x86::Avx512 {}
 impl crate::Zst for crate::backend::arm::Neon {}
 
 // ============================================================================
-// Blanket Implementations for Operators
+// Operator Trait Implementations (Enumerate operators once)
 // ============================================================================
+
+// Binary operators
+impl<L, R> BinaryOp for crate::ops::Add<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Sub<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Mul<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Div<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Max<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Min<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::MulRsqrt<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Lt<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Gt<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Le<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Ge<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::SoftGt<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::SoftLt<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::And<L, R> {
+    type Left = L;
+    type Right = R;
+}
+impl<L, R> BinaryOp for crate::ops::Or<L, R> {
+    type Left = L;
+    type Right = R;
+}
+
+// Unary operators
+impl<M> UnaryOp for crate::ops::Sqrt<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::Abs<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::Floor<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::Rsqrt<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::Sin<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::Cos<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::Log2<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::Exp2<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::Neg<M> {
+    type Inner = M;
+}
+impl<M> UnaryOp for crate::ops::BNot<M> {
+    type Inner = M;
+}
+
+// Ternary operators
+impl<A, B, C> TernaryOp for crate::ops::MulAdd<A, B, C> {
+    type First = A;
+    type Second = B;
+    type Third = C;
+}
+impl<Acc, Val, Mask> TernaryOp for crate::ops::AddMasked<Acc, Val, Mask> {
+    type First = Acc;
+    type Second = Val;
+    type Third = Mask;
+}
+impl<Mask, IfTrue, IfFalse> TernaryOp for crate::ops::SoftSelect<Mask, IfTrue, IfFalse> {
+    type First = Mask;
+    type Second = IfTrue;
+    type Third = IfFalse;
+}
+
+// ============================================================================
+// Zst Implementations for Operators
+// ============================================================================
+//
+// Note: We must enumerate each operator because Rust's coherence rules can't
+// prove that BinaryOp, UnaryOp, and TernaryOp are mutually exclusive, even
+// though they're sealed. The compiler sees potential overlap and rejects
+// blanket implementations.
 
 // Binary operators: ZST + ZST → ZST
 impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Add<L, R> {}
@@ -82,13 +319,14 @@ impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Div<L, R> {}
 impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Max<L, R> {}
 impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Min<L, R> {}
 impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::MulRsqrt<L, R> {}
-
-// Ternary operators: ZST + ZST + ZST → ZST
-impl<A: crate::Zst, B: crate::Zst, C: crate::Zst> crate::Zst for crate::ops::MulAdd<A, B, C> {}
-impl<Acc: crate::Zst, Val: crate::Zst, Mask: crate::Zst> crate::Zst
-    for crate::ops::AddMasked<Acc, Val, Mask>
-{
-}
+impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Lt<L, R> {}
+impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Gt<L, R> {}
+impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Le<L, R> {}
+impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Ge<L, R> {}
+impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::SoftGt<L, R> {}
+impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::SoftLt<L, R> {}
+impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::And<L, R> {}
+impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Or<L, R> {}
 
 // Unary operators: ZST → ZST
 impl<M: crate::Zst> crate::Zst for crate::ops::Sqrt<M> {}
@@ -100,23 +338,18 @@ impl<M: crate::Zst> crate::Zst for crate::ops::Cos<M> {}
 impl<M: crate::Zst> crate::Zst for crate::ops::Log2<M> {}
 impl<M: crate::Zst> crate::Zst for crate::ops::Exp2<M> {}
 impl<M: crate::Zst> crate::Zst for crate::ops::Neg<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::BNot<M> {}
 
-// Comparison operators: ZST + ZST → ZST
-impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Lt<L, R> {}
-impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Gt<L, R> {}
-impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Le<L, R> {}
-impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Ge<L, R> {}
-impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::SoftGt<L, R> {}
-impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::SoftLt<L, R> {}
+// Ternary operators: ZST + ZST + ZST → ZST
+impl<A: crate::Zst, B: crate::Zst, C: crate::Zst> crate::Zst for crate::ops::MulAdd<A, B, C> {}
+impl<Acc: crate::Zst, Val: crate::Zst, Mask: crate::Zst> crate::Zst
+    for crate::ops::AddMasked<Acc, Val, Mask>
+{
+}
 impl<Mask: crate::Zst, IfTrue: crate::Zst, IfFalse: crate::Zst> crate::Zst
     for crate::ops::SoftSelect<Mask, IfTrue, IfFalse>
 {
 }
-
-// Logic operators: ZST + ZST → ZST
-impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::And<L, R> {}
-impl<L: crate::Zst, R: crate::Zst> crate::Zst for crate::ops::Or<L, R> {}
-impl<M: crate::Zst> crate::Zst for crate::ops::BNot<M> {}
 
 // ============================================================================
 // Blanket Implementations for Combinators
@@ -150,7 +383,7 @@ impl<Seed: crate::Zst, Step: crate::Zst, Done: crate::Zst> crate::Zst
 }
 
 // ============================================================================
-// Copy Implementations for ZST Types (Step 3)
+// Copy Implementations for ZST Operators (Step 3)
 // ============================================================================
 //
 // This is the key insight: we only want Copy on zero-sized types.
@@ -158,10 +391,13 @@ impl<Seed: crate::Zst, Step: crate::Zst, Done: crate::Zst> crate::Zst
 //
 // Strategy:
 // 1. Remove #[derive(Copy)] from all operators/combinators
-// 2. Add blanket impl Copy only when all type parameters are Zst
+// 2. Manually impl Copy only when all type parameters are Zst + Copy
 // 3. Result: Add<X, Y> is Copy, but Add<Field, Field> is not
+//
+// Note: We must enumerate each operator because Copy is a foreign trait.
+// Blanket implementations on type parameters violate orphan rules.
 
-// Binary operators: Copy when both operands are ZST
+// Binary operators: Copy when both operands are ZST + Copy
 impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Add<L, R> {}
 impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Sub<L, R> {}
 impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Mul<L, R> {}
@@ -169,18 +405,16 @@ impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Div<L, R> 
 impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Max<L, R> {}
 impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Min<L, R> {}
 impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::MulRsqrt<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Lt<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Gt<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Le<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Ge<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::SoftGt<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::SoftLt<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::And<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Or<L, R> {}
 
-// Ternary operators: Copy when all operands are ZST
-impl<A: crate::Zst + Copy, B: crate::Zst + Copy, C: crate::Zst + Copy> Copy
-    for crate::ops::MulAdd<A, B, C>
-{
-}
-impl<Acc: crate::Zst + Copy, Val: crate::Zst + Copy, Mask: crate::Zst + Copy> Copy
-    for crate::ops::AddMasked<Acc, Val, Mask>
-{
-}
-
-// Unary operators: Copy when operand is ZST
+// Unary operators: Copy when operand is ZST + Copy
 impl<M: crate::Zst + Copy> Copy for crate::ops::Sqrt<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Abs<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Floor<M> {}
@@ -190,23 +424,21 @@ impl<M: crate::Zst + Copy> Copy for crate::ops::Cos<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Log2<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Exp2<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Neg<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::BNot<M> {}
 
-// Comparison operators: Copy when both operands are ZST
-impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Lt<L, R> {}
-impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Gt<L, R> {}
-impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Le<L, R> {}
-impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Ge<L, R> {}
-impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::SoftGt<L, R> {}
-impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::SoftLt<L, R> {}
+// Ternary operators: Copy when all operands are ZST + Copy
+impl<A: crate::Zst + Copy, B: crate::Zst + Copy, C: crate::Zst + Copy> Copy
+    for crate::ops::MulAdd<A, B, C>
+{
+}
+impl<Acc: crate::Zst + Copy, Val: crate::Zst + Copy, Mask: crate::Zst + Copy> Copy
+    for crate::ops::AddMasked<Acc, Val, Mask>
+{
+}
 impl<Mask: crate::Zst + Copy, IfTrue: crate::Zst + Copy, IfFalse: crate::Zst + Copy> Copy
     for crate::ops::SoftSelect<Mask, IfTrue, IfFalse>
 {
 }
-
-// Logic operators: Copy when operands are ZST
-impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::And<L, R> {}
-impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Or<L, R> {}
-impl<M: crate::Zst + Copy> Copy for crate::ops::BNot<M> {}
 
 // Combinators: Copy when all parameters are ZST
 impl<C: crate::Zst + Copy, T: crate::Zst + Copy, F: crate::Zst + Copy> Copy
@@ -238,8 +470,6 @@ impl<Seed: crate::Zst + Copy, Step: crate::Zst + Copy, Done: crate::Zst + Copy> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Helper function to assert a type is a ZST
     fn assert_zst<T: crate::Zst>() {
         assert_eq!(core::mem::size_of::<T>(), 0);
