@@ -6,48 +6,48 @@ use crate::Manifold;
 use crate::numeric::{Computational, Numeric};
 
 /// Square root.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Sqrt<M>(pub M);
 
 /// Negation: -M
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Neg<M>(pub M);
 
 /// Absolute value.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Abs<M>(pub M);
 
 /// Floor (round toward negative infinity).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Floor<M>(pub M);
 
 /// Reciprocal square root: 1/sqrt(M).
 /// Uses fast SIMD rsqrt with Newton-Raphson refinement.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Rsqrt<M>(pub M);
 
 /// Sine function.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Sin<M>(pub M);
 
 /// Cosine function.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Cos<M>(pub M);
 
 /// Base-2 logarithm.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Log2<M>(pub M);
 
 /// Base-2 exponential.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Exp2<M>(pub M);
 
 /// Element-wise maximum.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Max<L, R>(pub L, pub R);
 
 /// Element-wise minimum.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Min<L, R>(pub L, pub R);
 
 impl<M, I> Manifold<I> for Sqrt<M>

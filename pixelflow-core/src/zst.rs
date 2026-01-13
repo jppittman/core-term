@@ -150,6 +150,89 @@ impl<Seed: crate::Zst, Step: crate::Zst, Done: crate::Zst> crate::Zst
 }
 
 // ============================================================================
+// Copy Implementations for ZST Types (Step 3)
+// ============================================================================
+//
+// This is the key insight: we only want Copy on zero-sized types.
+// Large expression trees should not be implicitly copied.
+//
+// Strategy:
+// 1. Remove #[derive(Copy)] from all operators/combinators
+// 2. Add blanket impl Copy only when all type parameters are Zst
+// 3. Result: Add<X, Y> is Copy, but Add<Field, Field> is not
+
+// Binary operators: Copy when both operands are ZST
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Add<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Sub<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Mul<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Div<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Max<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Min<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::MulRsqrt<L, R> {}
+
+// Ternary operators: Copy when all operands are ZST
+impl<A: crate::Zst + Copy, B: crate::Zst + Copy, C: crate::Zst + Copy> Copy
+    for crate::ops::MulAdd<A, B, C>
+{
+}
+impl<Acc: crate::Zst + Copy, Val: crate::Zst + Copy, Mask: crate::Zst + Copy> Copy
+    for crate::ops::AddMasked<Acc, Val, Mask>
+{
+}
+
+// Unary operators: Copy when operand is ZST
+impl<M: crate::Zst + Copy> Copy for crate::ops::Sqrt<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Abs<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Floor<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Rsqrt<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Sin<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Cos<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Log2<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Exp2<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Neg<M> {}
+
+// Comparison operators: Copy when both operands are ZST
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Lt<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Gt<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Le<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Ge<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::SoftGt<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::SoftLt<L, R> {}
+impl<Mask: crate::Zst + Copy, IfTrue: crate::Zst + Copy, IfFalse: crate::Zst + Copy> Copy
+    for crate::ops::SoftSelect<Mask, IfTrue, IfFalse>
+{
+}
+
+// Logic operators: Copy when operands are ZST
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::And<L, R> {}
+impl<L: crate::Zst + Copy, R: crate::Zst + Copy> Copy for crate::ops::Or<L, R> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::BNot<M> {}
+
+// Combinators: Copy when all parameters are ZST
+impl<C: crate::Zst + Copy, T: crate::Zst + Copy, F: crate::Zst + Copy> Copy
+    for crate::combinators::Select<C, T, F>
+{
+}
+impl<M: crate::Zst + Copy, T: crate::Zst + Copy> Copy for crate::combinators::Map<M, T> {}
+impl<M: crate::Zst + Copy, D: crate::variables::Dimension + Copy> Copy
+    for crate::combinators::Project<M, D>
+{
+}
+impl<
+        Cx: crate::Zst + Copy,
+        Cy: crate::Zst + Copy,
+        Cz: crate::Zst + Copy,
+        Cw: crate::Zst + Copy,
+        M: crate::Zst + Copy,
+    > Copy for crate::combinators::At<Cx, Cy, Cz, Cw, M>
+{
+}
+impl<Seed: crate::Zst + Copy, Step: crate::Zst + Copy, Done: crate::Zst + Copy> Copy
+    for crate::combinators::Fix<Seed, Step, Done>
+{
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
