@@ -1524,7 +1524,7 @@ impl SimdOps for F32x16 {
         // 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {
             // n = floor(x), f = x - n
-            let n = _mm512_floor_ps(self.0);
+            let n = _mm512_roundscale_ps::<9>(self.0); // 9 = floor mode
             let f = _mm512_sub_ps(self.0, n);
 
             // Minimax polynomial for 2^f, f ∈ [0, 1)
