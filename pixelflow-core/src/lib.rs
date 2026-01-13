@@ -149,6 +149,9 @@ pub mod manifold;
 /// Coordinate variables (X, Y, Z, W).
 pub mod variables;
 
+/// Zero-sized type marker trait.
+pub mod zst;
+
 /// Arithmetic and logic operations.
 pub mod ops;
 
@@ -173,6 +176,7 @@ pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
 pub use ops::unary::*;
 pub use variables::*;
+pub use zst::Zst;
 
 // Differentiable trait for manifolds with analytical gradients
 pub use manifold::Differentiable;
