@@ -28,7 +28,7 @@ use crate::ops::logic::{And, BNot, Or};
 ///
 /// Evaluates `if_true` only when some lanes are true,
 /// `if_false` only when some are false.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Select<C, T, F> {
     /// The condition (produces a mask).
     pub cond: C,

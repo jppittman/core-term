@@ -20,7 +20,7 @@ use crate::{Field, Manifold, ops::Vector, variables::Axis};
 ///     // shift and OR to pack bytes
 /// });
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Pack<M, Op> {
     /// The inner vector manifold.
     pub inner: M,

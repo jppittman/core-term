@@ -20,19 +20,19 @@
 use crate::Manifold;
 
 /// Addition: L + R
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Add<L, R>(pub L, pub R);
 
 /// Subtraction: L - R
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Sub<L, R>(pub L, pub R);
 
 /// Multiplication: L * R
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Mul<L, R>(pub L, pub R);
 
 /// Division: L / R
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Div<L, R>(pub L, pub R);
 
 /// Fused Multiply-Add: A * B + C
@@ -40,7 +40,7 @@ pub struct Div<L, R>(pub L, pub R);
 /// Uses FMA instruction when available (single rounding).
 /// This is automatically generated when `Mul + Rhs` or `Lhs + Mul` is written,
 /// enabling zero-cost compile-time fusion.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct MulAdd<A, B, C>(pub A, pub B, pub C);
 
 /// Multiply by precomputed reciprocal: M * (1/divisor)
@@ -48,7 +48,7 @@ pub struct MulAdd<A, B, C>(pub A, pub B, pub C);
 /// Optimizes division by constants. The reciprocal is computed once at
 /// construction time, turning expensive divisions into fast multiplies.
 /// Automatically generated when `Manifold / f32` is written.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct MulRecip<M> {
     /// The inner manifold to evaluate
     pub inner: M,
@@ -60,7 +60,7 @@ pub struct MulRecip<M> {
 ///
 /// Optimized winding number accumulation. On AVX-512, uses masked add
 /// instruction for true single-instruction operation.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct AddMasked<Acc, Val, Mask> {
     /// Accumulator value
     pub acc: Acc,
@@ -190,7 +190,7 @@ where
 /// sqrt and divide operations (~8 cycles vs ~25 cycles).
 ///
 /// Created automatically when dividing by `Sqrt<R>`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct MulRsqrt<L, R>(pub L, pub R);
 
 impl<L, R, I> Manifold<I> for MulRsqrt<L, R>

@@ -68,7 +68,7 @@ pub const SH_NORM: [[f32; 7]; 4] = [
 ///
 /// Input coordinates (x, y, z) are treated as a direction vector and
 /// internally normalized to the unit sphere.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SphericalHarmonic<const L: usize, const M: i32>;
 
 /// Evaluate a manifold graph to Field (coordinates don't matter for Field constants).
@@ -86,8 +86,8 @@ impl<const L: usize, const M: i32> Manifold<Field> for SphericalHarmonic<L, M> {
         // Build AST for normalization - keep as graph
         let r_sq = x * x + y * y + z * z;
         let inv_r = r_sq.rsqrt();
-        let nx = x * inv_r;
-        let ny = y * inv_r;
+        let nx = x * inv_r.clone();
+        let ny = y * inv_r.clone();
         let nz = z * inv_r;
 
         // We need Field values for the recurrence in legendre_p
@@ -231,7 +231,7 @@ impl<const NUM_COEFFS: usize> ShCoeffs<NUM_COEFFS> {
 ///
 /// Takes coordinates and outputs the SH basis vector for that direction.
 /// This enables computing SH projections of any manifold.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ShProject<const NUM_COEFFS: usize>;
 
 // ============================================================================
@@ -267,8 +267,8 @@ impl<M: Manifold<Field, Output = (Field, Field, Field)>> Manifold<Field> for ShR
         // Normalize direction - build AST, eval at boundaries
         let r_sq = dx * dx + dy * dy + dz * dz;
         let inv_r = r_sq.rsqrt();
-        let nx = eval(dx * inv_r);
-        let ny = eval(dy * inv_r);
+        let nx = eval(dx * inv_r.clone());
+        let ny = eval(dy * inv_r.clone());
         let nz = eval(dz * inv_r);
 
         // Evaluate SH basis and accumulate
@@ -311,7 +311,7 @@ impl<M: Manifold<Field, Output = (Field, Field, Field)>> Manifold<Field> for ShR
 ///
 /// Zonal harmonics are rotationally symmetric around the z-axis.
 /// They're particularly efficient for axis-aligned lighting.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ZonalHarmonic<const L: usize>;
 
 impl<const L: usize> Manifold<Field> for ZonalHarmonic<L> {
@@ -479,21 +479,21 @@ pub fn sh2_basis_at(dir: (Field, Field, Field)) -> [Field; 9] {
     // Normalize direction - keep as AST
     let r2 = x * x + y * y + z * z;
     let inv_r = r2.rsqrt();
-    let nx = x * inv_r;
-    let ny = y * inv_r;
+    let nx = x * inv_r.clone();
+    let ny = y * inv_r.clone();
     let nz = z * inv_r;
 
     // SH basis functions - one big graph per element, eval once at boundary
     [
         Field::from(SH_NORM[0][0]),
-        eval(Field::from(SH_NORM[1][1]) * ny),
-        eval(Field::from(SH_NORM[1][0]) * nz),
-        eval(Field::from(SH_NORM[1][1]) * nx),
-        eval(Field::from(SH_NORM[2][2]) * nx * ny),
-        eval(Field::from(SH_NORM[2][1]) * ny * nz),
-        eval(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0))),
-        eval(Field::from(SH_NORM[2][1]) * nx * nz),
-        eval(Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny)),
+        eval(Field::from(SH_NORM[1][1]) * ny.clone()),
+        eval(Field::from(SH_NORM[1][0]) * nz.clone()),
+        eval(Field::from(SH_NORM[1][1]) * nx.clone()),
+        eval(Field::from(SH_NORM[2][2]) * nx.clone() * ny.clone()),
+        eval(Field::from(SH_NORM[2][1]) * ny.clone() * nz.clone()),
+        eval(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz.clone() * nz.clone() - Field::from(1.0))),
+        eval(Field::from(SH_NORM[2][1]) * nx.clone() * nz),
+        eval(Field::from(SH_NORM[2][2]) * (nx.clone() * nx - ny.clone() * ny)),
     ]
 }
 

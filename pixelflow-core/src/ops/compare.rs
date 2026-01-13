@@ -22,19 +22,19 @@ use crate::numeric::Computational;
 // ============================================================================
 
 /// Less than: L < R
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Lt<L, R>(pub L, pub R);
 
 /// Greater than: L > R
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Gt<L, R>(pub L, pub R);
 
 /// Less than or equal: L <= R
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Le<L, R>(pub L, pub R);
 
 /// Greater than or equal: L >= R
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Ge<L, R>(pub L, pub R);
 
 // Select is defined in combinators/select.rs with early-exit optimization.
@@ -133,7 +133,7 @@ impl_logic_ops!(Or);
 ///
 /// **Jet2-specific**: Only works with Jet2 to provide smooth derivatives.
 /// For Field evaluation, use hard Gt.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SoftGt<L, R> {
     /// Left operand.
     pub left: L,
@@ -145,7 +145,7 @@ pub struct SoftGt<L, R> {
 
 /// Smooth less-than: sigmoid((R - L) / k).
 /// **Jet2-specific** for smooth derivatives.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SoftLt<L, R> {
     /// Left operand.
     pub left: L,
@@ -160,7 +160,7 @@ pub struct SoftLt<L, R> {
 ///
 /// **Always returns Jet2** and **only takes Manifold<Jet2> inputs**.
 /// For Field select, use hard Select.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SoftSelect<Mask, IfTrue, IfFalse> {
     /// The smooth mask (0.0 to 1.0).
     pub mask: Mask,
