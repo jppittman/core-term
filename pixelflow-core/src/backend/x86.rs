@@ -314,12 +314,13 @@ impl SimdOps for F32x4 {
             let f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Remez minimax polynomial for log2(f), f ∈ [1, 2)
-            // Degree 4, max error ~10^-7
-            let c4 = _mm_set1_ps(-0.1334614);
-            let c3 = _mm_set1_ps(1.0588497);
-            let c2 = _mm_set1_ps(-2.3600652);
-            let c1 = _mm_set1_ps(2.8647557);
-            let c0 = _mm_set1_ps(-core::f32::consts::FRAC_2_PI);
+            // Derived from t*(a + t*(b + t*(c + t*d))) where t = f-1
+            // Degree 4, max error ~2×10^-4
+            let c4 = _mm_set1_ps(-0.3610230);
+            let c3 = _mm_set1_ps(1.9258237);
+            let c2 = _mm_set1_ps(-4.3326806);
+            let c1 = _mm_set1_ps(5.7746771);
+            let c0 = _mm_set1_ps(-3.0067972);
 
             // Horner's method (no FMA on base SSE2, emulate with mul+add)
             let mut poly = _mm_add_ps(_mm_mul_ps(c4, f), c3);
@@ -336,7 +337,8 @@ impl SimdOps for F32x4 {
         // SSE2: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {
             // n = floor(x), f = x - n
-            let n = _mm_floor_ps(self.0);
+            // Use SSE2-compatible floor (not _mm_floor_ps which requires SSE4.1)
+            let n = self.floor().0;
             let f = _mm_sub_ps(self.0, n);
 
             // Minimax polynomial for 2^f, f ∈ [0, 1)
@@ -879,11 +881,14 @@ impl SimdOps for F32x8 {
                 one_bits,
             ));
 
-            let c4 = _mm256_set1_ps(-0.1334614);
-            let c3 = _mm256_set1_ps(1.0588497);
-            let c2 = _mm256_set1_ps(-2.3600652);
-            let c1 = _mm256_set1_ps(2.8647557);
-            let c0 = _mm256_set1_ps(-core::f32::consts::FRAC_2_PI);
+            // Remez minimax polynomial for log2(f), f ∈ [1, 2)
+            // Derived from t*(a + t*(b + t*(c + t*d))) where t = f-1
+            // Degree 4, max error ~2×10^-4
+            let c4 = _mm256_set1_ps(-0.3610230);
+            let c3 = _mm256_set1_ps(1.9258237);
+            let c2 = _mm256_set1_ps(-4.3326806);
+            let c1 = _mm256_set1_ps(5.7746771);
+            let c0 = _mm256_set1_ps(-3.0067972);
 
             // Horner's method
             #[cfg(target_feature = "fma")]
@@ -1500,13 +1505,14 @@ impl SimdOps for F32x16 {
             let n = _mm512_getexp_ps(self.0);
 
             // Remez minimax polynomial for log2(f), f ∈ [0.75, 1.5)
-            // Centered around 1.0 for reduced polynomial error
-            // Degree 4, max error ~10^-7
-            let c4 = _mm512_set1_ps(-0.1334614);
-            let c3 = _mm512_set1_ps(1.0588497);
-            let c2 = _mm512_set1_ps(-2.3600652);
-            let c1 = _mm512_set1_ps(2.8647557);
-            let c0 = _mm512_set1_ps(-core::f32::consts::FRAC_2_PI);
+            // Derived from t*(a + t*(b + t*(c + t*d))) where t = f-1
+            // Same coefficients work for both [1, 2) and [0.75, 1.5) intervals
+            // Degree 4, max error ~2×10^-4
+            let c4 = _mm512_set1_ps(-0.3610230);
+            let c3 = _mm512_set1_ps(1.9258237);
+            let c2 = _mm512_set1_ps(-4.3326806);
+            let c1 = _mm512_set1_ps(5.7746771);
+            let c0 = _mm512_set1_ps(-3.0067972);
 
             // Horner's method: ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
             let poly = _mm512_fmadd_ps(c4, f, c3);
@@ -1524,7 +1530,8 @@ impl SimdOps for F32x16 {
         // 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {
             // n = floor(x), f = x - n
-            let n = _mm512_floor_ps(self.0);
+            // Use roundscale with floor mode (imm8=9: mode=1 floor, bit 3 suppress exceptions)
+            let n = _mm512_roundscale_ps::<9>(self.0);
             let f = _mm512_sub_ps(self.0, n);
 
             // Minimax polynomial for 2^f, f ∈ [0, 1)
