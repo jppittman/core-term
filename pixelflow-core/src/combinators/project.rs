@@ -20,7 +20,7 @@ pub trait Projectable<D: Dimension>: Sized {
 /// Project a composite type onto a Dimension to get a scalar manifold.
 ///
 /// If `M` is `Projectable<D>`, `Project<M, D>` evaluates the component for dimension D.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Project<M, D>(pub M, pub PhantomData<D>);
 
 impl<M, D> Project<M, D> {

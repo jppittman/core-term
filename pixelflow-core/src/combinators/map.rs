@@ -25,7 +25,7 @@ use crate::{Field, Manifold};
 /// // Add the Y coordinate to the output
 /// let skewed = Map::new(sdf, X + Y);
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Map<M, T> {
     inner: M,
     transform: T,
@@ -63,7 +63,7 @@ where
 ///
 /// This is used for transformations that cannot be expressed as manifolds,
 /// such as lifting to complex types like `PathJet` via factory functions.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ClosureMap<M, F> {
     inner: M,
     func: F,

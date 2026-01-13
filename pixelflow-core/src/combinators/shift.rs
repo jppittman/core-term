@@ -28,7 +28,7 @@ use crate::{Computational, Manifold};
 ///
 /// Given `inner.shift(dx, dy, dz, dw)`, evaluation at `(x, y, z, w)` returns
 /// `inner.eval_raw(x - dx, y - dy, z - dz, w - dw)`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Shift<M> {
     /// The inner manifold to translate.
     pub inner: M,

@@ -166,10 +166,10 @@ impl Jet2H {
         let sign = self.val / self.val.abs();
         Self::new(
             self.val.abs(),
-            self.dx * sign,
-            self.dy * sign,
-            self.dxx * sign,
-            self.dxy * sign,
+            self.dx * sign.clone(),
+            self.dy * sign.clone(),
+            self.dxx * sign.clone(),
+            self.dxy * sign.clone(),
             self.dyy * sign,
         )
     }
@@ -249,16 +249,16 @@ impl Jet2HSqrt {
         let half_rsqrt = rsqrt_val * Field::from(0.5);
 
         // sqrt(x)' = rsqrt(x) / 2
-        let sqrt_dx = self.0.dx * half_rsqrt;
-        let sqrt_dy = self.0.dy * half_rsqrt;
+        let sqrt_dx = self.0.dx * half_rsqrt.clone();
+        let sqrt_dy = self.0.dy * half_rsqrt.clone();
 
         // sqrt(x)'' = ∂/∂x[x' * rsqrt(x) / 2]
         //           = x'' * rsqrt(x) / 2 + x' * (rsqrt(x) / 2)'
         // where (rsqrt(x))' = -x' * rsqrt(x)³ / 2
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
         let quarter_rsqrt_cubed = rsqrt_cubed * Field::from(0.25);
-        let sqrt_dxx = self.0.dxx * half_rsqrt - self.0.dx * self.0.dx * quarter_rsqrt_cubed;
-        let sqrt_dxy = self.0.dxy * half_rsqrt - self.0.dx * self.0.dy * quarter_rsqrt_cubed;
+        let sqrt_dxx = self.0.dxx * half_rsqrt.clone() - self.0.dx * self.0.dx * quarter_rsqrt_cubed.clone();
+        let sqrt_dxy = self.0.dxy * half_rsqrt.clone() - self.0.dx * self.0.dy * quarter_rsqrt_cubed.clone();
         let sqrt_dyy = self.0.dyy * half_rsqrt - self.0.dy * self.0.dy * quarter_rsqrt_cubed;
 
         Jet2H::new(sqrt_val, sqrt_dx, sqrt_dy, sqrt_dxx, sqrt_dxy, sqrt_dyy)
@@ -283,11 +283,11 @@ impl core::ops::Div<Jet2HSqrt> for Jet2H {
 
         // d/dx[a * rsqrt(b)] = a' * rsqrt(b) - a * b' * rsqrt(b)³ / 2
         let rsqrt_cubed = rsqrt_b * rsqrt_b * rsqrt_b;
-        let half_rsqrt_cubed = rsqrt_cubed * Field::from(0.5);
+        let half_rsqrt_cubed = rsqrt_cubed.clone() * Field::from(0.5);
 
         // First derivatives
-        let result_dx = self.dx * rsqrt_b + self.val * b.dx * half_rsqrt_cubed * Field::from(-1.0);
-        let result_dy = self.dy * rsqrt_b + self.val * b.dy * half_rsqrt_cubed * Field::from(-1.0);
+        let result_dx = self.dx * rsqrt_b + self.val * b.dx * half_rsqrt_cubed.clone() * Field::from(-1.0);
+        let result_dy = self.dy * rsqrt_b + self.val * b.dy * half_rsqrt_cubed.clone() * Field::from(-1.0);
 
         // Second derivatives: d²/dx²[a * rsqrt(b)]
         // = a'' * rsqrt(b) + 2 * a' * (rsqrt(b))'
@@ -300,18 +300,18 @@ impl core::ops::Div<Jet2HSqrt> for Jet2H {
         let two = Field::from(2.0);
 
         let result_dxx = self.dxx * rsqrt_b
-            + two * self.dx * b.dx * term * Field::from(-1.0)
-            + self.val * b.dxx * half_rsqrt_cubed * Field::from(-1.0)
-            + self.val * b.dx * b.dx * term;
+            + two * self.dx * b.dx * term.clone() * Field::from(-1.0)
+            + self.val * b.dxx * half_rsqrt_cubed.clone() * Field::from(-1.0)
+            + self.val * b.dx * b.dx * term.clone();
 
         let result_dxy = self.dxy * rsqrt_b
-            + self.dx * b.dy * term * Field::from(-1.0)
-            + self.dy * b.dx * term * Field::from(-1.0)
-            + self.val * b.dxy * half_rsqrt_cubed * Field::from(-1.0)
-            + self.val * b.dx * b.dy * term;
+            + self.dx * b.dy * term.clone() * Field::from(-1.0)
+            + self.dy * b.dx * term.clone() * Field::from(-1.0)
+            + self.val * b.dxy * half_rsqrt_cubed.clone() * Field::from(-1.0)
+            + self.val * b.dx * b.dy * term.clone();
 
         let result_dyy = self.dyy * rsqrt_b
-            + two * self.dy * b.dy * term * Field::from(-1.0)
+            + two * self.dy * b.dy * term.clone() * Field::from(-1.0)
             + self.val * b.dyy * half_rsqrt_cubed * Field::from(-1.0)
             + self.val * b.dy * b.dy * term;
 
@@ -443,36 +443,36 @@ impl core::ops::Div for Jet2H {
         //       (g^(-1))'' = -g'' * g^(-2) + 2 * g'² * g^(-3)
 
         let inv_g = rhs.val.recip();
-        let inv_g_sq = inv_g * inv_g;
-        let inv_g_cube = inv_g_sq * inv_g;
+        let inv_g_sq = inv_g.clone() * inv_g;
+        let inv_g_cube = inv_g_sq.clone() * inv_g;
         let two = Field::from(2.0);
 
         // First derivatives
-        let dx = self.dx * inv_g + self.val * rhs.dx * inv_g_sq * Field::from(-1.0);
-        let dy = self.dy * inv_g + self.val * rhs.dy * inv_g_sq * Field::from(-1.0);
+        let dx = self.dx.clone() * inv_g + self.val * rhs.dx.clone() * inv_g_sq.clone() * Field::from(-1.0);
+        let dy = self.dy.clone() * inv_g + self.val * rhs.dy.clone() * inv_g_sq.clone() * Field::from(-1.0);
 
         // Second derivatives
-        // d/dx[self.dx * inv_g + self.val * rhs.dx * inv_g_sq * (-1)]
-        // = self.dxx * inv_g + self.dx * (-rhs.dx * inv_g_sq)
+        // d/dx[self.dx.clone() * inv_g + self.val * rhs.dx.clone() * inv_g_sq * (-1)]
+        // = self.dxx.clone() * inv_g + self.dx * (-rhs.dx.clone() * inv_g_sq)
         //   + self.dx * rhs.dx * (-inv_g_sq) + self.val * rhs.dxx * (-inv_g_sq)
-        //   + self.val * rhs.dx * (-2 * rhs.dx * inv_g_cube)
-        let dxx = self.dxx * inv_g
-            + two * self.dx * rhs.dx * inv_g_sq * Field::from(-1.0)
-            + self.val * rhs.dxx * inv_g_sq * Field::from(-1.0)
-            + two * self.val * rhs.dx * rhs.dx * inv_g_cube;
+        //   + self.val * rhs.dx * (-2 * rhs.dx.clone() * inv_g_cube)
+        let dxx = self.dxx.clone() * inv_g
+            + two * self.dx * rhs.dx.clone() * inv_g_sq.clone() * Field::from(-1.0)
+            + self.val * rhs.dxx.clone() * inv_g_sq.clone() * Field::from(-1.0)
+            + two * self.val * rhs.dx * rhs.dx.clone() * inv_g_cube.clone();
 
-        let dxy = self.dxy * inv_g
-            + self.dx * rhs.dy * inv_g_sq * Field::from(-1.0)
-            + self.dy * rhs.dx * inv_g_sq * Field::from(-1.0)
-            + self.val * rhs.dxy * inv_g_sq * Field::from(-1.0)
-            + two * self.val * rhs.dx * rhs.dy * inv_g_cube;
+        let dxy = self.dxy.clone() * inv_g
+            + self.dx * rhs.dy.clone() * inv_g_sq.clone() * Field::from(-1.0)
+            + self.dy * rhs.dx.clone() * inv_g_sq.clone() * Field::from(-1.0)
+            + self.val * rhs.dxy.clone() * inv_g_sq.clone() * Field::from(-1.0)
+            + two * self.val * rhs.dx * rhs.dy.clone() * inv_g_cube.clone();
 
-        let dyy = self.dyy * inv_g
-            + two * self.dy * rhs.dy * inv_g_sq * Field::from(-1.0)
-            + self.val * rhs.dyy * inv_g_sq * Field::from(-1.0)
-            + two * self.val * rhs.dy * rhs.dy * inv_g_cube;
+        let dyy = self.dyy.clone() * inv_g
+            + two * self.dy * rhs.dy.clone() * inv_g_sq.clone() * Field::from(-1.0)
+            + self.val * rhs.dyy.clone() * inv_g_sq * Field::from(-1.0)
+            + two * self.val * rhs.dy * rhs.dy.clone() * inv_g_cube;
 
-        Self::new(self.val * inv_g, dx, dy, dxx, dxy, dyy)
+        Self::new(self.val.clone() * inv_g, dx, dy, dxx, dxy, dyy)
     }
 }
 
@@ -561,13 +561,13 @@ impl Numeric for Jet2H {
         // where rsqrt(f)' = -f' * rsqrt(f)³ / 2
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
         let quarter_rsqrt_cubed = rsqrt_cubed * Field::from(0.25);
-        let sqrt_dxx = self.dxx * half_rsqrt - self.dx * self.dx * quarter_rsqrt_cubed;
-        let sqrt_dyy = self.dyy * half_rsqrt - self.dy * self.dy * quarter_rsqrt_cubed;
-        let sqrt_dxy = self.dxy * half_rsqrt - self.dx * self.dy * quarter_rsqrt_cubed;
+        let sqrt_dxx = self.dxx * half_rsqrt.clone() - self.dx * self.dx * quarter_rsqrt_cubed.clone();
+        let sqrt_dyy = self.dyy * half_rsqrt.clone() - self.dy * self.dy * quarter_rsqrt_cubed.clone();
+        let sqrt_dxy = self.dxy * half_rsqrt.clone() - self.dx * self.dy * quarter_rsqrt_cubed;
 
         Self::new(
             sqrt_val,
-            self.dx * half_rsqrt,
+            self.dx * half_rsqrt.clone(),
             self.dy * half_rsqrt,
             sqrt_dxx,
             sqrt_dxy,
@@ -580,10 +580,10 @@ impl Numeric for Jet2H {
         let sign = self.val / self.val.abs();
         Self::new(
             self.val.abs(),
-            self.dx * sign,
-            self.dy * sign,
-            self.dxx * sign,
-            self.dxy * sign,
+            self.dx * sign.clone(),
+            self.dy * sign.clone(),
+            self.dxx * sign.clone(),
+            self.dxy * sign.clone(),
             self.dyy * sign,
         )
     }
@@ -706,10 +706,10 @@ impl Numeric for Jet2H {
 
         Self::new(
             cos_val,
-            self.dx * neg_sin_val,
-            self.dy * neg_sin_val,
-            neg_cos_val * self.dx * self.dx + self.dxx * neg_sin_val,
-            neg_cos_val * self.dx * self.dy + self.dxy * neg_sin_val,
+            self.dx * neg_sin_val.clone(),
+            self.dy * neg_sin_val.clone(),
+            neg_cos_val.clone() * self.dx * self.dx + self.dxx * neg_sin_val.clone(),
+            neg_cos_val.clone() * self.dx * self.dy + self.dxy * neg_sin_val.clone(),
             neg_cos_val * self.dy * self.dy + self.dyy * neg_sin_val,
         )
     }
@@ -718,30 +718,30 @@ impl Numeric for Jet2H {
     fn atan2(self, x: Self) -> Self {
         let r_sq = self.val * self.val + x.val * x.val;
         let inv_r_sq = Field::from(1.0) / r_sq;
-        let dy_darg = x.val * inv_r_sq;
-        let dx_darg = self.val * inv_r_sq * Field::from(-1.0);
-        let inv_r_fourth = inv_r_sq * inv_r_sq;
+        let dy_darg = x.val.clone() * inv_r_sq.clone();
+        let dx_darg = self.val.clone() * inv_r_sq.clone() * Field::from(-1.0);
+        let inv_r_fourth = inv_r_sq.clone() * inv_r_sq.clone();
         let two = Field::from(2.0);
-        let term = two * inv_r_fourth;
-        let d_dy_darg_y = self.val * dy_darg * term * Field::from(-1.0);
-        let d_dy_darg_x = inv_r_sq + x.val * x.val * term * Field::from(-1.0);
-        let d_dx_darg_y = inv_r_sq * Field::from(-1.0) + self.val * self.val * term;
-        let d_dx_darg_x = self.val * dx_darg * term;
+        let term = two.clone() * inv_r_fourth;
+        let d_dy_darg_y = self.val * dy_darg.clone() * term.clone() * Field::from(-1.0);
+        let d_dy_darg_x = inv_r_sq.clone() + x.val * x.val * term.clone() * Field::from(-1.0);
+        let d_dx_darg_y = inv_r_sq * Field::from(-1.0) + self.val * self.val * term.clone();
+        let d_dx_darg_x = self.val * dx_darg.clone() * term;
         Self::new(
             self.val.atan2(x.val),
-            self.dx * dy_darg + x.dx * dx_darg,
-            self.dy * dy_darg + x.dy * dx_darg,
-            self.dxx * dy_darg
-                + self.dx * d_dy_darg_y * self.dx
-                + x.dxx * dx_darg
-                + x.dx * d_dx_darg_x * x.dx
-                + self.dx * x.dx * (d_dy_darg_x + d_dx_darg_y),
-            self.dxy * dy_darg
-                + self.dx * d_dy_darg_y * self.dy
-                + x.dxy * dx_darg
-                + x.dx * d_dx_darg_x * x.dy
-                + self.dy * x.dx * (d_dy_darg_x + d_dx_darg_y)
-                + self.dx * x.dy * (d_dy_darg_x + d_dx_darg_y),
+            self.dx * dy_darg.clone() + x.dx * dx_darg.clone(),
+            self.dy * dy_darg.clone() + x.dy * dx_darg.clone(),
+            self.dxx * dy_darg.clone()
+                + self.dx * d_dy_darg_y.clone() * self.dx
+                + x.dxx * dx_darg.clone()
+                + x.dx * d_dx_darg_x.clone() * x.dx
+                + self.dx * x.dx * (d_dy_darg_x.clone() + d_dx_darg_y.clone()),
+            self.dxy * dy_darg.clone()
+                + self.dx * d_dy_darg_y.clone() * self.dy
+                + x.dxy * dx_darg.clone()
+                + x.dx * d_dx_darg_x.clone() * x.dy
+                + self.dy * x.dx * (d_dy_darg_x.clone() + d_dx_darg_y.clone())
+                + self.dx * x.dy * (d_dy_darg_x.clone() + d_dx_darg_y.clone()),
             self.dyy * dy_darg
                 + self.dy * d_dy_darg_y * self.dy
                 + x.dyy * dx_darg
@@ -755,24 +755,24 @@ impl Numeric for Jet2H {
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
         let inv_self = Field::from(1.0) / self.val;
-        let coeff = exp.val * inv_self;
+        let coeff = exp.val.clone() * inv_self.clone();
         let two = Field::from(2.0);
         Self::new(
             val,
-            val * (exp.dx * ln_base + coeff * self.dx),
-            val * (exp.dy * ln_base + coeff * self.dy),
-            self.dxx * val * coeff
-                + two * self.dx * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
+            val * (exp.dx * ln_base + coeff.clone() * self.dx),
+            val * (exp.dy * ln_base + coeff.clone() * self.dy),
+            self.dxx * val * coeff.clone()
+                + two * self.dx * val.clone() * inv_self.clone() * (exp.dx * ln_base + coeff.clone() * self.dx)
                 + val * exp.dxx * ln_base
-                - self.dx * self.dx * val * inv_self * inv_self,
-            self.dxy * val * coeff
-                + self.dx * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
-                + self.dy * val * inv_self * (exp.dx * ln_base + coeff * self.dx)
+                - self.dx * self.dx * val.clone() * inv_self.clone() * inv_self.clone(),
+            self.dxy * val * coeff.clone()
+                + self.dx * val.clone() * inv_self.clone() * (exp.dy * ln_base + coeff.clone() * self.dy)
+                + self.dy * val.clone() * inv_self.clone() * (exp.dx * ln_base + coeff.clone() * self.dx)
                 + val * exp.dxy * ln_base,
-            self.dyy * val * coeff
-                + two * self.dy * val * inv_self * (exp.dy * ln_base + coeff * self.dy)
+            self.dyy * val * coeff.clone()
+                + two * self.dy * val.clone() * inv_self.clone() * (exp.dy * ln_base + coeff * self.dy)
                 + val * exp.dyy * ln_base
-                - self.dy * self.dy * val * inv_self * inv_self,
+                - self.dy * self.dy * val.clone() * inv_self.clone() * inv_self,
         )
     }
 
@@ -793,15 +793,15 @@ impl Numeric for Jet2H {
     fn log2(self) -> Self {
         let log2_e = Field::from(1.4426950408889634);
         let inv_val = Field::from(1.0) / self.val;
-        let inv_val_sq = inv_val * inv_val;
-        let deriv_coeff = inv_val * log2_e;
+        let inv_val_sq = inv_val.clone() * inv_val.clone();
+        let deriv_coeff = inv_val.clone() * log2_e;
         Self::new(
             self.val.log2(),
-            self.dx * deriv_coeff,
+            self.dx * deriv_coeff.clone(),
             self.dy * deriv_coeff,
-            log2_e * (self.dxx * inv_val - self.dx * self.dx * inv_val_sq),
-            log2_e * (self.dxy * inv_val - self.dx * self.dy * inv_val_sq),
-            log2_e * (self.dyy * inv_val - self.dy * self.dy * inv_val_sq),
+            log2_e * (self.dxx.clone() * inv_val.clone() - self.dx * self.dx.clone() * inv_val_sq.clone()),
+            log2_e * (self.dxy.clone() * inv_val.clone() - self.dx * self.dy.clone() * inv_val_sq.clone()),
+            log2_e * (self.dyy.clone() * inv_val - self.dy * self.dy.clone() * inv_val_sq),
         )
     }
 
@@ -815,10 +815,10 @@ impl Numeric for Jet2H {
 
         Self::new(
             exp2_val,
-            self.dx * deriv_coeff,
-            self.dy * deriv_coeff,
-            deriv_coeff * (self.dxx + self.dx * self.dx * ln_2),
-            deriv_coeff * (self.dxy + self.dx * self.dy * ln_2),
+            self.dx * deriv_coeff.clone(),
+            self.dy * deriv_coeff.clone(),
+            deriv_coeff.clone() * (self.dxx + self.dx * self.dx * ln_2),
+            deriv_coeff.clone() * (self.dxy + self.dx * self.dy * ln_2),
             deriv_coeff * (self.dyy + self.dy * self.dy * ln_2),
         )
     }
@@ -849,17 +849,17 @@ impl Numeric for Jet2H {
         // (1/f)' = -f'/f²
         // (1/f)'' = -f''/f² + 2*(f')²/f³
         let inv = self.val.recip();
-        let inv_sq = inv * inv;
-        let inv_cube = inv_sq * inv;
+        let inv_sq = inv.clone() * inv;
+        let inv_cube = inv_sq.clone() * inv;
         let neg_inv_sq = inv_sq * Field::from(-1.0);
         let two = Field::from(2.0);
         Self::new(
             inv,
-            self.dx * neg_inv_sq,
-            self.dy * neg_inv_sq,
-            self.dxx * neg_inv_sq + two * self.dx * self.dx * inv_cube,
-            self.dxy * neg_inv_sq + two * self.dx * self.dy * inv_cube,
-            self.dyy * neg_inv_sq + two * self.dy * self.dy * inv_cube,
+            self.dx * neg_inv_sq.clone(),
+            self.dy * neg_inv_sq.clone(),
+            self.dxx * neg_inv_sq.clone() + two * self.dx * self.dx.clone() * inv_cube.clone(),
+            self.dxy * neg_inv_sq.clone() + two * self.dx * self.dy.clone() * inv_cube.clone(),
+            self.dyy * neg_inv_sq + two * self.dy * self.dy.clone() * inv_cube,
         )
     }
 
@@ -869,16 +869,16 @@ impl Numeric for Jet2H {
         // rsqrt(f)'' = -f'' * rsqrt(f)³ / 2 - 3/2 * f' * rsqrt(f)⁵ * f'
         let rsqrt_val = self.val.rsqrt();
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
-        let rsqrt_fifth = rsqrt_cubed * rsqrt_val * rsqrt_val;
+        let rsqrt_fifth = rsqrt_cubed.clone() * rsqrt_val * rsqrt_val;
         let scale = rsqrt_cubed * Field::from(-0.5);
         let scale_second = rsqrt_fifth * Field::from(-1.5);
 
         Self::new(
             rsqrt_val,
-            self.dx * scale,
-            self.dy * scale,
-            self.dxx * scale + self.dx * self.dx * scale_second,
-            self.dxy * scale + self.dx * self.dy * scale_second,
+            self.dx * scale.clone(),
+            self.dy * scale.clone(),
+            self.dxx * scale.clone() + self.dx * self.dx * scale_second.clone(),
+            self.dxy * scale.clone() + self.dx * self.dy * scale_second.clone(),
             self.dyy * scale + self.dy * self.dy * scale_second,
         )
     }

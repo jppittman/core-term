@@ -8,7 +8,7 @@ use crate::{Field, Manifold};
 ///
 /// Evaluates `step` repeatedly (using W as state) until `done` returns true.
 /// Uses per-lane retirement for efficiency.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Fix<Seed, Step, Done> {
     /// Initial state value.
     pub seed: Seed,

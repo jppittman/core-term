@@ -80,8 +80,8 @@ pub(crate) fn cheby_sin(x: Field) -> Field {
     // p(t) = C1*t + C3*t^3 + C5*t^5 + C7*t^7
     // Rewrite as: ((C7*t^2 + C5)*t^2 + C3)*t^2 + C1)*t
     // AST building enables FMA fusion
-    let t2 = t * t;
-    let result = (((Field::from(C7) * t2 + Field::from(C5)) * t2 + Field::from(C3)) * t2
+    let t2 = t.clone() * t.clone();
+    let result = (((Field::from(C7) * t2.clone() + Field::from(C5)) * t2.clone() + Field::from(C3)) * t2
         + Field::from(C1))
         * t;
 
@@ -110,9 +110,9 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
     // p(t) = C0 + C2*t^2 + C4*t^4 + C6*t^6
     // Rewrite as: ((C6*t^2 + C4)*t^2 + C2)*t^2 + C0
     // AST building enables FMA fusion
-    let t2 = t * t;
+    let t2 = t.clone() * t;
     let result =
-        ((Field::from(C6) * t2 + Field::from(C4)) * t2 + Field::from(C2)) * t2 + Field::from(C0);
+        ((Field::from(C6) * t2.clone() + Field::from(C4)) * t2.clone() + Field::from(C2)) * t2 + Field::from(C0);
 
     eval(result)
 }
@@ -139,7 +139,7 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
     // AST building enables FMA fusion
     let t = r_abs;
     let t2 = t * t;
-    let atan_approx = (((Field::from(C7) * t2 + Field::from(C5)) * t2 + Field::from(C3)) * t2
+    let atan_approx = (((Field::from(C7) * t2.clone() + Field::from(C5)) * t2.clone() + Field::from(C3)) * t2
         + Field::from(C1))
         * t;
 
@@ -147,17 +147,17 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
     // For |r| > 1, use identity: atan(r) = π/2 - atan(1/r)
     // Use ManifoldExt's select which builds AST
     let mask_large = r_abs.gt(Field::from(1.0));
-    let atan_large = Field::from(PI_2) - (Field::from(1.0) / r_abs) * atan_approx;
+    let atan_large = Field::from(PI_2) - (Field::from(1.0) / r_abs) * atan_approx.clone();
     let atan_val = mask_large.select(atan_large, atan_approx);
 
     // Apply sign of y
     let sign_y = y.abs() / y;
-    let atan_signed = atan_val * sign_y;
+    let atan_signed = atan_val * sign_y.clone();
 
     // Apply sign of x (quadrant correction)
     let mask_neg_x = x.lt(Field::from(0.0));
     let correction = Field::from(PI) * sign_y;
-    let result = mask_neg_x.select(atan_signed - correction, atan_signed);
+    let result = mask_neg_x.select(atan_signed.clone() - correction, atan_signed);
 
     eval(result)
 }

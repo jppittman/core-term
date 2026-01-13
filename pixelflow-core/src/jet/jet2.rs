@@ -124,7 +124,7 @@ impl Jet2 {
     pub fn abs(self) -> Self {
         // |f|' = f' * sign(f)
         let sign = self.val / self.val.abs();
-        Self::new(self.val.abs(), self.dx * sign, self.dy * sign)
+        Self::new(self.val.abs(), self.dx * sign.clone(), self.dy * sign)
     }
 
     /// Element-wise minimum with derivative.
@@ -194,7 +194,7 @@ impl Jet2Sqrt {
         let rsqrt_val = self.0.val.rsqrt();
         let sqrt_val = self.0.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Jet2::new(sqrt_val, self.0.dx * half_rsqrt, self.0.dy * half_rsqrt)
+        Jet2::new(sqrt_val, self.0.dx * half_rsqrt.clone(), self.0.dy * half_rsqrt)
     }
 }
 
@@ -217,7 +217,7 @@ impl core::ops::Div<Jet2Sqrt> for Jet2 {
         let half_rsqrt_cubed = rsqrt_cubed * Field::from(0.5);
         Jet2::new(
             result_val,
-            self.dx * rsqrt_b - self.val * b.dx * half_rsqrt_cubed,
+            self.dx * rsqrt_b - self.val * b.dx * half_rsqrt_cubed.clone(),
             self.dy * rsqrt_b - self.val * b.dy * half_rsqrt_cubed,
         )
     }
@@ -321,11 +321,11 @@ impl core::ops::Div for Jet2 {
         // Quotient rule: (f / g)' = (f' * g - f * g') / g²
         let g_sq = rhs.val * rhs.val;
         let inv_g_sq = Field::from(1.0) / g_sq;
-        let scale = rhs.val * inv_g_sq;
+        let scale = rhs.val.clone() * inv_g_sq.clone();
         Self::new(
             self.val / rhs.val,
-            self.dx * scale - self.val * rhs.dx * inv_g_sq,
-            self.dy * scale - self.val * rhs.dy * inv_g_sq,
+            self.dx * scale.clone() - self.val * rhs.dx.clone() * inv_g_sq.clone(),
+            self.dy * scale - self.val * rhs.dy.clone() * inv_g_sq,
         )
     }
 }
@@ -405,7 +405,7 @@ impl Numeric for Jet2 {
         let rsqrt_val = self.val.rsqrt();
         let sqrt_val = self.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Self::new(sqrt_val, self.dx * half_rsqrt, self.dy * half_rsqrt)
+        Self::new(sqrt_val, self.dx * half_rsqrt.clone(), self.dy * half_rsqrt)
     }
 
     #[inline(always)]
@@ -413,7 +413,7 @@ impl Numeric for Jet2 {
         // |f|' = f' * sign(f)
         // Note: derivative undefined at f=0, we use sign
         let sign = self.val / self.val.abs(); // NaN at zero, but close enough
-        Self::new(self.val.abs(), self.dx * sign, self.dy * sign)
+        Self::new(self.val.abs(), self.dx * sign.clone(), self.dy * sign)
     }
 
     #[inline(always)]
@@ -515,7 +515,7 @@ impl Numeric for Jet2 {
         // Chain rule: (sin f)' = cos(f) * f'
         let sin_val = self.val.sin();
         let cos_deriv = self.val.cos();
-        Self::new(sin_val, self.dx * cos_deriv, self.dy * cos_deriv)
+        Self::new(sin_val, self.dx * cos_deriv.clone(), self.dy * cos_deriv)
     }
 
     #[inline(always)]
@@ -523,7 +523,7 @@ impl Numeric for Jet2 {
         // Chain rule: (cos f)' = -sin(f) * f'
         let cos_val = self.val.cos();
         let neg_sin = -self.val.sin();
-        Self::new(cos_val, self.dx * neg_sin, self.dy * neg_sin)
+        Self::new(cos_val, self.dx * neg_sin.clone(), self.dy * neg_sin)
     }
 
     #[inline(always)]
@@ -533,11 +533,11 @@ impl Numeric for Jet2 {
         // ∂/∂x = -y / (x² + y²)
         let r_sq = self.val * self.val + x.val * x.val;
         let inv_r_sq = Field::from(1.0) / r_sq;
-        let dy_darg = x.val * inv_r_sq;
-        let dx_darg = (-self.val) * inv_r_sq;
+        let dy_darg = x.val.clone() * inv_r_sq.clone();
+        let dx_darg = (-self.val).clone() * inv_r_sq;
         Self::new(
             self.val.atan2(x.val),
-            self.dx * dy_darg + x.dx * dx_darg,
+            self.dx * dy_darg.clone() + x.dx * dx_darg.clone(),
             self.dy * dy_darg + x.dy * dx_darg,
         )
     }
@@ -548,10 +548,10 @@ impl Numeric for Jet2 {
         let val = self.val.pow(exp.val);
         let ln_base = self.val.map_lanes(libm::logf);
         let inv_self = Field::from(1.0) / self.val;
-        let coeff = exp.val * inv_self;
+        let coeff = exp.val.clone() * inv_self;
         Self::new(
             val,
-            val * (exp.dx * ln_base + coeff * self.dx),
+            val * (exp.dx * ln_base + coeff.clone() * self.dx),
             val * (exp.dy * ln_base + coeff * self.dy),
         )
     }
@@ -560,7 +560,7 @@ impl Numeric for Jet2 {
     fn exp(self) -> Self {
         // Chain rule: (exp f)' = exp(f) * f'
         let exp_val = self.val.exp();
-        Self::new(exp_val, self.dx * exp_val, self.dy * exp_val)
+        Self::new(exp_val.clone(), self.dx * exp_val.clone(), self.dy * exp_val)
     }
 
     #[inline(always)]
@@ -572,7 +572,7 @@ impl Numeric for Jet2 {
         let deriv_coeff = inv_val * log2_e;
         Self::new(
             self.val.log2(),
-            self.dx * deriv_coeff,
+            self.dx * deriv_coeff.clone(),
             self.dy * deriv_coeff,
         )
     }
@@ -584,7 +584,7 @@ impl Numeric for Jet2 {
         let ln_2 = Field::from(0.6931471805599453);
         let exp2_val = self.val.exp2();
         let deriv_coeff = exp2_val * ln_2;
-        Self::new(exp2_val, self.dx * deriv_coeff, self.dy * deriv_coeff)
+        Self::new(exp2_val, self.dx * deriv_coeff.clone(), self.dy * deriv_coeff)
     }
 
     #[inline(always)]
@@ -607,8 +607,8 @@ impl Numeric for Jet2 {
     fn recip(self) -> Self {
         // (1/f)' = -f'/f²
         let inv = self.val.recip();
-        let neg_inv_sq = Field::from(0.0) - inv * inv;
-        Self::new(inv, self.dx * neg_inv_sq, self.dy * neg_inv_sq)
+        let neg_inv_sq = Field::from(0.0) - inv.clone() * inv;
+        Self::new(inv, self.dx * neg_inv_sq.clone(), self.dy * neg_inv_sq)
     }
 
     #[inline(always)]
@@ -617,7 +617,7 @@ impl Numeric for Jet2 {
         let rsqrt_val = self.val.rsqrt();
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
         let scale = Field::from(-0.5) * rsqrt_cubed;
-        Self::new(rsqrt_val, self.dx * scale, self.dy * scale)
+        Self::new(rsqrt_val, self.dx * scale.clone(), self.dy * scale)
     }
 
     #[inline(always)]

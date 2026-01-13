@@ -49,7 +49,7 @@ use crate::{Computational, Manifold};
 /// Maps a Manifold from domain B to domain A via coordinate transformation.
 /// - **Cx, Cy, Cz, Cw**: Coordinate expressions (A -> B)
 /// - **M**: Inner manifold (B -> Output)
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct At<Cx, Cy, Cz, Cw, M> {
     /// The inner manifold to evaluate.
     pub inner: M,
@@ -133,7 +133,7 @@ where
 ///     coords: [X, Y, Z, W + 1.0],
 /// };
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct AtArray<M, const N: usize, C> {
     /// The inner manifold to evaluate on domain B.
     pub inner: M,

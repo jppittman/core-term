@@ -7,15 +7,15 @@ use crate::numeric::Numeric;
 use core::ops::{BitAnd, BitOr, Not};
 
 /// Bitwise AND.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct And<L, R>(pub L, pub R);
 
 /// Bitwise OR.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Or<L, R>(pub L, pub R);
 
 /// Bitwise NOT.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BNot<M>(pub M);
 
 impl<L, R, I> Manifold<I> for And<L, R>
