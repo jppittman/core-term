@@ -1,6 +1,6 @@
 //! Event mapping for X11 -> DisplayEvent.
 
-use crate::display::messages::{DisplayEvent, WindowId};
+use crate::display::messages::{DisplayEvent, Window, WindowId};
 use crate::input::{KeySymbol, Modifiers};
 use crate::pixel::PlatformPixel;
 use pixelflow_graphics::render::Frame;
@@ -60,10 +60,13 @@ pub fn map_event(
                     window.height = conf.height as u32;
                     let frame = Frame::<PlatformPixel>::new(window.width, window.height);
                     Some(DisplayEvent::Resized {
-                        id: window_id,
-                        width_px: window.width,
-                        height_px: window.height,
-                        frame,
+                        window: Window {
+                            id: window_id,
+                            frame,
+                            width_px: window.width,
+                            height_px: window.height,
+                            scale: window.scale_factor,
+                        },
                     })
                 } else {
                     None
