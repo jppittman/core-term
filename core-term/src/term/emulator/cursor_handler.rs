@@ -35,10 +35,11 @@ impl TerminalEmulator {
 
     pub(super) fn cursor_down(&mut self, n: usize) {
         self.cursor_wrap_next = false;
-        log::trace!("cursor_handler::cursor_down: n = {}", n);
-        for _i in 0..n {
-            self.index();
-        }
+        // CUD (Cursor Down) moves the cursor down without scrolling.
+        // If it hits the bottom margin, it stops.
+        // Previously this used a loop calling `index()` which causes scrolling (IND behavior).
+        self.cursor_controller
+            .move_down(n, &self.current_screen_context());
     }
 
     pub(super) fn cursor_forward(&mut self, n: usize) {
