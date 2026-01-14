@@ -1,6 +1,6 @@
 //! Event mapping for X11 -> DisplayEvent.
 
-use crate::display::messages::{DisplayEvent, WindowId};
+use crate::display::messages::{DisplayEvent, Window, WindowId};
 use crate::input::{KeySymbol, Modifiers};
 use crate::pixel::PlatformPixel;
 use pixelflow_graphics::render::Frame;
@@ -59,11 +59,17 @@ pub fn map_event(
                     window.width = conf.width as u32;
                     window.height = conf.height as u32;
                     let frame = Frame::<PlatformPixel>::new(window.width, window.height);
-                    Some(DisplayEvent::Resized {
+
+                    let display_window = Window {
                         id: window_id,
+                        frame,
                         width_px: window.width,
                         height_px: window.height,
-                        frame,
+                        scale: window.scale_factor,
+                    };
+
+                    Some(DisplayEvent::Resized {
+                        window: display_window,
                     })
                 } else {
                     None
@@ -88,7 +94,7 @@ pub fn map_event(
     }
 }
 
-unsafe fn handle_selection_request(event: &xlib::XEvent, window: &mut super::window::X11Window) {
+unsafe fn handle_selection_request(event: &xlib::XEvent, window: &mut super::window::X11Window, ) {
     let req = event.selection_request;
     let mut response: xlib::XSelectionEvent = std::mem::zeroed();
     response.type_ = xlib::SelectionNotify;

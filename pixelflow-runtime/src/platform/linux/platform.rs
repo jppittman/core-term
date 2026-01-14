@@ -4,12 +4,12 @@
 
 use crate::api::private::EngineActorHandle;
 use crate::api::private::EngineData;
-use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, WindowId};
+use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window, WindowId};
 use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
 use crate::platform::linux::window::X11Window;
 use crate::platform::waker::X11Waker;
-use actor_scheduler::{ActorStatus, Message, SystemStatus};
+use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, Message, SystemStatus};
 use log::{error, info};
 use pixelflow_graphics::render::color::Bgra8;
 use pixelflow_graphics::render::Frame;
@@ -40,24 +40,36 @@ impl LinuxOps {
 }
 
 impl PlatformOps for LinuxOps {
-    fn handle_data(&mut self, data: DisplayData) {
+    fn handle_data(&mut self, data: DisplayData) -> HandlerResult {
         if let Some(window) = &mut self.window {
             match data {
-                DisplayData::Present { frame, .. } => {
+                DisplayData::Present { window: display_window } => {
+                    let frame = display_window.frame;
                     let (returned_frame, result) = window.present(frame);
                     if let Err(e) = result {
                         error!("X11: Present failed: {:?}", e);
                     }
+
+                    // Reconstruct Window to return
+                    let returned_window = Window {
+                        id: display_window.id,
+                        frame: returned_frame,
+                        width_px: display_window.width_px,
+                        height_px: display_window.height_px,
+                        scale: display_window.scale,
+                    };
+
                     // Return buffer to engine
                     let _ = self
                         .engine_handle
-                        .send(Message::Data(EngineData::PresentComplete(returned_frame)));
+                        .send(Message::Data(EngineData::PresentComplete(returned_window)));
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: DisplayControl) {
+    fn handle_control(&mut self, ctrl: DisplayControl) -> HandlerResult {
         if let Some(window) = &mut self.window {
             match ctrl {
                 DisplayControl::Shutdown => {
@@ -86,9 +98,10 @@ impl PlatformOps for LinuxOps {
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: DisplayMgmt) {
+    fn handle_management(&mut self, mgmt: DisplayMgmt) -> HandlerResult {
         match mgmt {
             DisplayMgmt::Create { settings } => {
                 info!(
@@ -101,14 +114,18 @@ impl PlatformOps for LinuxOps {
                         // Allocate initial frame buffer
                         let frame = Frame::<LinuxPixel>::new(window.width, window.height);
                         
+                        let display_window = Window {
+                            id,
+                            frame,
+                            width_px: window.width,
+                            height_px: window.height,
+                            scale: window.scale_factor,
+                        };
+
                         // Send WindowCreated event
                         let _ = self.engine_handle.send(Message::Data(EngineData::FromDriver(
                             DisplayEvent::WindowCreated {
-                                id,
-                                width_px: window.width,
-                                height_px: window.height,
-                                scale: window.scale_factor,
-                                frame,
+                                window: display_window,
                             },
                         )));
                         self.window = Some(window);
@@ -123,9 +140,10 @@ impl PlatformOps for LinuxOps {
                 self.window = None;
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         if let Some(window) = &mut self.window {
             let window_id = WindowId(window.window as u64);
 
@@ -164,10 +182,10 @@ impl PlatformOps for LinuxOps {
                                 .send(Message::Data(EngineData::FromDriver(display_event)));
                         }
                     }
-                    return ActorStatus::Busy;
+                    return Ok(ActorStatus::Busy);
                 }
             }
         }
-        ActorStatus::Idle
+        Ok(ActorStatus::Idle)
     }
 }
