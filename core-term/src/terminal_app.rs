@@ -40,7 +40,7 @@ use pixelflow_runtime::api::public::EngineHandle;
 use pixelflow_runtime::{
     EngineEventControl, EngineEventData, EngineEventManagement,
 };
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 /// Path to the embedded font file
@@ -99,20 +99,35 @@ pub struct TerminalAppParams {
     pub window_config: pixelflow_runtime::WindowConfig,
 }
 
+/// Parameters for creating a terminal cell manifold.
+struct RenderCellParams {
+    glyph: CachedGlyph,
+    offset_x: f32,
+    offset_y: f32,
+    cell_width: f32,
+    cell_height: f32,
+    fg: [f32; 4],
+    bg: [f32; 4],
+}
+
 impl TerminalApp {
     /// Helper to create a positioned terminal cell with background blending.
     ///
     /// Composition: bg + cov * (fg - bg)
     #[inline(always)]
     fn make_terminal_cell(
-        glyph: CachedGlyph,
-        offset_x: f32,
-        offset_y: f32,
-        cell_width: f32,
-        cell_height: f32,
-        fg: [f32; 4],
-        bg: [f32; 4],
+        params: RenderCellParams,
     ) -> impl Manifold<Output = Discrete> + Clone {
+        let RenderCellParams {
+            glyph,
+            offset_x,
+            offset_y,
+            cell_width,
+            cell_height,
+            fg,
+            bg,
+        } = params;
+
         // Create bounded glyph in local coordinates [0, width] x [0, height]
         // IMPORTANT: Bound BEFORE translating to avoid evaluating every glyph for every pixel
         let cond = X.ge(0.0) & X.le(cell_width) & Y.ge(0.0) & Y.le(cell_height);
@@ -300,15 +315,15 @@ impl TerminalApp {
 
                     cell_items.push(Positioned {
                         bounds: (x, y, x + cell_width, y + cell_height),
-                        leaf: Self::make_terminal_cell(
-                            cached,
-                            x,
-                            y,
+                        leaf: Self::make_terminal_cell(RenderCellParams {
+                            glyph: cached,
+                            offset_x: x,
+                            offset_y: y,
                             cell_width,
                             cell_height,
-                            [fg_r, fg_g, fg_b, fg_a],
-                            [bg_r, bg_g, bg_b, bg_a],
-                        ),
+                            fg: [fg_r, fg_g, fg_b, fg_a],
+                            bg: [bg_r, bg_g, bg_b, bg_a],
+                        }),
                     });
                 }
             }
