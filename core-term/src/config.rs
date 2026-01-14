@@ -15,6 +15,7 @@ use crate::{
 use log::{error, info};
 use pixelflow_runtime::config::PerformanceConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -101,26 +102,63 @@ pub struct Keybinding {
 
 /// Defines the configuration for all keybindings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "RawKeybindingsConfig", into = "RawKeybindingsConfig")]
 pub struct KeybindingsConfig {
     pub bindings: Vec<Keybinding>,
+    pub lookup: HashMap<(KeySymbol, Modifiers), UserInputAction>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RawKeybindingsConfig {
+    bindings: Vec<Keybinding>,
+}
+
+impl From<RawKeybindingsConfig> for KeybindingsConfig {
+    fn from(raw: RawKeybindingsConfig) -> Self {
+        let mut lookup = HashMap::new();
+        for binding in &raw.bindings {
+            lookup
+                .entry((binding.key, binding.mods))
+                .or_insert(binding.action.clone());
+        }
+        KeybindingsConfig {
+            bindings: raw.bindings,
+            lookup,
+        }
+    }
+}
+
+impl From<KeybindingsConfig> for RawKeybindingsConfig {
+    fn from(config: KeybindingsConfig) -> Self {
+        RawKeybindingsConfig {
+            bindings: config.bindings,
+        }
+    }
 }
 
 impl Default for KeybindingsConfig {
     fn default() -> Self {
-        KeybindingsConfig {
-            bindings: vec![
-                Keybinding {
-                    key: KeySymbol::Char('\u{3}'),
-                    mods: Modifiers::CONTROL | Modifiers::SHIFT,
-                    action: UserInputAction::InitiateCopy,
-                },
-                Keybinding {
-                    key: KeySymbol::Char('\u{16}'),
-                    mods: Modifiers::CONTROL | Modifiers::SHIFT,
-                    action: UserInputAction::RequestClipboardPaste,
-                },
-            ],
+        let bindings = vec![
+            Keybinding {
+                key: KeySymbol::Char('\u{3}'),
+                mods: Modifiers::CONTROL | Modifiers::SHIFT,
+                action: UserInputAction::InitiateCopy,
+            },
+            Keybinding {
+                key: KeySymbol::Char('\u{16}'),
+                mods: Modifiers::CONTROL | Modifiers::SHIFT,
+                action: UserInputAction::RequestClipboardPaste,
+            },
+        ];
+
+        let mut lookup = HashMap::new();
+        for binding in &bindings {
+            lookup
+                .entry((binding.key, binding.mods))
+                .or_insert(binding.action.clone());
         }
+
+        KeybindingsConfig { bindings, lookup }
     }
 }
 
