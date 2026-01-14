@@ -15,17 +15,15 @@ pub fn map_key_event_to_action(
     modifiers: Modifiers,
     config: &Config,
 ) -> Option<UserInputAction> {
-    config.keybindings.bindings.iter().find_map(|binding| {
-        // Use the passed config
-        if binding.key == key_symbol && binding.mods == modifiers {
-            debug!(
-                "Keybinding: {:?} + {:?} => {:?}",
-                binding.mods, binding.key, &binding.action
-            );
-            return Some(binding.action.clone());
-        }
+    if let Some(action) = config.keybindings.lookup.get(&(key_symbol, modifiers)) {
+        debug!(
+            "Keybinding: {:?} + {:?} => {:?}",
+            modifiers, key_symbol, action
+        );
+        Some(action.clone())
+    } else {
         None
-    })
+    }
 }
 
 #[cfg(test)]
@@ -33,10 +31,17 @@ mod tests {
     use super::*;
     use crate::config::{Config, Keybinding, KeybindingsConfig};
     use crate::term::action::UserInputAction;
+    use std::collections::HashMap;
 
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
         let mut cfg = Config::default();
-        cfg.keybindings = KeybindingsConfig { bindings };
+        let mut lookup = HashMap::new();
+        for b in &bindings {
+            lookup
+                .entry((b.key, b.mods))
+                .or_insert(b.action.clone());
+        }
+        cfg.keybindings = KeybindingsConfig { bindings, lookup };
         cfg
     }
 
