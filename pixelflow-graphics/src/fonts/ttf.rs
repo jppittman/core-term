@@ -805,6 +805,13 @@ pub struct Font<'a> {
     pub line_gap: i16,
 }
 
+struct SimpleParams {
+    n: usize,
+    scale: f32,
+    tx: f32,
+    ty: f32,
+}
+
 impl<'a> Font<'a> {
     pub fn parse(data: &'a [u8]) -> Option<Self> {
         // TTF header: sfntVersion(4) + numTables(2) + searchRange(2) + entrySelector(2) + rangeShift(2) = 12 bytes
@@ -1004,7 +1011,13 @@ impl<'a> Font<'a> {
 
         if n >= 0 {
             // Parse segments in normalized [0,1] space
-            let sum_segs = self.simple(&mut r, n as usize, norm_scale, norm_tx, norm_ty)?;
+            let params = SimpleParams {
+                n: n as usize,
+                scale: norm_scale,
+                tx: norm_tx,
+                ty: norm_ty,
+            };
+            let sum_segs = self.simple(&mut r, params)?;
 
             // Compose: Geometry (smooth AA coverage) -> Bounded (via square) -> Affine
             let bounded = square(sum_segs, 0.0f32);
@@ -1018,11 +1031,10 @@ impl<'a> Font<'a> {
     fn simple(
         &self,
         r: &mut R,
-        n: usize,
-        scale: f32,
-        tx: f32,
-        ty: f32,
+        params: SimpleParams,
     ) -> Option<Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+        let SimpleParams { n, scale, tx, ty } = params;
+
         if n == 0 {
             return Some(Geometry {
                 lines: vec![].into(),
