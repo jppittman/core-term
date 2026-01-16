@@ -9,7 +9,7 @@ use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
 use crate::platform::linux::window::X11Window;
 use crate::platform::waker::X11Waker;
-use actor_scheduler::{ActorStatus, Message, SystemStatus};
+use actor_scheduler::{ActorStatus, HandlerError, Message, SystemStatus};
 use log::{error, info};
 use pixelflow_graphics::render::color::Bgra8;
 use pixelflow_graphics::render::Frame;
@@ -40,24 +40,28 @@ impl LinuxOps {
 }
 
 impl PlatformOps for LinuxOps {
-    fn handle_data(&mut self, data: DisplayData) {
-        if let Some(window) = &mut self.window {
+    fn handle_data(&mut self, data: DisplayData) -> Result<(), HandlerError> {
+        if let Some(platform_window) = &mut self.window {
             match data {
-                DisplayData::Present { frame, .. } => {
-                    let (returned_frame, result) = window.present(frame);
+                DisplayData::Present { mut window } => {
+                    let (returned_frame, result) = platform_window.present(window.frame);
                     if let Err(e) = result {
                         error!("X11: Present failed: {:?}", e);
                     }
-                    // Return buffer to engine
+                    // Update window frame with returned buffer
+                    window.frame = returned_frame;
+
+                    // Return window to engine
                     let _ = self
                         .engine_handle
-                        .send(Message::Data(EngineData::PresentComplete(returned_frame)));
+                        .send(Message::Data(EngineData::PresentComplete(window)));
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: DisplayControl) {
+    fn handle_control(&mut self, ctrl: DisplayControl) -> Result<(), HandlerError> {
         if let Some(window) = &mut self.window {
             match ctrl {
                 DisplayControl::Shutdown => {
@@ -86,9 +90,10 @@ impl PlatformOps for LinuxOps {
                 }
             }
         }
+        Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: DisplayMgmt) {
+    fn handle_management(&mut self, mgmt: DisplayMgmt) -> Result<(), HandlerError> {
         match mgmt {
             DisplayMgmt::Create { settings } => {
                 info!(
@@ -101,14 +106,18 @@ impl PlatformOps for LinuxOps {
                         // Allocate initial frame buffer
                         let frame = Frame::<LinuxPixel>::new(window.width, window.height);
                         
+                        let win = crate::display::messages::Window {
+                            id,
+                            width_px: window.width,
+                            height_px: window.height,
+                            scale: window.scale_factor,
+                            frame,
+                        };
+
                         // Send WindowCreated event
                         let _ = self.engine_handle.send(Message::Data(EngineData::FromDriver(
                             DisplayEvent::WindowCreated {
-                                id,
-                                width_px: window.width,
-                                height_px: window.height,
-                                scale: window.scale_factor,
-                                frame,
+                                window: win,
                             },
                         )));
                         self.window = Some(window);
@@ -123,9 +132,10 @@ impl PlatformOps for LinuxOps {
                 self.window = None;
             }
         }
+        Ok(())
     }
 
-    fn park(&mut self, status: SystemStatus) -> ActorStatus {
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         if let Some(window) = &mut self.window {
             let window_id = WindowId(window.window as u64);
 
@@ -164,10 +174,10 @@ impl PlatformOps for LinuxOps {
                                 .send(Message::Data(EngineData::FromDriver(display_event)));
                         }
                     }
-                    return ActorStatus::Busy;
+                    return Ok(ActorStatus::Busy);
                 }
             }
         }
-        ActorStatus::Idle
+        Ok(ActorStatus::Idle)
     }
 }
