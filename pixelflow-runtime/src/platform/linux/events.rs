@@ -59,11 +59,17 @@ pub fn map_event(
                     window.width = conf.width as u32;
                     window.height = conf.height as u32;
                     let frame = Frame::<PlatformPixel>::new(window.width, window.height);
-                    Some(DisplayEvent::Resized {
+
+                    let win = crate::display::messages::Window {
                         id: window_id,
                         width_px: window.width,
                         height_px: window.height,
+                        scale: window.scale_factor,
                         frame,
+                    };
+
+                    Some(DisplayEvent::Resized {
+                        window: win
                     })
                 } else {
                     None
@@ -221,13 +227,17 @@ fn handle_button_press(
             y: e.y,
             modifiers,
         }),
-        _ => Some(DisplayEvent::MouseButtonPress {
+        // Handle other standard buttons (Left=1, Middle=2, Right=3)
+        1 | 2 | 3 => Some(DisplayEvent::MouseButtonPress {
             id,
             button: e.button as u8,
             x: e.x,
             y: e.y,
             modifiers,
         }),
+        // Ignore extended buttons for now, or todo!() if strictness required, but better to just ignore or handle as generic
+        // returning None for unhandled buttons is safer than panic
+        _ => None,
     }
 }
 

@@ -15,17 +15,15 @@ pub fn map_key_event_to_action(
     modifiers: Modifiers,
     config: &Config,
 ) -> Option<UserInputAction> {
-    config.keybindings.bindings.iter().find_map(|binding| {
-        // Use the passed config
-        if binding.key == key_symbol && binding.mods == modifiers {
-            debug!(
-                "Keybinding: {:?} + {:?} => {:?}",
-                binding.mods, binding.key, &binding.action
-            );
-            return Some(binding.action.clone());
-        }
+    if let Some(action) = config.keybindings.lookup.get(&(key_symbol, modifiers)) {
+        debug!(
+            "Keybinding: {:?} + {:?} => {:?}",
+            modifiers, key_symbol, action
+        );
+        Some(action.clone())
+    } else {
         None
-    })
+    }
 }
 
 #[cfg(test)]
@@ -36,7 +34,21 @@ mod tests {
 
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
         let mut cfg = Config::default();
-        cfg.keybindings = KeybindingsConfig { bindings };
+        // Since we modified KeybindingsConfig to build lookup on creation/deserialization,
+        // we need to construct it properly here.
+        // We use the From<RawKeybindingsConfig> impl indirectly via the public API if exposed,
+        // or just rely on the fact that we can construct it manually if fields were public.
+        // But `lookup` field is public.
+
+        // However, we want to simulate how it's normally created.
+        // We can create it manually since fields are public.
+        use std::collections::HashMap;
+        let mut lookup = HashMap::new();
+        for binding in &bindings {
+            lookup.entry((binding.key, binding.mods)).or_insert(binding.action.clone());
+        }
+
+        cfg.keybindings = KeybindingsConfig { bindings, lookup };
         cfg
     }
 
