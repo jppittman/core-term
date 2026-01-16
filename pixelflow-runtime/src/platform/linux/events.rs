@@ -59,12 +59,14 @@ pub fn map_event(
                     window.width = conf.width as u32;
                     window.height = conf.height as u32;
                     let frame = Frame::<PlatformPixel>::new(window.width, window.height);
-                    Some(DisplayEvent::Resized {
+                    let win = crate::display::messages::Window {
                         id: window_id,
+                        frame,
                         width_px: window.width,
                         height_px: window.height,
-                        frame,
-                    })
+                        scale: window.scale_factor,
+                    };
+                    Some(DisplayEvent::Resized { window: win })
                 } else {
                     None
                 }
