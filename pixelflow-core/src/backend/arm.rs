@@ -341,13 +341,13 @@ impl SimdOps for F32x4 {
             let one_bits = vdupq_n_u32(0x3F800000);
             let f = vreinterpretq_f32_u32(vorrq_u32(vandq_u32(x_u32, mant_mask), one_bits));
 
-            // Remez minimax polynomial for log2(f), f ∈ [1, 2)
-            // Degree 4, max error ~10^-7
-            let c4 = vdupq_n_f32(-0.1334614);
-            let c3 = vdupq_n_f32(1.0588497);
-            let c2 = vdupq_n_f32(-2.3600652);
-            let c1 = vdupq_n_f32(2.8647557);
-            let c0 = vdupq_n_f32(-core::f32::consts::FRAC_2_PI);
+            // Polynomial approximation for log2(f), f ∈ [1, 2)
+            // Derived from Taylor series of log2(1+x) transformed to f-basis
+            let c4 = vdupq_n_f32(-0.360674);
+            let c3 = vdupq_n_f32(1.9237);
+            let c2 = vdupq_n_f32(-4.3282);
+            let c1 = vdupq_n_f32(5.7708);
+            let c0 = vdupq_n_f32(-3.0056);
 
             // Horner's method using NEON FMA: vfmaq_f32(c, a, b) = a*b + c
             let poly = vfmaq_f32(c3, c4, f);
