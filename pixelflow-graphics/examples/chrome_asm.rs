@@ -53,7 +53,7 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         let width = Field::from(self.width);
         let height = Field::from(self.height);
         let scale = Field::from(2.0) / height;
-        let sx = (x - width * Field::from(0.5)) * scale;
+        let sx = (x - width * Field::from(0.5)) * scale.clone();
         let sy = (height * Field::from(0.5) - y) * scale;
         // Use At combinator to evaluate at transformed coordinates
         At {

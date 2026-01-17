@@ -116,7 +116,7 @@ impl Manifold for RadialGradient {
     fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
         let dx = x - Field::from(self.cx);
         let dy = y - Field::from(self.cy);
-        let dist_sq = dx * dx + dy * dy;
+        let dist_sq = dx.clone() * dx + dy.clone() * dy;
 
         // 1.0 at center, 0.0 at edge (parabolic falloff)
         // Values outside radius will go negative, but Pixel::from_rgba clamps

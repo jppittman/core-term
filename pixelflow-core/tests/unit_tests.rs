@@ -279,13 +279,14 @@ mod logic_ops_tests {
     #[test]
     fn test_logic_operators_compile() {
         // Verify all logic operators compile
+        // Note: With Zst trait, non-ZST expressions need cloning for reuse
         let cond1 = X.ge(0.0f32);
         let cond2 = X.le(10.0f32);
 
-        let _and = cond1 & cond2;
-        let _or = cond1 | cond2;
+        let _and = cond1.clone() & cond2.clone();
+        let _or = cond1.clone() | cond2.clone();
 
-        let _and_struct = And(cond1, cond2);
+        let _and_struct = And(cond1.clone(), cond2.clone());
         let _or_struct = Or(cond1, cond2);
     }
 }
