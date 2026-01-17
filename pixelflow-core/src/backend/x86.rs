@@ -313,13 +313,14 @@ impl SimdOps for F32x4 {
             let one_bits = _mm_set1_epi32(0x3F800000);
             let f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
-            // Remez minimax polynomial for log2(f), f ∈ [1, 2)
-            // Degree 4, max error ~10^-7
-            let c4 = _mm_set1_ps(-0.1334614);
-            let c3 = _mm_set1_ps(1.0588497);
-            let c2 = _mm_set1_ps(-2.3600652);
-            let c1 = _mm_set1_ps(2.8647557);
-            let c0 = _mm_set1_ps(-core::f32::consts::FRAC_2_PI);
+            // Polynomial approximation for log2(f), f ∈ [1, 2)
+            // Derived from Taylor series of log2(1+x) transformed to f-basis
+            // Coefficients ensure poly(1) = 0 and poly(2) ≈ 1 with good accuracy
+            let c4 = _mm_set1_ps(-0.360674);
+            let c3 = _mm_set1_ps(1.9237);
+            let c2 = _mm_set1_ps(-4.3282);
+            let c1 = _mm_set1_ps(5.7708);
+            let c0 = _mm_set1_ps(-3.0056);
 
             // Horner's method (no FMA on base SSE2, emulate with mul+add)
             let mut poly = _mm_add_ps(_mm_mul_ps(c4, f), c3);
@@ -879,11 +880,13 @@ impl SimdOps for F32x8 {
                 one_bits,
             ));
 
-            let c4 = _mm256_set1_ps(-0.1334614);
-            let c3 = _mm256_set1_ps(1.0588497);
-            let c2 = _mm256_set1_ps(-2.3600652);
-            let c1 = _mm256_set1_ps(2.8647557);
-            let c0 = _mm256_set1_ps(-core::f32::consts::FRAC_2_PI);
+            // Polynomial approximation for log2(f), f ∈ [1, 2)
+            // Derived from Taylor series of log2(1+x) transformed to f-basis
+            let c4 = _mm256_set1_ps(-0.360674);
+            let c3 = _mm256_set1_ps(1.9237);
+            let c2 = _mm256_set1_ps(-4.3282);
+            let c1 = _mm256_set1_ps(5.7708);
+            let c0 = _mm256_set1_ps(-3.0056);
 
             // Horner's method
             #[cfg(target_feature = "fma")]
@@ -1499,14 +1502,14 @@ impl SimdOps for F32x16 {
             // Extract exponent (automatically adjusts for the mantissa range shift)
             let n = _mm512_getexp_ps(self.0);
 
-            // Remez minimax polynomial for log2(f), f ∈ [0.75, 1.5)
+            // Polynomial approximation for log2(f), f ∈ [0.75, 1.5)
             // Centered around 1.0 for reduced polynomial error
-            // Degree 4, max error ~10^-7
-            let c4 = _mm512_set1_ps(-0.1334614);
-            let c3 = _mm512_set1_ps(1.0588497);
-            let c2 = _mm512_set1_ps(-2.3600652);
-            let c1 = _mm512_set1_ps(2.8647557);
-            let c0 = _mm512_set1_ps(-core::f32::consts::FRAC_2_PI);
+            // Derived from Taylor series of log2(1+x) transformed to f-basis
+            let c4 = _mm512_set1_ps(-0.360674);
+            let c3 = _mm512_set1_ps(1.9237);
+            let c2 = _mm512_set1_ps(-4.3282);
+            let c1 = _mm512_set1_ps(5.7708);
+            let c0 = _mm512_set1_ps(-3.0056);
 
             // Horner's method: ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
             let poly = _mm512_fmadd_ps(c4, f, c3);
