@@ -812,9 +812,20 @@ dependencies = [
  "libc",
  "log",
  "pixelflow-core",
+ "pixelflow-macros",
  "serde",
  "tempfile",
  "windows-sys",
+]
+
+[[package]]
+name = "pixelflow-macros"
+version = "0.1.0"
+dependencies = [
+ "pixelflow-core",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
