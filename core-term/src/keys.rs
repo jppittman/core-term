@@ -15,28 +15,26 @@ pub fn map_key_event_to_action(
     modifiers: Modifiers,
     config: &Config,
 ) -> Option<UserInputAction> {
-    config.keybindings.bindings.iter().find_map(|binding| {
-        // Use the passed config
-        if binding.key == key_symbol && binding.mods == modifiers {
-            debug!(
-                "Keybinding: {:?} + {:?} => {:?}",
-                binding.mods, binding.key, &binding.action
-            );
-            return Some(binding.action.clone());
-        }
+    if let Some(action) = config.keybindings.lookup.get(&(key_symbol, modifiers)) {
+        debug!(
+            "Keybinding: {:?} + {:?} => {:?}",
+            modifiers, key_symbol, action
+        );
+        Some(action.clone())
+    } else {
         None
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Keybinding, KeybindingsConfig};
+    use crate::config::{Config, Keybinding, KeybindingsConfig, RawKeybindingsConfig};
     use crate::term::action::UserInputAction;
 
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
         let mut cfg = Config::default();
-        cfg.keybindings = KeybindingsConfig { bindings };
+        cfg.keybindings = KeybindingsConfig::from(RawKeybindingsConfig { bindings });
         cfg
     }
 
