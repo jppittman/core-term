@@ -77,7 +77,7 @@ impl<M: Manifold<Output = Field> + ManifoldExt> Manifold for ScreenRemap<M> {
         // Scale so that screen Y range is [-1, 1]
         // This gives ~53° vertical FOV (since atan(1) = 45°, the full range is 90°)
         let scale = Field::from(2.0) / height;
-        let x = (px - width * Field::from(0.5)) * scale;
+        let x = (px - width * Field::from(0.5)) * scale.clone();
         let y = (height * Field::from(0.5) - py) * scale; // Flip Y
 
         self.inner.eval_at(x, y, z, w)
@@ -301,7 +301,7 @@ fn test_color_chrome_sphere() {
             let width = Field::from(self.width);
             let height = Field::from(self.height);
             let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale;
+            let x = (px - width * Field::from(0.5)) * scale.clone();
             let y = (height * Field::from(0.5) - py) * scale;
             At {
                 inner: &self.inner,
@@ -393,7 +393,7 @@ fn test_mullet_vs_3channel_comparison() {
             let cell_z = z.val.floor().constant();
             let sum = (cell_x + cell_z).constant();
             let half = (sum * Field::from(0.5)).constant();
-            let fract_half = (half - half.floor()).constant();
+            let fract_half = (half.clone() - half.floor()).constant();
             let is_even = fract_half.abs().lt(Field::from(0.25));
 
             let (a, b) = match self.channel {
@@ -494,7 +494,7 @@ fn test_mullet_vs_3channel_comparison() {
             let width = Field::from(self.width);
             let height = Field::from(self.height);
             let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale;
+            let x = (px - width * Field::from(0.5)) * scale.clone();
             let y = (height * Field::from(0.5) - py) * scale;
             At {
                 inner: &self.inner,
@@ -619,7 +619,7 @@ fn test_work_stealing_benchmark() {
             let width = Field::from(self.width);
             let height = Field::from(self.height);
             let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale;
+            let x = (px - width * Field::from(0.5)) * scale.clone();
             let y = (height * Field::from(0.5) - py) * scale;
             At {
                 inner: &self.inner,

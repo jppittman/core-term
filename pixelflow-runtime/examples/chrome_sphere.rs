@@ -63,7 +63,7 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
         let height = Field::from(self.height);
 
         let scale = Field::from(2.0) / height;
-        let x = (px - width * Field::from(0.5)) * scale;
+        let x = (px - width * Field::from(0.5)) * scale.clone();
         let y = (height * Field::from(0.5) - py) * scale;
 
         At {

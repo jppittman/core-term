@@ -186,7 +186,8 @@ fn quadratic_winding([x0, y0]: [f32; 2], [x1, y1]: [f32; 2], [x2, y2]: [f32; 2])
 
     // Layer 1 (outermost): screen coords
     let disc = Y * disc_slope + disc_const;
-    disc.ge(0.0)
+    disc.clone()
+        .ge(0.0)
         .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
 }
 
@@ -419,6 +420,7 @@ impl<K: Manifold<Jet2, Output = Jet2>, D: Send + Sync> Differentiable for Quad<K
 }
 
 // Old Quad implementation using quadratic formula (for benchmarking Curve<3>)
+// Uses layered contramap pattern: build AST with ZST variables, inject values via .at()
 impl Manifold<Field> for Curve<3> {
     type Output = Field;
 
@@ -432,55 +434,76 @@ impl Manifold<Field> for Curve<3> {
             if by.abs() < 1e-6 {
                 return Field::from(0.0);
             }
-            // Linear case: t = (Y - cy) / by
-            let t = (Y - cy) / by;
-            let in_t = t.ge(0.0f32) & t.lt(1.0f32);
-            let x_int = (t * ax + bx) * t + cx;
-            let dx_dt = t * (2.0 * ax) + bx;
-            let dy_dt = t * (2.0 * ay) + by;
-            let dir = dy_dt.gt(0.0f32).select(1.0f32, -1.0f32);
-            let dist = x_int - X;
-            let curve_grad_sq = dx_dt * dx_dt + dy_dt * dy_dt;
-            let aa_scale = dy_dt.abs() * curve_grad_sq.max(1e-12f32).rsqrt();
-            let coverage = (dist * aa_scale + 0.5).max(0.0f32).min(1.0f32);
-            in_t.select(coverage * dir, 0.0f32).at(x, y, z, w).eval()
+            // Linear case - Layer 2 (inner): Z = t parameter
+            // Build expression using ZST variables (X, Y, Z are Copy)
+            // Note: Coefficients (ax, bx, etc.) are f32, making expressions non-Copy
+            // Clone where expressions are used multiple times
+            let inner = {
+                // Z represents t, X represents screen_x
+                let in_t = Z.ge(0.0) & Z.lt(1.0);
+                let x_int = Z * Z * ax + Z * bx + cx;
+                let dx_dt = Z * (2.0 * ax) + bx;
+                let dy_dt = Z * (2.0 * ay) + by;
+                // dy_dt used twice: for dir and for gradient - clone for first use
+                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
+                let dist = x_int - X;
+                // dx_dt used twice in gradient, dy_dt used in gradient AND later for abs()
+                let curve_grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
+                let aa_scale = dy_dt.abs() * curve_grad_sq.max(1e-12f32).rsqrt();
+                let coverage = (dist * aa_scale + 0.5).max(0.0f32).min(1.0f32);
+                in_t.select(coverage * dir, 0.0f32)
+            };
+
+            // Layer 1 (outer): inject t = (Y - cy) / by via contramap
+            inner.at(X, Y, (Y - cy) / by, W).at(x, y, z, w).eval()
         } else {
-            // Quadratic: t = (-by ± sqrt(by² - 4*ay*(cy - Y))) / (2*ay)
-            // c_val = cy - Y, rewritten as -Y + cy for Manifold-first ordering
-            let c_val = Y * (-1.0) + cy;
-            let discriminant = (c_val * (-4.0 * ay)) + (by * by);
-            let valid = discriminant.ge(0.0f32);
-            let sd = discriminant.abs().sqrt();
+            // Quadratic case - Layer 3 (innermost): Y = t1, Z = t2
+            // Build winding contributions using ZST variables (all Copy)
+            let contrib1 = {
+                // Y represents t1
+                let in_t = Y.ge(0.0) & Y.lt(1.0);
+                let x_int = Y * Y * ax + Y * bx + cx;
+                let dx_dt = Y * (2.0 * ax) + bx;
+                let dy_dt = Y * (2.0 * ay) + by;
+                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
+                let dist = x_int - X;
+                let grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
+                let aa = dy_dt.abs() * grad_sq.max(1e-12f32).rsqrt();
+                let cov = (dist * aa + 0.5).max(0.0f32).min(1.0f32);
+                in_t.select(cov * dir, 0.0f32)
+            };
+            let contrib2 = {
+                // Z represents t2
+                let in_t = Z.ge(0.0) & Z.lt(1.0);
+                let x_int = Z * Z * ax + Z * bx + cx;
+                let dx_dt = Z * (2.0 * ax) + bx;
+                let dy_dt = Z * (2.0 * ay) + by;
+                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
+                let dist = x_int - X;
+                let grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
+                let aa = dy_dt.abs() * grad_sq.max(1e-12f32).rsqrt();
+                let cov = (dist * aa + 0.5).max(0.0f32).min(1.0f32);
+                in_t.select(cov * dir, 0.0f32)
+            };
+
+            // Sum contributions from both roots
+            let contrib = contrib1 + contrib2;
+
+            // Layer 2: W = sqrt(discriminant), inject t1 and t2
             let inv_2ay = 1.0 / (2.0 * ay);
+            let with_roots = contrib.at(
+                X,
+                W * (-inv_2ay) + (-by * inv_2ay), // t1 = (-by - sqrt_disc) / (2*ay)
+                W * inv_2ay + (-by * inv_2ay),    // t2 = (-by + sqrt_disc) / (2*ay)
+                W,
+            );
 
-            // t1 = (-by - sd) / (2*ay)
-            let t1 = (sd * (-1.0) - by) * inv_2ay;
-            let in_t1 = t1.ge(0.0f32) & t1.lt(1.0f32);
-            let x_int1 = (t1 * ax + bx) * t1 + cx;
-            let dx_dt1 = t1 * (2.0 * ax) + bx;
-            let dy_dt1 = t1 * (2.0 * ay) + by;
-            let dir1 = dy_dt1.gt(0.0f32).select(1.0f32, -1.0f32);
-            let dist1 = x_int1 - X;
-            let grad_sq1 = dx_dt1 * dx_dt1 + dy_dt1 * dy_dt1;
-            let aa1 = dy_dt1.abs() * grad_sq1.max(1e-12f32).rsqrt();
-            let cov1 = (dist1 * aa1 + 0.5).max(0.0f32).min(1.0f32);
-            let contrib1 = in_t1.select(cov1 * dir1, 0.0f32);
-
-            // t2 = (-by + sd) / (2*ay)
-            let t2 = (sd - by) * inv_2ay;
-            let in_t2 = t2.ge(0.0f32) & t2.lt(1.0f32);
-            let x_int2 = (t2 * ax + bx) * t2 + cx;
-            let dx_dt2 = t2 * (2.0 * ax) + bx;
-            let dy_dt2 = t2 * (2.0 * ay) + by;
-            let dir2 = dy_dt2.gt(0.0f32).select(1.0f32, -1.0f32);
-            let dist2 = x_int2 - X;
-            let grad_sq2 = dx_dt2 * dx_dt2 + dy_dt2 * dy_dt2;
-            let aa2 = dy_dt2.abs() * grad_sq2.max(1e-12f32).rsqrt();
-            let cov2 = (dist2 * aa2 + 0.5).max(0.0f32).min(1.0f32);
-            let contrib2 = in_t2.select(cov2 * dir2, 0.0f32);
-
-            valid
-                .select(contrib1 + contrib2, 0.0f32)
+            // Layer 1 (outermost): compute discriminant, check validity
+            // disc used twice: for ge() check and for sqrt() in W coordinate
+            let disc = Y * (-4.0 * ay) + (by * by + 4.0 * ay * cy);
+            disc.clone()
+                .ge(0.0)
+                .select(with_roots.at(X, Y, Z, disc.max(0.0).sqrt()), 0.0f32)
                 .at(x, y, z, w)
                 .eval()
         }

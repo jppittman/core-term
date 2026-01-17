@@ -556,39 +556,36 @@ impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
         let tv = (x.dy, y.dy, z.dy);
 
         // Cross product Tv × Tu for outward normal
+        // Build expression tree, evaluate at Jet3 struct construction boundaries
         let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
-        // Collapse AST nodes to Field for scalar operations
+        // Build the normalized normal as a single expression tree
+        // All operations stay as AST nodes until final evaluation
         let fzero = Field::from(0.0);
-        let n_len_sq_scalar =
-            (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z).constant();
-        let inv_n_len = n_len_sq_scalar
-            .max(Field::from(1e-10))
-            .sqrt()
-            .rsqrt()
-            .constant();
+        let n_len_sq = cross_x.clone() * cross_x.clone()
+            + cross_y.clone() * cross_y.clone()
+            + cross_z.clone() * cross_z.clone();
+        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
 
-        // Normal as scalar (for Householder value computation)
-        let nx = (cross_x * inv_n_len).constant();
-        let ny = (cross_y * inv_n_len).constant();
+        // Normal components - evaluate at Jet3 construction boundary
+        let nx = (cross_x * inv_n_len.clone()).constant();
+        let ny = (cross_y * inv_n_len.clone()).constant();
         let nz = (cross_z * inv_n_len).constant();
 
-        // Compute incident direction (normalized hit point direction from origin)
+        // Incident direction (normalized hit point direction from origin)
         let d_x = (x.val * inv_p_len.val).constant();
         let d_y = (y.val * inv_p_len.val).constant();
         let d_z = (z.val * inv_p_len.val).constant();
 
-        // Compute D·N (cosine of incidence angle) for curvature scaling
+        // D·N (cosine of incidence angle) for curvature scaling
         let d_dot_n_scalar = (d_x * nx + d_y * ny + d_z * nz).constant();
 
-        // Curvature-aware scaling: reflection magnifies angular spread.
-        // At normal incidence (cos=1): magnification ≈ 2x
-        // At grazing angles (cos→0): magnification → large
+        // Curvature-aware scaling: reflection magnifies angular spread
         // Scale = 2 / |cos(incidence)|, clamped to avoid infinity
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = Field::from(2.0) / cos_incidence;
+        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
         let n_jet_x = Jet3 {
             val: nx,
@@ -647,38 +644,35 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
         let tu = (x.dx, y.dx, z.dx);
         let tv = (x.dy, y.dy, z.dy);
 
+        // Cross product Tv × Tu for outward normal - build expression tree
         let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
-        // Collapse AST nodes to Field for scalar operations
+        // Build normalized normal as expression tree, evaluate at boundaries
         let fzero = Field::from(0.0);
-        let n_len_sq_scalar =
-            (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z).constant();
-        let inv_n_len = n_len_sq_scalar
-            .max(Field::from(1e-10))
-            .sqrt()
-            .rsqrt()
-            .constant();
+        let n_len_sq = cross_x.clone() * cross_x.clone()
+            + cross_y.clone() * cross_y.clone()
+            + cross_z.clone() * cross_z.clone();
+        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
 
-        let nx = (cross_x * inv_n_len).constant();
-        let ny = (cross_y * inv_n_len).constant();
+        // Normal components - evaluate at Jet3 construction boundary
+        let nx = (cross_x * inv_n_len.clone()).constant();
+        let ny = (cross_y * inv_n_len.clone()).constant();
         let nz = (cross_z * inv_n_len).constant();
 
-        // Compute incident direction (normalized hit point direction from origin)
+        // Incident direction (normalized hit point direction from origin)
         let d_x = (x.val * inv_p_len.val).constant();
         let d_y = (y.val * inv_p_len.val).constant();
         let d_z = (z.val * inv_p_len.val).constant();
 
-        // Compute D·N (cosine of incidence angle) for curvature scaling
+        // D·N (cosine of incidence angle) for curvature scaling
         let d_dot_n_scalar = (d_x * nx + d_y * ny + d_z * nz).constant();
 
-        // Curvature-aware scaling: reflection magnifies angular spread.
-        // At normal incidence (cos=1): magnification ≈ 2x
-        // At grazing angles (cos→0): magnification → large
+        // Curvature-aware scaling: reflection magnifies angular spread
         // Scale = 2 / |cos(incidence)|, clamped to avoid infinity
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = Field::from(2.0) / cos_incidence;
+        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
         let n_jet_x = Jet3 {
             val: nx,
@@ -768,12 +762,14 @@ where
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
-        // Normalize
-        let n_len_sq = (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z).constant();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt().constant();
+        // Normalize - build expression tree, clone for reuse
+        let n_len_sq = cross_x.clone() * cross_x.clone()
+            + cross_y.clone() * cross_y.clone()
+            + cross_z.clone() * cross_z.clone();
+        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
 
-        let nx = (cross_x * inv_n_len).constant();
-        let ny = (cross_y * inv_n_len).constant();
+        let nx = (cross_x * inv_n_len.clone()).constant();
+        let ny = (cross_y * inv_n_len.clone()).constant();
         let nz = (cross_z * inv_n_len).constant();
 
         // ====================================================================
@@ -795,7 +791,7 @@ where
         // Compute D·N for curvature scaling
         let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = Field::from(2.0) / cos_incidence;
+        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
         // Normal as Jet3 with scaled derivatives
         let fzero = Field::from(0.0);
@@ -884,11 +880,14 @@ where
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
-        let n_len_sq = (cross_x * cross_x + cross_y * cross_y + cross_z * cross_z).constant();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt().constant();
+        // Build normalized normal as expression tree, clone for reuse
+        let n_len_sq = cross_x.clone() * cross_x.clone()
+            + cross_y.clone() * cross_y.clone()
+            + cross_z.clone() * cross_z.clone();
+        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
 
-        let nx = (cross_x * inv_n_len).constant();
-        let ny = (cross_y * inv_n_len).constant();
+        let nx = (cross_x * inv_n_len.clone()).constant();
+        let ny = (cross_y * inv_n_len.clone()).constant();
         let nz = (cross_z * inv_n_len).constant();
 
         // 2. Normalize incoming direction
@@ -902,7 +901,7 @@ where
         // 3. Curvature scaling
         let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = Field::from(2.0) / cos_incidence;
+        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
         let fzero = Field::from(0.0);
         let n_jet_x = Jet3 {
@@ -971,7 +970,7 @@ impl Manifold<Jet3> for Checker {
         let cell_z = z.val.floor();
         let sum = cell_x + cell_z;
         let half = sum * Field::from(0.5);
-        let fract_half = half - half.floor();
+        let fract_half = half.clone() - half.floor();
         let is_even = fract_half.abs().lt(Field::from(0.25));
 
         // Colors - use select for branchless conditional
@@ -1003,7 +1002,7 @@ impl Manifold<Jet3> for Checker {
 
         // Blend with neighbor color at edges
         let neighbor_color = is_even.select(color_b, color_a);
-        (base_color * coverage + neighbor_color * (Field::from(1.0) - coverage))
+        (base_color * coverage.clone() + neighbor_color * (Field::from(1.0) - coverage))
             .at(x.val, Field::from(0.0), z.val, Field::from(0.0))
             .eval()
     }
@@ -1097,7 +1096,7 @@ where
         let cell_z = z.val.floor();
         let sum = cell_x + cell_z;
         let half = sum * Field::from(0.5);
-        let fract_half = half - half.floor();
+        let fract_half = half.clone() - half.floor();
         let is_even = fract_half.abs().lt(Field::from(0.25));
 
         let ra = Field::from(0.95);

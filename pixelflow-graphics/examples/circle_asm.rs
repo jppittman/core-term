@@ -15,7 +15,7 @@ pub fn circle_kernel(x: Field, y: Field) -> Field {
 
     let dx = X - cx;
     let dy = Y - cy;
-    let dist_sq = dx * dx + dy * dy;
+    let dist_sq = dx.clone() * dx + dy.clone() * dy;
     let inside = dist_sq.lt(r * r);
     inside
         .select(1.0f32, 0.0f32)
