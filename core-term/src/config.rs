@@ -15,6 +15,7 @@ use crate::{
 use log::{error, info};
 use pixelflow_runtime::config::PerformanceConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -99,27 +100,57 @@ pub struct Keybinding {
     pub action: UserInputAction,
 }
 
+/// Defines the raw configuration for all keybindings (for serialization).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawKeybindingsConfig {
+    pub bindings: Vec<Keybinding>,
+}
+
 /// Defines the configuration for all keybindings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "RawKeybindingsConfig", into = "RawKeybindingsConfig")]
 pub struct KeybindingsConfig {
     pub bindings: Vec<Keybinding>,
+    #[serde(skip)]
+    pub lookup: HashMap<(KeySymbol, Modifiers), UserInputAction>,
 }
 
 impl Default for KeybindingsConfig {
     fn default() -> Self {
+        let bindings = vec![
+            Keybinding {
+                key: KeySymbol::Char('\u{3}'),
+                mods: Modifiers::CONTROL | Modifiers::SHIFT,
+                action: UserInputAction::InitiateCopy,
+            },
+            Keybinding {
+                key: KeySymbol::Char('\u{16}'),
+                mods: Modifiers::CONTROL | Modifiers::SHIFT,
+                action: UserInputAction::RequestClipboardPaste,
+            },
+        ];
+        Self::from(RawKeybindingsConfig { bindings })
+    }
+}
+
+impl From<RawKeybindingsConfig> for KeybindingsConfig {
+    fn from(raw: RawKeybindingsConfig) -> Self {
+        let mut lookup = HashMap::with_capacity(raw.bindings.len());
+        for binding in &raw.bindings {
+            // Use or_insert to preserve "first match" semantics (earlier bindings take precedence)
+            lookup.entry((binding.key, binding.mods)).or_insert(binding.action.clone());
+        }
         KeybindingsConfig {
-            bindings: vec![
-                Keybinding {
-                    key: KeySymbol::Char('\u{3}'),
-                    mods: Modifiers::CONTROL | Modifiers::SHIFT,
-                    action: UserInputAction::InitiateCopy,
-                },
-                Keybinding {
-                    key: KeySymbol::Char('\u{16}'),
-                    mods: Modifiers::CONTROL | Modifiers::SHIFT,
-                    action: UserInputAction::RequestClipboardPaste,
-                },
-            ],
+            bindings: raw.bindings,
+            lookup,
+        }
+    }
+}
+
+impl From<KeybindingsConfig> for RawKeybindingsConfig {
+    fn from(config: KeybindingsConfig) -> Self {
+        RawKeybindingsConfig {
+            bindings: config.bindings,
         }
     }
 }
