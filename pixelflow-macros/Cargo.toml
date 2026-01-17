@@ -1,0 +1,18 @@
+[package]
+name = "pixelflow-macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Procedural macros for PixelFlow: express algebra, get SIMD"
+license = "Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "fold", "extra-traits", "parsing"] }
+quote = "1"
+proc-macro2 = "1"
+
+[dev-dependencies]
+pixelflow-core = { path = "../pixelflow-core" }

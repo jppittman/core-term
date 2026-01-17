@@ -31,6 +31,7 @@ windows-sys = { version = "0.59", features = ["Win32_System_Memory", "Win32_Foun
 criterion = { version = "0.5", features = ["html_reports"] }
 freetype-rs = "0.32"
 tempfile = "3.10"
+pixelflow-macros = { path = "../pixelflow-macros" }
 
 [[bench]]
 name = "graphics_benches"
