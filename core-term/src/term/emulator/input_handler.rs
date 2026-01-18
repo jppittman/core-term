@@ -11,6 +11,12 @@ use log::{debug, trace};
 const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
 const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
+struct KeyInput {
+    symbol: pixelflow_runtime::input::KeySymbol,
+    modifiers: pixelflow_runtime::input::Modifiers,
+    text: Option<String>,
+}
+
 pub(super) fn process_user_input_action(
     emulator: &mut TerminalEmulator,
     action: UserInputAction,
@@ -30,7 +36,7 @@ pub(super) fn process_user_input_action(
             symbol,
             modifiers,
             text,
-        } => handle_key_input(emulator, symbol, modifiers, text),
+        } => handle_key_input(emulator, KeyInput { symbol, modifiers, text }),
         UserInputAction::StartSelection { x_px, y_px } => {
             handle_start_selection(emulator, x_px, y_px)
         }
@@ -67,12 +73,10 @@ pub(super) fn process_user_input_action(
 
 fn handle_key_input(
     emulator: &mut TerminalEmulator,
-    symbol: pixelflow_runtime::input::KeySymbol,
-    modifiers: pixelflow_runtime::input::Modifiers,
-    text: Option<String>,
+    input: KeyInput,
 ) -> Option<EmulatorAction> {
     let bytes_to_send =
-        key_translator::translate_key_input(symbol, modifiers, text, &emulator.dec_modes);
+        key_translator::translate_key_input(input.symbol, input.modifiers, input.text, &emulator.dec_modes);
     if !bytes_to_send.is_empty() {
         Some(EmulatorAction::WritePty(bytes_to_send))
     } else {
