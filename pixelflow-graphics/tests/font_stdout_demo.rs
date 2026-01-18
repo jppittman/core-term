@@ -5,7 +5,7 @@
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
@@ -36,7 +36,7 @@ fn demo_single_glyph_rasterization() {
     rasterize(
         &color_manifold,
         &mut frame,
-        1,
+        RenderOptions { num_threads: 1 },
     );
     
     let pixels = frame.data;
@@ -81,7 +81,7 @@ fn demo_text_rasterization_with_frame() {
     rasterize(
         &color_manifold,
         &mut frame,
-        1,
+        RenderOptions { num_threads: 1 },
     );
     let pixels = frame.data;
 
@@ -126,7 +126,7 @@ fn demo_alphabet_rasterization() {
     rasterize(
         &color_manifold,
         &mut frame,
-        1,
+        RenderOptions { num_threads: 1 },
     );
     let pixels = frame.data;
 
@@ -153,7 +153,7 @@ fn demo_alphabet_rasterization() {
     rasterize(
         &color_manifold2,
         &mut frame2,
-        1,
+        RenderOptions { num_threads: 1 },
     );
     let pixels2 = frame2.data;
 

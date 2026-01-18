@@ -4,7 +4,7 @@
 
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 
 #[test]
 fn verify_color_manifold_renders() {
@@ -14,7 +14,7 @@ fn verify_color_manifold_renders() {
 
     let mut frame = Frame::<Rgba8>::new(4, 4);
 
-    rasterize(&red, &mut frame, 1);
+    rasterize(&red, &mut frame, RenderOptions { num_threads: 1 });
 
     // All pixels should be red
     for pixel in &frame.data {
@@ -32,7 +32,7 @@ fn verify_named_color_manifold_renders() {
 
     let mut frame = Frame::<Rgba8>::new(2, 2);
 
-    rasterize(&blue, &mut frame, 1);
+    rasterize(&blue, &mut frame, RenderOptions { num_threads: 1 });
 
     for pixel in &frame.data {
         assert_eq!(pixel.r(), 0);

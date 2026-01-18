@@ -7,7 +7,7 @@ use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
 use pixelflow_graphics::{
-    render::rasterizer::{rasterize, TensorShape},
+    render::{rasterizer::{rasterize, RenderOptions}, frame::Frame},
     CachedGlyph, CachedText, Color, ColorCube, Font, GlyphCache, Grayscale, NamedColor, Rgba8,
 };
 
@@ -187,12 +187,11 @@ fn bench_rasterize_solid_color(c: &mut Criterion) {
             size,
             |bencher, &size| {
                 let color = NamedColor::Red;
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&color, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&color, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -220,12 +219,11 @@ fn bench_rasterize_gradient(c: &mut Criterion) {
                     z: 0.5f32,
                     w: 1.0f32,
                 };
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&gradient, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&gradient, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -253,15 +251,14 @@ fn bench_rasterize_circle(c: &mut Criterion) {
                 // Circle SDF: inside = white, outside = black
                 let dx = X - cx;
                 let dy = Y - cy;
-                let inside = (dx * dx + dy * dy).lt(r * r);
+                let inside = (dx.clone() * dx + dy.clone() * dy).lt(r * r);
                 let circle = Grayscale(inside.select(1.0f32, 0.0f32));
 
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&circle, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&circle, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -285,12 +282,11 @@ fn bench_rasterize_glyph(c: &mut Criterion) {
             |bencher, &size| {
                 let glyph = font.glyph_scaled('A', size as f32).unwrap();
                 let colored = Grayscale(glyph);
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&colored, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -301,12 +297,11 @@ fn bench_rasterize_glyph(c: &mut Criterion) {
             |bencher, &size| {
                 let glyph = font.glyph_scaled('@', size as f32).unwrap();
                 let colored = Grayscale(glyph);
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&colored, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -334,12 +329,11 @@ fn bench_rasterize_glyph_aa(c: &mut Criterion) {
                 let glyph = font.glyph_scaled('A', size as f32).unwrap();
                 let aa_glyph = aa_coverage(glyph);
                 let colored = Grayscale(aa_glyph);
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&colored, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -351,12 +345,11 @@ fn bench_rasterize_glyph_aa(c: &mut Criterion) {
                 let glyph = font.glyph_scaled('@', size as f32).unwrap();
                 let aa_glyph = aa_coverage(glyph);
                 let colored = Grayscale(aa_glyph);
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&colored, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -628,12 +621,11 @@ fn bench_cached_vs_uncached_raster(c: &mut Criterion) {
             |bencher, &size| {
                 let glyph = font.glyph_scaled('A', size as f32).unwrap();
                 let colored = Grayscale(glyph);
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&colored, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -646,12 +638,11 @@ fn bench_cached_vs_uncached_raster(c: &mut Criterion) {
                 let glyph = font.glyph_scaled('A', size as f32).unwrap();
                 let cached = CachedGlyph::new(&glyph, size);
                 let colored = Grayscale(cached);
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); size * size];
-                let shape = TensorShape::new(size, size);
+                let mut frame = Frame::<Rgba8>::new(size as u32, size as u32);
 
                 bencher.iter(|| {
-                    rasterize(&colored, &mut buffer, shape, 1);
-                    black_box(&buffer);
+                    rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+                    black_box(&frame);
                 })
             },
         );
@@ -689,12 +680,11 @@ fn bench_cached_text(c: &mut Criterion) {
         let mut cache_copy = cache.clone();
         let cached_text = CachedText::new(&font, &mut cache_copy, text, size);
         let colored = Grayscale(cached_text);
-        let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); width * height];
-        let shape = TensorShape::new(width, height);
+        let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
         bencher.iter(|| {
-            rasterize(&colored, &mut buffer, shape, 1);
-            black_box(&buffer);
+            rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+            black_box(&frame);
         })
     });
 
@@ -727,12 +717,11 @@ fn bench_text_rendering(c: &mut Criterion) {
     group.bench_function("render_single_char_64px", |bencher| {
         let glyph = font.glyph_scaled('A', 64.0).unwrap();
         let colored = Grayscale(glyph);
-        let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); 64 * 64];
-        let shape = TensorShape::new(64, 64);
+        let mut frame = Frame::<Rgba8>::new(64, 64);
 
         bencher.iter(|| {
-            rasterize(&colored, &mut buffer, shape, 1);
-            black_box(&buffer);
+            rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+            black_box(&frame);
         })
     });
 
@@ -741,10 +730,9 @@ fn bench_text_rendering(c: &mut Criterion) {
             for c in 'A'..='Z' {
                 let glyph = font.glyph_scaled(c, 32.0).unwrap();
                 let colored = Grayscale(glyph);
-                let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); 32 * 32];
-                let shape = TensorShape::new(32, 32);
-                rasterize(&colored, &mut buffer, shape, 1);
-                black_box(&buffer);
+                let mut frame = Frame::<Rgba8>::new(32, 32);
+                rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+                black_box(&frame);
             }
         })
     });
@@ -894,10 +882,9 @@ fn bench_scene3d(c: &mut Criterion) {
 
         let renderable = GrayToRgba { inner: screen };
         let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
-        let shape = TensorShape::new(w, h);
 
         bencher.iter(|| {
-            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
+            rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
             black_box(&frame);
         })
     });
@@ -918,10 +905,9 @@ fn bench_scene3d(c: &mut Criterion) {
 
         let renderable = GrayToRgba { inner: screen };
         let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
-        let shape = TensorShape::new(w, h);
 
         bencher.iter(|| {
-            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
+            rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
             black_box(&frame);
         })
     });
@@ -942,10 +928,9 @@ fn bench_scene3d(c: &mut Criterion) {
 
         let renderable = GrayToRgba { inner: screen };
         let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
-        let shape = TensorShape::new(w, h);
 
         bencher.iter(|| {
-            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
+            rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
             black_box(&frame);
         })
     });
@@ -1007,10 +992,9 @@ fn bench_scene3d(c: &mut Criterion) {
         };
 
         let mut frame = Frame::<Rgba8>::new(w_hd as u32, h_hd as u32);
-        let shape = TensorShape::new(w_hd, h_hd);
 
         bencher.iter(|| {
-            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
+            rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
             black_box(&frame);
         })
     });
@@ -1041,10 +1025,9 @@ fn bench_scene3d(c: &mut Criterion) {
         };
 
         let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
-        let shape = TensorShape::new(w, h);
 
         bencher.iter(|| {
-            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
+            rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
             black_box(&frame);
         })
     });
@@ -1084,10 +1067,13 @@ fn bench_scene3d(c: &mut Criterion) {
             };
 
             let mut frame = Frame::<Rgba8>::new(w_hd as u32, h_hd as u32);
-            let shape = TensorShape::new(w_hd, h_hd);
 
             bencher.iter(|| {
-                rasterize(&renderable, frame.as_slice_mut(), shape, num_threads);
+                rasterize(
+                    &renderable,
+                    &mut frame,
+                    RenderOptions { num_threads },
+                );
                 black_box(&frame);
             })
         },
@@ -1193,7 +1179,6 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
         height: h as f32,
     };
 
-    let shape = TensorShape::new(w, h);
 
     // Benchmark 1: Work-stealing with atomic counter (scoped threads)
     group.bench_function(
@@ -1201,7 +1186,11 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
         |bencher| {
             let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
             bencher.iter(|| {
-                rasterize(&renderable, frame.as_slice_mut(), shape, num_threads);
+                rasterize(
+                    &renderable,
+                    &mut frame,
+                    RenderOptions { num_threads },
+                );
                 black_box(&frame);
             })
         },
@@ -1211,7 +1200,7 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
     group.bench_function("single_threaded", |bencher| {
         let mut frame = Frame::<Rgba8>::new(w as u32, h as u32);
         bencher.iter(|| {
-            rasterize(&renderable, frame.as_slice_mut(), shape, 1);
+            rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
             black_box(&frame);
         })
     });

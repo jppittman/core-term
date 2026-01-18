@@ -37,6 +37,7 @@ use super::messages::{
     RenderRequest, RenderResponse,
 };
 use super::rasterize;
+use crate::render::rasterizer::parallel::RenderOptions;
 use crate::render::Pixel;
 use actor_scheduler::{Actor, ActorScheduler, ActorStatus, ActorTypes, HandlerError, HandlerResult, SystemStatus};
 use std::sync::mpsc::{self, Sender};
@@ -159,7 +160,13 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
 
         // Render the frame
         let start = Instant::now();
-        rasterize(&manifold, &mut frame, self.num_threads);
+        rasterize(
+            &manifold,
+            &mut frame,
+            RenderOptions {
+                num_threads: self.num_threads,
+            },
+        );
         let render_time = start.elapsed();
 
         log::trace!(

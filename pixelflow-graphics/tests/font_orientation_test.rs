@@ -5,7 +5,7 @@
 
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 use pixelflow_graphics::render::frame::Frame;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
@@ -51,7 +51,7 @@ fn letter_a_apex_is_at_top() {
     let width = 60;
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
-    rasterize(&color_manifold, &mut frame, 1);
+    rasterize(&color_manifold, &mut frame, RenderOptions { num_threads: 1 });
     let pixels = &frame.data;
 
     // Debug: print the rendered 'A'
@@ -139,7 +139,7 @@ fn letter_a_has_crossbar() {
     let width = 60;
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
-    rasterize(&color_manifold, &mut frame, 1);
+    rasterize(&color_manifold, &mut frame, RenderOptions { num_threads: 1 });
     let pixels = &frame.data;
 
     let threshold = 32;
@@ -205,7 +205,7 @@ fn letter_v_point_is_at_bottom() {
     let width = 60;
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
-    rasterize(&color_manifold, &mut frame, 1);
+    rasterize(&color_manifold, &mut frame, RenderOptions { num_threads: 1 });
     let pixels = &frame.data;
 
     // Find the vertical bounds (use threshold 32 for cleaner edges)

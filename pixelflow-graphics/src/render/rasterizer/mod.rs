@@ -192,7 +192,7 @@ pub mod actor;
 pub mod messages;
 
 // Public API - simplified to single rasterize function
-pub use parallel::rasterize;
+pub use parallel::{rasterize, RenderOptions};
 
 // Actor-based API for asynchronous rendering with bootstrap pattern
 pub use actor::RasterizerActor;

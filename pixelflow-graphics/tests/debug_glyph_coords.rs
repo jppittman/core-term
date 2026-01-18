@@ -3,7 +3,7 @@
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
@@ -56,7 +56,7 @@ fn debug_coverage_at_points() {
     rasterize(
         &color_manifold,
         &mut frame,
-        1,
+        RenderOptions { num_threads: 1 },
     );
     let pixels = frame.data;
 

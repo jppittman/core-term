@@ -11,7 +11,7 @@ use pixelflow_graphics::fonts::ttf::{make_line, Geometry, Line, LineKernel, Quad
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 use std::sync::Arc;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
@@ -146,7 +146,7 @@ fn regression_glyph_ascent_offset() {
     let height = 120;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
-    rasterize(&lifted, &mut frame, 1);
+    rasterize(&lifted, &mut frame, RenderOptions { num_threads: 1 });
     
     let pixels = frame.data;
 
@@ -186,7 +186,7 @@ fn regression_text_rendering_pipeline() {
     let height = 30;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
-    rasterize(&lifted, &mut frame, 1);
+    rasterize(&lifted, &mut frame, RenderOptions { num_threads: 1 });
     let pixels = frame.data;
 
     // Count pixels by brightness

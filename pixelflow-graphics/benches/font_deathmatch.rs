@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use freetype::Library;
 use pixelflow_graphics::{
-    render::rasterizer::{rasterize, TensorShape},
+    render::{rasterizer::{rasterize, RenderOptions}, frame::Frame},
     Font, Grayscale, Rgba8,
 };
 
@@ -52,8 +52,7 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     let pf_font = Font::parse(FONT_DATA).unwrap();
 
     // Pre-allocate buffer for PixelFlow (simulating reuse, Freetype also reuses its internal slot buffer)
-    let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
-    let shape = TensorShape::new(size_px as usize, size_px as usize);
+    let mut frame = Frame::<Rgba8>::new(size_px, size_px);
 
     group.bench_function(BenchmarkId::new("pixelflow", "64px_g"), |b| {
         b.iter(|| {
@@ -61,8 +60,8 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
                 .glyph_scaled(black_box(char_code), size_px as f32)
                 .unwrap();
             let colored = Grayscale(glyph);
-            rasterize(&colored, &mut buffer, shape, 1);
-            black_box(&buffer);
+            rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+            black_box(&frame);
         })
     });
 
@@ -74,8 +73,8 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("pixelflow_cached", "64px_g"), |b| {
         b.iter(|| {
-            rasterize(&cached_colored, &mut buffer, shape, 1);
-            black_box(&buffer);
+            rasterize(&cached_colored, &mut frame, RenderOptions { num_threads: 1 });
+            black_box(&frame);
         })
     });
 
@@ -84,15 +83,15 @@ fn bench_rasterization_deathmatch(c: &mut Criterion) {
     // ------------------------------------------------------------------------
     group.bench_function(BenchmarkId::new("pixelflow_parallel_2", "64px_g"), |b| {
         b.iter(|| {
-            rasterize(&cached_colored, &mut buffer, shape, 2);
-            black_box(&buffer);
+            rasterize(&cached_colored, &mut frame, RenderOptions { num_threads: 2 });
+            black_box(&frame);
         })
     });
 
     group.bench_function(BenchmarkId::new("pixelflow_parallel_4", "64px_g"), |b| {
         b.iter(|| {
-            rasterize(&cached_colored, &mut buffer, shape, 4);
-            black_box(&buffer);
+            rasterize(&cached_colored, &mut frame, RenderOptions { num_threads: 4 });
+            black_box(&frame);
         })
     });
 
@@ -114,38 +113,37 @@ fn bench_heavy_workload(c: &mut Criterion) {
     let glyph = pf_font.glyph_scaled('@', size_px as f32).unwrap();
     let colored = Grayscale(glyph);
 
-    let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
-    let shape = TensorShape::new(size_px as usize, size_px as usize);
+    let mut frame = Frame::<Rgba8>::new(size_px, size_px);
 
     // Serial
     group.bench_function(BenchmarkId::new("pixelflow_serial", "256px_@"), |b| {
         b.iter(|| {
-            rasterize(&colored, &mut buffer, shape, 1);
-            black_box(&buffer);
+            rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+            black_box(&frame);
         })
     });
 
     // Parallel 2
     group.bench_function(BenchmarkId::new("pixelflow_parallel_2", "256px_@"), |b| {
         b.iter(|| {
-            rasterize(&colored, &mut buffer, shape, 2);
-            black_box(&buffer);
+            rasterize(&colored, &mut frame, RenderOptions { num_threads: 2 });
+            black_box(&frame);
         })
     });
 
     // Parallel 4
     group.bench_function(BenchmarkId::new("pixelflow_parallel_4", "256px_@"), |b| {
         b.iter(|| {
-            rasterize(&colored, &mut buffer, shape, 4);
-            black_box(&buffer);
+            rasterize(&colored, &mut frame, RenderOptions { num_threads: 4 });
+            black_box(&frame);
         })
     });
 
     // Parallel 8
     group.bench_function(BenchmarkId::new("pixelflow_parallel_8", "256px_@"), |b| {
         b.iter(|| {
-            rasterize(&colored, &mut buffer, shape, 8);
-            black_box(&buffer);
+            rasterize(&colored, &mut frame, RenderOptions { num_threads: 8 });
+            black_box(&frame);
         })
     });
 
@@ -182,8 +180,7 @@ fn bench_cold_start(c: &mut Criterion) {
     // ------------------------------------------------------------------------
     // PixelFlow Cold (Font Parse + Compile + Render)
     // ------------------------------------------------------------------------
-    let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
-    let shape = TensorShape::new(size_px as usize, size_px as usize);
+    let mut frame = Frame::<Rgba8>::new(size_px, size_px);
 
     group.bench_function(BenchmarkId::new("pixelflow", "parse_and_render"), |b| {
         b.iter(|| {
@@ -193,8 +190,8 @@ fn bench_cold_start(c: &mut Criterion) {
                 .glyph_scaled(black_box(char_code), size_px as f32)
                 .unwrap();
             let colored = Grayscale(glyph);
-            rasterize(&colored, &mut buffer, shape, 1);
-            black_box(&buffer);
+            rasterize(&colored, &mut frame, RenderOptions { num_threads: 1 });
+            black_box(&frame);
         })
     });
 
