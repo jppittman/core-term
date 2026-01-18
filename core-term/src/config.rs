@@ -15,6 +15,7 @@ use crate::{
 use log::{error, info};
 use pixelflow_runtime::config::PerformanceConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -99,15 +100,15 @@ pub struct Keybinding {
     pub action: UserInputAction,
 }
 
-/// Defines the configuration for all keybindings.
+/// Raw configuration structure for serialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeybindingsConfig {
+pub struct RawKeybindingsConfig {
     pub bindings: Vec<Keybinding>,
 }
 
-impl Default for KeybindingsConfig {
+impl Default for RawKeybindingsConfig {
     fn default() -> Self {
-        KeybindingsConfig {
+        RawKeybindingsConfig {
             bindings: vec![
                 Keybinding {
                     key: KeySymbol::Char('\u{3}'),
@@ -120,6 +121,51 @@ impl Default for KeybindingsConfig {
                     action: UserInputAction::RequestClipboardPaste,
                 },
             ],
+        }
+    }
+}
+
+/// Defines the configuration for all keybindings.
+///
+/// This struct maintains a dual representation:
+/// 1. `bindings`: A vector of keybindings (source of truth for serialization).
+/// 2. `lookup`: A HashMap for O(1) runtime lookups of key events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "RawKeybindingsConfig", into = "RawKeybindingsConfig")]
+pub struct KeybindingsConfig {
+    pub bindings: Vec<Keybinding>,
+    #[serde(skip)]
+    pub lookup: HashMap<(KeySymbol, Modifiers), UserInputAction>,
+}
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        RawKeybindingsConfig::default().into()
+    }
+}
+
+impl From<RawKeybindingsConfig> for KeybindingsConfig {
+    fn from(raw: RawKeybindingsConfig) -> Self {
+        let mut lookup = HashMap::new();
+        // Insert bindings into the map.
+        // We use `or_insert` to ensure the *first* binding encountered in the list takes precedence.
+        // This matches the behavior of a linear search that stops at the first match.
+        for binding in &raw.bindings {
+            lookup
+                .entry((binding.key, binding.mods))
+                .or_insert_with(|| binding.action.clone());
+        }
+        KeybindingsConfig {
+            bindings: raw.bindings,
+            lookup,
+        }
+    }
+}
+
+impl From<KeybindingsConfig> for RawKeybindingsConfig {
+    fn from(config: KeybindingsConfig) -> Self {
+        RawKeybindingsConfig {
+            bindings: config.bindings,
         }
     }
 }
