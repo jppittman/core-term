@@ -7,7 +7,7 @@ pub use pixelflow_runtime::input::{KeySymbol, Modifiers};
 
 /// Maps a given key symbol and modifiers to a `UserInputAction` based on the provided configuration.
 ///
-/// It iterates through the keybindings defined in `config.keybindings.bindings`.
+/// It looks up the keybinding in `config.keybindings.lookup`.
 /// If a match is found, it returns a clone of the corresponding `UserInputAction`.
 /// Otherwise, it returns `None`.
 pub fn map_key_event_to_action(
@@ -15,28 +15,27 @@ pub fn map_key_event_to_action(
     modifiers: Modifiers,
     config: &Config,
 ) -> Option<UserInputAction> {
-    config.keybindings.bindings.iter().find_map(|binding| {
-        // Use the passed config
-        if binding.key == key_symbol && binding.mods == modifiers {
-            debug!(
-                "Keybinding: {:?} + {:?} => {:?}",
-                binding.mods, binding.key, &binding.action
-            );
-            return Some(binding.action.clone());
-        }
+    if let Some(action) = config.keybindings.lookup.get(&(key_symbol, modifiers)) {
+        debug!(
+            "Keybinding found (O(1)): {:?} + {:?} => {:?}",
+            modifiers, key_symbol, action
+        );
+        Some(action.clone())
+    } else {
         None
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Keybinding, KeybindingsConfig};
+    use crate::config::{Config, Keybinding, KeybindingsConfig, RawKeybindingsConfig};
     use crate::term::action::UserInputAction;
 
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
         let mut cfg = Config::default();
-        cfg.keybindings = KeybindingsConfig { bindings };
+        // Use From conversion to ensure the lookup map is populated
+        cfg.keybindings = RawKeybindingsConfig { bindings }.into();
         cfg
     }
 
@@ -111,6 +110,8 @@ mod tests {
 
     #[test]
     fn test_map_key_multiple_bindings_first_match() {
+        // This test verifies that if multiple bindings exist for the same key,
+        // the first one (index 0) is the one that gets into the map.
         let bindings = vec![
             Keybinding {
                 key: KeySymbol::Char('A'),
