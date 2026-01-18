@@ -7,7 +7,7 @@
 //! - No finite differences, no extra evaluations
 
 use pixelflow_graphics::mesh::{Point3, QuadMesh};
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
@@ -59,7 +59,7 @@ fn main() {
     println!("\nRendering {}x{} image...", width, height);
 
     let mut frame = Frame::<Rgba8>::new(width, height);
-    rasterize(&scene, &mut frame, 1);
+    rasterize(&scene, &mut frame, RenderOptions { num_threads: 1 });
 
     // Save to PPM (simple format, no dependencies)
     save_ppm("subdivision_autodiff.ppm", &frame);

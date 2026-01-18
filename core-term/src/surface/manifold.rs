@@ -315,6 +315,7 @@ mod tests {
     #[test]
     fn test_grid_construction() {
         use pixelflow_graphics::render::rasterizer::rasterize;
+        use pixelflow_graphics::render::rasterizer::parallel::RenderOptions;
 
         let factory = MockFactory {
             cols: 4,
@@ -329,7 +330,7 @@ mod tests {
         use pixelflow_graphics::render::color::Bgra8;
         use pixelflow_graphics::render::frame::Frame;
         let mut frame = Frame::<Bgra8>::new(8, 8);
-        rasterize(&grid, &mut frame, 1);
+        rasterize(&grid, &mut frame, RenderOptions { num_threads: 1 });
 
         // Check pixel at (4, 0) - should be in first cell (0,0) - white
         let pixel_index = 0 * 8 + 4; // row 0, col 4
@@ -340,6 +341,7 @@ mod tests {
     #[test]
     fn test_cell_channel_blending() {
         use pixelflow_graphics::render::rasterizer::rasterize;
+        use pixelflow_graphics::render::rasterizer::parallel::RenderOptions;
 
         let cell = Cell::new(
             ConstCoverage(0.5),
@@ -359,7 +361,7 @@ mod tests {
         use pixelflow_graphics::render::color::Bgra8;
         use pixelflow_graphics::render::frame::Frame;
         let mut frame = Frame::<Bgra8>::new(1, 1);
-        rasterize(&packed, &mut frame, 1);
+        rasterize(&packed, &mut frame, RenderOptions { num_threads: 1 });
 
         // 50% coverage: R = 0.5*1.0 + 0.5*0.0 = 0.5 = 127
         // B = 0.5*0.0 + 0.5*1.0 = 0.5 = 127
@@ -373,6 +375,7 @@ mod tests {
     #[test]
     fn test_color_manifold() {
         use pixelflow_graphics::render::rasterizer::rasterize;
+        use pixelflow_graphics::render::rasterizer::parallel::RenderOptions;
 
         // Color::Rgb from pixelflow-graphics implements Manifold<Output = Discrete>
         let red = Color::Rgb(255, 0, 0);
@@ -381,7 +384,7 @@ mod tests {
         use pixelflow_graphics::render::color::Rgba8;
         use pixelflow_graphics::render::frame::Frame;
         let mut frame = Frame::<Rgba8>::new(1, 1);
-        rasterize(&red, &mut frame, 1);
+        rasterize(&red, &mut frame, RenderOptions { num_threads: 1 });
 
         let pixel = frame.data[0];
         // Check that red channel is approximately correct (might have some rounding)

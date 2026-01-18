@@ -385,10 +385,10 @@ pub fn render_work_stealing<P, M>(
 pub fn rasterize<P, M>(
     manifold: &M,
     frame: &mut Frame<P>,
-    num_threads: usize,
+    options: RenderOptions,
 ) where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {
-    render_work_stealing(manifold, frame, RenderOptions { num_threads })
+    render_work_stealing(manifold, frame, options)
 }

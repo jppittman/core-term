@@ -5,7 +5,7 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
@@ -99,7 +99,7 @@ fn test_sphere_on_floor() {
     };
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    rasterize(&renderable, &mut frame, 1);
+    rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_raymarch_sh.ppm");
@@ -164,7 +164,7 @@ fn test_sphere_on_matte_floor() {
     };
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    rasterize(&renderable, &mut frame, 1);
+    rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_raymarch_matte.ppm");
@@ -215,7 +215,7 @@ fn test_chrome_sphere_on_checkerboard() {
     };
 
     let mut frame = Frame::<Rgba8>::new(WIDTH as u32, HEIGHT as u32);
-    rasterize(&renderable, &mut frame, 1);
+    rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_chrome_checker.ppm");

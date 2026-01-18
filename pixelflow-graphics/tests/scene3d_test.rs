@@ -10,7 +10,7 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt};
 use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 use pixelflow_graphics::scene3d::{
     Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
     Reflect, ScreenToDir, Sky, Surface,
@@ -129,7 +129,7 @@ fn test_chrome_unit_sphere() {
 
     // Render
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    rasterize(&renderable, &mut frame, 1);
+    rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_chrome_unit_sphere.ppm");
@@ -195,7 +195,7 @@ fn test_sky_only() {
     let renderable = GrayToRgba { inner: screen };
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    rasterize(&renderable, &mut frame, 1);
+    rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
 
     // Save
     let path = std::env::temp_dir().join("pixelflow_sky_only.ppm");
@@ -238,7 +238,7 @@ fn test_floor_only() {
     let renderable = GrayToRgba { inner: screen };
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    rasterize(&renderable, &mut frame, 1);
+    rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
 
     // Save
     let path = std::env::temp_dir().join("pixelflow_floor_only.ppm");
@@ -323,7 +323,7 @@ fn test_color_chrome_sphere() {
     // Render
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let start = std::time::Instant::now();
-    rasterize(&renderable, &mut frame, 1);
+    rasterize(&renderable, &mut frame, RenderOptions { num_threads: 1 });
     let elapsed = start.elapsed();
     let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
     println!("Color render (mullet): {:?} ({:.2} Mpix/s)", elapsed, mpps);
@@ -476,7 +476,7 @@ fn test_mullet_vs_3channel_comparison() {
 
     let mut old_frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let old_start = std::time::Instant::now();
-    rasterize(&old_renderer, &mut old_frame, 1);
+    rasterize(&old_renderer, &mut old_frame, RenderOptions { num_threads: 1 });
     let old_elapsed = old_start.elapsed();
 
     // ============================================================
@@ -530,7 +530,7 @@ fn test_mullet_vs_3channel_comparison() {
 
     let mut new_frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let new_start = std::time::Instant::now();
-    rasterize(&new_renderer, &mut new_frame, 1);
+    rasterize(&new_renderer, &mut new_frame, RenderOptions { num_threads: 1 });
     let new_elapsed = new_start.elapsed();
 
     // ============================================================
@@ -641,13 +641,13 @@ fn test_work_stealing_benchmark() {
     // Single-threaded baseline
     let mut frame1 = Frame::<Rgba8>::new(W as u32, H as u32);
     let start1 = std::time::Instant::now();
-    rasterize(&renderable, &mut frame1, 1);
+    rasterize(&renderable, &mut frame1, RenderOptions { num_threads: 1 });
     let single = start1.elapsed();
 
     // Work-stealing with 12 threads
     let mut frame2 = Frame::<Rgba8>::new(W as u32, H as u32);
     let start2 = std::time::Instant::now();
-    rasterize(&renderable, &mut frame2, 12);
+    rasterize(&renderable, &mut frame2, RenderOptions { num_threads: 12 });
     let parallel = start2.elapsed();
 
     let speedup = single.as_secs_f64() / parallel.as_secs_f64();

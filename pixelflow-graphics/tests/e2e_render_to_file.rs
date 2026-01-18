@@ -6,7 +6,7 @@
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, X, Y};
 use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::render::rasterizer::{rasterize, RenderOptions};
 use pixelflow_graphics::transform::{Scale, Translate};
 use std::fs::File;
 use std::io::Write;
@@ -62,7 +62,7 @@ fn e2e_render_gradient() {
 
     let mut frame = Frame::<Rgba8>::new(WIDTH, HEIGHT);
 
-    rasterize(&scene, &mut frame, 1);
+    rasterize(&scene, &mut frame, RenderOptions { num_threads: 1 });
 
     // Verify some pixels
     // Top-left should be dark (low R, low G, high B due to gradient formula)
@@ -138,7 +138,7 @@ fn e2e_render_radial_gradient() {
 
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
 
-    rasterize(&radial, &mut frame, 1);
+    rasterize(&radial, &mut frame, RenderOptions { num_threads: 1 });
 
     // Center should be bright (close to white)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
@@ -204,7 +204,7 @@ fn e2e_render_circle() {
 
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
 
-    rasterize(&scene, &mut frame, 1);
+    rasterize(&scene, &mut frame, RenderOptions { num_threads: 1 });
 
     // Center should be white (inside circle = 1.0)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
@@ -239,7 +239,7 @@ fn e2e_solid_color_renders_correctly() {
 
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
 
-    rasterize(&cyan, &mut frame, 1);
+    rasterize(&cyan, &mut frame, RenderOptions { num_threads: 1 });
 
     // Every pixel should be bright cyan (0, 255, 255)
     for (i, pixel) in frame.data.iter().enumerate() {
@@ -305,7 +305,7 @@ fn e2e_frame_operations() {
     }
 
     // Render something
-    rasterize(&NamedColor::Red, &mut frame, 1);
+    rasterize(&NamedColor::Red, &mut frame, RenderOptions { num_threads: 1 });
 
     // Now all should be red
     for pixel in &frame.data {
