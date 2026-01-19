@@ -850,6 +850,7 @@ dependencies = [
  "log",
  "pixelflow-core",
  "pixelflow-graphics",
+ "pixelflow-macros",
  "pkg-config",
  "serde",
  "serde-wasm-bindgen",

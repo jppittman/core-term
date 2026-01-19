@@ -77,11 +77,19 @@ impl Parse for KernelDef {
 
         input.parse::<Token![|]>()?;
 
+        // Parse optional return type: -> Type
+        let return_ty = if input.peek(Token![->]) {
+            input.parse::<Token![->]>()?;
+            Some(input.parse::<Type>()?)
+        } else {
+            None
+        };
+
         // Parse the body expression
         let syn_expr: syn::Expr = input.parse()?;
         let body = convert_expr(syn_expr)?;
 
-        Ok(KernelDef { params, body })
+        Ok(KernelDef { params, return_ty, body })
     }
 }
 
@@ -301,5 +309,27 @@ mod tests {
             }
             _ => panic!("expected block expression"),
         }
+    }
+
+    #[test]
+    fn parse_return_type() {
+        let input = quote! { |cx: f32| -> Jet3 X - cx };
+        let kernel = parse(input).unwrap();
+        assert_eq!(kernel.params.len(), 1);
+        assert!(kernel.return_ty.is_some());
+        // Verify the return type is "Jet3"
+        let ty = kernel.return_ty.unwrap();
+        if let syn::Type::Path(type_path) = ty {
+            assert_eq!(type_path.path.segments[0].ident.to_string(), "Jet3");
+        } else {
+            panic!("expected path type");
+        }
+    }
+
+    #[test]
+    fn parse_no_return_type() {
+        let input = quote! { |cx: f32| X - cx };
+        let kernel = parse(input).unwrap();
+        assert!(kernel.return_ty.is_none());
     }
 }

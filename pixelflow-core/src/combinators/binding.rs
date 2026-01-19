@@ -182,6 +182,33 @@ where
 }
 
 // ============================================================================
+// Stub Manifold<Field4> impl for ManifoldExt compatibility
+// ============================================================================
+//
+// Var<N> should only be evaluated on domains with Head trait (i.e., LetExtended).
+// However, to use ManifoldExt methods for AST construction (.sqrt(), .abs(), etc.),
+// we need Manifold<Field4> impls. These panic if actually called, but that should
+// never happen since Var<N> is always wrapped in Let bindings that extend the domain.
+
+type Field4 = (crate::Field, crate::Field, crate::Field, crate::Field);
+
+impl Manifold<Field4> for Var<Zero> {
+    type Output = crate::Field;
+
+    fn eval(&self, _p: Field4) -> Self::Output {
+        unreachable!("Var<N> must be evaluated within a Let binding that extends the domain")
+    }
+}
+
+impl<N: Send + Sync> Manifold<Field4> for Var<Succ<N>> {
+    type Output = crate::Field;
+
+    fn eval(&self, _p: Field4) -> Self::Output {
+        unreachable!("Var<N> must be evaluated within a Let binding that extends the domain")
+    }
+}
+
+// ============================================================================
 // Operator Overloading for Var
 // ============================================================================
 
@@ -264,8 +291,6 @@ pub trait Graph<Ctx>: Send + Sync {
 /// Wrapper to lift a `Manifold` into the `Graph` world.
 #[derive(Clone, Debug)]
 pub struct Lift<M>(pub M);
-
-type Field4 = (crate::Field, crate::Field, crate::Field, crate::Field);
 
 impl<M, Ctx> Graph<Ctx> for Lift<M>
 where
