@@ -390,7 +390,11 @@ mod tests {
 
         let pixel = frame.data[0];
         // Check that red channel is approximately correct (might have some rounding)
-        assert!(pixel.r() > 200, "Red channel should be > 200, got {}", pixel.r());
+        assert!(
+            pixel.r() > 200,
+            "Red channel should be > 200, got {}",
+            pixel.r()
+        );
         assert_eq!(pixel.g(), 0);
         assert_eq!(pixel.b(), 0);
     }

@@ -11,7 +11,10 @@
 //!
 //! Following STYLE.md: tests focus on public API contracts, not implementation details.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, SendError, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SendError,
+    SystemStatus,
+};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
@@ -147,9 +150,15 @@ struct ParkTrackingActor {
 }
 
 impl Actor<(), (), ()> for ParkTrackingActor {
-    fn handle_data(&mut self, _msg: ()) -> HandlerResult { Ok(()) }
-    fn handle_control(&mut self, _msg: ()) -> HandlerResult { Ok(()) }
-    fn handle_management(&mut self, _msg: ()) -> HandlerResult { Ok(()) }
+    fn handle_data(&mut self, _msg: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_control(&mut self, _msg: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_management(&mut self, _msg: ()) -> HandlerResult {
+        Ok(())
+    }
 
     fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         self.park_hints.lock().unwrap().push(status);
@@ -264,7 +273,9 @@ fn control_processed_before_management() {
                 self.management_seen = true;
                 Ok(())
             }
-            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -418,7 +429,9 @@ fn no_starvation_with_continuous_high_priority() {
                 // High priority, but shouldn't starve data
                 Ok(())
             }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -626,9 +639,15 @@ fn actor_run_exits_when_all_senders_dropped() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -666,8 +685,12 @@ fn cloned_handle_works_after_original_dropped() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -926,8 +949,12 @@ fn high_throughput_single_sender() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -1050,7 +1077,9 @@ fn priority_maintained_when_both_lanes_have_messages() {
                 }
                 Ok(())
             }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -1087,9 +1116,15 @@ fn empty_message_types_work() {
     let handle = thread::spawn(move || {
         struct UnitActor;
         impl Actor<(), (), ()> for UnitActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -1167,8 +1202,12 @@ fn large_message_type_works() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -1195,9 +1234,15 @@ fn immediate_shutdown_no_messages() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -1231,8 +1276,12 @@ fn custom_burst_and_buffer_sizes() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -1264,8 +1313,12 @@ fn large_burst_and_buffer_sizes() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }

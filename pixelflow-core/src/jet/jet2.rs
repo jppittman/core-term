@@ -2,8 +2,8 @@
 
 use crate::Field;
 use crate::Manifold;
-use crate::numeric::{Computational, Numeric, Selectable};
 use crate::ext;
+use crate::numeric::{Computational, Numeric, Selectable};
 
 /// The standard 4D Field domain.
 type Field4 = (Field, Field, Field, Field);
@@ -197,7 +197,11 @@ impl Jet2Sqrt {
         let rsqrt_val = self.0.val.rsqrt();
         let sqrt_val = self.0.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Jet2::new(sqrt_val, self.0.dx * half_rsqrt.clone(), self.0.dy * half_rsqrt)
+        Jet2::new(
+            sqrt_val,
+            self.0.dx * half_rsqrt.clone(),
+            self.0.dy * half_rsqrt,
+        )
     }
 }
 
@@ -563,7 +567,11 @@ impl Numeric for Jet2 {
     fn exp(self) -> Self {
         // Chain rule: (exp f)' = exp(f) * f'
         let exp_val = self.val.exp();
-        Self::new(exp_val.clone(), self.dx * exp_val.clone(), self.dy * exp_val)
+        Self::new(
+            exp_val.clone(),
+            self.dx * exp_val.clone(),
+            self.dy * exp_val,
+        )
     }
 
     #[inline(always)]
@@ -587,7 +595,11 @@ impl Numeric for Jet2 {
         let ln_2 = Field::from(0.6931471805599453);
         let exp2_val = self.val.exp2();
         let deriv_coeff = exp2_val * ln_2;
-        Self::new(exp2_val, self.dx * deriv_coeff.clone(), self.dy * deriv_coeff)
+        Self::new(
+            exp2_val,
+            self.dx * deriv_coeff.clone(),
+            self.dy * deriv_coeff,
+        )
     }
 
     #[inline(always)]

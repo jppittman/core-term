@@ -1,8 +1,10 @@
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread;
 use std::time::Duration;
@@ -23,10 +25,15 @@ impl Actor<i32, (), ()> for CountingActor {
         Ok(())
     }
 
-    fn handle_management(&mut self, _mgmt: ()) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _mgmt: ()) -> HandlerResult {
+        Ok(())
+    }
 
     fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        Ok(hint)
+        match hint {
+            SystemStatus::Idle => Ok(ActorStatus::Idle),
+            SystemStatus::Busy => Ok(ActorStatus::Busy),
+        }
     }
 }
 
@@ -187,10 +194,7 @@ fn bench_multiple_control_flooders(c: &mut Criterion) {
 
             // Stop all flooders
             stop_flooding.store(true, Ordering::Relaxed);
-            let total_control_sent: usize = flooders
-                .into_iter()
-                .map(|f| f.join().unwrap())
-                .sum();
+            let total_control_sent: usize = flooders.into_iter().map(|f| f.join().unwrap()).sum();
 
             tx.send(Message::Shutdown).unwrap();
             actor_handle.join().unwrap();
@@ -230,10 +234,15 @@ fn bench_slow_receiver_backpressure(c: &mut Criterion) {
                     Ok(())
                 }
 
-                fn handle_management(&mut self, _mgmt: ()) -> HandlerResult { Ok(()) }
+                fn handle_management(&mut self, _mgmt: ()) -> HandlerResult {
+                    Ok(())
+                }
 
                 fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                    Ok(hint)
+                    match hint {
+                        SystemStatus::Idle => Ok(ActorStatus::Idle),
+                        SystemStatus::Busy => Ok(ActorStatus::Busy),
+                    }
                 }
             }
 

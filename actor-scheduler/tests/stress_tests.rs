@@ -3,7 +3,9 @@
 //! These tests verify the scheduler behaves correctly under heavy load,
 //! concurrent access, and various edge conditions.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
@@ -48,8 +50,12 @@ impl Actor<u64, u64, u64> for SlowHandler {
         self.processed.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn handle_control(&mut self, _msg: u64) -> HandlerResult { Ok(()) }
-    fn handle_management(&mut self, _msg: u64) -> HandlerResult { Ok(()) }
+    fn handle_control(&mut self, _msg: u64) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_management(&mut self, _msg: u64) -> HandlerResult {
+        Ok(())
+    }
     fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
@@ -58,9 +64,15 @@ impl Actor<u64, u64, u64> for SlowHandler {
 struct NoOpHandler;
 
 impl Actor<(), (), ()> for NoOpHandler {
-    fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-    fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-    fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_data(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_control(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_management(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
     fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
@@ -304,7 +316,9 @@ fn burst_limit_prevents_data_starvation() {
             self.data_processed.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        fn handle_control(&mut self, _: u64) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _: u64) -> HandlerResult {
+            Ok(())
+        }
         fn handle_management(&mut self, _: u64) -> HandlerResult {
             self.mgmt_processed.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -366,8 +380,12 @@ fn concurrent_clone_and_send() {
             self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        fn handle_control(&mut self, _: u64) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _: u64) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _: u64) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: u64) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -445,8 +463,12 @@ fn large_messages_work() {
             self.received.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }

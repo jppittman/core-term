@@ -1,8 +1,10 @@
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::thread;
 
@@ -29,7 +31,10 @@ impl Actor<i32, (), ()> for CountingActor {
     }
 
     fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        Ok(hint)
+        match hint {
+            SystemStatus::Idle => Ok(ActorStatus::Idle),
+            SystemStatus::Busy => Ok(ActorStatus::Busy),
+        }
     }
 }
 

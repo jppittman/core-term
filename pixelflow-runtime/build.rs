@@ -56,22 +56,36 @@ fn determine_display_driver(target_os: &str) -> String {
     let has_web =
         cfg!(feature = "display_web") || std::env::var("CARGO_FEATURE_DISPLAY_WEB").is_ok();
 
-    if has_web {
+    // Only allow web driver if the target architecture is wasm32
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if has_web && target_arch == "wasm32" {
         return "web".to_string();
     }
-    if has_headless && !has_x11 && !has_cocoa {
-        return "headless".to_string();
-    }
-    if has_x11 && !has_headless {
-        return "x11".to_string();
-    }
-    if has_cocoa {
-        return "cocoa".to_string();
+
+    // Prioritize drivers based on the target OS
+    match target_os {
+        "macos" => {
+            if has_cocoa {
+                return "cocoa".to_string();
+            }
+        }
+        "linux" | "freebsd" | "openbsd" | "netbsd" => {
+            if has_x11 {
+                return "x11".to_string();
+            }
+        }
+        _ => {}
     }
 
+    // Fallback: use headless if explicitly requested
+    if has_headless {
+        return "headless".to_string();
+    }
+
+    // Default based on OS if no specific feature matched or headless wasn't requested
     match target_os {
         "macos" => "cocoa".to_string(),
-        "linux" => "x11".to_string(),
+        "linux" | "freebsd" | "openbsd" | "netbsd" => "x11".to_string(),
         "unknown" => "web".to_string(),
         _ => "headless".to_string(),
     }

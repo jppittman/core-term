@@ -41,9 +41,9 @@
 //! hang because it performs arithmetic during resolution. Peano encoding
 //! (`Succ<Succ<Zero>>`) is pure structural recursion - no arithmetic needed.
 
-use core::marker::PhantomData;
-use crate::domain::{Head, LetExtended, Tail};
 use crate::Manifold;
+use crate::domain::{Head, LetExtended, Tail};
+use core::marker::PhantomData;
 
 // ============================================================================
 // Peano Numbers (Type-Level Naturals)
@@ -510,7 +510,7 @@ mod tests {
         let expr = Let::new(
             3.0f32, // a = 3.0 (becomes Var<1> after second let)
             Let::new(
-                4.0f32,                               // b = 4.0 (becomes Var<0>)
+                4.0f32,                              // b = 4.0 (becomes Var<0>)
                 Var::<N1>::new() + Var::<N0>::new(), // a + b
             ),
         );
@@ -542,10 +542,7 @@ mod tests {
     #[test]
     fn test_legacy_let_binding() {
         // let x = 5.0; x + x
-        let graph = Let::new(
-            Lift(5.0f32),
-            GAdd(Var::<N0>::new(), Var::<N0>::new()),
-        );
+        let graph = Let::new(Lift(5.0f32), GAdd(Var::<N0>::new(), Var::<N0>::new()));
 
         let zero = Field::from(0.0);
         let result = graph.eval_at(&Empty, zero, zero, zero, zero);

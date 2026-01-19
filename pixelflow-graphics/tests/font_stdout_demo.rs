@@ -33,12 +33,8 @@ fn demo_single_glyph_rasterization() {
     let height = 45;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
-    rasterize(
-        &color_manifold,
-        &mut frame,
-        1,
-    );
-    
+    rasterize(&color_manifold, &mut frame, 1);
+
     let pixels = frame.data;
 
     println!("ASCII render of 'A' ({}x{}):", width, height);
@@ -78,11 +74,7 @@ fn demo_text_rasterization_with_frame() {
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
     // Rasterize!
-    rasterize(
-        &color_manifold,
-        &mut frame,
-        1,
-    );
+    rasterize(&color_manifold, &mut frame, 1);
     let pixels = frame.data;
 
     // Print as ASCII art
@@ -123,11 +115,7 @@ fn demo_alphabet_rasterization() {
     let height = 24;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
-    rasterize(
-        &color_manifold,
-        &mut frame,
-        1,
-    );
+    rasterize(&color_manifold, &mut frame, 1);
     let pixels = frame.data;
 
     let chars = [' ', '.', ':', '+', '#', '@'];
@@ -150,11 +138,7 @@ fn demo_alphabet_rasterization() {
     let color_manifold2 = Grayscale(glyph2);
 
     let mut frame2 = Frame::<Rgba8>::new(width as u32, height as u32);
-    rasterize(
-        &color_manifold2,
-        &mut frame2,
-        1,
-    );
+    rasterize(&color_manifold2, &mut frame2, 1);
     let pixels2 = frame2.data;
 
     println!("NOPQRSTUVWXYZ:");

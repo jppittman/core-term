@@ -15,7 +15,10 @@ use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
     return_vsync_token, RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
-use actor_scheduler::{Actor, ActorHandle, ActorTypes, Message, ActorStatus, HandlerError, HandlerResult, SystemStatus, TroupeActor};
+use actor_scheduler::{
+    Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message,
+    SystemStatus, TroupeActor,
+};
 use pixelflow_core::{Discrete, Manifold};
 use pixelflow_graphics::render::rasterizer::{
     RasterizerActor, RasterizerHandle, RenderRequest, RenderResponse,
@@ -81,9 +84,7 @@ actor_scheduler::troupe! {
 }
 
 // Implement Actor for EngineHandler
-impl Actor<EngineData, EngineControl, AppManagement>
-    for EngineHandler
-{
+impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
     fn handle_data(&mut self, data: EngineData) -> HandlerResult {
         match data {
             EngineData::FromApp(app_data) => self.handle_app_data(app_data),
@@ -277,14 +278,17 @@ impl EngineHandler {
             RasterizerActor::<PlatformPixel>::spawn_with_setup(self.render_threads);
 
         // Step 2: Create response channel (engine receives render results here)
-        let (response_tx, response_rx) = std::sync::mpsc::channel::<RenderResponse<PlatformPixel>>();
+        let (response_tx, response_rx) =
+            std::sync::mpsc::channel::<RenderResponse<PlatformPixel>>();
 
         // Step 3: Start forwarding thread - receives responses and sends to engine
         std::thread::spawn(move || {
             log::debug!("Rasterizer response forwarding thread started");
             while let Ok(response) = response_rx.recv() {
                 // Forward to engine as RenderComplete
-                if let Err(e) = engine_handle.send(Message::Data(EngineData::RenderComplete(response))) {
+                if let Err(e) =
+                    engine_handle.send(Message::Data(EngineData::RenderComplete(response)))
+                {
                     log::warn!("Failed to forward render response to engine: {}", e);
                     break;
                 }
@@ -366,7 +370,6 @@ impl EngineHandler {
 
     /// Present a window with cooked frame to the driver.
     fn present_cooked_frame(&mut self, render_time: std::time::Duration, window: Window) {
-
         // Send window to driver for presentation (transfers ownership)
         let t1 = Instant::now();
         self.driver

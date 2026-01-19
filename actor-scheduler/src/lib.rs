@@ -94,8 +94,8 @@
 
 mod error;
 
-pub use error::{HandlerError, HandlerResult, SendError};
 use error::DrainStatus;
+pub use error::{HandlerError, HandlerResult, SendError};
 
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, troupe};
@@ -626,9 +626,12 @@ fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError>
                     // Phase 3: Sleep (exponential backoff with jitter)
                     #[cfg(debug_assertions)]
                     if attempt % 10 == 0 {
-                        eprintln!("[ActorScheduler] Priority channel full, backing off (attempt {})", attempt);
+                        eprintln!(
+                            "[ActorScheduler] Priority channel full, backing off (attempt {})",
+                            attempt
+                        );
                     }
-                    
+
                     let sleep_attempt = attempt - (SPIN_ATTEMPTS + YIELD_ATTEMPTS);
                     let backoff = backoff_with_jitter(sleep_attempt)?;
                     std::thread::sleep(backoff);
@@ -643,7 +646,6 @@ fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError>
         }
     }
 }
-
 
 impl<D, C, M> ActorHandle<D, C, M> {
     /// Sends a message to the appropriate priority lane and wakes the scheduler.
@@ -673,10 +675,12 @@ impl<D, C, M> ActorHandle<D, C, M> {
             Message::Data(d) => {
                 // Data lane: regular blocking send
                 // Try send first to avoid blocking if possible
-                if let Err(std::sync::mpsc::TrySendError::Full(returned_d)) = self.tx_data.try_send(d) {
+                if let Err(std::sync::mpsc::TrySendError::Full(returned_d)) =
+                    self.tx_data.try_send(d)
+                {
                     #[cfg(debug_assertions)]
                     eprintln!("[ActorScheduler] Data channel full, blocking send...");
-                    
+
                     self.tx_data.send(returned_d)?;
                 }
                 self.wake();
@@ -846,9 +850,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 return Ok(());
             }
 
-            let data_status = Self::drain_channel(&self.rx_data, batch_size, |msg| {
-                actor.handle_data(msg)
-            })?;
+            let data_status =
+                Self::drain_channel(&self.rx_data, batch_size, |msg| actor.handle_data(msg))?;
             if Instant::now() >= deadline {
                 return Ok(());
             }
@@ -957,7 +960,11 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
     pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
-        assert!(data_buffer_size > 0, "data_buffer_size must be >= 1, got {}", data_buffer_size);
+        assert!(
+            data_buffer_size > 0,
+            "data_buffer_size must be >= 1, got {}",
+            data_buffer_size
+        );
 
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
@@ -1007,7 +1014,11 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
     ) -> (ActorHandle<D, C, M>, Self) {
-        assert!(data_buffer_size > 0, "data_buffer_size must be >= 1, got {}", data_buffer_size);
+        assert!(
+            data_buffer_size > 0,
+            "data_buffer_size must be >= 1, got {}",
+            data_buffer_size
+        );
 
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
@@ -1059,7 +1070,11 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         data_buffer_size: usize,
         shutdown_mode: ShutdownMode,
     ) -> (ActorHandle<D, C, M>, Self) {
-        assert!(data_buffer_size > 0, "data_buffer_size must be >= 1, got {}", data_buffer_size);
+        assert!(
+            data_buffer_size > 0,
+            "data_buffer_size must be >= 1, got {}",
+            data_buffer_size
+        );
 
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
@@ -1127,7 +1142,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             let signal = if working {
                 self.rx_doorbell.try_recv()
             } else {
-                self.rx_doorbell.recv().map_err(|_| TryRecvError::Disconnected)
+                self.rx_doorbell
+                    .recv()
+                    .map_err(|_| TryRecvError::Disconnected)
             };
 
             match signal {
@@ -1270,9 +1287,15 @@ mod tests {
         let handle = thread::spawn(move || {
             struct NoopActor;
             impl Actor<(), (), ()> for NoopActor {
-                fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-                fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-                fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn handle_data(&mut self, _: ()) -> HandlerResult {
+                    Ok(())
+                }
+                fn handle_control(&mut self, _: ()) -> HandlerResult {
+                    Ok(())
+                }
+                fn handle_management(&mut self, _: ()) -> HandlerResult {
+                    Ok(())
+                }
                 fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Idle)
                 }
@@ -1292,7 +1315,6 @@ mod tests {
         handle.join().unwrap();
         assert!(exited.load(Ordering::SeqCst), "should have exited");
     }
-
 }
 
 #[cfg(test)]
@@ -1330,7 +1352,9 @@ mod troupe_tests {
     }
 
     impl Actor<EngineData, EngineControl, EngineManagement> for EngineActor<'_> {
-        fn handle_data(&mut self, _msg: EngineData) -> HandlerResult { Ok(()) }
+        fn handle_data(&mut self, _msg: EngineData) -> HandlerResult {
+            Ok(())
+        }
         fn handle_control(&mut self, msg: EngineControl) -> HandlerResult {
             match msg {
                 EngineControl::Tick => {
@@ -1344,7 +1368,9 @@ mod troupe_tests {
             }
             Ok(())
         }
-        fn handle_management(&mut self, _msg: EngineManagement) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _msg: EngineManagement) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -1370,7 +1396,9 @@ mod troupe_tests {
     }
 
     impl Actor<DisplayData, DisplayControl, DisplayManagement> for DisplayActor<'_> {
-        fn handle_data(&mut self, _msg: DisplayData) -> HandlerResult { Ok(()) }
+        fn handle_data(&mut self, _msg: DisplayData) -> HandlerResult {
+            Ok(())
+        }
         fn handle_control(&mut self, msg: DisplayControl) -> HandlerResult {
             match msg {
                 DisplayControl::Render => {
@@ -1386,7 +1414,9 @@ mod troupe_tests {
             }
             Ok(())
         }
-        fn handle_management(&mut self, _msg: DisplayManagement) -> HandlerResult { Ok(()) }
+        fn handle_management(&mut self, _msg: DisplayManagement) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -1477,7 +1507,9 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                     Ok(())
                 }
-                fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn handle_management(&mut self, _: ()) -> HandlerResult {
+                    Ok(())
+                }
                 fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy) // Keep spinning to maximize throughput
                 }
@@ -1581,7 +1613,9 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                     Ok(())
                 }
-                fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn handle_management(&mut self, _: ()) -> HandlerResult {
+                    Ok(())
+                }
                 fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
@@ -1692,7 +1726,9 @@ mod troupe_tests {
                     self.data_count.fetch_add(1, Ordering::Relaxed);
                     Ok(())
                 }
-                fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+                fn handle_management(&mut self, _: ()) -> HandlerResult {
+                    Ok(())
+                }
                 fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
@@ -1891,9 +1927,15 @@ mod troupe_nesting_tests {
     }
 
     impl Actor<WorkerData, WorkerControl, WorkerManagement> for WorkerActor<'_> {
-        fn handle_data(&mut self, _msg: WorkerData) -> HandlerResult { Ok(()) }
-        fn handle_control(&mut self, _msg: WorkerControl) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _msg: WorkerManagement) -> HandlerResult { Ok(()) }
+        fn handle_data(&mut self, _msg: WorkerData) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_control(&mut self, _msg: WorkerControl) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _msg: WorkerManagement) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -1999,8 +2041,8 @@ mod troupe_nesting_tests {
 mod shutdown_tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
     use std::thread;
     use std::time::Duration;
@@ -2037,11 +2079,8 @@ mod shutdown_tests {
 
     #[test]
     fn test_shutdown_immediate_exits_quickly_under_flood() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            100,
-            ShutdownMode::Immediate,
-        );
+        let (tx, mut rx) =
+            ActorScheduler::new_with_shutdown_mode(100, 100, ShutdownMode::Immediate);
 
         let data_count = Arc::new(AtomicUsize::new(0));
         let control_count = Arc::new(AtomicUsize::new(0));
@@ -2084,11 +2123,8 @@ mod shutdown_tests {
 
     #[test]
     fn test_shutdown_drain_control_processes_control_and_mgmt() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            100,
-            ShutdownMode::DrainControl,
-        );
+        let (tx, mut rx) =
+            ActorScheduler::new_with_shutdown_mode(100, 100, ShutdownMode::DrainControl);
 
         let data_count = Arc::new(AtomicUsize::new(0));
         let control_count = Arc::new(AtomicUsize::new(0));
@@ -2186,7 +2222,7 @@ mod shutdown_tests {
     #[test]
     fn test_shutdown_drain_all_timeout_fallback() {
         let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            10,  // Small burst limit to check shutdown frequently
+            10,   // Small burst limit to check shutdown frequently
             1000, // Large buffer to avoid blocking sends
             ShutdownMode::DrainAll {
                 timeout: Duration::from_millis(50), // Short timeout
@@ -2270,6 +2306,9 @@ mod shutdown_tests {
             "Timeout should prevent processing all messages, processed {}",
             processed
         );
-        assert!(processed > 10, "Should process at least some messages before timeout");
+        assert!(
+            processed > 10,
+            "Should process at least some messages before timeout"
+        );
     }
 }

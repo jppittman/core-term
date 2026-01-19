@@ -13,7 +13,8 @@
 //! generates code that's hard to test in isolation.
 
 use actor_scheduler::{
-    Actor, ActorHandle, ActorScheduler, ActorTypes, Message, ActorStatus, SystemStatus, TroupeActor, HandlerResult, HandlerError,
+    Actor, ActorHandle, ActorScheduler, ActorStatus, ActorTypes, HandlerError, HandlerResult,
+    Message, SystemStatus, TroupeActor,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -103,7 +104,9 @@ impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
         Ok(())
     }
 
-    fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
+        Ok(())
+    }
 
     fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
@@ -153,7 +156,9 @@ impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
         Ok(())
     }
 
-    fn handle_management(&mut self, _: BetaManagement) -> HandlerResult { Ok(()) }
+    fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
+        Ok(())
+    }
 
     fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
@@ -327,9 +332,15 @@ fn all_actor_threads_exit_on_channel_close() {
     let alpha_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
-            fn handle_data(&mut self, _: AlphaData) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -341,9 +352,15 @@ fn all_actor_threads_exit_on_channel_close() {
     let beta_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<BetaData, BetaControl, BetaManagement> for NoopActor {
-            fn handle_data(&mut self, _: BetaData) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: BetaControl) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: BetaManagement) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: BetaData) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: BetaControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -386,8 +403,12 @@ fn actor_thread_panic_isolated() {
             fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
                 panic!("Alpha panics!");
             }
-            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -405,8 +426,12 @@ fn actor_thread_panic_isolated() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: BetaControl) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: BetaManagement) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: BetaControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -471,7 +496,9 @@ fn circular_messaging_does_not_deadlock() {
             max: usize,
         }
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for PingActor {
-            fn handle_data(&mut self, _: AlphaData) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
+                Ok(())
+            }
             fn handle_control(&mut self, cmd: AlphaControl) -> HandlerResult {
                 if matches!(cmd, AlphaControl::Ping) {
                     let c = self.count.fetch_add(1, Ordering::SeqCst);
@@ -481,7 +508,9 @@ fn circular_messaging_does_not_deadlock() {
                 }
                 Ok(())
             }
-            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -502,7 +531,9 @@ fn circular_messaging_does_not_deadlock() {
             max: usize,
         }
         impl Actor<BetaData, BetaControl, BetaManagement> for PongActor {
-            fn handle_data(&mut self, _: BetaData) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: BetaData) -> HandlerResult {
+                Ok(())
+            }
             fn handle_control(&mut self, cmd: BetaControl) -> HandlerResult {
                 if matches!(cmd, BetaControl::Pong) {
                     let c = self.count.fetch_add(1, Ordering::SeqCst);
@@ -512,7 +543,9 @@ fn circular_messaging_does_not_deadlock() {
                 }
                 Ok(())
             }
-            fn handle_management(&mut self, _: BetaManagement) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -566,8 +599,12 @@ fn cloned_directory_handles_work_independently() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -627,9 +664,15 @@ fn actors_can_coordinate_startup_with_barrier() {
 
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -645,9 +688,15 @@ fn actors_can_coordinate_startup_with_barrier() {
 
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -690,9 +739,15 @@ fn shutdown_message_causes_actor_exit() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
-            fn handle_data(&mut self, _: AlphaData) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -729,9 +784,15 @@ fn shutdown_works_with_multiple_actors() {
     let alpha_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
-            fn handle_data(&mut self, _: AlphaData) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: AlphaControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -743,9 +804,15 @@ fn shutdown_works_with_multiple_actors() {
     let beta_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<BetaData, BetaControl, BetaManagement> for NoopActor {
-            fn handle_data(&mut self, _: BetaData) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: BetaControl) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: BetaManagement) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: BetaData) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: BetaControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }

@@ -48,10 +48,7 @@ pub(super) fn process_ansi_command(
     }
 }
 
-fn handle_c0_control(
-    emulator: &mut TerminalEmulator,
-    c0: C0Control,
-) -> Option<EmulatorAction> {
+fn handle_c0_control(emulator: &mut TerminalEmulator, c0: C0Control) -> Option<EmulatorAction> {
     match c0 {
         C0Control::BS => {
             emulator.backspace();
@@ -141,10 +138,7 @@ fn handle_esc_command(
     }
 }
 
-fn handle_csi_command(
-    emulator: &mut TerminalEmulator,
-    csi: CsiCommand,
-) -> Option<EmulatorAction> {
+fn handle_csi_command(emulator: &mut TerminalEmulator, csi: CsiCommand) -> Option<EmulatorAction> {
     match csi {
         CsiCommand::CursorUp(n) => {
             emulator.cursor_up(n.max(1) as usize);
@@ -223,8 +217,7 @@ fn handle_csi_command(
         CsiCommand::DeviceStatusReport(dsr_param) => match dsr_param {
             DSR_DEFAULT | DSR_REPORT_CURSOR_POSITION => {
                 let screen_ctx = emulator.current_screen_context();
-                let (abs_x, abs_y) =
-                    emulator.cursor_controller.physical_screen_pos(&screen_ctx);
+                let (abs_x, abs_y) = emulator.cursor_controller.physical_screen_pos(&screen_ctx);
                 // Bolt Optimization: Avoid String allocation by writing directly to Vec
                 use std::io::Write;
                 let mut response = Vec::with_capacity(16);
@@ -268,11 +261,9 @@ fn handle_csi_command(
             emulator
                 .screen
                 .set_scrolling_region(top as usize, bottom as usize);
-            emulator.cursor_controller.move_to_logical(
-                0,
-                0,
-                &emulator.current_screen_context(),
-            );
+            emulator
+                .cursor_controller
+                .move_to_logical(0, 0, &emulator.current_screen_context());
             None
         }
         CsiCommand::SetCursorStyle { shape } => {

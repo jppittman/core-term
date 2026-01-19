@@ -8,8 +8,8 @@
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{
-    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
-    Y, Z,
+    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select,
+    Sub, W, X, Y, Z,
 };
 use std::sync::Arc;
 
@@ -19,15 +19,38 @@ type Field4 = (Field, Field, Field, Field);
 /// The 4D Jet2 domain type for autodifferentiation.
 type Jet4 = (Jet2, Jet2, Jet2, Jet2);
 
+/// Polymorphic constant that adapts to the evaluation domain.
+///
+/// - Field domain: Returns Field
+/// - Jet domain: Returns Jet2 (constant value, zero derivatives)
+#[derive(Clone, Copy, Debug)]
+pub struct Constant(pub f32);
+
+impl Manifold<Field4> for Constant {
+    type Output = Field;
+    #[inline(always)]
+    fn eval(&self, _: Field4) -> Field {
+        Field::from(self.0)
+    }
+}
+
+impl Manifold<Jet4> for Constant {
+    type Output = Jet2;
+    #[inline(always)]
+    fn eval(&self, _: Jet4) -> Jet2 {
+        Jet2::constant(Field::from(self.0))
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Type Aliases for Concrete Kernel Types
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The concrete type returned by line_winding_field (captured via TAIT).
-pub type LineKernel = impl Manifold<Field4, Output = Field> + Clone;
+pub type LineKernel = impl Manifold<Field4, Output = Field> + Manifold<Jet4, Output = Jet2> + Clone;
 
 /// The concrete type returned by quadratic_winding (captured via TAIT).
-pub type QuadKernel = impl Manifold<Field4, Output = Field> + Clone;
+pub type QuadKernel = impl Manifold<Field4, Output = Field> + Manifold<Jet4, Output = Jet2> + Clone;
 
 // Defining uses for TAIT - these functions establish what the opaque types actually are
 #[doc(hidden)]
@@ -168,35 +191,35 @@ fn quadratic_winding([x0, y0]: [f32; 2], [x1, y1]: [f32; 2], [x2, y2]: [f32; 2])
 
     // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
     let winding = {
-        let x_plus = Y * Y * ax + Y * bx + cx;
-        let x_minus = Z * Z * ax + Z * bx + cx;
-        let dy_plus = Y * (2.0 * ay) + by;
-        let dy_minus = Z * (2.0 * ay) + by;
+        let x_plus = Y * Y * Constant(ax) + Y * Constant(bx) + Constant(cx);
+        let x_minus = Z * Z * Constant(ax) + Z * Constant(bx) + Constant(cx);
+        let dy_plus = Y * Constant(2.0 * ay) + Constant(by);
+        let dy_minus = Z * Constant(2.0 * ay) + Constant(by);
 
         // Ray goes right from test point - count crossings to the right
-        let valid_plus = Y.ge(0.0) & Y.le(1.0) & X.lt(x_plus);
-        let valid_minus = Z.ge(0.0) & Z.le(1.0) & X.lt(x_minus);
+        let valid_plus = Y.ge(Constant(0.0)) & Y.le(Constant(1.0)) & X.lt(x_plus);
+        let valid_minus = Z.ge(Constant(0.0)) & Z.le(Constant(1.0)) & X.lt(x_minus);
 
         // In Y-down coordinates: dy > 0 means downward (above → below) → -1
-        let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
-        let sign_minus = dy_minus.gt(0.0).select(-1.0, 1.0);
+        let sign_plus = dy_plus.gt(Constant(0.0)).select(Constant(-1.0), Constant(1.0));
+        let sign_minus = dy_minus.gt(Constant(0.0)).select(Constant(-1.0), Constant(1.0));
 
-        valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
+    valid_plus.select(sign_plus, Constant(0.0)) + valid_minus.select(sign_minus, Constant(0.0))
     };
 
     // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
     let with_roots = winding.at(
         X,
-        Z * inv_2a + neg_b_2a,  // t_plus
-        Z * -inv_2a + neg_b_2a, // t_minus
+        Z * Constant(inv_2a) + Constant(neg_b_2a),  // t_plus
+        Z * Constant(-inv_2a) + Constant(neg_b_2a), // t_minus
         W,
     );
 
     // Layer 1 (outermost): screen coords
-    let disc = Y * disc_slope + disc_const;
+    let disc = Y * Constant(disc_slope) + Constant(disc_const);
     disc.clone()
-        .ge(0.0)
-        .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
+        .ge(Constant(0.0))
+        .select(with_roots.at(X, Y, disc.max(Constant(0.0)).sqrt(), W), Constant(0.0))
 }
 
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
@@ -255,19 +278,23 @@ fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
 
     let y_min = y0.min(y1);
     let y_max = y0.max(y1);
-    let in_y = Y.ge(y_min) & Y.lt(y_max);
+    let in_y = Y.ge(Constant(y_min)) & Y.lt(Constant(y_max));
 
     // x_int = (Y - y0) * (dx / dy) + x0  (x position where line crosses current Y)
     // For degenerate horizontal lines (dy ≈ 0), use safe fallback
     let safe_dy = if dy.abs() < 1e-6 { 1.0 } else { dy };
-    let x_int = (Y - y0) * (dx / safe_dy) + x0;
+    let x_int = (Y - Constant(y0)) * Constant(dx / safe_dy) + Constant(x0);
     // In Y-down coordinates: dy > 0 means downward (above → below) → -1
     let dir = if dy > 0.0 { -1.0 } else { 1.0 };
 
     // Winding contribution: ray goes right from test point, counts crossings to the right
     // Degenerate horizontal lines (dy ≈ 0) are filtered out by multiplying by a mask
     let non_degenerate = if dy.abs() < 1e-6 { 0.0 } else { 1.0 };
-    in_y.select(X.lt(x_int).select(dir * non_degenerate, 0.0), 0.0f32)
+    in_y.select(
+        X.lt(x_int)
+            .select(Constant(dir * non_degenerate), Constant(0.0)),
+        Constant(0.0f32),
+    )
 }
 
 /// Create a line with baked winding kernel from control points.
@@ -648,10 +675,10 @@ where
                 // At<trans_x, trans_y, Z, W, Select<UnitSquare, Geometry, 0.0>>
                 //
                 // We evaluate trans_x and trans_y at (x, y, z, w), then pass to inner
-                let tx = g.x.eval(p);  // transformed x
-                let ty = g.y.eval(p);  // transformed y
-                let tz = g.z.eval(p);  // z (passthrough)
-                let tw = g.w.eval(p);  // w (passthrough)
+                let tx = g.x.eval(p); // transformed x
+                let ty = g.y.eval(p); // transformed y
+                let tz = g.z.eval(p); // z (passthrough)
+                let tw = g.w.eval(p); // w (passthrough)
 
                 // Now evaluate the inner Select<UnitSquare, Geometry, 0.0>
                 g.inner.eval((tx, ty, tz, tw))
@@ -697,8 +724,16 @@ where
                 let ty_field = g.y.eval((x.val, y.val, z.val, w.val));
 
                 // Create Jet2 coords with the transformed values and propagated derivatives
-                let tx = Jet2 { val: tx_field, dx: x.dx, dy: x.dy };
-                let ty = Jet2 { val: ty_field, dx: y.dx, dy: y.dy };
+                let tx = Jet2 {
+                    val: tx_field,
+                    dx: x.dx,
+                    dy: x.dy,
+                };
+                let ty = Jet2 {
+                    val: ty_field,
+                    dx: y.dx,
+                    dy: y.dy,
+                };
                 let tz = z;
                 let tw = w;
 
@@ -711,8 +746,16 @@ where
                     let tx_field = child.x.eval((x.val, y.val, z.val, w.val));
                     let ty_field = child.y.eval((x.val, y.val, z.val, w.val));
 
-                    let tx = Jet2 { val: tx_field, dx: x.dx, dy: x.dy };
-                    let ty = Jet2 { val: ty_field, dx: y.dx, dy: y.dy };
+                    let tx = Jet2 {
+                        val: tx_field,
+                        dx: x.dx,
+                        dy: x.dy,
+                    };
+                    let ty = Jet2 {
+                        val: ty_field,
+                        dx: y.dx,
+                        dy: y.dy,
+                    };
                     let tz = z;
                     let tw = w;
 

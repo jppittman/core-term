@@ -240,7 +240,12 @@ where
 // Generic implementation for non-Field types (Jet2, etc.) on 4D domains
 // ============================================================================
 
-type Jet4 = (crate::jet::Jet2, crate::jet::Jet2, crate::jet::Jet2, crate::jet::Jet2);
+type Jet4 = (
+    crate::jet::Jet2,
+    crate::jet::Jet2,
+    crate::jet::Jet2,
+    crate::jet::Jet2,
+);
 
 impl<C, T, F, O> Manifold<Jet4> for Select<C, T, F>
 where

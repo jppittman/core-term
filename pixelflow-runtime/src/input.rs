@@ -15,7 +15,9 @@ bitflags! {
 }
 
 /// Represents a key symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub enum KeySymbol {
     // Alphanumeric keys
     Char(char),

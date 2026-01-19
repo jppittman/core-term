@@ -31,7 +31,12 @@ type Field4 = (Field, Field, Field, Field);
 
 /// Helper: Convert f32 tuple to Field4
 fn field4(x: f32, y: f32, z: f32, w: f32) -> Field4 {
-    (Field::from(x), Field::from(y), Field::from(z), Field::from(w))
+    (
+        Field::from(x),
+        Field::from(y),
+        Field::from(z),
+        Field::from(w),
+    )
 }
 
 /// Helper: Check if two Fields are approximately equal across all lanes.

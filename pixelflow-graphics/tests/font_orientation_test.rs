@@ -5,8 +5,8 @@
 
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::render::frame::Frame;
+use pixelflow_graphics::render::rasterizer::rasterize;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 

@@ -147,7 +147,7 @@ fn regression_glyph_ascent_offset() {
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
 
     rasterize(&lifted, &mut frame, 1);
-    
+
     let pixels = frame.data;
 
     // Count non-black pixels (with AA, we have smooth gradients)

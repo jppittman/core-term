@@ -172,8 +172,7 @@ pub const UNIT_CIRCLE_SDF: Sub<Sqrt<Add<Mul<X, X>, Mul<Y, Y>>>, f32> =
 
 /// Unit circle condition: x² + y² < 1.0
 /// Returns mask (all-1s inside, all-0s outside).
-pub const UNIT_CIRCLE_COND: Lt<Add<Mul<X, X>, Mul<Y, Y>>, f32> =
-    Lt(Add(Mul(X, X), Mul(Y, Y)), 1.0);
+pub const UNIT_CIRCLE_COND: Lt<Add<Mul<X, X>, Mul<Y, Y>>, f32> = Lt(Add(Mul(X, X), Mul(Y, Y)), 1.0);
 
 #[cfg(test)]
 mod tests {
@@ -225,7 +224,11 @@ mod tests {
 
         // Now test the full SDF (using relaxed tolerance for fast sqrt approximation)
         let at_edge = eval_scalar(&UNIT_CIRCLE_SDF, 1.0, 0.0);
-        assert!(at_edge.abs() < 0.01, "SDF at edge should be ~0.0, got {}", at_edge);
+        assert!(
+            at_edge.abs() < 0.01,
+            "SDF at edge should be ~0.0, got {}",
+            at_edge
+        );
 
         let outside = eval_scalar(&UNIT_CIRCLE_SDF, 2.0, 0.0);
         assert!(
@@ -256,6 +259,10 @@ mod tests {
         );
 
         let outside = eval_scalar(&selected, 2.0, 0.0);
-        assert!(outside.abs() < 0.001, "Point (2,0) should be outside (0.0), got {}", outside);
+        assert!(
+            outside.abs() < 0.001,
+            "Point (2,0) should be outside (0.0), got {}",
+            outside
+        );
     }
 }
