@@ -1,17 +1,18 @@
 // src/os/pty.rs
 
 use anyhow::{Context, Result};
-use std::ffi::CString;
 use std::io::{Read, Result as IoResult, Write};
 use std::os::unix::io::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::sync::Arc;
 
-use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use nix::fcntl::{fcntl, FcntlArg, FdFlag, OFlag};
 use nix::pty::openpty;
 use nix::sys::signal::{kill, Signal};
 use nix::sys::termios;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{execvp, fork, setsid, ForkResult, Pid};
+use nix::unistd::Pid;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 /// Configuration for spawning a PTY.
@@ -68,8 +69,9 @@ impl NixPty {
 
     /// Spawns a new process connected to a PTY using the given configuration.
     ///
-    /// This forks the process, creates a new session in the child, sets up the PTY,
-    /// and executes the command.
+    /// This uses `std::process::Command` to handle forking safely, avoiding potential
+    /// deadlocks in multi-threaded environments (like `cargo test`) that can occur with
+    /// manual `fork` and non-async-signal-safe code (e.g. `malloc` in `eprintln!`).
     ///
     /// # Parameters
     /// * `config` - Configuration for the PTY and command.
@@ -82,104 +84,86 @@ impl NixPty {
         let master_fd = pty_results.master;
         let slave_fd = pty_results.slave;
 
-        let master_raw_fd_for_log = master_fd.as_raw_fd();
+        // Set FD_CLOEXEC on both master and slave so they are closed in the child upon exec.
+        // We will dup2 the slave to 0,1,2 in pre_exec, so the duplicated FDs will remain open,
+        // while the original slave_fd (and master_fd) will be closed.
+        Self::set_cloexec(&master_fd)?;
+        Self::set_cloexec(&slave_fd)?;
 
-        let child_pid = match unsafe { fork() }.with_context(|| "Failed to fork process")? {
-            ForkResult::Parent { child, .. } => {
-                drop(slave_fd); // Parent closes its copy of slave PTY
-                log::debug!(
-                    "Parent: Forked child with PID {}, PTY master FD {}",
-                    child,
-                    master_raw_fd_for_log
-                );
+        // Configure slave PTY attributes (in the parent, operating on the slave FD).
+        // This is safe because slave_fd refers to the same underlying PTY.
+        let mut termios_attrs = termios::tcgetattr(&slave_fd)
+            .with_context(|| "Failed to get terminal attributes")?;
+        termios::cfmakeraw(&mut termios_attrs);
+        termios_attrs.local_flags |= termios::LocalFlags::ISIG;
+        termios_attrs.input_flags |= termios::InputFlags::ICRNL;
+        termios::tcsetattr(&slave_fd, termios::SetArg::TCSANOW, &termios_attrs)
+            .with_context(|| "Failed to set terminal attributes to raw mode")?;
 
-                Self::set_pty_size_internal(&master_fd, config.initial_cols, config.initial_rows)
-                    .with_context(|| "Parent: Failed to set initial PTY size")?;
+        let mut cmd = Command::new(config.command_executable);
+        cmd.args(config.args);
 
-                Self::set_fd_nonblocking(&master_fd)
-                    .with_context(|| "Parent: Failed to set master PTY to non-blocking")?;
-                child
-            }
-            ForkResult::Child => {
-                drop(master_fd); // Child closes its copy of master PTY
-                setsid().with_context(|| "Child: Failed to create new session")?;
-
-                let slave_raw_fd = slave_fd.as_raw_fd();
-
-                let tiocsctty_res = unsafe { libc::ioctl(slave_raw_fd, libc::TIOCSCTTY as _, 0) };
-                if tiocsctty_res == -1 {
-                    return Err(anyhow::Error::from(nix::Error::last()).context(
-                        "Child: Failed to set PTY slave as controlling terminal (ioctl TIOCSCTTY)",
-                    ));
+        // Pre-exec setup in the child.
+        // Must use only async-signal-safe functions (no malloc, no locks).
+        let slave_raw_fd = slave_fd.as_raw_fd();
+        unsafe {
+            cmd.pre_exec(move || {
+                // Create new session
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
                 }
 
-                let mut termios_attrs = termios::tcgetattr(&slave_fd)
-                    .with_context(|| "Child: Failed to get terminal attributes")?;
-                termios::cfmakeraw(&mut termios_attrs);
-                termios_attrs.local_flags |= termios::LocalFlags::ISIG;
-                termios_attrs.input_flags |= termios::InputFlags::ICRNL;
-                termios::tcsetattr(&slave_fd, termios::SetArg::TCSANOW, &termios_attrs)
-                    .with_context(|| "Child: Failed to set terminal attributes to raw mode")?;
-
-                // Using libc::dup2 directly as nix::unistd::dup2 signature caused issues.
-                if unsafe { libc::dup2(slave_raw_fd, libc::STDIN_FILENO) } == -1 {
-                    return Err(anyhow::Error::from(nix::Error::last())
-                        .context("Child: Failed to dup slave PTY to stdin using libc::dup2"));
-                }
-                if unsafe { libc::dup2(slave_raw_fd, libc::STDOUT_FILENO) } == -1 {
-                    return Err(anyhow::Error::from(nix::Error::last())
-                        .context("Child: Failed to dup slave PTY to stdout using libc::dup2"));
-                }
-                if unsafe { libc::dup2(slave_raw_fd, libc::STDERR_FILENO) } == -1 {
-                    return Err(anyhow::Error::from(nix::Error::last())
-                        .context("Child: Failed to dup slave PTY to stderr using libc::dup2"));
+                // Set controlling terminal
+                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
                 }
 
-                // After dup2, the original slave_fd (wrapping slave_raw_fd) should be closed,
-                // as 0, 1, and 2 now refer to the same underlying file description.
-                // Letting slave_fd (OwnedFd) go out of scope will achieve this.
-                // No std::mem::forget is needed because openpty() will not return an FD in the 0,1,2 range.
-                // So slave_raw_fd will be a distinct number (e.g. 5), and that FD 5 needs to be closed.
-                // If slave_fd were to be forgotten, FD 5 would leak.
-                drop(slave_fd);
-
-                let command_cst = CString::new(config.command_executable).with_context(|| {
-                    format!(
-                        "Child: Failed to create CString for command: {}",
-                        config.command_executable
-                    )
-                })?;
-
-                let mut args_cst_vec = Vec::new();
-                args_cst_vec.push(
-                    CString::new(
-                        config
-                            .command_executable
-                            .split('/')
-                            .next_back()
-                            .unwrap_or(config.command_executable),
-                    )
-                    .with_context(|| "Child: Failed to create CString for command name (arg0)")?,
-                );
-                for arg in config.args {
-                    args_cst_vec.push(CString::new(*arg).with_context(|| {
-                        format!("Child: Failed to create CString for argument: {}", arg)
-                    })?);
+                // Dup2 slave to stdin, stdout, stderr
+                if libc::dup2(slave_raw_fd, libc::STDIN_FILENO) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::dup2(slave_raw_fd, libc::STDOUT_FILENO) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::dup2(slave_raw_fd, libc::STDERR_FILENO) == -1 {
+                    return Err(std::io::Error::last_os_error());
                 }
 
-                log::debug!(
-                    "Child: Executing command: {:?} with args {:?}",
-                    command_cst,
-                    args_cst_vec
-                );
-                let exec_err = execvp(&command_cst, &args_cst_vec).unwrap_err();
-                eprintln!(
-                    "Child: Failed to execute command '{:?}': {}",
-                    command_cst, exec_err
-                );
-                std::process::exit(1);
-            }
-        };
+                // We don't need to manually close slave_raw_fd or master_fd here
+                // because we set FD_CLOEXEC on them in the parent.
+                // dup2 clears FD_CLOEXEC on the new FDs (0, 1, 2), so they will persist.
+
+                Ok(())
+            });
+        }
+
+        log::debug!(
+            "Spawning command: {} with args {:?}",
+            config.command_executable,
+            config.args
+        );
+
+        // Spawn the process
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to spawn command '{}'", config.command_executable))?;
+
+        let child_pid = Pid::from_raw(child.id() as i32);
+        log::debug!(
+            "Parent: Spawned child with PID {}, PTY master FD {}",
+            child_pid,
+            master_fd.as_raw_fd()
+        );
+
+        // In parent: configure master PTY size and non-blocking I/O
+        Self::set_pty_size_internal(&master_fd, config.initial_cols, config.initial_rows)
+            .with_context(|| "Parent: Failed to set initial PTY size")?;
+
+        Self::set_fd_nonblocking(&master_fd)
+            .with_context(|| "Parent: Failed to set master PTY to non-blocking")?;
+
+        // slave_fd is dropped here, closing the parent's handle to the slave PTY.
+        // The child has its own copies (0, 1, 2).
 
         Ok(NixPty {
             master_fd: Arc::new(master_fd),
@@ -203,6 +187,14 @@ impl NixPty {
         _initial_rows: u16,
     ) -> Result<Self> {
         unimplemented!("spawn_shell_command is not fully implemented with OwnedFd yet.");
+    }
+
+    fn set_cloexec<Fd: AsFd>(fd: Fd) -> Result<()> {
+        let raw_fd = fd.as_fd().as_raw_fd();
+        fcntl(fd.as_fd(), FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))
+            .with_context(|| format!("Failed to set FD_CLOEXEC for fd {}", raw_fd))?;
+        log::trace!("NixPty: Set FD_CLOEXEC on fd {}", raw_fd);
+        Ok(())
     }
 
     fn set_fd_nonblocking<Fd: AsFd>(fd: Fd) -> Result<()> {
