@@ -36,6 +36,8 @@ use syn::{Ident, Type};
 pub struct KernelDef {
     /// Parameters captured from the closure syntax.
     pub params: Vec<Param>,
+    /// Optional return type annotation (e.g., `-> Jet3`).
+    pub return_ty: Option<Type>,
     /// The kernel body expression.
     pub body: Expr,
 }

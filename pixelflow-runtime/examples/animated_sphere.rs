@@ -13,6 +13,7 @@ use actor_scheduler::Message;
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
+use pixelflow_macros::kernel;
 
 type Field4 = (Field, Field, Field, Field);
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
@@ -30,46 +31,38 @@ const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
 
 // ============================================================================
-// GEOMETRY PRIMITIVES
+// GEOMETRY PRIMITIVES (using kernel! macro)
 // ============================================================================
 
-/// SphereAt - a sphere at a given center position.
+/// Create a sphere geometry kernel.
 ///
-/// Animation is handled at scene construction time by computing the offset
-/// and baking it into the center position.
-#[derive(Clone, Copy)]
-struct SphereAt {
-    /// Center position
-    center: (f32, f32, f32),
-    /// Sphere radius
-    radius: f32,
-}
+/// The kernel! macro generates a struct that captures (cx, cy, cz, r, eps) and
+/// implements Manifold<Jet3_4> with Output = Jet3 (inferred from `-> Jet3`).
+///
+/// This replaces the manual `SphereAt` struct with a declarative expression.
+///
+/// Note: We make epsilon a parameter because inline f32 literals in Jet3 kernels
+/// create type conflicts during AST construction (f32 returns Field, not Jet3).
+/// Parameters get wrapped as Jet3::constant() at the Let binding level, avoiding this.
+fn sphere_at(cx: f32, cy: f32, cz: f32, r: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
+    // Smooth epsilon for grazing angles (as parameter to avoid type conflicts)
+    const EPSILON_SQ: f32 = 0.0001;
 
-impl Manifold<Jet3_4> for SphereAt {
-    type Output = Jet3;
-
-    #[inline(always)]
-    fn eval(&self, p: Jet3_4) -> Jet3 {
-        let (rx, ry, rz, _w) = p;
-        let cx = Jet3::constant(Field::from(self.center.0));
-        let cy = Jet3::constant(Field::from(self.center.1));
-        let cz = Jet3::constant(Field::from(self.center.2));
-
+    kernel!(|cx: f32, cy: f32, cz: f32, r: f32, eps: f32| -> Jet3 {
         // Ray-sphere intersection: |t*D - C|² = r²
         // For normalized ray D: t² - 2t(D·C) + |C|² - r² = 0
         // Solution: t = (D·C) - sqrt((D·C)² - (|C|² - r²))
 
-        let d_dot_c = rx * cx + ry * cy + rz * cz;
+        let d_dot_c = X * cx + Y * cy + Z * cz;
         let c_sq = cx * cx + cy * cy + cz * cz;
-        let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let discriminant: Jet3 = d_dot_c * d_dot_c - (c_sq - r_sq);
+        let r_sq = r * r;
+        let discriminant = d_dot_c * d_dot_c - (c_sq - r_sq);
 
-        // Smooth epsilon for grazing angles
-        let epsilon_sq = Jet3::constant(Field::from(0.0001));
-        let safe_discriminant: Jet3 = discriminant + epsilon_sq;
+        // Add epsilon for safe sqrt
+        let safe_discriminant = discriminant + eps;
 
         d_dot_c - safe_discriminant.sqrt()
-    }
+    })(cx, cy, cz, r, EPSILON_SQ)
 }
 
 /// Screen coordinate remapper.
@@ -116,7 +109,9 @@ const RADIUS: f32 = 1.0;
 fn build_scene_at_time(t: f32) -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
     // Compute the animated X offset
     let x_offset = (t * FREQUENCY).sin() * AMPLITUDE;
-    let center = (BASE_CENTER.0 + x_offset, BASE_CENTER.1, BASE_CENTER.2);
+    let cx = BASE_CENTER.0 + x_offset;
+    let cy = BASE_CENTER.1;
+    let cz = BASE_CENTER.2;
 
     // Background: floor with checkerboard
     let world = ColorSurface {
@@ -125,8 +120,8 @@ fn build_scene_at_time(t: f32) -> impl Manifold<Output = Discrete> + Clone + Syn
         background: ColorSky::<ColorCube>::default(),
     };
 
-    // Sphere at the computed animated position
-    let sphere = SphereAt { center, radius: RADIUS };
+    // Sphere at the computed animated position (using kernel! macro)
+    let sphere = sphere_at(cx, cy, cz, RADIUS);
 
     let scene = ColorSurface {
         geometry: sphere,

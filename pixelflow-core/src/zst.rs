@@ -156,6 +156,12 @@ impl<M, T> sealed::Sealed for crate::combinators::Map<M, T> {}
 impl<M, D> sealed::Sealed for crate::combinators::Project<M, D> {}
 impl<Cx, Cy, Cz, Cw, M> sealed::Sealed for crate::combinators::At<Cx, Cy, Cz, Cw, M> {}
 impl<Seed, Step, Done> sealed::Sealed for crate::combinators::Fix<Seed, Step, Done> {}
+impl<Val, Body> sealed::Sealed for crate::combinators::Let<Val, Body> {}
+impl<N> sealed::Sealed for crate::combinators::Var<N> {}
+
+// Seal Peano types
+impl sealed::Sealed for crate::combinators::Zero {}
+impl<N> sealed::Sealed for crate::combinators::Succ<N> {}
 
 // ============================================================================
 // Base ZST Implementations
@@ -186,6 +192,11 @@ impl crate::Zst for crate::backend::x86::Avx512 {}
 
 #[cfg(target_arch = "aarch64")]
 impl crate::Zst for crate::backend::arm::Neon {}
+
+// Peano types (for Let/Var bindings)
+impl crate::Zst for crate::combinators::Zero {}
+impl<N: crate::Zst> crate::Zst for crate::combinators::Succ<N> {}
+impl<N: crate::Zst> crate::Zst for crate::combinators::Var<N> {}
 
 // ============================================================================
 // Operator Trait Implementations (Enumerate operators once)

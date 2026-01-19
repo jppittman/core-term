@@ -77,3 +77,4 @@ default = []
 [dev-dependencies]
 anyhow = "1.0"
 env_logger = "0.11"
+pixelflow-macros = { path = "../pixelflow-macros" }

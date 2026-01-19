@@ -12,12 +12,17 @@
 //!
 //! For `X`, the macro generates:
 //! ```rust,ignore
-//! impl<Rhs: Manifold> core::ops::Add<Rhs> for X {
+//! impl<Rhs> core::ops::Add<Rhs> for X {
 //!     type Output = Add<X, Rhs>;
 //!     fn add(self, rhs: Rhs) -> Self::Output { Add(self, rhs) }
 //! }
 //! // ... and Sub, Mul, Div similarly
 //! ```
+//!
+//! Note: No `Manifold` bound on Rhs! Operators just construct AST nodes.
+//! The Manifold bound is checked at evaluation time, not construction time.
+//! This allows expressions like `X - Var::<N0>::new()` where Var<N> only
+//! implements Manifold for domains with Head trait.
 //!
 //! ## Rsqrt Fusion
 //!
@@ -29,7 +34,6 @@ use super::{
     Sqrt, Sub,
 };
 use crate::Field;
-use crate::Manifold;
 use crate::combinators::Select;
 use crate::variables::{W, X, Y, Z};
 
@@ -39,23 +43,28 @@ use crate::variables::{W, X, Y, Z};
 
 /// Implements binary operators for a single base manifold type.
 /// Includes rsqrt fusion: L / Sqrt<R> → MulRsqrt<L, R>
+///
+/// Note: No `Manifold` bound on the Rhs type! Operators construct AST nodes
+/// without validating that operands are manifolds. Validation happens at
+/// evaluation time, allowing expressions with Var<N> (which only implements
+/// Manifold for domains with Head trait).
 macro_rules! impl_binary_ops_for {
     ($ty:ty) => {
-        impl<Rhs: Manifold> core::ops::Add<Rhs> for $ty {
+        impl<Rhs> core::ops::Add<Rhs> for $ty {
             type Output = Add<$ty, Rhs>;
             fn add(self, rhs: Rhs) -> Self::Output {
                 Add(self, rhs)
             }
         }
 
-        impl<Rhs: Manifold> core::ops::Sub<Rhs> for $ty {
+        impl<Rhs> core::ops::Sub<Rhs> for $ty {
             type Output = Sub<$ty, Rhs>;
             fn sub(self, rhs: Rhs) -> Self::Output {
                 Sub(self, rhs)
             }
         }
 
-        impl<Rhs: Manifold> core::ops::Mul<Rhs> for $ty {
+        impl<Rhs> core::ops::Mul<Rhs> for $ty {
             type Output = Mul<$ty, Rhs>;
             fn mul(self, rhs: Rhs) -> Self::Output {
                 Mul(self, rhs)
@@ -63,7 +72,7 @@ macro_rules! impl_binary_ops_for {
         }
 
         // Rsqrt fusion: L / Sqrt<R> → MulRsqrt<L, R>
-        impl<R: Manifold> core::ops::Div<Sqrt<R>> for $ty {
+        impl<R> core::ops::Div<Sqrt<R>> for $ty {
             type Output = MulRsqrt<$ty, R>;
             #[inline(always)]
             fn div(self, rhs: Sqrt<R>) -> Self::Output {
@@ -103,7 +112,7 @@ macro_rules! impl_binary_ops_for {
 /// Generate Div impl for base type with generic divisor
 macro_rules! impl_base_div {
     ($self_ty:ty, $div_ty:ident <$($dg:ident),*>) => {
-        impl<$($dg: Manifold),*> core::ops::Div<$div_ty<$($dg),*>> for $self_ty {
+        impl<$($dg),*> core::ops::Div<$div_ty<$($dg),*>> for $self_ty {
             type Output = Div<$self_ty, $div_ty<$($dg),*>>;
             #[inline(always)]
             fn div(self, rhs: $div_ty<$($dg),*>) -> Self::Output { Div(self, rhs) }
