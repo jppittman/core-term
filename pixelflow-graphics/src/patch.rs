@@ -115,6 +115,7 @@ impl Manifold<Field4> for BezierPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_core::ManifoldCompat;
 
     #[test]
     fn test_flat_patch() {
