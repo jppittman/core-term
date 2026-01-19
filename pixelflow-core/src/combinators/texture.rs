@@ -6,11 +6,13 @@
 use crate::{Field, Manifold, PARALLELISM};
 use alloc::vec::Vec;
 
+type Field4 = (Field, Field, Field, Field);
+
 /// Evaluate a manifold graph to Field.
 #[inline(always)]
-fn eval<M: Manifold<Field, Output = Field>>(m: M) -> Field {
+fn eval<M: Manifold<Field4, Output = Field>>(m: M) -> Field {
     let zero = Field::from(0.0);
-    m.eval_raw(zero, zero, zero, zero)
+    m.eval((zero, zero, zero, zero))
 }
 
 /// A manifold backed by a 2D texture in memory.
@@ -32,7 +34,7 @@ fn eval<M: Manifold<Field, Output = Field>>(m: M) -> Field {
 /// let tex = Texture::new(data, 64, 64);
 ///
 /// // Sample at coordinates - returns cached values
-/// let val = tex.eval_raw(x, y, z, w);
+/// let val = tex.eval((x, y, z, w));
 /// ```
 pub struct Texture {
     /// Row-major f32 data.
@@ -62,7 +64,7 @@ impl Texture {
     /// Evaluates `source` at each pixel center `(x + 0.5, y + 0.5)`.
     pub fn from_manifold<M>(source: &M, width: usize, height: usize) -> Self
     where
-        M: Manifold<Output = Field>,
+        M: Manifold<Field4, Output = Field>,
     {
         let mut data = Vec::with_capacity(width * height);
         let mut buf = [0.0f32; PARALLELISM];
@@ -71,7 +73,7 @@ impl Texture {
             let fy = Field::from(y as f32 + 0.5);
             for x in 0..width {
                 let fx = Field::from(x as f32 + 0.5);
-                let val = source.eval_raw(fx, fy, Field::from(0.0), Field::from(0.0));
+                let val = source.eval((fx, fy, Field::from(0.0), Field::from(0.0)));
                 // All lanes have same value for splat input, extract first
                 val.store(&mut buf);
                 data.push(buf[0]);
@@ -104,11 +106,12 @@ impl Texture {
     }
 }
 
-impl Manifold for Texture {
+impl Manifold<Field4> for Texture {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, _z, _w) = p;
         // Compute linear indices: floor(y) * width + floor(x)
         let w = Field::from(self.width as f32);
         let zero = Field::from(0.0);
@@ -146,33 +149,33 @@ mod tests {
         let tex = Texture::new(data, 4, 4);
 
         // Sample at (0.5, 0.5) should give value at index 0
-        let val = tex.eval_raw(
+        let val = tex.eval((
             Field::from(0.5),
             Field::from(0.5),
             Field::from(0.0),
             Field::from(0.0),
-        );
+        ));
         let mut buf = [0.0f32; PARALLELISM];
         val.store(&mut buf);
         assert!((buf[0] - 0.0).abs() < 0.01);
 
         // Sample at (1.5, 0.5) should give value at index 1
-        let val = tex.eval_raw(
+        let val = tex.eval((
             Field::from(1.5),
             Field::from(0.5),
             Field::from(0.0),
             Field::from(0.0),
-        );
+        ));
         val.store(&mut buf);
         assert!((buf[0] - 1.0).abs() < 0.01);
 
         // Sample at (0.5, 1.5) should give value at index 4 (row 1, col 0)
-        let val = tex.eval_raw(
+        let val = tex.eval((
             Field::from(0.5),
             Field::from(1.5),
             Field::from(0.0),
             Field::from(0.0),
-        );
+        ));
         val.store(&mut buf);
         assert!((buf[0] - 4.0).abs() < 0.01);
     }
@@ -183,23 +186,23 @@ mod tests {
         let tex = Texture::new(data, 4, 4);
 
         // Sample at negative coords should clamp to 0
-        let val = tex.eval_raw(
+        let val = tex.eval((
             Field::from(-1.0),
             Field::from(0.5),
             Field::from(0.0),
             Field::from(0.0),
-        );
+        ));
         let mut buf = [0.0f32; PARALLELISM];
         val.store(&mut buf);
         assert!((buf[0] - 0.0).abs() < 0.01);
 
         // Sample at coords > width should clamp to edge
-        let val = tex.eval_raw(
+        let val = tex.eval((
             Field::from(10.0),
             Field::from(0.5),
             Field::from(0.0),
             Field::from(0.0),
-        );
+        ));
         val.store(&mut buf);
         assert!((buf[0] - 3.0).abs() < 0.01); // Last column of row 0
     }

@@ -18,6 +18,12 @@
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
 
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
+
+/// The 4D Jet3 domain type for 3D ray tracing autodiff.
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+
 // ============================================================================
 // LIFT: Field manifold → Jet3 manifold (explicit conversion)
 // ============================================================================
@@ -30,11 +36,12 @@ use pixelflow_core::*;
 #[derive(Clone, Copy)]
 pub struct Lift<M>(pub M);
 
-impl<M: Manifold<Field> + Send + Sync> Manifold<Jet3> for Lift<M> {
+impl<M: ManifoldCompat<Field> + Send + Sync> Manifold<Jet3_4> for Lift<M> {
     type Output = M::Output;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Self::Output {
+    fn eval(&self, p: Jet3_4) -> Self::Output {
+        let (x, y, z, w) = p;
         self.0.eval_raw(x.into(), y.into(), z.into(), w.into())
     }
 }
@@ -48,11 +55,11 @@ impl<M: Manifold<Field> + Send + Sync> Manifold<Jet3> for Lift<M> {
 #[derive(Clone, Copy)]
 struct FieldMask(Field);
 
-impl Manifold<Jet3> for FieldMask {
+impl Manifold<Jet3_4> for FieldMask {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, _p: Jet3_4) -> Jet3 {
         // Convert Field mask to Jet3 with zero derivatives
         Jet3::constant(self.0)
     }
@@ -76,11 +83,12 @@ pub struct ScreenToDir<M> {
     pub inner: M,
 }
 
-impl<M: Manifold<Jet3, Output = Field>> Manifold for ScreenToDir<M> {
+impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Field4> for ScreenToDir<M> {
     type Output = Field;
 
     #[inline]
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, _z, w) = p;
         // 1. Seed Jets from Screen Coords
         // x: varies with screen x (dx=1, dy=0, dz=0)
         let sx = Jet3::x(x);
@@ -111,11 +119,12 @@ pub struct ColorScreenToDir<M> {
     pub inner: M,
 }
 
-impl<M: Manifold<Jet3, Output = Discrete>> Manifold for ColorScreenToDir<M> {
+impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Field4> for ColorScreenToDir<M> {
     type Output = Discrete;
 
     #[inline]
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, _z, w) = p;
         let sx = Jet3::x(x);
         let sy = Jet3::y(y);
         let sz = Jet3::constant(Field::from(1.0));
@@ -140,11 +149,12 @@ impl<M: Manifold<Jet3, Output = Discrete>> Manifold for ColorScreenToDir<M> {
 #[derive(Clone, Copy)]
 pub struct UnitSphere;
 
-impl Manifold<Jet3> for UnitSphere {
+impl Manifold<Jet3_4> for UnitSphere {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (rx, ry, rz, _w) = p;
         // Ray is normalized, so |ray| = 1 usually, but let's be robust.
         // t = 1.0 / sqrt(rx^2 + ry^2 + rz^2)
         let len_sq = rx * rx + ry * ry + rz * rz;
@@ -159,11 +169,12 @@ pub struct PlaneGeometry {
     pub height: f32,
 }
 
-impl Manifold<Jet3> for PlaneGeometry {
+impl Manifold<Jet3_4> for PlaneGeometry {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, _rx: Jet3, ry: Jet3, _rz: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (_rx, ry, _rz, _w) = p;
         Jet3::constant(Field::from(self.height)) / ry
     }
 }
@@ -182,11 +193,12 @@ pub struct HeightFieldGeometry<H> {
     pub center_z: f32, // World z offset (patch centered here)
 }
 
-impl<H: Manifold<Field, Output = Field>> Manifold<Jet3> for HeightFieldGeometry<H> {
+impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldGeometry<H> {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (rx, ry, rz, _w) = p;
         // Step 1: Hit base plane at y = base_height
         let t_plane = Jet3::constant(Field::from(self.base_height)) / ry;
 
@@ -240,16 +252,17 @@ pub struct Surface<G, M, B> {
     pub background: B, // Evaluates at Ray Direction D (if miss)
 }
 
-impl<G, M, B> Manifold<Jet3> for Surface<G, M, B>
+impl<G, M, B> Manifold<Jet3_4> for Surface<G, M, B>
 where
-    G: Manifold<Jet3, Output = Jet3>,
-    M: Manifold<Jet3, Output = Field>,
-    B: Manifold<Jet3, Output = Field>,
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+    M: ManifoldCompat<Jet3, Output = Field>,
+    B: ManifoldCompat<Jet3, Output = Field>,
 {
     type Output = Field;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Field {
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (rx, ry, rz, w) = p;
         // 1. Ask Geometry for distance t
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 

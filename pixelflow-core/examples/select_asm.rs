@@ -3,7 +3,7 @@
 //! Run: cargo-asm -p pixelflow-core --example select_asm select_gt --release
 //! Run: cargo-asm -p pixelflow-core --example select_asm select_field --release
 
-use pixelflow_core::{Field, Manifold, ManifoldExt, X};
+use pixelflow_core::{Field, ManifoldCompat, ManifoldExt, X};
 use std::hint::black_box;
 
 /// Select with Gt<X, f32> condition - goes through FieldCondition::eval_mask

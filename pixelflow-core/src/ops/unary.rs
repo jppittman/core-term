@@ -50,147 +50,151 @@ pub struct Max<L, R>(pub L, pub R);
 #[derive(Clone, Debug)]
 pub struct Min<L, R>(pub L, pub R);
 
-impl<M, I> Manifold<I> for Sqrt<M>
-where
-    I: crate::numeric::Numeric,
-    M: Manifold<I>,
-    M::Output: crate::numeric::Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).sqrt()
-    }
-}
+// ============================================================================
+// Domain-Generic Manifold Implementations
+// ============================================================================
 
-impl<M, I> Manifold<I> for Neg<M>
+impl<P, M, O> Manifold<P> for Sqrt<M>
 where
-    I: Numeric,
-    M: Manifold<I>,
-    M::Output: Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        <M::Output as Computational>::from_f32(0.0).raw_sub(self.0.eval_raw(x, y, z, w))
-    }
-}
-
-impl<M, I> Manifold<I> for Abs<M>
-where
-    I: crate::numeric::Numeric,
-    M: Manifold<I>,
-    M::Output: crate::numeric::Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).abs()
-    }
-}
-
-impl<M, I> Manifold<I> for Floor<M>
-where
-    I: crate::numeric::Numeric,
-    M: Manifold<I>,
-    M::Output: crate::numeric::Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).floor()
-    }
-}
-
-impl<M, I> Manifold<I> for Rsqrt<M>
-where
-    I: crate::numeric::Numeric,
-    M: Manifold<I>,
-    M::Output: crate::numeric::Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).rsqrt()
-    }
-}
-
-impl<M, I> Manifold<I> for Sin<M>
-where
-    I: crate::numeric::Numeric,
-    M: Manifold<I>,
-    M::Output: crate::numeric::Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).sin()
-    }
-}
-
-impl<M, I> Manifold<I> for Cos<M>
-where
-    I: crate::numeric::Numeric,
-    M: Manifold<I>,
-    M::Output: crate::numeric::Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).cos()
-    }
-}
-
-impl<M, I> Manifold<I> for Log2<M>
-where
-    I: crate::numeric::Numeric,
-    M: Manifold<I>,
-    M::Output: crate::numeric::Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).log2()
-    }
-}
-
-impl<M, I> Manifold<I> for Exp2<M>
-where
-    I: crate::numeric::Numeric,
-    M: Manifold<I>,
-    M::Output: crate::numeric::Numeric,
-{
-    type Output = M::Output;
-    #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).exp2()
-    }
-}
-
-impl<L, R, I, O> Manifold<I> for Max<L, R>
-where
-    I: crate::numeric::Numeric,
-    O: crate::numeric::Numeric,
-    L: Manifold<I, Output = O>,
-    R: Manifold<I, Output = O>,
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
 {
     type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).max(self.1.eval_raw(x, y, z, w))
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).sqrt()
     }
 }
 
-impl<L, R, I, O> Manifold<I> for Min<L, R>
+impl<P, M, O> Manifold<P> for Neg<M>
 where
-    I: crate::numeric::Numeric,
-    O: crate::numeric::Numeric,
-    L: Manifold<I, Output = O>,
-    R: Manifold<I, Output = O>,
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
 {
     type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0.eval_raw(x, y, z, w).min(self.1.eval_raw(x, y, z, w))
+    fn eval(&self, p: P) -> O {
+        <O as Computational>::from_f32(0.0).raw_sub(self.0.eval(p))
+    }
+}
+
+impl<P, M, O> Manifold<P> for Abs<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).abs()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Floor<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).floor()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Rsqrt<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).rsqrt()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Sin<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).sin()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Cos<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).cos()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Log2<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).log2()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Exp2<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).exp2()
+    }
+}
+
+impl<P, L, R, O> Manifold<P> for Max<L, R>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).max(self.1.eval(p))
+    }
+}
+
+impl<P, L, R, O> Manifold<P> for Min<L, R>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).min(self.1.eval(p))
     }
 }

@@ -184,8 +184,11 @@
 use crate::render::color::Pixel;
 use crate::render::frame::Frame;
 use pixelflow_core::{
-    materialize_discrete, materialize_discrete_fields, Discrete, Field, Manifold, PARALLELISM,
+    materialize_discrete, materialize_discrete_fields, Discrete, Field, Manifold, ManifoldCompat, PARALLELISM,
 };
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
 
 pub mod parallel;
 pub mod actor;
@@ -205,12 +208,12 @@ pub use messages::{
 #[derive(Clone, Copy, Debug)]
 pub struct Rasterize<M>(pub M);
 
-impl<M: Manifold> Manifold for Rasterize<M> {
+impl<M: Manifold<Field4>> Manifold<Field4> for Rasterize<M> {
     type Output = M::Output;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output {
-        self.0.eval_raw(x, y, z, w)
+    fn eval(&self, p: Field4) -> Self::Output {
+        self.0.eval(p)
     }
 }
 
@@ -232,7 +235,7 @@ pub(crate) struct Stripe {
 pub(crate) fn execute<P, M>(manifold: &M, target: &mut Frame<P>)
 where
     P: Pixel,
-    M: Manifold<Output = Discrete> + ?Sized,
+    M: ManifoldCompat<Field, Output = Discrete> + ?Sized,
 {
     let width = target.width;
     let height = target.height;
@@ -254,7 +257,7 @@ where
 pub(crate) fn execute_stripe<P, M>(manifold: &M, target: &mut [P], stripe: Stripe)
 where
     P: Pixel,
-    M: Manifold<Output = Discrete> + ?Sized,
+    M: ManifoldCompat<Field, Output = Discrete> + ?Sized,
 {
     let mut packed = [0u32; PARALLELISM];
 

@@ -2,7 +2,31 @@
 //!
 //! The base coordinate manifolds: X, Y, Z, W.
 //! Also defines the `Axis` enum for 4D topology.
+//!
+//! ## Domain-Generic Design
+//!
+//! Coordinate variables use the `Spatial` trait to access coordinates from
+//! any domain type. This allows them to work with:
+//!
+//! - 2D domains: `(I, I)` - X and Y available, Z and W return zero
+//! - 3D domains: `(I, I, I)` - X, Y, Z available, W returns zero
+//! - 4D domains: `(I, I, I, I)` - all coordinates available
+//! - Let-extended domains: `LetExtended<V, Rest>` - coordinates pass through
+//!
+//! ## Example
+//!
+//! ```ignore
+//! use pixelflow_core::{X, Y, Manifold, Field};
+//!
+//! // X and Y work on any Spatial domain
+//! let circle = (X * X + Y * Y).sqrt();
+//!
+//! // Evaluate on 2D domain
+//! let val = circle.eval((Field::from(3.0), Field::from(4.0)));
+//! // val = 5.0
+//! ```
 
+use crate::domain::Spatial;
 use crate::Manifold;
 
 /// The explicit 4D axes of the manifold topology.
@@ -56,35 +80,116 @@ impl Dimension for W {
     const AXIS: Axis = Axis::W;
 }
 
-// Variables are polymorphic - they return their coordinate unchanged
-impl<I: crate::numeric::Numeric> Manifold<I> for X {
-    type Output = I;
+// ============================================================================
+// Manifold Implementations for Coordinate Variables
+// ============================================================================
+
+// X reads the x coordinate from any Spatial domain
+impl<P> Manifold<P> for X
+where
+    P: Spatial + Send + Sync,
+    P::Coord: Copy + Send + Sync,
+{
+    type Output = P::Coord;
     #[inline(always)]
-    fn eval_raw(&self, x: I, _y: I, _z: I, _w: I) -> I {
-        x
+    fn eval(&self, p: P) -> P::Coord {
+        p.x()
     }
 }
 
-impl<I: crate::numeric::Numeric> Manifold<I> for Y {
-    type Output = I;
+// Y reads the y coordinate from any Spatial domain
+impl<P> Manifold<P> for Y
+where
+    P: Spatial + Send + Sync,
+    P::Coord: Copy + Send + Sync,
+{
+    type Output = P::Coord;
     #[inline(always)]
-    fn eval_raw(&self, _x: I, y: I, _z: I, _w: I) -> I {
-        y
+    fn eval(&self, p: P) -> P::Coord {
+        p.y()
     }
 }
 
-impl<I: crate::numeric::Numeric> Manifold<I> for Z {
-    type Output = I;
+// Z reads the z coordinate from any Spatial domain
+// For 2D domains, returns zero per GLSL conventions
+impl<P> Manifold<P> for Z
+where
+    P: Spatial + Send + Sync,
+    P::Coord: Copy + Send + Sync,
+{
+    type Output = P::Coord;
     #[inline(always)]
-    fn eval_raw(&self, _x: I, _y: I, z: I, _w: I) -> I {
-        z
+    fn eval(&self, p: P) -> P::Coord {
+        p.z()
     }
 }
 
-impl<I: crate::numeric::Numeric> Manifold<I> for W {
-    type Output = I;
+// W reads the w coordinate from any Spatial domain
+// For 2D/3D domains, returns zero per GLSL conventions
+impl<P> Manifold<P> for W
+where
+    P: Spatial + Send + Sync,
+    P::Coord: Copy + Send + Sync,
+{
+    type Output = P::Coord;
     #[inline(always)]
-    fn eval_raw(&self, _x: I, _y: I, _z: I, w: I) -> I {
-        w
+    fn eval(&self, p: P) -> P::Coord {
+        p.w()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Field;
+
+    #[test]
+    fn test_x_on_2d() {
+        let domain = (Field::from(3.0), Field::from(4.0));
+        let result = X.eval(domain);
+        let mut buf = [0.0f32; crate::PARALLELISM];
+        result.store(&mut buf);
+        assert_eq!(buf[0], 3.0);
+    }
+
+    #[test]
+    fn test_y_on_2d() {
+        let domain = (Field::from(3.0), Field::from(4.0));
+        let result = Y.eval(domain);
+        let mut buf = [0.0f32; crate::PARALLELISM];
+        result.store(&mut buf);
+        assert_eq!(buf[0], 4.0);
+    }
+
+    #[test]
+    fn test_z_on_2d_is_zero() {
+        let domain = (Field::from(3.0), Field::from(4.0));
+        let result = Z.eval(domain);
+        let mut buf = [0.0f32; crate::PARALLELISM];
+        result.store(&mut buf);
+        assert_eq!(buf[0], 0.0); // Zero-padded
+    }
+
+    #[test]
+    fn test_on_4d() {
+        let domain = (
+            Field::from(1.0),
+            Field::from(2.0),
+            Field::from(3.0),
+            Field::from(4.0),
+        );
+        let mut buf = [0.0f32; crate::PARALLELISM];
+
+        X.eval(domain).store(&mut buf);
+        assert_eq!(buf[0], 1.0);
+
+        Y.eval(domain).store(&mut buf);
+        assert_eq!(buf[0], 2.0);
+
+        Z.eval(domain).store(&mut buf);
+        assert_eq!(buf[0], 3.0);
+
+        W.eval(domain).store(&mut buf);
+        assert_eq!(buf[0], 4.0);
     }
 }

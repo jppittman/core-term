@@ -71,63 +71,65 @@ type NativeMask = <NativeSimd as SimdOps>::Mask;
 ///
 /// This is automatically implemented for comparison types (Lt, Gt, Le, Ge)
 /// and their boolean combinations (And, Or, Not).
-pub trait FieldCondition: Send + Sync {
+pub trait FieldCondition<P>: Send + Sync {
     /// Evaluate the condition, returning a native mask.
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask;
+    fn eval_mask(&self, p: P) -> NativeMask;
 }
 
 // ============================================================================
-// FieldCondition implementations for comparison types
+// FieldCondition implementations for comparison types (4D Field domains)
 // ============================================================================
 
-impl<L, R> FieldCondition for Lt<L, R>
+type Field4 = (Field, Field, Field, Field);
+
+impl<L, R> FieldCondition<Field4> for Lt<L, R>
 where
-    L: Manifold<Field, Output = Field>,
-    R: Manifold<Field, Output = Field>,
+    L: Manifold<Field4, Output = Field>,
+    R: Manifold<Field4, Output = Field>,
 {
     #[inline(always)]
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
-        let left = self.0.eval_raw(x, y, z, w);
-        let right = self.1.eval_raw(x, y, z, w);
+    fn eval_mask(&self, p: Field4) -> NativeMask {
+        let left = self.0.eval(p);
+        let right = self.1.eval(p);
         left.0.cmp_lt(right.0)
     }
 }
 
-impl<L, R> FieldCondition for Gt<L, R>
+impl<L, R> FieldCondition<Field4> for Gt<L, R>
 where
-    L: Manifold<Field, Output = Field>,
-    R: Manifold<Field, Output = Field>,
+    L: Manifold<Field4, Output = Field>,
+    R: Manifold<Field4, Output = Field>,
 {
     #[inline(always)]
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
-        let left = self.0.eval_raw(x, y, z, w);
-        let right = self.1.eval_raw(x, y, z, w);
+    fn eval_mask(&self, p: Field4) -> NativeMask {
+        let left = self.0.eval(p);
+        let right = self.1.eval(p);
         left.0.cmp_gt(right.0)
     }
 }
 
-impl<L, R> FieldCondition for Le<L, R>
+impl<L, R> FieldCondition<Field4> for Le<L, R>
 where
-    L: Manifold<Field, Output = Field>,
-    R: Manifold<Field, Output = Field>,
+    L: Manifold<Field4, Output = Field>,
+    R: Manifold<Field4, Output = Field>,
 {
     #[inline(always)]
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
-        let left = self.0.eval_raw(x, y, z, w);
-        let right = self.1.eval_raw(x, y, z, w);
+    fn eval_mask(&self, p: Field4) -> NativeMask {
+        let left = self.0.eval(p);
+        let right = self.1.eval(p);
         left.0.cmp_le(right.0)
     }
 }
 
-impl<L, R> FieldCondition for Ge<L, R>
+impl<L, R> FieldCondition<Field4> for Ge<L, R>
 where
-    L: Manifold<Field, Output = Field>,
-    R: Manifold<Field, Output = Field>,
+    L: Manifold<Field4, Output = Field>,
+    R: Manifold<Field4, Output = Field>,
 {
     #[inline(always)]
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
-        let left = self.0.eval_raw(x, y, z, w);
-        let right = self.1.eval_raw(x, y, z, w);
+    fn eval_mask(&self, p: Field4) -> NativeMask {
+        let left = self.0.eval(p);
+        let right = self.1.eval(p);
         left.0.cmp_ge(right.0)
     }
 }
@@ -136,35 +138,38 @@ where
 // FieldCondition for boolean combinations
 // ============================================================================
 
-impl<L, R> FieldCondition for And<L, R>
+impl<L, R, P> FieldCondition<P> for And<L, R>
 where
-    L: FieldCondition,
-    R: FieldCondition,
+    P: Copy,
+    L: FieldCondition<P>,
+    R: FieldCondition<P>,
 {
     #[inline(always)]
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
-        self.0.eval_mask(x, y, z, w) & self.1.eval_mask(x, y, z, w)
+    fn eval_mask(&self, p: P) -> NativeMask {
+        self.0.eval_mask(p) & self.1.eval_mask(p)
     }
 }
 
-impl<L, R> FieldCondition for Or<L, R>
+impl<L, R, P> FieldCondition<P> for Or<L, R>
 where
-    L: FieldCondition,
-    R: FieldCondition,
+    P: Copy,
+    L: FieldCondition<P>,
+    R: FieldCondition<P>,
 {
     #[inline(always)]
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
-        self.0.eval_mask(x, y, z, w) | self.1.eval_mask(x, y, z, w)
+    fn eval_mask(&self, p: P) -> NativeMask {
+        self.0.eval_mask(p) | self.1.eval_mask(p)
     }
 }
 
-impl<T> FieldCondition for BNot<T>
+impl<T, P> FieldCondition<P> for BNot<T>
 where
-    T: FieldCondition,
+    P: Copy,
+    T: FieldCondition<P>,
 {
     #[inline(always)]
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
-        !self.0.eval_mask(x, y, z, w)
+    fn eval_mask(&self, p: P) -> NativeMask {
+        !self.0.eval_mask(p)
     }
 }
 
@@ -172,95 +177,91 @@ where
 // FieldCondition for Abs<T> (common in threshold patterns like |winding| >= 0.5)
 // ============================================================================
 
-impl<T> FieldCondition for crate::ops::unary::Abs<T>
+impl<T> FieldCondition<Field4> for crate::ops::unary::Abs<T>
 where
-    T: Manifold<Field, Output = Field>,
+    T: Manifold<Field4, Output = Field>,
 {
     #[inline(always)]
-    fn eval_mask(&self, x: Field, y: Field, z: Field, w: Field) -> NativeMask {
+    fn eval_mask(&self, p: Field4) -> NativeMask {
         // Abs doesn't produce a mask directly, so this shouldn't be called.
         // But we need it for nested expressions like Ge(Abs(m), 0.5)
         // In that case, Ge's eval_mask handles it properly.
         // This impl is for cases where Abs is used as a bare condition (unusual).
-        let val = self.0.eval_raw(x, y, z, w);
+        let val = self.0.eval(p);
         val.0.float_to_mask()
     }
 }
 
 // Field itself can be a condition (mask stored as float bits).
 // Used when Field::gt/lt/etc. returns a Field mask directly.
-impl FieldCondition for Field {
+impl FieldCondition<Field4> for Field {
     #[inline(always)]
-    fn eval_mask(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> NativeMask {
+    fn eval_mask(&self, _p: Field4) -> NativeMask {
         self.0.float_to_mask()
     }
 }
 
 // ============================================================================
-// Select implementation for Field with FieldCondition (OPTIMIZED PATH)
+// Select implementation for 4D Field domain with FieldCondition (OPTIMIZED PATH)
 // ============================================================================
 
-impl<C, T, F, O> Manifold<Field> for Select<C, T, F>
+impl<C, T, F, O> Manifold<Field4> for Select<C, T, F>
 where
     O: crate::numeric::Selectable,
-    C: FieldCondition,
-    T: Manifold<Field, Output = O>,
-    F: Manifold<Field, Output = O>,
+    C: FieldCondition<Field4>,
+    T: Manifold<Field4, Output = O>,
+    F: Manifold<Field4, Output = O>,
 {
     type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> O {
+    fn eval(&self, p: Field4) -> O {
         // Get native mask directly - no float conversion!
-        let mask = self.cond.eval_mask(x, y, z, w);
+        let mask = self.cond.eval_mask(p);
 
         // Early exit using native mask ops (free on AVX-512 k-registers)
         if mask.all() {
-            return self.if_true.eval_raw(x, y, z, w);
+            return self.if_true.eval(p);
         }
         if !mask.any() {
-            return self.if_false.eval_raw(x, y, z, w);
+            return self.if_false.eval(p);
         }
 
         // Select using Selectable trait
         // Convert native mask back to Field (float mask) for the generic interface
         let mask_field = Field(NativeSimd::mask_to_float(mask));
-        let true_val = self.if_true.eval_raw(x, y, z, w);
-        let false_val = self.if_false.eval_raw(x, y, z, w);
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
 
         O::select_raw(mask_field, true_val, false_val)
     }
 }
 
 // ============================================================================
-// Generic implementation for non-Field types (Jet2, etc.)
+// Generic implementation for non-Field types (Jet2, etc.) on 4D domains
 // ============================================================================
 
-impl<C, T, F, O> Manifold<crate::jet::Jet2> for Select<C, T, F>
+type Jet4 = (crate::jet::Jet2, crate::jet::Jet2, crate::jet::Jet2, crate::jet::Jet2);
+
+impl<C, T, F, O> Manifold<Jet4> for Select<C, T, F>
 where
     O: Numeric,
-    C: Manifold<crate::jet::Jet2, Output = O>,
-    T: Manifold<crate::jet::Jet2, Output = O>,
-    F: Manifold<crate::jet::Jet2, Output = O>,
+    C: Manifold<Jet4, Output = O>,
+    T: Manifold<Jet4, Output = O>,
+    F: Manifold<Jet4, Output = O>,
 {
     type Output = O;
     #[inline(always)]
-    fn eval_raw(
-        &self,
-        x: crate::jet::Jet2,
-        y: crate::jet::Jet2,
-        z: crate::jet::Jet2,
-        w: crate::jet::Jet2,
-    ) -> O {
-        let mask = self.cond.eval_raw(x, y, z, w);
+    fn eval(&self, p: Jet4) -> O {
+        let mask = self.cond.eval(p);
         if mask.all() {
-            return self.if_true.eval_raw(x, y, z, w);
+            return self.if_true.eval(p);
         }
         if !mask.any() {
-            return self.if_false.eval_raw(x, y, z, w);
+            return self.if_false.eval(p);
         }
 
-        let true_val = self.if_true.eval_raw(x, y, z, w);
-        let false_val = self.if_false.eval_raw(x, y, z, w);
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
         O::select_raw(mask, true_val, false_val)
     }
 }
@@ -269,35 +270,36 @@ where
 // Jet3 with Selectable output (for Discrete in the mullet architecture)
 // ============================================================================
 
-impl<C, T, F, O> Manifold<crate::jet::Jet3> for Select<C, T, F>
+type Jet3_4 = (
+    crate::jet::Jet3,
+    crate::jet::Jet3,
+    crate::jet::Jet3,
+    crate::jet::Jet3,
+);
+
+impl<C, T, F, O> Manifold<Jet3_4> for Select<C, T, F>
 where
     O: crate::numeric::Selectable,
-    C: Manifold<crate::jet::Jet3, Output = crate::jet::Jet3>,
-    T: Manifold<crate::jet::Jet3, Output = O>,
-    F: Manifold<crate::jet::Jet3, Output = O>,
+    C: Manifold<Jet3_4, Output = crate::jet::Jet3>,
+    T: Manifold<Jet3_4, Output = O>,
+    F: Manifold<Jet3_4, Output = O>,
 {
     type Output = O;
     #[inline(always)]
-    fn eval_raw(
-        &self,
-        x: crate::jet::Jet3,
-        y: crate::jet::Jet3,
-        z: crate::jet::Jet3,
-        w: crate::jet::Jet3,
-    ) -> O {
-        let cond_jet = self.cond.eval_raw(x, y, z, w);
+    fn eval(&self, p: Jet3_4) -> O {
+        let cond_jet = self.cond.eval(p);
         let mask = cond_jet.val; // Extract Field mask from Jet3
 
         // Early exit using Field's any/all
         if mask.all() {
-            return self.if_true.eval_raw(x, y, z, w);
+            return self.if_true.eval(p);
         }
         if !mask.any() {
-            return self.if_false.eval_raw(x, y, z, w);
+            return self.if_false.eval(p);
         }
 
-        let true_val = self.if_true.eval_raw(x, y, z, w);
-        let false_val = self.if_false.eval_raw(x, y, z, w);
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
         O::select_raw(mask, true_val, false_val)
     }
 }

@@ -15,12 +15,15 @@
 use crate::Field;
 use crate::{Manifold, ManifoldExt};
 
+/// The standard 4D Field domain.
+type Field4 = (Field, Field, Field, Field);
+
 /// Evaluate a manifold graph to Field.
 /// Since Field is a constant manifold, coordinates don't matter.
 #[inline(always)]
-fn eval<M: Manifold<Field, Output = Field>>(m: M) -> Field {
+fn eval<M: Manifold<Field4, Output = Field>>(m: M) -> Field {
     let zero = Field::from(0.0);
-    m.eval_raw(zero, zero, zero, zero)
+    m.eval((zero, zero, zero, zero))
 }
 
 // ============================================================================

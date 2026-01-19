@@ -14,7 +14,7 @@ use crate::{Field, Manifold};
 /// # Semantics
 ///
 /// Given `inner` and `transform`:
-/// `result(x, y, z, w) = transform(inner(x, y, z, w), y, z, w)`
+/// `result(p) = transform((inner(p), y, z, w))`
 ///
 /// # Example
 ///
@@ -39,19 +39,20 @@ impl<M, T> Map<M, T> {
     }
 }
 
-impl<I, M, T> Manifold<I> for Map<M, T>
+// Map on 4D domains: output of inner becomes X for transform
+impl<I, M, T> Manifold<(I, I, I, I)> for Map<M, T>
 where
     I: crate::numeric::Computational,
-    M: Manifold<I, Output = I>,
-    T: Manifold<I, Output = I>,
+    M: Manifold<(I, I, I, I), Output = I>,
+    T: Manifold<(I, I, I, I), Output = I>,
 {
     type Output = I;
 
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        let val = self.inner.eval_raw(x, y, z, w);
+    fn eval(&self, p: (I, I, I, I)) -> Self::Output {
+        let val = self.inner.eval(p);
         // Map the output of inner to X of transform, pass others through
-        self.transform.eval_raw(val, y, z, w)
+        self.transform.eval((val, p.1, p.2, p.3))
     }
 }
 
@@ -77,38 +78,41 @@ impl<M, F> ClosureMap<M, F> {
     }
 }
 
-impl<M, F> Manifold for ClosureMap<M, F>
+type Field4 = (Field, Field, Field, Field);
+
+impl<M, F> Manifold<Field4> for ClosureMap<M, F>
 where
-    M: Manifold<Output = Field>,
+    M: Manifold<Field4, Output = Field>,
     F: Fn(Field) -> Field + Send + Sync,
 {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let val = self.inner.eval_raw(x, y, z, w);
+    fn eval(&self, p: Field4) -> Field {
+        let val = self.inner.eval(p);
         (self.func)(val)
     }
 }
 
 /// Covariant map for Field -> PathJet<Field>
-impl<M, F> Manifold<crate::jet::PathJet<Field>> for ClosureMap<M, F>
+type PathJet4 = (
+    crate::jet::PathJet<Field>,
+    crate::jet::PathJet<Field>,
+    crate::jet::PathJet<Field>,
+    crate::jet::PathJet<Field>,
+);
+
+impl<M, F> Manifold<PathJet4> for ClosureMap<M, F>
 where
-    M: Manifold<Field, Output = Field>,
+    M: Manifold<Field4, Output = Field>,
     F: Fn(Field) -> crate::jet::PathJet<Field> + Send + Sync,
 {
     type Output = crate::jet::PathJet<Field>;
 
     #[inline(always)]
-    fn eval_raw(
-        &self,
-        x: crate::jet::PathJet<Field>,
-        y: crate::jet::PathJet<Field>,
-        z: crate::jet::PathJet<Field>,
-        w: crate::jet::PathJet<Field>,
-    ) -> crate::jet::PathJet<Field> {
+    fn eval(&self, p: PathJet4) -> crate::jet::PathJet<Field> {
         // Extract origin components and evaluate inner manifold
-        let val = self.inner.eval_raw(x.val, y.val, z.val, w.val);
+        let val = self.inner.eval((p.0.val, p.1.val, p.2.val, p.3.val));
         (self.func)(val)
     }
 }

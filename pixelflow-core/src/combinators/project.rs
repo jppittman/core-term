@@ -5,13 +5,15 @@
 use crate::{Field, Manifold, variables::Dimension};
 use core::marker::PhantomData;
 
+type Field4 = (Field, Field, Field, Field);
+
 /// A trait for types that can be projected onto a dimension to yield a component manifold.
 ///
 /// Instead of evaluating to a Vector and then extracting, implementors provide
 /// direct access to their component manifolds.
 pub trait Projectable<D: Dimension>: Sized {
     /// The manifold type for this dimension's component.
-    type Component: Manifold<Output = Field>;
+    type Component: Manifold<Field4, Output = Field>;
 
     /// Get the component manifold for this dimension.
     fn project(&self) -> Self::Component;
@@ -31,7 +33,7 @@ impl<M, D> Project<M, D> {
     }
 }
 
-impl<M, D> Manifold for Project<M, D>
+impl<M, D> Manifold<Field4> for Project<M, D>
 where
     M: Projectable<D> + Send + Sync,
     D: Dimension + Send + Sync + 'static,
@@ -39,7 +41,7 @@ where
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        self.0.project().eval_raw(x, y, z, w)
+    fn eval(&self, p: Field4) -> Field {
+        self.0.project().eval(p)
     }
 }

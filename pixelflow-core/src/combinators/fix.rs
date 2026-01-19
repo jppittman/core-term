@@ -4,6 +4,8 @@
 
 use crate::{Field, Manifold};
 
+type Field4 = (Field, Field, Field, Field);
+
 /// Iterate until convergence.
 ///
 /// Evaluates `step` repeatedly (using W as state) until `done` returns true.
@@ -18,14 +20,17 @@ pub struct Fix<Seed, Step, Done> {
     pub done: Done,
 }
 
-impl<Seed: Manifold<Output = Field>, Step: Manifold<Output = Field>, Done: Manifold<Output = Field>>
-    Manifold for Fix<Seed, Step, Done>
+impl<Seed, Step, Done> Manifold<Field4> for Fix<Seed, Step, Done>
+where
+    Seed: Manifold<Field4, Output = Field>,
+    Step: Manifold<Field4, Output = Field>,
+    Done: Manifold<Field4, Output = Field>,
 {
     type Output = Field;
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let _ = w; // Unused input; we use W for iteration state
-        let mut state = self.seed.eval_raw(x, y, z, w);
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, _w) = p;
+        let mut state = self.seed.eval(p);
 
         // Track which lanes are still active (all-1s mask initially)
         let zero = Field::from(0.0f32);
@@ -33,7 +38,7 @@ impl<Seed: Manifold<Output = Field>, Step: Manifold<Output = Field>, Done: Manif
 
         loop {
             // Check termination
-            let done_mask = self.done.eval_raw(x, y, z, state);
+            let done_mask = self.done.eval((x, y, z, state));
 
             // Retire converged lanes: active = active AND NOT done
             active = Field::select_raw(done_mask, zero, active);
@@ -44,7 +49,7 @@ impl<Seed: Manifold<Output = Field>, Step: Manifold<Output = Field>, Done: Manif
             }
 
             // Step only active lanes
-            let next = self.step.eval_raw(x, y, z, state);
+            let next = self.step.eval((x, y, z, state));
             state = Field::select_raw(active, next, state);
         }
 
