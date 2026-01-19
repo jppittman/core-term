@@ -168,7 +168,7 @@ impl<'a> CodeEmitter<'a> {
 
         // Run annotation pass to collect literals and assign Var indices
         // Literals get indices 0..m-1, params get indices m..m+n-1
-        let annotation_ctx = AnnotationCtx::new(params.len(), self.use_jet_wrapper);
+        let annotation_ctx = AnnotationCtx::new();
         let (annotated_body, _, collected_literals) = annotate(&self.analyzed.def.body, annotation_ctx);
         let literal_count = collected_literals.len();
         self.collected_literals = collected_literals;
@@ -225,13 +225,13 @@ impl<'a> CodeEmitter<'a> {
 
         // Handle empty vs non-empty params, with or without generics
         if params.is_empty() {
-            // No parameters - simple case
+            // No parameters - unit struct is always Copy
             quote! {
                 {
                     type __Domain = #domain_type;
                     type __Scalar = #scalar_type;
 
-                    #[derive(Clone)]
+                    #[derive(Clone, Copy)]
                     struct __Kernel;
 
                     impl ::pixelflow_core::Manifold<__Domain> for __Kernel {
@@ -253,14 +253,14 @@ impl<'a> CodeEmitter<'a> {
                     || __Kernel
                 }
             }
-        } else if manifold_count == 0 {
-            // Only scalar parameters - no generics needed
+        } else if manifold_count == 0 && params.len() == 1 {
+            // Single scalar parameter - derive Copy (f32, i32, etc. are Copy)
             quote! {
                 {
                     type __Domain = #domain_type;
                     type __Scalar = #scalar_type;
 
-                    #[derive(Clone)]
+                    #[derive(Clone, Copy)]
                     struct __Kernel { #(#struct_fields),* }
 
                     impl ::pixelflow_core::Manifold<__Domain> for __Kernel {
@@ -275,6 +275,89 @@ impl<'a> CodeEmitter<'a> {
                             #peano_imports
 
                             let __expr = { #body };
+                            #at_binding
+                        }
+                    }
+
+                    |#(#closure_params),*| __Kernel { #(#field_names),* }
+                }
+            }
+        } else if manifold_count == 0 {
+            // Multiple scalar parameters - no auto-Copy
+            quote! {
+                {
+                    type __Domain = #domain_type;
+                    type __Scalar = #scalar_type;
+
+                    struct __Kernel { #(#struct_fields),* }
+
+                    impl ::pixelflow_core::Manifold<__Domain> for __Kernel {
+                        type Output = #output_type;
+
+                        #[inline(always)]
+                        fn eval(
+                            &self,
+                            __p: __Domain,
+                        ) -> #output_type {
+                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                            #peano_imports
+
+                            let __expr = { #body };
+                            #at_binding
+                        }
+                    }
+
+                    |#(#closure_params),*| __Kernel { #(#field_names),* }
+                }
+            }
+        } else if manifold_count == 1 && params.len() == 1 {
+            // Single manifold parameter - conditional Copy when M0: Copy
+            // This enables ZST composition: if inner kernel is ZST+Copy, outer is too
+            let trait_bounds: Vec<TokenStream> = generic_names
+                .iter()
+                .map(|g| {
+                    quote! { #g: ::pixelflow_core::Manifold<__Domain, Output = __Scalar> }
+                })
+                .collect();
+
+            quote! {
+                {
+                    type __Domain = #domain_type;
+                    type __Scalar = #scalar_type;
+
+                    struct __Kernel<#(#generic_names),*> { #(#struct_fields),* }
+
+                    // Clone when inner is Clone
+                    impl<#(#generic_names: Clone),*> Clone for __Kernel<#(#generic_names),*> {
+                        fn clone(&self) -> Self {
+                            Self { #(#field_names: self.#field_names.clone()),* }
+                        }
+                    }
+
+                    // Copy when inner is Copy (ZST kernels are Copy via zst.rs)
+                    impl<#(#generic_names: Copy),*> Copy for __Kernel<#(#generic_names),*> {}
+
+                    impl<#(#generic_names),*> ::pixelflow_core::Manifold<__Domain> for __Kernel<#(#generic_names),*>
+                    where
+                        #(#trait_bounds),*
+                    {
+                        type Output = #output_type;
+
+                        #[inline(always)]
+                        fn eval(
+                            &self,
+                            __p: __Domain,
+                        ) -> #output_type {
+                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                            #peano_imports
+
+                            // Evaluate manifold parameters at current point (borrows via &self)
+                            #manifold_eval_stmts
+
+                            // Build the ZST expression tree using Var<N> for ALL parameters
+                            let __expr = { #body };
+
+                            // Wrap in nested Let bindings and evaluate
                             #at_binding
                         }
                     }

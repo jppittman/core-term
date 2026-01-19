@@ -7,7 +7,7 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
 use pixelflow_graphics::render::color::RgbaColorCube;
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
 };
 
 type Field4 = (Field, Field, Field, Field);
@@ -76,7 +76,7 @@ impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScre
 #[inline(never)]
 pub fn eval_one_pixel(x: Field, y: Field) -> Discrete {
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: ColorChecker::<RgbaColorCube>::default(),
         background: ColorSky::<RgbaColorCube>::default(),
     };

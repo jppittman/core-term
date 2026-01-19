@@ -17,6 +17,7 @@
 
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
+use pixelflow_macros::kernel;
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
@@ -149,37 +150,17 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Field4> for ColorScree
 
 /// Unit sphere centered at origin.
 /// Solves |t * ray| = 1  =>  t = 1 / |ray|
-#[derive(Clone, Copy)]
-pub struct UnitSphere;
-
-impl Manifold<Jet3_4> for UnitSphere {
-    type Output = Jet3;
-
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Jet3 {
-        let (rx, ry, rz, _w) = p;
-        // Ray is normalized, so |ray| = 1 usually, but let's be robust.
-        // t = 1.0 / sqrt(rx^2 + ry^2 + rz^2)
-        let len_sq = rx * rx + ry * ry + rz * rz;
-        Jet3::constant(Field::from(1.0)) / len_sq.sqrt()
-    }
+pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
+    kernel!(|| -> Jet3 {
+        let len_sq = X * X + Y * Y + Z * Z;
+        1.0 / len_sq.sqrt()
+    })()
 }
 
 /// Horizontal plane at y = height.
 /// Solves P.y = height => t * ry = height => t = height / ry
-#[derive(Clone, Copy)]
-pub struct PlaneGeometry {
-    pub height: f32,
-}
-
-impl Manifold<Jet3_4> for PlaneGeometry {
-    type Output = Jet3;
-
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Jet3 {
-        let (_rx, ry, _rz, _w) = p;
-        Jet3::constant(Field::from(self.height)) / ry
-    }
+pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
+    kernel!(|h: f32| -> Jet3 { h / Y })(height)
 }
 
 /// Height field geometry: z = base_height + scale * f(x, y)
@@ -1022,22 +1003,13 @@ impl Manifold<Jet3_4> for Checker {
 }
 
 /// Simple Sky Gradient based on Y direction.
-#[derive(Clone, Copy)]
-pub struct Sky;
-
-impl Manifold<Jet3_4> for Sky {
-    type Output = Field;
-
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Field {
-        let (_x, y, _z, _w) = p;
-        // y is the Y component of the direction vector
-        let t = y.val * Field::from(0.5) + Field::from(0.5);
-        let t = t.max(Field::from(0.0)).min(Field::from(1.0));
-
-        // Deep blue to white
-        (Field::from(0.1) + t * Field::from(0.8)).constant()
-    }
+///
+/// Uses Lift to project Jet3 → Field (discards derivatives - sky doesn't need AA).
+pub fn sky() -> Lift<impl Manifold<Field4, Output = Field> + Copy> {
+    Lift(kernel!(|| {
+        let t = (Y * 0.5 + 0.5).max(0.0).min(1.0);
+        t * 0.8 + 0.1
+    })())
 }
 
 /// Color Sky: Blue gradient, generic over ColorCube for platform-specific byte order.
