@@ -122,6 +122,7 @@ mod tests {
     use pixelflow_core::Discrete;
     use pixelflow_core::Field;
     use pixelflow_core::Manifold;
+    use pixelflow_core::RgbaComponents;
 
     // A minimal test surface
     #[derive(Clone, Copy)]
@@ -132,12 +133,12 @@ mod tests {
     impl Manifold for TestSurface {
         type Output = Discrete;
         fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
-            Discrete::pack(
-                Field::from(self.color),
-                Field::from(self.color),
-                Field::from(self.color),
-                Field::from(1.0),
-            )
+            Discrete::pack(RgbaComponents {
+                r: Field::from(self.color),
+                g: Field::from(self.color),
+                b: Field::from(self.color),
+                a: Field::from(1.0),
+            })
         }
     }
 

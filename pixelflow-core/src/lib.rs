@@ -1,4 +1,4 @@
-//! # PixelFlow Core: An Algebraic Graphics Engine
+//! PixelFlow Core: An Algebraic Graphics Engine
 //!
 //! **A minimal lambda calculus (eDSL) for composing pull-based graphics computations.**
 //!
@@ -166,6 +166,7 @@ pub mod ext;
 // ============================================================================
 
 pub use backend::fastmath::FastMathGuard;
+pub use backend::RgbaComponents;
 pub use combinators::*;
 pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
@@ -683,52 +684,64 @@ impl Discrete {
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
-    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
-        Self(backend::arm::U32x4::pack_rgba(
-            unsafe { core::mem::transmute(r.0) },
-            unsafe { core::mem::transmute(g.0) },
-            unsafe { core::mem::transmute(b.0) },
-            unsafe { core::mem::transmute(a.0) },
-        ))
+    pub fn pack(components: RgbaComponents<Field>) -> Self {
+        let r = components.r;
+        let g = components.g;
+        let b = components.b;
+        let a = components.a;
+        Self(backend::arm::U32x4::pack_rgba(RgbaComponents {
+            r: unsafe { core::mem::transmute(r.0) },
+            g: unsafe { core::mem::transmute(g.0) },
+            b: unsafe { core::mem::transmute(b.0) },
+            a: unsafe { core::mem::transmute(a.0) },
+        }))
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
-    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
+    pub fn pack(components: RgbaComponents<Field>) -> Self {
+        let r = components.r;
+        let g = components.g;
+        let b = components.b;
+        let a = components.a;
         #[cfg(target_feature = "avx512f")]
         {
-            Self(backend::x86::U32x16::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x16::pack_rgba(RgbaComponents {
+                r: unsafe { core::mem::transmute(r.0) },
+                g: unsafe { core::mem::transmute(g.0) },
+                b: unsafe { core::mem::transmute(b.0) },
+                a: unsafe { core::mem::transmute(a.0) },
+            }))
         }
         #[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
         {
-            Self(backend::x86::U32x8::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x8::pack_rgba(RgbaComponents {
+                r: unsafe { core::mem::transmute(r.0) },
+                g: unsafe { core::mem::transmute(g.0) },
+                b: unsafe { core::mem::transmute(b.0) },
+                a: unsafe { core::mem::transmute(a.0) },
+            }))
         }
         #[cfg(all(not(target_feature = "avx512f"), not(target_feature = "avx2")))]
         {
-            Self(backend::x86::U32x4::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x4::pack_rgba(RgbaComponents {
+                r: unsafe { core::mem::transmute(r.0) },
+                g: unsafe { core::mem::transmute(g.0) },
+                b: unsafe { core::mem::transmute(b.0) },
+                a: unsafe { core::mem::transmute(a.0) },
+            }))
         }
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     #[inline(always)]
-    pub fn pack(r: Field, g: Field, b: Field, _a: Field) -> Self {
+    pub fn pack(components: RgbaComponents<Field>) -> Self {
+        let r = components.r;
+        let g = components.g;
+        let b = components.b;
+        let _a = components.a;
         // Scalar fallback - only packs first element
         let mut r_buf = [0.0f32; 1];
         let mut g_buf = [0.0f32; 1];
@@ -745,7 +758,12 @@ impl Discrete {
         let a_u8 = (a_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
         let packed = r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24);
 
-        Self(backend::scalar::ScalarU32::splat(packed))
+        Self(backend::scalar::ScalarU32::pack_rgba(RgbaComponents {
+            r: backend::scalar::ScalarF32::splat(r_buf[0]),
+            g: backend::scalar::ScalarF32::splat(g_buf[0]),
+            b: backend::scalar::ScalarF32::splat(b_buf[0]),
+            a: backend::scalar::ScalarF32::splat(a_buf[0]),
+        }))
     }
 
     /// Branchless select: returns `if_true` where mask is set, `if_false` elsewhere.

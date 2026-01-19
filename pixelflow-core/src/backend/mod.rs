@@ -170,6 +170,19 @@ pub trait SimdOps:
     fn exp2(self) -> Self;
 }
 
+/// Helper struct to group RGBA components, reducing argument count in functions.
+#[derive(Copy, Clone, Debug)]
+pub struct RgbaComponents<T> {
+    /// Red component.
+    pub r: T,
+    /// Green component.
+    pub g: T,
+    /// Blue component.
+    pub b: T,
+    /// Alpha component.
+    pub a: T,
+}
+
 /// SIMD operations for u32 (packed pixels).
 pub trait SimdU32Ops:
     Copy

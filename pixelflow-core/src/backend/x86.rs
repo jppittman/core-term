@@ -1,6 +1,6 @@
 //! x86_64 backend.
 
-use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, RgbaComponents, SimdOps, SimdU32Ops};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 use core::fmt::{Debug, Formatter};
@@ -545,7 +545,11 @@ impl Shr<u32> for U32x4 {
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
-    pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
+    pub fn pack_rgba(components: RgbaComponents<F32x4>) -> Self {
+        let r = components.r;
+        let g = components.g;
+        let b = components.b;
+        let a = components.a;
         unsafe {
             // Clamp to [0, 1] and scale to [0, 255]
             let scale = _mm_set1_ps(255.0);
@@ -1139,7 +1143,11 @@ impl Shr<u32> for U32x8 {
 impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
-    pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
+    pub(crate) fn pack_rgba(components: RgbaComponents<F32x8>) -> Self {
+        let r = components.r;
+        let g = components.g;
+        let b = components.b;
+        let a = components.a;
         unsafe {
             let scale = _mm256_set1_ps(255.0);
             let zero = _mm256_setzero_ps();
@@ -1736,7 +1744,11 @@ impl Shr<u32> for U32x16 {
 impl U32x16 {
     /// Pack 16 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
-    pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
+    pub(crate) fn pack_rgba(components: RgbaComponents<F32x16>) -> Self {
+        let r = components.r;
+        let g = components.g;
+        let b = components.b;
+        let a = components.a;
         unsafe {
             let scale = _mm512_set1_ps(255.0);
             let zero = _mm512_setzero_ps();

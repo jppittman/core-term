@@ -1,61 +1,40 @@
-//! Idiomatic pixelflow example to verify SIMD codegen
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM, X, Y};
+// examples/asm_check.rs
+
+use pixelflow_core::{
+    materialize_discrete, Discrete, Field, Manifold, ManifoldExt, RgbaComponents,
+};
+
+// Removed render_kernel (F32) as Vector trait for (Field, Field, Field, Field) is not readily available
+// and we are interested in Discrete optimization.
 
 #[inline(never)]
-pub fn render_circle(buffer: &mut [u32]) {
-    // Circle SDF - pure algebra
-    let sdf = (X * X + Y * Y).sqrt() - 100.0;
-
-    let mut packed = [0u32; PARALLELISM];
-
-    // Render a 100x100 grid
-    for y in 0..100 {
-        for x_chunk in (0..100).step_by(PARALLELISM) {
-            let offset = y * 100 + x_chunk;
-
-            // Evaluate the SDF at PARALLELISM points
-            let dist = sdf.eval_raw(
-                Field::from(x_chunk as f32),
-                Field::from(y as f32),
-                Field::from(0.0),
-                Field::from(0.0),
-            );
-
-            // Distance as grayscale - doing arithmetic on Field directly
-            let scale = Field::from(0.01);
-            let half = Field::from(0.5);
+fn render_discrete_kernel(x_start: f32, y: f32, out: &mut [u32]) {
+    // A discrete color manifold (manually constructed to inspect asm)
+    struct RedCircle;
+    impl pixelflow_core::Manifold for RedCircle {
+        type Output = Discrete;
+        fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Discrete {
+            let dist = ((x * x + y * y).sqrt() - Field::from(1.0)).constant();
+            let mask = dist.lt(Field::from(0.0));
             let one = Field::from(1.0);
             let zero = Field::from(0.0);
-
-            let normalized = dist * scale + half;
-            let clamped = normalized.min(one).max(zero).constant();
-
-            // Pack to grayscale RGBA and materialize
-            let discrete = Discrete::pack(clamped, clamped, clamped, one);
-
-            // Materialize the discrete values - but we need a manifold, not a discrete value
-            // This is awkward - in real code you'd use a Color manifold directly
-            // For now just use a workaround - this example needs restructuring
-            // Actually, we can't easily materialize a pre-packed Discrete
-            // The right way is to use a Color manifold. Let me show the simpler approach:
-
-            for i in 0..PARALLELISM {
-                if offset + i < buffer.len() {
-                    // Since we already evaluated, we need to manually extract
-                    // This is a limitation of the example - normally you'd use a Color manifold
-                    buffer[offset + i] = 0; // Placeholder
-                }
-            }
+            // Red inside, black outside
+            let clamped = mask.select(one, zero).constant();
+            let discrete = Discrete::pack(RgbaComponents {
+                r: clamped,
+                g: clamped,
+                b: clamped,
+                a: one,
+            });
+            discrete
         }
     }
+
+    materialize_discrete(&RedCircle, x_start, y, out);
 }
 
 fn main() {
-    let mut buffer = vec![0u32; 10000];
-    render_circle(&mut buffer);
-
-    // Check that we rendered something
-    let non_zero = buffer.iter().filter(|&&p| p != 0).count();
-    println!("Rendered {} non-zero pixels", non_zero);
+    let mut buf_u32 = [0u32; 16];
+    render_discrete_kernel(0.0, 0.0, &mut buf_u32);
+    println!("U32 Output: {:?}", buf_u32);
 }
-

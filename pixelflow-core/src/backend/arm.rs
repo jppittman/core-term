@@ -1,6 +1,6 @@
 //! ARM NEON backend (4 lanes for f32).
 
-use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, RgbaComponents, SimdOps, SimdU32Ops};
 use core::arch::aarch64::*;
 use core::fmt::{Debug, Formatter};
 use core::ops::*;
@@ -579,7 +579,11 @@ impl Shr<u32> for U32x4 {
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
-    pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
+    pub fn pack_rgba(components: RgbaComponents<F32x4>) -> Self {
+        let r = components.r;
+        let g = components.g;
+        let b = components.b;
+        let a = components.a;
         unsafe {
             // Clamp to [0, 1] and scale to [0, 255]
             let scale = vdupq_n_f32(255.0);

@@ -176,9 +176,9 @@ pub mod subdiv;
 pub mod subdivision;
 pub mod transform;
 
-pub use spatial_bsp::{Positioned, SpatialBSP};
+pub use spatial_bsp::SpatialBsp;
 
-pub use baked::Baked;
+pub use baked::BakedTexture;
 pub use transform::Scale;
 
 // Re-export fonts (user-facing types only; internal combinators like Affine/Sum stay in fonts::ttf)

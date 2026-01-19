@@ -1,6 +1,6 @@
 //! Scalar fallback backend for non-SIMD platforms.
 
-use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, RgbaComponents, SimdOps, SimdU32Ops};
 use core::fmt::Debug;
 use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
 
@@ -346,11 +346,11 @@ impl Shr<u32> for ScalarU32 {
 impl ScalarU32 {
     /// Pack 4 f32 values (RGBA in 0-1) into a packed u32 pixel.
     #[inline(always)]
-    pub fn pack_rgba(r: ScalarF32, g: ScalarF32, b: ScalarF32, a: ScalarF32) -> Self {
-        let r_u8 = (r.0.clamp(0.0, 1.0) * 255.0) as u32;
-        let g_u8 = (g.0.clamp(0.0, 1.0) * 255.0) as u32;
-        let b_u8 = (b.0.clamp(0.0, 1.0) * 255.0) as u32;
-        let a_u8 = (a.0.clamp(0.0, 1.0) * 255.0) as u32;
+    pub fn pack_rgba(components: RgbaComponents<ScalarF32>) -> Self {
+        let r_u8 = (components.r.0.clamp(0.0, 1.0) * 255.0) as u32;
+        let g_u8 = (components.g.0.clamp(0.0, 1.0) * 255.0) as u32;
+        let b_u8 = (components.b.0.clamp(0.0, 1.0) * 255.0) as u32;
+        let a_u8 = (components.a.0.clamp(0.0, 1.0) * 255.0) as u32;
         Self(r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24))
     }
 }
