@@ -594,17 +594,19 @@ fn bench_fastmath_guard(c: &mut Criterion) {
 
     // Benchmark 5: Complex manifold with denormals (realistic rendering scenario)
     group.bench_function("manifold_denormal_heavy_no_guard", |bencher| {
-        // Create a manifold that produces denormals in intermediate calculations
-        // e^(-x^2 - y^2) with large x,y produces denormals
-        let m = ((X * X + Y * Y) * -1.0f32).map(|f| f.exp());
-        let far_x = Field::from(20.0); // e^(-400) is deep in denormal range
+        // Multiplication that approaches denormals
+        // tiny * tiny produces denormal results
+        let tiny = 1.0e-20f32;
+        let m = X * tiny * Y * tiny;
+        let far_x = Field::from(1.0);
         bencher.iter(|| black_box(m.eval_raw(black_box(far_x), y, z, w)))
     });
 
     // Benchmark 6: Same manifold with guard
     group.bench_function("manifold_denormal_heavy_with_guard", |bencher| {
-        let m = ((X * X + Y * Y) * -1.0f32).map(|f| f.exp());
-        let far_x = Field::from(20.0);
+        let tiny = 1.0e-20f32;
+        let m = X * tiny * Y * tiny;
+        let far_x = Field::from(1.0);
         bencher.iter(|| {
             let _guard = unsafe { FastMathGuard::new() };
             black_box(m.eval_raw(black_box(far_x), y, z, w))
