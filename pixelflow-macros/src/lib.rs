@@ -16,7 +16,10 @@
 //! AST (ast.rs)
 //!     │
 //!     ▼ Semantic Analysis (sema.rs)
-//! Annotated AST + Symbol Table
+//! Analyzed AST + Symbol Table
+//!     │
+//!     ▼ Annotation (annotate.rs)
+//! Annotated AST (literals have Var indices)
 //!     │
 //!     ▼ Code Generation (codegen.rs)
 //! Rust TokenStream (output)
@@ -32,6 +35,7 @@
 //! This mirrors the layered contramap pattern: parameters are fixed when you
 //! call the kernel constructor, coordinates are fixed when `eval_raw` is called.
 
+mod annotate;
 mod ast;
 mod codegen;
 mod lexer;

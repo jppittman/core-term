@@ -44,10 +44,10 @@
 //! }
 //! ```
 
-use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, Expr, LetStmt, MethodCallExpr, ParamKind, Stmt, UnaryExpr,
-    UnaryOp,
+use crate::annotate::{
+    annotate, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
 };
+use crate::ast::{BinaryOp, ParamKind, UnaryOp};
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
 use proc_macro2::TokenStream;
@@ -74,6 +74,8 @@ struct CodeEmitter<'a> {
     /// Whether we're generating for a Jet domain (Jet2, Jet3).
     /// If true, f32 literals must be wrapped as constant jets.
     use_jet_wrapper: bool,
+    /// Collected literals from annotation pass (for Let bindings in Jet mode).
+    collected_literals: Vec<CollectedLiteral>,
 }
 
 impl<'a> CodeEmitter<'a> {
@@ -113,6 +115,7 @@ impl<'a> CodeEmitter<'a> {
             param_indices,
             manifold_indices,
             use_jet_wrapper,
+            collected_literals: Vec::new(), // Populated during emit_kernel
         }
     }
 
@@ -163,10 +166,24 @@ impl<'a> CodeEmitter<'a> {
             })
             .collect();
 
-        // Transform and emit the body as a ZST expression
-        let body = self.emit_expr(&self.analyzed.def.body);
+        // Run annotation pass to collect literals and assign Var indices
+        // Literals get indices 0..m-1, params get indices m..m+n-1
+        let annotation_ctx = AnnotationCtx::new(params.len(), self.use_jet_wrapper);
+        let (annotated_body, _, collected_literals) = annotate(&self.analyzed.def.body, annotation_ctx);
+        let literal_count = collected_literals.len();
+        self.collected_literals = collected_literals;
 
-        // Generate the Peano type imports needed based on parameter count
+        // Adjust param indices to account for literals (literals are innermost)
+        // Original: param0→n-1, param1→n-2, ..., param_{n-1}→0
+        // Adjusted: param0→n+m-1, param1→n+m-2, ..., param_{n-1}→m
+        for (_, idx) in self.param_indices.iter_mut() {
+            *idx += literal_count;
+        }
+
+        // Transform and emit the body as a ZST expression
+        let body = self.emit_annotated_expr(&annotated_body);
+
+        // Generate the Peano type imports needed based on parameter + literal count
         let peano_imports = self.emit_peano_imports();
 
         // Determine output type and infer domain type from it
@@ -313,15 +330,15 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
-    /// Emit the Peano type imports needed based on parameter count.
+    /// Emit the Peano type imports needed based on parameter + literal count.
     fn emit_peano_imports(&self) -> TokenStream {
-        let n = self.analyzed.def.params.len();
-        if n == 0 {
+        let total = self.analyzed.def.params.len() + self.collected_literals.len();
+        if total == 0 {
             return quote! {};
         }
 
-        // Import N0..N{n-1}
-        let imports: Vec<TokenStream> = (0..n)
+        // Import N0..N{total-1}
+        let imports: Vec<TokenStream> = (0..total)
             .map(|i| {
                 let name = syn::Ident::new(PEANO_INDICES[i], proc_macro2::Span::call_site());
                 quote! { #name }
@@ -331,21 +348,22 @@ impl<'a> CodeEmitter<'a> {
         quote! { use ::pixelflow_core::{ #(#imports),* }; }
     }
 
-    /// Emit unified Let/Var binding for both manifold and scalar parameters.
+    /// Emit unified Let/Var binding for params and literals.
     ///
     /// Returns two things:
     /// 1. Statements to evaluate manifold parameters at `__p`
-    /// 2. Nested Let::new() calls that extend the domain with all parameter values
+    /// 2. Nested Let::new() calls that extend the domain
     ///
-    /// The key insight: ALL params become Var<N> in the expression tree.
-    /// - Manifold params: Evaluated at `__p` first → `let __m0 = self.inner.eval(__p);`
-    ///   → then bound via `Let::new(__m0, ...)`
-    /// - Scalar params: Bound directly via `Let::new(self.r, ...)`
+    /// Binding order (outermost to innermost):
+    /// - Parameters (outermost) → highest Var indices
+    /// - Literals (innermost) → lowest Var indices (0, 1, ...)
+    ///
+    /// This ensures the expression tree can use pure Var<N> references.
     fn emit_unified_binding(&self) -> (TokenStream, TokenStream) {
         let params = &self.analyzed.def.params;
 
-        if params.is_empty() {
-            // No parameters - evaluate expression directly
+        if params.is_empty() && self.collected_literals.is_empty() {
+            // No bindings needed - evaluate expression directly
             return (quote! {}, quote! { __expr.eval(__p) });
         }
 
@@ -367,13 +385,23 @@ impl<'a> CodeEmitter<'a> {
             .collect();
 
         // 2. Build nested Let bindings from outside to inside.
-        // First parameter (index 0) is outermost, last parameter is innermost.
-        // This creates: Let::new(p0, Let::new(p1, ..., Let::new(pN, __expr)))
-        //
-        // The body (__expr) uses Var<N{n-1}> for first param, Var<N0> for last param.
+        // Order: params first (outermost), then literals (innermost)
         let mut result = quote! { __expr };
 
-        // Wrap from innermost to outermost (reverse order)
+        // First wrap literals (innermost - reversed so last literal is innermost)
+        for collected in self.collected_literals.iter().rev() {
+            let lit = &collected.lit;
+            let lit_value = if self.use_jet_wrapper {
+                quote! { __Scalar::constant(::pixelflow_core::Field::from(#lit)) }
+            } else {
+                quote! { #lit }
+            };
+            result = quote! {
+                Let::new(#lit_value, #result)
+            };
+        }
+
+        // Then wrap params (outermost - reversed so last param is innermost among params)
         for param in params.iter().rev() {
             let name = &param.name;
 
@@ -405,10 +433,13 @@ impl<'a> CodeEmitter<'a> {
         (quote! { #(#manifold_eval_stmts)* }, at_binding)
     }
 
-    /// Emit code for an expression, transforming parameters to Var<N> references.
-    fn emit_expr(&self, expr: &Expr) -> TokenStream {
+    /// Emit code for an annotated expression (pure, no mutation).
+    ///
+    /// Literals with var_index become Var<N> references.
+    /// This is the clean functional version that works with the annotation pass.
+    fn emit_annotated_expr(&self, expr: &AnnotatedExpr) -> TokenStream {
         match expr {
-            Expr::Ident(ident_expr) => {
+            AnnotatedExpr::Ident(ident_expr) => {
                 let name = &ident_expr.name;
                 let name_str = name.to_string();
 
@@ -420,7 +451,6 @@ impl<'a> CodeEmitter<'a> {
                         }
                         SymbolKind::Parameter | SymbolKind::ManifoldParam => {
                             // Both scalar and manifold parameters become Var::<N{index}>::new()
-                            // The unified Let/Var binding handles the difference at bind time
                             if let Some(&idx) = self.param_indices.get(&name_str) {
                                 if idx < PEANO_INDICES.len() {
                                     let peano_name = syn::Ident::new(
@@ -429,15 +459,13 @@ impl<'a> CodeEmitter<'a> {
                                     );
                                     quote! { Var::<#peano_name>::new() }
                                 } else {
-                                    // More than 8 parameters - emit compile error hint
                                     let err_msg = format!(
-                                        "kernel! supports max 8 parameters, found index {}",
+                                        "kernel! supports max 8 bindings, found index {}",
                                         idx
                                     );
                                     quote! { compile_error!(#err_msg) }
                                 }
                             } else {
-                                // Should not happen - parameter not in map
                                 quote! { #name }
                             }
                         }
@@ -453,120 +481,128 @@ impl<'a> CodeEmitter<'a> {
                 }
             }
 
-            Expr::Literal(lit_expr) => {
-                let lit = &lit_expr.lit;
-                if self.use_jet_wrapper {
-                    // For Jet domains, wrap numeric literals as constant jets
-                    // This ensures type unification: Jet3 + lit → Jet3 + Jet3
-                    quote! { __Scalar::constant(::pixelflow_core::Field::from(#lit)) }
-                } else {
-                    quote! { #lit }
+            AnnotatedExpr::Literal(lit) => {
+                match lit.var_index {
+                    Some(collection_idx) => {
+                        // Literal has a Var binding (Jet mode).
+                        // The collection_idx is the order in which literals were encountered.
+                        // We need to invert this because the Let binding order puts:
+                        // - Last literal (innermost Let) at N0
+                        // - First literal at N(literal_count - 1)
+                        let literal_count = self.collected_literals.len();
+                        let var_idx = (literal_count - 1) - collection_idx;
+
+                        if var_idx < PEANO_INDICES.len() {
+                            let peano_name = syn::Ident::new(
+                                PEANO_INDICES[var_idx],
+                                proc_macro2::Span::call_site(),
+                            );
+                            quote! { Var::<#peano_name>::new() }
+                        } else {
+                            let err_msg = format!(
+                                "kernel! supports max 8 bindings, found index {}",
+                                var_idx
+                            );
+                            quote! { compile_error!(#err_msg) }
+                        }
+                    }
+                    None => {
+                        // No binding needed (non-Jet mode), emit literal directly
+                        let l = &lit.lit;
+                        quote! { #l }
+                    }
                 }
             }
 
-            Expr::Binary(binary) => self.emit_binary(binary),
+            AnnotatedExpr::Binary(binary) => {
+                let lhs = self.emit_annotated_expr(&binary.lhs);
+                let rhs = self.emit_annotated_expr(&binary.rhs);
 
-            Expr::Unary(unary) => self.emit_unary(unary),
+                match binary.op {
+                    BinaryOp::Add => quote! { #lhs + #rhs },
+                    BinaryOp::Sub => quote! { #lhs - #rhs },
+                    BinaryOp::Mul => quote! { #lhs * #rhs },
+                    BinaryOp::Div => quote! { #lhs / #rhs },
+                    BinaryOp::Rem => quote! { #lhs % #rhs },
+                    BinaryOp::Lt => quote! { #lhs.lt(#rhs) },
+                    BinaryOp::Le => quote! { #lhs.le(#rhs) },
+                    BinaryOp::Gt => quote! { #lhs.gt(#rhs) },
+                    BinaryOp::Ge => quote! { #lhs.ge(#rhs) },
+                    BinaryOp::Eq => quote! { #lhs.eq(#rhs) },
+                    BinaryOp::Ne => quote! { #lhs.ne(#rhs) },
+                }
+            }
 
-            Expr::MethodCall(call) => self.emit_method_call(call),
+            AnnotatedExpr::Unary(unary) => {
+                let operand = self.emit_annotated_expr(&unary.operand);
+                match unary.op {
+                    UnaryOp::Neg => quote! { #operand.neg() },
+                    UnaryOp::Not => quote! { !#operand },
+                }
+            }
 
-            Expr::Block(block) => self.emit_block(block),
+            AnnotatedExpr::MethodCall(call) => {
+                let receiver = self.emit_annotated_expr(&call.receiver);
+                let method = &call.method;
+                let args: Vec<TokenStream> = call.args.iter()
+                    .map(|a| self.emit_annotated_expr(a))
+                    .collect();
 
-            Expr::Paren(inner) => {
-                let inner_code = self.emit_expr(inner);
+                if args.is_empty() {
+                    quote! { #receiver.#method() }
+                } else {
+                    quote! { #receiver.#method(#(#args),*) }
+                }
+            }
+
+            AnnotatedExpr::Block(block) => {
+                let stmts: Vec<TokenStream> = block.stmts.iter()
+                    .map(|s| self.emit_annotated_stmt(s))
+                    .collect();
+
+                let final_expr = block.expr.as_ref().map(|e| self.emit_annotated_expr(e));
+
+                match final_expr {
+                    Some(expr) => quote! {
+                        {
+                            #(#stmts)*
+                            #expr
+                        }
+                    },
+                    None => quote! {
+                        {
+                            #(#stmts)*
+                        }
+                    },
+                }
+            }
+
+            AnnotatedExpr::Paren(inner) => {
+                let inner_code = self.emit_annotated_expr(inner);
                 quote! { (#inner_code) }
             }
 
-            Expr::Verbatim(syn_expr) => {
-                // Pass through verbatim
+            AnnotatedExpr::Verbatim(syn_expr) => {
                 syn_expr.to_token_stream()
             }
         }
     }
 
-    /// Emit a binary expression.
-    fn emit_binary(&self, binary: &BinaryExpr) -> TokenStream {
-        let lhs = self.emit_expr(&binary.lhs);
-        let rhs = self.emit_expr(&binary.rhs);
-
-        match binary.op {
-            BinaryOp::Add => quote! { #lhs + #rhs },
-            BinaryOp::Sub => quote! { #lhs - #rhs },
-            BinaryOp::Mul => quote! { #lhs * #rhs },
-            BinaryOp::Div => quote! { #lhs / #rhs },
-            BinaryOp::Rem => quote! { #lhs % #rhs },
-            BinaryOp::Lt => quote! { #lhs.lt(#rhs) },
-            BinaryOp::Le => quote! { #lhs.le(#rhs) },
-            BinaryOp::Gt => quote! { #lhs.gt(#rhs) },
-            BinaryOp::Ge => quote! { #lhs.ge(#rhs) },
-            BinaryOp::Eq => quote! { #lhs.eq(#rhs) },
-            BinaryOp::Ne => quote! { #lhs.ne(#rhs) },
-        }
-    }
-
-    /// Emit a unary expression.
-    fn emit_unary(&self, unary: &UnaryExpr) -> TokenStream {
-        let operand = self.emit_expr(&unary.operand);
-
-        match unary.op {
-            UnaryOp::Neg => quote! { #operand.neg() },
-            UnaryOp::Not => quote! { !#operand },
-        }
-    }
-
-    /// Emit a method call.
-    fn emit_method_call(&self, call: &MethodCallExpr) -> TokenStream {
-        let receiver = self.emit_expr(&call.receiver);
-        let method = &call.method;
-        let args: Vec<TokenStream> = call.args.iter().map(|a| self.emit_expr(a)).collect();
-
-        if args.is_empty() {
-            quote! { #receiver.#method() }
-        } else {
-            quote! { #receiver.#method(#(#args),*) }
-        }
-    }
-
-    /// Emit a block expression.
-    fn emit_block(&self, block: &BlockExpr) -> TokenStream {
-        let stmts: Vec<TokenStream> = block.stmts.iter().map(|s| self.emit_stmt(s)).collect();
-
-        let final_expr = block.expr.as_ref().map(|e| self.emit_expr(e));
-
-        match final_expr {
-            Some(expr) => quote! {
-                {
-                    #(#stmts)*
-                    #expr
-                }
-            },
-            None => quote! {
-                {
-                    #(#stmts)*
-                }
-            },
-        }
-    }
-
-    /// Emit a statement.
-    fn emit_stmt(&self, stmt: &Stmt) -> TokenStream {
+    fn emit_annotated_stmt(&self, stmt: &AnnotatedStmt) -> TokenStream {
         match stmt {
-            Stmt::Let(let_stmt) => self.emit_let(let_stmt),
-            Stmt::Expr(expr) => {
-                let code = self.emit_expr(expr);
+            AnnotatedStmt::Let(let_stmt) => {
+                let name = &let_stmt.name;
+                let init = self.emit_annotated_expr(&let_stmt.init);
+
+                match &let_stmt.ty {
+                    Some(ty) => quote! { let #name: #ty = #init; },
+                    None => quote! { let #name = #init; },
+                }
+            }
+            AnnotatedStmt::Expr(expr) => {
+                let code = self.emit_annotated_expr(expr);
                 quote! { #code; }
             }
-        }
-    }
-
-    /// Emit a let statement.
-    fn emit_let(&self, let_stmt: &LetStmt) -> TokenStream {
-        let name = &let_stmt.name;
-        let init = self.emit_expr(&let_stmt.init);
-
-        match &let_stmt.ty {
-            Some(ty) => quote! { let #name: #ty = #init; },
-            None => quote! { let #name = #init; },
         }
     }
 }

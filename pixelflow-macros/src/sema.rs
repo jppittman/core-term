@@ -74,7 +74,12 @@ impl SemanticAnalyzer {
         if self.symbols.is_intrinsic(&name) {
             return Err(syn::Error::new(
                 param.name.span(),
-                format!("parameter '{}' shadows intrinsic coordinate variable", name),
+                format!(
+                    "parameter '{}' shadows intrinsic coordinate variable\n\
+                     note: intrinsics are: X, Y, Z, W (coordinate variables)\n\
+                     help: rename this parameter to something else",
+                    name
+                ),
             ));
         }
 
@@ -82,7 +87,11 @@ impl SemanticAnalyzer {
         if self.symbols.lookup(&name).is_some() {
             return Err(syn::Error::new(
                 param.name.span(),
-                format!("duplicate parameter '{}'", name),
+                format!(
+                    "duplicate parameter '{}'\n\
+                     help: each parameter must have a unique name",
+                    name
+                ),
             ));
         }
 
@@ -145,12 +154,77 @@ impl SemanticAnalyzer {
 
         match self.symbols.lookup(&name) {
             Some(symbol) => Ok(symbol.kind),
-            None => Err(syn::Error::new(
-                ident.span(),
-                format!("undefined symbol '{}'", name),
-            )),
+            None => {
+                // Try to find a similar symbol to suggest
+                let suggestion = self.find_similar_symbol(&name);
+                let msg = match suggestion {
+                    Some(similar) => format!(
+                        "undefined symbol '{}'\n\
+                         help: did you mean '{}'?\n\
+                         note: available intrinsics: X, Y, Z, W",
+                        name, similar
+                    ),
+                    None => format!(
+                        "undefined symbol '{}'\n\
+                         note: available intrinsics: X, Y, Z, W\n\
+                         help: check spelling or add as a parameter",
+                        name
+                    ),
+                };
+                Err(syn::Error::new(ident.span(), msg))
+            }
         }
     }
+
+    /// Find a similar symbol name for typo suggestions.
+    fn find_similar_symbol(&self, name: &str) -> Option<String> {
+        let name_lower = name.to_lowercase();
+
+        // Check intrinsics first (common typos)
+        let intrinsics = ["X", "Y", "Z", "W"];
+        for intr in intrinsics {
+            if intr.to_lowercase() == name_lower {
+                return Some(intr.to_string());
+            }
+        }
+
+        // Check parameters and locals
+        for sym_name in self.symbols.all_names() {
+            // Simple similarity: same length and differs by 1-2 chars
+            if sym_name.len() == name.len() {
+                let diff_count = sym_name
+                    .chars()
+                    .zip(name.chars())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                if diff_count <= 2 {
+                    return Some(sym_name);
+                }
+            }
+            // Case-insensitive match
+            if sym_name.to_lowercase() == name_lower {
+                return Some(sym_name);
+            }
+        }
+
+        None
+    }
+
+    /// Known methods from ManifoldExt and standard numeric operations.
+    const KNOWN_METHODS: &'static [&'static str] = &[
+        // ManifoldExt methods
+        "abs", "sqrt", "floor", "ceil", "round", "fract",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "exp", "ln", "log2", "log10", "pow",
+        "min", "max", "clamp",
+        "hypot", "rsqrt", "recip",
+        // Comparison methods
+        "lt", "le", "gt", "ge", "eq", "ne",
+        // Selection
+        "select",
+        // Field/Jet specific
+        "constant", "collapse",
+    ];
 
     /// Analyze a method call.
     fn analyze_method_call(&mut self, call: &MethodCallExpr) -> syn::Result<()> {
@@ -162,8 +236,41 @@ impl SemanticAnalyzer {
             self.analyze_expr(arg)?;
         }
 
-        // Validate known methods (optional - could be extended)
-        // For now, we trust ManifoldExt to handle unknown methods
+        // Validate method name against known methods
+        let method_name = call.method.to_string();
+        if !Self::KNOWN_METHODS.contains(&method_name.as_str()) {
+            // Find similar method for suggestion
+            let suggestion = Self::KNOWN_METHODS
+                .iter()
+                .find(|&&m| {
+                    let m_lower = m.to_lowercase();
+                    let name_lower = method_name.to_lowercase();
+                    m_lower == name_lower
+                        || (m.len() == method_name.len()
+                            && m.chars()
+                                .zip(method_name.chars())
+                                .filter(|(a, b)| a != b)
+                                .count()
+                                <= 2)
+                })
+                .copied();
+
+            let msg = match suggestion {
+                Some(similar) => format!(
+                    "unknown method '{}'\n\
+                     help: did you mean '{}'?",
+                    method_name, similar
+                ),
+                None => format!(
+                    "unknown method '{}'\n\
+                     note: common methods: sqrt, abs, sin, cos, min, max, select\n\
+                     help: see ManifoldExt trait for available methods",
+                    method_name
+                ),
+            };
+
+            return Err(syn::Error::new(call.method.span(), msg));
+        }
         Ok(())
     }
 
@@ -265,5 +372,75 @@ mod tests {
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn typo_suggestion_for_intrinsic() {
+        // Lowercase "x" should suggest uppercase "X"
+        let input = quote! { || x * x };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("undefined symbol"));
+        assert!(err.contains("did you mean 'X'"));
+    }
+
+    #[test]
+    fn typo_suggestion_for_parameter() {
+        // "radiu" should suggest "radius"
+        let input = quote! { |radius: f32| X - radiu };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("undefined symbol"));
+        // Similar names with 1-2 char difference should be suggested
+    }
+
+    #[test]
+    fn error_on_unknown_method() {
+        let input = quote! { |r: f32| X.unknownmethod() };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown method"));
+    }
+
+    #[test]
+    fn typo_suggestion_for_method() {
+        // "sqrtt" should suggest "sqrt"
+        let input = quote! { || X.sqrtt() };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown method"));
+        // The similar method "sqrt" should be suggested
+    }
+
+    #[test]
+    fn known_methods_accepted() {
+        // All ManifoldExt methods should be accepted
+        let input = quote! { || X.sqrt().abs().sin().cos() };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn error_on_duplicate_parameter() {
+        let input = quote! { |r: f32, r: f32| X - r };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("duplicate parameter"));
     }
 }
