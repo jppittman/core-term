@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 bitflags! {
     /// Represents a keyboard modifier.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
     pub struct Modifiers: u8 {
         const SHIFT = 1 << 0;
         const CONTROL = 1 << 1;
@@ -15,7 +15,7 @@ bitflags! {
 }
 
 /// Represents a key symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 pub enum KeySymbol {
     // Alphanumeric keys
     Char(char),
