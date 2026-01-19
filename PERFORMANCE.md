@@ -489,7 +489,15 @@ normal_mul_with_guard                    1.0          No penalty
 
 ## Optimization Opportunities
 
-### 1. Macro Parameter Limit
+This section examines potential optimizations for PixelFlow. Note that **some traditional graphics optimizations don't apply** to PixelFlow's pull-based architecture - these are marked as "Already Optimal" with explanations of why the current implementation is correct.
+
+**Priority Key:**
+- 🔴 **High Impact, Actionable** - Worth implementing soon
+- 🟡 **Medium Impact, Blocked** - Good ideas but waiting on Rust features
+- 🟢 **Already Optimal** - No action needed, architecture is correct
+- ⚪ **Low Priority** - Marginal benefit, not worth complexity
+
+### 1. Macro Parameter Limit 🔴
 
 **Current Limitation:** Only 2 parameters supported (`cx`, `cy` mapped to Z, W slots)
 
@@ -504,7 +512,7 @@ normal_mul_with_guard                    1.0          No penalty
 
 **Benefit:** Unlock more complex kernel definitions
 
-### 2. Symmetric FMA Fusion
+### 2. Symmetric FMA Fusion 🟡
 
 **Current Limitation:** `a * b + c` fuses, but `c + a * b` does not
 
@@ -520,7 +528,7 @@ normal_mul_with_guard                    1.0          No penalty
 
 **Benefit:** Better ergonomics, fewer foot-guns
 
-### 3. Constant Folding
+### 3. Constant Folding 🟡
 
 **Current State:** No compile-time constant evaluation
 
@@ -541,7 +549,7 @@ let expr = 2.0 * 3.0 + 5.0;
 
 **Benefit:** Eliminate trivial runtime work
 
-### 4. SIMD Width Auto-Tuning
+### 4. SIMD Width Auto-Tuning ⚪
 
 **Current State:** Fixed SIMD width per backend (4/8/16)
 
@@ -559,7 +567,7 @@ let expr = 2.0 * 3.0 + 5.0;
 
 **Benefit:** 5-15% performance improvement (diminishing returns)
 
-### 5. Algebraic Simplification
+### 5. Algebraic Simplification 🟡
 
 **Current State:** No expression rewriting
 
@@ -579,25 +587,78 @@ let expr = 2.0 * 3.0 + 5.0;
 
 **Benefit:** Eliminate redundant ops in user code
 
-### 6. Memory Layout Optimization
+### 6. Memory Layout Optimization 🟢
 
-**Current State:** AoS (array of structures) output
+**Status:** ✅ **Already Optimal** - No further optimization needed
 
-**Opportunity:** SoA (structure of arrays) intermediate representation
+**Analysis:**
 
-**Rationale:**
-- **SoA**: Better cache utilization for wide SIMD
-- **AoS**: Required for final framebuffer format
+PixelFlow's **pull-based architecture** fundamentally eliminates the need for SoA/AoS optimization that would benefit traditional multi-pass renderers.
 
-**Solution:**
-- Compute in SoA, transpose to AoS at materialization
-- Already done for `materialize()`, but not all code paths
+**Why This Doesn't Apply:**
 
-**Complexity:** Medium (refactor combinators)
+1. **No intermediate buffers** - All computation stays in SIMD registers until final `materialize()`
+2. **Single transpose** - The existing `materialize()` SoA → AoS is the only one needed (unavoidable for framebuffer format)
+3. **Already SoA internally** - SIMD registers ARE structure-of-arrays format naturally
+4. **Composition is compile-time** - Combining effects creates types, not buffer passes
 
-**Benefit:** 10-20% improvement for wide SIMD (AVX-512)
+**How Adjacent-Pixel Effects Work (Without Multi-Pass):**
 
-### 7. Loop Unrolling Hints
+Traditional renderers need multiple passes for effects like bloom:
+```rust
+// ❌ Traditional (multi-pass - NOT how PixelFlow works)
+let rendered = render_scene();      // Pass 1: Scene → buffer
+let bloomed = bloom(rendered);      // Pass 2: Buffer → buffer (SoA would help here)
+let final = tone_map(bloomed);      // Pass 3: Buffer → final
+```
+
+PixelFlow uses **pull-based composition** - everything fuses into one evaluation:
+```rust
+// ✅ PixelFlow (single-pass pull-based)
+let scene = bloom(tone_map(scene_manifold));  // Type composition
+let pixel = scene.eval(x, y);  // ONE evaluation, all effects fused
+```
+
+**Three Strategies for Neighbor Access:**
+
+1. **Automatic Differentiation in Screen Space**
+   ```rust
+   // Use Jet2 gradients to reconstruct neighbor information
+   let blur = manifold.map(|center, grad_x, grad_y| {
+       // Approximate neighbors via Taylor expansion
+   });
+   ```
+
+2. **Fix Combinator (Iterative Refinement)**
+   ```rust
+   // Fixed-point iteration for effects requiring convergence
+   let blurred = Fix {
+       seed: scene,
+       step: |prev| {
+           let left = prev.at(X - 1.0, Y, Z, W);
+           let right = prev.at(X + 1.0, Y, Z, W);
+           (left + right + prev) / 3.0
+       },
+       done: /* convergence condition */
+   };
+   ```
+
+3. **Direct Neighbor Sampling**
+   ```rust
+   // Explicit coordinate offset sampling
+   let bloom = |scene| {
+       let center = scene;
+       let left = scene.at(X - 1.0, Y, Z, W);
+       let right = scene.at(X + 1.0, Y, Z, W);
+       // Combine samples compositionally
+   };
+   ```
+
+All strategies compose at the **type level** - no buffers, no multiple passes, no SoA/AoS layout decisions to make.
+
+**Conclusion:** The existing `materialize()` transpose is optimal. Pull-based rendering eliminates entire classes of optimizations needed by push-based multi-pass renderers.
+
+### 7. Loop Unrolling Hints ⚪
 
 **Current State:** Relies on LLVM auto-unrolling
 
