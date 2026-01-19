@@ -14,6 +14,8 @@ pub mod render_pool;
 pub mod testing;
 pub mod traits;
 pub mod vsync_actor;
+#[cfg(test)]
+mod vsync_actor_test;
 
 // Re-export public API types at crate root (new, preferred)
 pub use api::public::*;

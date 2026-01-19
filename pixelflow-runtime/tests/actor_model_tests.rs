@@ -12,7 +12,7 @@
 //! Following STYLE.md: tests focus on public API contracts, not implementation details.
 
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SendError,
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
