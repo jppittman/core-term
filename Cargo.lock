@@ -822,6 +822,7 @@ dependencies = [
 name = "pixelflow-macros"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "pixelflow-core",
  "proc-macro2",
  "quote",

@@ -16,3 +16,8 @@ proc-macro2 = "1"
 
 [dev-dependencies]
 pixelflow-core = { path = "../pixelflow-core" }
+criterion = "0.5"
+
+[[bench]]
+name = "macro_bench"
+harness = false
