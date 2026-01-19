@@ -51,6 +51,20 @@ fn bench_keybindings(c: &mut Criterion) {
                 }).map(|b| &b.action);
             })
         });
+
+        // Benchmark O(log n) Binary Search
+        let mut sorted_bindings = bindings.clone();
+        // Requires KeySymbol and Modifiers to implement Ord (added in pixelflow-runtime)
+        sorted_bindings.sort_by(|a, b| (a.key, a.mods).cmp(&(b.key, b.mods)));
+
+        group.bench_function(format!("lookup_binsearch_size_{}", size), |b| {
+            b.iter(|| {
+                let key = black_box(target_key);
+                let mods = black_box(target_mods);
+                // Note: binary_search_by returns Result<usize, usize>
+                let _ = sorted_bindings.binary_search_by(|probe| (probe.key, probe.mods).cmp(&(key, mods)));
+            })
+        });
     }
     group.finish();
 }
