@@ -58,6 +58,10 @@ criterion = "0.5"
 name = "ansi_parser"
 harness = false
 
+[[bench]]
+name = "keybinding_benchmark"
+harness = false
+
 [[bin]]
 name = "core-term"
 path = "src/main.rs"
