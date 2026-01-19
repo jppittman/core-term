@@ -123,6 +123,9 @@ pub enum BinaryOp {
     Ge,
     Eq,
     Ne,
+    // Boolean/bitwise operations
+    BitAnd,
+    BitOr,
 }
 
 /// A binary expression.
@@ -213,6 +216,8 @@ impl BinaryOp {
             syn::BinOp::Ge(_) => Some(BinaryOp::Ge),
             syn::BinOp::Eq(_) => Some(BinaryOp::Eq),
             syn::BinOp::Ne(_) => Some(BinaryOp::Ne),
+            syn::BinOp::BitAnd(_) => Some(BinaryOp::BitAnd),
+            syn::BinOp::BitOr(_) => Some(BinaryOp::BitOr),
             _ => None,
         }
     }
