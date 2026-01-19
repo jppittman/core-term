@@ -1,4 +1,4 @@
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, ManifoldCompat};
 use pixelflow_graphics::fonts::ttf::{make_line, Geometry, Line, LineKernel, Quad, QuadKernel};
 use std::hint::black_box;
 

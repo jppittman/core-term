@@ -27,7 +27,10 @@
 //! Uses `ColorManifold` from pixelflow-graphics for RGBA packing.
 //! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
-use pixelflow_core::{Field, Lt, Manifold, ManifoldExt, Select, X, Y};
+use pixelflow_core::{Field, Lt, Manifold, ManifoldCompat, ManifoldExt, Select, X, Y};
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
 use pixelflow_graphics::render::color::{color_manifold, ColorManifold};
 
 // Re-export Color for solid color manifolds
@@ -74,13 +77,14 @@ impl<G, const CHANNEL: usize> CellChannel<G, CHANNEL> {
     }
 }
 
-impl<G: Manifold<Output = Field> + Clone, const CHANNEL: usize> Manifold
+impl<G: ManifoldCompat<Field, Output = Field> + Clone, const CHANNEL: usize> Manifold<Field4>
     for CellChannel<G, CHANNEL>
 {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         let zero = Field::from(0.0);
         let coverage = self.cell.glyph.eval_raw(x, y, z, w);
         let c = coverage.max(zero).min(Field::from(1.0)).constant();
@@ -118,11 +122,12 @@ impl<M> LocalCoords<M> {
     }
 }
 
-impl<M: Manifold<Output = Field> + ManifoldExt> Manifold for LocalCoords<M> {
+impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> for LocalCoords<M> {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         let local_x = x - Field::from(self.offset_x);
         let local_y = y - Field::from(self.offset_y);
         self.inner.eval_at(local_x, local_y, z, w)
@@ -259,11 +264,11 @@ fn build_channel_tree<F: CellFactory, const CHANNEL: usize>(
 #[derive(Clone, Copy, Debug)]
 pub struct ConstCoverage(pub f32);
 
-impl Manifold for ConstCoverage {
+impl Manifold<Field4> for ConstCoverage {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Field {
+    fn eval(&self, _p: Field4) -> Field {
         Field::from(self.0)
     }
 }

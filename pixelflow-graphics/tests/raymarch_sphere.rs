@@ -2,7 +2,10 @@
 
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Discrete, Field, Manifold};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
+
+type Field4 = (Field, Field, Field, Field);
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
@@ -17,11 +20,12 @@ struct SphereAt {
     radius: f32,
 }
 
-impl Manifold<Jet3> for SphereAt {
+impl Manifold<Jet3_4> for SphereAt {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (rx, ry, rz, _w) = p;
         let cx = Jet3::constant(Field::from(self.center.0));
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
@@ -46,10 +50,11 @@ struct ColorScreenRemap<M> {
     height: f32,
 }
 
-impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
     type Output = Discrete;
 
-    fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (px, py, z, w) = p;
         let width = Field::from(self.width);
         let height = Field::from(self.height);
         let scale = Field::from(2.0) / height;
@@ -65,7 +70,7 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
             z,
             w,
         }
-        .eval()
+        .collapse()
     }
 }
 
@@ -131,10 +136,10 @@ fn test_sphere_on_matte_floor() {
     #[derive(Copy, Clone)]
     struct SolidGray;
 
-    impl pixelflow_core::Manifold<Jet3> for SolidGray {
+    impl pixelflow_core::Manifold<Jet3_4> for SolidGray {
         type Output = Discrete;
 
-        fn eval_raw(&self, _x: Jet3, _y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
+        fn eval(&self, _p: Jet3_4) -> Discrete {
             let gray = Field::from(0.5);
             Discrete::pack(gray, gray, gray, Field::from(1.0))
         }

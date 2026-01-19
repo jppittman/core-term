@@ -23,6 +23,9 @@ use crate::mesh::{Point3, QuadMesh};
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Field, Manifold, ManifoldExt};
 
+/// The 4D Jet3 domain type for 3D ray tracing autodiff.
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+
 /// Eigenstructure for a given valence configuration.
 ///
 /// Precomputed at compile time via const fn (future work).
@@ -407,11 +410,12 @@ impl SubdivisionGeometry {
     }
 }
 
-impl Manifold<Jet3> for SubdivisionGeometry {
+impl Manifold<Jet3_4> for SubdivisionGeometry {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (rx, ry, rz, _w) = p;
         // Simplified intersection: hit base plane, map to UV, sample surface
         // Similar to HeightFieldGeometry pattern
 

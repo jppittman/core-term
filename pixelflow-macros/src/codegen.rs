@@ -135,22 +135,22 @@ impl<'a> CodeEmitter<'a> {
 
         quote! {
             {
+                type __Field4 = (::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field);
+
                 #[derive(Clone)]
                 #struct_def
 
-                impl ::pixelflow_core::Manifold for __Kernel {
+                impl ::pixelflow_core::Manifold<__Field4> for __Kernel {
                     type Output = ::pixelflow_core::Field;
 
                     #[inline(always)]
-                    fn eval_raw(
+                    fn eval(
                         &self,
-                        __x: ::pixelflow_core::Field,
-                        __y: ::pixelflow_core::Field,
-                        __z: ::pixelflow_core::Field,
-                        __w: ::pixelflow_core::Field,
+                        __p: __Field4,
                     ) -> ::pixelflow_core::Field {
+                        let (__x, __y, __z, __w) = __p;
                         // Import the coordinate variables and traits
-                        use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, Manifold};
+                        use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat};
 
                         // Build the ZST expression tree (this is Copy!)
                         let __expr = { #body };
@@ -170,9 +170,9 @@ impl<'a> CodeEmitter<'a> {
         let params = &self.analyzed.def.params;
 
         if params.is_empty() {
-            // No parameters - evaluate directly
+            // No parameters - evaluate directly using ManifoldCompat
             quote! {
-                ::pixelflow_core::Manifold::eval_raw(&__expr, __x, __y, __z, __w)
+                ::pixelflow_core::ManifoldCompat::eval_raw(&__expr, __x, __y, __z, __w)
             }
         } else {
             // Build .at() arguments: X, Y pass through, Z/W get parameter values
@@ -194,8 +194,9 @@ impl<'a> CodeEmitter<'a> {
                 })
                 .unwrap_or_else(|| quote! { W });
 
+            // Use .collapse() on the pinned At combinator
             quote! {
-                __expr.at(X, Y, #z_arg, #w_arg).eval_raw(__x, __y, __z, __w)
+                __expr.at(__x, __y, #z_arg, #w_arg).collapse()
             }
         }
     }
