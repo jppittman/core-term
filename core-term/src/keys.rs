@@ -7,7 +7,7 @@ pub use pixelflow_runtime::input::{KeySymbol, Modifiers};
 
 /// Maps a given key symbol and modifiers to a `UserInputAction` based on the provided configuration.
 ///
-/// It iterates through the keybindings defined in `config.keybindings.bindings`.
+/// It performs an O(1) lookup in `config.keybindings.lookup`.
 /// If a match is found, it returns a clone of the corresponding `UserInputAction`.
 /// Otherwise, it returns `None`.
 pub fn map_key_event_to_action(
@@ -15,28 +15,27 @@ pub fn map_key_event_to_action(
     modifiers: Modifiers,
     config: &Config,
 ) -> Option<UserInputAction> {
-    config.keybindings.bindings.iter().find_map(|binding| {
-        // Use the passed config
-        if binding.key == key_symbol && binding.mods == modifiers {
-            debug!(
-                "Keybinding: {:?} + {:?} => {:?}",
-                binding.mods, binding.key, &binding.action
-            );
-            return Some(binding.action.clone());
-        }
+    if let Some(action) = config.keybindings.lookup.get(&(key_symbol, modifiers)) {
+        debug!(
+            "Keybinding: {:?} + {:?} => {:?}",
+            modifiers, key_symbol, action
+        );
+        Some(action.clone())
+    } else {
         None
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Keybinding, KeybindingsConfig};
+    use crate::config::{Config, Keybinding, RawKeybindingsConfig};
     use crate::term::action::UserInputAction;
 
     fn config_with_bindings(bindings: Vec<Keybinding>) -> Config {
         let mut cfg = Config::default();
-        cfg.keybindings = KeybindingsConfig { bindings };
+        // Use RawKeybindingsConfig::into() to populate the lookup map
+        cfg.keybindings = RawKeybindingsConfig { bindings }.into();
         cfg
     }
 
@@ -125,6 +124,7 @@ mod tests {
         ];
         let config = config_with_bindings(bindings);
         let result = map_key_event_to_action(KeySymbol::Char('A'), Modifiers::ALT, &config);
+        // Should match the first one
         assert_eq!(result, Some(UserInputAction::RequestZoomIn));
     }
 }

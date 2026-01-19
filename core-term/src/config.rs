@@ -15,6 +15,7 @@ use crate::{
 use log::{error, info};
 use pixelflow_runtime::config::PerformanceConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -99,15 +100,47 @@ pub struct Keybinding {
     pub action: UserInputAction,
 }
 
+/// Raw configuration structure for deserialization/serialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawKeybindingsConfig {
+    pub bindings: Vec<Keybinding>,
+}
+
 /// Defines the configuration for all keybindings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "RawKeybindingsConfig", into = "RawKeybindingsConfig")]
 pub struct KeybindingsConfig {
     pub bindings: Vec<Keybinding>,
+    #[serde(skip)]
+    pub lookup: HashMap<(KeySymbol, Modifiers), UserInputAction>,
+}
+
+impl From<RawKeybindingsConfig> for KeybindingsConfig {
+    fn from(raw: RawKeybindingsConfig) -> Self {
+        let mut lookup = HashMap::new();
+        for binding in &raw.bindings {
+            // First match wins, so we use entry(...).or_insert(...) to only insert if not present
+            lookup.entry((binding.key, binding.mods))
+                .or_insert_with(|| binding.action.clone());
+        }
+        KeybindingsConfig {
+            bindings: raw.bindings,
+            lookup,
+        }
+    }
+}
+
+impl From<KeybindingsConfig> for RawKeybindingsConfig {
+    fn from(config: KeybindingsConfig) -> Self {
+        RawKeybindingsConfig {
+            bindings: config.bindings,
+        }
+    }
 }
 
 impl Default for KeybindingsConfig {
     fn default() -> Self {
-        KeybindingsConfig {
+        let raw = RawKeybindingsConfig {
             bindings: vec![
                 Keybinding {
                     key: KeySymbol::Char('\u{3}'),
@@ -120,7 +153,8 @@ impl Default for KeybindingsConfig {
                     action: UserInputAction::RequestClipboardPaste,
                 },
             ],
-        }
+        };
+        KeybindingsConfig::from(raw)
     }
 }
 
