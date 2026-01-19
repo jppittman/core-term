@@ -159,8 +159,20 @@ pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
 
 /// Horizontal plane at y = height.
 /// Solves P.y = height => t * ry = height => t = height / ry
+///
+/// TODO: kernel! macro doesn't support Jet3_4 domain yet - needs generic domain support
+#[allow(dead_code)]
 pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
-    kernel!(|h: f32| -> Jet3 { h / Y })(height)
+    #[derive(Copy, Clone)]
+    struct PlaneKernel { h: f32 }
+    impl Manifold<Jet3_4> for PlaneKernel {
+        type Output = Jet3;
+        fn eval(&self, p: Jet3_4) -> Jet3 {
+            let h = Jet3::from(Field::from(self.h));
+            h / p.1  // h / Y
+        }
+    }
+    PlaneKernel { h: height }
 }
 
 /// Height field geometry: z = base_height + scale * f(x, y)

@@ -30,6 +30,7 @@ use super::derivative::{
 use crate::Field;
 use crate::combinators::Select;
 use crate::combinators::binding::{Let, Var};
+use crate::combinators::CtxVar;
 use crate::variables::{W, X, Y, Z};
 
 // ============================================================================
@@ -125,6 +126,7 @@ macro_rules! impl_all_divs {
         impl_div_for!($ty<$($gen),*> / MulRsqrt<DL2, DR2>);
         impl_div_for!($ty<$($gen),*> / AddMasked<DAcc, DVal, DMask>);
         impl_div_for!($ty<$($gen),*> / Var<DN>);
+        impl_div_for!($ty<$($gen),*> / CtxVar<DCN>);
 
         // Fused derivative combinators
         impl_div_for!($ty<$($gen),*> / GradientMag2D<DDM>);

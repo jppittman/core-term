@@ -16,7 +16,7 @@ pub fn text(
     font: &Font,
     text_str: &str,
     size: f32,
-) -> Sum<Translate<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>>> {
+) -> Sum<Translate<Glyph<Line<LineKernel>, Quad<QuadKernel>>>> {
     // The Scan: Accumulate X position while mapping chars to glyphs
     // Optimized to perform a single CMAP lookup per character
     let mut cursor = 0.0;

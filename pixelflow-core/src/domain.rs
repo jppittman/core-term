@@ -68,7 +68,7 @@ pub trait Spatial {
 
 /// Access the head (first element) of a domain stack.
 ///
-/// Used by `Var<Zero>` to read the most recently bound value.
+/// Used by `Var<N0>` (index 0) to read the most recently bound value.
 ///
 /// # Example
 ///
@@ -87,7 +87,7 @@ pub trait Head {
 
 /// Access the tail (rest) of a domain stack.
 ///
-/// Used by `Var<Succ<N>>` to recurse through let bindings.
+/// Used by `Var<N>` (where N > 0) to recurse through let bindings.
 ///
 /// # Example
 ///

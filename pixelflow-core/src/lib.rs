@@ -1,3 +1,4 @@
+#![recursion_limit = "2048"]
 //! # PixelFlow Core: An Algebraic Graphics Engine
 //!
 //! **A minimal lambda calculus (eDSL) for composing pull-based graphics computations.**
