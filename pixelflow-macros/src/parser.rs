@@ -138,7 +138,14 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
 
         syn::Expr::Binary(expr_binary) => {
             let op = BinaryOp::from_syn(&expr_binary.op).ok_or_else(|| {
-                syn::Error::new_spanned(&expr_binary.op, "unsupported binary operator")
+                syn::Error::new_spanned(
+                    &expr_binary.op,
+                    format!(
+                        "unsupported binary operator `{}`\n\
+                         note: kernel! supports: + - * / % < <= > >= == != & |",
+                        quote::quote!(#expr_binary.op)
+                    ),
+                )
             })?;
             let lhs = convert_expr(*expr_binary.left)?;
             let rhs = convert_expr(*expr_binary.right)?;
@@ -152,7 +159,11 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
 
         syn::Expr::Unary(expr_unary) => {
             let op = UnaryOp::from_syn(&expr_unary.op).ok_or_else(|| {
-                syn::Error::new_spanned(&expr_unary.op, "unsupported unary operator")
+                syn::Error::new_spanned(
+                    &expr_unary.op,
+                    "unsupported unary operator\n\
+                     note: kernel! supports: - (negation), ! (logical not)",
+                )
             })?;
             let operand = convert_expr(*expr_unary.expr)?;
             Ok(Expr::Unary(UnaryExpr {
@@ -254,14 +265,16 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
             syn::Stmt::Item(_) => {
                 return Err(syn::Error::new(
                     Span::call_site(),
-                    "items not allowed in kernel block",
+                    "items (fn, struct, etc.) not allowed in kernel block\n\
+                     help: define items outside the kernel! macro",
                 ));
             }
 
             syn::Stmt::Macro(_) => {
                 return Err(syn::Error::new(
                     Span::call_site(),
-                    "macros not allowed in kernel block",
+                    "macro invocations not allowed in kernel block\n\
+                     help: expand macros outside kernel! or use equivalent expressions",
                 ));
             }
         }
