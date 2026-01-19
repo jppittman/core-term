@@ -136,7 +136,8 @@ impl<L> SpatialBSP<L> {
 
         // Find bounding box of all items and center extents
         let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        let (mut min_cx, mut min_cy, mut max_cx, mut max_cy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        let (mut min_cx, mut min_cy, mut max_cx, mut max_cy) =
+            (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
 
         for item in &items {
             min_x = min_x.min(item.bounds.0);
@@ -341,7 +342,11 @@ mod tests {
     fn test_single_leaf() {
         let bsp = SpatialBSP::single(SolidColor::new(255, 0, 0, 255));
 
-        assert_eq!(bsp.interior_count(), 0, "Single leaf tree has no interior nodes");
+        assert_eq!(
+            bsp.interior_count(),
+            0,
+            "Single leaf tree has no interior nodes"
+        );
         assert_eq!(bsp.leaf_count(), 1, "Single leaf tree has exactly one leaf");
 
         // Evaluate at any point should compile and execute without panic
@@ -410,7 +415,11 @@ mod tests {
 
         // Binary tree with 4 leaves should have exactly 3 interior nodes (n-1)
         assert_eq!(bsp.leaf_count(), 4, "Should have 4 leaves in the grid");
-        assert_eq!(bsp.interior_count(), 3, "Binary tree with 4 leaves must have exactly 3 interior nodes");
+        assert_eq!(
+            bsp.interior_count(),
+            3,
+            "Binary tree with 4 leaves must have exactly 3 interior nodes"
+        );
     }
 
     // ========================================================================
@@ -472,16 +481,26 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        assert_eq!(bsp.interior_count(), 1, "Two non-overlapping items need exactly one split");
+        assert_eq!(
+            bsp.interior_count(),
+            1,
+            "Two non-overlapping items need exactly one split"
+        );
 
         // Verify the split axis and threshold are correct
         // Left item spans [0, 25], right item spans [75, 100]
         // Threshold should be in the gap (25, 75), ideally around 50
         let root = &bsp.interiors[0];
-        assert_eq!(root.axis, Axis::X, "Should split on X axis for horizontal separation");
-        assert!(root.threshold >= 25.0 && root.threshold <= 75.0,
-                "Threshold must be in gap between items: {} should be in [25, 75]",
-                root.threshold);
+        assert_eq!(
+            root.axis,
+            Axis::X,
+            "Should split on X axis for horizontal separation"
+        );
+        assert!(
+            root.threshold >= 25.0 && root.threshold <= 75.0,
+            "Threshold must be in gap between items: {} should be in [25, 75]",
+            root.threshold
+        );
     }
 
     #[test]
@@ -633,9 +652,11 @@ mod tests {
         // Verify threshold is in the gap between items
         // Left item spans [-100, -50], right item spans [-50, 0]
         let root = &bsp.interiors[0];
-        assert!(root.threshold >= -100.0 && root.threshold <= 0.0,
-                "Threshold must separate the items: {} should be in [-100, 0]",
-                root.threshold);
+        assert!(
+            root.threshold >= -100.0 && root.threshold <= 0.0,
+            "Threshold must separate the items: {} should be in [-100, 0]",
+            root.threshold
+        );
     }
 
     #[test]
@@ -869,9 +890,11 @@ mod tests {
         // Each quadrant must return a distinct value
         for i in 0..results.len() {
             for j in (i + 1)..results.len() {
-                assert_ne!(results[i], results[j],
+                assert_ne!(
+                    results[i], results[j],
                     "Quadrant {} and {} must have different colors",
-                    i, j);
+                    i, j
+                );
             }
         }
     }
@@ -1786,14 +1809,17 @@ mod tests {
         // Check Point in Item 1, Right side (x=75, y=5)
         let mut pixels = [0u32; PARALLELISM];
         materialize_discrete(&bsp, 75.0, 5.0, &mut pixels);
-        
+
         let expected_red = {
             let red = SolidColor::new(255, 0, 0, 255);
             let mut buf = [0u32; PARALLELISM];
             materialize_discrete(&red, 0.0, 0.0, &mut buf);
             buf[0]
         };
-        assert_eq!(pixels[0], expected_red, "Item 1 should be visible on right side");
+        assert_eq!(
+            pixels[0], expected_red,
+            "Item 1 should be visible on right side"
+        );
 
         // Check Point in Item 2, Left side (x=25, y=15)
         materialize_discrete(&bsp, 25.0, 15.0, &mut pixels);
@@ -1803,6 +1829,9 @@ mod tests {
             materialize_discrete(&blue, 0.0, 0.0, &mut buf);
             buf[0]
         };
-        assert_eq!(pixels[0], expected_blue, "Item 2 should be visible on left side");
+        assert_eq!(
+            pixels[0], expected_blue,
+            "Item 2 should be visible on left side"
+        );
     }
 }

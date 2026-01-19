@@ -7,11 +7,13 @@
 
 pub mod ipc;
 
-use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData, EngineControl};
-use actor_scheduler::Message;
+use crate::api::private::{
+    DriverCommand, EngineActorHandle as EngineSender, EngineControl, EngineData,
+};
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::error::RuntimeError;
+use actor_scheduler::Message;
 use ipc::SharedRingBuffer;
 use js_sys::SharedArrayBuffer;
 use log::error;
@@ -194,7 +196,8 @@ impl WebState {
                         if let Err(e) = result {
                             error!("Web: Present failed: {:?}", e);
                         }
-                        let _ = engine_tx.send(Message::Data(EngineData::PresentComplete(returned_frame)));
+                        let _ = engine_tx
+                            .send(Message::Data(EngineData::PresentComplete(returned_frame)));
                     }
                     DriverCommand::SetTitle { .. } => {
                         // Not supported in worker context

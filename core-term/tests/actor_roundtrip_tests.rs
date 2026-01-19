@@ -5,7 +5,9 @@
 //!
 //! Following TDD principles: write tests first, uncover bugs, fix them.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -60,8 +62,12 @@ impl Actor<Vec<u8>, (), ()> for TestParserActor {
         Ok(())
     }
 
-    fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-    fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_control(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_management(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
 
     fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
@@ -577,8 +583,12 @@ fn multi_actor_chain_roundtrip() {
             }
             Ok(())
         }
-        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -645,8 +655,12 @@ fn roundtrip_handles_actor_panic_gracefully() {
             }
             Ok(())
         }
-        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -701,8 +715,12 @@ fn roundtrip_sender_dropped_during_processing() {
                 self.processed.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }

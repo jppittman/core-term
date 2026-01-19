@@ -26,8 +26,8 @@
 //! // val = 5.0
 //! ```
 
-use crate::domain::Spatial;
 use crate::Manifold;
+use crate::domain::Spatial;
 
 /// The explicit 4D axes of the manifold topology.
 /// Used for indexing `Vector` outputs.

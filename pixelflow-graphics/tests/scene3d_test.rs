@@ -600,7 +600,6 @@ fn test_mullet_vs_3channel_comparison() {
 /// Benchmark: Compare work-stealing vs single-threaded at 1080p
 #[test]
 fn test_work_stealing_benchmark() {
-
     const W: usize = 1920;
     const H: usize = 1080;
 

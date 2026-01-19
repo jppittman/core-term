@@ -1,4 +1,4 @@
-use actor_scheduler::{Actor, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus};
 use pixelflow_graphics::render::Frame;
 use pixelflow_runtime::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use pixelflow_runtime::display::ops::PlatformOps;

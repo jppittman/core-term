@@ -120,7 +120,8 @@ impl From<RawKeybindingsConfig> for KeybindingsConfig {
         let mut lookup = HashMap::new();
         for binding in &raw.bindings {
             // First match wins, so we use entry(...).or_insert(...) to only insert if not present
-            lookup.entry((binding.key, binding.mods))
+            lookup
+                .entry((binding.key, binding.mods))
                 .or_insert_with(|| binding.action.clone());
         }
         KeybindingsConfig {

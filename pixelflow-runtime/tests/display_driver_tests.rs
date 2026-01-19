@@ -290,7 +290,12 @@ fn engine_event_control_resize() {
         width_px: 1920,
         height_px: 1080,
     });
-    if let EngineEvent::Control(EngineEventControl::Resized { width_px: w, height_px: h, .. }) = event {
+    if let EngineEvent::Control(EngineEventControl::Resized {
+        width_px: w,
+        height_px: h,
+        ..
+    }) = event
+    {
         assert_eq!(w, 1920);
         assert_eq!(h, 1080);
     } else {

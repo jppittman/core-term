@@ -287,8 +287,9 @@ impl<M: Manifold<Field4, Output = (Field, Field, Field)>> Manifold<Field4> for S
         // l=2
         let y2m2 = eval_const(Field::from(SH_NORM[2][2]) * nx * ny);
         let y2m1 = eval_const(Field::from(SH_NORM[2][1]) * ny * nz);
-        let y20 =
-            eval_const(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)));
+        let y20 = eval_const(
+            Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)),
+        );
         let y21 = eval_const(Field::from(SH_NORM[2][1]) * nx * nz);
         let y22 = eval_const(Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny));
 
@@ -496,7 +497,10 @@ pub fn sh2_basis_at(dir: (Field, Field, Field)) -> [Field; 9] {
         eval_const(Field::from(SH_NORM[1][1]) * nx.clone()),
         eval_const(Field::from(SH_NORM[2][2]) * nx.clone() * ny.clone()),
         eval_const(Field::from(SH_NORM[2][1]) * ny.clone() * nz.clone()),
-        eval_const(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz.clone() * nz.clone() - Field::from(1.0))),
+        eval_const(
+            Field::from(SH_NORM[2][0])
+                * (Field::from(3.0) * nz.clone() * nz.clone() - Field::from(1.0)),
+        ),
         eval_const(Field::from(SH_NORM[2][1]) * nx.clone() * nz),
         eval_const(Field::from(SH_NORM[2][2]) * (nx.clone() * nx - ny.clone() * ny)),
     ]
@@ -573,7 +577,8 @@ pub fn sh2_multiply_static_field(a: &Sh2, b: &Sh2Field) -> Sh2Field {
     let mut result = [Field::from(0.0); 9];
     for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
         // Accumulation requires eval per iteration (result[k] is reused)
-        result[k] = eval_const(result[k] + Field::from(a.coeffs[i]) * b.coeffs[j] * Field::from(weight));
+        result[k] =
+            eval_const(result[k] + Field::from(a.coeffs[i]) * b.coeffs[j] * Field::from(weight));
     }
     Sh2Field { coeffs: result }
 }
@@ -611,7 +616,7 @@ pub fn cosine_lobe_sh2(n: (Field, Field, Field)) -> Sh2Field {
             eval_const(l1_scale * n.1), // Y1-1 (y direction)
             eval_const(l1_scale * n.2), // Y10  (z direction)
             eval_const(l1_scale * n.0), // Y11  (x direction)
-            Field::from(0.0),     // L2 terms small for Lambertian
+            Field::from(0.0),           // L2 terms small for Lambertian
             Field::from(0.0),
             Field::from(0.0),
             Field::from(0.0),

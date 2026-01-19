@@ -183,8 +183,8 @@
 //! All three functions check `num_threads <= 1` and fall back to `execute()` (single-threaded).
 //! This simplifies usage: you can always call the parallel version with dynamic thread count.
 
-use super::{execute, execute_stripe};
 use super::Stripe;
+use super::{execute, execute_stripe};
 use crate::render::color::Pixel;
 use crate::Frame;
 use pixelflow_core::{Discrete, Manifold};
@@ -222,11 +222,8 @@ unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
 
 /// Render with parallel rasterization (spawns new threads).
-pub fn render_parallel<P, M>(
-    manifold: &M,
-    frame: &mut Frame<P>,
-    options: RenderOptions,
-) where
+pub fn render_parallel<P, M>(manifold: &M, frame: &mut Frame<P>, options: RenderOptions)
+where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {
@@ -287,11 +284,8 @@ pub fn render_parallel<P, M>(
 ///
 /// Threads race to grab rows via atomic fetch_add. No channels, no barriers,
 /// no allocations. Just raw atomics and scoped threads.
-pub fn render_work_stealing<P, M>(
-    manifold: &M,
-    frame: &mut Frame<P>,
-    options: RenderOptions,
-) where
+pub fn render_work_stealing<P, M>(manifold: &M, frame: &mut Frame<P>, options: RenderOptions)
+where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {
@@ -382,11 +376,8 @@ pub fn render_work_stealing<P, M>(
 /// - For interactive apps: `core_count - 1` (leave one core for UI/input)
 /// - For batch rendering: `core_count` (maximize throughput)
 /// - Values > core count cause contention with minimal benefit
-pub fn rasterize<P, M>(
-    manifold: &M,
-    frame: &mut Frame<P>,
-    num_threads: usize,
-) where
+pub fn rasterize<P, M>(manifold: &M, frame: &mut Frame<P>, num_threads: usize)
+where
     P: Pixel + Send,
     M: Manifold<Output = Discrete> + Sync,
 {

@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+};
 use pixelflow_runtime::vsync_actor::{
     RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
 };
@@ -36,7 +38,9 @@ struct TickRateTracker {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker {
-    fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult { Ok(()) }
+    fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
+        Ok(())
+    }
 
     fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
         match cmd {
@@ -158,7 +162,9 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
         Ok(())
     }
 
-    fn handle_control(&mut self, _: VsyncCommand) -> HandlerResult { Ok(()) }
+    fn handle_control(&mut self, _: VsyncCommand) -> HandlerResult {
+        Ok(())
+    }
 
     fn handle_management(&mut self, msg: VsyncManagement) -> HandlerResult {
         if matches!(msg, VsyncManagement::Tick) {
@@ -385,7 +391,9 @@ fn shutdown_command_stops_tick_processing() {
             shutdown: bool,
         }
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for ShutdownActor {
-            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
+                Ok(())
+            }
             fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
                 if matches!(cmd, VsyncCommand::Shutdown) {
                     self.shutdown = true;
@@ -449,7 +457,9 @@ fn fps_request_handles_dropped_receiver() {
     let handle = thread::spawn(move || {
         struct FPSActor(Arc<Mutex<Vec<String>>>);
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for FPSActor {
-            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
+                Ok(())
+            }
             fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
                 match cmd {
                     VsyncCommand::RequestCurrentFPS(sender) => {
@@ -464,7 +474,9 @@ fn fps_request_handles_dropped_receiver() {
                 }
                 Ok(())
             }
-            fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -534,7 +546,9 @@ fn refresh_rate_update_during_ticks_is_safe() {
             refresh_rate: f64,
         }
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for RateChangeActor {
-            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
+                Ok(())
+            }
             fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
                 match cmd {
                     VsyncCommand::Start => self.running = true,

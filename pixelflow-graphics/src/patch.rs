@@ -4,7 +4,7 @@
 //! Pull-based: sample the surface at any (u,v), get position and derivatives.
 
 use pixelflow_core::jet::Jet2H;
-use pixelflow_core::{Field, Manifold, ManifoldCompat};
+use pixelflow_core::{Field, Manifold};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);

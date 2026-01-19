@@ -35,6 +35,7 @@
 mod ast;
 mod codegen;
 mod lexer;
+mod optimize;
 mod parser;
 mod sema;
 mod symbol;
@@ -87,6 +88,9 @@ pub fn kernel(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    // Phase 4: Code generation
-    codegen::emit(analyzed).into()
+    // Phase 4: Optimization
+    let optimized = optimize::optimize(analyzed);
+
+    // Phase 5: Code generation
+    codegen::emit(optimized).into()
 }

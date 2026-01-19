@@ -130,7 +130,10 @@ fn main() -> anyhow::Result<()> {
     // Create a dummy app that ignores events
     struct DummyApp;
     impl pixelflow_runtime::Application for DummyApp {
-        fn send(&self, _event: pixelflow_runtime::EngineEvent) -> Result<(), pixelflow_runtime::RuntimeError> {
+        fn send(
+            &self,
+            _event: pixelflow_runtime::EngineEvent,
+        ) -> Result<(), pixelflow_runtime::RuntimeError> {
             Ok(())
         }
     }

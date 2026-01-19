@@ -1,7 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use core_term::config::{Keybinding, KeybindingsConfig, RawKeybindingsConfig};
 use core_term::keys::{KeySymbol, Modifiers};
 use core_term::term::action::UserInputAction;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 fn bench_keybindings(c: &mut Criterion) {
     let mut group = c.benchmark_group("keybindings");
@@ -10,11 +10,15 @@ fn bench_keybindings(c: &mut Criterion) {
         // Setup config with `size` bindings
         let mut bindings = Vec::new();
         for i in 0..*size {
-             // Create dummy bindings
-             bindings.push(Keybinding {
+            // Create dummy bindings
+            bindings.push(Keybinding {
                 // Use a changing char to avoid duplicates
                 key: KeySymbol::Char(char::from_u32(33 + (i % 90) as u32).unwrap_or('a')),
-                mods: if i % 2 == 0 { Modifiers::CONTROL } else { Modifiers::ALT },
+                mods: if i % 2 == 0 {
+                    Modifiers::CONTROL
+                } else {
+                    Modifiers::ALT
+                },
                 action: UserInputAction::RequestQuit,
             });
         }
@@ -29,7 +33,9 @@ fn bench_keybindings(c: &mut Criterion) {
             action: UserInputAction::InitiateCopy,
         });
 
-        let raw = RawKeybindingsConfig { bindings: bindings.clone() };
+        let raw = RawKeybindingsConfig {
+            bindings: bindings.clone(),
+        };
         let config: KeybindingsConfig = raw.into(); // Populates lookup
 
         // Benchmark O(1) Map Lookup
@@ -46,9 +52,11 @@ fn bench_keybindings(c: &mut Criterion) {
             b.iter(|| {
                 let key = black_box(target_key);
                 let mods = black_box(target_mods);
-                let _ = config.bindings.iter().find(|b| {
-                    b.key == key && b.mods == mods
-                }).map(|b| &b.action);
+                let _ = config
+                    .bindings
+                    .iter()
+                    .find(|b| b.key == key && b.mods == mods)
+                    .map(|b| &b.action);
             })
         });
 
@@ -62,7 +70,8 @@ fn bench_keybindings(c: &mut Criterion) {
                 let key = black_box(target_key);
                 let mods = black_box(target_mods);
                 // Note: binary_search_by returns Result<usize, usize>
-                let _ = sorted_bindings.binary_search_by(|probe| (probe.key, probe.mods).cmp(&(key, mods)));
+                let _ = sorted_bindings
+                    .binary_search_by(|probe| (probe.key, probe.mods).cmp(&(key, mods)));
             })
         });
     }

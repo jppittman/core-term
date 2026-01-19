@@ -10,7 +10,9 @@
 //! Note: Some tests require the actor to run in a thread, which means
 //! we test through the public message interface rather than internal state.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -718,8 +720,12 @@ fn shutdown_stops_processing_immediately() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: VsyncCommand) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: VsyncCommand) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }

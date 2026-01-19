@@ -784,10 +784,10 @@ mod tests {
 
         // Test points at different tile depths
         let test_points = [
-            (0.75, 0.75, "first tile"),      // Tile 1: [0.5, 1]²
-            (0.3, 0.3, "second tile"),       // Tile 2: [0.25, 0.5)²
-            (0.15, 0.15, "third tile"),      // Tile 3: [0.125, 0.25)²
-            (0.06, 0.06, "fourth tile"),     // Tile 4: deeper
+            (0.75, 0.75, "first tile"),  // Tile 1: [0.5, 1]²
+            (0.3, 0.3, "second tile"),   // Tile 2: [0.25, 0.5)²
+            (0.15, 0.15, "third tile"),  // Tile 3: [0.125, 0.25)²
+            (0.06, 0.06, "fourth tile"), // Tile 4: deeper
         ];
 
         for (u, v, desc) in test_points {

@@ -149,7 +149,6 @@ mod parser_thread;
 mod read_thread;
 mod write_thread;
 
-use crate::ansi::AnsiCommand;
 use crate::io::pty::NixPty;
 use crate::io::traits::PtySender;
 use crate::io::PtyCommand;
@@ -157,7 +156,7 @@ use anyhow::{Context, Result};
 use log::*;
 use parser_thread::ParserThread;
 use read_thread::ReadThread;
-use std::sync::mpsc::{channel, Receiver, SyncSender};
+use std::sync::mpsc::{channel, Receiver};
 use write_thread::WriteThread;
 
 /// EventMonitor actor that manages PTY I/O across three dedicated threads.

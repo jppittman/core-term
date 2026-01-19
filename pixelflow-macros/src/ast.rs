@@ -32,7 +32,7 @@ use proc_macro2::Span;
 use syn::{Ident, Type};
 
 /// A complete kernel definition.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KernelDef {
     /// Parameters captured from the closure syntax.
     pub params: Vec<Param>,
@@ -63,7 +63,7 @@ pub struct Param {
 }
 
 /// An expression in the kernel body.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     /// A variable reference (X, Y, cx, etc.).
     Ident(IdentExpr),
@@ -92,14 +92,14 @@ pub enum Expr {
 }
 
 /// An identifier expression.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IdentExpr {
     pub name: Ident,
     pub span: Span,
 }
 
 /// A literal expression.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LiteralExpr {
     pub lit: syn::Lit,
     pub span: Span,
@@ -123,7 +123,7 @@ pub enum BinaryOp {
 }
 
 /// A binary expression.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BinaryExpr {
     pub op: BinaryOp,
     pub lhs: Box<Expr>,
@@ -139,7 +139,7 @@ pub enum UnaryOp {
 }
 
 /// A unary expression.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UnaryExpr {
     pub op: UnaryOp,
     pub operand: Box<Expr>,
@@ -147,7 +147,7 @@ pub struct UnaryExpr {
 }
 
 /// A method call expression.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MethodCallExpr {
     /// The receiver (what the method is called on).
     pub receiver: Box<Expr>,
@@ -159,7 +159,7 @@ pub struct MethodCallExpr {
 }
 
 /// A statement in a block.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Stmt {
     /// A let binding: `let dx = X - cx;`
     Let(LetStmt),
@@ -168,7 +168,7 @@ pub enum Stmt {
 }
 
 /// A let statement.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LetStmt {
     pub name: Ident,
     pub ty: Option<Type>,
@@ -177,7 +177,7 @@ pub struct LetStmt {
 }
 
 /// A block expression.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlockExpr {
     pub stmts: Vec<Stmt>,
     /// The final expression (if any).

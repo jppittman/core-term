@@ -29,11 +29,8 @@ impl MockEngine {
         };
 
         // Create scheduler channels
-        let (handle, mut scheduler) = actor_scheduler::create_actor::<
-            EngineData,
-            EngineControl,
-            AppManagement,
-        >(100, None);
+        let (handle, mut scheduler) =
+            actor_scheduler::create_actor::<EngineData, EngineControl, AppManagement>(100, None);
 
         // Spawn background thread to process messages
         let thread = std::thread::spawn(move || {
@@ -61,9 +58,7 @@ struct MessageCollector {
     messages: Arc<Mutex<Vec<ReceivedMessage>>>,
 }
 
-impl Actor<EngineData, EngineControl, AppManagement>
-    for MessageCollector
-{
+impl Actor<EngineData, EngineControl, AppManagement> for MessageCollector {
     fn handle_data(&mut self, msg: EngineData) -> HandlerResult {
         self.messages
             .lock()

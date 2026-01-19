@@ -4,10 +4,7 @@ use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, SystemSta
 
 /// The Platform Trait.
 /// Implementers must be an Actor that handles display messages.
-pub trait Platform:
-    Actor<DisplayData, DisplayControl, DisplayMgmt> + Send + 'static
-{
-}
+pub trait Platform: Actor<DisplayData, DisplayControl, DisplayMgmt> + Send + 'static {}
 
 /// A generic wrapper that turns any `PlatformOps` implementation into a `Platform` Actor.
 pub struct PlatformActor<Ops: PlatformOps> {
@@ -20,9 +17,7 @@ impl<Ops: PlatformOps> PlatformActor<Ops> {
     }
 }
 
-impl<Ops: PlatformOps> Actor<DisplayData, DisplayControl, DisplayMgmt>
-    for PlatformActor<Ops>
-{
+impl<Ops: PlatformOps> Actor<DisplayData, DisplayControl, DisplayMgmt> for PlatformActor<Ops> {
     fn handle_data(&mut self, msg: DisplayData) -> HandlerResult {
         self.ops.handle_data(msg)
     }

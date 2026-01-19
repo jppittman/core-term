@@ -427,7 +427,11 @@ pub trait ManifoldExt: Manifold<Field4> + Sized {
     /// Both branches are always evaluated. For complex branches, this is more expensive
     /// than a scalar `if` statement, but matches typical shader execution models where
     /// lanes follow independent code paths.
-    fn select<T: Manifold<Field4>, F: Manifold<Field4>>(self, if_true: T, if_false: F) -> Select<Self, T, F> {
+    fn select<T: Manifold<Field4>, F: Manifold<Field4>>(
+        self,
+        if_true: T,
+        if_false: F,
+    ) -> Select<Self, T, F> {
         Select {
             cond: self,
             if_true,

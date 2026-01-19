@@ -3,7 +3,9 @@
 //! These tests verify the message flows between actors in the core-term system.
 //! Each test covers a specific CUJ identified in MESSAGE_CUJ_COVERAGE.md.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -52,8 +54,12 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
         Ok(())
     }
 
-    fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-    fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_control(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_management(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
     fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
@@ -382,9 +388,15 @@ fn cuj_pty04_sender_drop_terminates_receiver() {
     }
 
     impl Actor<u8, (), ()> for TerminationActor {
-        fn handle_data(&mut self, _: u8) -> HandlerResult { Ok(()) }
-        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_data(&mut self, _: u8) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_control(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -735,8 +747,12 @@ fn cuj_concurrent_senders_all_messages_delivered() {
             self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: ()) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }

@@ -386,7 +386,6 @@ pub enum AppData {
     /// and present a blank/black frame instead. Use only when you know the
     /// previous frame is still correct.
     Skipped,
-
 }
 
 impl std::fmt::Debug for AppData {
@@ -534,12 +533,16 @@ impl UnregisteredEngineHandle {
         // Send RegisterApp first
         self.inner
             .send(Message::Management(AppManagement::RegisterApp(app)))
-            .map_err(|e| crate::error::RuntimeError::InitError(format!("Failed to register app: {}", e)))?;
+            .map_err(|e| {
+                crate::error::RuntimeError::InitError(format!("Failed to register app: {}", e))
+            })?;
 
         // Then send CreateWindow
         self.inner
             .send(Message::Management(AppManagement::CreateWindow(window)))
-            .map_err(|e| crate::error::RuntimeError::InitError(format!("Failed to create window: {}", e)))?;
+            .map_err(|e| {
+                crate::error::RuntimeError::InitError(format!("Failed to create window: {}", e))
+            })?;
 
         // Return full handle
         Ok(EngineHandle { inner: self.inner })
