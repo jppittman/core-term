@@ -206,8 +206,8 @@ fn main() -> anyhow::Result<()> {
     info!("Engine config created. Creating EngineTroupe...");
 
     // Phase 1: Create troupe (channels ready, no threads spawned yet)
-    let troupe =
-        EngineTroupe::with_config(engine_config.clone()).context("Failed to create EngineTroupe")?;
+    let troupe = EngineTroupe::with_config(engine_config.clone())
+        .context("Failed to create EngineTroupe")?;
 
     // Phase 2: Get unregistered engine handle
     let unregistered_handle = troupe.engine_handle();

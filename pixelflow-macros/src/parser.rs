@@ -96,7 +96,11 @@ impl Parse for KernelDef {
         let syn_expr: syn::Expr = input.parse()?;
         let body = convert_expr(syn_expr)?;
 
-        Ok(KernelDef { params, return_ty, body })
+        Ok(KernelDef {
+            params,
+            return_ty,
+            body,
+        })
     }
 }
 
@@ -207,14 +211,14 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
                             return Err(syn::Error::new_spanned(
                                 &local.pat,
                                 "expected identifier pattern in let",
-                            ))
+                            ));
                         }
                     },
                     _ => {
                         return Err(syn::Error::new_spanned(
                             &local.pat,
                             "expected identifier pattern in let",
-                        ))
+                        ));
                     }
                 };
 
@@ -251,14 +255,14 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
                 return Err(syn::Error::new(
                     Span::call_site(),
                     "items not allowed in kernel block",
-                ))
+                ));
             }
 
             syn::Stmt::Macro(_) => {
                 return Err(syn::Error::new(
                     Span::call_site(),
                     "macros not allowed in kernel block",
-                ))
+                ));
             }
         }
     }

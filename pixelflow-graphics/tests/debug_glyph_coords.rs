@@ -53,11 +53,7 @@ fn debug_coverage_at_points() {
     let width = 40;
     let height = 45;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
-    rasterize(
-        &color_manifold,
-        &mut frame,
-        1,
-    );
+    rasterize(&color_manifold, &mut frame, 1);
     let pixels = frame.data;
 
     // Print cross-sections at different Y values

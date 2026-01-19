@@ -170,12 +170,15 @@ mod manifold_tests {
         );
 
         // Constants must implement Manifold
-        let _const_f32 = 42.0f32.eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
+        let _const_f32 =
+            42.0f32.eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
         let _const_i32 = 42i32.eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
-        let _const_field = Field::from(42.0).eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
+        let _const_field =
+            Field::from(42.0).eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
 
         // Combinators must be composable
-        let _scaled = scale(X, 2.0).eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
+        let _scaled =
+            scale(X, 2.0).eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
         let _ref_expr = (&X).eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
     }
 
@@ -303,8 +306,18 @@ mod select_tests {
     /// Select implements conditional manifolds based on boolean predicates.
     #[test]
     fn test_select_combinator() {
-        let coords_pos = (Field::from(5.0), Field::from(10.0), Field::from(20.0), Field::from(0.0));
-        let coords_neg = (Field::from(-1.0), Field::from(10.0), Field::from(20.0), Field::from(0.0));
+        let coords_pos = (
+            Field::from(5.0),
+            Field::from(10.0),
+            Field::from(20.0),
+            Field::from(0.0),
+        );
+        let coords_neg = (
+            Field::from(-1.0),
+            Field::from(10.0),
+            Field::from(20.0),
+            Field::from(0.0),
+        );
 
         // Struct form
         let sel_pos = Select {
@@ -321,7 +334,12 @@ mod select_tests {
         // Nested select
         let inner = Y.gt(0.0f32).select(1.0f32, 2.0f32);
         let outer = X.gt(0.0f32).select(inner, 3.0f32);
-        let _nested = outer.eval_raw(Field::from(1.0), Field::from(1.0), Field::from(0.0), Field::from(0.0));
+        let _nested = outer.eval_raw(
+            Field::from(1.0),
+            Field::from(1.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
     }
 }
 
@@ -337,11 +355,21 @@ mod map_tests {
     fn test_map_combinator() {
         // Struct form: substitute X with X+X (effectively doubling)
         let doubled = Map::new(X, X + X);
-        let _result = doubled.eval_raw(Field::from(5.0), Field::from(0.0), Field::from(0.0), Field::from(0.0));
+        let _result = doubled.eval_raw(
+            Field::from(5.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
 
         // Extension method form: square the X coordinate
         let squared = X.map(X * X);
-        let _result2 = squared.eval_raw(Field::from(4.0), Field::from(0.0), Field::from(0.0), Field::from(0.0));
+        let _result2 = squared.eval_raw(
+            Field::from(4.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
     }
 
     #[test]
@@ -350,13 +378,43 @@ mod map_tests {
         let clamped = X.map(X.max(0.0f32).min(1.0f32));
 
         // Test various value ranges
-        let coords_in_range = (Field::from(0.5), Field::from(0.0), Field::from(0.0), Field::from(0.0));
-        let coords_below = (Field::from(-0.5), Field::from(0.0), Field::from(0.0), Field::from(0.0));
-        let coords_above = (Field::from(1.5), Field::from(0.0), Field::from(0.0), Field::from(0.0));
+        let coords_in_range = (
+            Field::from(0.5),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let coords_below = (
+            Field::from(-0.5),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let coords_above = (
+            Field::from(1.5),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
 
-        let _in_range = clamped.eval_raw(coords_in_range.0, coords_in_range.1, coords_in_range.2, coords_in_range.3);
-        let _below = clamped.eval_raw(coords_below.0, coords_below.1, coords_below.2, coords_below.3);
-        let _above = clamped.eval_raw(coords_above.0, coords_above.1, coords_above.2, coords_above.3);
+        let _in_range = clamped.eval_raw(
+            coords_in_range.0,
+            coords_in_range.1,
+            coords_in_range.2,
+            coords_in_range.3,
+        );
+        let _below = clamped.eval_raw(
+            coords_below.0,
+            coords_below.1,
+            coords_below.2,
+            coords_below.3,
+        );
+        let _above = clamped.eval_raw(
+            coords_above.0,
+            coords_above.1,
+            coords_above.2,
+            coords_above.3,
+        );
     }
 }
 
@@ -422,18 +480,35 @@ mod ext_tests {
         let _i32_result = expr.eval_raw(Field::from(1.0), Field::from(2.0), zero, zero);
 
         // Method forms of binary operators
-        let _add = X.add(Y).eval_raw(Field::from(3.0), Field::from(4.0), zero, zero);
-        let _sub = X.sub(Y).eval_raw(Field::from(10.0), Field::from(3.0), zero, zero);
-        let _mul = X.mul(Y).eval_raw(Field::from(4.0), Field::from(5.0), zero, zero);
-        let _div = X.div(Y).eval_raw(Field::from(10.0), Field::from(2.0), zero, zero);
-        let _max = X.max(Y).eval_raw(Field::from(3.0), Field::from(7.0), zero, zero);
-        let _min = X.min(Y).eval_raw(Field::from(3.0), Field::from(7.0), zero, zero);
+        let _add = X
+            .add(Y)
+            .eval_raw(Field::from(3.0), Field::from(4.0), zero, zero);
+        let _sub = X
+            .sub(Y)
+            .eval_raw(Field::from(10.0), Field::from(3.0), zero, zero);
+        let _mul = X
+            .mul(Y)
+            .eval_raw(Field::from(4.0), Field::from(5.0), zero, zero);
+        let _div = X
+            .div(Y)
+            .eval_raw(Field::from(10.0), Field::from(2.0), zero, zero);
+        let _max = X
+            .max(Y)
+            .eval_raw(Field::from(3.0), Field::from(7.0), zero, zero);
+        let _min = X
+            .min(Y)
+            .eval_raw(Field::from(3.0), Field::from(7.0), zero, zero);
     }
 
     #[test]
     fn test_boxed_manifold() {
         let expr = (X + Y).boxed();
-        let _result = expr.eval_raw(Field::from(3.0), Field::from(4.0), Field::from(0.0), Field::from(0.0));
+        let _result = expr.eval_raw(
+            Field::from(3.0),
+            Field::from(4.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
 
         // Test operators on BoxedManifold
         let boxed = X.boxed();
@@ -442,10 +517,30 @@ mod ext_tests {
         let prod = boxed.clone() * Y;
         let quot = boxed / Y;
 
-        let _sum_result = sum.eval_raw(Field::from(10.0), Field::from(2.0), Field::from(0.0), Field::from(0.0));
-        let _diff_result = diff.eval_raw(Field::from(10.0), Field::from(2.0), Field::from(0.0), Field::from(0.0));
-        let _prod_result = prod.eval_raw(Field::from(10.0), Field::from(2.0), Field::from(0.0), Field::from(0.0));
-        let _quot_result = quot.eval_raw(Field::from(10.0), Field::from(2.0), Field::from(0.0), Field::from(0.0));
+        let _sum_result = sum.eval_raw(
+            Field::from(10.0),
+            Field::from(2.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let _diff_result = diff.eval_raw(
+            Field::from(10.0),
+            Field::from(2.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let _prod_result = prod.eval_raw(
+            Field::from(10.0),
+            Field::from(2.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
+        let _quot_result = quot.eval_raw(
+            Field::from(10.0),
+            Field::from(2.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
     }
 }
 

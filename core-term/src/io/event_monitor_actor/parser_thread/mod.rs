@@ -1,10 +1,12 @@
 // src/io/event_monitor_actor/parser_thread/mod.rs
 
-use crate::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
+use crate::ansi::{AnsiParser, AnsiProcessor};
 use crate::io::traits::PtySender;
-use actor_scheduler::{Actor, ActorScheduler, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, SystemStatus,
+};
 use log::*;
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 /// Control message for parser thread (unused)
@@ -59,7 +61,10 @@ impl Drop for ParserThread {
             if let Err(panic_payload) = handle.join() {
                 if std::thread::panicking() {
                     // Already unwinding - can't double-panic, just log
-                    eprintln!("Parser thread panicked (during unwind): {:?}", panic_payload);
+                    eprintln!(
+                        "Parser thread panicked (during unwind): {:?}",
+                        panic_payload
+                    );
                 } else {
                     // Propagate the panic - this is a fatal error
                     std::panic::resume_unwind(panic_payload);

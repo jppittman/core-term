@@ -74,10 +74,7 @@ impl SemanticAnalyzer {
         if self.symbols.is_intrinsic(&name) {
             return Err(syn::Error::new(
                 param.name.span(),
-                format!(
-                    "parameter '{}' shadows intrinsic coordinate variable",
-                    name
-                ),
+                format!("parameter '{}' shadows intrinsic coordinate variable", name),
             ));
         }
 

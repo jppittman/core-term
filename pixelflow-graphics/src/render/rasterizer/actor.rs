@@ -38,7 +38,9 @@ use super::messages::{
 };
 use super::rasterize;
 use crate::render::Pixel;
-use actor_scheduler::{Actor, ActorScheduler, ActorStatus, ActorTypes, HandlerError, HandlerResult, SystemStatus};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, ActorTypes, HandlerError, HandlerResult, SystemStatus,
+};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -123,10 +125,7 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
                 response_tx,
             };
 
-            log::info!(
-                "RasterizerActor started with {} threads",
-                actor.num_threads
-            );
+            log::info!("RasterizerActor started with {} threads", actor.num_threads);
 
             scheduler.run(&mut actor);
         });
@@ -155,7 +154,10 @@ impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
             return Ok(());
         }
 
-        let RenderRequest { manifold, mut frame } = request;
+        let RenderRequest {
+            manifold,
+            mut frame,
+        } = request;
 
         // Render the frame
         let start = Instant::now();

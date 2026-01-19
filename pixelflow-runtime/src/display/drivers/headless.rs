@@ -6,10 +6,10 @@
 //! run() reads CreateWindow, runs a simple event loop.
 
 use crate::api::private::{DriverCommand, EngineActorHandle as EngineSender, EngineData};
-use actor_scheduler::Message;
 use crate::display::driver::DisplayDriver;
 use crate::display::messages::{DisplayEvent, WindowId};
 use crate::error::RuntimeError;
+use actor_scheduler::Message;
 use log::info;
 use pixelflow_render::color::Rgba;
 use pixelflow_render::Frame;

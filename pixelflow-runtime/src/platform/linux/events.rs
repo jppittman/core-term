@@ -74,7 +74,9 @@ pub fn map_event(
             xlib::FocusIn => Some(DisplayEvent::FocusGained { id: window_id }),
             xlib::FocusOut => Some(DisplayEvent::FocusLost { id: window_id }),
             xlib::ButtonPress => handle_button_press(event.button, window_id, event.button.state),
-            xlib::ButtonRelease => handle_button_release(event.button, window_id, event.button.state),
+            xlib::ButtonRelease => {
+                handle_button_release(event.button, window_id, event.button.state)
+            }
             xlib::MotionNotify => {
                 let e = event.motion;
                 let modifiers = extract_modifiers(e.state);
@@ -184,11 +186,7 @@ unsafe fn handle_selection_notify(
     None
 }
 
-fn handle_button_press(
-    e: xlib::XButtonEvent,
-    id: WindowId,
-    state: u32,
-) -> Option<DisplayEvent> {
+fn handle_button_press(e: xlib::XButtonEvent, id: WindowId, state: u32) -> Option<DisplayEvent> {
     let modifiers = extract_modifiers(state);
     match e.button {
         4 => Some(DisplayEvent::MouseScroll {
@@ -233,11 +231,7 @@ fn handle_button_press(
     }
 }
 
-fn handle_button_release(
-    e: xlib::XButtonEvent,
-    id: WindowId,
-    state: u32,
-) -> Option<DisplayEvent> {
+fn handle_button_release(e: xlib::XButtonEvent, id: WindowId, state: u32) -> Option<DisplayEvent> {
     if e.button >= 4 && e.button <= 7 {
         return None;
     }

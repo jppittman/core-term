@@ -3,9 +3,9 @@
 //! These benchmarks measure the compile-time performance of the macro,
 //! not runtime performance. They help identify bottlenecks in the compiler frontend.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use pixelflow_core::{Field, Manifold, X, Y};
 use pixelflow_macros::kernel;
-use pixelflow_core::{Manifold, Field, X, Y};
 
 // ============================================================================
 // Macro Expansion Benchmarks (Compile-Time, measured via codegen)

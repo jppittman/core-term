@@ -61,7 +61,6 @@ pub(crate) fn vsync_token_count() -> u32 {
     VSYNC_TOKEN_BUCKET.load(Ordering::Relaxed)
 }
 
-
 /// Configuration for VsyncActor
 #[derive(Debug, Clone)]
 pub struct VsyncConfig {
@@ -307,10 +306,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
         // Count actual rendered frames for accurate FPS measurement
         // (Token management is now handled via atomic bucket)
         self.frame_count += 1;
-        log::trace!(
-            "VsyncActor: Frame {} rendered",
-            response.frame_number
-        );
+        log::trace!("VsyncActor: Frame {} rendered", response.frame_number);
         self.update_fps();
         Ok(())
     }
@@ -374,10 +370,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self.refresh_rate = config.refresh_rate;
                 self.interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
 
-                info!(
-                    "VsyncActor: Configured with {:.2} Hz",
-                    config.refresh_rate
-                );
+                info!("VsyncActor: Configured with {:.2} Hz", config.refresh_rate);
 
                 // Spawn clock thread
                 let (clock_tx, clock_rx) = std::sync::mpsc::channel();
@@ -414,7 +407,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<actor_scheduler::ActorStatus, HandlerError> {
+    fn park(
+        &mut self,
+        _status: SystemStatus,
+    ) -> Result<actor_scheduler::ActorStatus, HandlerError> {
         // VSync is driven by internal clock thread sending messages
         Ok(actor_scheduler::ActorStatus::Idle)
     }

@@ -98,10 +98,7 @@ impl sealed::Sealed for crate::variables::Z {}
 impl sealed::Sealed for crate::variables::W {}
 
 // Spherical harmonics
-impl<const L: usize, const M: i32> sealed::Sealed
-    for crate::combinators::SphericalHarmonic<L, M>
-{
-}
+impl<const L: usize, const M: i32> sealed::Sealed for crate::combinators::SphericalHarmonic<L, M> {}
 impl<const L: usize> sealed::Sealed for crate::combinators::ZonalHarmonic<L> {}
 impl<const NUM_COEFFS: usize> sealed::Sealed for crate::combinators::ShProject<NUM_COEFFS> {}
 
@@ -462,12 +459,12 @@ impl<M: crate::Zst + Copy, D: crate::variables::Dimension + Copy> Copy
 {
 }
 impl<
-        Cx: crate::Zst + Copy,
-        Cy: crate::Zst + Copy,
-        Cz: crate::Zst + Copy,
-        Cw: crate::Zst + Copy,
-        M: crate::Zst + Copy,
-    > Copy for crate::combinators::At<Cx, Cy, Cz, Cw, M>
+    Cx: crate::Zst + Copy,
+    Cy: crate::Zst + Copy,
+    Cz: crate::Zst + Copy,
+    Cw: crate::Zst + Copy,
+    M: crate::Zst + Copy,
+> Copy for crate::combinators::At<Cx, Cy, Cz, Cw, M>
 {
 }
 impl<Seed: crate::Zst + Copy, Step: crate::Zst + Copy, Done: crate::Zst + Copy> Copy

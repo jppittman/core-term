@@ -184,15 +184,16 @@
 use crate::render::color::Pixel;
 use crate::render::frame::Frame;
 use pixelflow_core::{
-    materialize_discrete, materialize_discrete_fields, Discrete, Field, Manifold, ManifoldCompat, PARALLELISM,
+    materialize_discrete, materialize_discrete_fields, Discrete, Field, Manifold, ManifoldCompat,
+    PARALLELISM,
 };
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
 
-pub mod parallel;
 pub mod actor;
 pub mod messages;
+pub mod parallel;
 
 // Public API - simplified to single rasterize function
 pub use parallel::rasterize;

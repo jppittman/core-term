@@ -14,8 +14,8 @@ pub mod texture;
 
 pub use at::{At, AtArray};
 pub use binding::{
-    Empty, GAdd, GDiv, GMul, GSub, Get, Graph, Let, Lift, Root, Succ, Var, Zero, N0, N1, N2, N3,
-    N4, N5, N6, N7,
+    Empty, GAdd, GDiv, GMul, GSub, Get, Graph, Let, Lift, N0, N1, N2, N3, N4, N5, N6, N7, Root,
+    Succ, Var, Zero,
 };
 pub use fix::Fix;
 pub use map::{ClosureMap, Map};

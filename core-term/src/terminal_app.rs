@@ -2,11 +2,14 @@ use crate::ansi::commands::AnsiCommand;
 use crate::color::Color;
 use crate::config::Config;
 use crate::glyph::Glyph;
+use crate::io::traits::PtySender;
 use crate::io::PtyCommand;
 use crate::messages::TerminalData;
 use crate::term::TerminalEmulator;
-use actor_scheduler::{ActorHandle, Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
-use crate::io::traits::PtySender;
+use actor_scheduler::{
+    Actor, ActorHandle, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SystemStatus,
+};
 use pixelflow_core::{
     Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
 };
@@ -17,7 +20,9 @@ pub struct TerminalAppSender {
 }
 
 impl TerminalAppSender {
-    pub fn new(handle: ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>) -> Self {
+    pub fn new(
+        handle: ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    ) -> Self {
         Self { handle }
     }
 }
@@ -32,15 +37,13 @@ impl PtySender for TerminalAppSender {
 
 /// Helper to create a positioned terminal cell with background blending.
 use pixelflow_graphics::fonts::loader::{LoadedFont, MmapSource};
-use pixelflow_runtime::platform::ColorCube;
 use pixelflow_graphics::{CachedGlyph, GlyphCache, Positioned, SpatialBSP};
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
 use pixelflow_runtime::api::public::EngineHandle;
-use pixelflow_runtime::{
-    EngineEventControl, EngineEventData, EngineEventManagement,
-};
-use std::sync::mpsc::{Receiver, SyncSender};
+use pixelflow_runtime::platform::ColorCube;
+use pixelflow_runtime::{EngineEventControl, EngineEventData, EngineEventManagement};
+use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 /// Font filename (looked up in multiple locations)
@@ -104,11 +107,11 @@ type BlendedChannel = At<f32, f32, PositionedGlyph, f32, LerpManifold>;
 
 /// Concrete leaf type: a terminal cell with background and foreground blending.
 type TerminalCellLeaf = At<
-    BlendedChannel,    // R
-    BlendedChannel,    // G
-    BlendedChannel,    // B
-    f32,               // A
-    ColorCube, // M
+    BlendedChannel, // R
+    BlendedChannel, // G
+    BlendedChannel, // B
+    f32,            // A
+    ColorCube,      // M
 >;
 
 /// Layout parameters for a terminal cell.
@@ -250,8 +253,9 @@ impl TerminalApp {
     fn new_registered(params: TerminalAppParamsRegistered) -> Self {
         // Memory-map the font file from the appropriate location
         let font_path = find_font_path();
-        let source = MmapSource::open(&font_path)
-            .unwrap_or_else(|e| panic!("Failed to open font file at {}: {}", font_path.display(), e));
+        let source = MmapSource::open(&font_path).unwrap_or_else(|e| {
+            panic!("Failed to open font file at {}: {}", font_path.display(), e)
+        });
 
         let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));
 
@@ -306,7 +310,12 @@ impl TerminalApp {
         if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
             log::info!(
                 "Terminal snapshot: {}x{} cells, cell size {}x{} px, grid {}x{} px",
-                cols, rows, cell_width, cell_height, grid_width, grid_height
+                cols,
+                rows,
+                cell_width,
+                cell_height,
+                grid_width,
+                grid_height
             );
         }
 
@@ -408,7 +417,10 @@ impl TerminalApp {
         // Build top-level vertical BSP from row items
         log::debug!(
             "Building BSP with {} row_items (from {} rows), grid {}x{}",
-            row_items.len(), rows, grid_width, grid_height
+            row_items.len(),
+            rows,
+            grid_width,
+            grid_height
         );
         let top_bsp = SpatialBSP::from_positioned(row_items);
         (Arc::new(top_bsp), (grid_width, grid_height))
@@ -668,11 +680,12 @@ pub fn spawn_terminal_app(
         ActorScheduler::<TerminalData, EngineEventControl, EngineEventManagement>::new(10, 128);
 
     // Register with engine (sends RegisterApp + CreateWindow atomically)
-    use pixelflow_runtime::WindowDescriptor;
     use pixelflow_runtime::api::public::{Application, EngineEvent};
+    use pixelflow_runtime::WindowDescriptor;
 
     struct TerminalAppAdapter {
-        handle: actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+        handle:
+            actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
     }
 
     impl Application for TerminalAppAdapter {
@@ -682,7 +695,9 @@ pub fn spawn_terminal_app(
                 EngineEvent::Control(c) => Message::Control(c),
                 EngineEvent::Management(m) => Message::Management(m),
             };
-            self.handle.send(msg).map_err(|e| pixelflow_runtime::error::RuntimeError::EventSendError(e.to_string()))
+            self.handle
+                .send(msg)
+                .map_err(|e| pixelflow_runtime::error::RuntimeError::EventSendError(e.to_string()))
         }
     }
 
@@ -693,8 +708,11 @@ pub fn spawn_terminal_app(
         resizable: true,
     };
 
-    let app_arc = std::sync::Arc::new(TerminalAppAdapter { handle: app_handle.clone() });
-    let engine_tx = params.unregistered_engine
+    let app_arc = std::sync::Arc::new(TerminalAppAdapter {
+        handle: app_handle.clone(),
+    });
+    let engine_tx = params
+        .unregistered_engine
         .register(app_arc, window_descriptor)
         .expect("Failed to register app with engine");
 

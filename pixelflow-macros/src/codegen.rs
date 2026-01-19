@@ -51,7 +51,7 @@ use crate::ast::{
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use std::collections::HashMap;
 
 /// Peano type names for indices 0-7.

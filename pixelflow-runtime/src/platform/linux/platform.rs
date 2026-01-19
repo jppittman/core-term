@@ -59,7 +59,10 @@ impl PlatformOps for LinuxOps {
         Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: DisplayControl) -> Result<(), actor_scheduler::HandlerError> {
+    fn handle_control(
+        &mut self,
+        ctrl: DisplayControl,
+    ) -> Result<(), actor_scheduler::HandlerError> {
         if let Some(window) = &mut self.window {
             match ctrl {
                 DisplayControl::Shutdown => {
@@ -91,7 +94,10 @@ impl PlatformOps for LinuxOps {
         Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: DisplayMgmt) -> Result<(), actor_scheduler::HandlerError> {
+    fn handle_management(
+        &mut self,
+        mgmt: DisplayMgmt,
+    ) -> Result<(), actor_scheduler::HandlerError> {
         match mgmt {
             DisplayMgmt::Create { settings } => {
                 info!(
@@ -103,7 +109,7 @@ impl PlatformOps for LinuxOps {
                         let id = WindowId(window.window as u64);
                         // Allocate initial frame buffer
                         let frame = Frame::<LinuxPixel>::new(window.width, window.height);
-                        
+
                         let win = crate::display::messages::Window {
                             id,
                             frame,
@@ -113,11 +119,11 @@ impl PlatformOps for LinuxOps {
                         };
 
                         // Send WindowCreated event
-                        let _ = self.engine_handle.send(Message::Data(EngineData::FromDriver(
-                            DisplayEvent::WindowCreated {
-                                window: win,
-                            },
-                        )));
+                        let _ = self
+                            .engine_handle
+                            .send(Message::Data(EngineData::FromDriver(
+                                DisplayEvent::WindowCreated { window: win },
+                            )));
                         self.window = Some(window);
                     }
                     Err(e) => {
@@ -157,8 +163,7 @@ impl PlatformOps for LinuxOps {
                         if matches!(display_event, DisplayEvent::CloseRequested { .. }) {
                             info!("X11: CloseRequested");
                         }
-                        self
-                            .engine_handle
+                        self.engine_handle
                             .send(Message::Data(EngineData::FromDriver(display_event)))
                             .expect("failed to send engine event");
                     }

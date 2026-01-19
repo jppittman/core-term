@@ -1,12 +1,20 @@
 // Test: troupe! macro with simple actor type
-use actor_scheduler::{Actor, ActorTypes, TroupeActor, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorStatus, ActorTypes, HandlerError, HandlerResult, SystemStatus, TroupeActor,
+};
 
 struct SimpleActor;
 
 impl Actor<(), (), ()> for SimpleActor {
-    fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-    fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-    fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_data(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_control(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_management(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
     fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
