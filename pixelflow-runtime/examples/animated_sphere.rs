@@ -18,7 +18,7 @@ use pixelflow_macros::kernel;
 type Field4 = (Field, Field, Field, Field);
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
 };
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventData};
@@ -117,7 +117,7 @@ fn build_scene_at_time(t: f32) -> impl Manifold<Output = Discrete> + Clone + Syn
 
     // Background: floor with checkerboard
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: ColorChecker::<ColorCube>::default(),
         background: ColorSky::<ColorCube>::default(),
     };

@@ -15,8 +15,8 @@ use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
-    Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
-    Reflect, ScreenToDir, Sky, Surface,
+    Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
+    Reflect, ScreenToDir, sky, Surface,
 };
 use std::fs::File;
 use std::io::Write;
@@ -98,7 +98,7 @@ impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> fo
 /// Uses the new three-layer architecture:
 /// - ScreenToDir: seeds jets with screen derivatives, normalizes direction
 /// - Surface<SphereAt, Reflect<world>, world>: sphere reflecting world
-/// - world = Surface<PlaneGeometry, Checker, Sky>: floor + sky
+/// - world = Surface<plane, Checker, Sky>: floor + sky
 #[test]
 fn test_chrome_unit_sphere() {
     const W: usize = 400;
@@ -107,9 +107,9 @@ fn test_chrome_unit_sphere() {
     // World = floor + sky
     // PlaneGeometry at y=-1: returns t = -1 / ry (negative plane)
     let world = Surface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: Checker,
-        background: Sky,
+        background: sky(),
     };
 
     // Scene = chrome sphere at (0, 0, 4) + world background
@@ -231,9 +231,9 @@ fn test_floor_only() {
 
     // Just floor + sky (no sphere)
     let scene = Surface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: Checker,
-        background: Sky,
+        background: sky(),
     };
 
     let screen = ScreenRemap {
@@ -279,7 +279,7 @@ fn test_color_chrome_sphere() {
 
     // World = floor + sky (using Color* types that output Discrete)
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: ColorChecker::<RgbaColorCube>::default(),
         background: ColorSky::<RgbaColorCube>::default(),
     };
@@ -437,7 +437,7 @@ fn test_mullet_vs_3channel_comparison() {
 
     fn build_channel_scene(channel: u8) -> impl Manifold<Output = Field> {
         let world = Surface {
-            geometry: PlaneGeometry { height: -1.0 },
+            geometry: plane(-1.0),
             material: ChannelChecker { channel },
             background: ChannelSky { channel },
         };
@@ -520,7 +520,7 @@ fn test_mullet_vs_3channel_comparison() {
     }
 
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: ColorChecker::<RgbaColorCube>::default(),
         background: ColorSky::<RgbaColorCube>::default(),
     };
@@ -605,7 +605,7 @@ fn test_work_stealing_benchmark() {
 
     // Build scene
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: ColorChecker::<RgbaColorCube>::default(),
         background: ColorSky::<RgbaColorCube>::default(),
     };

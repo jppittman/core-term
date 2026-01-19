@@ -29,16 +29,11 @@ pub struct AnnotationCtx {
     /// Next literal index to assign (0, 1, 2, ...).
     /// These are "collection order" indices, inverted at emit time.
     pub next_literal: usize,
-    /// Whether we're in Jet mode (literals need Var bindings).
-    pub jet_mode: bool,
 }
 
 impl AnnotationCtx {
-    pub fn new(_param_count: usize, jet_mode: bool) -> Self {
-        Self {
-            next_literal: 0,
-            jet_mode,
-        }
+    pub fn new() -> Self {
+        Self { next_literal: 0 }
     }
 
     /// Total number of literals collected.
@@ -147,39 +142,32 @@ fn annotate_expr(
         Expr::Ident(ident) => (AnnotatedExpr::Ident(ident.clone()), ctx),
 
         Expr::Literal(lit_expr) => {
-            if ctx.jet_mode {
-                // Assign a collection-order index to this literal.
-                // The actual Var<N> index is computed at emit time by inverting:
-                // Var index = (literal_count - 1) - collection_index
-                // This ensures the last literal bound (innermost Let) is at N0.
-                let collection_index = ctx.next_literal;
-                literals.push(CollectedLiteral {
-                    index: collection_index,
+            // Always assign a collection-order index to literals.
+            // This makes literals into expression tree nodes (Var<N>), enabling:
+            // 1. `0.1 + expr` to work (both sides are expression trees)
+            // 2. FMA pattern matching (MulAdd recognition)
+            // 3. Uniform treatment across Field and Jet domains
+            //
+            // The actual Var<N> index is computed at emit time by inverting:
+            // Var index = (literal_count - 1) - collection_index
+            // This ensures the last literal bound (innermost Let) is at N0.
+            let collection_index = ctx.next_literal;
+            literals.push(CollectedLiteral {
+                index: collection_index,
+                lit: lit_expr.lit.clone(),
+            });
+            let new_ctx = AnnotationCtx {
+                next_literal: ctx.next_literal + 1,
+                ..ctx
+            };
+            (
+                AnnotatedExpr::Literal(AnnotatedLiteral {
                     lit: lit_expr.lit.clone(),
-                });
-                let new_ctx = AnnotationCtx {
-                    next_literal: ctx.next_literal + 1,
-                    ..ctx
-                };
-                (
-                    AnnotatedExpr::Literal(AnnotatedLiteral {
-                        lit: lit_expr.lit.clone(),
-                        span: lit_expr.span,
-                        var_index: Some(collection_index),
-                    }),
-                    new_ctx,
-                )
-            } else {
-                // Non-Jet mode: no Var binding needed
-                (
-                    AnnotatedExpr::Literal(AnnotatedLiteral {
-                        lit: lit_expr.lit.clone(),
-                        span: lit_expr.span,
-                        var_index: None,
-                    }),
-                    ctx,
-                )
-            }
+                    span: lit_expr.span,
+                    var_index: Some(collection_index),
+                }),
+                new_ctx,
+            )
         }
 
         Expr::Binary(binary) => {
@@ -308,18 +296,19 @@ mod tests {
     fn annotate_no_literals() {
         let input = quote! { || X + Y };
         let kernel = parse(input).unwrap();
-        let ctx = AnnotationCtx::new(0, true);
+        let ctx = AnnotationCtx::new();
         let (_, _, literals) = annotate(&kernel.body, ctx);
         assert!(literals.is_empty());
     }
 
     #[test]
-    fn annotate_single_literal_jet_mode() {
+    fn annotate_single_literal() {
         let input = quote! { || X + 1.0 };
         let kernel = parse(input).unwrap();
-        let ctx = AnnotationCtx::new(0, true);
+        let ctx = AnnotationCtx::new();
         let (annotated, _, literals) = annotate(&kernel.body, ctx);
 
+        // Literals are always collected now (for both Field and Jet modes)
         assert_eq!(literals.len(), 1);
         assert_eq!(literals[0].index, 0); // collection order index
 
@@ -336,31 +325,10 @@ mod tests {
     }
 
     #[test]
-    fn annotate_literal_non_jet_mode() {
-        let input = quote! { || X + 1.0 };
-        let kernel = parse(input).unwrap();
-        let ctx = AnnotationCtx::new(0, false); // non-jet mode
-        let (annotated, _, literals) = annotate(&kernel.body, ctx);
-
-        assert!(literals.is_empty()); // No collection in non-jet mode
-
-        // Check var_index is None
-        if let AnnotatedExpr::Binary(binary) = annotated {
-            if let AnnotatedExpr::Literal(lit) = &*binary.rhs {
-                assert_eq!(lit.var_index, None);
-            } else {
-                panic!("expected literal");
-            }
-        } else {
-            panic!("expected binary");
-        }
-    }
-
-    #[test]
     fn annotate_multiple_literals() {
         let input = quote! { || 1.0 / X.sqrt() + 2.0 };
         let kernel = parse(input).unwrap();
-        let ctx = AnnotationCtx::new(2, true); // 2 params (unused now), jet mode
+        let ctx = AnnotationCtx::new();
         let (_, _, literals) = annotate(&kernel.body, ctx);
 
         assert_eq!(literals.len(), 2);

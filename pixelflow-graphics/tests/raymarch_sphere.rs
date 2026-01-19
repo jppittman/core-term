@@ -10,7 +10,7 @@ use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
 };
 
 /// Sphere at given center with radius (local to this test).
@@ -81,7 +81,7 @@ fn test_sphere_on_floor() {
 
     // Floor + sky as the world (background)
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -0.5 },
+        geometry: plane(-0.5),
         material: ColorChecker::<RgbaColorCube>::default(),
         background: ColorSky::<RgbaColorCube>::default(),
     };
@@ -147,7 +147,7 @@ fn test_sphere_on_matte_floor() {
 
     // Floor + sky as the world (background)
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -0.5 },
+        geometry: plane(-0.5),
         material: SolidGray,
         background: ColorSky::<RgbaColorCube>::default(),
     };
@@ -198,7 +198,7 @@ fn test_chrome_sphere_on_checkerboard() {
 
     // Floor with checkerboard pattern + sky background
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -0.5 },
+        geometry: plane(-0.5),
         material: ColorChecker::<RgbaColorCube>::default(),
         background: ColorSky::<RgbaColorCube>::default(),
     };

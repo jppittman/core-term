@@ -20,7 +20,7 @@ const H: u32 = 1080;
 
 // Import scene3d types
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
 };
 use pixelflow_runtime::platform::ColorCube;
 
@@ -81,7 +81,7 @@ impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ScreenRem
 /// Build the chrome sphere scene.
 fn build_scene() -> impl Manifold<Output = Discrete> + Send + Sync + Clone {
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: ColorChecker::<ColorCube>::default(),
         background: ColorSky::<ColorCube>::default(),
     };

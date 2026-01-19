@@ -40,7 +40,7 @@ fn main() {
 
     // Build scene: subdivision surface with checker floor and sky
     let floor = ColorSurface {
-        geometry: pixelflow_graphics::scene3d::PlaneGeometry { height: -2.0 },
+        geometry: pixelflow_graphics::scene3d::plane(-2.0),
         material: ColorChecker::<RgbaColorCube>::default(),
         background: ColorSky::<RgbaColorCube>::default(),
     };

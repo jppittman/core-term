@@ -798,7 +798,7 @@ fn bench_scene3d(c: &mut Criterion) {
     use pixelflow_graphics::render::frame::Frame;
     use pixelflow_graphics::scene3d::{
         Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
-        PlaneGeometry, Reflect, ScreenToDir, Sky, Surface,
+        plane, Reflect, ScreenToDir, sky, Surface,
     };
 
     /// Sphere at given center with radius (local to this benchmark).
@@ -878,9 +878,9 @@ fn bench_scene3d(c: &mut Criterion) {
 
     group.bench_function("chrome_sphere_400x300", |bencher| {
         let world = Surface {
-            geometry: PlaneGeometry { height: -1.0 },
+            geometry: plane(-1.0),
             material: Checker,
-            background: Sky,
+            background: sky(),
         };
 
         let scene = Surface {
@@ -911,9 +911,9 @@ fn bench_scene3d(c: &mut Criterion) {
     // Sky only (baseline)
     group.bench_function("sky_only_400x300", |bencher| {
         let scene = Surface {
-            geometry: PlaneGeometry { height: -1000.0 }, // Never hits
+            geometry: plane(-1000.0), // Never hits
             material: Checker,
-            background: Sky,
+            background: sky(),
         };
 
         let screen = ScreenRemap {
@@ -935,9 +935,9 @@ fn bench_scene3d(c: &mut Criterion) {
     // Floor only (no reflection)
     group.bench_function("floor_only_400x300", |bencher| {
         let scene = Surface {
-            geometry: PlaneGeometry { height: -1.0 },
+            geometry: plane(-1.0),
             material: Checker,
-            background: Sky,
+            background: sky(),
         };
 
         let screen = ScreenRemap {
@@ -992,7 +992,7 @@ fn bench_scene3d(c: &mut Criterion) {
 
     group.bench_function("color_chrome_1920x1080_mullet", |bencher| {
         let world = ColorSurface {
-            geometry: PlaneGeometry { height: -1.0 },
+            geometry: plane(-1.0),
             material: ColorChecker,
             background: ColorSky,
         };
@@ -1026,7 +1026,7 @@ fn bench_scene3d(c: &mut Criterion) {
 
     group.bench_function("color_chrome_400x300_mullet", |bencher| {
         let world = ColorSurface {
-            geometry: PlaneGeometry { height: -1.0 },
+            geometry: plane(-1.0),
             material: ColorChecker,
             background: ColorSky,
         };
@@ -1069,7 +1069,7 @@ fn bench_scene3d(c: &mut Criterion) {
         &format!("color_chrome_1920x1080_parallel_{}t", num_threads),
         |bencher| {
             let world = ColorSurface {
-                geometry: PlaneGeometry { height: -1.0 },
+                geometry: plane(-1.0),
                 material: ColorChecker,
                 background: ColorSky,
             };
@@ -1112,7 +1112,7 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
     use pixelflow_core::jet::Jet3;
     use pixelflow_graphics::render::frame::Frame;
     use pixelflow_graphics::scene3d::{
-        ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
+        ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
     };
 
     /// Sphere at given center with radius (local to this benchmark).
@@ -1180,7 +1180,7 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
 
     // Build the scene once
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: ColorChecker,
         background: ColorSky,
     };

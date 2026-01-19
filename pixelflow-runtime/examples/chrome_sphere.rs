@@ -13,7 +13,7 @@ use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
+    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
 };
 use pixelflow_runtime::platform::ColorCube;
 
@@ -86,7 +86,7 @@ impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScre
 /// Geometry runs once, colors flow as packed RGBA.
 fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync {
     let world = ColorSurface {
-        geometry: PlaneGeometry { height: -1.0 },
+        geometry: plane(-1.0),
         material: ColorChecker::<ColorCube>::default(),
         background: ColorSky::<ColorCube>::default(),
     };
