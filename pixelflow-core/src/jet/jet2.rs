@@ -2,8 +2,11 @@
 
 use crate::Field;
 use crate::Manifold;
-use crate::ManifoldExt;
 use crate::numeric::{Computational, Numeric, Selectable};
+use crate::ext;
+
+/// The standard 4D Field domain.
+type Field4 = (Field, Field, Field, Field);
 
 /// A 2-jet: value and first derivatives.
 ///
@@ -61,9 +64,9 @@ impl Jet2 {
     #[inline(always)]
     pub fn new<V, Dx, Dy>(val: V, dx: Dx, dy: Dy) -> Self
     where
-        V: Manifold<Field, Output = Field>,
-        Dx: Manifold<Field, Output = Field>,
-        Dy: Manifold<Field, Output = Field>,
+        V: ext::ManifoldExt + Manifold<Field4, Output = Field>,
+        Dx: ext::ManifoldExt + Manifold<Field4, Output = Field>,
+        Dy: ext::ManifoldExt + Manifold<Field4, Output = Field>,
     {
         Self {
             val: val.constant(),

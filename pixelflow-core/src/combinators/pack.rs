@@ -6,6 +6,8 @@
 
 use crate::{Field, Manifold, ops::Vector, variables::Axis};
 
+type Field4 = (Field, Field, Field, Field);
+
 /// Folds a vector manifold to a scalar using a binary operator.
 ///
 /// Given a manifold that outputs a `Vector<Component = Field>` and a binary
@@ -35,17 +37,17 @@ impl<M, Op> Pack<M, Op> {
     }
 }
 
-impl<M, Op, V> Manifold for Pack<M, Op>
+impl<M, Op, V> Manifold<Field4> for Pack<M, Op>
 where
-    M: Manifold<Output = V>,
+    M: Manifold<Field4, Output = V>,
     V: Vector<Component = Field>,
     Op: Fn(Field, Field) -> Field + Send + Sync,
 {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let vec = self.inner.eval_raw(x, y, z, w);
+    fn eval(&self, p: Field4) -> Field {
+        let vec = self.inner.eval(p);
 
         // Fold: x op y op z op w
         let acc = (self.op)(vec.get(Axis::X), vec.get(Axis::Y));

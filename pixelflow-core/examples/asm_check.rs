@@ -1,5 +1,5 @@
 //! Idiomatic pixelflow example to verify SIMD codegen
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM, X, Y};
+use pixelflow_core::{Discrete, Field, ManifoldCompat, ManifoldExt, PARALLELISM, X, Y};
 
 #[inline(never)]
 pub fn render_circle(buffer: &mut [u32]) {

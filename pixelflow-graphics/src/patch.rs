@@ -4,7 +4,10 @@
 //! Pull-based: sample the surface at any (u,v), get position and derivatives.
 
 use pixelflow_core::jet::Jet2H;
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, Manifold, ManifoldCompat};
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
 
 /// A bicubic Bezier patch defined by 16 control points.
 ///
@@ -97,11 +100,12 @@ impl BezierPatch {
 }
 
 /// Height field: (x, y) → z
-impl Manifold<Field> for BezierPatch {
+impl Manifold<Field4> for BezierPatch {
     type Output = Field;
 
     #[inline]
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, _z, _w) = p;
         let u = Jet2H::x(x);
         let v = Jet2H::y(y);
         self.eval(u, v)[2].val

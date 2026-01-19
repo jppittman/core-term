@@ -146,6 +146,9 @@ pub mod jet;
 /// The core Manifold trait.
 pub mod manifold;
 
+/// Domain traits for generic manifold evaluation.
+pub mod domain;
+
 /// Coordinate variables (X, Y, Z, W).
 pub mod variables;
 
@@ -167,6 +170,7 @@ pub mod ext;
 
 pub use backend::fastmath::FastMathGuard;
 pub use combinators::*;
+pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;

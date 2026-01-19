@@ -5,10 +5,10 @@
 //!
 //! # Semantics
 //!
-//! Given a manifold `M: Manifold<B>` and coordinate expressions mapping A -> B,
-//! then `At` produces a `Manifold<A>` by composing: domain A → domain B → output.
+//! Given a manifold `M: Manifold<(I, I, I, I)>` and coordinate expressions mapping P -> (I, I, I, I),
+//! then `At` produces a `Manifold<P>` by composing: domain P → domain (I, I, I, I) → output.
 //!
-//! The key insight: **all coordinate expressions receive the same input A**.
+//! The key insight: **all coordinate expressions receive the same input P**.
 //! This allows x to depend on w (time), z to depend on y (swizzle), etc.
 //!
 //! # Example: Swizzle Coordinates
@@ -39,7 +39,7 @@
 //!     z: Jet3::from(0.0),
 //!     w: Jet3::from(0.0),
 //! };
-//! // Caller passes any A, mapped to (3, 4, 0, 0), material evaluates on Jet3
+//! // Caller passes any P, mapped to (3, 4, 0, 0), material evaluates
 //! ```
 
 use crate::{Computational, Manifold};
@@ -47,8 +47,8 @@ use crate::{Computational, Manifold};
 /// The universal contramap combinator (tuple-based).
 ///
 /// Maps a Manifold from domain B to domain A via coordinate transformation.
-/// - **Cx, Cy, Cz, Cw**: Coordinate expressions (A -> B)
-/// - **M**: Inner manifold (B -> Output)
+/// - **Cx, Cy, Cz, Cw**: Coordinate expressions (P -> I)
+/// - **M**: Inner manifold ((I, I, I, I) -> Output)
 #[derive(Clone, Debug)]
 pub struct At<Cx, Cy, Cz, Cw, M> {
     /// The inner manifold to evaluate.
@@ -63,47 +63,48 @@ pub struct At<Cx, Cy, Cz, Cw, M> {
     pub w: Cw,
 }
 
-impl<I, Cx, Cy, Cz, Cw, M> Manifold<I> for At<Cx, Cy, Cz, Cw, M>
+impl<P, I, Cx, Cy, Cz, Cw, M> Manifold<P> for At<Cx, Cy, Cz, Cw, M>
 where
+    P: Copy + Send + Sync,
     I: Computational,
-    Cx: Manifold<I, Output = I>,
-    Cy: Manifold<I, Output = I>,
-    Cz: Manifold<I, Output = I>,
-    Cw: Manifold<I, Output = I>,
-    M: Manifold<I>,
+    Cx: Manifold<P, Output = I>,
+    Cy: Manifold<P, Output = I>,
+    Cz: Manifold<P, Output = I>,
+    Cw: Manifold<P, Output = I>,
+    M: Manifold<(I, I, I, I)>,
 {
     type Output = M::Output;
 
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        // 1. Map Domain A -> Domain B using coordinate expressions.
-        // Note: All coordinates receive the full input (x, y, z, w).
+    fn eval(&self, p: P) -> Self::Output {
+        // 1. Map Domain P -> Domain (I, I, I, I) using coordinate expressions.
+        // Note: All coordinates receive the full input p.
         // This allows 'x' to depend on 'w' (time) or 'z' (swizzle), etc.
-        let new_x = self.x.eval_raw(x, y, z, w);
-        let new_y = self.y.eval_raw(x, y, z, w);
-        let new_z = self.z.eval_raw(x, y, z, w);
-        let new_w = self.w.eval_raw(x, y, z, w);
-        // 2. Evaluate inner manifold on domain B.
-        self.inner.eval_raw(new_x, new_y, new_z, new_w)
+        let new_x = self.x.eval(p);
+        let new_y = self.y.eval(p);
+        let new_z = self.z.eval(p);
+        let new_w = self.w.eval(p);
+        // 2. Evaluate inner manifold on domain (I, I, I, I).
+        self.inner.eval((new_x, new_y, new_z, new_w))
     }
 }
 
 impl<Cx, Cy, Cz, Cw, M> At<Cx, Cy, Cz, Cw, M>
 where
-    Cx: Manifold<crate::Field, Output = crate::Field>,
-    Cy: Manifold<crate::Field, Output = crate::Field>,
-    Cz: Manifold<crate::Field, Output = crate::Field>,
-    Cw: Manifold<crate::Field, Output = crate::Field>,
-    M: Manifold<crate::Field>,
+    Cx: Manifold<(crate::Field, crate::Field, crate::Field, crate::Field), Output = crate::Field>,
+    Cy: Manifold<(crate::Field, crate::Field, crate::Field, crate::Field), Output = crate::Field>,
+    Cz: Manifold<(crate::Field, crate::Field, crate::Field, crate::Field), Output = crate::Field>,
+    Cw: Manifold<(crate::Field, crate::Field, crate::Field, crate::Field), Output = crate::Field>,
+    M: Manifold<(crate::Field, crate::Field, crate::Field, crate::Field)>,
 {
     /// Collapse the pinned manifold to a value.
     ///
     /// Since coordinates are already bound via At, evaluates at origin.
-    /// `foo.at(x, y, z, w).eval()` is cleaner than `foo.eval_raw(x, y, z, w)`.
+    /// `foo.at(x, y, z, w).eval()` is cleaner than `foo.eval((x, y, z, w))`.
     #[inline(always)]
-    pub fn eval(&self) -> M::Output {
+    pub fn collapse(&self) -> M::Output {
         let zero = crate::Field::from(0.0);
-        self.eval_raw(zero, zero, zero, zero)
+        self.eval((zero, zero, zero, zero))
     }
 }
 
@@ -137,45 +138,46 @@ where
 pub struct AtArray<M, const N: usize, C> {
     /// The inner manifold to evaluate on domain B.
     pub inner: M,
-    /// Coordinate expressions: [cx, cy, cz, cw] each mapping A -> B.
+    /// Coordinate expressions: [cx, cy, cz, cw] each mapping P -> I.
     pub coords: [C; N],
 }
 
-impl<A, B, C, M> Manifold<A> for AtArray<M, 4, C>
+impl<P, I, C, M> Manifold<P> for AtArray<M, 4, C>
 where
-    A: Computational,
-    B: Computational,
-    C: Manifold<A, Output = B> + Copy,
-    M: Manifold<B>,
+    P: Copy + Send + Sync,
+    I: Computational,
+    C: Manifold<P, Output = I> + Copy,
+    M: Manifold<(I, I, I, I)>,
 {
     type Output = M::Output;
 
     #[inline(always)]
-    fn eval_raw(&self, x: A, y: A, z: A, w: A) -> Self::Output {
-        // 1. Map Domain A -> Domain B using coordinate expressions.
-        // Note: All coordinates receive the full input (x, y, z, w).
+    fn eval(&self, p: P) -> Self::Output {
+        // 1. Map Domain P -> Domain (I, I, I, I) using coordinate expressions.
+        // Note: All coordinates receive the full input p.
         // This allows 'x' to depend on 'w' (time) or 'z' (swizzle), etc.
-        let nx = self.coords[0].eval_raw(x, y, z, w);
-        let ny = self.coords[1].eval_raw(x, y, z, w);
-        let nz = self.coords[2].eval_raw(x, y, z, w);
-        let nw = self.coords[3].eval_raw(x, y, z, w);
+        let nx = self.coords[0].eval(p);
+        let ny = self.coords[1].eval(p);
+        let nz = self.coords[2].eval(p);
+        let nw = self.coords[3].eval(p);
 
-        // 2. Evaluate inner manifold on domain B.
-        self.inner.eval_raw(nx, ny, nz, nw)
+        // 2. Evaluate inner manifold on domain (I, I, I, I).
+        self.inner.eval((nx, ny, nz, nw))
     }
 }
 
 impl<M, C> AtArray<M, 4, C>
 where
-    C: Manifold<crate::Field, Output = crate::Field> + Copy,
-    M: Manifold<crate::Field>,
+    C: Manifold<(crate::Field, crate::Field, crate::Field, crate::Field), Output = crate::Field>
+        + Copy,
+    M: Manifold<(crate::Field, crate::Field, crate::Field, crate::Field)>,
 {
     /// Collapse the pinned manifold to a value.
     ///
     /// Since coordinates are already bound via At, evaluates at origin.
     #[inline(always)]
-    pub fn eval(&self) -> M::Output {
+    pub fn collapse(&self) -> M::Output {
         let zero = crate::Field::from(0.0);
-        self.eval_raw(zero, zero, zero, zero)
+        self.eval((zero, zero, zero, zero))
     }
 }

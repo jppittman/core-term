@@ -32,6 +32,9 @@ use crate::manifold::Manifold;
 // TODO: Refactor to build polymorphic AST from X, Y, Z using Fix combinator
 // for the Legendre recurrence. For now, Field-only implementation.
 
+/// The standard 4D Field domain.
+type Field4 = (Field, Field, Field, Field);
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -73,16 +76,17 @@ pub struct SphericalHarmonic<const L: usize, const M: i32>;
 
 /// Evaluate a manifold graph to Field (coordinates don't matter for Field constants).
 #[inline(always)]
-fn eval<M: crate::Manifold<Field, Output = Field>>(m: M) -> Field {
+fn eval_const<M: crate::Manifold<Field4, Output = Field>>(m: M) -> Field {
     let zero = Field::from(0.0);
-    m.eval_raw(zero, zero, zero, zero)
+    m.eval((zero, zero, zero, zero))
 }
 
-impl<const L: usize, const M: i32> Manifold<Field> for SphericalHarmonic<L, M> {
+impl<const L: usize, const M: i32> Manifold<Field4> for SphericalHarmonic<L, M> {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, _w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, _w) = p;
         // Build AST for normalization - keep as graph
         let r_sq = x * x + y * y + z * z;
         let inv_r = r_sq.rsqrt();
@@ -92,13 +96,13 @@ impl<const L: usize, const M: i32> Manifold<Field> for SphericalHarmonic<L, M> {
 
         // We need Field values for the recurrence in legendre_p
         // Eval once here, then the recurrence builds more AST
-        let nx_val = eval(nx);
-        let ny_val = eval(ny);
-        let nz_val = eval(nz);
+        let nx_val = eval_const(nx);
+        let ny_val = eval_const(ny);
+        let nz_val = eval_const(nz);
 
         // Convert to spherical coordinates
         let cos_theta = nz_val;
-        let sin_theta = eval((Field::from(1.0) - cos_theta * cos_theta).sqrt());
+        let sin_theta = eval_const((Field::from(1.0) - cos_theta * cos_theta).sqrt());
         let phi = ny_val.atan2(nx_val);
 
         // Evaluate Y_l^m (final eval is inside)
@@ -115,14 +119,14 @@ fn eval_sh<const L: usize, const M: i32>(cos_theta: Field, sin_theta: Field, phi
     if M > 0 {
         // Y_l^m = K * P_l^m * cos(m*φ)
         let m_phi = Field::from(M as f32) * phi;
-        eval(norm * plm * m_phi.cos())
+        eval_const(norm * plm * m_phi.cos())
     } else if M < 0 {
         // Y_l^{-m} = K * P_l^m * sin(|m|*φ)
         let m_phi = Field::from((-M) as f32) * phi;
-        eval(norm * plm * m_phi.sin())
+        eval_const(norm * plm * m_phi.sin())
     } else {
         // Y_l^0 = K * P_l^0
-        eval(norm * plm)
+        eval_const(norm * plm)
     }
 }
 
@@ -145,11 +149,11 @@ fn legendre_p<const L: usize, const M: i32>(cos_theta: Field, sin_theta: Field) 
         // sin^m(θ) - build AST, eval once
         let mut sin_pow = Field::from(1.0);
         for _ in 0..m {
-            sin_pow = eval(sin_pow * sin_theta);
+            sin_pow = eval_const(sin_pow * sin_theta);
         }
-        pmm = eval(Field::from(double_fact) * sin_pow);
+        pmm = eval_const(Field::from(double_fact) * sin_pow);
         if m % 2 == 1 {
-            pmm = eval(Field::from(0.0) - pmm); // (-1)^m
+            pmm = eval_const(Field::from(0.0) - pmm); // (-1)^m
         }
     }
 
@@ -158,7 +162,7 @@ fn legendre_p<const L: usize, const M: i32>(cos_theta: Field, sin_theta: Field) 
     }
 
     // P_{m+1}^m = x * (2m+1) * P_m^m
-    let pmm1 = eval(cos_theta * Field::from((2 * m + 1) as f32) * pmm);
+    let pmm1 = eval_const(cos_theta * Field::from((2 * m + 1) as f32) * pmm);
     if L == m + 1 {
         return pmm1;
     }
@@ -170,7 +174,7 @@ fn legendre_p<const L: usize, const M: i32>(cos_theta: Field, sin_theta: Field) 
         let a = (2 * l - 1) as f32;
         let b = (l + m - 1) as f32;
         let c = (l - m) as f32;
-        let p_curr = eval(
+        let p_curr = eval_const(
             (Field::from(a) * cos_theta * p_prev1 - Field::from(b) * p_prev2) / Field::from(c),
         );
         p_prev2 = p_prev1;
@@ -257,39 +261,39 @@ impl<const NUM_COEFFS: usize, M> ShReconstruct<NUM_COEFFS, M> {
 }
 
 // For now, implement only for 9 coefficients (band 2, diffuse lighting)
-impl<M: Manifold<Field, Output = (Field, Field, Field)>> Manifold<Field> for ShReconstruct<9, M> {
+impl<M: Manifold<Field4, Output = (Field, Field, Field)>> Manifold<Field4> for ShReconstruct<9, M> {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-        let (dx, dy, dz) = self.direction.eval_raw(x, y, z, w);
+    fn eval(&self, p: Field4) -> Field {
+        let (dx, dy, dz) = self.direction.eval(p);
 
         // Normalize direction - build AST, eval at boundaries
         let r_sq = dx * dx + dy * dy + dz * dz;
         let inv_r = r_sq.rsqrt();
-        let nx = eval(dx * inv_r.clone());
-        let ny = eval(dy * inv_r.clone());
-        let nz = eval(dz * inv_r);
+        let nx = eval_const(dx * inv_r.clone());
+        let ny = eval_const(dy * inv_r.clone());
+        let nz = eval_const(dz * inv_r);
 
         // Evaluate SH basis and accumulate
         // l=0
         let y00 = Field::from(SH_NORM[0][0]);
 
         // l=1
-        let y1m1 = eval(Field::from(SH_NORM[1][1]) * ny);
-        let y10 = eval(Field::from(SH_NORM[1][0]) * nz);
-        let y11 = eval(Field::from(SH_NORM[1][1]) * nx);
+        let y1m1 = eval_const(Field::from(SH_NORM[1][1]) * ny);
+        let y10 = eval_const(Field::from(SH_NORM[1][0]) * nz);
+        let y11 = eval_const(Field::from(SH_NORM[1][1]) * nx);
 
         // l=2
-        let y2m2 = eval(Field::from(SH_NORM[2][2]) * nx * ny);
-        let y2m1 = eval(Field::from(SH_NORM[2][1]) * ny * nz);
+        let y2m2 = eval_const(Field::from(SH_NORM[2][2]) * nx * ny);
+        let y2m1 = eval_const(Field::from(SH_NORM[2][1]) * ny * nz);
         let y20 =
-            eval(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)));
-        let y21 = eval(Field::from(SH_NORM[2][1]) * nx * nz);
-        let y22 = eval(Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny));
+            eval_const(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)));
+        let y21 = eval_const(Field::from(SH_NORM[2][1]) * nx * nz);
+        let y22 = eval_const(Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny));
 
         // Dot product with coefficients
-        eval(
+        eval_const(
             Field::from(self.coeffs.coeffs[0]) * y00
                 + Field::from(self.coeffs.coeffs[1]) * y1m1
                 + Field::from(self.coeffs.coeffs[2]) * y10
@@ -314,22 +318,23 @@ impl<M: Manifold<Field, Output = (Field, Field, Field)>> Manifold<Field> for ShR
 #[derive(Clone, Debug)]
 pub struct ZonalHarmonic<const L: usize>;
 
-impl<const L: usize> Manifold<Field> for ZonalHarmonic<L> {
+impl<const L: usize> Manifold<Field4> for ZonalHarmonic<L> {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, _w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, _w) = p;
         // Build AST for normalization, eval at boundaries
         let r_sq = x * x + y * y + z * z;
         let inv_r = r_sq.rsqrt();
-        let nz = eval(z * inv_r);
+        let nz = eval_const(z * inv_r);
 
         let cos_theta = nz;
-        let sin_theta = eval((Field::from(1.0) - cos_theta * cos_theta).sqrt());
+        let sin_theta = eval_const((Field::from(1.0) - cos_theta * cos_theta).sqrt());
 
         // Y_l^0 = K_l^0 * P_l^0(cos θ)
         let plm = legendre_p::<L, 0>(cos_theta, sin_theta);
-        eval(Field::from(SH_NORM[L][0]) * plm)
+        eval_const(Field::from(SH_NORM[L][0]) * plm)
     }
 }
 
@@ -454,7 +459,7 @@ pub fn sh2_multiply(a: &Sh2, b: &Sh2) -> Sh2 {
 /// Σ c_i Y_i(direction).
 impl Sh2 {
     /// Evaluate the SH representation at a direction.
-    pub fn eval(&self, dir: (Field, Field, Field)) -> Field {
+    pub fn eval_const(&self, dir: (Field, Field, Field)) -> Field {
         let basis = sh2_basis_at(dir);
         // Build full expression, eval once at end
         let expr = Field::from(self.coeffs[0]) * basis[0]
@@ -466,7 +471,7 @@ impl Sh2 {
             + Field::from(self.coeffs[6]) * basis[6]
             + Field::from(self.coeffs[7]) * basis[7]
             + Field::from(self.coeffs[8]) * basis[8];
-        eval(expr)
+        eval_const(expr)
     }
 }
 
@@ -486,14 +491,14 @@ pub fn sh2_basis_at(dir: (Field, Field, Field)) -> [Field; 9] {
     // SH basis functions - one big graph per element, eval once at boundary
     [
         Field::from(SH_NORM[0][0]),
-        eval(Field::from(SH_NORM[1][1]) * ny.clone()),
-        eval(Field::from(SH_NORM[1][0]) * nz.clone()),
-        eval(Field::from(SH_NORM[1][1]) * nx.clone()),
-        eval(Field::from(SH_NORM[2][2]) * nx.clone() * ny.clone()),
-        eval(Field::from(SH_NORM[2][1]) * ny.clone() * nz.clone()),
-        eval(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz.clone() * nz.clone() - Field::from(1.0))),
-        eval(Field::from(SH_NORM[2][1]) * nx.clone() * nz),
-        eval(Field::from(SH_NORM[2][2]) * (nx.clone() * nx - ny.clone() * ny)),
+        eval_const(Field::from(SH_NORM[1][1]) * ny.clone()),
+        eval_const(Field::from(SH_NORM[1][0]) * nz.clone()),
+        eval_const(Field::from(SH_NORM[1][1]) * nx.clone()),
+        eval_const(Field::from(SH_NORM[2][2]) * nx.clone() * ny.clone()),
+        eval_const(Field::from(SH_NORM[2][1]) * ny.clone() * nz.clone()),
+        eval_const(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz.clone() * nz.clone() - Field::from(1.0))),
+        eval_const(Field::from(SH_NORM[2][1]) * nx.clone() * nz),
+        eval_const(Field::from(SH_NORM[2][2]) * (nx.clone() * nx - ny.clone() * ny)),
     ]
 }
 
@@ -539,7 +544,7 @@ impl Sh2Field {
     }
 
     /// Evaluate at a direction.
-    pub fn eval(&self, dir: (Field, Field, Field)) -> Field {
+    pub fn eval_const(&self, dir: (Field, Field, Field)) -> Field {
         let basis = sh2_basis_at(dir);
         // Build full expression, eval once at end
         let expr = Field::from(0.0)
@@ -552,7 +557,7 @@ impl Sh2Field {
             + self.coeffs[6] * basis[6]
             + self.coeffs[7] * basis[7]
             + self.coeffs[8] * basis[8];
-        eval(expr)
+        eval_const(expr)
     }
 
     /// Extract L0 coefficient (the "DC term" / hemisphere average).
@@ -568,7 +573,7 @@ pub fn sh2_multiply_static_field(a: &Sh2, b: &Sh2Field) -> Sh2Field {
     let mut result = [Field::from(0.0); 9];
     for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
         // Accumulation requires eval per iteration (result[k] is reused)
-        result[k] = eval(result[k] + Field::from(a.coeffs[i]) * b.coeffs[j] * Field::from(weight));
+        result[k] = eval_const(result[k] + Field::from(a.coeffs[i]) * b.coeffs[j] * Field::from(weight));
     }
     Sh2Field { coeffs: result }
 }
@@ -580,7 +585,7 @@ pub fn sh2_multiply_field(a: &Sh2Field, b: &Sh2Field) -> Sh2Field {
     let mut result = [Field::from(0.0); 9];
     for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
         // Accumulation requires eval per iteration (result[k] is reused)
-        result[k] = eval(result[k] + a.coeffs[i] * b.coeffs[j] * Field::from(weight));
+        result[k] = eval_const(result[k] + a.coeffs[i] * b.coeffs[j] * Field::from(weight));
     }
     Sh2Field { coeffs: result }
 }
@@ -603,9 +608,9 @@ pub fn cosine_lobe_sh2(n: (Field, Field, Field)) -> Sh2Field {
     Sh2Field {
         coeffs: [
             l0,
-            eval(l1_scale * n.1), // Y1-1 (y direction)
-            eval(l1_scale * n.2), // Y10  (z direction)
-            eval(l1_scale * n.0), // Y11  (x direction)
+            eval_const(l1_scale * n.1), // Y1-1 (y direction)
+            eval_const(l1_scale * n.2), // Y10  (z direction)
+            eval_const(l1_scale * n.0), // Y11  (x direction)
             Field::from(0.0),     // L2 terms small for Lambertian
             Field::from(0.0),
             Field::from(0.0),
@@ -627,12 +632,12 @@ mod tests {
     fn test_sh_orthonormality() {
         // Y_0^0 should be constant = 1/(2√π) ≈ 0.282
         let y00 = SphericalHarmonic::<0, 0>;
-        let val = y00.eval_raw(
+        let val = y00.eval((
             Field::from(1.0),
             Field::from(0.0),
             Field::from(0.0),
             Field::from(0.0),
-        );
+        ));
         let mut buf = [0.0f32; crate::PARALLELISM];
         val.store(&mut buf);
         assert!((buf[0] - 0.282).abs() < 0.01);

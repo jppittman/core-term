@@ -18,40 +18,47 @@ pub struct Or<L, R>(pub L, pub R);
 #[derive(Clone, Debug)]
 pub struct BNot<M>(pub M);
 
-impl<L, R, I> Manifold<I> for And<L, R>
+// ============================================================================
+// Domain-Generic Manifold Implementations
+// ============================================================================
+
+impl<P, L, R, O> Manifold<P> for And<L, R>
 where
-    I: Numeric + BitAnd<Output = I>,
-    L: Manifold<I, Output = I>,
-    R: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: Numeric + BitAnd<Output = O>,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        self.0.eval_raw(x, y, z, w) & self.1.eval_raw(x, y, z, w)
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p) & self.1.eval(p)
     }
 }
 
-impl<L, R, I> Manifold<I> for Or<L, R>
+impl<P, L, R, O> Manifold<P> for Or<L, R>
 where
-    I: Numeric + BitOr<Output = I>,
-    L: Manifold<I, Output = I>,
-    R: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: Numeric + BitOr<Output = O>,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        self.0.eval_raw(x, y, z, w) | self.1.eval_raw(x, y, z, w)
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p) | self.1.eval(p)
     }
 }
 
-impl<M, I> Manifold<I> for BNot<M>
+impl<P, M, O> Manifold<P> for BNot<M>
 where
-    I: Numeric + Not<Output = I>,
-    M: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: Numeric + Not<Output = O>,
+    M: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> I {
-        !self.0.eval_raw(x, y, z, w)
+    fn eval(&self, p: P) -> O {
+        !self.0.eval(p)
     }
 }
