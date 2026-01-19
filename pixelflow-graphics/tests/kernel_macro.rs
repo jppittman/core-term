@@ -565,3 +565,77 @@ fn test_composed_kernel_ownership() {
     assert!(fields_close(r1, Field::from(1.0), 0.001));
     assert!(fields_close(r2, Field::from(1.0), 0.001));
 }
+
+/// Test Jet3 kernel with numeric literals in expressions.
+/// This tests the annotation-based literal handling for Jet domains.
+/// Previously, literals like `1.0` would be wrapped as `Jet3::constant(...)`,
+/// creating type mismatches with ZST expression tree types.
+/// With the annotation pass, literals become Var<N> references bound via Let.
+#[test]
+fn test_jet3_with_literals() {
+    // Inverse square root with literal numerator
+    // This expression: 1.0 / (X*X + Y*Y + Z*Z).sqrt()
+    // Tests that the literal 1.0 is properly handled in Jet3 mode
+    let inv_sqrt = kernel!(|| -> Jet3 {
+        let len_sq = X * X + Y * Y + Z * Z;
+        1.0 / len_sq.sqrt()
+    });
+    let k = inv_sqrt();
+
+    // At (1, 0, 0): 1.0 / sqrt(1) = 1.0
+    let result = k.eval(jet3_4(1.0, 0.0, 0.0, 0.0));
+    let expected = Jet3::constant(Field::from(1.0));
+    let diff = (result.val - expected.val).abs();
+    let eps = Field::from(0.01);
+    assert!(
+        Field::lt(diff.constant(), eps).all(),
+        "1.0/sqrt(1) should be 1.0"
+    );
+
+    // At (2, 0, 0): 1.0 / sqrt(4) = 0.5
+    let result2 = k.eval(jet3_4(2.0, 0.0, 0.0, 0.0));
+    let expected2 = Jet3::constant(Field::from(0.5));
+    let diff2 = (result2.val - expected2.val).abs();
+    assert!(
+        Field::lt(diff2.constant(), eps).all(),
+        "1.0/sqrt(4) should be 0.5"
+    );
+}
+
+/// Test Jet3 kernel with multiple literals.
+/// Verifies that multiple literals each get their own Var<N> binding.
+#[test]
+fn test_jet3_multiple_literals() {
+    // Expression with multiple literals: 2.0 * X + 3.0
+    let affine = kernel!(|| -> Jet3 2.0 * X + 3.0);
+    let k = affine();
+
+    // At x=5: 2.0 * 5 + 3.0 = 13.0
+    let result = k.eval(jet3_4(5.0, 0.0, 0.0, 0.0));
+    let expected = Jet3::constant(Field::from(13.0));
+    let diff = (result.val - expected.val).abs();
+    let eps = Field::from(0.01);
+    assert!(
+        Field::lt(diff.constant(), eps).all(),
+        "2.0 * 5 + 3.0 should be 13.0"
+    );
+}
+
+/// Test Jet3 kernel with literals AND parameters.
+/// Both literals and params become Var<N> - they should coexist correctly.
+#[test]
+fn test_jet3_literals_and_params() {
+    // offset + 2.0 * X - 0.5
+    let kernel = kernel!(|offset: f32| -> Jet3 offset + 2.0 * X - 0.5);
+    let k = kernel(10.0);
+
+    // At x=3: 10.0 + 2.0*3 - 0.5 = 10.0 + 6.0 - 0.5 = 15.5
+    let result = k.eval(jet3_4(3.0, 0.0, 0.0, 0.0));
+    let expected = Jet3::constant(Field::from(15.5));
+    let diff = (result.val - expected.val).abs();
+    let eps = Field::from(0.01);
+    assert!(
+        Field::lt(diff.constant(), eps).all(),
+        "10.0 + 2.0*3 - 0.5 should be 15.5"
+    );
+}

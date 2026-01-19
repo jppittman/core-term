@@ -190,6 +190,11 @@ impl SymbolTable {
             .filter(|s| s.kind == SymbolKind::ManifoldParam)
     }
 
+    /// Get all symbol names (for typo suggestions in error messages).
+    pub fn all_names(&self) -> impl Iterator<Item = String> + '_ {
+        self.symbols.keys().cloned()
+    }
+
     /// Push a new scope (for future block scoping).
     pub fn push_scope(&mut self) {
         self.scope_stack.push(Vec::new());
