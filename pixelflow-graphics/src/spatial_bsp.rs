@@ -16,8 +16,11 @@
 //! - Per-lane blending only at cell boundaries
 //! - O(log n) tree depth
 
-use pixelflow_core::{Discrete, Field, Manifold};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
 use std::sync::Arc;
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
 
 /// Split axis for BSP nodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,14 +225,15 @@ impl<L> SpatialBSP<L> {
 // Manifold Implementation for Discrete Output
 // ============================================================================
 
-impl<L> Manifold for SpatialBSP<L>
+impl<L> Manifold<Field4> for SpatialBSP<L>
 where
-    L: Manifold<Output = Discrete> + Send + Sync,
+    L: ManifoldCompat<Field, Output = Discrete>,
 {
     type Output = Discrete;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, z, w) = p;
         // Handle degenerate cases
         if self.leaves.is_empty() {
             // No leaves - return transparent black
@@ -249,7 +253,7 @@ where
 
 impl<L> SpatialBSP<L>
 where
-    L: Manifold<Output = Discrete>,
+    L: ManifoldCompat<Field, Output = Discrete>,
 {
     /// Traverse the BSP tree, returning the blended result.
     #[inline(always)]
@@ -319,10 +323,11 @@ mod tests {
         }
     }
 
-    impl Manifold for SolidColor {
+    impl Manifold<Field4> for SolidColor {
         type Output = Discrete;
 
-        fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
+        fn eval(&self, p: Field4) -> Discrete {
+            let (_x, _y, _z, _w) = p;
             Discrete::pack(
                 Field::from(self.r),
                 Field::from(self.g),

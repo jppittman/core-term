@@ -1,6 +1,6 @@
 //! Tests for the TTF parser and glyph rendering.
 
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, ManifoldCompat};
 use pixelflow_graphics::fonts::Font;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
@@ -36,7 +36,7 @@ fn glyph_is_manifold() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let glyph = font.glyph_scaled('A', 64.0).expect("Glyph 'A' not found");
 
-    // Verify the glyph implements Manifold by evaluating it
+    // Verify the glyph implements ManifoldCompat by evaluating it
     // We can't extract the values, but we can verify it doesn't panic
     let _val = glyph.eval_raw(
         Field::from(32.0),

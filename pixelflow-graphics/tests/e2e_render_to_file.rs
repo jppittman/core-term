@@ -3,8 +3,10 @@
 //! This test verifies the full pipeline from manifold composition
 //! through rasterization to file output.
 
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, X, Y};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt, X, Y};
 use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
+
+type Field4 = (Field, Field, Field, Field);
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::transform::{Scale, Translate};
@@ -37,10 +39,11 @@ struct Gradient {
     height: f32,
 }
 
-impl Manifold for Gradient {
+impl Manifold<Field4> for Gradient {
     type Output = Discrete;
 
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, _z, _w) = p;
         // Normalize coordinates to [0, 1]
         let r = (x / Field::from(self.width)).constant();
         let g = (y / Field::from(self.height)).constant();
@@ -110,10 +113,11 @@ struct RadialGradient {
     radius_sq: f32,
 }
 
-impl Manifold for RadialGradient {
+impl Manifold<Field4> for RadialGradient {
     type Output = Field;
 
-    fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, _z, _w) = p;
         let dx = x - Field::from(self.cx);
         let dy = y - Field::from(self.cy);
         let dist_sq = dx.clone() * dx + dy.clone() * dy;
@@ -169,10 +173,10 @@ fn e2e_render_radial_gradient() {
 #[derive(Clone, Copy)]
 struct UnitCircle;
 
-impl Manifold for UnitCircle {
+impl Manifold<Field4> for UnitCircle {
     type Output = Field;
 
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
         // Build the manifold expression: x² + y² < 1 ? 1.0 : 0.0
         // Using ManifoldExt's lt() and select()
         let dist_sq = X * X + Y * Y;
@@ -180,7 +184,7 @@ impl Manifold for UnitCircle {
         let result = mask.select(1.0f32, 0.0f32);
 
         // Evaluate the composed manifold at the given coordinates
-        result.eval_raw(x, y, z, w)
+        result.eval(p)
     }
 }
 

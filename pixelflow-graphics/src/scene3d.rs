@@ -24,6 +24,9 @@ type Field4 = (Field, Field, Field, Field);
 /// The 4D Jet3 domain type for 3D ray tracing autodiff.
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 
+/// The 4D PathJet domain type for recursive ray tracing.
+type PathJet4 = (PathJet<Jet3>, PathJet<Jet3>, PathJet<Jet3>, PathJet<Jet3>);
+
 // ============================================================================
 // LIFT: Field manifold → Jet3 manifold (explicit conversion)
 // ============================================================================
@@ -51,7 +54,7 @@ impl<M: ManifoldCompat<Field> + Send + Sync> Manifold<Jet3_4> for Lift<M> {
 // ============================================================================
 
 /// Wraps a Field mask to implement Manifold<Jet3> for use as a Select condition.
-/// This is needed because Select<C, T, F> for Jet3 requires C: Manifold<Jet3, Output = Jet3>.
+/// This is needed because Select<C, T, F> for Jet3 requires C: ManifoldCompat<Jet3, Output = Jet3>.
 #[derive(Clone, Copy)]
 struct FieldMask(Field);
 
@@ -324,16 +327,17 @@ pub struct ColorSurface<G, M, B> {
     pub background: B,
 }
 
-impl<G, M, B> Manifold<Jet3> for ColorSurface<G, M, B>
+impl<G, M, B> Manifold<Jet3_4> for ColorSurface<G, M, B>
 where
-    G: Manifold<Jet3, Output = Jet3>,
-    M: Manifold<Jet3, Output = Discrete>,
-    B: Manifold<Jet3, Output = Discrete>,
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+    M: ManifoldCompat<Jet3, Output = Discrete>,
+    B: ManifoldCompat<Jet3, Output = Discrete>,
 {
     type Output = Discrete;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
+    fn eval(&self, p: Jet3_4) -> Discrete {
+        let (rx, ry, rz, w) = p;
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
         let fzero = Field::from(0.0);
@@ -393,9 +397,9 @@ where
 /// "First hit in scene graph wins" - not distance-based, but priority-based.
 pub trait Scene {
     /// Mask manifold: evaluates to positive where ray hits this scene.
-    type Mask: Manifold<Jet3, Output = Field>;
+    type Mask: ManifoldCompat<Jet3, Output = Field>;
     /// Color manifold: evaluates to the color at the hit point.
-    type Color: Manifold<Jet3, Output = Discrete>;
+    type Color: ManifoldCompat<Jet3, Output = Discrete>;
 
     fn mask(&self) -> Self::Mask;
     fn color(&self) -> Self::Color;
@@ -413,16 +417,17 @@ pub struct Union<S1, S2, B> {
     pub background: B,
 }
 
-impl<S1, S2, B> Manifold<Jet3> for Union<S1, S2, B>
+impl<S1, S2, B> Manifold<Jet3_4> for Union<S1, S2, B>
 where
     S1: Scene + Send + Sync,
     S2: Scene + Send + Sync,
-    B: Manifold<Jet3, Output = Discrete>,
+    B: ManifoldCompat<Jet3, Output = Discrete>,
 {
     type Output = Discrete;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
+    fn eval(&self, p: Jet3_4) -> Discrete {
+        let (rx, ry, rz, w) = p;
         // First hit wins: nested Select
         // Select(S1.mask, S1.color, Select(S2.mask, S2.color, background))
         let m1 = self.first.mask();
@@ -460,11 +465,12 @@ pub struct GeometryMask<G> {
     geometry: G,
 }
 
-impl<G: Manifold<Jet3, Output = Jet3>> Manifold<Jet3> for GeometryMask<G> {
+impl<G: ManifoldCompat<Jet3, Output = Jet3>> Manifold<Jet3_4> for GeometryMask<G> {
     type Output = Field;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Field {
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (rx, ry, rz, w) = p;
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
         let fzero = Field::from(0.0);
@@ -485,15 +491,16 @@ pub struct GeometryColor<G, M> {
     material: M,
 }
 
-impl<G, M> Manifold<Jet3> for GeometryColor<G, M>
+impl<G, M> Manifold<Jet3_4> for GeometryColor<G, M>
 where
-    G: Manifold<Jet3, Output = Jet3>,
-    M: Manifold<Jet3, Output = Discrete>,
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+    M: ManifoldCompat<Jet3, Output = Discrete>,
 {
     type Output = Discrete;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Discrete {
+    fn eval(&self, p: Jet3_4) -> Discrete {
+        let (rx, ry, rz, w) = p;
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
         // Compute hit point: P = ray * t
@@ -508,8 +515,8 @@ where
 
 impl<G, M> Scene for SceneObject<G, M>
 where
-    G: Manifold<Jet3, Output = Jet3> + Clone + Copy,
-    M: Manifold<Jet3, Output = Discrete> + Clone + Copy,
+    G: ManifoldCompat<Jet3, Output = Jet3> + Clone + Copy,
+    M: ManifoldCompat<Jet3, Output = Discrete> + Clone + Copy,
 {
     type Mask = GeometryMask<G>;
     type Color = GeometryColor<G, M>;
@@ -539,11 +546,12 @@ pub struct Reflect<M> {
     pub inner: M,
 }
 
-impl<M: Manifold<Jet3, Output = Field>> Manifold<Jet3> for Reflect<M> {
+impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
     type Output = Field;
 
     #[inline]
-    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Field {
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (x, y, z, w) = p;
         // The input (x, y, z) is the hit point P with derivatives dP/dscreen.
         // We need to compute the reflected direction R with derivatives dR/dscreen.
         //
@@ -644,11 +652,12 @@ pub struct ColorReflect<M> {
     pub inner: M,
 }
 
-impl<M: Manifold<Jet3, Output = Discrete>> Manifold<Jet3> for ColorReflect<M> {
+impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorReflect<M> {
     type Output = Discrete;
 
     #[inline]
-    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Discrete {
+    fn eval(&self, p: Jet3_4) -> Discrete {
+        let (x, y, z, w) = p;
         let p_len_sq = x * x + y * y + z * z;
         let p_len = p_len_sq.sqrt();
         let one = Jet3::constant(Field::from(1.0));
@@ -747,20 +756,15 @@ use pixelflow_core::jet::PathJet;
 /// Creates a reflected ray:
 /// - `val`: Same hit point (new ray origin)
 /// - `dir`: Reflected direction R = D - 2(D·N)N
-impl<M> Manifold<PathJet<Jet3>> for Reflect<M>
+impl<M> Manifold<PathJet4> for Reflect<M>
 where
-    M: Manifold<PathJet<Jet3>, Output = Field>,
+    M: ManifoldCompat<PathJet<Jet3>, Output = Field>,
 {
     type Output = Field;
 
     #[inline]
-    fn eval_raw(
-        &self,
-        x: PathJet<Jet3>,
-        y: PathJet<Jet3>,
-        z: PathJet<Jet3>,
-        w: PathJet<Jet3>,
-    ) -> Field {
+    fn eval(&self, p: PathJet4) -> Field {
+        let (x, y, z, w) = p;
         // ====================================================================
         // 1. Extract surface normal from hit point's tangent frame
         // ====================================================================
@@ -869,20 +873,15 @@ where
 /// Generalized ColorReflect for PathJet coordinates.
 ///
 /// Same as Reflect but outputs Discrete (packed RGBA) for color pipelines.
-impl<M> Manifold<PathJet<Jet3>> for ColorReflect<M>
+impl<M> Manifold<PathJet4> for ColorReflect<M>
 where
-    M: Manifold<PathJet<Jet3>, Output = Discrete>,
+    M: ManifoldCompat<PathJet<Jet3>, Output = Discrete>,
 {
     type Output = Discrete;
 
     #[inline]
-    fn eval_raw(
-        &self,
-        x: PathJet<Jet3>,
-        y: PathJet<Jet3>,
-        z: PathJet<Jet3>,
-        w: PathJet<Jet3>,
-    ) -> Discrete {
+    fn eval(&self, p: PathJet4) -> Discrete {
+        let (x, y, z, w) = p;
         // Same algorithm as Reflect<M> for PathJet<Jet3>
 
         // 1. Extract normal from tangent frame
@@ -973,11 +972,12 @@ where
 #[derive(Clone, Copy)]
 pub struct Checker;
 
-impl Manifold<Jet3> for Checker {
+impl Manifold<Jet3_4> for Checker {
     type Output = Field;
 
     #[inline]
-    fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Field {
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (x, _y, z, _w) = p;
         // Which checker cell are we in?
         let cell_x = x.val.floor();
         let cell_z = z.val.floor();
@@ -1003,8 +1003,8 @@ impl Manifold<Jet3> for Checker {
         // Gradient magnitude from Jet3 derivatives (how fast coords change per pixel)
         // Build expression once with coordinate variables, evaluate at Jet derivative components
         let grad_mag = (X * X + Y * Y + Z * Z).sqrt();
-        let grad_x = grad_mag.at(x.dx, x.dy, x.dz, Field::from(0.0)).eval();
-        let grad_z = grad_mag.at(z.dx, z.dy, z.dz, Field::from(0.0)).eval();
+        let grad_x = grad_mag.at(x.dx, x.dy, x.dz, Field::from(0.0)).collapse();
+        let grad_z = grad_mag.at(z.dx, z.dy, z.dz, Field::from(0.0)).collapse();
         // This tells us how wide one pixel is in world space
         let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
 
@@ -1017,7 +1017,7 @@ impl Manifold<Jet3> for Checker {
         let neighbor_color = is_even.select(color_b, color_a);
         (base_color * coverage.clone() + neighbor_color * (Field::from(1.0) - coverage))
             .at(x.val, Field::from(0.0), z.val, Field::from(0.0))
-            .eval()
+            .collapse()
     }
 }
 
@@ -1025,11 +1025,12 @@ impl Manifold<Jet3> for Checker {
 #[derive(Clone, Copy)]
 pub struct Sky;
 
-impl Manifold<Jet3> for Sky {
+impl Manifold<Jet3_4> for Sky {
     type Output = Field;
 
     #[inline]
-    fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Field {
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (_x, y, _z, _w) = p;
         // y is the Y component of the direction vector
         let t = y.val * Field::from(0.5) + Field::from(0.5);
         let t = t.max(Field::from(0.0)).min(Field::from(1.0));
@@ -1057,14 +1058,15 @@ impl<C> Default for ColorSky<C> {
     }
 }
 
-impl<C> Manifold<Jet3> for ColorSky<C>
+impl<C> Manifold<Jet3_4> for ColorSky<C>
 where
-    C: Manifold<Field, Output = Discrete> + Default,
+    C: ManifoldCompat<Field, Output = Discrete> + Default,
 {
     type Output = Discrete;
 
     #[inline]
-    fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Discrete {
+    fn eval(&self, p: Jet3_4) -> Discrete {
+        let (_x, y, _z, _w) = p;
         let t = y.val * Field::from(0.5) + Field::from(0.5);
         let t = t.max(Field::from(0.0)).min(Field::from(1.0));
 
@@ -1097,14 +1099,15 @@ impl<C> Default for ColorChecker<C> {
     }
 }
 
-impl<C> Manifold<Jet3> for ColorChecker<C>
+impl<C> Manifold<Jet3_4> for ColorChecker<C>
 where
-    C: Manifold<Field, Output = Discrete> + Default,
+    C: ManifoldCompat<Field, Output = Discrete> + Default,
 {
     type Output = Discrete;
 
     #[inline]
-    fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Discrete {
+    fn eval(&self, p: Jet3_4) -> Discrete {
+        let (x, _y, z, _w) = p;
         let cell_x = x.val.floor();
         let cell_z = z.val.floor();
         let sum = cell_x + cell_z;

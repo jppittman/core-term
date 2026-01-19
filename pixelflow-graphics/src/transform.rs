@@ -1,7 +1,12 @@
 //! Coordinate transformations for manifolds.
 
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_core::{Field, Manifold, ManifoldCompat, ManifoldExt};
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
+/// The 4D Jet2 domain type for autodifferentiation.
+type Jet4 = (Jet2, Jet2, Jet2, Jet2);
 
 /// Uniform scaling of the manifold domain.
 ///
@@ -13,25 +18,27 @@ pub struct Scale<M> {
     pub factor: f32,
 }
 
-impl<M> Manifold<Field> for Scale<M>
+impl<M> Manifold<Field4> for Scale<M>
 where
-    M: Manifold<Field, Output = Field> + ManifoldExt,
+    M: ManifoldCompat<Field, Output = Field> + ManifoldExt,
 {
     type Output = Field;
 
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         let s = Field::from(self.factor);
         self.manifold.eval_at(x / s, y / s, z, w)
     }
 }
 
-impl<M> Manifold<Jet2> for Scale<M>
+impl<M> Manifold<Jet4> for Scale<M>
 where
-    M: Manifold<Jet2>,
+    M: ManifoldCompat<Jet2>,
 {
     type Output = M::Output;
 
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Self::Output {
+    fn eval(&self, p: Jet4) -> Self::Output {
+        let (x, y, z, w) = p;
         let s = Jet2::constant(Field::from(self.factor));
         self.manifold.eval_raw(x / s, y / s, z, w)
     }
@@ -47,26 +54,28 @@ pub struct Translate<M> {
     pub offset: [f32; 2],
 }
 
-impl<M> Manifold<Field> for Translate<M>
+impl<M> Manifold<Field4> for Translate<M>
 where
-    M: Manifold<Field, Output = Field> + ManifoldExt,
+    M: ManifoldCompat<Field, Output = Field> + ManifoldExt,
 {
     type Output = Field;
 
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         let dx = Field::from(self.offset[0]);
         let dy = Field::from(self.offset[1]);
         self.manifold.eval_at(x - dx, y - dy, z, w)
     }
 }
 
-impl<M> Manifold<Jet2> for Translate<M>
+impl<M> Manifold<Jet4> for Translate<M>
 where
-    M: Manifold<Jet2>,
+    M: ManifoldCompat<Jet2>,
 {
     type Output = M::Output;
 
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Self::Output {
+    fn eval(&self, p: Jet4) -> Self::Output {
+        let (x, y, z, w) = p;
         let dx = Jet2::constant(Field::from(self.offset[0]));
         let dy = Jet2::constant(Field::from(self.offset[1]));
         self.manifold.eval_raw(x - dx, y - dy, z, w)
@@ -242,7 +251,7 @@ mod tests {
 
     #[test]
     fn scale_implements_manifold() {
-        fn assert_manifold<T: Manifold<Field, Output = Field>>(_: &T) {}
+        fn assert_manifold<T: ManifoldCompat<Field, Output = Field>>(_: &T) {}
 
         let scaled = Scale {
             manifold: X,
@@ -253,7 +262,7 @@ mod tests {
 
     #[test]
     fn translate_implements_manifold() {
-        fn assert_manifold<T: Manifold<Field, Output = Field>>(_: &T) {}
+        fn assert_manifold<T: ManifoldCompat<Field, Output = Field>>(_: &T) {}
 
         let translated = Translate {
             manifold: X,

@@ -7,7 +7,10 @@
 
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt};
+
+type Field4 = (Field, Field, Field, Field);
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
@@ -25,11 +28,12 @@ struct SphereAt {
     radius: f32,
 }
 
-impl Manifold<Jet3> for SphereAt {
+impl Manifold<Jet3_4> for SphereAt {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (rx, ry, rz, _w) = p;
         let cx = Jet3::constant(Field::from(self.center.0));
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
@@ -49,10 +53,11 @@ struct GrayToRgba<M> {
     inner: M,
 }
 
-impl<M: Manifold<Output = Field>> Manifold for GrayToRgba<M> {
+impl<M: ManifoldCompat<Field, Output = Field>> Manifold<Field4> for GrayToRgba<M> {
     type Output = Discrete;
 
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, z, w) = p;
         let gray = self.inner.eval_raw(x, y, z, w);
         Discrete::pack(gray, gray, gray, Field::from(1.0))
     }
@@ -67,10 +72,11 @@ struct ScreenRemap<M> {
     height: f32,
 }
 
-impl<M: Manifold<Output = Field> + ManifoldExt> Manifold for ScreenRemap<M> {
+impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> for ScreenRemap<M> {
     type Output = Field;
 
-    fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (px, py, z, w) = p;
         let width = Field::from(self.width);
         let height = Field::from(self.height);
 
@@ -174,10 +180,11 @@ fn test_sky_only() {
     // Sky as the only "scene" - wraps it in a dummy Surface that always misses
     struct SkyOnly;
 
-    impl Manifold<Jet3> for SkyOnly {
+    impl Manifold<Jet3_4> for SkyOnly {
         type Output = Field;
 
-        fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Field {
+        fn eval(&self, p: Jet3_4) -> Field {
+            let (_x, y, _z, _w) = p;
             // Same as Sky: gradient based on Y direction
             let t = (y.val * Field::from(0.5) + Field::from(0.5))
                 .max(Field::from(0.0))
@@ -294,10 +301,11 @@ fn test_color_chrome_sphere() {
         height: f32,
     }
 
-    impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
         type Output = Discrete;
 
-        fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
+        fn eval(&self, p: Field4) -> Discrete {
+            let (px, py, z, w) = p;
             let width = Field::from(self.width);
             let height = Field::from(self.height);
             let scale = Field::from(2.0) / height;
@@ -310,7 +318,7 @@ fn test_color_chrome_sphere() {
                 z,
                 w,
             }
-            .eval()
+            .collapse()
         }
     }
 
@@ -368,9 +376,10 @@ fn test_mullet_vs_3channel_comparison() {
     struct ChannelSky {
         channel: u8,
     }
-    impl Manifold<Jet3> for ChannelSky {
+    impl Manifold<Jet3_4> for ChannelSky {
         type Output = Field;
-        fn eval_raw(&self, _x: Jet3, y: Jet3, _z: Jet3, _w: Jet3) -> Field {
+        fn eval(&self, p: Jet3_4) -> Field {
+            let (_x, y, _z, _w) = p;
             let t = y.val * Field::from(0.5) + Field::from(0.5);
             let t = t.max(Field::from(0.0)).min(Field::from(1.0)).constant();
             match self.channel {
@@ -386,9 +395,10 @@ fn test_mullet_vs_3channel_comparison() {
     struct ChannelChecker {
         channel: u8,
     }
-    impl Manifold<Jet3> for ChannelChecker {
+    impl Manifold<Jet3_4> for ChannelChecker {
         type Output = Field;
-        fn eval_raw(&self, x: Jet3, _y: Jet3, z: Jet3, _w: Jet3) -> Field {
+        fn eval(&self, p: Jet3_4) -> Field {
+            let (x, _y, z, _w) = p;
             let cell_x = x.val.floor().constant();
             let cell_z = z.val.floor().constant();
             let sum = (cell_x + cell_z).constant();
@@ -453,14 +463,15 @@ fn test_mullet_vs_3channel_comparison() {
         g: G,
         b: B,
     }
-    impl<R, G, B> Manifold for ThreeChannelRenderer<R, G, B>
+    impl<R, G, B> Manifold<Field4> for ThreeChannelRenderer<R, G, B>
     where
-        R: Manifold<Output = Field>,
-        G: Manifold<Output = Field>,
-        B: Manifold<Output = Field>,
+        R: ManifoldCompat<Field, Output = Field>,
+        G: ManifoldCompat<Field, Output = Field>,
+        B: ManifoldCompat<Field, Output = Field>,
     {
         type Output = Discrete;
-        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+        fn eval(&self, p: Field4) -> Discrete {
+            let (x, y, z, w) = p;
             let r = self.r.eval_raw(x, y, z, w);
             let g = self.g.eval_raw(x, y, z, w);
             let b = self.b.eval_raw(x, y, z, w);
@@ -488,9 +499,10 @@ fn test_mullet_vs_3channel_comparison() {
         width: f32,
         height: f32,
     }
-    impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
         type Output = Discrete;
-        fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
+        fn eval(&self, p: Field4) -> Discrete {
+            let (px, py, z, w) = p;
             let width = Field::from(self.width);
             let height = Field::from(self.height);
             let scale = Field::from(2.0) / height;
@@ -503,7 +515,7 @@ fn test_mullet_vs_3channel_comparison() {
                 z,
                 w,
             }
-            .eval()
+            .collapse()
         }
     }
 
@@ -613,9 +625,10 @@ fn test_work_stealing_benchmark() {
         width: f32,
         height: f32,
     }
-    impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
         type Output = Discrete;
-        fn eval_raw(&self, px: Field, py: Field, z: Field, w: Field) -> Discrete {
+        fn eval(&self, p: Field4) -> Discrete {
+            let (px, py, z, w) = p;
             let width = Field::from(self.width);
             let height = Field::from(self.height);
             let scale = Field::from(2.0) / height;
@@ -628,7 +641,7 @@ fn test_work_stealing_benchmark() {
                 z,
                 w,
             }
-            .eval()
+            .collapse()
         }
     }
 

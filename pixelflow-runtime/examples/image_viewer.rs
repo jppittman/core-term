@@ -7,15 +7,18 @@
 //! 4. Run the event loop
 
 use pixelflow_core::combinators::At;
-use pixelflow_core::{Discrete, Field, Manifold};
+use pixelflow_core::jet::Jet3;
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
 use pixelflow_runtime::{api::public::AppData, EngineConfig, EngineTroupe, WindowConfig};
 use std::sync::Arc;
+
+type Field4 = (Field, Field, Field, Field);
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 
 const W: u32 = 1920;
 const H: u32 = 1080;
 
 // Import scene3d types
-use pixelflow_core::jet::Jet3;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
@@ -28,11 +31,12 @@ struct SphereAt {
     radius: f32,
 }
 
-impl Manifold<Jet3> for SphereAt {
+impl Manifold<Jet3_4> for SphereAt {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (rx, ry, rz, _w) = p;
         let cx = Jet3::constant(Field::from(self.center.0));
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
@@ -55,10 +59,11 @@ struct ScreenRemap<M> {
     height: f32,
 }
 
-impl<M: Manifold<Output = Discrete>> Manifold for ScreenRemap<M> {
+impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ScreenRemap<M> {
     type Output = Discrete;
 
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, z, w) = p;
         let scale = 2.0 / self.height;
         let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
         let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
@@ -69,7 +74,7 @@ impl<M: Manifold<Output = Discrete>> Manifold for ScreenRemap<M> {
             z,
             w,
         }
-        .eval()
+        .collapse()
     }
 }
 
