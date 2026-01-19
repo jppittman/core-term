@@ -27,7 +27,7 @@
 //! own semantic layer.
 
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, KernelDef, LetStmt, LiteralExpr,
+    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, KernelDef, LetStmt, LiteralExpr,
     MethodCallExpr, Param, ParamKind, Stmt, UnaryExpr, UnaryOp,
 };
 use proc_macro2::{Span, TokenStream};
@@ -186,6 +186,28 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                 args,
                 span: Span::call_site(),
             }))
+        }
+
+        syn::Expr::Call(expr_call) => {
+            // Free function call: V(m), DX(expr), etc.
+            // Extract the function name from the callee
+            if let syn::Expr::Path(ref path) = *expr_call.func {
+                if path.path.segments.len() == 1 && path.qself.is_none() {
+                    let func = path.path.segments[0].ident.clone();
+                    let args = expr_call
+                        .args
+                        .into_iter()
+                        .map(convert_expr)
+                        .collect::<syn::Result<Vec<_>>>()?;
+                    return Ok(Expr::Call(CallExpr {
+                        func,
+                        args,
+                        span: Span::call_site(),
+                    }));
+                }
+            }
+            // Complex call (qualified path, etc.) - pass through verbatim
+            Ok(Expr::Verbatim(syn::Expr::Call(expr_call)))
         }
 
         syn::Expr::Paren(expr_paren) => {

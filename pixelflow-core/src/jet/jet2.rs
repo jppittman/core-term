@@ -685,3 +685,24 @@ impl From<Jet2> for Field {
         jet.val
     }
 }
+
+// ============================================================================
+// HasDerivatives trait implementation (for derivative accessors)
+// ============================================================================
+
+impl crate::ops::derivative::HasDerivatives for Jet2 {
+    #[inline(always)]
+    fn val(&self) -> Field {
+        self.val
+    }
+
+    #[inline(always)]
+    fn dx(&self) -> Field {
+        self.dx
+    }
+
+    #[inline(always)]
+    fn dy(&self) -> Field {
+        self.dy
+    }
+}

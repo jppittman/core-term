@@ -179,6 +179,12 @@ pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
 pub use ops::unary::*;
+pub use ops::derivative::{
+    Antialias2D, Antialias3D, Curvature2D, GradientMag2D, GradientMag3D, HasDerivatives, HasDz,
+    HasHessian, Normalized2D, Normalized3D,
+    // Simple accessor combinators and convenience functions
+    DxOf, DxxOf, DxyOf, DyOf, DyyOf, DzOf, ValOf, DX, DXX, DXY, DY, DYY, DZ, V,
+};
 pub use variables::*;
 pub use zst::Zst;
 
@@ -282,7 +288,7 @@ type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
 ///
 /// **Instead:**
 /// - ✅ Compose manifolds: `X.sqrt().abs().max(Y)`
-/// - ✅ Use `map` on manifolds: `my_manifold.map(|f| ...)`
+/// - ✅ Use `map` on manifolds: `my_manifold.map(transform)`
 /// - ✅ Implement manifolds: Define a custom `Manifold<Output = T>` type
 ///
 /// # The Exception: Custom Manifold Implementation
@@ -494,19 +500,19 @@ impl Field {
     /// Absolute value.
     #[inline(always)]
     pub fn abs(self) -> Self {
-        Self(self.0.abs())
+        Self(self.0.simd_abs())
     }
 
     /// Element-wise minimum.
     #[inline(always)]
     pub fn min(self, rhs: Self) -> Self {
-        Self(self.0.min(rhs.0))
+        Self(self.0.simd_min(rhs.0))
     }
 
     /// Element-wise maximum.
     #[inline(always)]
     pub fn max(self, rhs: Self) -> Self {
-        Self(self.0.max(rhs.0))
+        Self(self.0.simd_max(rhs.0))
     }
 
     /// Conditional select (raw SIMD, no early exit).
@@ -533,7 +539,7 @@ impl Field {
     #[inline(always)]
     pub(crate) fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
         // Convert float mask to native, use native select
-        Self(NativeSimd::select(
+        Self(NativeSimd::simd_select(
             mask.0.float_to_mask(),
             if_true.0,
             if_false.0,
@@ -584,7 +590,7 @@ impl Field {
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     #[inline(always)]
     pub fn log2(self) -> Self {
-        Self(self.0.log2())
+        Self(self.0.simd_log2())
     }
 
     /// Base-2 exponential (2^x).
@@ -593,13 +599,13 @@ impl Field {
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     #[inline(always)]
     pub fn exp2(self) -> Self {
-        Self(self.0.exp2())
+        Self(self.0.simd_exp2())
     }
 
     /// Floor (round toward negative infinity).
     #[inline(always)]
     pub fn floor(self) -> Self {
-        Self(self.0.floor())
+        Self(self.0.simd_floor())
     }
     /// Fused multiply-add: `self * b + c` in a single operation.
     /// Uses hardware FMA instruction when available.
@@ -621,7 +627,7 @@ impl Field {
     /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
     #[inline(always)]
     pub fn rsqrt(self) -> Self {
-        Self(self.0.rsqrt())
+        Self(self.0.simd_rsqrt())
     }
 
     /// Masked add: self + (mask ? val : 0)
@@ -788,7 +794,7 @@ impl numeric::Computational for Field {
 impl numeric::Selectable for Field {
     #[inline(always)]
     fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
-        Self(NativeSimd::select(
+        Self(NativeSimd::simd_select(
             mask.0.float_to_mask(),
             if_true.0,
             if_false.0,
@@ -874,7 +880,7 @@ impl numeric::Numeric for Field {
     #[inline(always)]
     fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
         // Convert float mask to native, use native select
-        Self(NativeSimd::select(
+        Self(NativeSimd::simd_select(
             mask.0.float_to_mask(),
             if_true.0,
             if_false.0,
@@ -1212,6 +1218,42 @@ impl core::ops::Div<i32> for Field {
     type Output = ops::Div<Self, i32>;
     #[inline(always)]
     fn div(self, rhs: i32) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+// Fused derivative combinator divisors for Field
+impl<DM> core::ops::Div<ops::derivative::GradientMag2D<DM>> for Field {
+    type Output = ops::Div<Self, ops::derivative::GradientMag2D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::derivative::GradientMag2D<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM> core::ops::Div<ops::derivative::GradientMag3D<DM>> for Field {
+    type Output = ops::Div<Self, ops::derivative::GradientMag3D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::derivative::GradientMag3D<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM> core::ops::Div<ops::derivative::Antialias2D<DM>> for Field {
+    type Output = ops::Div<Self, ops::derivative::Antialias2D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::derivative::Antialias2D<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM> core::ops::Div<ops::derivative::Antialias3D<DM>> for Field {
+    type Output = ops::Div<Self, ops::derivative::Antialias3D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::derivative::Antialias3D<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM> core::ops::Div<ops::derivative::Curvature2D<DM>> for Field {
+    type Output = ops::Div<Self, ops::derivative::Curvature2D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::derivative::Curvature2D<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }

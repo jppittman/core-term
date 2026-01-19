@@ -188,45 +188,37 @@ where
     }
 }
 
-// Field constants are manifolds - they ignore the domain and return themselves
-impl<P> Manifold<P> for Field
-where
-    P: Send + Sync,
-{
-    type Output = Field;
-    #[inline(always)]
-    fn eval(&self, _p: P) -> Field {
-        *self
-    }
-}
-
 // ============================================================================
-// Jet Constants as Manifolds
+// Computational Types as Constant Manifolds
 // ============================================================================
+//
+// All Computational types (Field, Jet2, Jet3, etc.) are constant manifolds.
+// They ignore the input domain and return themselves unchanged.
+// This allows them to be used in Let bindings as bound values.
 
-// Jet2 is a constant manifold - ignores input, always returns itself
-impl<P> Manifold<P> for crate::jet::Jet2
-where
-    P: Send + Sync,
-{
-    type Output = crate::jet::Jet2;
-    #[inline(always)]
-    fn eval(&self, _p: P) -> crate::jet::Jet2 {
-        *self
-    }
+macro_rules! impl_constant_manifold {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl<P> Manifold<P> for $ty
+            where
+                P: Send + Sync,
+            {
+                type Output = $ty;
+                #[inline(always)]
+                fn eval(&self, _p: P) -> $ty {
+                    *self
+                }
+            }
+        )*
+    };
 }
 
-// Jet3 is a constant manifold - ignores input, always returns itself
-impl<P> Manifold<P> for crate::jet::Jet3
-where
-    P: Send + Sync,
-{
-    type Output = crate::jet::Jet3;
-    #[inline(always)]
-    fn eval(&self, _p: P) -> crate::jet::Jet3 {
-        *self
-    }
-}
+impl_constant_manifold!(
+    Field,
+    crate::jet::Jet2,
+    crate::jet::Jet3,
+    // Add Jet2H, PathJet, etc. here as needed
+);
 
 // ============================================================================
 // Smart Pointer Implementations

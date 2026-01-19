@@ -639,3 +639,332 @@ fn test_jet3_literals_and_params() {
         "10.0 + 2.0*3 - 0.5 should be 15.5"
     );
 }
+
+// ============================================================================
+// Tests for Fused Derivative Combinators
+// ============================================================================
+//
+// Fused combinators evaluate the inner manifold ONCE and extract derived quantities:
+// - GradientMag2D(m) → √(dx² + dy²)
+// - GradientMag3D(m) → √(dx² + dy² + dz²)
+// - Antialias2D(m)   → val / √(dx² + dy²)
+// - Antialias3D(m)   → val / √(dx² + dy² + dz²)
+// - Normalized2D(m)  → (dx, dy) / √(dx² + dy²)
+// - Normalized3D(m)  → (dx, dy, dz) / √(dx² + dy² + dz²)
+
+use pixelflow_core::jet::Jet2;
+use pixelflow_core::{GradientMag2D, GradientMag3D, Antialias2D, Antialias3D, Normalized2D};
+
+type Jet2_4 = (Jet2, Jet2, Jet2, Jet2);
+
+/// Helper: Create Jet2_4 with proper derivative seeds
+fn jet2_4_seeded(x: f32, y: f32) -> Jet2_4 {
+    (
+        Jet2::x(Field::from(x)),
+        Jet2::y(Field::from(y)),
+        Jet2::constant(Field::from(0.0)),
+        Jet2::constant(Field::from(0.0)),
+    )
+}
+
+/// Helper: Create Jet3_4 with proper derivative seeds
+fn jet3_4_seeded(x: f32, y: f32, z: f32) -> Jet3_4 {
+    (
+        Jet3::x(Field::from(x)),
+        Jet3::y(Field::from(y)),
+        Jet3::z(Field::from(z)),
+        Jet3::constant(Field::from(0.0)),
+    )
+}
+
+/// Test GradientMag2D computes √(dx² + dy²) with single eval.
+#[test]
+fn test_gradient_mag_2d() {
+    // For f(x,y) = sqrt(x² + y²), the gradient is (x/r, y/r) where r = sqrt(x²+y²)
+    // Gradient magnitude is always 1.0 for distance fields
+    let dist = (pixelflow_core::X * pixelflow_core::X
+        + pixelflow_core::Y * pixelflow_core::Y)
+        .sqrt();
+
+    let grad_mag = GradientMag2D(dist);
+
+    // At (3, 4): r = 5, gradient = (3/5, 4/5), magnitude = 1.0
+    let result = grad_mag.eval(jet2_4_seeded(3.0, 4.0));
+    assert!(
+        fields_close(result, Field::from(1.0), 0.01),
+        "GradientMag2D at (3,4) should be 1.0"
+    );
+}
+
+/// Test GradientMag3D computes √(dx² + dy² + dz²) with single eval.
+#[test]
+fn test_gradient_mag_3d() {
+    // For f(x,y,z) = sqrt(x² + y² + z²), gradient magnitude is 1.0
+    let dist = (pixelflow_core::X * pixelflow_core::X
+        + pixelflow_core::Y * pixelflow_core::Y
+        + pixelflow_core::Z * pixelflow_core::Z)
+        .sqrt();
+
+    let grad_mag = GradientMag3D(dist);
+
+    // At (1, 2, 2): r = 3, gradient magnitude = 1.0
+    let result = grad_mag.eval(jet3_4_seeded(1.0, 2.0, 2.0));
+    assert!(
+        fields_close(result, Field::from(1.0), 0.01),
+        "GradientMag3D at (1,2,2) should be 1.0"
+    );
+}
+
+/// Test Antialias2D computes val / √(dx² + dy²) with single eval.
+#[test]
+fn test_antialias_2d() {
+    // Circle SDF using kernel! macro (handles literal promotion)
+    // At (2, 0): val = 1.0, gradient = (1, 0), so antialias = 1.0 / 1.0 = 1.0
+    let circle_sdf = kernel!(|| -> Jet2 {
+        (X * X + Y * Y).sqrt() - 1.0
+    });
+    let sdf = circle_sdf();
+
+    let aa = Antialias2D(sdf);
+
+    let result = aa.eval(jet2_4_seeded(2.0, 0.0));
+    assert!(
+        fields_close(result, Field::from(1.0), 0.01),
+        "Antialias2D at (2,0) for circle SDF should be 1.0"
+    );
+}
+
+/// Test Antialias3D computes val / √(dx² + dy² + dz²) with single eval.
+#[test]
+fn test_antialias_3d() {
+    // Sphere SDF using kernel! macro
+    // At (2, 0, 0): val = 1.0, gradient = (1, 0, 0), so antialias = 1.0 / 1.0 = 1.0
+    let sphere_sdf = kernel!(|| -> Jet3 {
+        (X * X + Y * Y + Z * Z).sqrt() - 1.0
+    });
+    let sdf = sphere_sdf();
+
+    let aa = Antialias3D(sdf);
+
+    let result = aa.eval(jet3_4_seeded(2.0, 0.0, 0.0));
+    assert!(
+        fields_close(result, Field::from(1.0), 0.01),
+        "Antialias3D at (2,0,0) for sphere SDF should be 1.0"
+    );
+}
+
+/// Test Normalized2D returns unit gradient vector with single eval.
+#[test]
+fn test_normalized_2d() {
+    // Distance field: sqrt(x² + y²)
+    // At (3, 4): gradient = (3/5, 4/5) = (0.6, 0.8)
+    let dist = (pixelflow_core::X * pixelflow_core::X
+        + pixelflow_core::Y * pixelflow_core::Y)
+        .sqrt();
+
+    let normal = Normalized2D(dist);
+
+    let (nx, ny) = normal.eval(jet2_4_seeded(3.0, 4.0));
+    assert!(
+        fields_close(nx, Field::from(0.6), 0.01),
+        "Normalized2D.x at (3,4) should be 0.6"
+    );
+    assert!(
+        fields_close(ny, Field::from(0.8), 0.01),
+        "Normalized2D.y at (3,4) should be 0.8"
+    );
+}
+
+/// Test fused combinators with kernel-composed manifolds.
+#[test]
+fn test_fused_combinators_with_kernel_composition() {
+    // Create a circle SDF kernel
+    let circle_sdf = kernel!(|cx: f32, cy: f32, r: f32| -> Jet2 {
+        let dx = X - cx;
+        let dy = Y - cy;
+        (dx * dx + dy * dy).sqrt() - r
+    });
+
+    // Instantiate: circle at (0, 0) with radius 1
+    let sdf = circle_sdf(0.0, 0.0, 1.0);
+
+    // Use fused combinators - evaluates sdf ONCE per combinator
+    let grad_mag = GradientMag2D(sdf.clone());
+    let aa = Antialias2D(sdf);
+
+    // At (2, 0): gradient magnitude = 1.0, antialias = 1.0 / 1.0 = 1.0
+    let grad_result = grad_mag.eval(jet2_4_seeded(2.0, 0.0));
+    let aa_result = aa.eval(jet2_4_seeded(2.0, 0.0));
+
+    assert!(
+        fields_close(grad_result, Field::from(1.0), 0.01),
+        "GradientMag2D(circle_sdf) at (2,0) should be 1.0"
+    );
+    assert!(
+        fields_close(aa_result, Field::from(1.0), 0.01),
+        "Antialias2D(circle_sdf) at (2,0) should be 1.0"
+    );
+}
+
+// ============================================================================
+// Tests for Simple Derivative Accessor Combinators
+// ============================================================================
+//
+// Simple accessors extract individual Jet components:
+// - V(m)   → val  (the function value)
+// - DX(m)  → dx   (∂f/∂x)
+// - DY(m)  → dy   (∂f/∂y)
+// - DZ(m)  → dz   (∂f/∂z, Jet3 only)
+//
+// **Design Note**: These are EXTRACTORS for individual components.
+// For composed operations (gradient magnitude, antialiasing), use the
+// FUSED COMBINATORS (GradientMag2D, Antialias2D, etc.) which evaluate
+// the inner manifold once and compute derived quantities efficiently.
+
+use pixelflow_core::{V, DX, DY, DZ};
+
+/// Test V accessor extracts the value component from Jet2.
+#[test]
+fn test_v_accessor() {
+    // Distance from origin: sqrt(x² + y²)
+    let dist = (pixelflow_core::X * pixelflow_core::X
+        + pixelflow_core::Y * pixelflow_core::Y)
+        .sqrt();
+
+    // Extract just the value
+    let val_only = V(dist);
+
+    // At (3, 4): distance = 5
+    let result = val_only.eval(jet2_4_seeded(3.0, 4.0));
+    assert!(
+        fields_close(result, Field::from(5.0), 0.01),
+        "V(dist) at (3,4) should be 5.0"
+    );
+}
+
+/// Test DX accessor extracts ∂f/∂x from Jet2.
+#[test]
+fn test_dx_accessor() {
+    // Distance from origin: sqrt(x² + y²)
+    // ∂dist/∂x = x / sqrt(x² + y²) = x / dist
+    let dist = (pixelflow_core::X * pixelflow_core::X
+        + pixelflow_core::Y * pixelflow_core::Y)
+        .sqrt();
+
+    // Extract ∂f/∂x
+    let dx_only = DX(dist);
+
+    // At (3, 4): dist = 5, ∂dist/∂x = 3/5 = 0.6
+    let result = dx_only.eval(jet2_4_seeded(3.0, 4.0));
+    assert!(
+        fields_close(result, Field::from(0.6), 0.01),
+        "DX(dist) at (3,4) should be 0.6"
+    );
+}
+
+/// Test DY accessor extracts ∂f/∂y from Jet2.
+#[test]
+fn test_dy_accessor() {
+    // Distance from origin: sqrt(x² + y²)
+    // ∂dist/∂y = y / sqrt(x² + y²) = y / dist
+    let dist = (pixelflow_core::X * pixelflow_core::X
+        + pixelflow_core::Y * pixelflow_core::Y)
+        .sqrt();
+
+    // Extract ∂f/∂y
+    let dy_only = DY(dist);
+
+    // At (3, 4): dist = 5, ∂dist/∂y = 4/5 = 0.8
+    let result = dy_only.eval(jet2_4_seeded(3.0, 4.0));
+    assert!(
+        fields_close(result, Field::from(0.8), 0.01),
+        "DY(dist) at (3,4) should be 0.8"
+    );
+}
+
+/// Test DZ accessor extracts ∂f/∂z from Jet3.
+#[test]
+fn test_dz_accessor() {
+    // 3D distance from origin: sqrt(x² + y² + z²)
+    // ∂dist/∂z = z / sqrt(x² + y² + z²)
+    let dist = (pixelflow_core::X * pixelflow_core::X
+        + pixelflow_core::Y * pixelflow_core::Y
+        + pixelflow_core::Z * pixelflow_core::Z)
+        .sqrt();
+
+    // Extract ∂f/∂z
+    let dz_only = DZ(dist);
+
+    // At (1, 2, 2): dist = 3, ∂dist/∂z = 2/3 ≈ 0.667
+    let result = dz_only.eval(jet3_4_seeded(1.0, 2.0, 2.0));
+    assert!(
+        fields_close(result, Field::from(2.0 / 3.0), 0.01),
+        "DZ(dist) at (1,2,2) should be 2/3"
+    );
+}
+
+/// Test composed gradient magnitude using DX and DY accessors.
+///
+/// With the 0-fill rule and specific domain impls, composed operations like
+/// `(DX(sdf) * DX(sdf) + DY(sdf) * DY(sdf)).sqrt()` now work with ManifoldExt.
+/// CSE (Phase 6) will optimize away redundant evaluations.
+#[test]
+fn test_manual_gradient_magnitude() {
+    // Distance from origin
+    let dist = (pixelflow_core::X * pixelflow_core::X
+        + pixelflow_core::Y * pixelflow_core::Y)
+        .sqrt();
+
+    // Manual gradient magnitude using DX/DY accessors
+    let grad_mag = (DX(dist) * DX(dist) + DY(dist) * DY(dist)).sqrt();
+
+    // At (3, 4): gradient magnitude = 1.0 for distance fields
+    let result = grad_mag.eval(jet2_4_seeded(3.0, 4.0));
+    assert!(
+        fields_close(result, Field::from(1.0), 0.01),
+        "Manual gradient magnitude at (3,4) should be 1.0"
+    );
+}
+
+// NOTE: This test requires HasDerivatives bound detection for manifold params that use V/DX/DY.
+// See Phase 5 plan for derivative accessor implementation details.
+// The kernel! macro doesn't yet add HasDerivatives bounds when derivative accessors are used.
+//
+// #[test]
+// fn test_manual_antialias() {
+//     let circle = kernel!(|| -> Jet2 { (X * X + Y * Y).sqrt() - 1.0 });
+//     let sdf = circle();
+//     let antialias = kernel!(|m: kernel| V(m) / (DX(m) * DX(m) + DY(m) * DY(m)).sqrt());
+//     let aa = antialias(sdf);
+//     let result = aa.eval(jet2_4_seeded(2.0, 0.0));
+//     assert!(fields_close(result, Field::from(1.0), 0.01));
+// }
+
+// NOTE: This test requires HasDerivatives bound detection for manifold params that use V/DX/DY.
+// See Phase 5 plan for derivative accessor implementation details.
+// The kernel! macro doesn't yet add HasDerivatives bounds when derivative accessors are used.
+//
+// #[test]
+// fn test_derivative_accessors_with_composition() {
+//     let circle_sdf = kernel!(|cx: f32, cy: f32, r: f32| -> Jet2 {
+//         let dx = X - cx;
+//         let dy = Y - cy;
+//         (dx * dx + dy * dy).sqrt() - r
+//     });
+//     let sdf = circle_sdf(0.0, 0.0, 1.0);
+//     let antialias = kernel!(|m: kernel| V(m) / (DX(m) * DX(m) + DY(m) * DY(m)).sqrt());
+//     let aa = antialias(sdf);
+//     let result = aa.eval(jet2_4_seeded(2.0, 0.0));
+//     assert!(fields_close(result, Field::from(1.0), 0.01));
+//
+//     let sdf2 = circle_sdf(0.0, 0.0, 1.0);
+//     let get_val = kernel!(|m: kernel| V(m));
+//     let get_dx = kernel!(|m: kernel| DX(m));
+//     let get_dy = kernel!(|m: kernel| DY(m));
+//     let val_result = get_val(sdf2.clone()).eval(jet2_4_seeded(2.0, 0.0));
+//     let gx_result = get_dx(sdf2.clone()).eval(jet2_4_seeded(2.0, 0.0));
+//     let gy_result = get_dy(sdf2).eval(jet2_4_seeded(2.0, 0.0));
+//     assert!(fields_close(val_result, Field::from(1.0), 0.01));
+//     assert!(fields_close(gx_result, Field::from(1.0), 0.01));
+//     assert!(fields_close(gy_result, Field::from(0.0), 0.01));
+// }

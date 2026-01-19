@@ -35,6 +35,7 @@ use super::{
 };
 use crate::Field;
 use crate::combinators::Select;
+use crate::combinators::binding::Var;
 use crate::variables::{W, X, Y, Z};
 
 // ============================================================================
@@ -97,6 +98,7 @@ macro_rules! impl_binary_ops_for {
         impl_base_div!($ty, MulRecip<DM2>);
         impl_base_div!($ty, MulRsqrt<DL2, DR2>);
         impl_base_div!($ty, AddMasked<DAcc, DVal, DMask>);
+        impl_base_div!($ty, Var<DN>);
 
         // Concrete divisor types
         impl_base_div_concrete!($ty, X);

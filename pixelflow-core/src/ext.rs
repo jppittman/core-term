@@ -9,14 +9,20 @@
 //! - **Method-chaining API**: `x.sqrt().abs().max(y)`
 //! - **Operator overloading**: `x * x + y * y`
 //! - **Polymorphic evaluation**: Build once, evaluate with `Field` or `Jet2`
-//! - **Type-safe composition**: Expression types are capture compute graphs
+//! - **Type-safe composition**: Expression types capture compute graphs
 //!
-//! While `ManifoldExt` methods use `Field` for **type inference during construction**,
-//! the resulting expression trees are **fully generic** over any `Computational` input type
-//! (`Field`, `Jet2`, `Jet3`). This allows the same expression to evaluate both:
+//! ## ManifoldExpr Marker Trait
 //!
-//! - As concrete SIMD values (for rendering)
-//! - As automatic derivatives (for gradients, antialiasing)
+//! `ManifoldExt` is implemented for types that implement `ManifoldExpr`. This marker
+//! trait gates which types get the fluent API, preventing method name conflicts with
+//! standard library traits like `Iterator::map` or `Ord::max`.
+//!
+//! Use `#[derive(ManifoldExpr)]` to enable the fluent API on custom combinator types:
+//!
+//! ```ignore
+//! #[derive(ManifoldExpr)]
+//! pub struct MyCustomCombinator<M>(pub M);
+//! ```
 //!
 //! ## Expression Building vs. Evaluation
 //!
@@ -28,59 +34,28 @@
 //! ```
 //!
 //! **No computation happens.** The type `Sqrt<Sub<Add<Mul<X,X>, Mul<Y,Y>>, f32>>` is
-//! the abstract syntax tree (AST) that represents the computation. The expression tree
-//! is a first-class value you can pass around.
+//! the abstract syntax tree (AST) that represents the computation.
 //!
 //! ### Evaluation Phase
 //! ```ignore
 //! // Concrete SIMD evaluation
-//! let distance = circle.eval(3.0, 4.0, 0.0, 0.0);  // Returns Field (SIMD batch)
+//! let distance = circle.eval4(3.0, 4.0, 0.0, 0.0);  // Returns Field
 //!
 //! // Automatic differentiation
-//! let x = Jet2::x(3.0);
-//! let y = Jet2::y(4.0);
-//! let result = circle.eval_raw(x, y, Jet2::constant(0.0), ...);
+//! let result = circle.eval((Jet2::x(3.0), Jet2::y(4.0), ...));
 //! // result contains: value, ∂/∂x, ∂/∂y
-//! ```
-//!
-//! ## Key Design Principles
-//!
-//! 1. **Static Typing**: Expression structure is known at compile time
-//! 2. **Zero-Cost Abstractions**: All composition overhead erased by monomorphization
-//! 3. **Polymorphic by Default**: Same code works with any `Computational` type
-//! 4. **Declarative**: Express *what* to compute, not *how*
-//!
-//! ## Example: Building a Circle Signed Distance Field
-//!
-//! ```ignore
-//! use pixelflow_core::{ManifoldExt, X, Y, Jet2, Field, Manifold};
-//!
-//! // Build expression
-//! let circle = (X * X + Y * Y).sqrt() - 1.0;
-//!
-//! // Evaluate with Field (normal rendering)
-//! let val = circle.eval(3.0, 4.0, 0.0, 0.0);  // Returns Field ~= 4.0
-//!
-//! // Evaluate with Jet2 (automatic differentiation)
-//! let x_jet = Jet2::x(3.0);
-//! let y_jet = Jet2::y(4.0);
-//! let zero = Jet2::constant(0.0);
-//! let result = circle.eval_raw(x_jet, y_jet, zero, zero);
-//! // result.val = 4.0 (distance)
-//! // result.dx ≈ 0.6 (∂/∂x gradient)
-//! // result.dy ≈ 0.8 (∂/∂y gradient)
 //! ```
 //!
 //! ## Method Organization
 //!
-//! `ManifoldExt` methods fall into three categories:
-//!
-//! 1. **Evaluation**: `eval`, `eval_at`, `eval_raw`, `constant`
-//! 2. **Unary Operations**: `sqrt`, `abs`, `sin`, `cos`, `floor`, `rsqrt`
-//! 3. **Binary Operations**: `add`, `sub`, `mul`, `div`, `min`, `max`
-//! 4. **Comparisons**: `lt`, `le`, `gt`, `ge`, `select`
-//! 5. **Coordinate Transform**: `at` (remap coordinate space)
-//! 6. **Functor Operations**: `map` (apply a function to output)
+//! 1. **Unary Operations**: `sqrt`, `abs`, `sin`, `cos`, `floor`, `rsqrt`, etc.
+//! 2. **Binary Operations**: `add`, `sub`, `mul`, `div`, `min`, `max`
+//! 3. **Comparisons**: `lt`, `le`, `gt`, `ge`
+//! 4. **Selection**: `select` (branchless conditional)
+//! 5. **Evaluation** (Field4 only): `eval4`, `eval_at`, `constant`
+//! 6. **Coordinate Transform** (Field4 only): `at`
+//! 7. **Type Erasure** (Field4 only): `boxed`
+//! 8. **Functor Operations**: `map`, `lift`
 
 use crate::Manifold;
 use crate::combinators::{At, ClosureMap, Map, Select};
@@ -91,12 +66,12 @@ use crate::ops::{
 
 use alloc::sync::Arc;
 
-/// The standard 4D Field domain for boxed manifolds.
+/// The standard 4D Field domain for boxed manifolds and legacy APIs.
 type Field4 = (crate::Field, crate::Field, crate::Field, crate::Field);
 
 /// Type-erased manifold (returning Field), wrapped in a struct to allow trait implementations.
 ///
-/// Note: `BoxedManifold` is Field-specific because trait objects require a concrete type.
+/// Note: `BoxedManifold` is Field4-specific because trait objects require a concrete type.
 /// For generic numeric contexts, use static dispatch instead.
 #[derive(Clone)]
 pub struct BoxedManifold(pub Arc<dyn Manifold<Field4, Output = crate::Field>>);
@@ -110,8 +85,6 @@ impl Manifold<Field4> for BoxedManifold {
 }
 
 // Operator Implementations for BoxedManifold
-// This allows writing `a + b` where a or b are BoxedManifolds.
-
 impl<R: Manifold<Field4>> core::ops::Add<R> for BoxedManifold {
     type Output = Add<Self, R>;
     fn add(self, rhs: R) -> Self::Output {
@@ -142,45 +115,211 @@ impl<R: Manifold<Field4>> core::ops::Div<R> for BoxedManifold {
 
 /// Extension methods for composing manifolds.
 ///
-/// This trait provides a fluent API for building manifold expressions. The trait
-/// works with any manifold output type, with some methods specialized for `Field`.
-/// The resulting expression trees implement `Manifold<N>` for any `N: Numeric`,
-/// enabling evaluation with both `Field` and `Jet2`.
+/// This trait provides a fluent API for building manifold expressions. It is
+/// blanket-implemented for **all `Sized` types**, making combinator methods
+/// universally available.
 ///
-/// # Genericity of Expression Trees
+/// # Domain-Agnostic Combinators
 ///
-/// Expression types returned by methods (like `Sqrt<M>`, `Add<L, R>`, etc.) are
-/// fully generic and work with any numeric type:
+/// Methods like `.sqrt()`, `.abs()`, `.add()` just wrap `self` in a combinator
+/// struct. They don't need any trait bounds—the resulting struct will implement
+/// `Manifold<P>` for whatever domain `P` makes sense.
+///
+/// # Field4-Specific Methods
+///
+/// Some methods require the standard `Field4` domain:
+/// - `eval4`, `eval_at`, `constant` — convenience evaluation
+/// - `at` — coordinate space remapping
+/// - `boxed` — type erasure to trait object
+///
+/// These methods have where clauses restricting them to `Manifold<Field4>`.
+///
+/// # Example
 ///
 /// ```ignore
-/// let expr = X.sqrt();  // expr has type Sqrt<X>
-/// // Sqrt<X> implements:
-/// //   - Manifold<Field, Output = Field>
-/// //   - Manifold<Jet2, Output = Jet2>
+/// use pixelflow_core::{ManifoldExt, X, Y};
+///
+/// // Build expression - works everywhere
+/// let circle = (X * X + Y * Y).sqrt() - 1.0;
+///
+/// // Evaluate with Field4 convenience method
+/// let val = circle.eval4(3.0, 4.0, 0.0, 0.0);
+///
+/// // Inside kernel! macro - also works (no Field4 constraint on .sqrt())
+/// kernel!(|m: kernel| (DX(m) * DX(m) + DY(m) * DY(m)).sqrt())
 /// ```
-///
-/// # Example with Automatic Differentiation
-///
-/// ```ignore
-/// use pixelflow_core::{ManifoldExt, X, Y, Jet2, Manifold, Numeric};
-///
-/// // Build expression (works with any output type)
-/// let expr = X * X + Y;
-///
-/// // Evaluate with Jet2 for automatic differentiation
-/// let x = Jet2::x(5.0.into());
-/// let y = Jet2::y(3.0.into());
-/// let zero = Jet2::constant(0.0.into());
-/// let result = expr.eval_raw(x, y, zero, zero);
-/// // result.val = 28, result.dx = 10 (∂/∂x of x² + y), result.dy = 1 (∂/∂y)
-/// ```
-pub trait ManifoldExt: Manifold<Field4> + Sized {
+pub trait ManifoldExt: Sized {
+    // =========================================================================
+    // Unary Operations (no domain constraint)
+    // =========================================================================
+
+    /// Square root.
+    #[inline(always)]
+    fn sqrt(self) -> Sqrt<Self> {
+        Sqrt(self)
+    }
+
+    /// Negation (-x).
+    #[inline(always)]
+    fn neg(self) -> Neg<Self> {
+        Neg(self)
+    }
+
+    /// Reciprocal square root (1/sqrt(x)).
+    #[inline(always)]
+    fn rsqrt(self) -> Rsqrt<Self> {
+        Rsqrt(self)
+    }
+
+    /// Absolute value.
+    #[inline(always)]
+    fn abs(self) -> Abs<Self> {
+        Abs(self)
+    }
+
+    /// Floor (round toward negative infinity).
+    #[inline(always)]
+    fn floor(self) -> Floor<Self> {
+        Floor(self)
+    }
+
+    /// Sine function.
+    #[inline(always)]
+    fn sin(self) -> Sin<Self> {
+        Sin(self)
+    }
+
+    /// Cosine function.
+    #[inline(always)]
+    fn cos(self) -> Cos<Self> {
+        Cos(self)
+    }
+
+    /// Base-2 logarithm.
+    #[inline(always)]
+    fn log2(self) -> Log2<Self> {
+        Log2(self)
+    }
+
+    /// Base-2 exponential (2^x).
+    #[inline(always)]
+    fn exp2(self) -> Exp2<Self> {
+        Exp2(self)
+    }
+
+    // =========================================================================
+    // Binary Operations (no domain constraint)
+    // =========================================================================
+
+    /// Add two values.
+    #[inline(always)]
+    fn add<R>(self, rhs: R) -> Add<Self, R> {
+        Add(self, rhs)
+    }
+
+    /// Subtract two values.
+    #[inline(always)]
+    fn sub<R>(self, rhs: R) -> Sub<Self, R> {
+        Sub(self, rhs)
+    }
+
+    /// Multiply two values.
+    #[inline(always)]
+    fn mul<R>(self, rhs: R) -> Mul<Self, R> {
+        Mul(self, rhs)
+    }
+
+    /// Divide two values.
+    #[inline(always)]
+    fn div<R>(self, rhs: R) -> Div<Self, R> {
+        Div(self, rhs)
+    }
+
+    /// Element-wise maximum.
+    #[inline(always)]
+    fn max<R>(self, rhs: R) -> Max<Self, R> {
+        Max(self, rhs)
+    }
+
+    /// Element-wise minimum.
+    #[inline(always)]
+    fn min<R>(self, rhs: R) -> Min<Self, R> {
+        Min(self, rhs)
+    }
+
+    // =========================================================================
+    // Comparisons (no domain constraint)
+    // =========================================================================
+
+    /// Less than comparison.
+    #[inline(always)]
+    fn lt<R>(self, rhs: R) -> Lt<Self, R> {
+        Lt(self, rhs)
+    }
+
+    /// Greater than comparison.
+    #[inline(always)]
+    fn gt<R>(self, rhs: R) -> Gt<Self, R> {
+        Gt(self, rhs)
+    }
+
+    /// Less than or equal comparison.
+    #[inline(always)]
+    fn le<R>(self, rhs: R) -> Le<Self, R> {
+        Le(self, rhs)
+    }
+
+    /// Greater than or equal comparison.
+    #[inline(always)]
+    fn ge<R>(self, rhs: R) -> Ge<Self, R> {
+        Ge(self, rhs)
+    }
+
+    // =========================================================================
+    // Selection (no domain constraint)
+    // =========================================================================
+
+    /// Branchless conditional select.
+    ///
+    /// Returns `if_true` where `self` is non-zero, `if_false` elsewhere.
+    /// Both branches are always evaluated (SIMD branchless execution).
+    #[inline(always)]
+    fn select<T, F>(self, if_true: T, if_false: F) -> Select<Self, T, F> {
+        Select {
+            cond: self,
+            if_true,
+            if_false,
+        }
+    }
+
+    // =========================================================================
+    // Functor Operations (no domain constraint)
+    // =========================================================================
+
+    /// Transform the output of this manifold using another manifold.
+    ///
+    /// `self` output becomes the `X` coordinate for `transform`.
+    #[inline(always)]
+    fn map<T>(self, transform: T) -> Map<Self, T> {
+        Map::new(self, transform)
+    }
+
+    /// Lift this manifold's output to ray space via a covariant map.
+    #[inline(always)]
+    fn lift<F>(self, func: F) -> ClosureMap<Self, F>
+    where
+        F: Fn(crate::Field) -> crate::jet::PathJet<crate::Field> + Send + Sync,
+    {
+        ClosureMap::new(self, func)
+    }
+
+    // =========================================================================
+    // Field4-Specific: Evaluation
+    // =========================================================================
+
     /// Evaluate the manifold at the given coordinates.
     ///
-    /// This convenience method accepts types that convert to `Field`.
-    /// For evaluation with other numeric types (like `Jet2`), use `eval()` directly.
-    ///
-    /// Note: Only available for manifolds that output `Field`.
+    /// Convenience method that accepts types convertible to `Field`.
     #[inline(always)]
     fn eval4<
         A: Into<crate::Field>,
@@ -202,17 +341,8 @@ pub trait ManifoldExt: Manifold<Field4> + Sized {
 
     /// Evaluate the manifold at manifold-computed coordinates.
     ///
-    /// Takes coordinate expressions (manifolds), evaluates them at origin,
-    /// then evaluates self at those coordinates. Immediate execution, no AST.
-    ///
-    /// Note: Only available for manifolds that output `Field`.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Translate: evaluate inner at (x - dx, y - dy)
-    /// inner.eval_at(x - dx, y - dy, z, w)
-    /// ```
+    /// Takes coordinate expressions, evaluates them at origin, then evaluates
+    /// self at those coordinates.
     #[inline(always)]
     fn eval_at<Cx, Cy, Cz, Cw>(&self, x: Cx, y: Cy, z: Cz, w: Cw) -> crate::Field
     where
@@ -233,16 +363,7 @@ pub trait ManifoldExt: Manifold<Field4> + Sized {
 
     /// Collapse an AST expression to a concrete Field value.
     ///
-    /// Evaluates at origin (0,0,0,0). Use this to force evaluation of
-    /// lazy arithmetic expressions when you need a concrete Field.
-    ///
-    /// Note: Only available for manifolds that output `Field`.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let result = (x * x + y * y).sqrt().constant();
-    /// ```
+    /// Evaluates at origin (0,0,0,0).
     #[inline(always)]
     fn constant(&self) -> crate::Field
     where
@@ -252,244 +373,25 @@ pub trait ManifoldExt: Manifold<Field4> + Sized {
         self.eval((zero, zero, zero, zero))
     }
 
-    /// Transform the output of this manifold using another manifold.
-    ///
-    /// This is the algebraic map operation. It applies `transform` to the output of `self`.
-    /// `self` output becomes the `X` coordinate for `transform`.
-    /// The `Y`, `Z`, and `W` coordinates are passed through unchanged.
-    ///
-    /// # Arguments
-    ///
-    /// - `transform`: A manifold to apply to the output. `X` in `transform` refers to `self` output.
-    ///
-    /// # Returns
-    ///
-    /// A new manifold representing the transformation.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use pixelflow_core::{ManifoldExt, X};
-    ///
-    /// // Double the output
-    /// let doubled = X.map(X * 2.0);
-    /// ```
-    fn map<T>(self, transform: T) -> Map<Self, T> {
-        Map::new(self, transform)
-    }
-
-    /// Lift this manifold's output to ray space via a covariant map.
-    ///
-    /// This enables conversion from point space (Field) to ray space (PathJet).
-    /// The function transforms each Field output into a PathJet.
-    ///
-    /// Note: Only available for manifolds that output `Field`.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use pixelflow_core::{ManifoldExt, X, Y, jet::PathJet};
-    ///
-    /// // Convert screen coordinates to rays from origin
-    /// let ray_x = X.lift(PathJet::from_slope);  // origin=0, direction=X
-    /// let ray_y = Y.lift(PathJet::from_slope);  // origin=0, direction=Y
-    /// let ray_z = 1.0f32.lift(PathJet::from_slope);  // origin=0, direction=1 (forward)
-    /// ```
-    fn lift<F>(self, func: F) -> ClosureMap<Self, F>
-    where
-        F: Fn(crate::Field) -> crate::jet::PathJet<crate::Field> + Send + Sync,
-    {
-        ClosureMap::new(self, func)
-    }
-
-    /// Add two manifolds.
-    fn add<R: Manifold<Field4>>(self, rhs: R) -> Add<Self, R> {
-        Add(self, rhs)
-    }
-
-    /// Subtract two manifolds.
-    fn sub<R: Manifold<Field4>>(self, rhs: R) -> Sub<Self, R> {
-        Sub(self, rhs)
-    }
-
-    /// Multiply two manifolds.
-    fn mul<R: Manifold<Field4>>(self, rhs: R) -> Mul<Self, R> {
-        Mul(self, rhs)
-    }
-
-    /// Divide two manifolds.
-    fn div<R: Manifold<Field4>>(self, rhs: R) -> Div<Self, R> {
-        Div(self, rhs)
-    }
-
-    /// Square root.
-    fn sqrt(self) -> Sqrt<Self> {
-        Sqrt(self)
-    }
-
-    /// Negation (-x).
-    fn neg(self) -> Neg<Self> {
-        Neg(self)
-    }
-
-    /// Reciprocal square root (1/sqrt(x)).
-    fn rsqrt(self) -> Rsqrt<Self> {
-        Rsqrt(self)
-    }
-
-    /// Absolute value.
-    fn abs(self) -> Abs<Self> {
-        Abs(self)
-    }
-
-    /// Floor (round toward negative infinity).
-    fn floor(self) -> Floor<Self> {
-        Floor(self)
-    }
-
-    /// Sine function.
-    fn sin(self) -> Sin<Self> {
-        Sin(self)
-    }
-
-    /// Cosine function.
-    fn cos(self) -> Cos<Self> {
-        Cos(self)
-    }
-
-    /// Base-2 logarithm.
-    fn log2(self) -> Log2<Self> {
-        Log2(self)
-    }
-
-    /// Base-2 exponential (2^x).
-    fn exp2(self) -> Exp2<Self> {
-        Exp2(self)
-    }
-
-    /// Element-wise maximum.
-    fn max<R: Manifold<Field4>>(self, rhs: R) -> Max<Self, R> {
-        Max(self, rhs)
-    }
-
-    /// Element-wise minimum.
-    fn min<R: Manifold<Field4>>(self, rhs: R) -> Min<Self, R> {
-        Min(self, rhs)
-    }
-
-    /// Less than comparison.
-    fn lt<R: Manifold<Field4>>(self, rhs: R) -> Lt<Self, R> {
-        Lt(self, rhs)
-    }
-
-    /// Greater than comparison.
-    fn gt<R: Manifold<Field4>>(self, rhs: R) -> Gt<Self, R> {
-        Gt(self, rhs)
-    }
-
-    /// Less than or equal comparison.
-    fn le<R: Manifold<Field4>>(self, rhs: R) -> Le<Self, R> {
-        Le(self, rhs)
-    }
-
-    /// Greater than or equal comparison.
-    fn ge<R: Manifold<Field4>>(self, rhs: R) -> Ge<Self, R> {
-        Ge(self, rhs)
-    }
-
-    /// Branchless conditional select between two manifolds.
-    ///
-    /// Returns `if_true` where `self` is non-zero (treats as true), `if_false` elsewhere.
-    /// This is a **branchless** operation—both branches are evaluated, then one is selected
-    /// per SIMD lane. No control flow.
-    ///
-    /// # Arguments
-    ///
-    /// - `if_true`: Manifold to use where condition is true
-    /// - `if_false`: Manifold to use where condition is false
-    ///
-    /// # Returns
-    ///
-    /// A new manifold that computes the conditional selection.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use pixelflow_core::{ManifoldExt, X, Y};
-    ///
-    /// // Checkerboard pattern
-    /// let inside_circle = ((X * X + Y * Y) - 1.0).sqrt().lt(0.1);
-    /// let pattern = inside_circle.select(0.0, 1.0);
-    /// ```
-    ///
-    /// # Performance
-    ///
-    /// Both branches are always evaluated. For complex branches, this is more expensive
-    /// than a scalar `if` statement, but matches typical shader execution models where
-    /// lanes follow independent code paths.
-    fn select<T: Manifold<Field4>, F: Manifold<Field4>>(
-        self,
-        if_true: T,
-        if_false: F,
-    ) -> Select<Self, T, F> {
-        Select {
-            cond: self,
-            if_true,
-            if_false,
-        }
-    }
+    // =========================================================================
+    // Field4-Specific: Coordinate Transform
+    // =========================================================================
 
     /// Remap coordinate space before evaluating this manifold.
     ///
-    /// Creates a new manifold that first remaps the input coordinates, then evaluates
-    /// `self` at the remapped coordinates. This is the mechanism for coordinate transforms
-    /// like scaling, translation, and rotation.
+    /// Creates a manifold that first remaps input coordinates, then evaluates
+    /// `self` at the remapped coordinates.
     ///
-    /// # Arguments
-    ///
-    /// The coordinate arguments can be:
-    /// - **Constants**: `0.0`, `1.5`
-    /// - **Coordinate variables**: `X`, `Y`, `Z`, `W`
-    /// - **Expressions**: `X / scale`, `X - offset`, `sqrt(X * X + Y * Y)`
-    ///
-    /// # Returns
-    ///
-    /// A new manifold that first computes the coordinate transforms, then evaluates
-    /// the inner manifold at those coordinates.
-    ///
-    /// # Example: Scale
+    /// # Example
     ///
     /// ```ignore
-    /// use pixelflow_core::{ManifoldExt, X, Y};
-    ///
-    /// let circle = (X * X + Y * Y).sqrt() - 1.0;
-    ///
-    /// // Scale by 2: sample at (x/2, y/2) instead of (x, y)
-    /// let scale_factor = 2.0;
-    /// let scaled = circle.at(
-    ///     X / scale_factor,
-    ///     Y / scale_factor,
-    ///     Z,
-    ///     W,
-    /// );
+    /// // Scale by 2: sample at (x/2, y/2)
+    /// let scaled = circle.at(X / 2.0, Y / 2.0, Z, W);
     /// ```
-    ///
-    /// # Example: Polar Coordinates
-    ///
-    /// ```ignore
-    /// // Convert to polar, then evaluate manifold in polar space
-    /// let radius = (X * X + Y * Y).sqrt();
-    /// let angle = (Y.atan2(X)) / std::f32::consts::TAU;
-    /// let warped = manifold.at(radius, angle, Z, W);
-    /// ```
-    ///
-    /// # Implementation Note
-    ///
-    /// The coordinate transforms are themselves manifolds (expressions built from operators).
-    /// When you call `at`, you're composing two manifolds: the coordinate transform and
-    /// the inner manifold. The resulting type captures both.
+    #[inline(always)]
     fn at<Cx, Cy, Cz, Cw>(self, x: Cx, y: Cy, z: Cz, w: Cw) -> At<Cx, Cy, Cz, Cw, Self>
     where
+        Self: Manifold<Field4>,
         Cx: Manifold<Field4>,
         Cy: Manifold<Field4>,
         Cz: Manifold<Field4>,
@@ -504,12 +406,15 @@ pub trait ManifoldExt: Manifold<Field4> + Sized {
         }
     }
 
+    // =========================================================================
+    // Field4-Specific: Type Erasure
+    // =========================================================================
+
     /// Type-erase this manifold into a boxed trait object.
     ///
-    /// Note: Boxing erases the static type and fixes evaluation to `Field`.
+    /// Boxing erases the static type and fixes evaluation to `Field4` domain.
     /// For `Jet2` evaluation, keep the expression statically typed.
-    ///
-    /// Only available for manifolds that output `Field`.
+    #[inline(always)]
     fn boxed(self) -> BoxedManifold
     where
         Self: Manifold<Field4, Output = crate::Field> + 'static,
@@ -518,9 +423,44 @@ pub trait ManifoldExt: Manifold<Field4> + Sized {
     }
 }
 
-/// Blanket implementation for all manifolds on Field4 domain.
+/// Marker trait for types that are manifold expressions.
 ///
-/// This makes the DSL methods available for any manifold on the standard 4D Field domain.
-/// Field-specific methods (eval4, constant, map, etc.) are only available when the
-/// manifold outputs `Field`, enforced by where clauses on those methods.
-impl<T: Manifold<Field4> + Sized> ManifoldExt for T {}
+/// `ManifoldExt` methods are only available on types that implement this trait.
+/// This prevents method name conflicts with standard library traits like
+/// `Iterator::map`, `Iterator::min`, `Iterator::max`, `Ord::min`, `Ord::max`.
+///
+/// ## Deriving
+///
+/// Use `#[derive(ManifoldExpr)]` from `pixelflow_macros` to implement this trait:
+///
+/// ```ignore
+/// use pixelflow_macros::ManifoldExpr;
+///
+/// #[derive(ManifoldExpr)]
+/// pub struct MyCustomCombinator<M>(pub M);
+/// ```
+///
+/// ## Built-in Implementations
+///
+/// All standard PixelFlow types implement this trait:
+/// - Coordinate variables: `X`, `Y`, `Z`, `W`
+/// - Combinators: `Sqrt`, `Add`, `Mul`, `Select`, etc.
+/// - Binding: `Let`, `Var`
+/// - Scalars: `f32`, `i32`, `Field`
+pub trait ManifoldExpr {}
+
+/// Blanket implementation: ManifoldExt is available for ManifoldExpr types.
+///
+/// This enables method chaining on manifold expression trees while avoiding
+/// conflicts with standard library traits. Field4-specific methods are further
+/// gated by where clauses on those individual methods.
+impl<T: ManifoldExpr> ManifoldExt for T {}
+
+// ============================================================================
+// ManifoldExpr implementations for scalar types
+// ============================================================================
+
+impl ManifoldExpr for f32 {}
+impl ManifoldExpr for i32 {}
+impl ManifoldExpr for crate::Field {}
+impl ManifoldExpr for BoxedManifold {}

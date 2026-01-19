@@ -80,6 +80,9 @@ pub enum Expr {
     /// A method call (x.sqrt(), a.max(b), etc.).
     MethodCall(MethodCallExpr),
 
+    /// A free function call (V(m), DX(expr), sin(x), etc.).
+    Call(CallExpr),
+
     /// A block expression ({ let dx = ...; dx * dx }).
     Block(BlockExpr),
 
@@ -154,6 +157,16 @@ pub struct MethodCallExpr {
     /// The method name (sqrt, sin, max, etc.).
     pub method: Ident,
     /// Method arguments (empty for sqrt, one arg for max, etc.).
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
+/// A free function call expression (V(m), DX(expr), etc.).
+#[derive(Debug, Clone)]
+pub struct CallExpr {
+    /// The function being called (V, DX, DY, etc.).
+    pub func: Ident,
+    /// Function arguments.
     pub args: Vec<Expr>,
     pub span: Span,
 }

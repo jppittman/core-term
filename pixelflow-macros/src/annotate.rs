@@ -19,7 +19,7 @@
 //! `Var<N>` references bound via `Let`. The annotation pass assigns each
 //! literal its Var index.
 
-use crate::ast::{BinaryOp, BlockExpr, Expr, IdentExpr, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, Stmt, UnaryOp};
 use proc_macro2::Span;
 use syn::{Ident, Lit, Type};
 
@@ -52,6 +52,7 @@ pub enum AnnotatedExpr {
     Binary(AnnotatedBinary),
     Unary(AnnotatedUnary),
     MethodCall(AnnotatedMethodCall),
+    Call(AnnotatedCall),
     Block(AnnotatedBlock),
     Paren(Box<AnnotatedExpr>),
     Verbatim(syn::Expr),
@@ -86,6 +87,14 @@ pub struct AnnotatedUnary {
 pub struct AnnotatedMethodCall {
     pub receiver: Box<AnnotatedExpr>,
     pub method: Ident,
+    pub args: Vec<AnnotatedExpr>,
+    pub span: Span,
+}
+
+/// A free function call (V(m), DX(expr), etc.).
+#[derive(Debug, Clone)]
+pub struct AnnotatedCall {
+    pub func: Ident,
     pub args: Vec<AnnotatedExpr>,
     pub span: Span,
 }
@@ -223,6 +232,25 @@ fn annotate_expr(
         Expr::Paren(inner) => {
             let (annotated, ctx1) = annotate_expr(inner, ctx, literals);
             (AnnotatedExpr::Paren(Box::new(annotated)), ctx1)
+        }
+
+        Expr::Call(call) => {
+            // Annotate all arguments (this is where manifold param rewriting happens)
+            let mut ctx1 = ctx;
+            let mut args = Vec::with_capacity(call.args.len());
+            for arg in &call.args {
+                let (annotated_arg, new_ctx) = annotate_expr(arg, ctx1, literals);
+                args.push(annotated_arg);
+                ctx1 = new_ctx;
+            }
+            (
+                AnnotatedExpr::Call(AnnotatedCall {
+                    func: call.func.clone(),
+                    args,
+                    span: call.span,
+                }),
+                ctx1,
+            )
         }
 
         Expr::Verbatim(syn_expr) => (AnnotatedExpr::Verbatim(syn_expr.clone()), ctx),

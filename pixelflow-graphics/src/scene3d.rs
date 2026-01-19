@@ -17,7 +17,7 @@
 
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
-use pixelflow_macros::kernel;
+use pixelflow_macros::{kernel, ManifoldExpr};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
@@ -37,7 +37,7 @@ type PathJet4 = (PathJet<Jet3>, PathJet<Jet3>, PathJet<Jet3>, PathJet<Jet3>);
 /// Uses `From<Jet3> for Field` to project jet coordinates to values,
 /// discarding derivatives. Use this for constant-valued manifolds
 /// (like Color) that don't need derivative information.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct Lift<M>(pub M);
 
 impl<M: ManifoldCompat<Field> + Send + Sync> Manifold<Jet3_4> for Lift<M> {
@@ -82,7 +82,7 @@ impl Manifold<Jet3_4> for FieldMask {
 ///
 /// The Chain Rule propagates these derivatives into the ray direction,
 /// allowing Materials to know "how the ray changes" across the pixel.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct ScreenToDir<M> {
     pub inner: M,
 }
@@ -118,7 +118,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Field4> for ScreenToDir<M
 /// Converts screen coordinates to ray direction jets, outputting Discrete.
 ///
 /// Same as ScreenToDir but for color (Discrete) pipelines.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct ColorScreenToDir<M> {
     pub inner: M,
 }
@@ -167,7 +167,7 @@ pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
 ///
 /// Single-step intersection: hit base plane, sample height, adjust t.
 /// No iteration - just one evaluation of the height manifold.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct HeightFieldGeometry<H> {
     pub height_field: H,
     pub base_height: f32,
@@ -229,7 +229,7 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 /// Performs **The Warp**: `P = ray * t`.
 /// Because `t` carries derivatives from Layer 1, and `ray` carries derivatives
 /// from Root, `P` automatically contains the Surface Tangent Frame via the Chain Rule.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct Surface<G, M, B> {
     pub geometry: G,   // Returns t
     pub material: M,   // Evaluates at Hit Point P
@@ -301,7 +301,7 @@ where
 }
 
 /// Color Surface: geometry + material + background, outputs Discrete.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct ColorSurface<G, M, B> {
     pub geometry: G,
     pub material: M,
@@ -391,7 +391,7 @@ pub trait Scene {
 /// Evaluates S1's mask first. If hit, use S1's color.
 /// Otherwise, evaluate S2's mask. If hit, use S2's color.
 /// Otherwise, use background.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct Union<S1, S2, B> {
     pub first: S1,
     pub second: S2,
@@ -434,14 +434,14 @@ where
 ///
 /// Unlike ColorSurface which hides the mask, SceneObject exposes it
 /// for use in Union composition.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct SceneObject<G, M> {
     pub geometry: G,
     pub material: M,
 }
 
 /// Mask manifold for geometry hit detection.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct GeometryMask<G> {
     geometry: G,
 }
@@ -466,7 +466,7 @@ impl<G: ManifoldCompat<Jet3, Output = Jet3>> Manifold<Jet3_4> for GeometryMask<G
 }
 
 /// Color manifold for material evaluation at hit point.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct GeometryColor<G, M> {
     geometry: G,
     material: M,
@@ -522,7 +522,7 @@ where
 
 /// Reflect: The Crown Jewel.
 /// Reconstructs surface normal from the Tangent Frame implied by the Jet derivatives.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct Reflect<M> {
     pub inner: M,
 }
@@ -628,7 +628,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
 }
 
 /// Color Reflect: Householder reflection, wraps Discrete material.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct ColorReflect<M> {
     pub inner: M,
 }
@@ -950,7 +950,7 @@ where
 
 /// Checkerboard pattern based on X/Z coordinates.
 /// Uses Jet3 derivatives for automatic antialiasing at edges.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct Checker;
 
 impl Manifold<Jet3_4> for Checker {
@@ -1017,7 +1017,7 @@ pub fn sky() -> Lift<impl Manifold<Field4, Output = Field> + Copy> {
 /// Generic over `C` to support different pixel formats (RGBA, BGRA).
 /// Use `ColorSky<RgbaColorCube>` for RGBA byte order (macOS, Web).
 /// Use `ColorSky<BgraColorCube>` for BGRA byte order (Linux X11).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct ColorSky<C> {
     _cube: core::marker::PhantomData<C>,
 }
@@ -1058,7 +1058,7 @@ where
 /// Generic over `C` to support different pixel formats (RGBA, BGRA).
 /// Use `ColorChecker<RgbaColorCube>` for RGBA byte order (macOS, Web).
 /// Use `ColorChecker<BgraColorCube>` for BGRA byte order (Linux X11).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 pub struct ColorChecker<C> {
     _cube: core::marker::PhantomData<C>,
 }

@@ -155,12 +155,12 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn sqrt(self) -> Self {
+    fn simd_sqrt(self) -> Self {
         unsafe { Self(_mm_sqrt_ps(self.0)) }
     }
 
     #[inline(always)]
-    fn abs(self) -> Self {
+    fn simd_abs(self) -> Self {
         unsafe {
             // Mask off sign bit (bit 31)
             let mask = _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF));
@@ -169,17 +169,17 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn min(self, rhs: Self) -> Self {
+    fn simd_min(self, rhs: Self) -> Self {
         unsafe { Self(_mm_min_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn max(self, rhs: Self) -> Self {
+    fn simd_max(self, rhs: Self) -> Self {
         unsafe { Self(_mm_max_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn select(mask: Mask4, if_true: Self, if_false: Self) -> Self {
+    fn simd_select(mask: Mask4, if_true: Self, if_false: Self) -> Self {
         unsafe {
             // (mask & if_true) | (!mask & if_false)
             // _mm_andnot_ps(a, b) computes (!a) & b
@@ -211,7 +211,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn floor(self) -> Self {
+    fn simd_floor(self) -> Self {
         unsafe {
             // SSE2 floor emulation:
             // 1. Truncate toward zero
@@ -255,7 +255,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn rsqrt(self) -> Self {
+    fn simd_rsqrt(self) -> Self {
         // Fast reciprocal square root (~12 bits accuracy)
         // Sufficient for AA coverage calculations
         unsafe { Self(_mm_rsqrt_ps(self.0)) }
@@ -297,7 +297,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn log2(self) -> Self {
+    fn simd_log2(self) -> Self {
         // SSE2: Use bit manipulation for exponent/mantissa extraction
         // log2(x) = exponent + log2(mantissa) where mantissa ∈ [1, 2)
         unsafe {
@@ -333,7 +333,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn exp2(self) -> Self {
+    fn simd_exp2(self) -> Self {
         // SSE2: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {
             // n = floor(x), f = x - n
@@ -755,12 +755,12 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn sqrt(self) -> Self {
+    fn simd_sqrt(self) -> Self {
         unsafe { Self(_mm256_sqrt_ps(self.0)) }
     }
 
     #[inline(always)]
-    fn abs(self) -> Self {
+    fn simd_abs(self) -> Self {
         unsafe {
             let mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
             Self(_mm256_and_ps(self.0, mask))
@@ -768,17 +768,17 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn min(self, rhs: Self) -> Self {
+    fn simd_min(self, rhs: Self) -> Self {
         unsafe { Self(_mm256_min_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn max(self, rhs: Self) -> Self {
+    fn simd_max(self, rhs: Self) -> Self {
         unsafe { Self(_mm256_max_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn select(mask: Mask8, if_true: Self, if_false: Self) -> Self {
+    fn simd_select(mask: Mask8, if_true: Self, if_false: Self) -> Self {
         unsafe { Self(_mm256_blendv_ps(if_false.0, if_true.0, mask.0)) }
     }
 
@@ -797,7 +797,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn floor(self) -> Self {
+    fn simd_floor(self) -> Self {
         unsafe { Self(_mm256_floor_ps(self.0)) }
     }
 
@@ -827,7 +827,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn rsqrt(self) -> Self {
+    fn simd_rsqrt(self) -> Self {
         unsafe { Self(_mm256_rsqrt_ps(self.0)) }
     }
 
@@ -865,7 +865,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn log2(self) -> Self {
+    fn simd_log2(self) -> Self {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
@@ -909,7 +909,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn exp2(self) -> Self {
+    fn simd_exp2(self) -> Self {
         unsafe {
             // n = floor(x), f = x - n
             let n = _mm256_floor_ps(self.0);
@@ -1358,12 +1358,12 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn sqrt(self) -> Self {
+    fn simd_sqrt(self) -> Self {
         unsafe { Self(_mm512_sqrt_ps(self.0)) }
     }
 
     #[inline(always)]
-    fn abs(self) -> Self {
+    fn simd_abs(self) -> Self {
         unsafe {
             let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(0x7FFFFFFF));
             Self(_mm512_and_ps(self.0, abs_mask))
@@ -1371,17 +1371,17 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn min(self, rhs: Self) -> Self {
+    fn simd_min(self, rhs: Self) -> Self {
         unsafe { Self(_mm512_min_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn max(self, rhs: Self) -> Self {
+    fn simd_max(self, rhs: Self) -> Self {
         unsafe { Self(_mm512_max_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn select(mask: Mask16, if_true: Self, if_false: Self) -> Self {
+    fn simd_select(mask: Mask16, if_true: Self, if_false: Self) -> Self {
         // Native k-register blend - no conversion needed!
         // vblendmps uses k-register directly
         unsafe { Self(_mm512_mask_blend_ps(mask.0, if_false.0, if_true.0)) }
@@ -1406,7 +1406,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn floor(self) -> Self {
+    fn simd_floor(self) -> Self {
         unsafe {
             // AVX-512: use roundscale with floor mode (1 = floor, bit 3 = suppress exceptions)
             // imm8 = 0b1001 = 9
@@ -1434,7 +1434,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn rsqrt(self) -> Self {
+    fn simd_rsqrt(self) -> Self {
         // Fast reciprocal square root (~14 bits accuracy)
         // Sufficient for AA coverage calculations
         unsafe { Self(_mm512_rsqrt14_ps(self.0)) }
@@ -1489,7 +1489,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn log2(self) -> Self {
+    fn simd_log2(self) -> Self {
         // AVX-512: Use dedicated getexp/getmant intrinsics
         // log2(x) = exponent + log2(mantissa)
         unsafe {
@@ -1522,7 +1522,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn exp2(self) -> Self {
+    fn simd_exp2(self) -> Self {
         // AVX-512: Use scalef for efficient 2^n computation
         // 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {

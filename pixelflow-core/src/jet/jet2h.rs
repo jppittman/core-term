@@ -964,3 +964,41 @@ impl From<Jet2H> for Field {
         jet.val
     }
 }
+
+// ============================================================================
+// HasDerivatives and HasHessian trait implementations (for derivative accessors)
+// ============================================================================
+
+impl crate::ops::derivative::HasDerivatives for Jet2H {
+    #[inline(always)]
+    fn val(&self) -> Field {
+        self.val
+    }
+
+    #[inline(always)]
+    fn dx(&self) -> Field {
+        self.dx
+    }
+
+    #[inline(always)]
+    fn dy(&self) -> Field {
+        self.dy
+    }
+}
+
+impl crate::ops::derivative::HasHessian for Jet2H {
+    #[inline(always)]
+    fn dxx(&self) -> Field {
+        self.dxx
+    }
+
+    #[inline(always)]
+    fn dxy(&self) -> Field {
+        self.dxy
+    }
+
+    #[inline(always)]
+    fn dyy(&self) -> Field {
+        self.dyy
+    }
+}

@@ -28,6 +28,7 @@
 //! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
 use pixelflow_core::{Field, Lt, Manifold, ManifoldCompat, ManifoldExt, Select, X, Y};
+use pixelflow_macros::ManifoldExpr;
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);

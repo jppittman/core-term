@@ -108,27 +108,27 @@ impl SimdOps for ScalarF32 {
     }
 
     #[inline(always)]
-    fn sqrt(self) -> Self {
+    fn simd_sqrt(self) -> Self {
         Self(libm::sqrtf(self.0))
     }
 
     #[inline(always)]
-    fn abs(self) -> Self {
+    fn simd_abs(self) -> Self {
         Self(libm::fabsf(self.0))
     }
 
     #[inline(always)]
-    fn min(self, rhs: Self) -> Self {
+    fn simd_min(self, rhs: Self) -> Self {
         Self(if self.0 < rhs.0 { self.0 } else { rhs.0 })
     }
 
     #[inline(always)]
-    fn max(self, rhs: Self) -> Self {
+    fn simd_max(self, rhs: Self) -> Self {
         Self(if self.0 > rhs.0 { self.0 } else { rhs.0 })
     }
 
     #[inline(always)]
-    fn select(mask: MaskScalar, if_true: Self, if_false: Self) -> Self {
+    fn simd_select(mask: MaskScalar, if_true: Self, if_false: Self) -> Self {
         Self(if mask.0 { if_true.0 } else { if_false.0 })
     }
 
@@ -144,7 +144,7 @@ impl SimdOps for ScalarF32 {
     }
 
     #[inline(always)]
-    fn floor(self) -> Self {
+    fn simd_floor(self) -> Self {
         Self(libm::floorf(self.0))
     }
 
@@ -165,7 +165,7 @@ impl SimdOps for ScalarF32 {
     }
 
     #[inline(always)]
-    fn rsqrt(self) -> Self {
+    fn simd_rsqrt(self) -> Self {
         Self(1.0 / libm::sqrtf(self.0))
     }
 
@@ -197,12 +197,12 @@ impl SimdOps for ScalarF32 {
     }
 
     #[inline(always)]
-    fn log2(self) -> Self {
+    fn simd_log2(self) -> Self {
         Self(libm::log2f(self.0))
     }
 
     #[inline(always)]
-    fn exp2(self) -> Self {
+    fn simd_exp2(self) -> Self {
         Self(libm::exp2f(self.0))
     }
 }

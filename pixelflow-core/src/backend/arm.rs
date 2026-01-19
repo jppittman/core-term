@@ -192,27 +192,27 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn sqrt(self) -> Self {
+    fn simd_sqrt(self) -> Self {
         unsafe { Self(vsqrtq_f32(self.0)) }
     }
 
     #[inline(always)]
-    fn abs(self) -> Self {
+    fn simd_abs(self) -> Self {
         unsafe { Self(vabsq_f32(self.0)) }
     }
 
     #[inline(always)]
-    fn min(self, rhs: Self) -> Self {
+    fn simd_min(self, rhs: Self) -> Self {
         unsafe { Self(vminq_f32(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn max(self, rhs: Self) -> Self {
+    fn simd_max(self, rhs: Self) -> Self {
         unsafe { Self(vmaxq_f32(self.0, rhs.0)) }
     }
 
     #[inline(always)]
-    fn select(mask: Mask4, if_true: Self, if_false: Self) -> Self {
+    fn simd_select(mask: Mask4, if_true: Self, if_false: Self) -> Self {
         unsafe {
             let result = vbslq_f32(mask.0, if_true.0, if_false.0);
             Self(result)
@@ -241,7 +241,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn floor(self) -> Self {
+    fn simd_floor(self) -> Self {
         unsafe { Self(vrndmq_f32(self.0)) }
     }
 
@@ -275,7 +275,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn rsqrt(self) -> Self {
+    fn simd_rsqrt(self) -> Self {
         // NEON approximate reciprocal square root (~8 bits accuracy)
         // One Newton-Raphson iteration improves to ~16 bits
         unsafe {
@@ -325,7 +325,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn log2(self) -> Self {
+    fn simd_log2(self) -> Self {
         // NEON: Use bit manipulation for exponent/mantissa extraction
         // log2(x) = exponent + log2(mantissa) where mantissa ∈ [1, 2)
         unsafe {
@@ -360,7 +360,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn exp2(self) -> Self {
+    fn simd_exp2(self) -> Self {
         // NEON: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         // Use polynomial approximation for 2^f
         unsafe {
