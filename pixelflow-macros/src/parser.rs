@@ -28,7 +28,7 @@
 
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, KernelDef, LetStmt, LiteralExpr,
-    MethodCallExpr, Param, Stmt, UnaryExpr, UnaryOp,
+    MethodCallExpr, Param, ParamKind, Stmt, UnaryExpr, UnaryOp,
 };
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
@@ -60,7 +60,14 @@ impl Parse for KernelDef {
                 // Parse type
                 let ty: Type = input.parse()?;
 
-                params.push(Param { name: ident, ty });
+                // Detect `kernel` keyword as manifold parameter marker
+                let kind = if is_kernel_keyword(&ty) {
+                    ParamKind::Manifold
+                } else {
+                    ParamKind::Scalar(ty)
+                };
+
+                params.push(Param { name: ident, kind });
 
                 // Check for comma or end of params
                 if input.peek(Token![,]) {
@@ -90,6 +97,15 @@ impl Parse for KernelDef {
         let body = convert_expr(syn_expr)?;
 
         Ok(KernelDef { params, return_ty, body })
+    }
+}
+
+/// Check if a type is the `kernel` keyword (manifold parameter marker).
+fn is_kernel_keyword(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        type_path.path.is_ident("kernel")
+    } else {
+        false
     }
 }
 
@@ -331,5 +347,36 @@ mod tests {
         let input = quote! { |cx: f32| X - cx };
         let kernel = parse(input).unwrap();
         assert!(kernel.return_ty.is_none());
+    }
+
+    #[test]
+    fn parse_manifold_param() {
+        // `kernel` keyword marks a manifold parameter
+        let input = quote! { |inner: kernel, r: f32| inner - r };
+        let kernel = parse(input).unwrap();
+        assert_eq!(kernel.params.len(), 2);
+
+        // First param should be Manifold
+        assert!(
+            matches!(kernel.params[0].kind, ParamKind::Manifold),
+            "expected inner to be Manifold param"
+        );
+        assert_eq!(kernel.params[0].name.to_string(), "inner");
+
+        // Second param should be Scalar(f32)
+        assert!(
+            matches!(kernel.params[1].kind, ParamKind::Scalar(_)),
+            "expected r to be Scalar param"
+        );
+        assert_eq!(kernel.params[1].name.to_string(), "r");
+    }
+
+    #[test]
+    fn parse_multiple_manifold_params() {
+        let input = quote! { |a: kernel, b: kernel| a + b };
+        let kernel = parse(input).unwrap();
+        assert_eq!(kernel.params.len(), 2);
+        assert!(matches!(kernel.params[0].kind, ParamKind::Manifold));
+        assert!(matches!(kernel.params[1].kind, ParamKind::Manifold));
     }
 }
