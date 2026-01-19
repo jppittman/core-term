@@ -4,6 +4,7 @@
 //! through rasterization to file output.
 
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt, X, Y};
+use pixelflow_macros::kernel;
 use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
 
 type Field4 = (Field, Field, Field, Field);
@@ -106,27 +107,21 @@ fn e2e_render_gradient() {
 
 /// A radial gradient from center (1.0) to edge (0.0).
 /// Uses parabolic falloff (simpler than true radial).
-#[derive(Clone, Copy)]
-struct RadialGradient {
+///
+/// Clean kernel! version - no manual tuple destructuring, no Field::from(),
+/// no .constant(), uses X/Y coordinate variables directly.
+fn radial_gradient(
     cx: f32,
     cy: f32,
     radius_sq: f32,
-}
-
-impl Manifold<Field4> for RadialGradient {
-    type Output = Field;
-
-    fn eval(&self, p: Field4) -> Field {
-        let (x, y, _z, _w) = p;
-        let dx = x - Field::from(self.cx);
-        let dy = y - Field::from(self.cy);
-        let dist_sq = dx.clone() * dx + dy.clone() * dy;
-
+) -> impl Manifold<Field4, Output = Field> + Clone {
+    kernel!(|cx: f32, cy: f32, radius_sq: f32| {
+        let dx = X - cx;
+        let dy = Y - cy;
+        let dist_sq = dx * dx + dy * dy;
         // 1.0 at center, 0.0 at edge (parabolic falloff)
-        // Values outside radius will go negative, but Pixel::from_rgba clamps
-        let normalized_sq = dist_sq / Field::from(self.radius_sq);
-        (Field::from(1.0) - normalized_sq).constant()
-    }
+        1.0 - dist_sq / radius_sq
+    })(cx, cy, radius_sq)
 }
 
 #[test]
@@ -134,11 +129,11 @@ fn e2e_render_radial_gradient() {
     const SIZE: u32 = 200;
 
     // Use Grayscale to convert a scalar field to grayscale
-    let radial = Grayscale(RadialGradient {
-        cx: SIZE as f32 / 2.0,
-        cy: SIZE as f32 / 2.0,
-        radius_sq: (SIZE as f32 / 2.0) * (SIZE as f32 / 2.0),
-    });
+    let radial = Grayscale(radial_gradient(
+        SIZE as f32 / 2.0,
+        SIZE as f32 / 2.0,
+        (SIZE as f32 / 2.0) * (SIZE as f32 / 2.0),
+    ));
 
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
 

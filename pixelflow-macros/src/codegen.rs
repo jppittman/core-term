@@ -45,7 +45,7 @@
 //! ```
 
 use crate::annotate::{
-    annotate, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
+    annotate, AnnotatedCall, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
 };
 use crate::ast::{BinaryOp, ParamKind, UnaryOp};
 use crate::sema::AnalyzedKernel;
@@ -242,7 +242,7 @@ impl<'a> CodeEmitter<'a> {
                             &self,
                             __p: __Domain,
                         ) -> #output_type {
-                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var, GradientMag2D, GradientMag3D, Antialias2D, Antialias3D, Curvature2D, Normalized2D, Normalized3D, V, DX, DY, DZ, DXX, DXY, DYY};
                             #peano_imports
 
                             let __expr = { #body };
@@ -271,7 +271,7 @@ impl<'a> CodeEmitter<'a> {
                             &self,
                             __p: __Domain,
                         ) -> #output_type {
-                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var, GradientMag2D, GradientMag3D, Antialias2D, Antialias3D, Curvature2D, Normalized2D, Normalized3D, V, DX, DY, DZ, DXX, DXY, DYY};
                             #peano_imports
 
                             let __expr = { #body };
@@ -283,12 +283,13 @@ impl<'a> CodeEmitter<'a> {
                 }
             }
         } else if manifold_count == 0 {
-            // Multiple scalar parameters - no auto-Copy
+            // Multiple scalar parameters - Clone but not Copy
             quote! {
                 {
                     type __Domain = #domain_type;
                     type __Scalar = #scalar_type;
 
+                    #[derive(Clone)]
                     struct __Kernel { #(#struct_fields),* }
 
                     impl ::pixelflow_core::Manifold<__Domain> for __Kernel {
@@ -299,7 +300,7 @@ impl<'a> CodeEmitter<'a> {
                             &self,
                             __p: __Domain,
                         ) -> #output_type {
-                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var, GradientMag2D, GradientMag3D, Antialias2D, Antialias3D, Curvature2D, Normalized2D, Normalized3D, V, DX, DY, DZ, DXX, DXY, DYY};
                             #peano_imports
 
                             let __expr = { #body };
@@ -313,101 +314,219 @@ impl<'a> CodeEmitter<'a> {
         } else if manifold_count == 1 && params.len() == 1 {
             // Single manifold parameter - conditional Copy when M0: Copy
             // This enables ZST composition: if inner kernel is ZST+Copy, outer is too
-            let trait_bounds: Vec<TokenStream> = generic_names
-                .iter()
-                .map(|g| {
-                    quote! { #g: ::pixelflow_core::Manifold<__Domain, Output = __Scalar> }
-                })
-                .collect();
 
-            quote! {
-                {
-                    type __Domain = #domain_type;
-                    type __Scalar = #scalar_type;
+            // Check if we have an explicit return type - if not, use generic domain
+            let has_return_type = self.analyzed.def.return_ty.is_some();
 
-                    struct __Kernel<#(#generic_names),*> { #(#struct_fields),* }
+            if has_return_type {
+                // Explicit return type → fixed domain (Jet2_4, Jet3_4, or Field4)
+                let trait_bounds: Vec<TokenStream> = generic_names
+                    .iter()
+                    .map(|g| {
+                        quote! { #g: ::pixelflow_core::Manifold<__Domain, Output = __Scalar> }
+                    })
+                    .collect();
 
-                    // Clone when inner is Clone
-                    impl<#(#generic_names: Clone),*> Clone for __Kernel<#(#generic_names),*> {
-                        fn clone(&self) -> Self {
-                            Self { #(#field_names: self.#field_names.clone()),* }
-                        }
-                    }
-
-                    // Copy when inner is Copy (ZST kernels are Copy via zst.rs)
-                    impl<#(#generic_names: Copy),*> Copy for __Kernel<#(#generic_names),*> {}
-
-                    impl<#(#generic_names),*> ::pixelflow_core::Manifold<__Domain> for __Kernel<#(#generic_names),*>
-                    where
-                        #(#trait_bounds),*
+                quote! {
                     {
-                        type Output = #output_type;
+                        type __Domain = #domain_type;
+                        type __Scalar = #scalar_type;
 
-                        #[inline(always)]
-                        fn eval(
-                            &self,
-                            __p: __Domain,
-                        ) -> #output_type {
-                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
-                            #peano_imports
+                        struct __Kernel<#(#generic_names),*> { #(#struct_fields),* }
 
-                            // Evaluate manifold parameters at current point (borrows via &self)
-                            #manifold_eval_stmts
-
-                            // Build the ZST expression tree using Var<N> for ALL parameters
-                            let __expr = { #body };
-
-                            // Wrap in nested Let bindings and evaluate
-                            #at_binding
+                        // Clone when inner is Clone
+                        impl<#(#generic_names: Clone),*> Clone for __Kernel<#(#generic_names),*> {
+                            fn clone(&self) -> Self {
+                                Self { #(#field_names: self.#field_names.clone()),* }
+                            }
                         }
-                    }
 
-                    |#(#closure_params),*| __Kernel { #(#field_names),* }
+                        // Copy when inner is Copy (ZST kernels are Copy via zst.rs)
+                        impl<#(#generic_names: Copy),*> Copy for __Kernel<#(#generic_names),*> {}
+
+                        impl<#(#generic_names),*> ::pixelflow_core::Manifold<__Domain> for __Kernel<#(#generic_names),*>
+                        where
+                            #(#trait_bounds),*
+                        {
+                            type Output = #output_type;
+
+                            #[inline(always)]
+                            fn eval(
+                                &self,
+                                __p: __Domain,
+                            ) -> #output_type {
+                                use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var, GradientMag2D, GradientMag3D, Antialias2D, Antialias3D, Curvature2D, Normalized2D, Normalized3D, V, DX, DY, DZ, DXX, DXY, DYY};
+                                #peano_imports
+
+                                // Evaluate manifold parameters at current point (borrows via &self)
+                                #manifold_eval_stmts
+
+                                // Build the ZST expression tree using Var<N> for ALL parameters
+                                let __expr = { #body };
+
+                                // Wrap in nested Let bindings and evaluate
+                                #at_binding
+                            }
+                        }
+
+                        |#(#closure_params),*| __Kernel { #(#field_names),* }
+                    }
+                }
+            } else {
+                // No return type → generic domain P
+                // This allows the kernel to adapt to whatever domain the manifold param requires
+                // Output is Field since derivative accessors (V, DX, DY) return Field
+
+                quote! {
+                    {
+                        struct __Kernel<#(#generic_names),*> { #(#struct_fields),* }
+
+                        // Clone when inner is Clone
+                        impl<#(#generic_names: Clone),*> Clone for __Kernel<#(#generic_names),*> {
+                            fn clone(&self) -> Self {
+                                Self { #(#field_names: self.#field_names.clone()),* }
+                            }
+                        }
+
+                        // Copy when inner is Copy (ZST kernels are Copy via zst.rs)
+                        impl<#(#generic_names: Copy),*> Copy for __Kernel<#(#generic_names),*> {}
+
+                        // Generic over domain P - works with whatever domain the manifold param requires
+                        impl<#(#generic_names),*, __P> ::pixelflow_core::Manifold<__P> for __Kernel<#(#generic_names),*>
+                        where
+                            __P: Copy + Send + Sync + ::pixelflow_core::Spatial,
+                            #(#generic_names: ::pixelflow_core::Manifold<__P>),*,
+                            // Output must be Copy+Send+Sync for Let binding
+                            #(<#generic_names as ::pixelflow_core::Manifold<__P>>::Output: Copy + Send + Sync),*,
+                        {
+                            type Output = ::pixelflow_core::Field;
+
+                            #[inline(always)]
+                            fn eval(
+                                &self,
+                                __p: __P,
+                            ) -> ::pixelflow_core::Field {
+                                use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var, GradientMag2D, GradientMag3D, Antialias2D, Antialias3D, Curvature2D, Normalized2D, Normalized3D, V, DX, DY, DZ, DXX, DXY, DYY};
+                                #peano_imports
+
+                                // Evaluate manifold parameters at current point (borrows via &self)
+                                #manifold_eval_stmts
+
+                                // Build the ZST expression tree using Var<N> for ALL parameters
+                                let __expr = { #body };
+
+                                // Wrap in nested Let bindings and evaluate
+                                #at_binding
+                            }
+                        }
+
+                        |#(#closure_params),*| __Kernel { #(#field_names),* }
+                    }
                 }
             }
         } else {
-            // Has manifold parameters - need generics and trait bounds
-            // Generate trait bounds: M0: Manifold<__Domain, Output = __Scalar>
-            let trait_bounds: Vec<TokenStream> = generic_names
-                .iter()
-                .map(|g| {
-                    quote! { #g: ::pixelflow_core::Manifold<__Domain, Output = __Scalar> }
-                })
-                .collect();
+            // Has manifold parameters (possibly mixed with scalar) - need generics and trait bounds
 
-            quote! {
-                {
-                    type __Domain = #domain_type;
-                    type __Scalar = #scalar_type;
+            // Check if we have an explicit return type - if not, use generic domain
+            let has_return_type = self.analyzed.def.return_ty.is_some();
 
-                    struct __Kernel<#(#generic_names),*> { #(#struct_fields),* }
+            if has_return_type {
+                // Explicit return type → fixed domain
+                let trait_bounds: Vec<TokenStream> = generic_names
+                    .iter()
+                    .map(|g| {
+                        quote! { #g: ::pixelflow_core::Manifold<__Domain, Output = __Scalar> }
+                    })
+                    .collect();
 
-                    impl<#(#generic_names),*> ::pixelflow_core::Manifold<__Domain> for __Kernel<#(#generic_names),*>
-                    where
-                        #(#trait_bounds),*
+                quote! {
                     {
-                        type Output = #output_type;
+                        type __Domain = #domain_type;
+                        type __Scalar = #scalar_type;
 
-                        #[inline(always)]
-                        fn eval(
-                            &self,
-                            __p: __Domain,
-                        ) -> #output_type {
-                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
-                            #peano_imports
+                        struct __Kernel<#(#generic_names),*> { #(#struct_fields),* }
 
-                            // Evaluate manifold parameters at current point (borrows via &self)
-                            #manifold_eval_stmts
-
-                            // Build the ZST expression tree using Var<N> for ALL parameters
-                            let __expr = { #body };
-
-                            // Wrap in nested Let bindings and evaluate
-                            #at_binding
+                        // Clone when all fields are Clone
+                        impl<#(#generic_names: Clone),*> Clone for __Kernel<#(#generic_names),*> {
+                            fn clone(&self) -> Self {
+                                Self { #(#field_names: self.#field_names.clone()),* }
+                            }
                         }
-                    }
 
-                    |#(#closure_params),*| __Kernel { #(#field_names),* }
+                        impl<#(#generic_names),*> ::pixelflow_core::Manifold<__Domain> for __Kernel<#(#generic_names),*>
+                        where
+                            #(#trait_bounds),*
+                        {
+                            type Output = #output_type;
+
+                            #[inline(always)]
+                            fn eval(
+                                &self,
+                                __p: __Domain,
+                            ) -> #output_type {
+                                use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var, GradientMag2D, GradientMag3D, Antialias2D, Antialias3D, Curvature2D, Normalized2D, Normalized3D, V, DX, DY, DZ, DXX, DXY, DYY};
+                                #peano_imports
+
+                                // Evaluate manifold parameters at current point (borrows via &self)
+                                #manifold_eval_stmts
+
+                                // Build the ZST expression tree using Var<N> for ALL parameters
+                                let __expr = { #body };
+
+                                // Wrap in nested Let bindings and evaluate
+                                #at_binding
+                            }
+                        }
+
+                        |#(#closure_params),*| __Kernel { #(#field_names),* }
+                    }
+                }
+            } else {
+                // No return type → generic domain P
+                // NOTE: Mixed manifold + scalar params with generic domain is complex
+                // For now, this requires an explicit return type annotation
+
+                quote! {
+                    {
+                        struct __Kernel<#(#generic_names),*> { #(#struct_fields),* }
+
+                        // Clone when all fields are Clone
+                        impl<#(#generic_names: Clone),*> Clone for __Kernel<#(#generic_names),*> {
+                            fn clone(&self) -> Self {
+                                Self { #(#field_names: self.#field_names.clone()),* }
+                            }
+                        }
+
+                        // Generic over domain P
+                        // Manifold params must output Field for mixed param type unification
+                        impl<#(#generic_names),*, __P> ::pixelflow_core::Manifold<__P> for __Kernel<#(#generic_names),*>
+                        where
+                            __P: Copy + Send + Sync + ::pixelflow_core::Spatial,
+                            #(#generic_names: ::pixelflow_core::Manifold<__P, Output = ::pixelflow_core::Field>),*,
+                        {
+                            type Output = ::pixelflow_core::Field;
+
+                            #[inline(always)]
+                            fn eval(
+                                &self,
+                                __p: __P,
+                            ) -> ::pixelflow_core::Field {
+                                use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var, GradientMag2D, GradientMag3D, Antialias2D, Antialias3D, Curvature2D, Normalized2D, Normalized3D, V, DX, DY, DZ, DXX, DXY, DYY};
+                                #peano_imports
+
+                                // Evaluate manifold parameters at current point (borrows via &self)
+                                #manifold_eval_stmts
+
+                                // Build the ZST expression tree using Var<N> for ALL parameters
+                                let __expr = { #body };
+
+                                // Wrap in nested Let bindings and evaluate
+                                #at_binding
+                            }
+                        }
+
+                        |#(#closure_params),*| __Kernel { #(#field_names),* }
+                    }
                 }
             }
         }
@@ -434,14 +553,24 @@ impl<'a> CodeEmitter<'a> {
     /// Emit unified Let/Var binding for params and literals.
     ///
     /// Returns two things:
-    /// 1. Statements to evaluate manifold parameters at `__p`
+    /// 1. Statements for pre-evaluating manifold params (when mixed with scalars)
     /// 2. Nested Let::new() calls that extend the domain
     ///
     /// Binding order (outermost to innermost):
     /// - Parameters (outermost) → highest Var indices
     /// - Literals (innermost) → lowest Var indices (0, 1, ...)
     ///
-    /// This ensures the expression tree can use pure Var<N> references.
+    /// ## Mixed Param Handling
+    ///
+    /// When manifold params are mixed with scalar params, we must eagerly evaluate
+    /// the manifold params to get concrete `__Scalar` values. This is because:
+    /// - Manifold param via Let<&M0, ...> produces `Var<N>::Output = M0::Output`
+    /// - Scalar param via Let<Field, ...> produces `Var<N>::Output = Field`
+    /// - Even though `M0::Output = __Scalar = Field`, the compiler sees them as
+    ///   different types and binary ops (Add, Sub, etc.) require same Output types.
+    ///
+    /// By eagerly evaluating manifolds first, ALL Let bindings use the same type
+    /// (`__Scalar`), ensuring Var outputs unify correctly.
     fn emit_unified_binding(&self) -> (TokenStream, TokenStream) {
         let params = &self.analyzed.def.params;
 
@@ -450,24 +579,42 @@ impl<'a> CodeEmitter<'a> {
             return (quote! {}, quote! { __expr.eval(__p) });
         }
 
-        // 1. Generate statements to evaluate manifold params
-        let manifold_eval_stmts: Vec<TokenStream> = params
-            .iter()
-            .filter_map(|p| {
-                if let ParamKind::Manifold = &p.kind {
-                    let name = &p.name;
-                    let idx = self.manifold_indices[&name.to_string()];
-                    let var_name = format_ident!("__m{}", idx);
-                    Some(quote! {
-                        let #var_name = self.#name.eval(__p);
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Determine if we need to pre-evaluate manifold params
+        // This is needed when:
+        // 1. Mixed params (manifold + scalar) - different Output types don't unify
+        // 2. Multiple manifold params - each M::Output is distinct to the compiler
+        // 3. Single manifold with scalars - M::Output vs f32/Field
+        let manifold_count = self.manifold_indices.len();
+        let has_scalar_params = params.iter().any(|p| matches!(p.kind, ParamKind::Scalar(_)));
+        let needs_pre_eval = manifold_count > 0 && (manifold_count > 1 || has_scalar_params);
 
-        // 2. Build nested Let bindings from outside to inside.
+        // Determine the scalar type to use for pre-evaluation
+        // If we have an explicit return type, __Scalar is defined; otherwise use Field directly
+        let has_return_type = self.analyzed.def.return_ty.is_some();
+        let scalar_type_token = if has_return_type {
+            quote! { __Scalar }
+        } else {
+            quote! { ::pixelflow_core::Field }
+        };
+
+        // Pre-evaluate manifolds to get concrete scalar values
+        let mut pre_eval_stmts = Vec::new();
+        if needs_pre_eval {
+            for param in params.iter() {
+                if matches!(param.kind, ParamKind::Manifold) {
+                    let name = &param.name;
+                    let eval_name = syn::Ident::new(
+                        &format!("__eval_{}", name),
+                        proc_macro2::Span::call_site(),
+                    );
+                    pre_eval_stmts.push(quote! {
+                        let #eval_name: #scalar_type_token = self.#name.eval(__p);
+                    });
+                }
+            }
+        }
+
+        // Build nested Let bindings from outside to inside.
         // Order: params first (outermost), then literals (innermost)
         let mut result = quote! { __expr };
 
@@ -490,15 +637,25 @@ impl<'a> CodeEmitter<'a> {
 
             let param_value = match &param.kind {
                 ParamKind::Manifold => {
-                    // Use the pre-evaluated manifold result
-                    let idx = self.manifold_indices[&name.to_string()];
-                    let var_name = format_ident!("__m{}", idx);
-                    quote! { #var_name }
+                    if needs_pre_eval {
+                        // Use pre-evaluated value for type unification
+                        let eval_name = syn::Ident::new(
+                            &format!("__eval_{}", name),
+                            proc_macro2::Span::call_site(),
+                        );
+                        quote! { #eval_name }
+                    } else {
+                        // Single manifold param without scalars - pass reference, Let evaluates internally
+                        quote! { &self.#name }
+                    }
                 }
                 ParamKind::Scalar(_) => {
                     // For Jet domains, wrap f32 params as constant jets
                     if self.use_jet_wrapper {
                         quote! { __Scalar::constant(::pixelflow_core::Field::from(self.#name)) }
+                    } else if needs_pre_eval {
+                        // Mixed with manifolds: wrap scalar as Field to match manifold outputs
+                        quote! { #scalar_type_token::from(self.#name) }
                     } else {
                         quote! { self.#name }
                     }
@@ -513,7 +670,13 @@ impl<'a> CodeEmitter<'a> {
         // Evaluate the whole Let-wrapped expression on the input domain
         let at_binding = quote! { #result.eval(__p) };
 
-        (quote! { #(#manifold_eval_stmts)* }, at_binding)
+        // Return pre-eval statements and the Let chain
+        let stmts = if pre_eval_stmts.is_empty() {
+            quote! {}
+        } else {
+            quote! { #(#pre_eval_stmts)* }
+        };
+        (stmts, at_binding)
     }
 
     /// Emit code for an annotated expression (pure, no mutation).
@@ -635,6 +798,21 @@ impl<'a> CodeEmitter<'a> {
                     quote! { #receiver.#method() }
                 } else {
                     quote! { #receiver.#method(#(#args),*) }
+                }
+            }
+
+            AnnotatedExpr::Call(call) => {
+                // Free function call: V(m), DX(expr), etc.
+                // Emit with transformed arguments (manifold params become Var<N>)
+                let func = &call.func;
+                let args: Vec<TokenStream> = call.args.iter()
+                    .map(|a| self.emit_annotated_expr(a))
+                    .collect();
+
+                if args.is_empty() {
+                    quote! { #func() }
+                } else {
+                    quote! { #func(#(#args),*) }
                 }
             }
 

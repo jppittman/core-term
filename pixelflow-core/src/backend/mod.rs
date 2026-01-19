@@ -93,18 +93,18 @@ pub trait SimdOps:
     /// Greater than or equal comparison (returns native mask).
     fn cmp_ge(self, rhs: Self) -> Self::Mask;
 
-    /// Square root.
-    fn sqrt(self) -> Self;
-    /// Absolute value.
-    fn abs(self) -> Self;
-    /// Element-wise minimum.
-    fn min(self, rhs: Self) -> Self;
-    /// Element-wise maximum.
-    fn max(self, rhs: Self) -> Self;
+    /// Square root (internal SIMD op).
+    fn simd_sqrt(self) -> Self;
+    /// Absolute value (internal SIMD op).
+    fn simd_abs(self) -> Self;
+    /// Element-wise minimum (internal SIMD op).
+    fn simd_min(self, rhs: Self) -> Self;
+    /// Element-wise maximum (internal SIMD op).
+    fn simd_max(self, rhs: Self) -> Self;
 
-    /// Conditional select using native mask.
+    /// Conditional select using native mask (internal SIMD op).
     /// On AVX-512, uses `vblendmps` with k-register directly.
-    fn select(mask: Self::Mask, if_true: Self, if_false: Self) -> Self;
+    fn simd_select(mask: Self::Mask, if_true: Self, if_false: Self) -> Self;
 
     /// Load from a slice.
     fn from_slice(slice: &[f32]) -> Self;
@@ -112,8 +112,8 @@ pub trait SimdOps:
     /// Gather: load from slice at indices specified by self.
     fn gather(slice: &[f32], indices: Self) -> Self;
 
-    /// Floor (round toward negative infinity).
-    fn floor(self) -> Self;
+    /// Floor (round toward negative infinity) (internal SIMD op).
+    fn simd_floor(self) -> Self;
 
     /// Fused multiply-add: (self * b) + c
     fn mul_add(self, b: Self, c: Self) -> Self;
@@ -125,8 +125,8 @@ pub trait SimdOps:
     /// Approximate reciprocal (1/x). ~12-14 bits accuracy.
     fn recip(self) -> Self;
 
-    /// Approximate reciprocal square root (1/sqrt(x)). ~12-14 bits accuracy.
-    fn rsqrt(self) -> Self;
+    /// Approximate reciprocal square root (1/sqrt(x)) (internal SIMD op). ~12-14 bits accuracy.
+    fn simd_rsqrt(self) -> Self;
 
     // =========================================================================
     // Mask Conversion (for Field API compatibility)
@@ -157,17 +157,17 @@ pub trait SimdOps:
     /// Example: bits 0x00000005 → i32 value 5 → f32 value 5.0
     fn i32_to_f32(self) -> Self;
 
-    /// Base-2 logarithm.
+    /// Base-2 logarithm (internal SIMD op).
     ///
     /// Computes log2(x) for positive finite x.
     /// Uses hardware getexp/getmant on AVX-512, bit manipulation + polynomial elsewhere.
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
-    fn log2(self) -> Self;
+    fn simd_log2(self) -> Self;
 
-    /// Base-2 exponential.
+    /// Base-2 exponential (internal SIMD op).
     ///
     /// Computes 2^x = exp(x * ln(2)).
-    fn exp2(self) -> Self;
+    fn simd_exp2(self) -> Self;
 }
 
 /// SIMD operations for u32 (packed pixels).

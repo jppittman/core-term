@@ -39,6 +39,7 @@ mod annotate;
 mod ast;
 mod codegen;
 mod lexer;
+mod manifold_expr;
 mod optimize;
 mod parser;
 mod sema;
@@ -97,4 +98,29 @@ pub fn kernel(input: TokenStream) -> TokenStream {
 
     // Phase 5: Code generation
     codegen::emit(optimized).into()
+}
+
+/// Derive macro for the `ManifoldExpr` marker trait.
+///
+/// This trait gates access to `ManifoldExt` methods, preventing them from
+/// polluting the method namespace of non-manifold types like iterators.
+///
+/// # Example
+///
+/// ```ignore
+/// use pixelflow_macros::ManifoldExpr;
+///
+/// #[derive(ManifoldExpr)]
+/// pub struct MyCustomCombinator<M>(pub M);
+/// ```
+///
+/// # Generated Code
+///
+/// ```ignore
+/// impl<M> ::pixelflow_core::ManifoldExpr for MyCustomCombinator<M> {}
+/// ```
+#[proc_macro_derive(ManifoldExpr)]
+pub fn derive_manifold_expr(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    manifold_expr::derive_manifold_expr(input).into()
 }

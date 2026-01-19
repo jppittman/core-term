@@ -18,11 +18,18 @@
 //! sqrt (~12 cycles) + div (~12 cycles).
 
 use super::{
-    Abs, Add, AddMasked, Cos, Div, Floor, Max, Min, Mul, MulAdd, MulRecip, MulRsqrt, Rsqrt, Sin,
-    Sqrt, Sub,
+    Abs, Add, AddMasked, Cos, Div, Exp2, Floor, Ge, Gt, Le, Log2, Lt, Max, Min, Mul, MulAdd,
+    MulRecip, MulRsqrt, Neg, Rsqrt, Sin, Sqrt, Sub,
+};
+use super::logic::{And, Or};
+use super::derivative::{
+    Antialias2D, Antialias3D, Curvature2D, GradientMag2D, GradientMag3D,
+    // Simple accessor combinators
+    DxOf, DxxOf, DxyOf, DyOf, DyyOf, DzOf, ValOf,
 };
 use crate::Field;
 use crate::combinators::Select;
+use crate::combinators::binding::{Let, Var};
 use crate::variables::{W, X, Y, Z};
 
 // ============================================================================
@@ -117,6 +124,23 @@ macro_rules! impl_all_divs {
         impl_div_for!($ty<$($gen),*> / MulRecip<DM2>);
         impl_div_for!($ty<$($gen),*> / MulRsqrt<DL2, DR2>);
         impl_div_for!($ty<$($gen),*> / AddMasked<DAcc, DVal, DMask>);
+        impl_div_for!($ty<$($gen),*> / Var<DN>);
+
+        // Fused derivative combinators
+        impl_div_for!($ty<$($gen),*> / GradientMag2D<DDM>);
+        impl_div_for!($ty<$($gen),*> / GradientMag3D<DDM2>);
+        impl_div_for!($ty<$($gen),*> / Antialias2D<DDM3>);
+        impl_div_for!($ty<$($gen),*> / Antialias3D<DDM4>);
+        impl_div_for!($ty<$($gen),*> / Curvature2D<DDM5>);
+
+        // Simple accessor combinators
+        impl_div_for!($ty<$($gen),*> / ValOf<DDA1>);
+        impl_div_for!($ty<$($gen),*> / DxOf<DDA2>);
+        impl_div_for!($ty<$($gen),*> / DyOf<DDA3>);
+        impl_div_for!($ty<$($gen),*> / DzOf<DDA4>);
+        impl_div_for!($ty<$($gen),*> / DxxOf<DDA5>);
+        impl_div_for!($ty<$($gen),*> / DxyOf<DDA6>);
+        impl_div_for!($ty<$($gen),*> / DyyOf<DDA7>);
 
         // Concrete divisor types (base variables, Field, scalars)
         impl_div_for!($ty<$($gen),*> / @X);
@@ -171,6 +195,16 @@ impl<L, R, Rhs> core::ops::Mul<Rhs> for Mul<L, R> {
 impl_all_divs!(Mul<L, R>);
 
 // ============================================================================
+// ManifoldExpr marker trait - gates access to ManifoldExt methods
+// ============================================================================
+
+macro_rules! impl_manifold_expr {
+    ($ty:ident <$($gen:ident),*>) => {
+        impl<$($gen),*> crate::ManifoldExpr for $ty<$($gen),*> {}
+    };
+}
+
+// ============================================================================
 // Standard chained ops for other types
 // ============================================================================
 
@@ -197,6 +231,94 @@ impl_chained_ops!(MulAdd<A, B, C>);
 impl_chained_ops!(MulRecip<M>);
 impl_chained_ops!(MulRsqrt<L, R>);
 impl_chained_ops!(AddMasked<Acc, Val, Mask>);
+
+// Fused derivative combinators (GradientMag, Antialias, Curvature)
+impl_chained_ops!(GradientMag2D<M>);
+impl_chained_ops!(GradientMag3D<M>);
+impl_chained_ops!(Antialias2D<M>);
+impl_chained_ops!(Antialias3D<M>);
+impl_chained_ops!(Curvature2D<M>);
+
+// Simple accessor combinators (V, DX, DY, DZ, DXX, DXY, DYY)
+impl_chained_ops!(ValOf<M>);
+impl_chained_ops!(DxOf<M>);
+impl_chained_ops!(DyOf<M>);
+impl_chained_ops!(DzOf<M>);
+impl_chained_ops!(DxxOf<M>);
+impl_chained_ops!(DxyOf<M>);
+impl_chained_ops!(DyyOf<M>);
+
+// ============================================================================
+// ManifoldExpr implementations for all combinator types
+// ============================================================================
+
+// Mul gets ManifoldExpr too (even though it has special chained ops handling)
+impl_manifold_expr!(Mul<L, R>);
+
+// Binary nodes
+impl_manifold_expr!(Add<L, R>);
+impl_manifold_expr!(Sub<L, R>);
+impl_manifold_expr!(Div<L, R>);
+impl_manifold_expr!(Max<L, R>);
+impl_manifold_expr!(Min<L, R>);
+
+// Unary nodes
+impl_manifold_expr!(Sqrt<M>);
+impl_manifold_expr!(Abs<M>);
+impl_manifold_expr!(Floor<M>);
+impl_manifold_expr!(Rsqrt<M>);
+impl_manifold_expr!(Sin<M>);
+impl_manifold_expr!(Cos<M>);
+
+// Select combinator
+impl_manifold_expr!(Select<C, T, F>);
+
+// Compound ops
+impl_manifold_expr!(MulAdd<A, B, C>);
+impl_manifold_expr!(MulRecip<M>);
+impl_manifold_expr!(MulRsqrt<L, R>);
+impl_manifold_expr!(AddMasked<Acc, Val, Mask>);
+
+// Fused derivative combinators
+impl_manifold_expr!(GradientMag2D<M>);
+impl_manifold_expr!(GradientMag3D<M>);
+impl_manifold_expr!(Antialias2D<M>);
+impl_manifold_expr!(Antialias3D<M>);
+impl_manifold_expr!(Curvature2D<M>);
+
+// Simple accessor combinators
+impl_manifold_expr!(ValOf<M>);
+impl_manifold_expr!(DxOf<M>);
+impl_manifold_expr!(DyOf<M>);
+impl_manifold_expr!(DzOf<M>);
+impl_manifold_expr!(DxxOf<M>);
+impl_manifold_expr!(DxyOf<M>);
+impl_manifold_expr!(DyyOf<M>);
+
+// Additional unary ops
+impl_manifold_expr!(Neg<M>);
+impl_manifold_expr!(Log2<M>);
+impl_manifold_expr!(Exp2<M>);
+
+// Comparison ops
+impl_manifold_expr!(Lt<L, R>);
+impl_manifold_expr!(Gt<L, R>);
+impl_manifold_expr!(Le<L, R>);
+impl_manifold_expr!(Ge<L, R>);
+
+// Logic ops
+impl_manifold_expr!(And<L, R>);
+impl_manifold_expr!(Or<L, R>);
+
+// At combinator (coordinate remapping)
+impl<Cx, Cy, Cz, Cw, M> crate::ManifoldExpr for crate::combinators::At<Cx, Cy, Cz, Cw, M> {}
+
+// Binding combinators
+impl_manifold_expr!(Var<N>);
+impl_manifold_expr!(Let<V, B>);
+
+// Thunk gets ManifoldExpr too
+impl<F: Fn() -> M + Send + Sync, M> crate::ManifoldExpr for crate::Thunk<F> {}
 
 // ============================================================================
 // Thunk Operators
@@ -405,6 +527,99 @@ impl<F: Fn() -> M + Send + Sync, M> core::ops::Div<i32> for crate::Thunk<F> {
     type Output = Div<Self, i32>;
     #[inline(always)]
     fn div(self, rhs: i32) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, N> core::ops::Div<Var<N>> for crate::Thunk<F> {
+    type Output = Div<Self, Var<N>>;
+    #[inline(always)]
+    fn div(self, rhs: Var<N>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+// Fused derivative combinator divisors for Thunk
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<GradientMag2D<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, GradientMag2D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: GradientMag2D<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<GradientMag3D<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, GradientMag3D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: GradientMag3D<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<Antialias2D<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, Antialias2D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: Antialias2D<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<Antialias3D<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, Antialias3D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: Antialias3D<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<Curvature2D<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, Curvature2D<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: Curvature2D<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+// Simple accessor combinator divisors for Thunk
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<ValOf<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, ValOf<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ValOf<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<DxOf<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, DxOf<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: DxOf<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<DyOf<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, DyOf<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: DyOf<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<DzOf<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, DzOf<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: DzOf<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<DxxOf<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, DxxOf<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: DxxOf<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<DxyOf<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, DxyOf<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: DxyOf<DM>) -> Self::Output {
+        Div(self, rhs)
+    }
+}
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<DyyOf<DM>> for crate::Thunk<F> {
+    type Output = Div<Self, DyyOf<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: DyyOf<DM>) -> Self::Output {
         Div(self, rhs)
     }
 }

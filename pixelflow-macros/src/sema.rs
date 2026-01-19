@@ -132,6 +132,13 @@ impl SemanticAnalyzer {
                 self.analyze_method_call(call)?;
             }
 
+            Expr::Call(call) => {
+                // Analyze all arguments (function name is external, not resolved here)
+                for arg in &call.args {
+                    self.analyze_expr(arg)?;
+                }
+            }
+
             Expr::Block(block) => {
                 self.analyze_block(block)?;
             }
@@ -222,8 +229,12 @@ impl SemanticAnalyzer {
         "lt", "le", "gt", "ge", "eq", "ne",
         // Selection
         "select",
+        // Coordinate warp (contramap)
+        "at",
         // Field/Jet specific
         "constant", "collapse",
+        // Unary
+        "neg",
     ];
 
     /// Analyze a method call.

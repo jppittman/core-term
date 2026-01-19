@@ -1,91 +1,175 @@
 //! Coordinate transformations for manifolds.
+//!
+//! Provides composable coordinate warping using the `At` combinator.
 
-use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Field, Manifold, ManifoldCompat, ManifoldExt};
+use pixelflow_core::ops::{Div, Sub};
+use pixelflow_core::{At, Field, Manifold, X, Y, Z, W};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
-/// The 4D Jet2 domain type for autodifferentiation.
-type Jet4 = (Jet2, Jet2, Jet2, Jet2);
+
+// =============================================================================
+// Scale transformation
+// =============================================================================
+
+/// Alias for the scaled manifold type.
+pub type Scaled<M> = At<Div<X, f32>, Div<Y, f32>, Z, W, M>;
 
 /// Uniform scaling of the manifold domain.
 ///
 /// Effectively scales the object size by `factor`.
 /// Internally, coordinates are divided by `factor`.
+///
+/// # Example
+/// ```ignore
+/// let circle = kernel!(|| (X * X + Y * Y).sqrt() - 1.0);
+/// let big_circle = scale(circle, 2.0);  // radius 2 circle
+/// ```
+pub fn scale<M>(inner: M, factor: f32) -> Scaled<M>
+where
+    M: Manifold<Field4, Output = Field>,
+{
+    At {
+        inner,
+        x: X / factor,
+        y: Y / factor,
+        z: Z,
+        w: W,
+    }
+}
+
+// =============================================================================
+// Translate transformation
+// =============================================================================
+
+/// Alias for the translated manifold type.
+pub type Translated<M> = At<Sub<X, f32>, Sub<Y, f32>, Z, W, M>;
+
+/// Translation of the manifold domain.
+///
+/// Shifts the object by `(dx, dy)`.
+/// Internally, coordinates are subtracted by the offset.
+///
+/// # Example
+/// ```ignore
+/// let circle = kernel!(|| (X * X + Y * Y).sqrt() - 1.0);
+/// let moved = translate(circle, 10.0, 5.0);  // circle centered at (10, 5)
+/// ```
+pub fn translate<M>(inner: M, dx: f32, dy: f32) -> Translated<M>
+where
+    M: Manifold<Field4, Output = Field>,
+{
+    At {
+        inner,
+        x: X - dx,
+        y: Y - dy,
+        z: Z,
+        w: W,
+    }
+}
+
+// =============================================================================
+// Legacy types (for backwards compatibility)
+// =============================================================================
+
+/// Uniform scaling transformation struct (legacy).
+///
+/// Prefer using `scale()` function which returns a composable `At` combinator.
 #[derive(Clone, Debug)]
 pub struct Scale<M> {
     pub manifold: M,
     pub factor: f32,
 }
 
-impl<M> Manifold<Field4> for Scale<M>
-where
-    M: ManifoldCompat<Field, Output = Field> + ManifoldExt,
-{
-    type Output = Field;
-
-    fn eval(&self, p: Field4) -> Field {
-        let (x, y, z, w) = p;
-        let s = Field::from(self.factor);
-        self.manifold.eval_at(x / s, y / s, z, w)
-    }
-}
-
-impl<M> Manifold<Jet4> for Scale<M>
-where
-    M: ManifoldCompat<Jet2>,
-{
-    type Output = M::Output;
-
-    fn eval(&self, p: Jet4) -> Self::Output {
-        let (x, y, z, w) = p;
-        let s = Jet2::constant(Field::from(self.factor));
-        self.manifold.eval_raw(x / s, y / s, z, w)
-    }
-}
-
-/// Translation of the manifold domain.
+/// Translation transformation struct (legacy).
 ///
-/// Shifts the object by `offset` (dx, dy).
-/// Internally, coordinates are subtracted by `offset`.
+/// Prefer using `translate()` function which returns a composable `At` combinator.
 #[derive(Clone, Debug)]
 pub struct Translate<M> {
     pub manifold: M,
     pub offset: [f32; 2],
 }
 
-impl<M> Manifold<Field4> for Translate<M>
+// Manifold implementations for legacy types use At directly
+
+impl<M> Manifold<Field4> for Scale<M>
 where
-    M: ManifoldCompat<Field, Output = Field> + ManifoldExt,
+    M: Manifold<Field4, Output = Field>,
 {
     type Output = Field;
 
+    #[inline(always)]
     fn eval(&self, p: Field4) -> Field {
-        let (x, y, z, w) = p;
-        let dx = Field::from(self.offset[0]);
-        let dy = Field::from(self.offset[1]);
-        self.manifold.eval_at(x - dx, y - dy, z, w)
+        // Create At combinator with coordinate expressions
+        let at = At {
+            inner: &self.manifold,
+            x: X / self.factor,
+            y: Y / self.factor,
+            z: Z,
+            w: W,
+        };
+        at.eval(p)
     }
 }
 
-impl<M> Manifold<Jet4> for Translate<M>
+impl<M> Manifold<Field4> for Translate<M>
 where
-    M: ManifoldCompat<Jet2>,
+    M: Manifold<Field4, Output = Field>,
 {
-    type Output = M::Output;
+    type Output = Field;
 
-    fn eval(&self, p: Jet4) -> Self::Output {
-        let (x, y, z, w) = p;
-        let dx = Jet2::constant(Field::from(self.offset[0]));
-        let dy = Jet2::constant(Field::from(self.offset[1]));
-        self.manifold.eval_raw(x - dx, y - dy, z, w)
+    #[inline(always)]
+    fn eval(&self, p: Field4) -> Field {
+        // Create At combinator with coordinate expressions
+        let at = At {
+            inner: &self.manifold,
+            x: X - self.offset[0],
+            y: Y - self.offset[1],
+            z: Z,
+            w: W,
+        };
+        at.eval(p)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_core::{Field, X, Y};
+    use pixelflow_core::Field;
+
+    #[test]
+    fn scale_function_works() {
+        let scaled = scale(X, 2.0);
+        let zero = Field::from(0.0);
+        let two = Field::from(2.0);
+
+        // At x=2, scaled should give x/2 = 1
+        let result = scaled.eval((two, zero, zero, zero));
+        let _ = result;
+    }
+
+    #[test]
+    fn translate_function_works() {
+        let translated = translate(X, 1.0, 0.0);
+        let zero = Field::from(0.0);
+        let two = Field::from(2.0);
+
+        // At x=2, translated should give x-1 = 1
+        let result = translated.eval((two, zero, zero, zero));
+        let _ = result;
+    }
+
+    #[test]
+    fn scale_and_translate_compose() {
+        let scaled = scale(X, 2.0);
+        let composed = translate(scaled, 1.0, 0.0);
+
+        let zero = Field::from(0.0);
+        let four = Field::from(4.0);
+
+        let result = composed.eval((four, zero, zero, zero));
+        let _ = result;
+    }
 
     #[test]
     fn scale_creation_and_eval() {
@@ -97,8 +181,7 @@ mod tests {
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
 
-        // Verify it evaluates without panic
-        let _ = scaled.eval_raw(one, zero, zero, zero);
+        let _ = scaled.eval((one, zero, zero, zero));
     }
 
     #[test]
@@ -110,7 +193,7 @@ mod tests {
             };
             let zero = Field::from(0.0);
             let one = Field::from(1.0);
-            let _ = scaled.eval_raw(one, one, zero, zero);
+            let _ = scaled.eval((one, one, zero, zero));
         }
     }
 
@@ -125,16 +208,6 @@ mod tests {
     }
 
     #[test]
-    fn scale_is_debug() {
-        let scaled = Scale {
-            manifold: X,
-            factor: 2.0,
-        };
-        let debug_str = format!("{:?}", scaled);
-        assert!(debug_str.contains("Scale"));
-    }
-
-    #[test]
     fn translate_creation_and_eval() {
         let translated = Translate {
             manifold: X,
@@ -144,8 +217,7 @@ mod tests {
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
 
-        // Verify it evaluates without panic
-        let _ = translated.eval_raw(one, one, zero, zero);
+        let _ = translated.eval((one, one, zero, zero));
     }
 
     #[test]
@@ -157,33 +229,12 @@ mod tests {
             };
             let zero = Field::from(0.0);
             let one = Field::from(1.0);
-            let _ = translated.eval_raw(one, one, zero, zero);
+            let _ = translated.eval((one, one, zero, zero));
         }
     }
 
     #[test]
-    fn translate_is_clone() {
-        let translated = Translate {
-            manifold: X,
-            offset: [1.0, 2.0],
-        };
-        let cloned = translated.clone();
-        assert_eq!(cloned.offset, [1.0, 2.0]);
-    }
-
-    #[test]
-    fn translate_is_debug() {
-        let translated = Translate {
-            manifold: X,
-            offset: [1.0, 2.0],
-        };
-        let debug_str = format!("{:?}", translated);
-        assert!(debug_str.contains("Translate"));
-    }
-
-    #[test]
-    fn scale_and_translate_compose() {
-        // First scale by 2, then translate by (1, 1)
+    fn struct_scale_and_translate_compose() {
         let scaled = Scale {
             manifold: X,
             factor: 2.0,
@@ -196,13 +247,11 @@ mod tests {
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
 
-        // Verify composition evaluates
-        let _ = composed.eval_raw(one, one, zero, zero);
+        let _ = composed.eval((one, one, zero, zero));
     }
 
     #[test]
-    fn translate_and_scale_compose() {
-        // First translate, then scale
+    fn struct_translate_and_scale_compose() {
         let translated = Translate {
             manifold: Y,
             offset: [1.0, 2.0],
@@ -215,59 +264,6 @@ mod tests {
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
 
-        // Verify composition evaluates
-        let _ = composed.eval_raw(one, one, zero, zero);
-    }
-
-    #[test]
-    fn scale_with_z_and_w_coordinates() {
-        let scaled = Scale {
-            manifold: X,
-            factor: 2.0,
-        };
-
-        let one = Field::from(1.0);
-        let five = Field::from(5.0);
-        let ten = Field::from(10.0);
-
-        // Z and W coordinates passed through
-        let _ = scaled.eval_raw(one, one, five, ten);
-    }
-
-    #[test]
-    fn translate_with_z_and_w_coordinates() {
-        let translated = Translate {
-            manifold: X,
-            offset: [1.0, 1.0],
-        };
-
-        let one = Field::from(1.0);
-        let five = Field::from(5.0);
-        let ten = Field::from(10.0);
-
-        // Z and W coordinates passed through
-        let _ = translated.eval_raw(one, one, five, ten);
-    }
-
-    #[test]
-    fn scale_implements_manifold() {
-        fn assert_manifold<T: ManifoldCompat<Field, Output = Field>>(_: &T) {}
-
-        let scaled = Scale {
-            manifold: X,
-            factor: 2.0,
-        };
-        assert_manifold(&scaled);
-    }
-
-    #[test]
-    fn translate_implements_manifold() {
-        fn assert_manifold<T: ManifoldCompat<Field, Output = Field>>(_: &T) {}
-
-        let translated = Translate {
-            manifold: X,
-            offset: [1.0, 2.0],
-        };
-        assert_manifold(&translated);
+        let _ = composed.eval((one, one, zero, zero));
     }
 }

@@ -81,6 +81,15 @@ impl Dimension for W {
 }
 
 // ============================================================================
+// ManifoldExpr implementations for Coordinate Variables
+// ============================================================================
+
+impl crate::ManifoldExpr for X {}
+impl crate::ManifoldExpr for Y {}
+impl crate::ManifoldExpr for Z {}
+impl crate::ManifoldExpr for W {}
+
+// ============================================================================
 // Manifold Implementations for Coordinate Variables
 // ============================================================================
 
