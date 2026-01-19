@@ -156,9 +156,11 @@ impl<Seed, Step, Done> sealed::Sealed for crate::combinators::Fix<Seed, Step, Do
 impl<Val, Body> sealed::Sealed for crate::combinators::Let<Val, Body> {}
 impl<N> sealed::Sealed for crate::combinators::Var<N> {}
 
-// Seal Peano types
-impl sealed::Sealed for crate::combinators::Zero {}
-impl<N> sealed::Sealed for crate::combinators::Succ<N> {}
+// Seal binary type-level number types
+impl sealed::Sealed for crate::combinators::UTerm {}
+impl sealed::Sealed for crate::combinators::B0 {}
+impl sealed::Sealed for crate::combinators::B1 {}
+impl<U, B> sealed::Sealed for crate::combinators::UInt<U, B> {}
 
 // ============================================================================
 // Base ZST Implementations
@@ -190,9 +192,11 @@ impl crate::Zst for crate::backend::x86::Avx512 {}
 #[cfg(target_arch = "aarch64")]
 impl crate::Zst for crate::backend::arm::Neon {}
 
-// Peano types (for Let/Var bindings)
-impl crate::Zst for crate::combinators::Zero {}
-impl<N: crate::Zst> crate::Zst for crate::combinators::Succ<N> {}
+// Binary type-level numbers (for Let/Var bindings)
+impl crate::Zst for crate::combinators::UTerm {}
+impl crate::Zst for crate::combinators::B0 {}
+impl crate::Zst for crate::combinators::B1 {}
+impl<U: crate::Zst, B: crate::Zst> crate::Zst for crate::combinators::UInt<U, B> {}
 impl<N: crate::Zst> crate::Zst for crate::combinators::Var<N> {}
 
 // ============================================================================

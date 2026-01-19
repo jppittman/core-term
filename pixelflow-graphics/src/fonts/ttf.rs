@@ -1,44 +1,34 @@
 //! pixelflow-graphics/src/fonts/ttf.rs
 //!
-//! Pure Manifold TTF Parser.
+//! Pure Manifold TTF Parser with Analytical Loop-Blinn Rendering.
 //!
-//! Glyphs are parsed into unit space [0,1]², bounded with Select for
-//! short-circuit evaluation, then wrapped in Affine transforms.
+//! Glyphs use analytical curves with coverage-based antialiasing.
+//! All derivatives are precomputed polynomials - no Jets needed!
 
 use crate::shapes::{square, Bounded};
-use pixelflow_core::jet::Jet2;
 use pixelflow_core::{
-    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select,
+    Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select,
     Sub, W, X, Y, Z,
 };
+use pixelflow_macros::kernel;
 use std::sync::Arc;
+
+// Import analytical curve kernels
+use super::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
 
-/// The 4D Jet2 domain type for autodifferentiation.
-type Jet4 = (Jet2, Jet2, Jet2, Jet2);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Type Aliases for Concrete Kernel Types
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// The concrete type returned by line_winding_field (captured via TAIT).
-pub type LineKernel = impl Manifold<Field4, Output = Field> + Clone;
+/// Analytical line kernel (replaces TAIT opaque type).
+pub type LineKernel = AnalyticalLine;
 
-/// The concrete type returned by quadratic_winding (captured via TAIT).
-pub type QuadKernel = impl Manifold<Field4, Output = Field> + Clone;
-
-// Defining uses for TAIT - these functions establish what the opaque types actually are
-#[doc(hidden)]
-pub fn __line_kernel_definer([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
-    line_winding_field([[x0, y0], [x1, y1]])
-}
-
-#[doc(hidden)]
-pub fn __quad_kernel_definer([p0, p1, p2]: [[f32; 2]; 3]) -> QuadKernel {
-    quadratic_winding(p0, p1, p2)
-}
+/// Analytical quad kernel (replaces TAIT opaque type).
+pub type QuadKernel = AnalyticalQuad;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Combinators
@@ -107,22 +97,6 @@ impl<M: Manifold<Field4, Output = Field>> Manifold<Field4> for Sum<M> {
     }
 }
 
-impl<M: Manifold<Jet4, Output = Jet2>> Manifold<Jet4> for Sum<M> {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval(&self, p: Jet4) -> Jet2 {
-        let (x, y, z, w) = p;
-        if self.0.len() == 1 {
-            return self.0[0].eval_raw(x, y, z, w);
-        }
-        let zero = Jet2::constant(Field::from(0.0));
-        self.0.iter().fold(zero, |acc, m| {
-            let val = m.eval_raw(x, y, z, w);
-            (acc + val).eval_raw(zero, zero, zero, zero)
-        })
-    }
-}
 
 /// Threshold combinator - converts winding number to inside/outside (0 or 1).
 ///
@@ -149,96 +123,25 @@ pub fn threshold<M>(m: M) -> Threshold<M> {
 #[derive(Clone, Copy, Debug)]
 pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
 
-/// Compute winding number contribution from a quadratic Bézier curve.
-///
-/// Uses scanline intersection to find where the curve crosses a horizontal ray
-/// from the point, then sums winding contributions based on crossing direction.
-#[inline]
-#[define_opaque(QuadKernel)]
-fn quadratic_winding([x0, y0]: [f32; 2], [x1, y1]: [f32; 2], [x2, y2]: [f32; 2]) -> QuadKernel {
-    let ay = y0 - 2.0 * y1 + y2;
-    let by = 2.0 * (y1 - y0);
-    let ax = x0 - 2.0 * x1 + x2;
-    let bx = 2.0 * (x1 - x0);
-    let cx = x0;
-    let inv_2a = 0.5 / ay;
-    let neg_b_2a = -by * inv_2a;
-    let disc_const = by * by - 4.0 * ay * y0;
-    let disc_slope = 4.0 * ay;
-
-    // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
-    let winding = {
-        let x_plus = Y * Y * ax + Y * bx + cx;
-        let x_minus = Z * Z * ax + Z * bx + cx;
-        let dy_plus = Y * (2.0 * ay) + by;
-        let dy_minus = Z * (2.0 * ay) + by;
-
-        // Ray goes right from test point - count crossings to the right
-        let valid_plus = Y.ge(0.0) & Y.le(1.0) & X.lt(x_plus);
-        let valid_minus = Z.ge(0.0) & Z.le(1.0) & X.lt(x_minus);
-
-        // In Y-down coordinates: dy > 0 means downward (above → below) → -1
-        let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
-        let sign_minus = dy_minus.gt(0.0).select(-1.0, 1.0);
-
-        valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
-    };
-
-    // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
-    let with_roots = winding.at(
-        X,
-        Z * inv_2a + neg_b_2a,  // t_plus
-        Z * -inv_2a + neg_b_2a, // t_minus
-        W,
-    );
-
-    // Layer 1 (outermost): screen coords
-    let disc = Y * disc_slope + disc_const;
-    disc.clone()
-        .ge(0.0)
-        .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
-}
-
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
 /// All control point computations happen at load time.
-/// Includes derivative (tangent) kernel for antialiasing.
+/// Derivatives are computed analytically inside the kernel.
 #[derive(Clone)]
-pub struct Quad<K, D> {
+pub struct Quad<K> {
     kernel: K,
-    derivative_kernel: D,
 }
 
-/// Create a quad with baked Loop-Blinn kernel from control points.
-/// The derivative of the quadratic is a line: dB/dt = 2[(1-t)(P1-P0) + t(P2-P1)]
+/// Create a quad with analytical Loop-Blinn kernel from control points.
 #[inline(always)]
-pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel, LineKernel> {
-    let [p0, p1, p2] = points;
-
-    // Derivative control points: 2(P1-P0) and 2(P2-P1)
-    let deriv_p0 = [2.0 * (p1[0] - p0[0]), 2.0 * (p1[1] - p0[1])];
-    let deriv_p1 = [2.0 * (p2[0] - p1[0]), 2.0 * (p2[1] - p1[1])];
-
-    Quad {
-        kernel: quadratic_winding(p0, p1, p2),
-        derivative_kernel: line_winding_field([deriv_p0, deriv_p1]),
-    }
+pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
+    let kernel = AnalyticalQuad::new(points[0], points[1], points[2]);
+    Quad { kernel }
 }
 
-/// Helper to create a quad with baked Loop-Blinn kernel (for benchmarks).
+/// Helper to create a quad with analytical Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
-pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel, LineKernel> {
+pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
     make_quad(points)
-}
-
-impl<K, D> Quad<K, D> {
-    /// Create a quad with explicit kernels (for advanced use).
-    #[inline(always)]
-    pub fn with_kernels(kernel: K, derivative_kernel: D) -> Self {
-        Self {
-            kernel,
-            derivative_kernel,
-        }
-    }
 }
 
 /// Line segment with baked winding kernel.
@@ -248,34 +151,11 @@ pub struct Line<K> {
     kernel: K,
 }
 
-/// Build line winding kernel (hard edges, no AA).
-#[define_opaque(LineKernel)]
-fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
-    let (dy, dx) = (y1 - y0, x1 - x0);
-
-    let y_min = y0.min(y1);
-    let y_max = y0.max(y1);
-    let in_y = Y.ge(y_min) & Y.lt(y_max);
-
-    // x_int = (Y - y0) * (dx / dy) + x0  (x position where line crosses current Y)
-    // For degenerate horizontal lines (dy ≈ 0), use safe fallback
-    let safe_dy = if dy.abs() < 1e-6 { 1.0 } else { dy };
-    let x_int = (Y - y0) * (dx / safe_dy) + x0;
-    // In Y-down coordinates: dy > 0 means downward (above → below) → -1
-    let dir = if dy > 0.0 { -1.0 } else { 1.0 };
-
-    // Winding contribution: ray goes right from test point, counts crossings to the right
-    // Degenerate horizontal lines (dy ≈ 0) are filtered out by multiplying by a mask
-    let non_degenerate = if dy.abs() < 1e-6 { 0.0 } else { 1.0 };
-    in_y.select(X.lt(x_int).select(dir * non_degenerate, 0.0), 0.0f32)
-}
-
-/// Create a line with baked winding kernel from control points.
+/// Create a line with analytical kernel from control points.
 #[inline(always)]
-pub fn make_line(points: [[f32; 2]; 2]) -> Line<LineKernel> {
-    Line {
-        kernel: line_winding_field(points),
-    }
+pub fn make_line(points: [[f32; 2]; 2]) -> Option<Line<LineKernel>> {
+    let kernel = AnalyticalLine::new(points[0], points[1])?;
+    Some(Line { kernel })
 }
 
 impl<K> Line<K> {
@@ -393,21 +273,8 @@ impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Line<K> {
     }
 }
 
-impl<K: Manifold<Jet4, Output = Jet2>> Manifold<Jet4> for Line<K> {
-    type Output = Jet2;
 
-    #[inline(always)]
-    fn eval(&self, p: Jet4) -> Jet2 {
-        let (x, y, z, w) = p;
-        self.kernel.eval_raw(x, y, z, w)
-    }
-}
-
-impl<K: Manifold<Jet4, Output = Jet2>> Differentiable for Line<K> {
-    type DiffWrt = (X, Y); // Spatial derivatives
-}
-
-impl<K: Manifold<Field4, Output = Field>, D: Send + Sync> Manifold<Field4> for Quad<K, D> {
+impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Quad<K> {
     type Output = Field;
 
     #[inline(always)]
@@ -417,19 +284,6 @@ impl<K: Manifold<Field4, Output = Field>, D: Send + Sync> Manifold<Field4> for Q
     }
 }
 
-impl<K: Manifold<Jet4, Output = Jet2>, D: Send + Sync> Manifold<Jet4> for Quad<K, D> {
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval(&self, p: Jet4) -> Jet2 {
-        let (x, y, z, w) = p;
-        self.kernel.eval_raw(x, y, z, w)
-    }
-}
-
-impl<K: Manifold<Jet4, Output = Jet2>, D: Send + Sync> Differentiable for Quad<K, D> {
-    type DiffWrt = (X, Y); // Spatial derivatives
-}
 
 // Old Quad implementation using quadratic formula (for benchmarking Curve<3>)
 // Uses layered contramap pattern: build AST with ZST variables, inject values via .at()
@@ -568,26 +422,6 @@ impl<L: Manifold<Field4, Output = Field>, Q: Manifold<Field4, Output = Field>> M
     }
 }
 
-impl<L: Manifold<Jet4, Output = Jet2>, Q: Manifold<Jet4, Output = Jet2>> Manifold<Jet4>
-    for Geometry<L, Q>
-{
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval(&self, p: Jet4) -> Jet2 {
-        let (x, y, z, w) = p;
-        let zero = Jet2::constant(Field::from(0.0));
-        let mut acc = zero;
-        for l in self.lines.iter() {
-            acc = acc + l.eval_raw(x, y, z, w);
-        }
-        for q in self.quads.iter() {
-            acc = acc + q.eval_raw(x, y, z, w);
-        }
-        // Apply non-zero winding rule: |winding| becomes coverage
-        acc.abs().min(Jet2::constant(Field::from(1.0)))
-    }
-}
 
 /// A simple glyph: segments in unit space, bounded, then transformed.
 ///
@@ -676,70 +510,6 @@ where
     }
 }
 
-impl<L, Q> Manifold<Jet4> for Glyph<L, Q>
-where
-    L: ManifoldCompat<Jet2, Output = Jet2>,
-    Q: ManifoldCompat<Jet2, Output = Jet2>,
-    Geometry<L, Q>: Manifold<Jet4, Output = Jet2>,
-{
-    type Output = Jet2;
-
-    #[inline(always)]
-    fn eval(&self, p: Jet4) -> Jet2 {
-        let (x, y, z, w) = p;
-        match self {
-            Self::Empty => Jet2::constant(Field::from(0.0)),
-            Self::Simple(g) => {
-                // For Jet2 evaluation, we transform coordinates using the affine matrix
-                // and skip the bounding box check (Select), going directly to Geometry.
-                // The bounding box is an optimization that doesn't affect correctness.
-                let tx_field = g.x.eval((x.val, y.val, z.val, w.val));
-                let ty_field = g.y.eval((x.val, y.val, z.val, w.val));
-
-                // Create Jet2 coords with the transformed values and propagated derivatives
-                let tx = Jet2 {
-                    val: tx_field,
-                    dx: x.dx,
-                    dy: x.dy,
-                };
-                let ty = Jet2 {
-                    val: ty_field,
-                    dx: y.dx,
-                    dy: y.dy,
-                };
-                let tz = z;
-                let tw = w;
-
-                // Access the geometry directly (inside the Select/Bounded wrapper)
-                g.inner.if_true.eval((tx, ty, tz, tw))
-            }
-            Self::Compound(sum) => {
-                let mut acc = Jet2::constant(Field::from(0.0));
-                for child in sum.0.iter() {
-                    let tx_field = child.x.eval((x.val, y.val, z.val, w.val));
-                    let ty_field = child.y.eval((x.val, y.val, z.val, w.val));
-
-                    let tx = Jet2 {
-                        val: tx_field,
-                        dx: x.dx,
-                        dy: x.dy,
-                    };
-                    let ty = Jet2 {
-                        val: ty_field,
-                        dx: y.dx,
-                        dy: y.dy,
-                    };
-                    let tz = z;
-                    let tw = w;
-
-                    // Recursively evaluate the child glyph
-                    acc = acc + child.inner.eval((tx, ty, tz, tw));
-                }
-                acc
-            }
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Reader
@@ -999,7 +769,7 @@ impl<'a> Font<'a> {
         self.cmap.lookup(ch as u32)
     }
 
-    pub fn glyph(&self, ch: char) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    pub fn glyph(&self, ch: char) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
@@ -1008,7 +778,7 @@ impl<'a> Font<'a> {
     pub fn glyph_by_id(
         &self,
         id: u16,
-    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         self.compile(id)
     }
 
@@ -1016,7 +786,7 @@ impl<'a> Font<'a> {
         &self,
         ch: char,
         size: f32,
-    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let id = self.cmap.lookup(ch as u32)?;
         self.glyph_scaled_by_id(id, size)
     }
@@ -1028,7 +798,7 @@ impl<'a> Font<'a> {
         &self,
         id: u16,
         size: f32,
-    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let g = self.glyph_by_id(id)?;
         // Scale based on total font height (ascent + |descent|) instead of units_per_em
         // This ensures descenders fit within the requested size
@@ -1090,7 +860,7 @@ impl<'a> Font<'a> {
         self.kern(left, right) * size / self.units_per_em as f32
     }
 
-    fn compile(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    fn compile(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let (a, b) = (self.loca.get(id as usize)?, self.loca.get(id as usize + 1)?);
         if a == b {
             return Some(Glyph::Empty);
@@ -1144,7 +914,7 @@ impl<'a> Font<'a> {
         scale: f32,
         tx: f32,
         ty: f32,
-    ) -> Option<Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    ) -> Option<Geometry<Line<LineKernel>, Quad<QuadKernel>>> {
         if n == 0 {
             return Some(Geometry {
                 lines: vec![].into(),
@@ -1214,7 +984,7 @@ impl<'a> Font<'a> {
         })
     }
 
-    fn compound(&self, r: &mut R) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
+    fn compound(&self, r: &mut R) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let mut kids = vec![];
         loop {
             let fl = r.u16()?;
@@ -1257,7 +1027,7 @@ impl<'a> Font<'a> {
 fn push_segs(
     pts: &[(f32, f32, bool)],
     lines: &mut Vec<Line<LineKernel>>,
-    quads: &mut Vec<Quad<QuadKernel, LineKernel>>,
+    quads: &mut Vec<Quad<QuadKernel>>,
 ) {
     if pts.is_empty() {
         return;
@@ -1287,7 +1057,9 @@ fn push_segs(
             [x, y]
         };
         if exp[(start + i + 1) % exp.len()].2 {
-            lines.push(make_line([p(i), p(i + 1)]));
+            if let Some(line) = make_line([p(i), p(i + 1)]) {
+                lines.push(line);
+            }
             i += 1;
         } else {
             quads.push(make_quad([p(i), p(i + 1), p(i + 2)]));

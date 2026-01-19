@@ -308,3 +308,160 @@ where
         O::select_raw(mask, true_val, false_val)
     }
 }
+// ============================================================================
+// Generic implementation for tuple domains ((V0, V1, ...), P)
+// ============================================================================
+//
+// This enables Select to work with WithContext-extended domains.
+// The condition, true branch, and false branch all evaluate on the extended domain,
+// but we extract the base spatial domain P for coordinate access.
+
+/// Generic Select impl for 1-element tuple domains
+impl<V0, P, C, T, F, O> Manifold<((V0,), P)> for Select<C, T, F>
+where
+    V0: Copy + Send + Sync,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    C: Manifold<((V0,), P), Output = O>,
+    T: Manifold<((V0,), P), Output = O>,
+    F: Manifold<((V0,), P), Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: ((V0,), P)) -> O {
+        let mask = self.cond.eval(p);
+        if mask.all() {
+            return self.if_true.eval(p);
+        }
+        if !mask.any() {
+            return self.if_false.eval(p);
+        }
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
+        O::select_raw(mask, true_val, false_val)
+    }
+}
+
+/// Generic Select impl for 2-element tuple domains
+impl<V0, V1, P, C, T, F, O> Manifold<((V0, V1), P)> for Select<C, T, F>
+where
+    V0: Copy + Send + Sync,
+    V1: Copy + Send + Sync,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    C: Manifold<((V0, V1), P), Output = O>,
+    T: Manifold<((V0, V1), P), Output = O>,
+    F: Manifold<((V0, V1), P), Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1), P)) -> O {
+        let mask = self.cond.eval(p);
+        if mask.all() {
+            return self.if_true.eval(p);
+        }
+        if !mask.any() {
+            return self.if_false.eval(p);
+        }
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
+        O::select_raw(mask, true_val, false_val)
+    }
+}
+
+/// Generic Select impl for 5-element tuple domains (the critical font rendering case)
+impl<V0, V1, V2, V3, V4, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4), P)> for Select<C, T, F>
+where
+    V0: Copy + Send + Sync,
+    V1: Copy + Send + Sync,
+    V2: Copy + Send + Sync,
+    V3: Copy + Send + Sync,
+    V4: Copy + Send + Sync,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    C: Manifold<((V0, V1, V2, V3, V4), P), Output = O>,
+    T: Manifold<((V0, V1, V2, V3, V4), P), Output = O>,
+    F: Manifold<((V0, V1, V2, V3, V4), P), Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4), P)) -> O {
+        let mask = self.cond.eval(p);
+        if mask.all() {
+            return self.if_true.eval(p);
+        }
+        if !mask.any() {
+            return self.if_false.eval(p);
+        }
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
+        O::select_raw(mask, true_val, false_val)
+    }
+}
+
+/// Generic Select impl for 8-element tuple domains
+impl<V0, V1, V2, V3, V4, V5, V6, V7, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>
+where
+    V0: Copy + Send + Sync,
+    V1: Copy + Send + Sync,
+    V2: Copy + Send + Sync,
+    V3: Copy + Send + Sync,
+    V4: Copy + Send + Sync,
+    V5: Copy + Send + Sync,
+    V6: Copy + Send + Sync,
+    V7: Copy + Send + Sync,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    C: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P), Output = O>,
+    T: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P), Output = O>,
+    F: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P), Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7), P)) -> O {
+        let mask = self.cond.eval(p);
+        if mask.all() {
+            return self.if_true.eval(p);
+        }
+        if !mask.any() {
+            return self.if_false.eval(p);
+        }
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
+        O::select_raw(mask, true_val, false_val)
+    }
+}
+
+/// Generic Select impl for 9-element tuple domains (for font quadratic curves with dy/dt)
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>
+where
+    V0: Copy + Send + Sync,
+    V1: Copy + Send + Sync,
+    V2: Copy + Send + Sync,
+    V3: Copy + Send + Sync,
+    V4: Copy + Send + Sync,
+    V5: Copy + Send + Sync,
+    V6: Copy + Send + Sync,
+    V7: Copy + Send + Sync,
+    V8: Copy + Send + Sync,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    C: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P), Output = O>,
+    T: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P), Output = O>,
+    F: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P), Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> O {
+        let mask = self.cond.eval(p);
+        if mask.all() {
+            return self.if_true.eval(p);
+        }
+        if !mask.any() {
+            return self.if_false.eval(p);
+        }
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
+        O::select_raw(mask, true_val, false_val)
+    }
+}

@@ -46,6 +46,9 @@ mod sema;
 mod symbol;
 
 use proc_macro::TokenStream;
+use quote::format_ident;
+use syn::parse::{Parse, ParseStream};
+use syn::{parse_macro_input, LitInt};
 
 /// The `kernel!` macro: closure-like syntax for SIMD manifold kernels.
 ///
@@ -123,4 +126,75 @@ pub fn kernel(input: TokenStream) -> TokenStream {
 pub fn derive_manifold_expr(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     manifold_expr::derive_manifold_expr(input).into()
+}
+
+/// Configuration for `generate_peano_types!` macro.
+struct PeanoConfig {
+    count: usize,
+}
+
+impl Parse for PeanoConfig {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let lit: LitInt = input.parse()?;
+        let count = lit.base10_parse()?;
+        Ok(PeanoConfig { count })
+    }
+}
+
+/// Generate binary-encoded type aliases N0, N1, ..., N{count-1}.
+///
+/// Uses binary encoding with UTerm/UInt/B0/B1 for logarithmic depth:
+/// - N0 = UTerm
+/// - N1 = UInt<UTerm, B1>  (0b1)
+/// - N2 = UInt<UInt<UTerm, B1>, B0>  (0b10)
+/// - N3 = UInt<UInt<UTerm, B1>, B1>  (0b11)
+/// - etc.
+///
+/// This reduces type nesting from O(n) to O(log n).
+///
+/// # Example
+///
+/// ```ignore
+/// generate_binary_types!(256);
+/// // N30 = UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B1>, B1>, B1>, B0>  (0b11110)
+/// // Instead of Succ<Succ<Succ<...30 times...>>>
+/// ```
+#[proc_macro]
+pub fn generate_binary_types(input: TokenStream) -> TokenStream {
+    let config = parse_macro_input!(input as PeanoConfig);
+    let count = config.count;
+
+    let mut types = Vec::new();
+
+    for i in 0..count {
+        let name = format_ident!("N{}", i);
+        let doc = format!("Index {} (0b{:b})", i, i);
+        let ty = to_binary_type(i);
+
+        types.push(quote::quote! {
+            #[doc = #doc]
+            pub type #name = #ty;
+        });
+    }
+
+    TokenStream::from(quote::quote! {
+        #(#types)*
+    })
+}
+
+/// Convert a number to its binary type representation.
+fn to_binary_type(n: usize) -> proc_macro2::TokenStream {
+    if n == 0 {
+        return quote::quote! { UTerm };
+    }
+
+    let bit = if n % 2 == 0 {
+        quote::quote! { B0 }
+    } else {
+        quote::quote! { B1 }
+    };
+
+    let rest = to_binary_type(n >> 1);
+
+    quote::quote! { UInt<#rest, #bit> }
 }

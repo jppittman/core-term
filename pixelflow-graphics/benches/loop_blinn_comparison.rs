@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughpu
 use pixelflow_core::{Field, ManifoldCompat};
 use pixelflow_graphics::{
     fonts::ttf::{loop_blinn_quad, Curve},
-    render::rasterizer::{execute, TensorShape},
+    render::frame::Frame,
     Font, Grayscale, Rgba8,
 };
 
@@ -75,15 +75,13 @@ fn bench_geometry_comparison(c: &mut Criterion) {
 
         let glyph = pf_font.glyph_scaled(*char_code, size_px as f32).unwrap();
 
-        let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
-        let shape = TensorShape::new(size_px as usize, size_px as usize);
-
         let bench_name = format!("standard/{}", desc);
         group.bench_function(&bench_name, |b| {
             b.iter(|| {
                 let colored = Grayscale(glyph.clone());
-                execute(&colored, &mut buffer, shape);
-                black_box(&buffer);
+                let mut frame = Frame::<Rgba8>::new(size_px, size_px);
+                frame.draw(&colored);
+                black_box(&frame);
             })
         });
     }
@@ -105,15 +103,14 @@ fn bench_full_glyph_rendering(c: &mut Criterion) {
         group.throughput(Throughput::Elements(total_pixels as u64));
 
         let glyph = pf_font.glyph_scaled('@', *size_px as f32).unwrap();
-        let mut buffer: Vec<Rgba8> = vec![Rgba8::default(); (size_px * size_px) as usize];
-        let shape = TensorShape::new(*size_px as usize, *size_px as usize);
 
         let bench_name = format!("standard_{}px", size_px);
         group.bench_function(&bench_name, |b| {
             b.iter(|| {
                 let colored = Grayscale(glyph.clone());
-                execute(&colored, &mut buffer, shape);
-                black_box(&buffer);
+                let mut frame = Frame::<Rgba8>::new(*size_px, *size_px);
+                frame.draw(&colored);
+                black_box(&frame);
             })
         });
     }

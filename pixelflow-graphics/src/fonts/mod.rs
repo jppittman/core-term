@@ -176,6 +176,7 @@ pub mod combinators;
 pub mod loader;
 pub mod text;
 pub mod ttf;
+pub mod ttf_curve_analytical;
 
 // Re-export font types (user-facing only; internal geometry types stay in ttf module)
 pub use ttf::{Font, Glyph};

@@ -27,8 +27,7 @@
 //! Uses `ColorManifold` from pixelflow-graphics for RGBA packing.
 //! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
-use pixelflow_core::{Field, Lt, Manifold, ManifoldCompat, ManifoldExt, Select, X, Y};
-use pixelflow_core::ManifoldExpr;
+use pixelflow_core::{Field, Lt, Manifold, ManifoldCompat, ManifoldExpr, ManifoldExt, Select, X, Y};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
@@ -71,6 +70,8 @@ pub struct CellChannel<G, const CHANNEL: usize> {
     cell: Cell<G>,
 }
 
+impl<G, const CHANNEL: usize> ManifoldExpr for CellChannel<G, CHANNEL> {}
+
 impl<G, const CHANNEL: usize> CellChannel<G, CHANNEL> {
     /// Create a channel extractor for a cell.
     pub fn new(cell: Cell<G>) -> Self {
@@ -94,8 +95,6 @@ impl<G: ManifoldCompat<Field, Output = Field> + Clone, const CHANNEL: usize> Man
             .constant()
     }
 }
-
-impl<G, const CHANNEL: usize> ManifoldExpr for CellChannel<G, CHANNEL> {}
 
 // Type aliases for each channel
 pub type CellR<G> = CellChannel<G, 0>;
