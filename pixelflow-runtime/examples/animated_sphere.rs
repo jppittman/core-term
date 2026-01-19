@@ -73,7 +73,9 @@ struct ScreenRemap<M> {
     height: f32,
 }
 
-impl<M: ManifoldCompat<Field, Output = Discrete> + Send + Sync> Manifold<Field4> for ScreenRemap<M> {
+impl<M: ManifoldCompat<Field, Output = Discrete> + Send + Sync> Manifold<Field4>
+    for ScreenRemap<M>
+{
     type Output = Discrete;
 
     fn eval(&self, p: Field4) -> Discrete {
@@ -98,8 +100,8 @@ impl<M: ManifoldCompat<Field, Output = Discrete> + Send + Sync> Manifold<Field4>
 
 /// Animation parameters for the oscillating sphere.
 const BASE_CENTER: (f32, f32, f32) = (0.0, 0.0, 4.0);
-const AMPLITUDE: f32 = 2.0;  // Oscillate ±2 units in X
-const FREQUENCY: f32 = 1.0;  // 1 rad/s
+const AMPLITUDE: f32 = 2.0; // Oscillate ±2 units in X
+const FREQUENCY: f32 = 1.0; // 1 rad/s
 const RADIUS: f32 = 1.0;
 
 /// Build scene with sphere at the given animated position.

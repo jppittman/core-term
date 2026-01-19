@@ -53,7 +53,7 @@ pub struct X11Window {
     pub atoms: SelectionAtoms,
     pub wake_atom: xlib::Atom,
     pub xrm_db: Option<xlib::XrmDatabase>,
-    
+
     // Window state
     pub width: u32,
     pub height: u32,
@@ -91,9 +91,8 @@ impl X11Window {
             let width = settings.width;
             let height = settings.height;
 
-            let window = xlib::XCreateSimpleWindow(
-                display, root, 0, 0, width, height, 0, white, black,
-            );
+            let window =
+                xlib::XCreateSimpleWindow(display, root, 0, 0, width, height, 0, white, black);
 
             if let Ok(c_title) = CString::new(settings.title.as_str()) {
                 xlib::XStoreName(display, window, c_title.as_ptr());
@@ -119,12 +118,7 @@ impl X11Window {
             );
 
             // Set WM Protocols (for close button)
-            xlib::XSetWMProtocols(
-                display,
-                window,
-                &wm_delete_window as *const _ as *mut _,
-                1,
-            );
+            xlib::XSetWMProtocols(display, window, &wm_delete_window as *const _ as *mut _, 1);
 
             // Create Graphics Context
             let gc = xlib::XCreateGC(display, window, 0, ptr::null_mut());
@@ -166,7 +160,9 @@ impl X11Window {
 
     /// Query Xft.dpi from X resources.
     fn query_scale_factor(&self) -> f64 {
-        let Some(xrm_db) = self.xrm_db else { return 1.0; };
+        let Some(xrm_db) = self.xrm_db else {
+            return 1.0;
+        };
         unsafe {
             let name = CString::new("Xft.dpi").unwrap();
             let class = CString::new("Xft.Dpi").unwrap();

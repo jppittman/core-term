@@ -1,9 +1,7 @@
 #[cfg(target_os = "macos")]
 mod tests {
-    use actor_scheduler::{Actor, ActorStatus, HandlerResult, HandlerError, SystemStatus};
-    use pixelflow_runtime::api::private::{
-        create_engine_actor, EngineControl, EngineData,
-    };
+    use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus};
+    use pixelflow_runtime::api::private::{create_engine_actor, EngineControl, EngineData};
     use pixelflow_runtime::api::public::{AppManagement, WindowDescriptor};
     use pixelflow_runtime::display::messages::{DisplayControl, DisplayMgmt};
     use pixelflow_runtime::display::ops::PlatformOps;
@@ -34,8 +32,12 @@ mod tests {
             Ok(())
         }
 
-        fn handle_control(&mut self, _msg: EngineControl) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _msg: AppManagement) -> HandlerResult { Ok(()) }
+        fn handle_control(&mut self, _msg: EngineControl) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _msg: AppManagement) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -67,9 +69,7 @@ mod tests {
             ..Default::default()
         };
 
-        let _ = ops.handle_management(DisplayMgmt::Create {
-            settings,
-        });
+        let _ = ops.handle_management(DisplayMgmt::Create { settings });
 
         // 5. Emulate run loop step (Platform)
         // This should trigger window creation and send event to Engine
@@ -81,7 +81,8 @@ mod tests {
         // 6. Verify Window Creation Event within MockEngine
         let captured = events.lock().unwrap();
         let found_window_id = captured.iter().find_map(|e| {
-            if let pixelflow_runtime::display::messages::DisplayEvent::WindowCreated { window } = e {
+            if let pixelflow_runtime::display::messages::DisplayEvent::WindowCreated { window } = e
+            {
                 Some(window.id)
             } else {
                 None

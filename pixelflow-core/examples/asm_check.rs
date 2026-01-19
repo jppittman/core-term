@@ -58,4 +58,3 @@ fn main() {
     let non_zero = buffer.iter().filter(|&&p| p != 0).count();
     println!("Rendered {} non-zero pixels", non_zero);
 }
-

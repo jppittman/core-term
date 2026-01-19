@@ -297,9 +297,7 @@ pub enum DisplayMgmt {
     /// }))?;
     /// // ... wait for DisplayEvent::WindowCreated ...
     /// ```
-    Create {
-        settings: WindowDescriptor,
-    },
+    Create { settings: WindowDescriptor },
 
     /// Destroy an existing window.
     ///
@@ -335,14 +333,18 @@ pub enum DisplayEvent {
     /// A new window was created by the platform.
     ///
     /// The `Window` contains the platform-assigned ID and initial frame buffer.
-    WindowCreated { window: Window },
+    WindowCreated {
+        window: Window,
+    },
     WindowDestroyed {
         id: WindowId,
     },
     /// Window was resized (by user or programmatically).
     ///
     /// The `Window` contains an appropriately-sized frame buffer.
-    Resized { window: Window },
+    Resized {
+        window: Window,
+    },
     ScaleChanged {
         id: WindowId,
         scale: f64,

@@ -8,8 +8,8 @@
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{
-    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
-    Y, Z,
+    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select,
+    Sub, W, X, Y, Z,
 };
 use std::sync::Arc;
 
@@ -648,10 +648,10 @@ where
                 // At<trans_x, trans_y, Z, W, Select<UnitSquare, Geometry, 0.0>>
                 //
                 // We evaluate trans_x and trans_y at (x, y, z, w), then pass to inner
-                let tx = g.x.eval(p);  // transformed x
-                let ty = g.y.eval(p);  // transformed y
-                let tz = g.z.eval(p);  // z (passthrough)
-                let tw = g.w.eval(p);  // w (passthrough)
+                let tx = g.x.eval(p); // transformed x
+                let ty = g.y.eval(p); // transformed y
+                let tz = g.z.eval(p); // z (passthrough)
+                let tw = g.w.eval(p); // w (passthrough)
 
                 // Now evaluate the inner Select<UnitSquare, Geometry, 0.0>
                 g.inner.eval((tx, ty, tz, tw))
@@ -697,8 +697,16 @@ where
                 let ty_field = g.y.eval((x.val, y.val, z.val, w.val));
 
                 // Create Jet2 coords with the transformed values and propagated derivatives
-                let tx = Jet2 { val: tx_field, dx: x.dx, dy: x.dy };
-                let ty = Jet2 { val: ty_field, dx: y.dx, dy: y.dy };
+                let tx = Jet2 {
+                    val: tx_field,
+                    dx: x.dx,
+                    dy: x.dy,
+                };
+                let ty = Jet2 {
+                    val: ty_field,
+                    dx: y.dx,
+                    dy: y.dy,
+                };
                 let tz = z;
                 let tw = w;
 
@@ -711,8 +719,16 @@ where
                     let tx_field = child.x.eval((x.val, y.val, z.val, w.val));
                     let ty_field = child.y.eval((x.val, y.val, z.val, w.val));
 
-                    let tx = Jet2 { val: tx_field, dx: x.dx, dy: x.dy };
-                    let ty = Jet2 { val: ty_field, dx: y.dx, dy: y.dy };
+                    let tx = Jet2 {
+                        val: tx_field,
+                        dx: x.dx,
+                        dy: x.dy,
+                    };
+                    let ty = Jet2 {
+                        val: ty_field,
+                        dx: y.dx,
+                        dy: y.dy,
+                    };
                     let tz = z;
                     let tw = w;
 

@@ -7,12 +7,12 @@
 //! - No finite differences, no extra evaluations
 
 use pixelflow_graphics::mesh::{Point3, QuadMesh};
+use pixelflow_graphics::render::color::RgbaColorCube;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
 use pixelflow_graphics::subdivision::{SubdivisionGeometry, SubdivisionPatch};
-use pixelflow_graphics::render::color::RgbaColorCube;
 use pixelflow_graphics::{Frame, Rgba8};
 
 fn main() {

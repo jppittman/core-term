@@ -3,8 +3,8 @@
 use crate::Field;
 use crate::Manifold;
 use crate::ManifoldExt;
-use crate::numeric::{Computational, Numeric, Selectable};
 use crate::ext;
+use crate::numeric::{Computational, Numeric, Selectable};
 
 /// The standard 4D Field domain.
 type Field4 = (Field, Field, Field, Field);
@@ -108,7 +108,11 @@ impl Jet3 {
     ) {
         let len_sq = self.dx * self.dx + self.dy * self.dy + self.dz * self.dz;
         let inv_len = len_sq.rsqrt();
-        (self.dx.clone() * inv_len.clone(), self.dy.clone() * inv_len.clone(), self.dz.clone() * inv_len)
+        (
+            self.dx.clone() * inv_len.clone(),
+            self.dy.clone() * inv_len.clone(),
+            self.dz.clone() * inv_len,
+        )
     }
 
     /// Get the raw gradient without normalization.
@@ -709,7 +713,12 @@ impl Numeric for Jet3 {
         let rsqrt_val = self.val.rsqrt();
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
         let scale = Field::from(-0.5) * rsqrt_cubed;
-        Self::new(rsqrt_val, self.dx * scale.clone(), self.dy * scale.clone(), self.dz * scale)
+        Self::new(
+            rsqrt_val,
+            self.dx * scale.clone(),
+            self.dy * scale.clone(),
+            self.dz * scale,
+        )
     }
 
     #[inline(always)]

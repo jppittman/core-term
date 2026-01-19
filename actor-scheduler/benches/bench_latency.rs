@@ -1,8 +1,11 @@
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, HandlerResult, HandlerError};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::sync::{
+    Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
+    mpsc,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,7 +15,9 @@ struct LatencyActor {
 }
 
 impl Actor<(), (), ()> for LatencyActor {
-    fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
+    fn handle_data(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
 
     fn handle_control(&mut self, _: ()) -> HandlerResult {
         // Immediately signal completion

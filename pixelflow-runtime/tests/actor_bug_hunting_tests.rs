@@ -9,7 +9,10 @@
 //!
 //! Each test documents the bug it's hunting for.
 
-use actor_scheduler::{Actor, ActorScheduler, Message, ActorStatus, SystemStatus, SendError, HandlerResult, HandlerError};
+use actor_scheduler::{
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SendError,
+    SystemStatus,
+};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
@@ -90,8 +93,12 @@ fn zero_burst_limit_does_not_cause_infinite_loop() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -144,8 +151,12 @@ fn mass_sender_drop_does_not_cause_race() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -214,8 +225,12 @@ fn actor_panic_does_not_corrupt_state() {
                 }
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -261,7 +276,9 @@ fn continuous_control_eventually_processes_data() {
                 // No delay - we're testing priority, not processing time
                 Ok(())
             }
-            fn handle_management(&mut self, _: String) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: String) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -306,9 +323,15 @@ fn park_poll_does_not_spin_indefinitely() {
             max_parks: usize,
         }
         impl Actor<(), (), ()> for SpinActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_control(&mut self, _: ()) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
+            fn handle_data(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 let count = self.park_count.fetch_add(1, Ordering::SeqCst);
                 if count < self.max_parks {
@@ -360,8 +383,12 @@ fn slow_handler_backpressure_works() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -414,8 +441,12 @@ fn single_sender_fifo_ordering_maintained() {
                 self.0.lock().unwrap().push(msg);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -507,8 +538,12 @@ fn concurrent_send_during_processing() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -561,8 +596,12 @@ fn doorbell_saturation_does_not_lose_messages() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -659,15 +698,13 @@ fn control_lane_timeout_returns_error() {
     let result = test_thread.join();
     let elapsed = start.elapsed();
 
-    assert!(
-        result.is_ok(),
-        "Test panicked or did not complete"
-    );
+    assert!(result.is_ok(), "Test panicked or did not complete");
 
     assert!(
         elapsed < test_timeout,
         "Test appears to be deadlocked - took {:?}, expected < {:?}",
-        elapsed, test_timeout
+        elapsed,
+        test_timeout
     );
 }
 
@@ -689,8 +726,12 @@ fn large_queue_does_not_cause_issues() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn handle_control(&mut self, _: String) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: String) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: String) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: String) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
@@ -727,9 +768,15 @@ fn shutdown_race_does_not_panic() {
         let handle = thread::spawn(move || {
             struct NoopActor;
             impl Actor<i32, i32, i32> for NoopActor {
-                fn handle_data(&mut self, _: i32) -> HandlerResult { Ok(()) }
-                fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-                fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+                fn handle_data(&mut self, _: i32) -> HandlerResult {
+                    Ok(())
+                }
+                fn handle_control(&mut self, _: i32) -> HandlerResult {
+                    Ok(())
+                }
+                fn handle_management(&mut self, _: i32) -> HandlerResult {
+                    Ok(())
+                }
                 fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Idle)
                 }
