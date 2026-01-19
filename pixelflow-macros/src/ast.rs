@@ -42,13 +42,24 @@ pub struct KernelDef {
     pub body: Expr,
 }
 
+/// Parameter kind - scalar (f32/i32) or manifold (generic).
+#[derive(Debug, Clone)]
+pub enum ParamKind {
+    /// Scalar parameter - use Let/Var binding with concrete type.
+    /// Example: `r: f32` → struct field, bound via Let::new(self.r, ...)
+    Scalar(Type),
+    /// Manifold parameter - generic type with trait bounds.
+    /// Example: `inner: kernel` → generic M0, evaluated then bound via Let
+    Manifold,
+}
+
 /// A captured parameter.
 #[derive(Debug, Clone)]
 pub struct Param {
     /// Parameter name.
     pub name: Ident,
-    /// Parameter type.
-    pub ty: Type,
+    /// Parameter kind (scalar with type, or manifold).
+    pub kind: ParamKind,
 }
 
 /// An expression in the kernel body.

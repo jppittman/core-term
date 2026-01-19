@@ -45,12 +45,13 @@
 //! ```
 
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, Expr, LetStmt, MethodCallExpr, Stmt, UnaryExpr, UnaryOp,
+    BinaryExpr, BinaryOp, BlockExpr, Expr, LetStmt, MethodCallExpr, ParamKind, Stmt, UnaryExpr,
+    UnaryOp,
 };
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens};
+use quote::{format_ident, quote, ToTokens};
 use std::collections::HashMap;
 
 /// Peano type names for indices 0-7.
@@ -68,6 +69,8 @@ struct CodeEmitter<'a> {
     /// Maps parameter names to their Peano index for Var<N> access.
     /// First param → highest index (deepest in stack), last param → N0 (head).
     param_indices: HashMap<String, usize>,
+    /// Maps manifold parameter names to their generic type index (M0, M1, ...).
+    manifold_indices: HashMap<String, usize>,
     /// Whether we're generating for a Jet domain (Jet2, Jet3).
     /// If true, f32 literals must be wrapped as constant jets.
     use_jet_wrapper: bool,
@@ -75,7 +78,7 @@ struct CodeEmitter<'a> {
 
 impl<'a> CodeEmitter<'a> {
     fn new(analyzed: &'a AnalyzedKernel) -> Self {
-        // Compute Peano indices for parameters.
+        // Compute Peano indices for ALL parameters (both scalar and manifold).
         // With n parameters, first param is at index n-1, last param is at index 0.
         let n = analyzed.def.params.len();
         let mut param_indices = HashMap::new();
@@ -83,6 +86,17 @@ impl<'a> CodeEmitter<'a> {
             // First param (i=0) gets highest index (n-1), last param gets 0
             let peano_idx = n - 1 - i;
             param_indices.insert(param.name.to_string(), peano_idx);
+        }
+
+        // Compute generic type indices for manifold parameters (M0, M1, ...).
+        // These are numbered in declaration order.
+        let mut manifold_indices = HashMap::new();
+        let mut manifold_count = 0;
+        for param in &analyzed.def.params {
+            if matches!(param.kind, ParamKind::Manifold) {
+                manifold_indices.insert(param.name.to_string(), manifold_count);
+                manifold_count += 1;
+            }
         }
 
         // Determine if we need to wrap literals for Jet domains
@@ -97,6 +111,7 @@ impl<'a> CodeEmitter<'a> {
         CodeEmitter {
             analyzed,
             param_indices,
+            manifold_indices,
             use_jet_wrapper,
         }
     }
@@ -105,46 +120,51 @@ impl<'a> CodeEmitter<'a> {
     fn emit_kernel(&mut self) -> TokenStream {
         let params = &self.analyzed.def.params;
 
-        // Generate struct fields
+        // Count manifold parameters for generic type generation
+        let manifold_count = self.manifold_indices.len();
+
+        // Generate generic type parameter names (M0, M1, ...)
+        let generic_names: Vec<syn::Ident> = (0..manifold_count)
+            .map(|i| format_ident!("M{}", i))
+            .collect();
+
+        // Generate struct fields:
+        // - Manifold params → generic field `inner: M0`
+        // - Scalar params → concrete field `r: f32`
         let struct_fields: Vec<TokenStream> = params
             .iter()
             .map(|p| {
                 let name = &p.name;
-                let ty = &p.ty;
-                quote! { #name: #ty }
+                match &p.kind {
+                    ParamKind::Scalar(ty) => quote! { #name: #ty },
+                    ParamKind::Manifold => {
+                        let idx = self.manifold_indices[&name.to_string()];
+                        let generic_name = &generic_names[idx];
+                        quote! { #name: #generic_name }
+                    }
+                }
             })
             .collect();
 
         // Generate struct field names for construction
         let field_names: Vec<_> = params.iter().map(|p| &p.name).collect();
 
-        // Generate closure parameters
+        // Generate closure parameters:
+        // - Manifold params → just the name (type inferred from generic)
+        // - Scalar params → `name: type`
         let closure_params: Vec<TokenStream> = params
             .iter()
             .map(|p| {
                 let name = &p.name;
-                let ty = &p.ty;
-                quote! { #name: #ty }
+                match &p.kind {
+                    ParamKind::Scalar(ty) => quote! { #name: #ty },
+                    ParamKind::Manifold => quote! { #name },
+                }
             })
             .collect();
 
         // Transform and emit the body as a ZST expression
         let body = self.emit_expr(&self.analyzed.def.body);
-
-        // Handle empty vs non-empty params
-        let (struct_def, struct_init, closure) = if params.is_empty() {
-            (
-                quote! { struct __Kernel; },
-                quote! { __Kernel },
-                quote! { || },
-            )
-        } else {
-            (
-                quote! { struct __Kernel { #(#struct_fields),* } },
-                quote! { __Kernel { #(#field_names),* } },
-                quote! { |#(#closure_params),*| },
-            )
-        };
 
         // Generate the Peano type imports needed based on parameter count
         let peano_imports = self.emit_peano_imports();
@@ -184,37 +204,111 @@ impl<'a> CodeEmitter<'a> {
         };
 
         // Generate the Let/Var binding to inject parameters (use stored use_jet_wrapper)
-        let at_binding = self.emit_at_binding();
+        let (manifold_eval_stmts, at_binding) = self.emit_unified_binding();
 
-        quote! {
-            {
-                type __Domain = #domain_type;
-                type __Scalar = #scalar_type;
+        // Handle empty vs non-empty params, with or without generics
+        if params.is_empty() {
+            // No parameters - simple case
+            quote! {
+                {
+                    type __Domain = #domain_type;
+                    type __Scalar = #scalar_type;
 
-                #[derive(Clone)]
-                #struct_def
+                    #[derive(Clone)]
+                    struct __Kernel;
 
-                impl ::pixelflow_core::Manifold<__Domain> for __Kernel {
-                    type Output = #output_type;
+                    impl ::pixelflow_core::Manifold<__Domain> for __Kernel {
+                        type Output = #output_type;
 
-                    #[inline(always)]
-                    fn eval(
-                        &self,
-                        __p: __Domain,
-                    ) -> #output_type {
-                        // Import the coordinate variables, traits, and Peano types
-                        use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
-                        #peano_imports
+                        #[inline(always)]
+                        fn eval(
+                            &self,
+                            __p: __Domain,
+                        ) -> #output_type {
+                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                            #peano_imports
 
-                        // Build the ZST expression tree using Var<N> for parameters (this is Copy!)
-                        let __expr = { #body };
-
-                        // Wrap in nested Let bindings and evaluate
-                        #at_binding
+                            let __expr = { #body };
+                            #at_binding
+                        }
                     }
-                }
 
-                #closure #struct_init
+                    || __Kernel
+                }
+            }
+        } else if manifold_count == 0 {
+            // Only scalar parameters - no generics needed
+            quote! {
+                {
+                    type __Domain = #domain_type;
+                    type __Scalar = #scalar_type;
+
+                    #[derive(Clone)]
+                    struct __Kernel { #(#struct_fields),* }
+
+                    impl ::pixelflow_core::Manifold<__Domain> for __Kernel {
+                        type Output = #output_type;
+
+                        #[inline(always)]
+                        fn eval(
+                            &self,
+                            __p: __Domain,
+                        ) -> #output_type {
+                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                            #peano_imports
+
+                            let __expr = { #body };
+                            #at_binding
+                        }
+                    }
+
+                    |#(#closure_params),*| __Kernel { #(#field_names),* }
+                }
+            }
+        } else {
+            // Has manifold parameters - need generics and trait bounds
+            // Generate trait bounds: M0: Manifold<__Domain, Output = __Scalar>
+            let trait_bounds: Vec<TokenStream> = generic_names
+                .iter()
+                .map(|g| {
+                    quote! { #g: ::pixelflow_core::Manifold<__Domain, Output = __Scalar> }
+                })
+                .collect();
+
+            quote! {
+                {
+                    type __Domain = #domain_type;
+                    type __Scalar = #scalar_type;
+
+                    struct __Kernel<#(#generic_names),*> { #(#struct_fields),* }
+
+                    impl<#(#generic_names),*> ::pixelflow_core::Manifold<__Domain> for __Kernel<#(#generic_names),*>
+                    where
+                        #(#trait_bounds),*
+                    {
+                        type Output = #output_type;
+
+                        #[inline(always)]
+                        fn eval(
+                            &self,
+                            __p: __Domain,
+                        ) -> #output_type {
+                            use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                            #peano_imports
+
+                            // Evaluate manifold parameters at current point (borrows via &self)
+                            #manifold_eval_stmts
+
+                            // Build the ZST expression tree using Var<N> for ALL parameters
+                            let __expr = { #body };
+
+                            // Wrap in nested Let bindings and evaluate
+                            #at_binding
+                        }
+                    }
+
+                    |#(#closure_params),*| __Kernel { #(#field_names),* }
+                }
             }
         }
     }
@@ -237,50 +331,78 @@ impl<'a> CodeEmitter<'a> {
         quote! { use ::pixelflow_core::{ #(#imports),* }; }
     }
 
-    /// Emit the Let/Var binding that injects parameter values into the domain.
+    /// Emit unified Let/Var binding for both manifold and scalar parameters.
     ///
-    /// Generates nested Let::new() calls that extend the domain with each parameter,
-    /// then evaluates the expression on the extended domain.
+    /// Returns two things:
+    /// 1. Statements to evaluate manifold parameters at `__p`
+    /// 2. Nested Let::new() calls that extend the domain with all parameter values
     ///
-    /// For Jet domains (Jet2, Jet3), parameters are wrapped as constant jets:
-    /// `Jet3::constant(Field::from(self.param))` instead of raw `self.param`.
-    fn emit_at_binding(&self) -> TokenStream {
+    /// The key insight: ALL params become Var<N> in the expression tree.
+    /// - Manifold params: Evaluated at `__p` first → `let __m0 = self.inner.eval(__p);`
+    ///   → then bound via `Let::new(__m0, ...)`
+    /// - Scalar params: Bound directly via `Let::new(self.r, ...)`
+    fn emit_unified_binding(&self) -> (TokenStream, TokenStream) {
         let params = &self.analyzed.def.params;
 
         if params.is_empty() {
-            // No parameters - evaluate expression directly on the input domain
-            quote! {
-                __expr.eval(__p)
-            }
-        } else {
-            // Build nested Let bindings from outside to inside.
-            // First parameter (index 0) is outermost, last parameter is innermost.
-            // This creates: Let::new(p0, Let::new(p1, ..., Let::new(pN, __expr)))
-            //
-            // The body (__expr) uses Var<N{n-1}> for first param, Var<N0> for last param.
-            // After evaluation, first param is deepest in stack, last param is head.
-
-            let mut result = quote! { __expr };
-
-            // Wrap from innermost to outermost (reverse order)
-            for param in params.iter().rev() {
-                let name = &param.name;
-                // For Jet domains, wrap f32 params as constant jets
-                let param_value = if self.use_jet_wrapper {
-                    quote! { __Scalar::constant(::pixelflow_core::Field::from(self.#name)) }
-                } else {
-                    quote! { self.#name }
-                };
-                result = quote! {
-                    Let::new(#param_value, #result)
-                };
-            }
-
-            // Evaluate the whole Let-wrapped expression on the input domain
-            quote! {
-                #result.eval(__p)
-            }
+            // No parameters - evaluate expression directly
+            return (quote! {}, quote! { __expr.eval(__p) });
         }
+
+        // 1. Generate statements to evaluate manifold params
+        let manifold_eval_stmts: Vec<TokenStream> = params
+            .iter()
+            .filter_map(|p| {
+                if let ParamKind::Manifold = &p.kind {
+                    let name = &p.name;
+                    let idx = self.manifold_indices[&name.to_string()];
+                    let var_name = format_ident!("__m{}", idx);
+                    Some(quote! {
+                        let #var_name = self.#name.eval(__p);
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // 2. Build nested Let bindings from outside to inside.
+        // First parameter (index 0) is outermost, last parameter is innermost.
+        // This creates: Let::new(p0, Let::new(p1, ..., Let::new(pN, __expr)))
+        //
+        // The body (__expr) uses Var<N{n-1}> for first param, Var<N0> for last param.
+        let mut result = quote! { __expr };
+
+        // Wrap from innermost to outermost (reverse order)
+        for param in params.iter().rev() {
+            let name = &param.name;
+
+            let param_value = match &param.kind {
+                ParamKind::Manifold => {
+                    // Use the pre-evaluated manifold result
+                    let idx = self.manifold_indices[&name.to_string()];
+                    let var_name = format_ident!("__m{}", idx);
+                    quote! { #var_name }
+                }
+                ParamKind::Scalar(_) => {
+                    // For Jet domains, wrap f32 params as constant jets
+                    if self.use_jet_wrapper {
+                        quote! { __Scalar::constant(::pixelflow_core::Field::from(self.#name)) }
+                    } else {
+                        quote! { self.#name }
+                    }
+                }
+            };
+
+            result = quote! {
+                Let::new(#param_value, #result)
+            };
+        }
+
+        // Evaluate the whole Let-wrapped expression on the input domain
+        let at_binding = quote! { #result.eval(__p) };
+
+        (quote! { #(#manifold_eval_stmts)* }, at_binding)
     }
 
     /// Emit code for an expression, transforming parameters to Var<N> references.
@@ -296,8 +418,9 @@ impl<'a> CodeEmitter<'a> {
                             // Intrinsics (X, Y, Z, W) emitted as-is
                             quote! { #name }
                         }
-                        SymbolKind::Parameter => {
-                            // Parameters become Var::<N{index}>::new()
+                        SymbolKind::Parameter | SymbolKind::ManifoldParam => {
+                            // Both scalar and manifold parameters become Var::<N{index}>::new()
+                            // The unified Let/Var binding handles the difference at bind time
                             if let Some(&idx) = self.param_indices.get(&name_str) {
                                 if idx < PEANO_INDICES.len() {
                                     let peano_name = syn::Ident::new(
@@ -561,6 +684,78 @@ mod tests {
         assert!(
             output_str.contains("Var :: < N0 >"),
             "Expected Var::<N0> for r"
+        );
+    }
+
+    #[test]
+    fn emit_manifold_param() {
+        let input = quote! { |inner: kernel, r: f32| inner - r };
+        let output = compile(input);
+        let output_str = output.to_string();
+
+        // Should have generic struct: struct __Kernel<M0> { inner: M0, r: f32 }
+        assert!(
+            output_str.contains("struct __Kernel < M0 >"),
+            "Expected generic struct, got: {}",
+            output_str
+        );
+
+        // Should have trait bound for M0
+        assert!(
+            output_str.contains("M0 : :: pixelflow_core :: Manifold < __Domain"),
+            "Expected trait bound for M0, got: {}",
+            output_str
+        );
+
+        // inner → Var::<N1>, r → Var::<N0>
+        assert!(
+            output_str.contains("Var :: < N1 >"),
+            "Expected Var::<N1> for inner"
+        );
+        assert!(
+            output_str.contains("Var :: < N0 >"),
+            "Expected Var::<N0> for r"
+        );
+
+        // Should evaluate manifold: let __m0 = self.inner.eval(__p);
+        assert!(
+            output_str.contains("let __m0 = self . inner . eval (__p)"),
+            "Expected manifold eval, got: {}",
+            output_str
+        );
+    }
+
+    #[test]
+    fn emit_multiple_manifold_params() {
+        let input = quote! { |a: kernel, b: kernel| a + b };
+        let output = compile(input);
+        let output_str = output.to_string();
+
+        // Should have two generic params
+        assert!(
+            output_str.contains("struct __Kernel < M0 , M1 >"),
+            "Expected two generics, got: {}",
+            output_str
+        );
+
+        // Both params become Var references
+        assert!(
+            output_str.contains("Var :: < N1 >"),
+            "Expected Var::<N1> for a"
+        );
+        assert!(
+            output_str.contains("Var :: < N0 >"),
+            "Expected Var::<N0> for b"
+        );
+
+        // Should have two manifold evals
+        assert!(
+            output_str.contains("let __m0 = self . a . eval (__p)"),
+            "Expected __m0 eval"
+        );
+        assert!(
+            output_str.contains("let __m1 = self . b . eval (__p)"),
+            "Expected __m1 eval"
         );
     }
 }

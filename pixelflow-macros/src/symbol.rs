@@ -36,9 +36,14 @@ pub enum SymbolKind {
     /// Bound at evaluation time via `eval_raw` parameters.
     Intrinsic,
 
-    /// Captured parameter from closure syntax.
+    /// Captured scalar parameter from closure syntax (e.g., `r: f32`).
     /// Bound at construction time, accessed via `self.name`.
     Parameter,
+
+    /// Manifold parameter from closure syntax (e.g., `inner: kernel`).
+    /// Becomes a generic type parameter `M{n}` with trait bounds.
+    /// Evaluated at `__p` first, then bound via Let.
+    ManifoldParam,
 
     /// Local variable introduced by `let`.
     /// Scoped to the containing block.
@@ -92,7 +97,7 @@ impl SymbolTable {
         table
     }
 
-    /// Register a parameter symbol.
+    /// Register a scalar parameter symbol (e.g., `r: f32`).
     pub fn register_parameter(&mut self, name: Ident, ty: Type) {
         let key = name.to_string();
         self.symbols.insert(
@@ -101,6 +106,24 @@ impl SymbolTable {
                 name,
                 kind: SymbolKind::Parameter,
                 ty: Some(ty),
+                span: Span::call_site(),
+            },
+        );
+        // Add to current scope
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.push(key);
+        }
+    }
+
+    /// Register a manifold parameter symbol (e.g., `inner: kernel`).
+    pub fn register_manifold_param(&mut self, name: Ident) {
+        let key = name.to_string();
+        self.symbols.insert(
+            key.clone(),
+            Symbol {
+                name,
+                kind: SymbolKind::ManifoldParam,
+                ty: None, // Type is generic (M0, M1, etc.)
                 span: Span::call_site(),
             },
         );
@@ -146,11 +169,25 @@ impl SymbolTable {
             .map_or(false, |s| s.kind == SymbolKind::Parameter)
     }
 
-    /// Get all parameter symbols (for struct generation).
+    /// Get all scalar parameter symbols (for struct generation).
     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols
             .values()
             .filter(|s| s.kind == SymbolKind::Parameter)
+    }
+
+    /// Check if a name is a manifold parameter.
+    pub fn is_manifold_param(&self, name: &str) -> bool {
+        self.symbols
+            .get(name)
+            .map_or(false, |s| s.kind == SymbolKind::ManifoldParam)
+    }
+
+    /// Get all manifold parameter symbols (for generic type generation).
+    pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
+        self.symbols
+            .values()
+            .filter(|s| s.kind == SymbolKind::ManifoldParam)
     }
 
     /// Push a new scope (for future block scoping).

@@ -383,3 +383,180 @@ fn test_jet3_sphere_sdf() {
         "Jet3 sphere SDF at origin should be ~0.385"
     );
 }
+
+// ============================================================================
+// Tests for kernel composition (manifold parameters)
+// ============================================================================
+
+/// Test basic kernel composition with a single manifold parameter.
+/// This is the core use case: composing a distance function with a circle SDF.
+#[test]
+fn test_simple_kernel_composition() {
+    // Distance from a point (parametric)
+    let dist = kernel!(|cx: f32, cy: f32| {
+        let dx = X - cx;
+        let dy = Y - cy;
+        (dx * dx + dy * dy).sqrt()
+    });
+
+    // Circle SDF: takes a distance manifold and subtracts radius
+    let circle = kernel!(|inner: kernel, r: f32| inner - r);
+
+    // Compose: circle centered at origin with radius 1
+    let c = circle(dist(0.0, 0.0), 1.0);
+
+    // At (2, 0): distance from origin is 2, minus radius 1 = 1
+    let result = c.eval(field4(2.0, 0.0, 0.0, 0.0));
+    let expected = Field::from(1.0);
+    assert!(
+        fields_close(result, expected, 0.001),
+        "circle SDF at (2,0) should be 1.0"
+    );
+
+    // At (0, 0): distance from origin is 0, minus radius 1 = -1 (inside)
+    let result_center = c.eval(field4(0.0, 0.0, 0.0, 0.0));
+    let expected_center = Field::from(-1.0);
+    assert!(
+        fields_close(result_center, expected_center, 0.001),
+        "circle SDF at center should be -1.0"
+    );
+}
+
+/// Test kernel composition with offset centers.
+#[test]
+fn test_kernel_composition_with_offset() {
+    let dist = kernel!(|cx: f32, cy: f32| {
+        let dx = X - cx;
+        let dy = Y - cy;
+        (dx * dx + dy * dy).sqrt()
+    });
+
+    let circle = kernel!(|inner: kernel, r: f32| inner - r);
+
+    // Circle at (3, 4) with radius 5
+    let c = circle(dist(3.0, 4.0), 5.0);
+
+    // At origin (0, 0): distance from (3,4) is 5, minus radius 5 = 0 (on surface)
+    let result = c.eval(field4(0.0, 0.0, 0.0, 0.0));
+    let expected = Field::from(0.0);
+    assert!(
+        fields_close(result, expected, 0.001),
+        "circle SDF at origin should be 0 (on surface)"
+    );
+
+    // At (3, 4): center, SDF = -5
+    let result_center = c.eval(field4(3.0, 4.0, 0.0, 0.0));
+    let expected_center = Field::from(-5.0);
+    assert!(
+        fields_close(result_center, expected_center, 0.001),
+        "circle SDF at center should be -5"
+    );
+}
+
+/// Test multiple manifold parameters (SDF union).
+#[test]
+fn test_two_manifold_params() {
+    // Basic circle SDF
+    let circle_sdf = kernel!(|cx: f32, cy: f32, r: f32| {
+        let dx = X - cx;
+        let dy = Y - cy;
+        (dx * dx + dy * dy).sqrt() - r
+    });
+
+    // SDF union: min of two SDFs
+    let sdf_union = kernel!(|a: kernel, b: kernel| a.min(b));
+
+    // Union of two circles: one at origin r=1, one at (3,0) r=1
+    let c1 = circle_sdf(0.0, 0.0, 1.0);
+    let c2 = circle_sdf(3.0, 0.0, 1.0);
+    let union = sdf_union(c1, c2);
+
+    // At (0, 0): inside first circle, SDF = -1
+    let result_c1 = union.eval(field4(0.0, 0.0, 0.0, 0.0));
+    assert!(
+        fields_close(result_c1, Field::from(-1.0), 0.001),
+        "union at first circle center should be -1"
+    );
+
+    // At (3, 0): inside second circle, SDF = -1
+    let result_c2 = union.eval(field4(3.0, 0.0, 0.0, 0.0));
+    assert!(
+        fields_close(result_c2, Field::from(-1.0), 0.001),
+        "union at second circle center should be -1"
+    );
+
+    // At (1.5, 0): midpoint between circles, both circles contribute
+    // Distance to c1 center = 1.5, minus r=1 → 0.5
+    // Distance to c2 center = 1.5, minus r=1 → 0.5
+    // min(0.5, 0.5) = 0.5
+    let result_mid = union.eval(field4(1.5, 0.0, 0.0, 0.0));
+    assert!(
+        fields_close(result_mid, Field::from(0.5), 0.001),
+        "union at midpoint should be 0.5"
+    );
+}
+
+/// Test mixed manifold and scalar parameters.
+#[test]
+fn test_mixed_manifold_scalar_params() {
+    // Scale an SDF by a factor
+    let scale_sdf = kernel!(|inner: kernel, factor: f32| inner * factor);
+
+    // Simple distance from origin
+    let dist = kernel!(|| (X * X + Y * Y).sqrt());
+
+    // Scale the distance by 2
+    let scaled = scale_sdf(dist(), 2.0);
+
+    // At (3, 4): distance = 5, scaled = 10
+    let result = scaled.eval(field4(3.0, 4.0, 0.0, 0.0));
+    assert!(
+        fields_close(result, Field::from(10.0), 0.001),
+        "scaled distance at (3,4) should be 10"
+    );
+}
+
+/// Test chained kernel composition (three levels deep).
+#[test]
+fn test_chained_composition() {
+    // Basic X coordinate
+    let get_x = kernel!(|| X);
+
+    // Add a constant to a manifold
+    let add_const = kernel!(|inner: kernel, val: f32| inner + val);
+
+    // Multiply a manifold by a constant
+    let mul_const = kernel!(|inner: kernel, val: f32| inner * val);
+
+    // Chain: (X + 5) * 2
+    let composed = mul_const(add_const(get_x(), 5.0), 2.0);
+
+    // At x=3: (3 + 5) * 2 = 16
+    let result = composed.eval(field4(3.0, 0.0, 0.0, 0.0));
+    assert!(
+        fields_close(result, Field::from(16.0), 0.001),
+        "(3 + 5) * 2 should be 16"
+    );
+}
+
+/// Test that composed kernels can be cloned (the inner kernel is owned).
+#[test]
+fn test_composed_kernel_ownership() {
+    let dist = kernel!(|cx: f32, cy: f32| {
+        let dx = X - cx;
+        let dy = Y - cy;
+        (dx * dx + dy * dy).sqrt()
+    });
+
+    let circle = kernel!(|inner: kernel, r: f32| inner - r);
+
+    // Create a composed kernel
+    let c = circle(dist(0.0, 0.0), 1.0);
+
+    // Evaluate multiple times (the kernel is borrowed, not moved)
+    let r1 = c.eval(field4(2.0, 0.0, 0.0, 0.0));
+    let r2 = c.eval(field4(0.0, 2.0, 0.0, 0.0));
+
+    assert!(fields_close(r1, Field::from(1.0), 0.001));
+    assert!(fields_close(r2, Field::from(1.0), 0.001));
+}
