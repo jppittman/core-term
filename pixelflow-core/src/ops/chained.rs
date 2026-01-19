@@ -22,29 +22,33 @@ use super::{
     Sqrt, Sub,
 };
 use crate::Field;
-use crate::Manifold;
 use crate::combinators::Select;
 use crate::variables::{W, X, Y, Z};
 
 // ============================================================================
 // Add, Sub, Mul (no Div - that's handled separately for rsqrt fusion)
 // ============================================================================
+//
+// Note: No `Manifold` bound on Rhs! Operators construct AST nodes without
+// validating that operands are manifolds. Validation happens at evaluation time.
+// This allows expressions with Var<N> (which only implements Manifold for
+// domains with Head trait).
 
 macro_rules! impl_add_sub_mul {
     ($ty:ident <$($gen:ident),*>) => {
-        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Add<Rhs> for $ty<$($gen),*> {
+        impl<$($gen,)* Rhs> core::ops::Add<Rhs> for $ty<$($gen),*> {
             type Output = Add<Self, Rhs>;
             #[inline(always)]
             fn add(self, rhs: Rhs) -> Self::Output { Add(self, rhs) }
         }
 
-        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Sub<Rhs> for $ty<$($gen),*> {
+        impl<$($gen,)* Rhs> core::ops::Sub<Rhs> for $ty<$($gen),*> {
             type Output = Sub<Self, Rhs>;
             #[inline(always)]
             fn sub(self, rhs: Rhs) -> Self::Output { Sub(self, rhs) }
         }
 
-        impl<$($gen: Manifold,)* Rhs: Manifold> core::ops::Mul<Rhs> for $ty<$($gen),*> {
+        impl<$($gen,)* Rhs> core::ops::Mul<Rhs> for $ty<$($gen),*> {
             type Output = Mul<Self, Rhs>;
             #[inline(always)]
             fn mul(self, rhs: Rhs) -> Self::Output { Mul(self, rhs) }
@@ -56,13 +60,13 @@ macro_rules! impl_add_sub_mul {
 // Rsqrt Fusion: L / Sqrt<R> → MulRsqrt<L, R>
 // ============================================================================
 //
-// To avoid conflicting with a generic `Div<Rhs: Manifold>`, we enumerate
+// To avoid conflicting with a generic `Div<Rhs>`, we enumerate
 // all divisor types explicitly. This is the same pattern as FMA fusion:
 // Mul doesn't have a generic Add impl, so MulAdd doesn't conflict.
 
 macro_rules! impl_rsqrt_fusion {
     ($ty:ident <$($gen:ident),*>) => {
-        impl<$($gen: Manifold,)* SqrtInner: Manifold> core::ops::Div<Sqrt<SqrtInner>> for $ty<$($gen),*> {
+        impl<$($gen,)* SqrtInner> core::ops::Div<Sqrt<SqrtInner>> for $ty<$($gen),*> {
             type Output = MulRsqrt<Self, SqrtInner>;
             #[inline(always)]
             fn div(self, rhs: Sqrt<SqrtInner>) -> Self::Output { MulRsqrt(self, rhs.0) }
@@ -74,7 +78,7 @@ macro_rules! impl_rsqrt_fusion {
 macro_rules! impl_div_for {
     // Self<...> / Divisor<...> (generic divisor)
     ($self_ty:ident <$($sg:ident),*> / $div_ty:ident <$($dg:ident),*>) => {
-        impl<$($sg: Manifold,)* $($dg: Manifold),*> core::ops::Div<$div_ty<$($dg),*>> for $self_ty<$($sg),*> {
+        impl<$($sg,)* $($dg),*> core::ops::Div<$div_ty<$($dg),*>> for $self_ty<$($sg),*> {
             type Output = Div<Self, $div_ty<$($dg),*>>;
             #[inline(always)]
             fn div(self, rhs: $div_ty<$($dg),*>) -> Self::Output { Div(self, rhs) }
@@ -82,7 +86,7 @@ macro_rules! impl_div_for {
     };
     // Self<...> / ConcreteDivisor (no generics on divisor)
     ($self_ty:ident <$($sg:ident),*> / @ $div_ty:ty) => {
-        impl<$($sg: Manifold),*> core::ops::Div<$div_ty> for $self_ty<$($sg),*> {
+        impl<$($sg),*> core::ops::Div<$div_ty> for $self_ty<$($sg),*> {
             type Output = Div<Self, $div_ty>;
             #[inline(always)]
             fn div(self, rhs: $div_ty) -> Self::Output { Div(self, rhs) }
@@ -138,7 +142,8 @@ macro_rules! impl_chained_ops {
 // ============================================================================
 
 // Mul gets special treatment: Mul + Rhs becomes MulAdd
-impl<L: Manifold, R: Manifold, Rhs: Manifold> core::ops::Add<Rhs> for Mul<L, R> {
+// Note: No Manifold bounds - operators construct AST nodes without validation
+impl<L, R, Rhs> core::ops::Add<Rhs> for Mul<L, R> {
     type Output = MulAdd<L, R, Rhs>;
     #[inline(always)]
     fn add(self, rhs: Rhs) -> Self::Output {
@@ -146,7 +151,7 @@ impl<L: Manifold, R: Manifold, Rhs: Manifold> core::ops::Add<Rhs> for Mul<L, R> 
     }
 }
 
-impl<L: Manifold, R: Manifold, Rhs: Manifold> core::ops::Sub<Rhs> for Mul<L, R> {
+impl<L, R, Rhs> core::ops::Sub<Rhs> for Mul<L, R> {
     type Output = Sub<Self, Rhs>;
     #[inline(always)]
     fn sub(self, rhs: Rhs) -> Self::Output {
@@ -154,7 +159,7 @@ impl<L: Manifold, R: Manifold, Rhs: Manifold> core::ops::Sub<Rhs> for Mul<L, R> 
     }
 }
 
-impl<L: Manifold, R: Manifold, Rhs: Manifold> core::ops::Mul<Rhs> for Mul<L, R> {
+impl<L, R, Rhs> core::ops::Mul<Rhs> for Mul<L, R> {
     type Output = Mul<Self, Rhs>;
     #[inline(always)]
     fn mul(self, rhs: Rhs) -> Self::Output {
@@ -198,9 +203,8 @@ impl_chained_ops!(AddMasked<Acc, Val, Mask>);
 // ============================================================================
 
 // Thunk needs manual impls because its Manifold bound is on F's return type
-impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Add<Rhs>
-    for crate::Thunk<F>
-{
+// Note: No Manifold bound on Rhs - operators construct AST nodes without validation
+impl<F: Fn() -> M + Send + Sync, M, Rhs> core::ops::Add<Rhs> for crate::Thunk<F> {
     type Output = Add<Self, Rhs>;
     #[inline(always)]
     fn add(self, rhs: Rhs) -> Self::Output {
@@ -208,9 +212,7 @@ impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Add<Rhs>
     }
 }
 
-impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Sub<Rhs>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, Rhs> core::ops::Sub<Rhs> for crate::Thunk<F> {
     type Output = Sub<Self, Rhs>;
     #[inline(always)]
     fn sub(self, rhs: Rhs) -> Self::Output {
@@ -218,9 +220,7 @@ impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Sub<Rhs>
     }
 }
 
-impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Mul<Rhs>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, Rhs> core::ops::Mul<Rhs> for crate::Thunk<F> {
     type Output = Mul<Self, Rhs>;
     #[inline(always)]
     fn mul(self, rhs: Rhs) -> Self::Output {
@@ -229,9 +229,7 @@ impl<F: Fn() -> M + Send + Sync, M: Manifold, Rhs: Manifold> core::ops::Mul<Rhs>
 }
 
 // Rsqrt fusion: Thunk / Sqrt<R> → MulRsqrt<Thunk, R>
-impl<F: Fn() -> M + Send + Sync, M: Manifold, R: Manifold> core::ops::Div<Sqrt<R>>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, R> core::ops::Div<Sqrt<R>> for crate::Thunk<F> {
     type Output = MulRsqrt<Self, R>;
     #[inline(always)]
     fn div(self, rhs: Sqrt<R>) -> Self::Output {
@@ -240,107 +238,85 @@ impl<F: Fn() -> M + Send + Sync, M: Manifold, R: Manifold> core::ops::Div<Sqrt<R
 }
 
 // Enumerate all other divisor types for Thunk
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DL: Manifold, DR: Manifold>
-    core::ops::Div<Add<DL, DR>> for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DL, DR> core::ops::Div<Add<DL, DR>> for crate::Thunk<F> {
     type Output = Div<Self, Add<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: Add<DL, DR>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DL: Manifold, DR: Manifold>
-    core::ops::Div<Sub<DL, DR>> for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DL, DR> core::ops::Div<Sub<DL, DR>> for crate::Thunk<F> {
     type Output = Div<Self, Sub<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: Sub<DL, DR>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DL: Manifold, DR: Manifold>
-    core::ops::Div<Mul<DL, DR>> for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DL, DR> core::ops::Div<Mul<DL, DR>> for crate::Thunk<F> {
     type Output = Div<Self, Mul<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: Mul<DL, DR>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DL: Manifold, DR: Manifold>
-    core::ops::Div<Div<DL, DR>> for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DL, DR> core::ops::Div<Div<DL, DR>> for crate::Thunk<F> {
     type Output = Div<Self, Div<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: Div<DL, DR>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DL: Manifold, DR: Manifold>
-    core::ops::Div<Max<DL, DR>> for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DL, DR> core::ops::Div<Max<DL, DR>> for crate::Thunk<F> {
     type Output = Div<Self, Max<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: Max<DL, DR>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DL: Manifold, DR: Manifold>
-    core::ops::Div<Min<DL, DR>> for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DL, DR> core::ops::Div<Min<DL, DR>> for crate::Thunk<F> {
     type Output = Div<Self, Min<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: Min<DL, DR>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DM: Manifold> core::ops::Div<Abs<DM>>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<Abs<DM>> for crate::Thunk<F> {
     type Output = Div<Self, Abs<DM>>;
     #[inline(always)]
     fn div(self, rhs: Abs<DM>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DM: Manifold> core::ops::Div<Floor<DM>>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<Floor<DM>> for crate::Thunk<F> {
     type Output = Div<Self, Floor<DM>>;
     #[inline(always)]
     fn div(self, rhs: Floor<DM>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DM: Manifold> core::ops::Div<Rsqrt<DM>>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<Rsqrt<DM>> for crate::Thunk<F> {
     type Output = Div<Self, Rsqrt<DM>>;
     #[inline(always)]
     fn div(self, rhs: Rsqrt<DM>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DM: Manifold> core::ops::Div<Sin<DM>>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<Sin<DM>> for crate::Thunk<F> {
     type Output = Div<Self, Sin<DM>>;
     #[inline(always)]
     fn div(self, rhs: Sin<DM>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DM: Manifold> core::ops::Div<Cos<DM>>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DM> core::ops::Div<Cos<DM>> for crate::Thunk<F> {
     type Output = Div<Self, Cos<DM>>;
     #[inline(always)]
     fn div(self, rhs: Cos<DM>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DC: Manifold, DT: Manifold, DF: Manifold>
-    core::ops::Div<Select<DC, DT, DF>> for crate::Thunk<F>
+impl<F: Fn() -> M + Send + Sync, M, DC, DT, DF> core::ops::Div<Select<DC, DT, DF>>
+    for crate::Thunk<F>
 {
     type Output = Div<Self, Select<DC, DT, DF>>;
     #[inline(always)]
@@ -348,8 +324,8 @@ impl<F: Fn() -> M + Send + Sync, M: Manifold, DC: Manifold, DT: Manifold, DF: Ma
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DA: Manifold, DB: Manifold, DC2: Manifold>
-    core::ops::Div<MulAdd<DA, DB, DC2>> for crate::Thunk<F>
+impl<F: Fn() -> M + Send + Sync, M, DA, DB, DC2> core::ops::Div<MulAdd<DA, DB, DC2>>
+    for crate::Thunk<F>
 {
     type Output = Div<Self, MulAdd<DA, DB, DC2>>;
     #[inline(always)]
@@ -357,17 +333,15 @@ impl<F: Fn() -> M + Send + Sync, M: Manifold, DA: Manifold, DB: Manifold, DC2: M
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DM2: Manifold> core::ops::Div<MulRecip<DM2>>
-    for crate::Thunk<F>
-{
+impl<F: Fn() -> M + Send + Sync, M, DM2> core::ops::Div<MulRecip<DM2>> for crate::Thunk<F> {
     type Output = Div<Self, MulRecip<DM2>>;
     #[inline(always)]
     fn div(self, rhs: MulRecip<DM2>) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DL2: Manifold, DR2: Manifold>
-    core::ops::Div<MulRsqrt<DL2, DR2>> for crate::Thunk<F>
+impl<F: Fn() -> M + Send + Sync, M, DL2, DR2> core::ops::Div<MulRsqrt<DL2, DR2>>
+    for crate::Thunk<F>
 {
     type Output = Div<Self, MulRsqrt<DL2, DR2>>;
     #[inline(always)]
@@ -375,8 +349,8 @@ impl<F: Fn() -> M + Send + Sync, M: Manifold, DL2: Manifold, DR2: Manifold>
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold, DAcc: Manifold, DVal: Manifold, DMask: Manifold>
-    core::ops::Div<AddMasked<DAcc, DVal, DMask>> for crate::Thunk<F>
+impl<F: Fn() -> M + Send + Sync, M, DAcc, DVal, DMask> core::ops::Div<AddMasked<DAcc, DVal, DMask>>
+    for crate::Thunk<F>
 {
     type Output = Div<Self, AddMasked<DAcc, DVal, DMask>>;
     #[inline(always)]
@@ -385,49 +359,49 @@ impl<F: Fn() -> M + Send + Sync, M: Manifold, DAcc: Manifold, DVal: Manifold, DM
     }
 }
 // Concrete divisor types for Thunk
-impl<F: Fn() -> M + Send + Sync, M: Manifold> core::ops::Div<X> for crate::Thunk<F> {
+impl<F: Fn() -> M + Send + Sync, M> core::ops::Div<X> for crate::Thunk<F> {
     type Output = Div<Self, X>;
     #[inline(always)]
     fn div(self, rhs: X) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold> core::ops::Div<Y> for crate::Thunk<F> {
+impl<F: Fn() -> M + Send + Sync, M> core::ops::Div<Y> for crate::Thunk<F> {
     type Output = Div<Self, Y>;
     #[inline(always)]
     fn div(self, rhs: Y) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold> core::ops::Div<Z> for crate::Thunk<F> {
+impl<F: Fn() -> M + Send + Sync, M> core::ops::Div<Z> for crate::Thunk<F> {
     type Output = Div<Self, Z>;
     #[inline(always)]
     fn div(self, rhs: Z) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold> core::ops::Div<W> for crate::Thunk<F> {
+impl<F: Fn() -> M + Send + Sync, M> core::ops::Div<W> for crate::Thunk<F> {
     type Output = Div<Self, W>;
     #[inline(always)]
     fn div(self, rhs: W) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold> core::ops::Div<Field> for crate::Thunk<F> {
+impl<F: Fn() -> M + Send + Sync, M> core::ops::Div<Field> for crate::Thunk<F> {
     type Output = Div<Self, Field>;
     #[inline(always)]
     fn div(self, rhs: Field) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold> core::ops::Div<f32> for crate::Thunk<F> {
+impl<F: Fn() -> M + Send + Sync, M> core::ops::Div<f32> for crate::Thunk<F> {
     type Output = Div<Self, f32>;
     #[inline(always)]
     fn div(self, rhs: f32) -> Self::Output {
         Div(self, rhs)
     }
 }
-impl<F: Fn() -> M + Send + Sync, M: Manifold> core::ops::Div<i32> for crate::Thunk<F> {
+impl<F: Fn() -> M + Send + Sync, M> core::ops::Div<i32> for crate::Thunk<F> {
     type Output = Div<Self, i32>;
     #[inline(always)]
     fn div(self, rhs: i32) -> Self::Output {

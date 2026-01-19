@@ -7,10 +7,15 @@
 //!
 //! The kernel! macro generates:
 //! 1. A struct holding captured parameters (the environment)
-//! 2. A ZST expression tree using coordinate variables (the code)
-//! 3. An `.at()` binding that threads parameters into coordinate slots
+//! 2. A ZST expression tree using Var<N> for parameter references (the code)
+//! 3. Nested Let::new() bindings that extend the domain with parameter values
 //!
-//! Parameters map to coordinate slots: first param → Z, second param → W.
+//! Parameters use Peano-encoded stack indices:
+//! - First param (index 0) → Var<N{n-1}> (deepest in stack)
+//! - Last param (index n-1) → Var<N0> (head of stack)
+//!
+//! This enables **unlimited parameters** (up to 8), compared to the old
+//! Z/W coordinate slot approach which was limited to 2 parameters.
 //!
 //! ## Testing Strategy
 //!
@@ -18,6 +23,7 @@
 //! values. Instead we test using Field-level comparisons and check that all
 //! lanes satisfy the expected condition.
 
+use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Field, Manifold, ManifoldExt};
 use pixelflow_macros::kernel;
 
@@ -209,4 +215,171 @@ fn test_zst_expression_is_copy() {
     // (3-1)² + (4-1)² = 4 + 9 = 13
     let result = k.eval(field4(3.0, 4.0, 0.0, 0.0));
     assert!(fields_close(result, Field::from(13.0), 0.001));
+}
+
+// ============================================================================
+// Tests for >2 parameters (using Let/Var binding system)
+// ============================================================================
+
+/// Test a kernel with three parameters.
+/// This demonstrates the new Let/Var binding system since Z/W slots only support 2.
+#[test]
+fn test_three_param_kernel() {
+    // Translate point by (dx, dy) and add z offset
+    let translate_3d = kernel!(|dx: f32, dy: f32, dz: f32| (X + dx) + (Y + dy) + dz);
+    let k = translate_3d(10.0, 20.0, 30.0);
+
+    // At (5, 3): result should be (5+10) + (3+20) + 30 = 68
+    let result = k.eval(field4(5.0, 3.0, 0.0, 0.0));
+    let expected = Field::from(68.0);
+    assert!(
+        fields_close(result, expected, 0.001),
+        "expected 68, got different value"
+    );
+}
+
+/// Test a kernel with four parameters.
+/// Demonstrates full 4-parameter support.
+#[test]
+fn test_four_param_kernel() {
+    // Combine all four parameters with coordinates
+    let quad_combine = kernel!(|a: f32, b: f32, c: f32, d: f32| a + b + c + d + X + Y);
+    let k = quad_combine(1.0, 2.0, 3.0, 4.0);
+
+    // At (5, 6): result should be 1 + 2 + 3 + 4 + 5 + 6 = 21
+    let result = k.eval(field4(5.0, 6.0, 0.0, 0.0));
+    let expected = Field::from(21.0);
+    assert!(
+        fields_close(result, expected, 0.001),
+        "expected 21, got different value"
+    );
+}
+
+/// Test a 4-parameter sphere SDF kernel.
+/// This is a practical example: signed distance from a sphere at (cx, cy, cz) with radius r.
+#[test]
+fn test_sphere_sdf_kernel() {
+    // Sphere SDF: distance from center minus radius
+    let sphere_sdf = kernel!(|cx: f32, cy: f32, cz: f32, r: f32| {
+        let dx = X - cx;
+        let dy = Y - cy;
+        let dz = Z - cz;
+        (dx * dx + dy * dy + dz * dz).sqrt() - r
+    });
+
+    // Sphere at (2, 3, 4) with radius 5
+    let k = sphere_sdf(2.0, 3.0, 4.0, 5.0);
+
+    // Point at origin (0, 0, 0): distance = sqrt(4 + 9 + 16) - 5 = sqrt(29) - 5 ≈ 0.385
+    let result = k.eval(field4(0.0, 0.0, 0.0, 0.0));
+    let expected = Field::from((29.0f32).sqrt() - 5.0);
+    assert!(
+        fields_close(result, expected, 0.01),
+        "sphere SDF at origin should be ~0.385"
+    );
+
+    // Point at (2, 3, 4) (center): distance = 0 - 5 = -5
+    let result_center = k.eval(field4(2.0, 3.0, 4.0, 0.0));
+    let expected_center = Field::from(-5.0);
+    assert!(
+        fields_close(result_center, expected_center, 0.001),
+        "sphere SDF at center should be -5"
+    );
+}
+
+/// Test parameter ordering with 3 parameters.
+/// Verifies that parameters are correctly bound (first param deepest in stack).
+#[test]
+fn test_parameter_ordering_three() {
+    // Each parameter has a different multiplier to verify correct binding
+    let order_test = kernel!(|a: f32, b: f32, c: f32| a * 100.0 + b * 10.0 + c);
+    let k = order_test(1.0, 2.0, 3.0);
+
+    // Result should be 1*100 + 2*10 + 3 = 123
+    let result = k.eval(field4(0.0, 0.0, 0.0, 0.0));
+    let expected = Field::from(123.0);
+    assert!(
+        fields_close(result, expected, 0.001),
+        "expected 123 (a=1, b=2, c=3)"
+    );
+}
+
+/// Test that parameters can be used multiple times in 3+ param kernels.
+#[test]
+fn test_param_reuse_three() {
+    // Use each parameter twice
+    let reuse = kernel!(|a: f32, b: f32, c: f32| (a + a) + (b + b) + (c + c));
+    let k = reuse(1.0, 2.0, 3.0);
+
+    // Result should be 2 + 4 + 6 = 12
+    let result = k.eval(field4(0.0, 0.0, 0.0, 0.0));
+    let expected = Field::from(12.0);
+    assert!(
+        fields_close(result, expected, 0.001),
+        "expected 12 (each param doubled)"
+    );
+}
+
+// ============================================================================
+// Tests for Jet3 output (automatic differentiation)
+// ============================================================================
+
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+
+/// Helper: Convert f32 tuple to Jet3_4 (constant jets)
+fn jet3_4(x: f32, y: f32, z: f32, w: f32) -> Jet3_4 {
+    (
+        Jet3::constant(Field::from(x)),
+        Jet3::constant(Field::from(y)),
+        Jet3::constant(Field::from(z)),
+        Jet3::constant(Field::from(w)),
+    )
+}
+
+/// Test a simple Jet3 kernel (domain inferred from output type).
+#[test]
+fn test_jet3_simple() {
+    // X + Y with Jet3 output → domain is Jet3_4
+    let add_xy = kernel!(|| -> Jet3 X + Y);
+    let k = add_xy();
+
+    // At (3, 4, 0, 0): result should be 7
+    let result = k.eval(jet3_4(3.0, 4.0, 0.0, 0.0));
+    let expected = Jet3::constant(Field::from(7.0));
+
+    // Compare the val component
+    let diff = (result.val - expected.val).abs();
+    let eps = Field::from(0.001);
+    assert!(
+        Field::lt(diff.constant(), eps).all(),
+        "Jet3 X + Y at (3,4) should be 7"
+    );
+}
+
+/// Test Jet3 kernel with parameters (sphere SDF).
+#[test]
+fn test_jet3_sphere_sdf() {
+    // Sphere SDF: distance from center minus radius
+    // Using Jet3 for automatic differentiation (normals)
+    let sphere_sdf = kernel!(|cx: f32, cy: f32, cz: f32, r: f32| -> Jet3 {
+        let dx = X - cx;
+        let dy = Y - cy;
+        let dz = Z - cz;
+        (dx * dx + dy * dy + dz * dz).sqrt() - r
+    });
+
+    // Sphere at (2, 3, 4) with radius 5
+    let k = sphere_sdf(2.0, 3.0, 4.0, 5.0);
+
+    // Point at origin (0, 0, 0): distance = sqrt(4 + 9 + 16) - 5 = sqrt(29) - 5 ≈ 0.385
+    let result = k.eval(jet3_4(0.0, 0.0, 0.0, 0.0));
+    let expected_val = (29.0f32).sqrt() - 5.0;
+    let expected = Jet3::constant(Field::from(expected_val));
+
+    let diff = (result.val - expected.val).abs();
+    let eps = Field::from(0.01);
+    assert!(
+        Field::lt(diff.constant(), eps).all(),
+        "Jet3 sphere SDF at origin should be ~0.385"
+    );
 }

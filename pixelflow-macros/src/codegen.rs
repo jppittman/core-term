@@ -2,42 +2,44 @@
 //!
 //! Emits Rust code from the analyzed AST.
 //!
-//! ## Architecture: ZST Expression + Value Struct
+//! ## Architecture: ZST Expression + Let/Var Binding
 //!
 //! PixelFlow expressions are Copy when all components are ZST (zero-sized types).
-//! The coordinate variables X, Y, Z, W are ZST, so expressions built purely from
-//! them are also Copy. Non-ZST values (f32 parameters) break this.
+//! The coordinate variables X, Y, Z, W are ZST, and so are Var<N> references.
+//! This means expressions using Var<N> remain Copy.
 //!
 //! The solution is a two-layer architecture:
 //!
-//! 1. **ZST Expression**: Built using only coordinate variables (X, Y, Z, W)
-//! 2. **Value Struct**: Stores non-ZST captured parameters
-//! 3. **`.at()` binding**: Threads struct values into coordinate slots
+//! 1. **ZST Expression**: Built using coordinate variables (X, Y, Z, W) and Var<N>
+//! 2. **Value Struct**: Stores non-ZST captured parameters (f32 values)
+//! 3. **Let/Var binding**: Nested Let wrappers extend domain with parameter values
 //!
-//! ## Coordinate Slot Allocation
+//! ## Let/Var Binding (Peano-Encoded Stack)
 //!
-//! With 4 coordinate dimensions, we allocate:
-//! - **X, Y**: Reserved for screen/pixel coordinates (passed through)
-//! - **Z, W**: Available for parameter binding
+//! Parameters are bound using nested `Let::new()` calls that extend the domain:
+//! - First param → deepest binding → `Var::<N{n-1}>`
+//! - Last param → shallowest binding → `Var::<N0>` (head of stack)
 //!
-//! For 1-2 parameters, Z and W suffice. For more parameters, we use nested
-//! `.at()` calls to create additional virtual coordinate layers.
+//! This allows **unlimited parameters** (no longer limited to 2).
 //!
 //! ## Example Transformation
 //!
 //! ```text
 //! // User writes:
-//! kernel!(|cx: f32, cy: f32| (X - cx) * (X - cx) + (Y - cy) * (Y - cy))
+//! kernel!(|cx: f32, cy: f32, cz: f32| X - cx + Y - cy + Z - cz)
 //!
 //! // Becomes:
-//! struct __Kernel { cx: f32, cy: f32 }
+//! struct __Kernel { cx: f32, cy: f32, cz: f32 }
 //!
-//! impl Manifold for __Kernel {
-//!     fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
-//!         // ZST expression (Copy!)
-//!         let __expr = (X - Z) * (X - Z) + (Y - W) * (Y - W);
-//!         // Bind parameters via .at(), then evaluate
-//!         __expr.at(X, Y, self.cx, self.cy).eval_raw(x, y, z, w)
+//! impl Manifold<Field4> for __Kernel {
+//!     fn eval(&self, __p: Field4) -> Field {
+//!         // ZST expression using Var<N> (Copy!)
+//!         let __expr = X - Var::<N2>::new() + Y - Var::<N1>::new() + Z - Var::<N0>::new();
+//!         // Nested Let bindings extend domain with parameter values
+//!         Let::new(self.cx,
+//!           Let::new(self.cy,
+//!             Let::new(self.cz,
+//!               __expr))).eval(__p)
 //!     }
 //! }
 //! ```
@@ -51,9 +53,8 @@ use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use std::collections::HashMap;
 
-/// Coordinate slots available for parameter binding.
-/// X and Y are reserved for screen coordinates.
-const PARAM_SLOTS: [&str; 2] = ["Z", "W"];
+/// Peano type names for indices 0-7.
+const PEANO_INDICES: [&str; 8] = ["N0", "N1", "N2", "N3", "N4", "N5", "N6", "N7"];
 
 /// Emit Rust code for an analyzed kernel.
 pub fn emit(analyzed: AnalyzedKernel) -> TokenStream {
@@ -64,24 +65,39 @@ pub fn emit(analyzed: AnalyzedKernel) -> TokenStream {
 /// The code emitter state.
 struct CodeEmitter<'a> {
     analyzed: &'a AnalyzedKernel,
-    /// Maps parameter names to their coordinate slot (Z or W)
-    param_slots: HashMap<String, &'static str>,
+    /// Maps parameter names to their Peano index for Var<N> access.
+    /// First param → highest index (deepest in stack), last param → N0 (head).
+    param_indices: HashMap<String, usize>,
+    /// Whether we're generating for a Jet domain (Jet2, Jet3).
+    /// If true, f32 literals must be wrapped as constant jets.
+    use_jet_wrapper: bool,
 }
 
 impl<'a> CodeEmitter<'a> {
     fn new(analyzed: &'a AnalyzedKernel) -> Self {
-        // Allocate coordinate slots for parameters
-        let mut param_slots = HashMap::new();
+        // Compute Peano indices for parameters.
+        // With n parameters, first param is at index n-1, last param is at index 0.
+        let n = analyzed.def.params.len();
+        let mut param_indices = HashMap::new();
         for (i, param) in analyzed.def.params.iter().enumerate() {
-            if i < PARAM_SLOTS.len() {
-                param_slots.insert(param.name.to_string(), PARAM_SLOTS[i]);
-            }
-            // TODO: Handle >2 params with nested .at() layers
+            // First param (i=0) gets highest index (n-1), last param gets 0
+            let peano_idx = n - 1 - i;
+            param_indices.insert(param.name.to_string(), peano_idx);
         }
+
+        // Determine if we need to wrap literals for Jet domains
+        let use_jet_wrapper = match &analyzed.def.return_ty {
+            Some(ty) => {
+                let ty_str = quote! { #ty }.to_string();
+                ty_str.contains("Jet3") || ty_str.contains("Jet2")
+            }
+            None => false,
+        };
 
         CodeEmitter {
             analyzed,
-            param_slots,
+            param_indices,
+            use_jet_wrapper,
         }
     }
 
@@ -115,9 +131,6 @@ impl<'a> CodeEmitter<'a> {
         // Transform and emit the body as a ZST expression
         let body = self.emit_expr(&self.analyzed.def.body);
 
-        // Generate the .at() binding to inject parameters
-        let at_binding = self.emit_at_binding();
-
         // Handle empty vs non-empty params
         let (struct_def, struct_init, closure) = if params.is_empty() {
             (
@@ -133,29 +146,70 @@ impl<'a> CodeEmitter<'a> {
             )
         };
 
+        // Generate the Peano type imports needed based on parameter count
+        let peano_imports = self.emit_peano_imports();
+
+        // Determine output type and infer domain type from it
+        // - Jet3 output → Jet3_4 domain (for autodiff)
+        // - Field output (or default) → Field4 domain
+        let (output_type, domain_type, scalar_type) = match &self.analyzed.def.return_ty {
+            Some(ty) => {
+                // Check if return type is Jet3 (or Jet2, Jet4, etc.)
+                let ty_str = quote! { #ty }.to_string();
+                if ty_str.contains("Jet3") {
+                    (
+                        quote! { #ty },
+                        quote! { (::pixelflow_core::jet::Jet3, ::pixelflow_core::jet::Jet3, ::pixelflow_core::jet::Jet3, ::pixelflow_core::jet::Jet3) },
+                        quote! { ::pixelflow_core::jet::Jet3 },
+                    )
+                } else if ty_str.contains("Jet2") {
+                    (
+                        quote! { #ty },
+                        quote! { (::pixelflow_core::jet::Jet2, ::pixelflow_core::jet::Jet2, ::pixelflow_core::jet::Jet2, ::pixelflow_core::jet::Jet2) },
+                        quote! { ::pixelflow_core::jet::Jet2 },
+                    )
+                } else {
+                    (
+                        quote! { #ty },
+                        quote! { (::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field) },
+                        quote! { ::pixelflow_core::Field },
+                    )
+                }
+            }
+            None => (
+                quote! { ::pixelflow_core::Field },
+                quote! { (::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field) },
+                quote! { ::pixelflow_core::Field },
+            ),
+        };
+
+        // Generate the Let/Var binding to inject parameters (use stored use_jet_wrapper)
+        let at_binding = self.emit_at_binding();
+
         quote! {
             {
-                type __Field4 = (::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field);
+                type __Domain = #domain_type;
+                type __Scalar = #scalar_type;
 
                 #[derive(Clone)]
                 #struct_def
 
-                impl ::pixelflow_core::Manifold<__Field4> for __Kernel {
-                    type Output = ::pixelflow_core::Field;
+                impl ::pixelflow_core::Manifold<__Domain> for __Kernel {
+                    type Output = #output_type;
 
                     #[inline(always)]
                     fn eval(
                         &self,
-                        __p: __Field4,
-                    ) -> ::pixelflow_core::Field {
-                        let (__x, __y, __z, __w) = __p;
-                        // Import the coordinate variables and traits
-                        use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat};
+                        __p: __Domain,
+                    ) -> #output_type {
+                        // Import the coordinate variables, traits, and Peano types
+                        use ::pixelflow_core::{X, Y, Z, W, ManifoldExt, ManifoldCompat, Manifold, Let, Var};
+                        #peano_imports
 
-                        // Build the ZST expression tree (this is Copy!)
+                        // Build the ZST expression tree using Var<N> for parameters (this is Copy!)
                         let __expr = { #body };
 
-                        // Bind parameters via .at(), then evaluate at screen coords
+                        // Wrap in nested Let bindings and evaluate
                         #at_binding
                     }
                 }
@@ -165,43 +219,71 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
-    /// Emit the .at() binding that injects parameter values into coordinate slots.
+    /// Emit the Peano type imports needed based on parameter count.
+    fn emit_peano_imports(&self) -> TokenStream {
+        let n = self.analyzed.def.params.len();
+        if n == 0 {
+            return quote! {};
+        }
+
+        // Import N0..N{n-1}
+        let imports: Vec<TokenStream> = (0..n)
+            .map(|i| {
+                let name = syn::Ident::new(PEANO_INDICES[i], proc_macro2::Span::call_site());
+                quote! { #name }
+            })
+            .collect();
+
+        quote! { use ::pixelflow_core::{ #(#imports),* }; }
+    }
+
+    /// Emit the Let/Var binding that injects parameter values into the domain.
+    ///
+    /// Generates nested Let::new() calls that extend the domain with each parameter,
+    /// then evaluates the expression on the extended domain.
+    ///
+    /// For Jet domains (Jet2, Jet3), parameters are wrapped as constant jets:
+    /// `Jet3::constant(Field::from(self.param))` instead of raw `self.param`.
     fn emit_at_binding(&self) -> TokenStream {
         let params = &self.analyzed.def.params;
 
         if params.is_empty() {
-            // No parameters - evaluate directly using ManifoldCompat
+            // No parameters - evaluate expression directly on the input domain
             quote! {
-                ::pixelflow_core::ManifoldCompat::eval_raw(&__expr, __x, __y, __z, __w)
+                __expr.eval(__p)
             }
         } else {
-            // Build .at() arguments: X, Y pass through, Z/W get parameter values
-            let z_arg = params
-                .iter()
-                .find(|p| self.param_slots.get(&p.name.to_string()) == Some(&"Z"))
-                .map(|p| {
-                    let name = &p.name;
-                    quote! { self.#name }
-                })
-                .unwrap_or_else(|| quote! { Z });
+            // Build nested Let bindings from outside to inside.
+            // First parameter (index 0) is outermost, last parameter is innermost.
+            // This creates: Let::new(p0, Let::new(p1, ..., Let::new(pN, __expr)))
+            //
+            // The body (__expr) uses Var<N{n-1}> for first param, Var<N0> for last param.
+            // After evaluation, first param is deepest in stack, last param is head.
 
-            let w_arg = params
-                .iter()
-                .find(|p| self.param_slots.get(&p.name.to_string()) == Some(&"W"))
-                .map(|p| {
-                    let name = &p.name;
-                    quote! { self.#name }
-                })
-                .unwrap_or_else(|| quote! { W });
+            let mut result = quote! { __expr };
 
-            // Use .collapse() on the pinned At combinator
+            // Wrap from innermost to outermost (reverse order)
+            for param in params.iter().rev() {
+                let name = &param.name;
+                // For Jet domains, wrap f32 params as constant jets
+                let param_value = if self.use_jet_wrapper {
+                    quote! { __Scalar::constant(::pixelflow_core::Field::from(self.#name)) }
+                } else {
+                    quote! { self.#name }
+                };
+                result = quote! {
+                    Let::new(#param_value, #result)
+                };
+            }
+
+            // Evaluate the whole Let-wrapped expression on the input domain
             quote! {
-                __expr.at(__x, __y, #z_arg, #w_arg).collapse()
+                #result.eval(__p)
             }
         }
     }
 
-    /// Emit code for an expression, transforming parameters to coordinate references.
+    /// Emit code for an expression, transforming parameters to Var<N> references.
     fn emit_expr(&self, expr: &Expr) -> TokenStream {
         match expr {
             Expr::Ident(ident_expr) => {
@@ -215,13 +297,24 @@ impl<'a> CodeEmitter<'a> {
                             quote! { #name }
                         }
                         SymbolKind::Parameter => {
-                            // Parameters become their allocated coordinate slot
-                            if let Some(&slot) = self.param_slots.get(&name_str) {
-                                let slot_ident =
-                                    syn::Ident::new(slot, proc_macro2::Span::call_site());
-                                quote! { #slot_ident }
+                            // Parameters become Var::<N{index}>::new()
+                            if let Some(&idx) = self.param_indices.get(&name_str) {
+                                if idx < PEANO_INDICES.len() {
+                                    let peano_name = syn::Ident::new(
+                                        PEANO_INDICES[idx],
+                                        proc_macro2::Span::call_site(),
+                                    );
+                                    quote! { Var::<#peano_name>::new() }
+                                } else {
+                                    // More than 8 parameters - emit compile error hint
+                                    let err_msg = format!(
+                                        "kernel! supports max 8 parameters, found index {}",
+                                        idx
+                                    );
+                                    quote! { compile_error!(#err_msg) }
+                                }
                             } else {
-                                // Fallback for >2 params (TODO: proper nested .at())
+                                // Should not happen - parameter not in map
                                 quote! { #name }
                             }
                         }
@@ -239,7 +332,13 @@ impl<'a> CodeEmitter<'a> {
 
             Expr::Literal(lit_expr) => {
                 let lit = &lit_expr.lit;
-                quote! { #lit }
+                if self.use_jet_wrapper {
+                    // For Jet domains, wrap numeric literals as constant jets
+                    // This ensures type unification: Jet3 + lit → Jet3 + Jet3
+                    quote! { __Scalar::constant(::pixelflow_core::Field::from(#lit)) }
+                } else {
+                    quote! { #lit }
+                }
             }
 
             Expr::Binary(binary) => self.emit_binary(binary),
@@ -370,10 +469,18 @@ mod tests {
 
         // Should contain struct definition
         assert!(output_str.contains("struct __Kernel"));
-        // Should use Z coordinate for cx (parameter mapped to slot)
-        assert!(output_str.contains("X - Z"));
-        // Should have .at() binding
-        assert!(output_str.contains(". at ("));
+        // Should use Var::<N0> for the single parameter
+        assert!(
+            output_str.contains("Var :: < N0 >"),
+            "Expected Var::<N0>, got: {}",
+            output_str
+        );
+        // Should have Let binding
+        assert!(
+            output_str.contains("Let :: new"),
+            "Expected Let::new, got: {}",
+            output_str
+        );
     }
 
     #[test]
@@ -382,9 +489,49 @@ mod tests {
         let output = compile(input);
         let output_str = output.to_string();
 
-        // cx → Z, cy → W
-        assert!(output_str.contains("X - Z"));
-        assert!(output_str.contains("Y - W"));
+        // cx → Var::<N1> (first param, highest index)
+        // cy → Var::<N0> (second param, head of stack)
+        assert!(
+            output_str.contains("Var :: < N1 >"),
+            "Expected Var::<N1> for cx, got: {}",
+            output_str
+        );
+        assert!(
+            output_str.contains("Var :: < N0 >"),
+            "Expected Var::<N0> for cy, got: {}",
+            output_str
+        );
+        // Should have nested Let bindings
+        assert!(
+            output_str.contains("Let :: new (self . cx , Let :: new (self . cy"),
+            "Expected nested Let bindings, got: {}",
+            output_str
+        );
+    }
+
+    #[test]
+    fn emit_three_params() {
+        let input = quote! { |a: f32, b: f32, c: f32| a + b + c };
+        let output = compile(input);
+        let output_str = output.to_string();
+
+        // a → Var::<N2>, b → Var::<N1>, c → Var::<N0>
+        assert!(
+            output_str.contains("Var :: < N2 >"),
+            "Expected Var::<N2> for a"
+        );
+        assert!(
+            output_str.contains("Var :: < N1 >"),
+            "Expected Var::<N1> for b"
+        );
+        assert!(
+            output_str.contains("Var :: < N0 >"),
+            "Expected Var::<N0> for c"
+        );
+        // Should import N0, N1, N2
+        assert!(output_str.contains("N0"));
+        assert!(output_str.contains("N1"));
+        assert!(output_str.contains("N2"));
     }
 
     #[test]
@@ -395,8 +542,12 @@ mod tests {
 
         // Should have unit struct
         assert!(output_str.contains("struct __Kernel ;"));
-        // Should evaluate directly without .at()
-        assert!(output_str.contains("eval_raw (& __expr"));
+        // Should evaluate directly on __p
+        assert!(
+            output_str.contains("__expr . eval (__p)"),
+            "Expected direct eval on __p, got: {}",
+            output_str
+        );
     }
 
     #[test]
@@ -405,8 +556,11 @@ mod tests {
         let output = compile(input);
         let output_str = output.to_string();
 
-        // r → Z
+        // r → Var::<N0>
         assert!(output_str.contains(". sqrt ()"));
-        assert!(output_str.contains("- Z"));
+        assert!(
+            output_str.contains("Var :: < N0 >"),
+            "Expected Var::<N0> for r"
+        );
     }
 }

@@ -274,11 +274,7 @@ pub trait ManifoldExt: Manifold<Field4> + Sized {
     /// // Double the output
     /// let doubled = X.map(X * 2.0);
     /// ```
-    fn map<T>(self, transform: T) -> Map<Self, T>
-    where
-        Self: Manifold<Field4, Output = crate::Field>,
-        T: Manifold<Field4, Output = crate::Field>,
-    {
+    fn map<T>(self, transform: T) -> Map<Self, T> {
         Map::new(self, transform)
     }
 
@@ -301,7 +297,6 @@ pub trait ManifoldExt: Manifold<Field4> + Sized {
     /// ```
     fn lift<F>(self, func: F) -> ClosureMap<Self, F>
     where
-        Self: Manifold<Field4, Output = crate::Field>,
         F: Fn(crate::Field) -> crate::jet::PathJet<crate::Field> + Send + Sync,
     {
         ClosureMap::new(self, func)
