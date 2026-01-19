@@ -28,7 +28,7 @@
 //! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
 use pixelflow_core::{Field, Lt, Manifold, ManifoldCompat, ManifoldExt, Select, X, Y};
-use pixelflow_macros::ManifoldExpr;
+use pixelflow_core::ManifoldExpr;
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
@@ -95,6 +95,8 @@ impl<G: ManifoldCompat<Field, Output = Field> + Clone, const CHANNEL: usize> Man
     }
 }
 
+impl<G, const CHANNEL: usize> ManifoldExpr for CellChannel<G, CHANNEL> {}
+
 // Type aliases for each channel
 pub type CellR<G> = CellChannel<G, 0>;
 pub type CellG<G> = CellChannel<G, 1>;
@@ -134,6 +136,8 @@ impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> fo
         self.inner.eval_at(local_x, local_y, z, w)
     }
 }
+
+impl<M> ManifoldExpr for LocalCoords<M> {}
 
 // ============================================================================
 // Grid Builder Using ColorManifold + Select
@@ -273,6 +277,8 @@ impl Manifold<Field4> for ConstCoverage {
         Field::from(self.0)
     }
 }
+
+impl ManifoldExpr for ConstCoverage {}
 
 // ============================================================================
 // Tests
