@@ -23,7 +23,7 @@
 //! - The populated symbol table
 //! - Any resolved type information
 
-use crate::ast::{BlockExpr, Expr, KernelDef, LetStmt, MethodCallExpr, Param, Stmt};
+use crate::ast::{BlockExpr, Expr, KernelDef, LetStmt, MethodCallExpr, Param, ParamKind, Stmt};
 use crate::symbol::{SymbolKind, SymbolTable};
 use syn::Ident;
 
@@ -89,8 +89,16 @@ impl SemanticAnalyzer {
             ));
         }
 
-        self.symbols
-            .register_parameter(param.name.clone(), param.ty.clone());
+        // Register based on parameter kind
+        match &param.kind {
+            ParamKind::Scalar(ty) => {
+                self.symbols
+                    .register_parameter(param.name.clone(), ty.clone());
+            }
+            ParamKind::Manifold => {
+                self.symbols.register_manifold_param(param.name.clone());
+            }
+        }
         Ok(())
     }
 
