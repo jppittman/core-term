@@ -297,146 +297,33 @@ fn test_pty_spawn_invalid_command() {
     let non_existent_cmd = "/path/to/absolutely/nonexistent/command_39291az";
     let config = PtyConfig {
         command_executable: non_existent_cmd,
-        // For a non-existent command, what args contains doesn't matter as much as execvp will fail on command_executable
-        // However, spawn_with_config prepends command_executable to form argv[0] if it's not already there in args.
-        // For consistency, if args is empty, it's fine. If it's not, it should align with typical usage.
-        // Here, we can pass an empty args array. Or if spawn_with_config expects args[0] to be command name,
-        // then it should be `args: &[non_existent_cmd_basename]`
-        // Based on current spawn_with_config: it derives argv[0] from command_executable, then appends PtyConfig.args.
-        // So, an empty args is appropriate here.
         args: &[],
         initial_cols: DEFAULT_COLS,
         initial_rows: DEFAULT_ROWS,
     };
 
+    // With `std::process::Command`, spawning a non-existent command should return an error immediately,
+    // rather than succeeding the fork and failing later in the child.
     match NixPty::spawn_with_config(&config) {
-        Ok(mut pty) => {
-            // Current behavior: spawn_with_config returns Ok because fork succeeds.
-            // The execvp failure happens in the child.
-            log::info!(
-                "test_pty_spawn_invalid_command: NixPty::spawn_with_config returned Ok as expected for current behavior. Child PID: {}",
+        Ok(pty) => {
+            panic!(
+                "test_pty_spawn_invalid_command: Expected spawn to fail for non-existent command, but it succeeded. Child PID: {}",
                 pty.child_pid()
             );
-
-            // Variables from previous logic, now unused.
-            // let mut buffer = [0; 1];
-            // let mut read_attempt_count = 0;
-            // let max_read_attempts = 10;
-            // let mut read_result_ok_eof = false;
-            // let mut read_result_err = false;
-
-            let mut total_bytes_read = 0;
-            let mut read_attempts = 0;
-            let max_attempts = 20; // Increased attempts for potential error messages
-            let mut eof_reached = false;
-            let mut error_reached = false;
-            let mut read_buffer = [0u8; 256]; // Buffer for reading shell error messages
-
-            loop {
-                if read_attempts >= max_attempts {
-                    log::warn!(
-                        "test_pty_spawn_invalid_command: Max read attempts reached. Total bytes read: {}",
-                        total_bytes_read
-                    );
-                    break;
-                }
-                read_attempts += 1;
-
-                // Check child status
-                match nix::sys::wait::waitpid(
-                    pty.child_pid(),
-                    Some(nix::sys::wait::WaitPidFlag::WNOHANG),
-                ) {
-                    Ok(nix::sys::wait::WaitStatus::StillAlive) => {
-                        log::trace!(
-                            "test_pty_spawn_invalid_command: Child {} still alive.",
-                            pty.child_pid()
-                        );
-                    }
-                    Ok(status) => {
-                        log::info!(
-                            "test_pty_spawn_invalid_command: Child {} exited with status: {:?}",
-                            pty.child_pid(),
-                            status
-                        );
-                    }
-                    Err(e) => {
-                        log::warn!("test_pty_spawn_invalid_command: waitpid error: {}", e);
-                    }
-                }
-
-                match pty.read(&mut read_buffer) {
-                    Ok(0) => {
-                        log::info!(
-                            "test_pty_spawn_invalid_command: Read Ok(0) (EOF) after {} attempts and {} total bytes read.",
-                            read_attempts,
-                            total_bytes_read
-                        );
-                        eof_reached = true;
-                        break;
-                    }
-                    Ok(n) => {
-                        total_bytes_read += n;
-                        log::info!(
-                            "test_pty_spawn_invalid_command: Read {} bytes (total {}). Content: '{}'",
-                            n,
-                            total_bytes_read,
-                            String::from_utf8_lossy(&read_buffer[..n]).trim()
-                        );
-                        // Shell might output "command not found". We continue reading until EOF or error.
-                    }
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                        log::trace!(
-                            "test_pty_spawn_invalid_command: Read WouldBlock, attempt {}.",
-                            read_attempts
-                        );
-                        thread::sleep(Duration::from_millis(100)); // Wait before retrying
-                        continue;
-                    }
-                    Err(e) => {
-                        log::info!(
-                            "test_pty_spawn_invalid_command: Read Err ({:?}) after {} attempts and {} total bytes. This is an acceptable outcome.",
-                            e.kind(),
-                            read_attempts,
-                            total_bytes_read
-                        );
-                        error_reached = true;
-                        break;
-                    }
-                }
-            }
-
-            // The child shell (hosting the invalid command) should have exited, leading to EOF or an error (like EIO) on the PTY master.
-            // However, on some systems the PTY may not immediately signal EOF. If we've exhausted read attempts,
-            // verify the child has actually exited (which is the real indicator of failure for an invalid command).
-            if !eof_reached && !error_reached {
-                // Do a blocking wait to confirm child has exited
-                match nix::sys::wait::waitpid(pty.child_pid(), None) {
-                    Ok(status) => {
-                        log::info!(
-                            "test_pty_spawn_invalid_command: Child exited with status {:?} (no EOF/error from PTY, but child terminated as expected)",
-                            status
-                        );
-                        // Child exiting is the key indicator - the invalid command failed
-                    }
-                    Err(nix::errno::Errno::ECHILD) => {
-                        // Child was already reaped by a previous non-blocking waitpid
-                        log::info!("test_pty_spawn_invalid_command: Child already reaped (ECHILD)");
-                    }
-                    Err(e) => {
-                        panic!(
-                            "test_pty_spawn_invalid_command: Unexpected waitpid error: {}",
-                            e
-                        );
-                    }
-                }
-            }
         }
         Err(e) => {
-            panic!(
-                "test_pty_spawn_invalid_command: Expected NixPty::spawn_with_config to return Ok (current behavior), but it returned Err: {:?}",
+            log::info!(
+                "test_pty_spawn_invalid_command: NixPty::spawn_with_config returned Err as expected: {:?}",
                 e
             );
+            // We verify that the error is indeed related to the command not being found.
+            // If it's wrapped in anyhow, we check the root cause.
+            let root_cause = e.root_cause();
+            if let Some(io_err) = root_cause.downcast_ref::<std::io::Error>() {
+                 assert_eq!(io_err.kind(), std::io::ErrorKind::NotFound, "Expected NotFound error, got {:?}", io_err.kind());
+            } else {
+                 log::warn!("Could not downcast error to std::io::Error to verify ErrorKind::NotFound, but an error occurred as expected.");
+            }
         }
     }
 }
