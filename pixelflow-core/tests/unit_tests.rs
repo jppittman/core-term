@@ -22,6 +22,7 @@ use pixelflow_core::{
     Le,
     Lt,
     Manifold,
+    ManifoldCompat,
     ManifoldExt,
     Max,
     Min,
@@ -414,18 +415,19 @@ mod ext_tests {
     #[test]
     fn test_convenience_methods() {
         let expr = X + Y;
+        let zero = Field::from(0.0);
 
-        // eval() accepts types that convert to Field
-        let _f32_result = expr.eval(1.0f32, 2.0f32, 0.0f32, 0.0f32);
-        let _i32_result = expr.eval(1i32, 2i32, 0i32, 0i32);
+        // eval_raw() accepts Field values via ManifoldCompat
+        let _f32_result = expr.eval_raw(Field::from(1.0), Field::from(2.0), zero, zero);
+        let _i32_result = expr.eval_raw(Field::from(1.0), Field::from(2.0), zero, zero);
 
         // Method forms of binary operators
-        let _add = X.add(Y).eval(3.0f32, 4.0f32, 0.0f32, 0.0f32);
-        let _sub = X.sub(Y).eval(10.0f32, 3.0f32, 0.0f32, 0.0f32);
-        let _mul = X.mul(Y).eval(4.0f32, 5.0f32, 0.0f32, 0.0f32);
-        let _div = X.div(Y).eval(10.0f32, 2.0f32, 0.0f32, 0.0f32);
-        let _max = X.max(Y).eval(3.0f32, 7.0f32, 0.0f32, 0.0f32);
-        let _min = X.min(Y).eval(3.0f32, 7.0f32, 0.0f32, 0.0f32);
+        let _add = X.add(Y).eval_raw(Field::from(3.0), Field::from(4.0), zero, zero);
+        let _sub = X.sub(Y).eval_raw(Field::from(10.0), Field::from(3.0), zero, zero);
+        let _mul = X.mul(Y).eval_raw(Field::from(4.0), Field::from(5.0), zero, zero);
+        let _div = X.div(Y).eval_raw(Field::from(10.0), Field::from(2.0), zero, zero);
+        let _max = X.max(Y).eval_raw(Field::from(3.0), Field::from(7.0), zero, zero);
+        let _min = X.min(Y).eval_raw(Field::from(3.0), Field::from(7.0), zero, zero);
     }
 
     #[test]
@@ -628,10 +630,13 @@ mod materialize_tests {
     #[derive(Clone, Copy)]
     struct SimpleColorManifold;
 
-    impl Manifold for SimpleColorManifold {
+    type Field4 = (Field, Field, Field, Field);
+
+    impl Manifold<Field4> for SimpleColorManifold {
         type Output = SimpleVec4;
 
-        fn eval_raw(&self, x: Field, y: Field, _z: Field, _w: Field) -> Self::Output {
+        fn eval(&self, p: Field4) -> Self::Output {
+            let (x, y, _z, _w) = p;
             SimpleVec4(x, y, Field::from(0.5), Field::from(1.0))
         }
     }

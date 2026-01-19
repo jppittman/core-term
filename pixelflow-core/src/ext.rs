@@ -91,52 +91,49 @@ use crate::ops::{
 
 use alloc::sync::Arc;
 
+/// The standard 4D Field domain for boxed manifolds.
+type Field4 = (crate::Field, crate::Field, crate::Field, crate::Field);
+
 /// Type-erased manifold (returning Field), wrapped in a struct to allow trait implementations.
 ///
 /// Note: `BoxedManifold` is Field-specific because trait objects require a concrete type.
 /// For generic numeric contexts, use static dispatch instead.
 #[derive(Clone)]
-pub struct BoxedManifold(pub Arc<dyn Manifold<Output = crate::Field>>);
+pub struct BoxedManifold(pub Arc<dyn Manifold<Field4, Output = crate::Field>>);
 
-impl Manifold for BoxedManifold {
+impl Manifold<Field4> for BoxedManifold {
     type Output = crate::Field;
     #[inline(always)]
-    fn eval_raw(
-        &self,
-        x: crate::Field,
-        y: crate::Field,
-        z: crate::Field,
-        w: crate::Field,
-    ) -> crate::Field {
-        self.0.eval_raw(x, y, z, w)
+    fn eval(&self, p: Field4) -> crate::Field {
+        self.0.eval(p)
     }
 }
 
 // Operator Implementations for BoxedManifold
 // This allows writing `a + b` where a or b are BoxedManifolds.
 
-impl<R: Manifold> core::ops::Add<R> for BoxedManifold {
+impl<R: Manifold<Field4>> core::ops::Add<R> for BoxedManifold {
     type Output = Add<Self, R>;
     fn add(self, rhs: R) -> Self::Output {
         Add(self, rhs)
     }
 }
 
-impl<R: Manifold> core::ops::Sub<R> for BoxedManifold {
+impl<R: Manifold<Field4>> core::ops::Sub<R> for BoxedManifold {
     type Output = Sub<Self, R>;
     fn sub(self, rhs: R) -> Self::Output {
         Sub(self, rhs)
     }
 }
 
-impl<R: Manifold> core::ops::Mul<R> for BoxedManifold {
+impl<R: Manifold<Field4>> core::ops::Mul<R> for BoxedManifold {
     type Output = Mul<Self, R>;
     fn mul(self, rhs: R) -> Self::Output {
         Mul(self, rhs)
     }
 }
 
-impl<R: Manifold> core::ops::Div<R> for BoxedManifold {
+impl<R: Manifold<Field4>> core::ops::Div<R> for BoxedManifold {
     type Output = Div<Self, R>;
     fn div(self, rhs: R) -> Self::Output {
         Div(self, rhs)
@@ -177,15 +174,15 @@ impl<R: Manifold> core::ops::Div<R> for BoxedManifold {
 /// let result = expr.eval_raw(x, y, zero, zero);
 /// // result.val = 28, result.dx = 10 (∂/∂x of x² + y), result.dy = 1 (∂/∂y)
 /// ```
-pub trait ManifoldExt: Manifold + Sized {
+pub trait ManifoldExt: Manifold<Field4> + Sized {
     /// Evaluate the manifold at the given coordinates.
     ///
     /// This convenience method accepts types that convert to `Field`.
-    /// For evaluation with other numeric types (like `Jet2`), use `eval_raw` directly.
+    /// For evaluation with other numeric types (like `Jet2`), use `eval()` directly.
     ///
     /// Note: Only available for manifolds that output `Field`.
     #[inline(always)]
-    fn eval<
+    fn eval4<
         A: Into<crate::Field>,
         B: Into<crate::Field>,
         C: Into<crate::Field>,
@@ -198,9 +195,9 @@ pub trait ManifoldExt: Manifold + Sized {
         w: D,
     ) -> crate::Field
     where
-        Self: Manifold<crate::Field, Output = crate::Field>,
+        Self: Manifold<Field4, Output = crate::Field>,
     {
-        self.eval_raw(x.into(), y.into(), z.into(), w.into())
+        Manifold::eval(self, (x.into(), y.into(), z.into(), w.into()))
     }
 
     /// Evaluate the manifold at manifold-computed coordinates.
@@ -219,18 +216,19 @@ pub trait ManifoldExt: Manifold + Sized {
     #[inline(always)]
     fn eval_at<Cx, Cy, Cz, Cw>(&self, x: Cx, y: Cy, z: Cz, w: Cw) -> crate::Field
     where
-        Self: Manifold<crate::Field, Output = crate::Field>,
-        Cx: Manifold<crate::Field, Output = crate::Field>,
-        Cy: Manifold<crate::Field, Output = crate::Field>,
-        Cz: Manifold<crate::Field, Output = crate::Field>,
-        Cw: Manifold<crate::Field, Output = crate::Field>,
+        Self: Manifold<Field4, Output = crate::Field>,
+        Cx: Manifold<Field4, Output = crate::Field>,
+        Cy: Manifold<Field4, Output = crate::Field>,
+        Cz: Manifold<Field4, Output = crate::Field>,
+        Cw: Manifold<Field4, Output = crate::Field>,
     {
         let zero = crate::Field::from(0.0);
-        let new_x = x.eval_raw(zero, zero, zero, zero);
-        let new_y = y.eval_raw(zero, zero, zero, zero);
-        let new_z = z.eval_raw(zero, zero, zero, zero);
-        let new_w = w.eval_raw(zero, zero, zero, zero);
-        self.eval_raw(new_x, new_y, new_z, new_w)
+        let origin = (zero, zero, zero, zero);
+        let new_x = x.eval(origin);
+        let new_y = y.eval(origin);
+        let new_z = z.eval(origin);
+        let new_w = w.eval(origin);
+        self.eval((new_x, new_y, new_z, new_w))
     }
 
     /// Collapse an AST expression to a concrete Field value.
@@ -248,10 +246,10 @@ pub trait ManifoldExt: Manifold + Sized {
     #[inline(always)]
     fn constant(&self) -> crate::Field
     where
-        Self: Manifold<crate::Field, Output = crate::Field>,
+        Self: Manifold<Field4, Output = crate::Field>,
     {
         let zero = crate::Field::from(0.0);
-        self.eval_raw(zero, zero, zero, zero)
+        self.eval((zero, zero, zero, zero))
     }
 
     /// Transform the output of this manifold using another manifold.
@@ -278,8 +276,8 @@ pub trait ManifoldExt: Manifold + Sized {
     /// ```
     fn map<T>(self, transform: T) -> Map<Self, T>
     where
-        Self: Manifold<crate::Field, Output = crate::Field>,
-        T: Manifold<crate::Field, Output = crate::Field>,
+        Self: Manifold<Field4, Output = crate::Field>,
+        T: Manifold<Field4, Output = crate::Field>,
     {
         Map::new(self, transform)
     }
@@ -303,29 +301,29 @@ pub trait ManifoldExt: Manifold + Sized {
     /// ```
     fn lift<F>(self, func: F) -> ClosureMap<Self, F>
     where
-        Self: Manifold<crate::Field, Output = crate::Field>,
+        Self: Manifold<Field4, Output = crate::Field>,
         F: Fn(crate::Field) -> crate::jet::PathJet<crate::Field> + Send + Sync,
     {
         ClosureMap::new(self, func)
     }
 
     /// Add two manifolds.
-    fn add<R: Manifold>(self, rhs: R) -> Add<Self, R> {
+    fn add<R: Manifold<Field4>>(self, rhs: R) -> Add<Self, R> {
         Add(self, rhs)
     }
 
     /// Subtract two manifolds.
-    fn sub<R: Manifold>(self, rhs: R) -> Sub<Self, R> {
+    fn sub<R: Manifold<Field4>>(self, rhs: R) -> Sub<Self, R> {
         Sub(self, rhs)
     }
 
     /// Multiply two manifolds.
-    fn mul<R: Manifold>(self, rhs: R) -> Mul<Self, R> {
+    fn mul<R: Manifold<Field4>>(self, rhs: R) -> Mul<Self, R> {
         Mul(self, rhs)
     }
 
     /// Divide two manifolds.
-    fn div<R: Manifold>(self, rhs: R) -> Div<Self, R> {
+    fn div<R: Manifold<Field4>>(self, rhs: R) -> Div<Self, R> {
         Div(self, rhs)
     }
 
@@ -375,32 +373,32 @@ pub trait ManifoldExt: Manifold + Sized {
     }
 
     /// Element-wise maximum.
-    fn max<R: Manifold>(self, rhs: R) -> Max<Self, R> {
+    fn max<R: Manifold<Field4>>(self, rhs: R) -> Max<Self, R> {
         Max(self, rhs)
     }
 
     /// Element-wise minimum.
-    fn min<R: Manifold>(self, rhs: R) -> Min<Self, R> {
+    fn min<R: Manifold<Field4>>(self, rhs: R) -> Min<Self, R> {
         Min(self, rhs)
     }
 
     /// Less than comparison.
-    fn lt<R: Manifold>(self, rhs: R) -> Lt<Self, R> {
+    fn lt<R: Manifold<Field4>>(self, rhs: R) -> Lt<Self, R> {
         Lt(self, rhs)
     }
 
     /// Greater than comparison.
-    fn gt<R: Manifold>(self, rhs: R) -> Gt<Self, R> {
+    fn gt<R: Manifold<Field4>>(self, rhs: R) -> Gt<Self, R> {
         Gt(self, rhs)
     }
 
     /// Less than or equal comparison.
-    fn le<R: Manifold>(self, rhs: R) -> Le<Self, R> {
+    fn le<R: Manifold<Field4>>(self, rhs: R) -> Le<Self, R> {
         Le(self, rhs)
     }
 
     /// Greater than or equal comparison.
-    fn ge<R: Manifold>(self, rhs: R) -> Ge<Self, R> {
+    fn ge<R: Manifold<Field4>>(self, rhs: R) -> Ge<Self, R> {
         Ge(self, rhs)
     }
 
@@ -434,7 +432,7 @@ pub trait ManifoldExt: Manifold + Sized {
     /// Both branches are always evaluated. For complex branches, this is more expensive
     /// than a scalar `if` statement, but matches typical shader execution models where
     /// lanes follow independent code paths.
-    fn select<T: Manifold, F: Manifold>(self, if_true: T, if_false: F) -> Select<Self, T, F> {
+    fn select<T: Manifold<Field4>, F: Manifold<Field4>>(self, if_true: T, if_false: F) -> Select<Self, T, F> {
         Select {
             cond: self,
             if_true,
@@ -493,10 +491,10 @@ pub trait ManifoldExt: Manifold + Sized {
     /// the inner manifold. The resulting type captures both.
     fn at<Cx, Cy, Cz, Cw>(self, x: Cx, y: Cy, z: Cz, w: Cw) -> At<Cx, Cy, Cz, Cw, Self>
     where
-        Cx: Manifold,
-        Cy: Manifold,
-        Cz: Manifold,
-        Cw: Manifold,
+        Cx: Manifold<Field4>,
+        Cy: Manifold<Field4>,
+        Cz: Manifold<Field4>,
+        Cw: Manifold<Field4>,
     {
         At {
             inner: self,
@@ -515,15 +513,15 @@ pub trait ManifoldExt: Manifold + Sized {
     /// Only available for manifolds that output `Field`.
     fn boxed(self) -> BoxedManifold
     where
-        Self: Manifold<crate::Field, Output = crate::Field> + 'static,
+        Self: Manifold<Field4, Output = crate::Field> + 'static,
     {
         BoxedManifold(Arc::new(self))
     }
 }
 
-/// Blanket implementation for all manifolds.
+/// Blanket implementation for all manifolds on Field4 domain.
 ///
-/// This makes the DSL methods available for any manifold, regardless of output type.
-/// Field-specific methods (eval, constant, map, etc.) are only available when the
+/// This makes the DSL methods available for any manifold on the standard 4D Field domain.
+/// Field-specific methods (eval4, constant, map, etc.) are only available when the
 /// manifold outputs `Field`, enforced by where clauses on those methods.
-impl<T: Manifold + Sized> ManifoldExt for T {}
+impl<T: Manifold<Field4> + Sized> ManifoldExt for T {}

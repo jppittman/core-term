@@ -70,111 +70,112 @@ pub struct AddMasked<Acc, Val, Mask> {
     pub mask: Mask,
 }
 
-impl<L, R, I> Manifold<I> for Add<L, R>
+// ============================================================================
+// Domain-Generic Manifold Implementations
+// ============================================================================
+
+impl<P, L, R, O> Manifold<P> for Add<L, R>
 where
-    I: crate::numeric::Numeric,
-    L: Manifold<I, Output = I>,
-    R: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0
-            .eval_raw(x, y, z, w)
-            .raw_add(self.1.eval_raw(x, y, z, w))
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).raw_add(self.1.eval(p))
     }
 }
 
-impl<L, R, I> Manifold<I> for Sub<L, R>
+impl<P, L, R, O> Manifold<P> for Sub<L, R>
 where
-    I: crate::numeric::Numeric,
-    L: Manifold<I, Output = I>,
-    R: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0
-            .eval_raw(x, y, z, w)
-            .raw_sub(self.1.eval_raw(x, y, z, w))
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).raw_sub(self.1.eval(p))
     }
 }
 
-impl<L, R, I> Manifold<I> for Mul<L, R>
+impl<P, L, R, O> Manifold<P> for Mul<L, R>
 where
-    I: crate::numeric::Numeric,
-    L: Manifold<I, Output = I>,
-    R: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0
-            .eval_raw(x, y, z, w)
-            .raw_mul(self.1.eval_raw(x, y, z, w))
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).raw_mul(self.1.eval(p))
     }
 }
 
-impl<L, R, I> Manifold<I> for Div<L, R>
+impl<P, L, R, O> Manifold<P> for Div<L, R>
 where
-    I: crate::numeric::Numeric,
-    L: Manifold<I, Output = I>,
-    R: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.0
-            .eval_raw(x, y, z, w)
-            .raw_div(self.1.eval_raw(x, y, z, w))
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).raw_div(self.1.eval(p))
     }
 }
 
-impl<A, B, C, I> Manifold<I> for MulAdd<A, B, C>
+impl<P, A, B, C, O> Manifold<P> for MulAdd<A, B, C>
 where
-    I: crate::numeric::Numeric,
-    A: Manifold<I, Output = I>,
-    B: Manifold<I, Output = I>,
-    C: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    A: Manifold<P, Output = O>,
+    B: Manifold<P, Output = O>,
+    C: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        let a = self.0.eval_raw(x, y, z, w);
-        let b = self.1.eval_raw(x, y, z, w);
-        let c = self.2.eval_raw(x, y, z, w);
+    fn eval(&self, p: P) -> O {
+        let a = self.0.eval(p);
+        let b = self.1.eval(p);
+        let c = self.2.eval(p);
         a.mul_add(b, c)
     }
 }
 
-impl<M, I> Manifold<I> for MulRecip<M>
+impl<P, M, O> Manifold<P> for MulRecip<M>
 where
-    I: crate::numeric::Numeric,
-    M: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    M: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+    fn eval(&self, p: P) -> O {
         // Multiply by precomputed reciprocal - avoids slow division
-        self.inner
-            .eval_raw(x, y, z, w)
-            .raw_mul(I::from_f32(self.recip))
+        self.inner.eval(p).raw_mul(O::from_f32(self.recip))
     }
 }
 
-impl<Acc, Val, Mask, I> Manifold<I> for AddMasked<Acc, Val, Mask>
+impl<P, Acc, Val, Mask, O> Manifold<P> for AddMasked<Acc, Val, Mask>
 where
-    I: crate::numeric::Numeric,
-    Acc: Manifold<I, Output = I>,
-    Val: Manifold<I, Output = I>,
-    Mask: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    Acc: Manifold<P, Output = O>,
+    Val: Manifold<P, Output = O>,
+    Mask: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        let acc = self.acc.eval_raw(x, y, z, w);
-        let val = self.val.eval_raw(x, y, z, w);
-        let mask = self.mask.eval_raw(x, y, z, w);
+    fn eval(&self, p: P) -> O {
+        let acc = self.acc.eval(p);
+        let val = self.val.eval(p);
+        let mask = self.mask.eval(p);
         acc.add_masked(val, mask)
     }
 }
@@ -193,18 +194,17 @@ where
 #[derive(Clone, Debug)]
 pub struct MulRsqrt<L, R>(pub L, pub R);
 
-impl<L, R, I> Manifold<I> for MulRsqrt<L, R>
+impl<P, L, R, O> Manifold<P> for MulRsqrt<L, R>
 where
-    I: crate::numeric::Numeric,
-    L: Manifold<I, Output = I>,
-    R: Manifold<I, Output = I>,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    L: Manifold<P, Output = O>,
+    R: Manifold<P, Output = O>,
 {
-    type Output = I;
+    type Output = O;
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
+    fn eval(&self, p: P) -> O {
         // L * rsqrt(R) = L / sqrt(R) but faster
-        self.0
-            .eval_raw(x, y, z, w)
-            .raw_mul(self.1.eval_raw(x, y, z, w).rsqrt())
+        self.0.eval(p).raw_mul(self.1.eval(p).rsqrt())
     }
 }

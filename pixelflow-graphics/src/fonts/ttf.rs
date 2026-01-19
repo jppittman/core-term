@@ -8,20 +8,26 @@
 use crate::shapes::{square, Bounded};
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{
-    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
+    Abs, At, Differentiable, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select, Sub, W, X,
     Y, Z,
 };
 use std::sync::Arc;
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
+
+/// The 4D Jet2 domain type for autodifferentiation.
+type Jet4 = (Jet2, Jet2, Jet2, Jet2);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Type Aliases for Concrete Kernel Types
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The concrete type returned by line_winding_field (captured via TAIT).
-pub type LineKernel = impl Manifold<Field, Output = Field> + Clone;
+pub type LineKernel = impl Manifold<Field4, Output = Field> + Clone;
 
 /// The concrete type returned by quadratic_winding (captured via TAIT).
-pub type QuadKernel = impl Manifold<Field, Output = Field> + Clone;
+pub type QuadKernel = impl Manifold<Field4, Output = Field> + Clone;
 
 // Defining uses for TAIT - these functions establish what the opaque types actually are
 #[doc(hidden)]
@@ -83,11 +89,12 @@ pub fn affine<M>(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Affine<M> {
 #[derive(Clone, Debug)]
 pub struct Sum<M>(pub Arc<[M]>);
 
-impl<M: Manifold<Field, Output = Field>> Manifold<Field> for Sum<M> {
+impl<M: Manifold<Field4, Output = Field>> Manifold<Field4> for Sum<M> {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         if self.0.len() == 1 {
             return self.0[0].eval_raw(x, y, z, w);
         }
@@ -100,11 +107,12 @@ impl<M: Manifold<Field, Output = Field>> Manifold<Field> for Sum<M> {
     }
 }
 
-impl<M: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Sum<M> {
+impl<M: Manifold<Jet4, Output = Jet2>> Manifold<Jet4> for Sum<M> {
     type Output = Jet2;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+    fn eval(&self, p: Jet4) -> Jet2 {
+        let (x, y, z, w) = p;
         if self.0.len() == 1 {
             return self.0[0].eval_raw(x, y, z, w);
         }
@@ -375,57 +383,62 @@ impl OptQuad {
 
 // ─── Field Implementation (Winding Number Coverage) ────────────────────────
 
-impl<K: Manifold<Field, Output = Field>> Manifold<Field> for Line<K> {
+impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Line<K> {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         self.kernel.eval_raw(x, y, z, w)
     }
 }
 
-impl<K: Manifold<Jet2, Output = Jet2>> Manifold<Jet2> for Line<K> {
+impl<K: Manifold<Jet4, Output = Jet2>> Manifold<Jet4> for Line<K> {
     type Output = Jet2;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+    fn eval(&self, p: Jet4) -> Jet2 {
+        let (x, y, z, w) = p;
         self.kernel.eval_raw(x, y, z, w)
     }
 }
 
-impl<K: Manifold<Jet2, Output = Jet2>> Differentiable for Line<K> {
+impl<K: Manifold<Jet4, Output = Jet2>> Differentiable for Line<K> {
     type DiffWrt = (X, Y); // Spatial derivatives
 }
 
-impl<K: Manifold<Field, Output = Field>, D: Send + Sync> Manifold<Field> for Quad<K, D> {
+impl<K: Manifold<Field4, Output = Field>, D: Send + Sync> Manifold<Field4> for Quad<K, D> {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         self.kernel.eval_raw(x, y, z, w)
     }
 }
 
-impl<K: Manifold<Jet2, Output = Jet2>, D: Send + Sync> Manifold<Jet2> for Quad<K, D> {
+impl<K: Manifold<Jet4, Output = Jet2>, D: Send + Sync> Manifold<Jet4> for Quad<K, D> {
     type Output = Jet2;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+    fn eval(&self, p: Jet4) -> Jet2 {
+        let (x, y, z, w) = p;
         self.kernel.eval_raw(x, y, z, w)
     }
 }
 
-impl<K: Manifold<Jet2, Output = Jet2>, D: Send + Sync> Differentiable for Quad<K, D> {
+impl<K: Manifold<Jet4, Output = Jet2>, D: Send + Sync> Differentiable for Quad<K, D> {
     type DiffWrt = (X, Y); // Spatial derivatives
 }
 
 // Old Quad implementation using quadratic formula (for benchmarking Curve<3>)
 // Uses layered contramap pattern: build AST with ZST variables, inject values via .at()
-impl Manifold<Field> for Curve<3> {
+impl Manifold<Field4> for Curve<3> {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
         let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
         let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
@@ -521,13 +534,14 @@ pub struct Geometry<L, Q> {
     pub quads: Arc<[Q]>,
 }
 
-impl<L: Manifold<Field, Output = Field>, Q: Manifold<Field, Output = Field>> Manifold<Field>
+impl<L: Manifold<Field4, Output = Field>, Q: Manifold<Field4, Output = Field>> Manifold<Field4>
     for Geometry<L, Q>
 {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         let fzero = Field::from(0.0);
 
         // Accumulate line and quad contributions into a single composite value.
@@ -554,13 +568,14 @@ impl<L: Manifold<Field, Output = Field>, Q: Manifold<Field, Output = Field>> Man
     }
 }
 
-impl<L: Manifold<Jet2, Output = Jet2>, Q: Manifold<Jet2, Output = Jet2>> Manifold<Jet2>
+impl<L: Manifold<Jet4, Output = Jet2>, Q: Manifold<Jet4, Output = Jet2>> Manifold<Jet4>
     for Geometry<L, Q>
 {
     type Output = Jet2;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+    fn eval(&self, p: Jet4) -> Jet2 {
+        let (x, y, z, w) = p;
         let zero = Jet2::constant(Field::from(0.0));
         let mut acc = zero;
         for l in self.lines.iter() {
@@ -612,13 +627,14 @@ impl<L, Q> core::fmt::Debug for Glyph<L, Q> {
 // Glyph evaluation - concrete impls because Line/Quad/Segment have
 // different implementations for Field (hard) vs Jet2 (anti-aliased).
 
-impl<L: Manifold<Field, Output = Field>, Q: Manifold<Field, Output = Field>> Manifold<Field>
+impl<L: Manifold<Field4, Output = Field>, Q: Manifold<Field4, Output = Field>> Manifold<Field4>
     for Glyph<L, Q>
 {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         match self {
             Self::Empty => Field::from(0.0),
             Self::Simple(g) => g.eval_raw(x, y, z, w),
@@ -627,13 +643,14 @@ impl<L: Manifold<Field, Output = Field>, Q: Manifold<Field, Output = Field>> Man
     }
 }
 
-impl<L: Manifold<Jet2, Output = Jet2>, Q: Manifold<Jet2, Output = Jet2>> Manifold<Jet2>
+impl<L: Manifold<Jet4, Output = Jet2>, Q: Manifold<Jet4, Output = Jet2>> Manifold<Jet4>
     for Glyph<L, Q>
 {
     type Output = Jet2;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Jet2, y: Jet2, z: Jet2, w: Jet2) -> Jet2 {
+    fn eval(&self, p: Jet4) -> Jet2 {
+        let (x, y, z, w) = p;
         match self {
             Self::Empty => Jet2::constant(Field::from(0.0)),
             Self::Simple(g) => g.eval_raw(x, y, z, w),

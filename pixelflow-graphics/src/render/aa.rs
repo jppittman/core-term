@@ -5,7 +5,10 @@
 //! the exact coverage without any smoothstep hacks.
 
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{BoxedManifold, Computational, Field, Manifold, ManifoldExt};
+use pixelflow_core::{BoxedManifold, Computational, Field, Manifold, ManifoldCompat, ManifoldExt};
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
 
 const MIN_GRADIENT: f32 = 0.001;
 
@@ -35,14 +38,15 @@ pub struct AACoverage<M, C = Field> {
     _phantom: std::marker::PhantomData<C>,
 }
 
-impl<C, M> Manifold for AACoverage<M, C>
+impl<C, M> Manifold<Field4> for AACoverage<M, C>
 where
-    M: Manifold<C, Output = Jet2>,
+    M: ManifoldCompat<C, Output = Jet2>,
     C: Computational + From<Field> + Send + Sync + 'static,
 {
     type Output = Field;
 
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         // Convert Field coordinates to the manifold's coordinate type and evaluate
         let result = self
             .manifold

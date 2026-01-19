@@ -9,7 +9,10 @@
 //! For color manifolds, use `pixelflow_core::{Rgba, Red, Green, Blue, Alpha}`.
 
 use bitflags::bitflags;
-use pixelflow_core::{At, Discrete, Field, Manifold};
+use pixelflow_core::{At, Discrete, Field, Manifold, ManifoldCompat};
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -91,17 +94,12 @@ impl NamedColor {
 }
 
 // Make NamedColor a manifold - an infinite field of that ANSI color
-impl pixelflow_core::Manifold for NamedColor {
+impl pixelflow_core::Manifold<Field4> for NamedColor {
     type Output = pixelflow_core::Discrete;
 
     #[inline(always)]
-    fn eval_raw(
-        &self,
-        x: pixelflow_core::Field,
-        y: pixelflow_core::Field,
-        z: pixelflow_core::Field,
-        w: pixelflow_core::Field,
-    ) -> pixelflow_core::Discrete {
+    fn eval(&self, p: Field4) -> pixelflow_core::Discrete {
+        let (x, y, z, w) = p;
         let (r, g, b) = self.to_rgb();
         // Use RGBA ColorCube terminal object directly
         RgbaColorCube::default()
@@ -157,17 +155,12 @@ impl Color {
 }
 
 // Make Color a manifold - an infinite field of that color
-impl pixelflow_core::Manifold for Color {
+impl pixelflow_core::Manifold<Field4> for Color {
     type Output = pixelflow_core::Discrete;
 
     #[inline(always)]
-    fn eval_raw(
-        &self,
-        x: pixelflow_core::Field,
-        y: pixelflow_core::Field,
-        z: pixelflow_core::Field,
-        w: pixelflow_core::Field,
-    ) -> pixelflow_core::Discrete {
+    fn eval(&self, p: Field4) -> pixelflow_core::Discrete {
+        let (x, y, z, w) = p;
         let (r, g, b, a) = self.to_f32_rgba();
         RgbaColorCube::default()
             .at(
@@ -418,17 +411,18 @@ impl<R, G, B, A> Default for ColorCube<R, G, B, A> {
     }
 }
 
-impl<R, G, B, A> Manifold for ColorCube<R, G, B, A>
+impl<R, G, B, A> Manifold<Field4> for ColorCube<R, G, B, A>
 where
-    R: Manifold<Output = Field> + Default,
-    G: Manifold<Output = Field> + Default,
-    B: Manifold<Output = Field> + Default,
-    A: Manifold<Output = Field> + Default,
+    R: Manifold<Field4, Output = Field> + Default,
+    G: Manifold<Field4, Output = Field> + Default,
+    B: Manifold<Field4, Output = Field> + Default,
+    A: Manifold<Field4, Output = Field> + Default,
 {
     type Output = Discrete;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, z, w) = p;
         // Evaluate each channel variable to extract the appropriate coordinate
         let r = R::default().eval_raw(x, y, z, w);
         let g = G::default().eval_raw(x, y, z, w);

@@ -39,9 +39,12 @@ use crate::render::color::Pixel;
 use crate::render::frame::Frame;
 use crate::render::rasterizer::execute;
 use crate::Rgba8;
-use pixelflow_core::{Field, Manifold, Texture};
+use pixelflow_core::{Field, Manifold, ManifoldCompat, Texture};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
 
 use super::ttf::{affine, Affine, Font, Glyph, Sum};
 use crate::Grayscale;
@@ -77,8 +80,8 @@ impl CachedGlyph {
     /// The glyph is rasterized at `size × size` resolution.
     pub fn new<L, Q>(glyph: &Glyph<L, Q>, size: usize) -> Self
     where
-        L: Manifold<Field, Output = Field>,
-        Q: Manifold<Field, Output = Field>,
+        L: Manifold<Field4, Output = Field>,
+        Q: Manifold<Field4, Output = Field>,
         Glyph<L, Q>: Clone,
     {
         // Rasterize glyph to RGBA frame using Grayscale (coverage → grayscale)
@@ -116,11 +119,12 @@ impl CachedGlyph {
     }
 }
 
-impl Manifold for CachedGlyph {
+impl Manifold<Field4> for CachedGlyph {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         // Sample coverage from texture (SIMD gather)
         self.coverage.eval_raw(x, y, z, w)
     }
@@ -333,11 +337,12 @@ impl CachedText {
     }
 }
 
-impl Manifold for CachedText {
+impl Manifold<Field4> for CachedText {
     type Output = Field;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+    fn eval(&self, p: Field4) -> Field {
+        let (x, y, z, w) = p;
         // Sum of cached glyph coverages (just like Text)
         self.inner.eval_raw(x, y, z, w)
     }

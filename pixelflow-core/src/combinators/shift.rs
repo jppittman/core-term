@@ -27,7 +27,7 @@ use crate::{Computational, Manifold};
 /// Translates a manifold by subtracting constant offsets from coordinates.
 ///
 /// Given `inner.shift(dx, dy, dz, dw)`, evaluation at `(x, y, z, w)` returns
-/// `inner.eval_raw(x - dx, y - dy, z - dz, w - dw)`.
+/// `inner.eval((x - dx, y - dy, z - dz, w - dw))`.
 #[derive(Clone, Debug)]
 pub struct Shift<M> {
     /// The inner manifold to translate.
@@ -42,20 +42,20 @@ pub struct Shift<M> {
     pub dw: f32,
 }
 
-impl<I, M> Manifold<I> for Shift<M>
+impl<I, M> Manifold<(I, I, I, I)> for Shift<M>
 where
     I: Computational,
-    M: Manifold<I>,
+    M: Manifold<(I, I, I, I)>,
 {
     type Output = M::Output;
 
     #[inline(always)]
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output {
-        self.inner.eval_raw(
-            x - I::from_f32(self.dx),
-            y - I::from_f32(self.dy),
-            z - I::from_f32(self.dz),
-            w - I::from_f32(self.dw),
-        )
+    fn eval(&self, p: (I, I, I, I)) -> Self::Output {
+        self.inner.eval((
+            p.0 - I::from_f32(self.dx),
+            p.1 - I::from_f32(self.dy),
+            p.2 - I::from_f32(self.dz),
+            p.3 - I::from_f32(self.dw),
+        ))
     }
 }

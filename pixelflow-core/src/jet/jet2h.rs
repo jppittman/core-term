@@ -2,8 +2,11 @@
 
 use crate::Field;
 use crate::Manifold;
-use crate::ManifoldExt;
 use crate::numeric::{Computational, Numeric, Selectable};
+use crate::ext;
+
+/// The standard 4D Field domain.
+type Field4 = (Field, Field, Field, Field);
 
 /// A 2-jet with Hessian: value, first derivatives, and second derivatives.
 ///
@@ -91,12 +94,12 @@ impl Jet2H {
         dyy: Dyy,
     ) -> Self
     where
-        V: Manifold<Field, Output = Field>,
-        Dx: Manifold<Field, Output = Field>,
-        Dy: Manifold<Field, Output = Field>,
-        Dxx: Manifold<Field, Output = Field>,
-        Dxy: Manifold<Field, Output = Field>,
-        Dyy: Manifold<Field, Output = Field>,
+        V: ext::ManifoldExt + Manifold<Field4, Output = Field>,
+        Dx: ext::ManifoldExt + Manifold<Field4, Output = Field>,
+        Dy: ext::ManifoldExt + Manifold<Field4, Output = Field>,
+        Dxx: ext::ManifoldExt + Manifold<Field4, Output = Field>,
+        Dxy: ext::ManifoldExt + Manifold<Field4, Output = Field>,
+        Dyy: ext::ManifoldExt + Manifold<Field4, Output = Field>,
     {
         Self {
             val: val.constant(),

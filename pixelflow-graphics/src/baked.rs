@@ -8,7 +8,10 @@
 use crate::render::color::Pixel;
 use crate::render::frame::Frame;
 use crate::render::rasterizer::execute;
-use pixelflow_core::{Discrete, Field, Manifold, Texture};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, Texture};
+
+/// The standard 4D Field domain type.
+type Field4 = (Field, Field, Field, Field);
 
 /// A color manifold baked to a texture cache.
 ///
@@ -48,7 +51,7 @@ pub struct Baked<M, P: Pixel> {
 
 impl<M, P> Baked<M, P>
 where
-    M: Manifold<Output = Discrete>,
+    M: Manifold<Field4, Output = Discrete>,
     P: Pixel,
 {
     /// Bake a color manifold to textures at the given resolution.
@@ -124,15 +127,16 @@ where
     }
 }
 
-impl<M, P> Manifold for Baked<M, P>
+impl<M, P> Manifold<Field4> for Baked<M, P>
 where
-    M: Manifold<Output = Discrete> + Send + Sync,
+    M: Manifold<Field4, Output = Discrete> + Send + Sync,
     P: Pixel + Send + Sync,
 {
     type Output = Discrete;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, z, w) = p;
         // Sample each channel texture (proper SIMD gather)
         let r = self.r.eval_raw(x, y, z, w);
         let g = self.g.eval_raw(x, y, z, w);
@@ -153,10 +157,10 @@ mod tests {
     // A simple solid color manifold for testing
     struct SolidColor(u8, u8, u8, u8);
 
-    impl Manifold for SolidColor {
+    impl Manifold<Field4> for SolidColor {
         type Output = Discrete;
 
-        fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
+        fn eval(&self, _p: Field4) -> Discrete {
             Discrete::pack(
                 Field::from(self.0 as f32 / 255.0),
                 Field::from(self.1 as f32 / 255.0),
@@ -195,9 +199,10 @@ mod tests {
     fn test_baked_sequential_sampling() {
         // Create a gradient: red increases with x
         struct Gradient;
-        impl Manifold for Gradient {
+        impl Manifold<Field4> for Gradient {
             type Output = Discrete;
-            fn eval_raw(&self, x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
+            fn eval(&self, p: Field4) -> Discrete {
+                let (x, _y, _z, _w) = p;
                 // Red channel = x / 4 (for 4 wide texture)
                 let r = (x / Field::from(4.0)).constant();
                 Discrete::pack(r, Field::from(0.0), Field::from(0.0), Field::from(1.0))
