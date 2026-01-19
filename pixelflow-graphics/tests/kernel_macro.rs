@@ -18,8 +18,15 @@
 //! values. Instead we test using Field-level comparisons and check that all
 //! lanes satisfy the expected condition.
 
-use pixelflow_core::{Field, ManifoldExt};
+use pixelflow_core::{Field, Manifold, ManifoldExt};
 use pixelflow_macros::kernel;
+
+type Field4 = (Field, Field, Field, Field);
+
+/// Helper: Convert f32 tuple to Field4
+fn field4(x: f32, y: f32, z: f32, w: f32) -> Field4 {
+    (Field::from(x), Field::from(y), Field::from(z), Field::from(w))
+}
 
 /// Helper: Check if two Fields are approximately equal across all lanes.
 ///
@@ -45,7 +52,7 @@ fn test_one_param_kernel() {
     let k = offset_x(10.0);
 
     // At x=5: result should be 5 + 10 = 15
-    let result = k.eval(5.0, 0.0, 0.0, 0.0);
+    let result = k.eval(field4(5.0, 0.0, 0.0, 0.0));
     let expected = Field::from(15.0);
     assert!(
         fields_close(result, expected, 0.001),
@@ -61,7 +68,7 @@ fn test_two_param_kernel() {
     let k = offset_xy(10.0, 20.0);
 
     // At (5, 3): result should be (5+10) + (3+20) = 38
-    let result = k.eval(5.0, 3.0, 0.0, 0.0);
+    let result = k.eval(field4(5.0, 3.0, 0.0, 0.0));
     let expected = Field::from(38.0);
     assert!(
         fields_close(result, expected, 0.001),
@@ -77,7 +84,7 @@ fn test_zero_param_kernel() {
     let k = dist();
 
     // At (3, 4): distance = 5
-    let result = k.eval(3.0, 4.0, 0.0, 0.0);
+    let result = k.eval(field4(3.0, 4.0, 0.0, 0.0));
     let expected = Field::from(5.0);
     assert!(
         fields_close(result, expected, 0.001),
@@ -93,21 +100,21 @@ fn test_method_chaining() {
     let k = clamp(0.0, 1.0);
 
     // Below range: clamp(-5) should be 0
-    let below = k.eval(-5.0, 0.0, 0.0, 0.0);
+    let below = k.eval(field4(-5.0, 0.0, 0.0, 0.0));
     assert!(
         fields_close(below, Field::from(0.0), 0.001),
         "clamp below failed"
     );
 
     // In range: clamp(0.5) should be 0.5
-    let middle = k.eval(0.5, 0.0, 0.0, 0.0);
+    let middle = k.eval(field4(0.5, 0.0, 0.0, 0.0));
     assert!(
         fields_close(middle, Field::from(0.5), 0.001),
         "clamp middle failed"
     );
 
     // Above range: clamp(5) should be 1
-    let above = k.eval(5.0, 0.0, 0.0, 0.0);
+    let above = k.eval(field4(5.0, 0.0, 0.0, 0.0));
     assert!(
         fields_close(above, Field::from(1.0), 0.001),
         "clamp above failed"
@@ -121,8 +128,8 @@ fn test_kernel_is_clone() {
     let k1 = scale(2.0);
     let k2 = k1.clone();
 
-    let r1 = k1.eval(5.0, 0.0, 0.0, 0.0);
-    let r2 = k2.eval(5.0, 0.0, 0.0, 0.0);
+    let r1 = k1.eval(field4(5.0, 0.0, 0.0, 0.0));
+    let r2 = k2.eval(field4(5.0, 0.0, 0.0, 0.0));
 
     assert!(fields_close(r1, Field::from(10.0), 0.001));
     assert!(fields_close(r2, Field::from(10.0), 0.001));
@@ -136,8 +143,8 @@ fn test_independent_instantiations() {
     let double = scale(2.0);
     let triple = scale(3.0);
 
-    let r_double = double.eval(5.0, 0.0, 0.0, 0.0);
-    let r_triple = triple.eval(5.0, 0.0, 0.0, 0.0);
+    let r_double = double.eval(field4(5.0, 0.0, 0.0, 0.0));
+    let r_triple = triple.eval(field4(5.0, 0.0, 0.0, 0.0));
 
     assert!(
         fields_close(r_double, Field::from(10.0), 0.001),
@@ -156,7 +163,7 @@ fn test_sqrt() {
     let k = root(7.0);
 
     // sqrt(9 + 7) = sqrt(16) = 4
-    let result = k.eval(9.0, 0.0, 0.0, 0.0);
+    let result = k.eval(field4(9.0, 0.0, 0.0, 0.0));
     assert!(fields_close(result, Field::from(4.0), 0.001));
 }
 
@@ -166,10 +173,10 @@ fn test_floor() {
     let floored = kernel!(|| X.floor());
     let k = floored();
 
-    let result = k.eval(3.7, 0.0, 0.0, 0.0);
+    let result = k.eval(field4(3.7, 0.0, 0.0, 0.0));
     assert!(fields_close(result, Field::from(3.0), 0.001));
 
-    let negative = k.eval(-1.3, 0.0, 0.0, 0.0);
+    let negative = k.eval(field4(-1.3, 0.0, 0.0, 0.0));
     assert!(fields_close(negative, Field::from(-2.0), 0.001));
 }
 
@@ -180,11 +187,11 @@ fn test_abs() {
     let k = absolute(5.0);
 
     // |3 - 5| = 2
-    let result = k.eval(3.0, 0.0, 0.0, 0.0);
+    let result = k.eval(field4(3.0, 0.0, 0.0, 0.0));
     assert!(fields_close(result, Field::from(2.0), 0.001));
 
     // |7 - 5| = 2
-    let result2 = k.eval(7.0, 0.0, 0.0, 0.0);
+    let result2 = k.eval(field4(7.0, 0.0, 0.0, 0.0));
     assert!(fields_close(result2, Field::from(2.0), 0.001));
 }
 
@@ -200,6 +207,6 @@ fn test_zst_expression_is_copy() {
     let k = square_offset(1.0);
 
     // (3-1)² + (4-1)² = 4 + 9 = 13
-    let result = k.eval(3.0, 4.0, 0.0, 0.0);
+    let result = k.eval(field4(3.0, 4.0, 0.0, 0.0));
     assert!(fields_close(result, Field::from(13.0), 0.001));
 }

@@ -468,7 +468,7 @@ impl Manifold<Field4> for Curve<3> {
             };
 
             // Layer 1 (outer): inject t = (Y - cy) / by via contramap
-            inner.at(X, Y, (Y - cy) / by, W).at(x, y, z, w).eval()
+            inner.at(X, Y, (Y - cy) / by, W).at(x, y, z, w).collapse()
         } else {
             // Quadratic case - Layer 3 (innermost): Y = t1, Z = t2
             // Build winding contributions using ZST variables (all Copy)
@@ -518,7 +518,7 @@ impl Manifold<Field4> for Curve<3> {
                 .ge(0.0)
                 .select(with_roots.at(X, Y, Z, disc.max(0.0).sqrt()), 0.0f32)
                 .at(x, y, z, w)
-                .eval()
+                .collapse()
         }
     }
 }
@@ -627,8 +627,10 @@ impl<L, Q> core::fmt::Debug for Glyph<L, Q> {
 // Glyph evaluation - concrete impls because Line/Quad/Segment have
 // different implementations for Field (hard) vs Jet2 (anti-aliased).
 
-impl<L: Manifold<Field4, Output = Field>, Q: Manifold<Field4, Output = Field>> Manifold<Field4>
-    for Glyph<L, Q>
+impl<L, Q> Manifold<Field4> for Glyph<L, Q>
+where
+    L: ManifoldCompat<Field, Output = Field>,
+    Q: ManifoldCompat<Field, Output = Field>,
 {
     type Output = Field;
 
@@ -637,14 +639,48 @@ impl<L: Manifold<Field4, Output = Field>, Q: Manifold<Field4, Output = Field>> M
         let (x, y, z, w) = p;
         match self {
             Self::Empty => Field::from(0.0),
-            Self::Simple(g) => g.eval_raw(x, y, z, w),
-            Self::Compound(g) => g.eval_raw(x, y, z, w),
+            Self::Simple(g) => {
+                // Inline the Affine<Bounded<Geometry>> evaluation
+                // The affine transform has been stored as At<AffineTransform, AffineTransform, Z, W, Select<..., Geometry, f32>>
+                // We need to evaluate the coordinate expressions and then call the inner manifold
+
+                // For SimpleGlyph, the structure is:
+                // At<trans_x, trans_y, Z, W, Select<UnitSquare, Geometry, 0.0>>
+                //
+                // We evaluate trans_x and trans_y at (x, y, z, w), then pass to inner
+                let tx = g.x.eval(p);  // transformed x
+                let ty = g.y.eval(p);  // transformed y
+                let tz = g.z.eval(p);  // z (passthrough)
+                let tw = g.w.eval(p);  // w (passthrough)
+
+                // Now evaluate the inner Select<UnitSquare, Geometry, 0.0>
+                g.inner.eval((tx, ty, tz, tw))
+            }
+            Self::Compound(sum) => {
+                // Compound glyphs are Sum<Affine<Glyph>>
+                // We need to evaluate each child and sum the results
+                let mut acc = Field::from(0.0);
+                for child in sum.0.iter() {
+                    // Each child is Affine<Glyph<L, Q>>
+                    // Inline the At evaluation
+                    let tx = child.x.eval(p);
+                    let ty = child.y.eval(p);
+                    let tz = child.z.eval(p);
+                    let tw = child.w.eval(p);
+                    let child_val = child.inner.eval((tx, ty, tz, tw));
+                    acc = (acc + child_val).at(x, y, z, w).collapse();
+                }
+                acc
+            }
         }
     }
 }
 
-impl<L: Manifold<Jet4, Output = Jet2>, Q: Manifold<Jet4, Output = Jet2>> Manifold<Jet4>
-    for Glyph<L, Q>
+impl<L, Q> Manifold<Jet4> for Glyph<L, Q>
+where
+    L: ManifoldCompat<Jet2, Output = Jet2>,
+    Q: ManifoldCompat<Jet2, Output = Jet2>,
+    Geometry<L, Q>: Manifold<Jet4, Output = Jet2>,
 {
     type Output = Jet2;
 
@@ -653,8 +689,38 @@ impl<L: Manifold<Jet4, Output = Jet2>, Q: Manifold<Jet4, Output = Jet2>> Manifol
         let (x, y, z, w) = p;
         match self {
             Self::Empty => Jet2::constant(Field::from(0.0)),
-            Self::Simple(g) => g.eval_raw(x, y, z, w),
-            Self::Compound(g) => g.eval_raw(x, y, z, w),
+            Self::Simple(g) => {
+                // For Jet2 evaluation, we transform coordinates using the affine matrix
+                // and skip the bounding box check (Select), going directly to Geometry.
+                // The bounding box is an optimization that doesn't affect correctness.
+                let tx_field = g.x.eval((x.val, y.val, z.val, w.val));
+                let ty_field = g.y.eval((x.val, y.val, z.val, w.val));
+
+                // Create Jet2 coords with the transformed values and propagated derivatives
+                let tx = Jet2 { val: tx_field, dx: x.dx, dy: x.dy };
+                let ty = Jet2 { val: ty_field, dx: y.dx, dy: y.dy };
+                let tz = z;
+                let tw = w;
+
+                // Access the geometry directly (inside the Select/Bounded wrapper)
+                g.inner.if_true.eval((tx, ty, tz, tw))
+            }
+            Self::Compound(sum) => {
+                let mut acc = Jet2::constant(Field::from(0.0));
+                for child in sum.0.iter() {
+                    let tx_field = child.x.eval((x.val, y.val, z.val, w.val));
+                    let ty_field = child.y.eval((x.val, y.val, z.val, w.val));
+
+                    let tx = Jet2 { val: tx_field, dx: x.dx, dy: x.dy };
+                    let ty = Jet2 { val: ty_field, dx: y.dx, dy: y.dy };
+                    let tz = z;
+                    let tw = w;
+
+                    // Recursively evaluate the child glyph
+                    acc = acc + child.inner.eval((tx, ty, tz, tw));
+                }
+                acc
+            }
         }
     }
 }

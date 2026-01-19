@@ -3,7 +3,7 @@
 //! Compile with: cargo build --release -p pixelflow-graphics --example quad_asm
 //! Inspect with: objdump -d target/release/examples/quad_asm | grep -A200 eval_quad_kernel
 
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, ManifoldCompat};
 use pixelflow_graphics::fonts::ttf::{loop_blinn_quad, make_line, LineKernel, Quad, QuadKernel};
 use std::hint::black_box;
 

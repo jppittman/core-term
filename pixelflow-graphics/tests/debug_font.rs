@@ -1,6 +1,6 @@
 //! Debug font rendering
 
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, ManifoldCompat};
 use pixelflow_graphics::fonts::Font;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");

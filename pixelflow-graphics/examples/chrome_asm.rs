@@ -4,11 +4,14 @@
 
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Discrete, Field, Manifold};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
 use pixelflow_graphics::render::color::RgbaColorCube;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, PlaneGeometry,
 };
+
+type Field4 = (Field, Field, Field, Field);
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 use std::hint::black_box;
 
 /// Sphere at given center with radius (local to this example).
@@ -18,11 +21,12 @@ struct SphereAt {
     radius: f32,
 }
 
-impl Manifold<Jet3> for SphereAt {
+impl Manifold<Jet3_4> for SphereAt {
     type Output = Jet3;
 
     #[inline]
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (rx, ry, rz, _w) = p;
         let cx = Jet3::constant(Field::from(self.center.0));
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
@@ -45,11 +49,12 @@ struct ColorScreenRemap<M> {
     height: f32,
 }
 
-impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
+impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
     type Output = Discrete;
 
     #[inline(always)]
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, z, w) = p;
         let width = Field::from(self.width);
         let height = Field::from(self.height);
         let scale = Field::from(2.0) / height;
@@ -63,7 +68,7 @@ impl<M: Manifold<Output = Discrete>> Manifold for ColorScreenRemap<M> {
             z,
             w,
         }
-        .eval()
+        .collapse()
     }
 }
 
@@ -91,7 +96,7 @@ pub fn eval_one_pixel(x: Field, y: Field) -> Discrete {
         height: 1080.0,
     };
 
-    renderable.eval_raw(x, y, Field::from(0.0), Field::from(0.0))
+    renderable.eval((x, y, Field::from(0.0), Field::from(0.0)))
 }
 
 fn main() {

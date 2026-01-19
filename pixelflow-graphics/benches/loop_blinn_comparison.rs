@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, ManifoldCompat};
 use pixelflow_graphics::{
     fonts::ttf::{loop_blinn_quad, Curve},
     render::rasterizer::{execute, TensorShape},

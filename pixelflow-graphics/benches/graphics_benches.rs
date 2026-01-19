@@ -4,8 +4,11 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use pixelflow_core::combinators::At;
-use pixelflow_core::jet::Jet2;
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, PARALLELISM};
+use pixelflow_core::jet::{Jet2, Jet3};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt, PARALLELISM};
+
+type Field4 = (Field, Field, Field, Field);
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 use pixelflow_graphics::{
     render::rasterizer::{rasterize, TensorShape},
     CachedGlyph, CachedText, Color, ColorCube, Font, GlyphCache, Grayscale, NamedColor, Rgba8,
@@ -805,11 +808,12 @@ fn bench_scene3d(c: &mut Criterion) {
         radius: f32,
     }
 
-    impl Manifold<Jet3> for SphereAt {
+    impl Manifold<Jet3_4> for SphereAt {
         type Output = Jet3;
 
         #[inline]
-        fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+        fn eval(&self, p: Jet3_4) -> Jet3 {
+            let (rx, ry, rz, _w) = p;
             let cx = Jet3::constant(Field::from(self.center.0));
             let cy = Jet3::constant(Field::from(self.center.1));
             let cz = Jet3::constant(Field::from(self.center.2));
@@ -830,9 +834,10 @@ fn bench_scene3d(c: &mut Criterion) {
         inner: M,
     }
 
-    impl<M: Manifold<Output = Field>> Manifold for GrayToRgba<M> {
+    impl<M: ManifoldCompat<Field, Output = Field>> Manifold<Field4> for GrayToRgba<M> {
         type Output = Discrete;
-        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Discrete {
+        fn eval(&self, p: Field4) -> Discrete {
+            let (x, y, z, w) = p;
             let gray = self.inner.eval_raw(x, y, z, w);
             Discrete::pack(gray, gray, gray, Field::from(1.0))
         }
@@ -846,9 +851,10 @@ fn bench_scene3d(c: &mut Criterion) {
         height: f32,
     }
 
-    impl<M: Manifold<Output = Field>> Manifold for ScreenRemap<M> {
+    impl<M: ManifoldCompat<Field, Output = Field>> Manifold<Field4> for ScreenRemap<M> {
         type Output = Field;
-        fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Field {
+        fn eval(&self, p: Field4) -> Field {
+            let (x, y, z, w) = p;
             let scale = 2.0 / self.height;
             let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
             let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
@@ -859,7 +865,7 @@ fn bench_scene3d(c: &mut Criterion) {
                 z,
                 w,
             }
-            .eval()
+            .collapse()
         }
     }
 
@@ -1116,11 +1122,12 @@ fn bench_scheduler_comparison(c: &mut Criterion) {
         radius: f32,
     }
 
-    impl Manifold<Jet3> for SphereAt {
+    impl Manifold<Jet3_4> for SphereAt {
         type Output = Jet3;
 
         #[inline]
-        fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, _w: Jet3) -> Jet3 {
+        fn eval(&self, p: Jet3_4) -> Jet3 {
+            let (rx, ry, rz, _w) = p;
             let cx = Jet3::constant(Field::from(self.center.0));
             let cy = Jet3::constant(Field::from(self.center.1));
             let cz = Jet3::constant(Field::from(self.center.2));

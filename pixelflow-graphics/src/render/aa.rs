@@ -5,7 +5,7 @@
 //! the exact coverage without any smoothstep hacks.
 
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{BoxedManifold, Computational, Field, Manifold, ManifoldCompat, ManifoldExt};
+use pixelflow_core::{Computational, Field, Manifold, ManifoldCompat, ManifoldExt};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
@@ -19,16 +19,15 @@ const MIN_GRADIENT: f32 = 0.001;
 /// - Coverage is linear: 0.5 at edge, 1.0 at +0.5px inside, 0.0 at -0.5px outside
 ///
 /// No smoothstep. The gradient IS the antialiasing.
-pub fn aa_coverage<C, M>(manifold: M) -> BoxedManifold
+pub fn aa_coverage<C, M>(manifold: M) -> AACoverage<M, C>
 where
-    M: Manifold<C, Output = Jet2> + Clone + 'static,
+    M: ManifoldCompat<C, Output = Jet2> + Send + Sync,
     C: Computational + From<Field> + Send + Sync + 'static,
 {
     AACoverage {
         manifold,
         _phantom: std::marker::PhantomData,
     }
-    .boxed()
 }
 
 /// Antialiased coverage manifold using gradients from Jet2.
@@ -40,7 +39,7 @@ pub struct AACoverage<M, C = Field> {
 
 impl<C, M> Manifold<Field4> for AACoverage<M, C>
 where
-    M: ManifoldCompat<C, Output = Jet2>,
+    M: ManifoldCompat<C, Output = Jet2> + Send + Sync,
     C: Computational + From<Field> + Send + Sync + 'static,
 {
     type Output = Field;
@@ -61,6 +60,6 @@ where
         let coverage = result.val / (grad_mag + Field::from(MIN_GRADIENT)) + Field::from(0.5);
 
         // Clamp to [0, 1] - collapse AST to Field
-        coverage.max(0.0f32).min(1.0f32).at(x, y, z, w).eval()
+        coverage.max(0.0f32).min(1.0f32).at(x, y, z, w).collapse()
     }
 }

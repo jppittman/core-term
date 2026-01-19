@@ -129,9 +129,11 @@ mod tests {
         color: f32,
     }
 
-    impl Manifold for TestSurface {
+    type Field4 = (Field, Field, Field, Field);
+
+    impl Manifold<Field4> for TestSurface {
         type Output = Discrete;
-        fn eval_raw(&self, _x: Field, _y: Field, _z: Field, _w: Field) -> Discrete {
+        fn eval(&self, _p: Field4) -> Discrete {
             Discrete::pack(
                 Field::from(self.color),
                 Field::from(self.color),
