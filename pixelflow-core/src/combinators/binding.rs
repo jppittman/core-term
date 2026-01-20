@@ -140,6 +140,7 @@ pub struct Var<N>(PhantomData<N>);
 
 impl<N> Var<N> {
     /// Create a new variable reference.
+    #[must_use]
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -474,8 +475,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::LetExtended;
-    use crate::{Field, X, Y};
+
+    use crate::{Field, X};
 
     #[test]
     fn test_let_binding_new_style() {

@@ -21,6 +21,7 @@ pub struct MockEngine {
 impl MockEngine {
     /// Create a new MockEngine. Returns the engine instance (to inspect messages)
     /// and the handle (to pass to the actor under test).
+    #[must_use]
     pub fn new() -> Self {
         let messages = Arc::new(Mutex::new(Vec::new()));
 
@@ -44,6 +45,7 @@ impl MockEngine {
         }
     }
 
+    #[must_use]
     pub fn handle(&self) -> EngineActorHandle {
         self.handle.clone()
     }

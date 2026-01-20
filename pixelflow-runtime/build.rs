@@ -10,9 +10,11 @@ fn main() {
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS")
         .expect("CARGO_CFG_TARGET_OS is not set, cannot determine target platform.");
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH")
+        .expect("CARGO_CFG_TARGET_ARCH is not set, cannot determine target architecture.");
 
     // Determine which display driver to use
-    let display_driver = determine_display_driver(&target_os);
+    let display_driver = determine_display_driver(&target_os, &target_arch);
 
     // Emit appropriate cfg flag for the selected display driver
     match display_driver.as_str() {
@@ -41,7 +43,7 @@ fn main() {
     }
 }
 
-fn determine_display_driver(target_os: &str) -> String {
+fn determine_display_driver(target_os: &str, target_arch: &str) -> String {
     if let Ok(driver) = std::env::var("DISPLAY_DRIVER") {
         return driver.to_lowercase();
     }
@@ -56,17 +58,24 @@ fn determine_display_driver(target_os: &str) -> String {
     let has_web =
         cfg!(feature = "display_web") || std::env::var("CARGO_FEATURE_DISPLAY_WEB").is_ok();
 
-    if has_web {
+    // Only allow web driver if we're actually targeting wasm32
+    if has_web && target_arch == "wasm32" {
         return "web".to_string();
     }
-    if has_headless && !has_x11 && !has_cocoa {
-        return "headless".to_string();
+
+    // Only allow cocoa if on macOS
+    if has_cocoa && target_os == "macos" {
+        return "cocoa".to_string();
     }
-    if has_x11 && !has_headless {
+
+    // Only allow X11 if on Linux/BSD
+    if has_x11 && (target_os == "linux" || target_os.contains("bsd")) {
         return "x11".to_string();
     }
-    if has_cocoa {
-        return "cocoa".to_string();
+
+    // Fallback to headless if explicitly enabled (and no other platform-specific driver matched)
+    if has_headless {
+        return "headless".to_string();
     }
 
     match target_os {

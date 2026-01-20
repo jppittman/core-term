@@ -9,12 +9,14 @@ use std::hint::black_box;
 
 /// Prevent inlining so we can find this function in the ASM
 #[inline(never)]
+#[must_use]
 pub fn eval_quad_kernel(quad: &Quad<QuadKernel, LineKernel>, x: Field, y: Field) -> Field {
     quad.eval_raw(x, y, Field::from(0.0), Field::from(0.0))
 }
 
 /// Also test Line for comparison
 #[inline(never)]
+#[must_use]
 pub fn eval_line_kernel(
     line: &pixelflow_graphics::fonts::ttf::Line<LineKernel>,
     x: Field,

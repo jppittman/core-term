@@ -18,7 +18,7 @@ use pixelflow_macros::kernel;
 type Field4 = (Field, Field, Field, Field);
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
+    plane, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventData};
@@ -108,7 +108,7 @@ const RADIUS: f32 = 1.0;
 ///
 /// The animation offset is precomputed at the application level using
 /// sin(t * frequency) * amplitude, then baked into the sphere's center.
-fn build_scene_at_time(t: f32) -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
+fn build_scene_at_time(t: f32) -> impl Manifold<Output = Discrete> + Clone {
     // Compute the animated X offset
     let x_offset = (t * FREQUENCY).sin() * AMPLITUDE;
     let cx = BASE_CENTER.0 + x_offset;

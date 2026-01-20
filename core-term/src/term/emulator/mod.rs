@@ -64,6 +64,7 @@ pub struct TerminalEmulator {
 
 impl TerminalEmulator {
     /// Creates a new `TerminalEmulator`.
+    #[must_use]
     pub fn new(width: usize, height: usize) -> Self {
         let initial_attributes = Attributes::default(); // SGR Reset attributes
                                                         // Screen::new now gets scrollback_limit from CONFIG
@@ -267,6 +268,7 @@ impl TerminalEmulator {
         debug!("Selection cleared.");
     }
 
+    #[must_use]
     pub fn get_selected_text(&self) -> Option<String> {
         self.screen.get_selected_text()
     }

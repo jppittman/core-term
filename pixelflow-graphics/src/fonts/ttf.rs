@@ -19,23 +19,53 @@ type Field4 = (Field, Field, Field, Field);
 /// The 4D Jet2 domain type for autodifferentiation.
 type Jet4 = (Jet2, Jet2, Jet2, Jet2);
 
+/// Polymorphic constant that evaluates to Field or Jet2 depending on the domain.
+#[derive(Clone, Copy, Debug)]
+pub struct Constant(pub f32);
+
+impl Manifold<Field4> for Constant {
+    type Output = Field;
+    #[inline(always)]
+    fn eval(&self, _p: Field4) -> Field {
+        Field::from(self.0)
+    }
+}
+
+impl Manifold<Jet4> for Constant {
+    type Output = Jet2;
+    #[inline(always)]
+    fn eval(&self, _p: Jet4) -> Jet2 {
+        Jet2::constant(Field::from(self.0))
+    }
+}
+
+/// Helper to wrap f32 in Constant
+#[inline(always)]
+fn c(v: f32) -> Constant {
+    Constant(v)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Type Aliases for Concrete Kernel Types
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The concrete type returned by line_winding_field (captured via TAIT).
-pub type LineKernel = impl Manifold<Field4, Output = Field> + Clone;
+pub type LineKernel =
+    impl Manifold<Field4, Output = Field> + Manifold<Jet4, Output = Jet2> + Clone;
 
 /// The concrete type returned by quadratic_winding (captured via TAIT).
-pub type QuadKernel = impl Manifold<Field4, Output = Field> + Clone;
+pub type QuadKernel =
+    impl Manifold<Field4, Output = Field> + Manifold<Jet4, Output = Jet2> + Clone;
 
 // Defining uses for TAIT - these functions establish what the opaque types actually are
 #[doc(hidden)]
+#[must_use]
 pub fn __line_kernel_definer([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
     line_winding_field([[x0, y0], [x1, y1]])
 }
 
 #[doc(hidden)]
+#[must_use]
 pub fn __quad_kernel_definer([p0, p1, p2]: [[f32; 2]; 3]) -> QuadKernel {
     quadratic_winding(p0, p1, p2)
 }
@@ -168,35 +198,35 @@ fn quadratic_winding([x0, y0]: [f32; 2], [x1, y1]: [f32; 2], [x2, y2]: [f32; 2])
 
     // Layer 3 (innermost): X=screen_x, Y=t_plus, Z=t_minus
     let winding = {
-        let x_plus = Y * Y * ax + Y * bx + cx;
-        let x_minus = Z * Z * ax + Z * bx + cx;
-        let dy_plus = Y * (2.0 * ay) + by;
-        let dy_minus = Z * (2.0 * ay) + by;
+        let x_plus = Y * Y * c(ax) + Y * c(bx) + c(cx);
+        let x_minus = Z * Z * c(ax) + Z * c(bx) + c(cx);
+        let dy_plus = Y * c(2.0 * ay) + c(by);
+        let dy_minus = Z * c(2.0 * ay) + c(by);
 
         // Ray goes right from test point - count crossings to the right
-        let valid_plus = Y.ge(0.0) & Y.le(1.0) & X.lt(x_plus);
-        let valid_minus = Z.ge(0.0) & Z.le(1.0) & X.lt(x_minus);
+        let valid_plus = Y.ge(c(0.0)) & Y.le(c(1.0)) & X.lt(x_plus);
+        let valid_minus = Z.ge(c(0.0)) & Z.le(c(1.0)) & X.lt(x_minus);
 
         // In Y-down coordinates: dy > 0 means downward (above → below) → -1
-        let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
-        let sign_minus = dy_minus.gt(0.0).select(-1.0, 1.0);
+        let sign_plus = dy_plus.gt(c(0.0)).select(c(-1.0), c(1.0));
+        let sign_minus = dy_minus.gt(c(0.0)).select(c(-1.0), c(1.0));
 
-        valid_plus.select(sign_plus, 0.0) + valid_minus.select(sign_minus, 0.0)
+        valid_plus.select(sign_plus, c(0.0)) + valid_minus.select(sign_minus, c(0.0))
     };
 
     // Layer 2: X=screen_x, Y=screen_y, Z=sqrt_disc
     let with_roots = winding.at(
         X,
-        Z * inv_2a + neg_b_2a,  // t_plus
-        Z * -inv_2a + neg_b_2a, // t_minus
+        Z * c(inv_2a) + c(neg_b_2a),  // t_plus
+        Z * c(-inv_2a) + c(neg_b_2a), // t_minus
         W,
     );
 
     // Layer 1 (outermost): screen coords
-    let disc = Y * disc_slope + disc_const;
+    let disc = Y * c(disc_slope) + c(disc_const);
     disc.clone()
-        .ge(0.0)
-        .select(with_roots.at(X, Y, disc.max(0.0).sqrt(), W), 0.0)
+        .ge(c(0.0))
+        .select(with_roots.at(X, Y, disc.max(c(0.0)).sqrt(), W), c(0.0))
 }
 
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
@@ -211,6 +241,7 @@ pub struct Quad<K, D> {
 /// Create a quad with baked Loop-Blinn kernel from control points.
 /// The derivative of the quadratic is a line: dB/dt = 2[(1-t)(P1-P0) + t(P2-P1)]
 #[inline(always)]
+#[must_use]
 pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel, LineKernel> {
     let [p0, p1, p2] = points;
 
@@ -226,6 +257,7 @@ pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel, LineKernel> {
 
 /// Helper to create a quad with baked Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
+#[must_use]
 pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel, LineKernel> {
     make_quad(points)
 }
@@ -255,23 +287,27 @@ fn line_winding_field([[x0, y0], [x1, y1]]: [[f32; 2]; 2]) -> LineKernel {
 
     let y_min = y0.min(y1);
     let y_max = y0.max(y1);
-    let in_y = Y.ge(y_min) & Y.lt(y_max);
+    let in_y = Y.ge(c(y_min)) & Y.lt(c(y_max));
 
     // x_int = (Y - y0) * (dx / dy) + x0  (x position where line crosses current Y)
     // For degenerate horizontal lines (dy ≈ 0), use safe fallback
     let safe_dy = if dy.abs() < 1e-6 { 1.0 } else { dy };
-    let x_int = (Y - y0) * (dx / safe_dy) + x0;
+    let x_int = (Y - c(y0)) * c(dx / safe_dy) + c(x0);
     // In Y-down coordinates: dy > 0 means downward (above → below) → -1
     let dir = if dy > 0.0 { -1.0 } else { 1.0 };
 
     // Winding contribution: ray goes right from test point, counts crossings to the right
     // Degenerate horizontal lines (dy ≈ 0) are filtered out by multiplying by a mask
     let non_degenerate = if dy.abs() < 1e-6 { 0.0 } else { 1.0 };
-    in_y.select(X.lt(x_int).select(dir * non_degenerate, 0.0), 0.0f32)
+    in_y.select(
+        X.lt(x_int).select(c(dir * non_degenerate), c(0.0)),
+        c(0.0f32),
+    )
 }
 
 /// Create a line with baked winding kernel from control points.
 #[inline(always)]
+#[must_use]
 pub fn make_line(points: [[f32; 2]; 2]) -> Line<LineKernel> {
     Line {
         kernel: line_winding_field(points),
@@ -304,6 +340,7 @@ pub struct OptLine {
 impl OptLine {
     /// Create from two points. Returns None for horizontal lines.
     #[inline(always)]
+    #[must_use]
     pub fn new([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
         let dy = y1 - y0;
         if dy.abs() < 1e-6 {
@@ -347,6 +384,7 @@ pub struct OptQuad {
 impl OptQuad {
     /// Create from three control points.
     #[inline(always)]
+    #[must_use]
     pub fn new([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> Self {
         let ay = y0 - 2.0 * y1 + y2;
         let by = 2.0 * (y1 - y0);
@@ -789,8 +827,8 @@ enum Loca<'a> {
 impl Loca<'_> {
     fn get(&self, i: usize) -> Option<usize> {
         match self {
-            Self::Short(d) => Some(R(*d, i * 2).u16()? as usize * 2),
-            Self::Long(d) => Some(R(*d, i * 4).u32()? as usize),
+            Self::Short(d) => Some(R(d, i * 2).u16()? as usize * 2),
+            Self::Long(d) => Some(R(d, i * 4).u32()? as usize),
         }
     }
 }
@@ -804,24 +842,24 @@ impl Cmap<'_> {
     fn lookup(&self, c: u32) -> Option<u16> {
         match self {
             Self::Fmt4(d) if c <= 0xFFFF => {
-                let n = R(*d, 6).u16()? as usize / 2;
+                let n = R(d, 6).u16()? as usize / 2;
                 (0..n).find_map(|i| {
-                    let end = R(*d, 14 + i * 2).u16()?;
+                    let end = R(d, 14 + i * 2).u16()?;
                     if c as u16 > end {
                         return None;
                     }
-                    let start = R(*d, 16 + n * 2 + i * 2).u16()?;
+                    let start = R(d, 16 + n * 2 + i * 2).u16()?;
                     if (c as u16) < start {
                         return Some(0);
                     }
-                    let delta = R(*d, 16 + n * 4 + i * 2).i16()?;
-                    let range = R(*d, 16 + n * 6 + i * 2).u16()?;
+                    let delta = R(d, 16 + n * 4 + i * 2).i16()?;
+                    let range = R(d, 16 + n * 6 + i * 2).u16()?;
                     Some(if range == 0 {
                         (c as i16).wrapping_add(delta) as u16
                     } else {
                         let off =
                             16 + n * 6 + i * 2 + range as usize + (c as u16 - start) as usize * 2;
-                        let g = R(*d, off).u16()?;
+                        let g = R(d, off).u16()?;
                         if g == 0 {
                             0
                         } else {
@@ -830,11 +868,11 @@ impl Cmap<'_> {
                     })
                 })
             }
-            Self::Fmt12(d) => (0..R(*d, 12).u32()? as usize).find_map(|i| {
+            Self::Fmt12(d) => (0..R(d, 12).u32()? as usize).find_map(|i| {
                 let (s, e, g) = (
-                    R(*d, 16 + i * 12).u32()?,
-                    R(*d, 20 + i * 12).u32()?,
-                    R(*d, 24 + i * 12).u32()?,
+                    R(d, 16 + i * 12).u32()?,
+                    R(d, 20 + i * 12).u32()?,
+                    R(d, 24 + i * 12).u32()?,
                 );
                 (c >= s && c <= e).then(|| (g + c - s) as u16)
             }),
@@ -891,14 +929,14 @@ impl<'a> Kern<'a> {
 
                 while lo < hi {
                     let mid = (lo + hi) / 2;
-                    let pair = ((R(*data, mid * 6).u16().unwrap_or(0) as u32) << 16)
-                        | (R(*data, mid * 6 + 2).u16().unwrap_or(0) as u32);
+                    let pair = ((R(data, mid * 6).u16().unwrap_or(0) as u32) << 16)
+                        | (R(data, mid * 6 + 2).u16().unwrap_or(0) as u32);
 
                     match pair.cmp(&key) {
                         std::cmp::Ordering::Less => lo = mid + 1,
                         std::cmp::Ordering::Greater => hi = mid,
                         std::cmp::Ordering::Equal => {
-                            return R(*data, mid * 6 + 4).i16().unwrap_or(0)
+                            return R(data, mid * 6 + 4).i16().unwrap_or(0)
                         }
                     }
                 }
@@ -928,6 +966,7 @@ pub struct Font<'a> {
 }
 
 impl<'a> Font<'a> {
+    #[must_use]
     pub fn parse(data: &'a [u8]) -> Option<Self> {
         // TTF header: sfntVersion(4) + numTables(2) + searchRange(2) + entrySelector(2) + rangeShift(2) = 12 bytes
         // Table record: tag(4) + checksum(4) + offset(4) + length(4) = 16 bytes
@@ -995,16 +1034,19 @@ impl<'a> Font<'a> {
     /// Use this when you need the glyph ID to batch multiple operations,
     /// avoiding redundant CMAP lookups in tight loops.
     #[inline]
+    #[must_use]
     pub fn cmap_lookup(&self, ch: char) -> Option<u16> {
         self.cmap.lookup(ch as u32)
     }
 
+    #[must_use]
     pub fn glyph(&self, ch: char) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
     /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
+    #[must_use]
     pub fn glyph_by_id(
         &self,
         id: u16,
@@ -1012,6 +1054,7 @@ impl<'a> Font<'a> {
         self.compile(id)
     }
 
+    #[must_use]
     pub fn glyph_scaled(
         &self,
         ch: char,
@@ -1024,6 +1067,7 @@ impl<'a> Font<'a> {
     /// Get scaled glyph by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
+    #[must_use]
     pub fn glyph_scaled_by_id(
         &self,
         id: u16,
@@ -1045,6 +1089,7 @@ impl<'a> Font<'a> {
         .into())))
     }
 
+    #[must_use]
     pub fn advance(&self, ch: char) -> Option<f32> {
         let id = self.cmap.lookup(ch as u32)?;
         self.advance_by_id(id)
@@ -1054,11 +1099,13 @@ impl<'a> Font<'a> {
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
     #[inline]
+    #[must_use]
     pub fn advance_by_id(&self, id: u16) -> Option<f32> {
         let i = (id as usize).min(self.num_hm.saturating_sub(1));
         Some(R(self.data, self.hmtx + i * 4).u16()? as f32)
     }
 
+    #[must_use]
     pub fn advance_scaled(&self, ch: char, size: f32) -> Option<f32> {
         Some(self.advance(ch)? * size / self.units_per_em as f32)
     }
@@ -1066,11 +1113,13 @@ impl<'a> Font<'a> {
     /// Get scaled advance width by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
+    #[must_use]
     pub fn advance_scaled_by_id(&self, id: u16, size: f32) -> Option<f32> {
         Some(self.advance_by_id(id)? * size / self.units_per_em as f32)
     }
 
     /// Get kerning adjustment between two characters in font units.
+    #[must_use]
     pub fn kern(&self, left: char, right: char) -> f32 {
         let left_id = self.cmap.lookup(left as u32).unwrap_or(0);
         let right_id = self.cmap.lookup(right as u32).unwrap_or(0);
@@ -1081,11 +1130,13 @@ impl<'a> Font<'a> {
     ///
     /// Avoids redundant CMAP lookups when you already have both glyph IDs.
     #[inline]
+    #[must_use]
     pub fn kern_by_ids(&self, left_id: u16, right_id: u16) -> f32 {
         self.kern.get(left_id, right_id) as f32
     }
 
     /// Get kerning adjustment between two characters, scaled to size.
+    #[must_use]
     pub fn kern_scaled(&self, left: char, right: char, size: f32) -> f32 {
         self.kern(left, right) * size / self.units_per_em as f32
     }

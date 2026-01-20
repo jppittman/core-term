@@ -150,6 +150,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Field4> for ColorScree
 
 /// Unit sphere centered at origin.
 /// Solves |t * ray| = 1  =>  t = 1 / |ray|
+#[must_use]
 pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
     kernel!(|| -> Jet3 {
         let len_sq = X * X + Y * Y + Z * Z;
@@ -159,6 +160,7 @@ pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
 
 /// Horizontal plane at y = height.
 /// Solves P.y = height => t * ry = height => t = height / ry
+#[must_use]
 pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
     kernel!(|h: f32| -> Jet3 { h / Y })(height)
 }
@@ -1005,6 +1007,7 @@ impl Manifold<Jet3_4> for Checker {
 /// Simple Sky Gradient based on Y direction.
 ///
 /// Uses Lift to project Jet3 → Field (discards derivatives - sky doesn't need AA).
+#[must_use]
 pub fn sky() -> Lift<impl Manifold<Field4, Output = Field> + Copy> {
     Lift(kernel!(|| {
         let t = (Y * 0.5 + 0.5).max(0.0).min(1.0);

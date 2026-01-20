@@ -20,6 +20,7 @@ pub struct TerminalAppSender {
 }
 
 impl TerminalAppSender {
+    #[must_use]
     pub fn new(
         handle: ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
     ) -> Self {
@@ -749,13 +750,13 @@ struct TerminalAppParamsRegistered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::commands::AnsiCommand;
+
     use crate::io::PtyCommand;
-    use crate::term::{EmulatorInput, TerminalEmulator, UserInputAction};
-    use actor_scheduler::{Actor, ActorStatus};
+    use crate::term::TerminalEmulator;
+    use actor_scheduler::Actor;
     use pixelflow_runtime::input::{KeySymbol, Modifiers};
     use pixelflow_runtime::{EngineEventControl, EngineEventManagement, WindowId};
-    use std::sync::mpsc::{Receiver, SyncSender};
+    use std::sync::mpsc::Receiver;
 
     // Define a DummyPixel struct for testing
     #[derive(Debug, Clone, Copy, Default, PartialEq)]

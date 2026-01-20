@@ -1,7 +1,7 @@
 use actor_scheduler::{
     Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
 };
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -32,7 +32,10 @@ impl Actor<(), (), ()> for LatencyActor {
     }
 
     fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        Ok(hint)
+        match hint {
+            SystemStatus::Idle => Ok(ActorStatus::Idle),
+            SystemStatus::Busy => Ok(ActorStatus::Busy),
+        }
     }
 }
 

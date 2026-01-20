@@ -176,8 +176,10 @@ use std::time::Duration;
 ///
 /// Configurable shutdown behavior per actor via `ShutdownMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ShutdownMode {
     /// Exit immediately, drop all pending messages (default, current behavior)
+    #[default]
     Immediate,
 
     /// Drain control+management lanes, drop data
@@ -189,11 +191,6 @@ pub enum ShutdownMode {
     DrainAll { timeout: std::time::Duration },
 }
 
-impl Default for ShutdownMode {
-    fn default() -> Self {
-        ShutdownMode::Immediate
-    }
-}
 
 #[derive(Debug)]
 pub enum Message<D, C, M> {
@@ -462,6 +459,7 @@ where
 /// # Arguments
 /// * `data_buffer_size` - Size of bounded data buffer
 /// * `wake_handler` - Optional wake handler for platform event loops
+#[must_use]
 pub fn create_actor<D, C, M>(
     data_buffer_size: usize,
     wake_handler: Option<Arc<dyn WakeHandler>>,
@@ -664,7 +662,6 @@ impl<D, C, M> ActorHandle<D, C, M> {
     ///
     /// # Errors
     /// Returns `Err` only if the receiver has been dropped.
-    #[must_use]
     pub fn send<T: Into<Message<D, C, M>>>(&self, msg: T) -> Result<(), SendError> {
         let msg = msg.into();
         self.send_message(msg)
@@ -796,24 +793,14 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         A: Actor<D, C, M>,
     {
         // Drain control completely
-        loop {
-            match Self::drain_channel(&self.rx_control, usize::MAX, |msg| {
-                actor.handle_control(msg)
-            })? {
-                DrainStatus::More => continue,
-                DrainStatus::Empty | DrainStatus::Disconnected => break,
-            }
-        }
+        while let DrainStatus::More = Self::drain_channel(&self.rx_control, usize::MAX, |msg| {
+            actor.handle_control(msg)
+        })? {}
 
         // Drain management completely
-        loop {
-            match Self::drain_channel(&self.rx_mgmt, usize::MAX, |msg| {
-                actor.handle_management(msg)
-            })? {
-                DrainStatus::More => continue,
-                DrainStatus::Empty | DrainStatus::Disconnected => break,
-            }
-        }
+        while let DrainStatus::More = Self::drain_channel(&self.rx_mgmt, usize::MAX, |msg| {
+            actor.handle_management(msg)
+        })? {}
 
         Ok(())
     }
@@ -959,6 +946,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
+    #[must_use]
     pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
         assert!(
             data_buffer_size > 0,
@@ -1009,6 +997,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
+    #[must_use]
     pub fn new_with_wake_handler(
         data_burst_limit: usize,
         data_buffer_size: usize,
@@ -1065,6 +1054,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// # Returns
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
+    #[must_use]
     pub fn new_with_shutdown_mode(
         data_burst_limit: usize,
         data_buffer_size: usize,

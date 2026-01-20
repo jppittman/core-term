@@ -4,7 +4,7 @@
 //! not runtime performance. They help identify bottlenecks in the compiler frontend.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold, X, Y};
+use pixelflow_core::{Field, ManifoldCompat, X, Y};
 use pixelflow_macros::kernel;
 
 // ============================================================================
@@ -76,7 +76,7 @@ fn bench_kernel_evaluation(c: &mut Criterion) {
 
     group.bench_function("zero_params_eval", |b| {
         let k = kernel!(|| X + Y);
-        b.iter(|| black_box(k()(black_box(x), black_box(y), z, w)))
+        b.iter(|| black_box(k().eval_raw(black_box(x), black_box(y), z, w)))
     });
 
     group.bench_function("one_param_eval", |b| {
@@ -136,7 +136,7 @@ fn bench_macro_vs_manual(c: &mut Criterion) {
         let r = 1.5f32;
         let dx = X - cx;
         let dy = Y - cy;
-        let manual = (dx * dx + dy * dy).sqrt() - r;
+        let manual = (dx.clone() * dx + dy.clone() * dy).sqrt() - r;
 
         b.iter(|| black_box(manual.eval_raw(black_box(x), black_box(y), z, w)))
     });
@@ -171,13 +171,13 @@ fn bench_type_depth(c: &mut Criterion) {
         b.iter(|| black_box(m.eval_raw(black_box(x), black_box(y), z, w)))
     });
 
-    group.bench_function("depth_4", |b| {
+    group.bench_function("depth_4", |bencher| {
         let a = X + Y;
         let b = X - Y;
         let c = X * X;
         let d = Y * Y;
         let m = (a * b + c) - (c * d + a);
-        b.iter(|| black_box(m.eval_raw(black_box(x), black_box(y), z, w)))
+        bencher.iter(|| black_box(m.eval_raw(black_box(x), black_box(y), z, w)))
     });
 
     group.finish();

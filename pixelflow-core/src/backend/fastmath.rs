@@ -53,6 +53,7 @@ impl FastMathGuard {
     ///
     /// Modifies global CPU floating-point control state. See [`FastMathGuard`] docs.
     #[inline]
+    #[must_use]
     pub unsafe fn new() -> Self {
         #[cfg(target_arch = "x86_64")]
         {

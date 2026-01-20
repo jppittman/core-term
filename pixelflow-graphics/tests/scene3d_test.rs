@@ -15,8 +15,8 @@ use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
-    Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
-    Reflect, ScreenToDir, sky, Surface,
+    plane, sky, Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
+    Reflect, ScreenToDir, Surface,
 };
 use std::fs::File;
 use std::io::Write;
@@ -403,7 +403,7 @@ fn test_mullet_vs_3channel_comparison() {
             let cell_z = z.val.floor().constant();
             let sum = (cell_x + cell_z).constant();
             let half = (sum * Field::from(0.5)).constant();
-            let fract_half = (half.clone() - half.floor()).constant();
+            let fract_half = (half - half.floor()).constant();
             let is_even = fract_half.abs().lt(Field::from(0.25));
 
             let (a, b) = match self.channel {
@@ -414,7 +414,7 @@ fn test_mullet_vs_3channel_comparison() {
 
             let color_a = Field::from(a);
             let color_b = Field::from(b);
-            let base_color = is_even.clone().select(color_a, color_b);
+            let base_color = is_even.select(color_a, color_b);
 
             let fx = (x.val - cell_x).constant();
             let fz = (z.val - cell_z).constant();

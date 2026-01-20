@@ -177,14 +177,35 @@ pub use manifold::*;
 pub use numeric::Computational;
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
+pub use ops::derivative::{
+    Antialias2D,
+    Antialias3D,
+    Curvature2D,
+    DX,
+    DXX,
+    DXY,
+    DY,
+    DYY,
+    DZ,
+    // Simple accessor combinators and convenience functions
+    DxOf,
+    DxxOf,
+    DxyOf,
+    DyOf,
+    DyyOf,
+    DzOf,
+    GradientMag2D,
+    GradientMag3D,
+    HasDerivatives,
+    HasDz,
+    HasHessian,
+    Normalized2D,
+    Normalized3D,
+    V,
+    ValOf,
+};
 pub use ops::logic::*;
 pub use ops::unary::*;
-pub use ops::derivative::{
-    Antialias2D, Antialias3D, Curvature2D, GradientMag2D, GradientMag3D, HasDerivatives, HasDz,
-    HasHessian, Normalized2D, Normalized3D,
-    // Simple accessor combinators and convenience functions
-    DxOf, DxxOf, DxyOf, DyOf, DyyOf, DzOf, ValOf, DX, DXX, DXY, DY, DYY, DZ, V,
-};
 pub use variables::*;
 pub use zst::Zst;
 
@@ -404,6 +425,7 @@ impl Field {
     /// This is the efficient way to create sequential x-coordinates
     /// for rasterization loops.
     #[inline(always)]
+    #[must_use]
     pub fn sequential(start: f32) -> Self {
         Self(NativeSimd::sequential(start))
     }
@@ -430,6 +452,7 @@ impl Field {
 
     /// Check if any lane is non-zero.
     #[inline(always)]
+    #[must_use]
     pub fn any(&self) -> bool {
         // Convert float representation to native mask, then check
         self.0.float_to_mask().any()
@@ -437,6 +460,7 @@ impl Field {
 
     /// Check if all lanes are non-zero.
     #[inline(always)]
+    #[must_use]
     pub fn all(&self) -> bool {
         // Convert float representation to native mask, then check
         self.0.float_to_mask().all()
@@ -444,6 +468,7 @@ impl Field {
 
     /// Less than comparison (returns mask as Field).
     #[inline(always)]
+    #[must_use]
     pub fn lt(self, rhs: Self) -> Self {
         // Returns native mask, convert back to float representation
         Self(NativeSimd::mask_to_float(self.0.cmp_lt(rhs.0)))
@@ -451,24 +476,28 @@ impl Field {
 
     /// Less than or equal (returns mask as Field).
     #[inline(always)]
+    #[must_use]
     pub fn le(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_le(rhs.0)))
     }
 
     /// Greater than comparison (returns mask as Field).
     #[inline(always)]
+    #[must_use]
     pub fn gt(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_gt(rhs.0)))
     }
 
     /// Greater than or equal (returns mask as Field).
     #[inline(always)]
+    #[must_use]
     pub fn ge(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_ge(rhs.0)))
     }
 
     /// Square root.
     #[inline(always)]
+    #[must_use]
     pub fn sqrt(self) -> Self {
         self.sqrt_fast()
     }
@@ -483,6 +512,7 @@ impl Field {
     ///
     /// Handles x=0 correctly (returns 0, not NaN from 0 * ∞).
     #[inline(always)]
+    #[must_use]
     pub fn sqrt_fast(self) -> Self {
         let rsqrt = self.rsqrt();
         // sqrt(x) = x * (1/sqrt(x))
@@ -499,18 +529,21 @@ impl Field {
 
     /// Absolute value.
     #[inline(always)]
+    #[must_use]
     pub fn abs(self) -> Self {
         Self(self.0.simd_abs())
     }
 
     /// Element-wise minimum.
     #[inline(always)]
+    #[must_use]
     pub fn min(self, rhs: Self) -> Self {
         Self(self.0.simd_min(rhs.0))
     }
 
     /// Element-wise maximum.
     #[inline(always)]
+    #[must_use]
     pub fn max(self, rhs: Self) -> Self {
         Self(self.0.simd_max(rhs.0))
     }
@@ -589,6 +622,7 @@ impl Field {
     /// Uses hardware getexp/getmant on AVX-512, bit manipulation + Remez polynomial elsewhere.
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     #[inline(always)]
+    #[must_use]
     pub fn log2(self) -> Self {
         Self(self.0.simd_log2())
     }
@@ -598,12 +632,14 @@ impl Field {
     /// Uses polynomial approximation with efficient 2^n scaling.
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     #[inline(always)]
+    #[must_use]
     pub fn exp2(self) -> Self {
         Self(self.0.simd_exp2())
     }
 
     /// Floor (round toward negative infinity).
     #[inline(always)]
+    #[must_use]
     pub fn floor(self) -> Self {
         Self(self.0.simd_floor())
     }
@@ -626,6 +662,7 @@ impl Field {
     /// Uses SIMD rsqrt + one NR iteration for near-full f32 precision.
     /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
     #[inline(always)]
+    #[must_use]
     pub fn rsqrt(self) -> Self {
         Self(self.0.simd_rsqrt())
     }
@@ -705,33 +742,19 @@ impl Discrete {
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
+    #[must_use]
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
         #[cfg(target_feature = "avx512f")]
         {
-            Self(backend::x86::U32x16::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x16::pack_rgba(r.0, g.0, b.0, a.0))
         }
         #[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
         {
-            Self(backend::x86::U32x8::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x8::pack_rgba(r.0, g.0, b.0, a.0))
         }
         #[cfg(all(not(target_feature = "avx512f"), not(target_feature = "avx2")))]
         {
-            Self(backend::x86::U32x4::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x4::pack_rgba(r.0, g.0, b.0, a.0))
         }
     }
 
@@ -762,6 +785,7 @@ impl Discrete {
     ///
     /// The mask is interpreted bitwise from the Field representation.
     #[inline(always)]
+    #[must_use]
     pub fn select(mask: Field, if_true: Self, if_false: Self) -> Self {
         use core::ops::{BitAnd, BitOr, Not};
         let mask_bits: NativeU32Simd = unsafe { core::mem::transmute(mask.0) };

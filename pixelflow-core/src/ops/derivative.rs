@@ -24,10 +24,10 @@
 //! let aa = Antialias2D(sdf);  // Evaluates sdf ONCE, divides by gradient mag
 //! ```
 
-use crate::combinators::binding::{Let, Var, N0, N1, N2};
-use crate::ext::ManifoldExt;
 use crate::Field;
 use crate::Manifold;
+use crate::combinators::binding::{Let, N0, N1, N2, Var};
+use crate::ext::ManifoldExt;
 
 // ============================================================================
 // Traits for Derivative Access
@@ -350,7 +350,11 @@ where
         let expr = v0 / (v1 * v1 + v2 * v2 + v3 * v3).sqrt();
 
         // Bind and eval
-        Let::new(dz_val, Let::new(dy_val, Let::new(dx_val, Let::new(val, expr)))).eval(p)
+        Let::new(
+            dz_val,
+            Let::new(dy_val, Let::new(dx_val, Let::new(val, expr))),
+        )
+        .eval(p)
     }
 }
 
@@ -459,11 +463,11 @@ where
         let expr = numerator / denominator;
 
         // Bind all values (outermost = deepest Var index)
-        Let::new(fyy,
-            Let::new(fxy,
-                Let::new(fxx,
-                    Let::new(fy,
-                        Let::new(fx, expr))))).eval(p)
+        Let::new(
+            fyy,
+            Let::new(fxy, Let::new(fxx, Let::new(fy, Let::new(fx, expr)))),
+        )
+        .eval(p)
     }
 }
 

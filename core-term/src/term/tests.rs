@@ -794,7 +794,7 @@ fn test_snapshot_with_selection() {
     let lines = vec![
         SnapshotLine {
             is_dirty: true,
-            cells: std::sync::Arc::new(vec![default_glyph.clone(); num_cols])
+            cells: std::sync::Arc::new(vec![default_glyph; num_cols])
         };
         num_rows
     ];
@@ -1348,7 +1348,7 @@ mod selection_logic_tests {
 #[cfg(test)]
 mod get_selected_text_tests {
     use super::*;
-    use crate::term::snapshot::{Point, SelectionRange};
+
 
     #[test]
     fn test_get_selected_text_no_selection() {

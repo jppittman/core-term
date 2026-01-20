@@ -49,14 +49,14 @@ mod tests {
         // Check select with native mask
         let t = F32x4::splat(10.0);
         let f = F32x4::splat(20.0);
-        let sel = F32x4::select(lt, t, f);
+        let sel = F32x4::simd_select(lt, t, f);
         let mut out = [0.0; 4];
         sel.store(&mut out);
         assert_eq!(out, [10.0, 10.0, 10.0, 10.0]);
 
         let gt = a.cmp_gt(b);
         assert!(!gt.any());
-        let sel2 = F32x4::select(gt, t, f);
+        let sel2 = F32x4::simd_select(gt, t, f);
         sel2.store(&mut out);
         assert_eq!(out, [20.0, 20.0, 20.0, 20.0]);
     }
@@ -74,17 +74,17 @@ mod tests {
     #[test]
     fn test_sse2_math() {
         let a = F32x4::splat(4.0);
-        let sqrt = a.sqrt();
+        let sqrt = a.simd_sqrt();
         let mut out = [0.0; 4];
         sqrt.store(&mut out);
         assert_eq!(out, [2.0, 2.0, 2.0, 2.0]);
 
         let b = F32x4::splat(-2.0);
-        let abs = b.abs();
+        let abs = b.simd_abs();
         abs.store(&mut out);
         assert_eq!(out, [2.0, 2.0, 2.0, 2.0]);
 
-        let min = a.min(b);
+        let min = a.simd_min(b);
         min.store(&mut out);
         assert_eq!(out, [-2.0, -2.0, -2.0, -2.0]);
     }

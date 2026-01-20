@@ -17,15 +17,25 @@
 //! `Div<L, Sqrt<R>>`. This uses fast rsqrt (~3 cycles) instead of
 //! sqrt (~12 cycles) + div (~12 cycles).
 
+use super::derivative::{
+    Antialias2D,
+    Antialias3D,
+    Curvature2D,
+    // Simple accessor combinators
+    DxOf,
+    DxxOf,
+    DxyOf,
+    DyOf,
+    DyyOf,
+    DzOf,
+    GradientMag2D,
+    GradientMag3D,
+    ValOf,
+};
+use super::logic::{And, Or};
 use super::{
     Abs, Add, AddMasked, Cos, Div, Exp2, Floor, Ge, Gt, Le, Log2, Lt, Max, Min, Mul, MulAdd,
     MulRecip, MulRsqrt, Neg, Rsqrt, Sin, Sqrt, Sub,
-};
-use super::logic::{And, Or};
-use super::derivative::{
-    Antialias2D, Antialias3D, Curvature2D, GradientMag2D, GradientMag3D,
-    // Simple accessor combinators
-    DxOf, DxxOf, DxyOf, DyOf, DyyOf, DzOf, ValOf,
 };
 use crate::Field;
 use crate::combinators::Select;

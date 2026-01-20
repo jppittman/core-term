@@ -179,7 +179,7 @@ mod manifold_tests {
         // Combinators must be composable
         let _scaled =
             scale(X, 2.0).eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
-        let _ref_expr = (&X).eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
+        let _ref_expr = X.eval_raw(test_coords.0, test_coords.1, test_coords.2, test_coords.3);
     }
 
     #[test]
@@ -975,7 +975,7 @@ mod clone_copy_tests {
     #[test]
     fn test_field_clone() {
         let a = Field::from(1.0);
-        let b = a.clone();
+        let b = a;
         let _ = a + b;
     }
 
@@ -997,7 +997,7 @@ mod clone_copy_tests {
     #[test]
     fn test_axis_clone() {
         let axis = Axis::X;
-        let axis2 = axis.clone();
+        let axis2 = axis;
         assert_eq!(axis, axis2);
     }
 }

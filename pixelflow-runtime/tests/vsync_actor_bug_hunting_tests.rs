@@ -330,7 +330,7 @@ fn clock_thread_stops_when_channel_closed() {
     // We can't easily test the real clock thread, but we can verify
     // the pattern works with our mock.
 
-    let (tx, mut rx) =
+    let (tx, rx) =
         ActorScheduler::<RenderedResponse, VsyncCommand, VsyncManagement>::new(10, 100);
 
     // Simulate clock thread behavior in a thread
@@ -461,16 +461,13 @@ fn fps_request_handles_dropped_receiver() {
                 Ok(())
             }
             fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
-                match cmd {
-                    VsyncCommand::RequestCurrentFPS(sender) => {
-                        let result = sender.send(60.0);
-                        if result.is_err() {
-                            self.0.lock().unwrap().push("fps_send_failed".to_string());
-                        } else {
-                            self.0.lock().unwrap().push("fps_sent".to_string());
-                        }
+                if let VsyncCommand::RequestCurrentFPS(sender) = cmd {
+                    let result = sender.send(60.0);
+                    if result.is_err() {
+                        self.0.lock().unwrap().push("fps_send_failed".to_string());
+                    } else {
+                        self.0.lock().unwrap().push("fps_sent".to_string());
                     }
-                    _ => {}
                 }
                 Ok(())
             }

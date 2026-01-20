@@ -10,7 +10,7 @@ use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
+    plane, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
 
 /// Sphere at given center with radius (local to this test).
@@ -127,7 +127,7 @@ fn test_sphere_on_floor() {
 /// Test with solid gray material (non-reflective)
 #[test]
 fn test_sphere_on_matte_floor() {
-    use pixelflow_core::jet::Jet3;
+
 
     const W: usize = 400;
     const H: usize = 300;

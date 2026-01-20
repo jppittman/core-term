@@ -121,6 +121,7 @@ pub struct RandomFourierFeature {
 
 impl RandomFourierFeature {
     /// Create new random Fourier features.
+    #[must_use]
     pub fn new(frequencies: Vec<f32>) -> Self {
         let num_features = frequencies.len() * 2;
         Self {
@@ -158,6 +159,7 @@ pub struct HarmonicAttention<const NUM_COEFFS: usize> {
 
 impl<const NUM_COEFFS: usize> HarmonicAttention<NUM_COEFFS> {
     /// Create a new harmonic attention layer.
+    #[must_use]
     pub fn new(value_dim: usize) -> Self {
         Self {
             accumulated: (0..value_dim).map(|_| ShCoeffs::zero()).collect(),
@@ -222,6 +224,7 @@ impl ShFeatureMap<9> {
     ///
     /// Returns the 9-coefficient SH vector for band 2.
     #[inline(always)]
+    #[must_use]
     pub fn project(x: Field, y: Field, z: Field) -> [Field; 9] {
         use pixelflow_core::SH_NORM;
 
@@ -375,7 +378,7 @@ mod tests {
     #[test]
     fn test_elu_feature_default() {
         let f1 = EluFeature;
-        let f2 = EluFeature::default();
+        let f2 = EluFeature;
         // Both should work the same
         let _ = f1.apply(Field::from(1.0));
         let _ = f2.apply(Field::from(1.0));

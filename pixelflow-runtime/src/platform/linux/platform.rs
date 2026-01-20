@@ -106,7 +106,7 @@ impl PlatformOps for LinuxOps {
                 );
                 match X11Window::new(&settings, &self.waker) {
                     Ok(window) => {
-                        let id = WindowId(window.window as u64);
+                        let id = WindowId(window.window);
                         // Allocate initial frame buffer
                         let frame = Frame::<LinuxPixel>::new(window.width, window.height);
 
@@ -141,7 +141,7 @@ impl PlatformOps for LinuxOps {
 
     fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, actor_scheduler::HandlerError> {
         if let Some(window) = &mut self.window {
-            let window_id = WindowId(window.window as u64);
+            let window_id = WindowId(window.window);
 
             // Poll for X11 events
             // If Busy, check pending without blocking.

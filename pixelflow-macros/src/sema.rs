@@ -220,20 +220,13 @@ impl SemanticAnalyzer {
     /// Known methods from ManifoldExt and standard numeric operations.
     const KNOWN_METHODS: &'static [&'static str] = &[
         // ManifoldExt methods
-        "abs", "sqrt", "floor", "ceil", "round", "fract",
-        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-        "exp", "ln", "log2", "log10", "pow",
-        "min", "max", "clamp",
-        "hypot", "rsqrt", "recip",
-        // Comparison methods
-        "lt", "le", "gt", "ge", "eq", "ne",
-        // Selection
-        "select",
-        // Coordinate warp (contramap)
-        "at",
-        // Field/Jet specific
-        "constant", "collapse",
-        // Unary
+        "abs", "sqrt", "floor", "ceil", "round", "fract", "sin", "cos", "tan", "asin", "acos",
+        "atan", "atan2", "exp", "ln", "log2", "log10", "pow", "min", "max", "clamp", "hypot",
+        "rsqrt", "recip", // Comparison methods
+        "lt", "le", "gt", "ge", "eq", "ne",     // Selection
+        "select", // Coordinate warp (contramap)
+        "at",     // Field/Jet specific
+        "constant", "collapse", // Unary
         "neg",
     ];
 
