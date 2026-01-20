@@ -590,11 +590,13 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                         }
                         EmulatorAction::ResizePty { cols, rows } => {
                             // Send resize command to PTY write thread
-                            if let Err(e) = self.pty_tx.send(PtyCommand::Resize { cols, rows }) {
+                            if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
+                                cols,
+                                rows,
+                            })) {
                                 log::warn!("Failed to send PTY resize command: {}", e);
                             }
                         }
-                    }
                 }
             }
             EngineEventManagement::MouseClick { button, x, y } => {
@@ -829,10 +831,10 @@ mod tests {
         let cmd = pty_rx.try_recv().expect("Should receive resize command");
         assert_eq!(
             cmd,
-            PtyCommand::Resize {
+            PtyCommand::Resize(crate::io::Resize {
                 cols: 100,
                 rows: 50
-            },
+            }),
             "PTY resize command should match new dimensions"
         );
     }
