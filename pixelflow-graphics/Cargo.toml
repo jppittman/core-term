@@ -22,6 +22,9 @@ pixelflow-macros = { path = "../pixelflow-macros" }
 # Actor system for async rendering
 actor-scheduler = { path = "../actor-scheduler" }
 
+# Optional FreeType for benchmarking comparisons
+freetype-rs = { version = "0.32", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -30,22 +33,14 @@ windows-sys = { version = "0.59", features = ["Win32_System_Memory", "Win32_Foun
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-freetype-rs = "0.32"
 tempfile = "3.10"
 pixelflow-macros = { path = "../pixelflow-macros" }
 
 [[bench]]
-name = "graphics_benches"
-harness = false
-
-[[bench]]
-name = "font_deathmatch"
-harness = false
-
-[[bench]]
-name = "loop_blinn_comparison"
+name = "font_rendering"
 harness = false
 
 [features]
 default = []
+freetype = ["dep:freetype-rs"]
 serde = ["dep:serde"]
