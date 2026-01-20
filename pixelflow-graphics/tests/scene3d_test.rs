@@ -90,6 +90,142 @@ impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> fo
     }
 }
 
+/// ScreenRemap but for Discrete output
+struct ColorScreenRemap<M> {
+    inner: M,
+    width: f32,
+    height: f32,
+    }
+
+impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
+    type Output = Discrete;
+
+    fn eval(&self, p: Field4) -> Discrete {
+        let (px, py, z, w) = p;
+        let width = Field::from(self.width);
+        let height = Field::from(self.height);
+        let scale = Field::from(2.0) / height;
+        let x = (px - width * Field::from(0.5)) * scale.clone();
+        let y = (height * Field::from(0.5) - py) * scale;
+        At {
+            inner: &self.inner,
+            x,
+            y,
+            z,
+            w,
+        }
+        .collapse()
+    }
+}
+
+/// Per-channel sky (inline version since we deleted BlueSky)
+#[derive(Clone, Copy)]
+struct ChannelSky {
+    channel: u8,
+}
+impl Manifold<Jet3_4> for ChannelSky {
+    type Output = Field;
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (_x, y, _z, _w) = p;
+        let t = y.val * Field::from(0.5) + Field::from(0.5);
+        let t = t.max(Field::from(0.0)).min(Field::from(1.0)).constant();
+        match self.channel {
+            0 => (Field::from(0.7) - t * Field::from(0.5)).constant(),
+            1 => (Field::from(0.85) - t * Field::from(0.45)).constant(),
+            _ => (Field::from(1.0) - t * Field::from(0.2)).constant(),
+        }
+    }
+}
+
+/// Per-channel checker (inline version)
+#[derive(Clone, Copy)]
+struct ChannelChecker {
+    channel: u8,
+}
+impl Manifold<Jet3_4> for ChannelChecker {
+    type Output = Field;
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (x, _y, z, _w) = p;
+        let cell_x = x.val.floor().constant();
+        let cell_z = z.val.floor().constant();
+        let sum = (cell_x + cell_z).constant();
+        let half = (sum * Field::from(0.5)).constant();
+        let fract_half = (half.clone() - half.floor()).constant();
+        let is_even = fract_half.abs().lt(Field::from(0.25));
+
+        let (a, b) = match self.channel {
+            0 => (0.95, 0.2),
+            1 => (0.9, 0.25),
+            _ => (0.8, 0.3),
+        };
+
+        let color_a = Field::from(a);
+        let color_b = Field::from(b);
+        let base_color = is_even.clone().select(color_a, color_b);
+
+        let fx = (x.val - cell_x).constant();
+        let fz = (z.val - cell_z).constant();
+        let dx_edge = (fx - Field::from(0.5)).abs();
+        let dz_edge = (fz - Field::from(0.5)).abs();
+        let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
+
+        let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().constant();
+        let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().constant();
+        let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).constant();
+
+        let coverage = (dist_to_edge / pixel_size)
+            .min(Field::from(1.0))
+            .max(Field::from(0.0));
+        let neighbor_color = is_even.select(color_b, color_a);
+        (base_color * coverage.clone() + neighbor_color * (Field::from(1.0) - coverage))
+            .constant()
+    }
+}
+
+fn build_channel_scene(channel: u8, width: f32, height: f32) -> impl Manifold<Output = Field> {
+    let world = Surface {
+        geometry: plane(-1.0),
+        material: ChannelChecker { channel },
+        background: ChannelSky { channel },
+    };
+
+    ScreenRemap {
+        inner: ScreenToDir {
+            inner: Surface {
+                geometry: SphereAt {
+                    center: (0.0, 0.0, 4.0),
+                    radius: 1.0,
+                },
+                material: Reflect { inner: world },
+                background: world,
+            },
+        },
+        width,
+        height,
+    }
+}
+
+struct ThreeChannelRenderer<R, G, B> {
+    r: R,
+    g: G,
+    b: B,
+}
+impl<R, G, B> Manifold<Field4> for ThreeChannelRenderer<R, G, B>
+where
+    R: ManifoldCompat<Field, Output = Field>,
+    G: ManifoldCompat<Field, Output = Field>,
+    B: ManifoldCompat<Field, Output = Field>,
+{
+    type Output = Discrete;
+    fn eval(&self, p: Field4) -> Discrete {
+        let (x, y, z, w) = p;
+        let r = self.r.eval_raw(x, y, z, w);
+        let g = self.g.eval_raw(x, y, z, w);
+        let b = self.b.eval_raw(x, y, z, w);
+        Discrete::pack(r, g, b, Field::from(1.0))
+    }
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -294,34 +430,6 @@ fn test_color_chrome_sphere() {
         background: world,
     };
 
-    // ScreenRemap but for Discrete output
-    struct ColorScreenRemap<M> {
-        inner: M,
-        width: f32,
-        height: f32,
-    }
-
-    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
-        type Output = Discrete;
-
-        fn eval(&self, p: Field4) -> Discrete {
-            let (px, py, z, w) = p;
-            let width = Field::from(self.width);
-            let height = Field::from(self.height);
-            let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale.clone();
-            let y = (height * Field::from(0.5) - py) * scale;
-            At {
-                inner: &self.inner,
-                x,
-                y,
-                z,
-                w,
-            }
-            .collapse()
-        }
-    }
-
     let renderable = ColorScreenRemap {
         inner: ColorScreenToDir { inner: scene },
         width: W as f32,
@@ -371,118 +479,10 @@ fn test_mullet_vs_3channel_comparison() {
     // OLD APPROACH: Run geometry 3 times (once per channel)
     // ============================================================
 
-    /// Per-channel sky (inline version since we deleted BlueSky)
-    #[derive(Clone, Copy)]
-    struct ChannelSky {
-        channel: u8,
-    }
-    impl Manifold<Jet3_4> for ChannelSky {
-        type Output = Field;
-        fn eval(&self, p: Jet3_4) -> Field {
-            let (_x, y, _z, _w) = p;
-            let t = y.val * Field::from(0.5) + Field::from(0.5);
-            let t = t.max(Field::from(0.0)).min(Field::from(1.0)).constant();
-            match self.channel {
-                0 => (Field::from(0.7) - t * Field::from(0.5)).constant(),
-                1 => (Field::from(0.85) - t * Field::from(0.45)).constant(),
-                _ => (Field::from(1.0) - t * Field::from(0.2)).constant(),
-            }
-        }
-    }
-
-    /// Per-channel checker (inline version)
-    #[derive(Clone, Copy)]
-    struct ChannelChecker {
-        channel: u8,
-    }
-    impl Manifold<Jet3_4> for ChannelChecker {
-        type Output = Field;
-        fn eval(&self, p: Jet3_4) -> Field {
-            let (x, _y, z, _w) = p;
-            let cell_x = x.val.floor().constant();
-            let cell_z = z.val.floor().constant();
-            let sum = (cell_x + cell_z).constant();
-            let half = (sum * Field::from(0.5)).constant();
-            let fract_half = (half.clone() - half.floor()).constant();
-            let is_even = fract_half.abs().lt(Field::from(0.25));
-
-            let (a, b) = match self.channel {
-                0 => (0.95, 0.2),
-                1 => (0.9, 0.25),
-                _ => (0.8, 0.3),
-            };
-
-            let color_a = Field::from(a);
-            let color_b = Field::from(b);
-            let base_color = is_even.clone().select(color_a, color_b);
-
-            let fx = (x.val - cell_x).constant();
-            let fz = (z.val - cell_z).constant();
-            let dx_edge = (fx - Field::from(0.5)).abs();
-            let dz_edge = (fz - Field::from(0.5)).abs();
-            let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
-
-            let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().constant();
-            let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().constant();
-            let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).constant();
-
-            let coverage = (dist_to_edge / pixel_size)
-                .min(Field::from(1.0))
-                .max(Field::from(0.0));
-            let neighbor_color = is_even.select(color_b, color_a);
-            (base_color * coverage.clone() + neighbor_color * (Field::from(1.0) - coverage))
-                .constant()
-        }
-    }
-
-    fn build_channel_scene(channel: u8) -> impl Manifold<Output = Field> {
-        let world = Surface {
-            geometry: plane(-1.0),
-            material: ChannelChecker { channel },
-            background: ChannelSky { channel },
-        };
-
-        ScreenRemap {
-            inner: ScreenToDir {
-                inner: Surface {
-                    geometry: SphereAt {
-                        center: (0.0, 0.0, 4.0),
-                        radius: 1.0,
-                    },
-                    material: Reflect { inner: world },
-                    background: world,
-                },
-            },
-            width: W as f32,
-            height: H as f32,
-        }
-    }
-
-    struct ThreeChannelRenderer<R, G, B> {
-        r: R,
-        g: G,
-        b: B,
-    }
-    impl<R, G, B> Manifold<Field4> for ThreeChannelRenderer<R, G, B>
-    where
-        R: ManifoldCompat<Field, Output = Field>,
-        G: ManifoldCompat<Field, Output = Field>,
-        B: ManifoldCompat<Field, Output = Field>,
-    {
-        type Output = Discrete;
-        fn eval(&self, p: Field4) -> Discrete {
-            let (x, y, z, w) = p;
-            let r = self.r.eval_raw(x, y, z, w);
-            let g = self.g.eval_raw(x, y, z, w);
-            let b = self.b.eval_raw(x, y, z, w);
-            Discrete::pack(r, g, b, Field::from(1.0))
-        }
-    }
-
     let old_renderer = ThreeChannelRenderer {
-        r: build_channel_scene(0),
-        g: build_channel_scene(1),
-        b: build_channel_scene(2),
+        r: build_channel_scene(0, W as f32, H as f32),
+        g: build_channel_scene(1, W as f32, H as f32),
+        b: build_channel_scene(2, W as f32, H as f32),
     };
 
     let mut old_frame = Frame::<Rgba8>::new(W as u32, H as u32);
@@ -493,31 +493,6 @@ fn test_mullet_vs_3channel_comparison() {
     // ============================================================
     // NEW APPROACH: Mullet architecture (geometry once, Discrete colors)
     // ============================================================
-
-    struct ColorScreenRemap<M> {
-        inner: M,
-        width: f32,
-        height: f32,
-    }
-    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
-        type Output = Discrete;
-        fn eval(&self, p: Field4) -> Discrete {
-            let (px, py, z, w) = p;
-            let width = Field::from(self.width);
-            let height = Field::from(self.height);
-            let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale.clone();
-            let y = (height * Field::from(0.5) - py) * scale;
-            At {
-                inner: &self.inner,
-                x,
-                y,
-                z,
-                w,
-            }
-            .collapse()
-        }
-    }
 
     let world = ColorSurface {
         geometry: plane(-1.0),
@@ -618,31 +593,6 @@ fn test_work_stealing_benchmark() {
         material: ColorReflect { inner: world },
         background: world,
     };
-
-    struct ColorScreenRemap<M> {
-        inner: M,
-        width: f32,
-        height: f32,
-    }
-    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
-        type Output = Discrete;
-        fn eval(&self, p: Field4) -> Discrete {
-            let (px, py, z, w) = p;
-            let width = Field::from(self.width);
-            let height = Field::from(self.height);
-            let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale.clone();
-            let y = (height * Field::from(0.5) - py) * scale;
-            At {
-                inner: &self.inner,
-                x,
-                y,
-                z,
-                w,
-            }
-            .collapse()
-        }
-    }
 
     let renderable = ColorScreenRemap {
         inner: ColorScreenToDir { inner: scene },
