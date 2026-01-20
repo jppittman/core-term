@@ -77,7 +77,7 @@ impl<N> CtxVar<N> {
 impl<N> crate::ext::ManifoldExpr for CtxVar<N> {}
 
 // Reuse our binary type-level numbers from binding module
-use super::binding::{N0, N1, N2, N3, N4, N5, N6, N7};
+use super::binding::{N0, N1, N2, N3, N4, N5, N6, N7, N8, N9};
 
 // CtxVar<N0> - first element
 impl<V0, V1, V2, V3, V4, P> Manifold<((V0, V1, V2, V3, V4), P)> for CtxVar<N0>
@@ -316,6 +316,93 @@ where
         let v6 = self.ctx.6.eval(p);
         let v7 = self.ctx.7.eval(p);
         self.body.eval(((v0, v1, v2, v3, v4, v5, v6, v7), p))
+    }
+}
+
+// 9-element context
+impl<P, V0, V1, V2, V3, V4, V5, V6, V7, V8, B, O0, O1, O2, O3, O4, O5, O6, O7, O8, Out> Manifold<P>
+    for WithContext<(V0, V1, V2, V3, V4, V5, V6, V7, V8), B>
+where
+    P: Copy + Send + Sync,
+    V0: Manifold<P, Output = O0>,
+    V1: Manifold<P, Output = O1>,
+    V2: Manifold<P, Output = O2>,
+    V3: Manifold<P, Output = O3>,
+    V4: Manifold<P, Output = O4>,
+    V5: Manifold<P, Output = O5>,
+    V6: Manifold<P, Output = O6>,
+    V7: Manifold<P, Output = O7>,
+    V8: Manifold<P, Output = O8>,
+    O0: Copy + Send + Sync,
+    O1: Copy + Send + Sync,
+    O2: Copy + Send + Sync,
+    O3: Copy + Send + Sync,
+    O4: Copy + Send + Sync,
+    O5: Copy + Send + Sync,
+    O6: Copy + Send + Sync,
+    O7: Copy + Send + Sync,
+    O8: Copy + Send + Sync,
+    B: Manifold<((O0, O1, O2, O3, O4, O5, O6, O7, O8), P), Output = Out>,
+{
+    type Output = Out;
+
+    #[inline(always)]
+    fn eval(&self, p: P) -> Self::Output {
+        let v0 = self.ctx.0.eval(p);
+        let v1 = self.ctx.1.eval(p);
+        let v2 = self.ctx.2.eval(p);
+        let v3 = self.ctx.3.eval(p);
+        let v4 = self.ctx.4.eval(p);
+        let v5 = self.ctx.5.eval(p);
+        let v6 = self.ctx.6.eval(p);
+        let v7 = self.ctx.7.eval(p);
+        let v8 = self.ctx.8.eval(p);
+        self.body.eval(((v0, v1, v2, v3, v4, v5, v6, v7, v8), p))
+    }
+}
+
+// 10-element context
+impl<P, V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, B, O0, O1, O2, O3, O4, O5, O6, O7, O8, O9, Out> Manifold<P>
+    for WithContext<(V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), B>
+where
+    P: Copy + Send + Sync,
+    V0: Manifold<P, Output = O0>,
+    V1: Manifold<P, Output = O1>,
+    V2: Manifold<P, Output = O2>,
+    V3: Manifold<P, Output = O3>,
+    V4: Manifold<P, Output = O4>,
+    V5: Manifold<P, Output = O5>,
+    V6: Manifold<P, Output = O6>,
+    V7: Manifold<P, Output = O7>,
+    V8: Manifold<P, Output = O8>,
+    V9: Manifold<P, Output = O9>,
+    O0: Copy + Send + Sync,
+    O1: Copy + Send + Sync,
+    O2: Copy + Send + Sync,
+    O3: Copy + Send + Sync,
+    O4: Copy + Send + Sync,
+    O5: Copy + Send + Sync,
+    O6: Copy + Send + Sync,
+    O7: Copy + Send + Sync,
+    O8: Copy + Send + Sync,
+    O9: Copy + Send + Sync,
+    B: Manifold<((O0, O1, O2, O3, O4, O5, O6, O7, O8, O9), P), Output = Out>,
+{
+    type Output = Out;
+
+    #[inline(always)]
+    fn eval(&self, p: P) -> Self::Output {
+        let v0 = self.ctx.0.eval(p);
+        let v1 = self.ctx.1.eval(p);
+        let v2 = self.ctx.2.eval(p);
+        let v3 = self.ctx.3.eval(p);
+        let v4 = self.ctx.4.eval(p);
+        let v5 = self.ctx.5.eval(p);
+        let v6 = self.ctx.6.eval(p);
+        let v7 = self.ctx.7.eval(p);
+        let v8 = self.ctx.8.eval(p);
+        let v9 = self.ctx.9.eval(p);
+        self.body.eval(((v0, v1, v2, v3, v4, v5, v6, v7, v8, v9), p))
     }
 }
 
@@ -573,6 +660,161 @@ where V7: Copy + Send + Sync, P: Copy + Send + Sync
     #[inline(always)]
     fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7), P)) -> V7 { p.0.7 }
 }
+
+// CtxVar impls for 9-element tuples
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N0>
+where V0: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V0;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V0 { p.0.0 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N1>
+where V1: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V1;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V1 { p.0.1 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N2>
+where V2: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V2;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V2 { p.0.2 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N3>
+where V3: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V3;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V3 { p.0.3 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N4>
+where V4: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V4;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V4 { p.0.4 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N5>
+where V5: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V5;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V5 { p.0.5 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N6>
+where V6: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V6;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V6 { p.0.6 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N7>
+where V7: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V7;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V7 { p.0.7 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for CtxVar<N8>
+where V8: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V8;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> V8 { p.0.8 }
+}
+
+// CtxVar impls for 10-element tuples
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N0>
+where V0: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V0;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V0 { p.0.0 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N1>
+where V1: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V1;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V1 { p.0.1 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N2>
+where V2: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V2;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V2 { p.0.2 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N3>
+where V3: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V3;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V3 { p.0.3 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N4>
+where V4: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V4;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V4 { p.0.4 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N5>
+where V5: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V5;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V5 { p.0.5 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N6>
+where V6: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V6;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V6 { p.0.6 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N7>
+where V7: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V7;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V7 { p.0.7 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N8>
+where V8: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V8;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V8 { p.0.8 }
+}
+
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for CtxVar<N9>
+where V9: Copy + Send + Sync, P: Copy + Send + Sync
+{
+    type Output = V9;
+    #[inline(always)]
+    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> V9 { p.0.9 }
+}
+
 // ============================================================================
 // Arithmetic Operators for CtxVar
 // ============================================================================
@@ -735,6 +977,36 @@ where P: crate::domain::Spatial
 
 // 8-element tuple domain
 impl<V0, V1, V2, V3, V4, V5, V6, V7, P> crate::domain::Spatial for ((V0, V1, V2, V3, V4, V5, V6, V7), P)
+where P: crate::domain::Spatial
+{
+    type Coord = P::Coord;
+    #[inline(always)]
+    fn x(&self) -> Self::Coord { self.1.x() }
+    #[inline(always)]
+    fn y(&self) -> Self::Coord { self.1.y() }
+    #[inline(always)]
+    fn z(&self) -> Self::Coord { self.1.z() }
+    #[inline(always)]
+    fn w(&self) -> Self::Coord { self.1.w() }
+}
+
+// 9-element tuple domain
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P> crate::domain::Spatial for ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)
+where P: crate::domain::Spatial
+{
+    type Coord = P::Coord;
+    #[inline(always)]
+    fn x(&self) -> Self::Coord { self.1.x() }
+    #[inline(always)]
+    fn y(&self) -> Self::Coord { self.1.y() }
+    #[inline(always)]
+    fn z(&self) -> Self::Coord { self.1.z() }
+    #[inline(always)]
+    fn w(&self) -> Self::Coord { self.1.w() }
+}
+
+// 10-element tuple domain
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P> crate::domain::Spatial for ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)
 where P: crate::domain::Spatial
 {
     type Coord = P::Coord;
