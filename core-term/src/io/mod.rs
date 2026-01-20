@@ -196,6 +196,15 @@ pub mod event_monitor_actor;
 pub mod pty;
 pub mod traits;
 
+/// Represents dimensions for a resize command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resize {
+    /// Number of columns in the terminal grid.
+    pub cols: u16,
+    /// Number of rows in the terminal grid.
+    pub rows: u16,
+}
+
 /// Commands that can be sent to the PTY write thread.
 ///
 /// The write thread handles both data writes and control operations like resize.
@@ -209,7 +218,7 @@ pub mod traits;
 /// pty_tx.send(PtyCommand::Write(b"ls -la\n".to_vec()))?;
 ///
 /// // Resize the PTY when window size changes
-/// pty_tx.send(PtyCommand::Resize { cols: 120, rows: 40 })?;
+/// pty_tx.send(PtyCommand::Resize(Resize { cols: 120, rows: 40 }))?;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PtyCommand {
@@ -226,12 +235,7 @@ pub enum PtyCommand {
     ///
     /// Full-screen programs (vim, less, top, etc.) will respond to SIGWINCH
     /// by querying the new size and redrawing.
-    Resize {
-        /// Number of columns in the terminal grid.
-        cols: u16,
-        /// Number of rows in the terminal grid.
-        rows: u16,
-    },
+    Resize(Resize),
 }
 
 #[cfg(test)]
