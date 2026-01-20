@@ -913,6 +913,12 @@ impl<'a> Kern<'a> {
 // Font
 // ═══════════════════════════════════════════════════════════════════════════
 
+struct Normalization {
+    scale: f32,
+    tx: f32,
+    ty: f32,
+}
+
 pub struct Font<'a> {
     data: &'a [u8],
     glyf: usize,
@@ -1126,7 +1132,15 @@ impl<'a> Font<'a> {
 
         if n >= 0 {
             // Parse segments in normalized [0,1] space
-            let sum_segs = self.simple(&mut r, n as usize, norm_scale, norm_tx, norm_ty)?;
+            let sum_segs = self.simple(
+                &mut r,
+                n as usize,
+                Normalization {
+                    scale: norm_scale,
+                    tx: norm_tx,
+                    ty: norm_ty,
+                },
+            )?;
 
             // Compose: Geometry (smooth AA coverage) -> Bounded (via square) -> Affine
             let bounded = square(sum_segs, 0.0f32);
@@ -1141,9 +1155,7 @@ impl<'a> Font<'a> {
         &self,
         r: &mut R,
         n: usize,
-        scale: f32,
-        tx: f32,
-        ty: f32,
+        norm: Normalization,
     ) -> Option<Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>>> {
         if n == 0 {
             return Some(Geometry {
@@ -1190,8 +1202,8 @@ impl<'a> Font<'a> {
         let pts: Vec<_> = (0..np)
             .map(|i| {
                 (
-                    (xs[i] as f32) * scale + tx,
-                    (ys[i] as f32) * scale + ty,
+                    (xs[i] as f32) * norm.scale + norm.tx,
+                    (ys[i] as f32) * norm.scale + norm.ty,
                     fl[i] & 1 != 0,
                 )
             })
