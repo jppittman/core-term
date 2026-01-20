@@ -761,10 +761,10 @@ fn pty_command_resize_delivery_at_actor_boundary() {
     let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
 
     // Simulate sending resize command from TerminalApp
-    tx.send(PtyCommand::Resize {
+    tx.send(PtyCommand::Resize(core_term::io::Resize {
         cols: 120,
         rows: 40,
-    })
+    }))
     .expect("Should send resize command");
 
     // Simulate receiving in WriteThread
@@ -772,10 +772,10 @@ fn pty_command_resize_delivery_at_actor_boundary() {
 
     assert_eq!(
         cmd,
-        PtyCommand::Resize {
+        PtyCommand::Resize(core_term::io::Resize {
             cols: 120,
             rows: 40
-        }
+        })
     );
 }
 
@@ -785,36 +785,40 @@ fn pty_command_resize_ordering_preserved() {
     let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
 
     // Send multiple resize commands
-    tx.send(PtyCommand::Resize { cols: 80, rows: 24 }).unwrap();
-    tx.send(PtyCommand::Resize {
+    tx.send(PtyCommand::Resize(core_term::io::Resize {
+        cols: 80,
+        rows: 24,
+    }))
+    .unwrap();
+    tx.send(PtyCommand::Resize(core_term::io::Resize {
         cols: 120,
         rows: 40,
-    })
+    }))
     .unwrap();
-    tx.send(PtyCommand::Resize {
+    tx.send(PtyCommand::Resize(core_term::io::Resize {
         cols: 200,
         rows: 60,
-    })
+    }))
     .unwrap();
 
     // Verify FIFO order
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize { cols: 80, rows: 24 }
+        PtyCommand::Resize(core_term::io::Resize { cols: 80, rows: 24 })
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize {
+        PtyCommand::Resize(core_term::io::Resize {
             cols: 120,
             rows: 40
-        }
+        })
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize {
+        PtyCommand::Resize(core_term::io::Resize {
             cols: 200,
             rows: 60
-        }
+        })
     );
 }
 
@@ -825,10 +829,10 @@ fn pty_command_write_and_resize_interleaved() {
 
     // Interleave write and resize commands
     tx.send(PtyCommand::Write(b"hello".to_vec())).unwrap();
-    tx.send(PtyCommand::Resize {
+    tx.send(PtyCommand::Resize(core_term::io::Resize {
         cols: 100,
         rows: 50,
-    })
+    }))
     .unwrap();
     tx.send(PtyCommand::Write(b"world".to_vec())).unwrap();
 
@@ -839,10 +843,10 @@ fn pty_command_write_and_resize_interleaved() {
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize {
+        PtyCommand::Resize(core_term::io::Resize {
             cols: 100,
             rows: 50
-        }
+        })
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
@@ -855,7 +859,11 @@ fn pty_command_write_and_resize_interleaved() {
 fn pty_command_channel_closure_on_sender_drop() {
     let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
 
-    tx.send(PtyCommand::Resize { cols: 80, rows: 24 }).unwrap();
+    tx.send(PtyCommand::Resize(core_term::io::Resize {
+        cols: 80,
+        rows: 24,
+    }))
+    .unwrap();
 
     drop(tx);
 
@@ -872,25 +880,29 @@ fn pty_command_resize_boundary_values() {
     let (tx, rx) = std::sync::mpsc::sync_channel::<PtyCommand>(16);
 
     // Minimum valid size
-    tx.send(PtyCommand::Resize { cols: 1, rows: 1 }).unwrap();
+    tx.send(PtyCommand::Resize(core_term::io::Resize {
+        cols: 1,
+        rows: 1,
+    }))
+    .unwrap();
 
     // Maximum u16 values
-    tx.send(PtyCommand::Resize {
+    tx.send(PtyCommand::Resize(core_term::io::Resize {
         cols: u16::MAX,
         rows: u16::MAX,
-    })
+    }))
     .unwrap();
 
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize { cols: 1, rows: 1 }
+        PtyCommand::Resize(core_term::io::Resize { cols: 1, rows: 1 })
     );
     assert_eq!(
         rx.recv_timeout(Duration::from_millis(100)).unwrap(),
-        PtyCommand::Resize {
+        PtyCommand::Resize(core_term::io::Resize {
             cols: u16::MAX,
             rows: u16::MAX
-        }
+        })
     );
 }
 
@@ -904,10 +916,10 @@ fn pty_command_resize_from_multiple_senders() {
 
     let h1 = thread::spawn(move || {
         for i in 0..5 {
-            tx1.send(PtyCommand::Resize {
+            tx1.send(PtyCommand::Resize(core_term::io::Resize {
                 cols: 100 + i,
                 rows: 50,
-            })
+            }))
             .unwrap();
         }
     });
@@ -929,7 +941,7 @@ fn pty_command_resize_from_multiple_senders() {
 
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
-            PtyCommand::Resize { .. } => resize_count += 1,
+            PtyCommand::Resize(_) => resize_count += 1,
             PtyCommand::Write(_) => write_count += 1,
         }
     }

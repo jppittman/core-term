@@ -35,13 +35,16 @@ impl WriteThread {
                                 break;
                             }
                         }
-                        PtyCommand::Resize { cols, rows } => {
-                            if let Err(e) = pty.resize(cols, rows) {
+                        PtyCommand::Resize(resize) => {
+                            if let Err(e) = pty.resize(resize.cols, resize.rows) {
                                 // Log but don't break - resize failures are non-fatal
                                 // (e.g., child process may have exited)
-                                warn!("Failed to resize PTY to {}x{}: {}", cols, rows, e);
+                                warn!(
+                                    "Failed to resize PTY to {}x{}: {}",
+                                    resize.cols, resize.rows, e
+                                );
                             } else {
-                                debug!("PTY resized to {}x{}", cols, rows);
+                                debug!("PTY resized to {}x{}", resize.cols, resize.rows);
                             }
                         }
                     }
@@ -94,10 +97,10 @@ mod tests {
         let write_thread = WriteThread::spawn(pty, rx).expect("Failed to spawn write thread");
 
         // Send resize command
-        tx.send(PtyCommand::Resize {
+        tx.send(PtyCommand::Resize(crate::io::Resize {
             cols: 120,
             rows: 40,
-        })
+        }))
         .expect("Failed to send resize");
 
         // Send some data
