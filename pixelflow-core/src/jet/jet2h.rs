@@ -816,7 +816,7 @@ impl Numeric for Jet2H {
 
     #[inline(always)]
     fn log2(self) -> Self {
-        let log2_e = Field::from(1.4426950408889634);
+        let log2_e = Field::from(core::f32::consts::LOG2_E);
         let inv_val = Field::from(1.0) / self.val;
         let inv_val_sq = inv_val.clone() * inv_val.clone();
         let deriv_coeff = inv_val.clone() * log2_e;
@@ -838,7 +838,7 @@ impl Numeric for Jet2H {
     fn exp2(self) -> Self {
         // (2^f)' = f' * 2^f * ln(2)
         // (2^f)'' = 2^f * ln(2) * (f'' + (f')² * ln(2))
-        let ln_2 = Field::from(0.6931471805599453);
+        let ln_2 = Field::from(core::f32::consts::LN_2);
         let exp2_val = self.val.exp2();
         let deriv_coeff = exp2_val * ln_2;
 
