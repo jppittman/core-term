@@ -45,6 +45,9 @@ mod parser;
 mod sema;
 mod symbol;
 
+/// E-graph for equality saturation and algebraic simplification.
+mod egraph;
+
 use proc_macro::TokenStream;
 use quote::format_ident;
 use syn::parse::{Parse, ParseStream};
