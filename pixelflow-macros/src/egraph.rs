@@ -16,7 +16,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use pixelflow_core::egraph::{EGraph, ENode};
+//! use pixelflow_macros::egraph::{EGraph, ENode};
 //!
 //! let mut egraph = EGraph::new();
 //!
@@ -37,12 +37,10 @@
 //!
 //! - Willsey et al., "egg: Fast and Extensible Equality Saturation" (POPL 2021)
 
-use alloc::boxed::Box;
-use alloc::vec;
-use alloc::vec::Vec;
+use std::collections::HashMap;
 
 /// Identifier for an equivalence class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EClassId(u32);
 
 impl EClassId {
@@ -55,11 +53,11 @@ impl EClassId {
 ///
 /// Children reference e-classes, not specific nodes. This is what allows
 /// an e-graph to represent exponentially many equivalent expressions compactly.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ENode {
     /// Variable reference by index (0 = X, 1 = Y, 2 = Z, 3 = W)
     Var(u8),
-    /// Floating-point constant (stored as bits for comparison)
+    /// Floating-point constant (stored as bits for hashing/comparison)
     Const(u32),
     /// Addition: left + right
     Add(EClassId, EClassId),
@@ -157,9 +155,8 @@ pub struct EGraph {
     classes: Vec<EClass>,
     /// Union-find parent pointers. `parent[i]` points to parent of class i.
     parent: Vec<EClassId>,
-    /// Memo table for hash-consing: (canonical node, e-class).
-    /// Using Vec instead of HashMap for no_std compatibility.
-    memo: Vec<(ENode, EClassId)>,
+    /// Memo table for hash-consing: canonical node -> e-class.
+    memo: HashMap<ENode, EClassId>,
     /// Worklist for propagating merges.
     worklist: Vec<EClassId>,
 }
@@ -176,7 +173,7 @@ impl EGraph {
         Self {
             classes: Vec::new(),
             parent: Vec::new(),
-            memo: Vec::new(),
+            memo: HashMap::new(),
             worklist: Vec::new(),
         }
     }
@@ -209,23 +206,6 @@ impl EGraph {
         current
     }
 
-    /// Lookup a node in the memo table.
-    fn memo_lookup(&self, node: &ENode) -> Option<EClassId> {
-        for (n, id) in &self.memo {
-            if n == node {
-                return Some(*id);
-            }
-        }
-        None
-    }
-
-    /// Insert into memo table.
-    fn memo_insert(&mut self, node: ENode, id: EClassId) {
-        // Remove any existing entry for this node
-        self.memo.retain(|(n, _)| n != &node);
-        self.memo.push((node, id));
-    }
-
     /// Add an e-node to the graph, returning its e-class ID.
     ///
     /// If an equivalent node already exists (hash-consing), returns the
@@ -235,7 +215,7 @@ impl EGraph {
         node.canonicalize(self);
 
         // Check memo for existing equivalent
-        if let Some(id) = self.memo_lookup(&node) {
+        if let Some(&id) = self.memo.get(&node) {
             return self.find(id);
         }
 
@@ -245,7 +225,7 @@ impl EGraph {
             nodes: vec![node.clone()],
         });
         self.parent.push(id);
-        self.memo_insert(node, id);
+        self.memo.insert(node, id);
 
         id
     }
@@ -267,7 +247,7 @@ impl EGraph {
         self.parent[child.index()] = parent;
 
         // Merge nodes from child into parent
-        let child_nodes = core::mem::take(&mut self.classes[child.index()].nodes);
+        let child_nodes = std::mem::take(&mut self.classes[child.index()].nodes);
         self.classes[parent.index()].nodes.extend(child_nodes);
 
         // Add to worklist for re-canonicalization
@@ -282,21 +262,21 @@ impl EGraph {
             let id = self.find(id);
 
             // Re-canonicalize all nodes in this class
-            let nodes = core::mem::take(&mut self.classes[id.index()].nodes);
+            let nodes = std::mem::take(&mut self.classes[id.index()].nodes);
             let mut new_nodes = Vec::new();
 
             for mut node in nodes {
                 node.canonicalize(self);
 
                 // Check if this canonical form already exists elsewhere
-                if let Some(existing) = self.memo_lookup(&node) {
+                if let Some(&existing) = self.memo.get(&node) {
                     let existing = self.find(existing);
                     if existing != id {
                         // Need to merge
                         self.union(id, existing);
                     }
                 } else {
-                    self.memo_insert(node.clone(), id);
+                    self.memo.insert(node.clone(), id);
                 }
 
                 new_nodes.push(node);
@@ -347,7 +327,7 @@ impl EGraph {
     /// Apply rewrite rules to a single node, returning equivalent e-class if found.
     fn apply_rule(&mut self, _class_id: EClassId, node: &ENode) -> Option<EClassId> {
         match node {
-            // x + 0 → x
+            // x + 0 -> x
             ENode::Add(a, b) => {
                 if self.contains_const(*b, 0.0) {
                     return Some(*a);
@@ -355,7 +335,7 @@ impl EGraph {
                 if self.contains_const(*a, 0.0) {
                     return Some(*b);
                 }
-                // x + x → 2 * x
+                // x + x -> 2 * x
                 if self.find(*a) == self.find(*b) {
                     let two = self.add(ENode::constant(2.0));
                     return Some(self.add(ENode::Mul(two, *a)));
@@ -363,8 +343,8 @@ impl EGraph {
                 None
             }
 
-            // x - 0 → x
-            // x - x → 0
+            // x - 0 -> x
+            // x - x -> 0
             ENode::Sub(a, b) => {
                 if self.contains_const(*b, 0.0) {
                     return Some(*a);
@@ -372,16 +352,16 @@ impl EGraph {
                 if self.find(*a) == self.find(*b) {
                     return Some(self.add(ENode::constant(0.0)));
                 }
-                // 0 - x → -x
+                // 0 - x -> -x
                 if self.contains_const(*a, 0.0) {
                     return Some(self.add(ENode::Neg(*b)));
                 }
                 None
             }
 
-            // x * 0 → 0
-            // x * 1 → x
-            // x * -1 → -x
+            // x * 0 -> 0
+            // x * 1 -> x
+            // x * -1 -> -x
             ENode::Mul(a, b) => {
                 if self.contains_const(*a, 0.0) || self.contains_const(*b, 0.0) {
                     return Some(self.add(ENode::constant(0.0)));
@@ -401,9 +381,9 @@ impl EGraph {
                 None
             }
 
-            // x / 1 → x
-            // 0 / x → 0 (assuming x ≠ 0)
-            // x / x → 1 (assuming x ≠ 0)
+            // x / 1 -> x
+            // 0 / x -> 0 (assuming x != 0)
+            // x / x -> 1 (assuming x != 0)
             ENode::Div(a, b) => {
                 if self.contains_const(*b, 1.0) {
                     return Some(*a);
@@ -415,7 +395,7 @@ impl EGraph {
                     // x / x = 1 (assuming non-zero)
                     return Some(self.add(ENode::constant(1.0)));
                 }
-                // x / sqrt(y) → x * rsqrt(y)
+                // x / sqrt(y) -> x * rsqrt(y)
                 for child_node in self.nodes(*b) {
                     if let ENode::Sqrt(inner) = child_node {
                         let inner = *inner;
@@ -426,22 +406,22 @@ impl EGraph {
                 None
             }
 
-            // --x → x
+            // --x -> x
             ENode::Neg(a) => {
                 for child_node in self.nodes(*a) {
                     if let ENode::Neg(inner) = child_node {
                         return Some(*inner);
                     }
                 }
-                // -0 → 0
+                // -0 -> 0
                 if self.contains_const(*a, 0.0) {
                     return Some(self.add(ENode::constant(0.0)));
                 }
                 None
             }
 
-            // sqrt(0) → 0
-            // sqrt(1) → 1
+            // sqrt(0) -> 0
+            // sqrt(1) -> 1
             ENode::Sqrt(a) => {
                 if self.contains_const(*a, 0.0) {
                     return Some(self.add(ENode::constant(0.0)));
@@ -452,7 +432,7 @@ impl EGraph {
                 None
             }
 
-            // rsqrt(1) → 1
+            // rsqrt(1) -> 1
             ENode::Rsqrt(a) => {
                 if self.contains_const(*a, 1.0) {
                     return Some(self.add(ENode::constant(1.0)));
@@ -460,8 +440,8 @@ impl EGraph {
                 None
             }
 
-            // |0| → 0
-            // |-x| → |x|
+            // |0| -> 0
+            // |-x| -> |x|
             ENode::Abs(a) => {
                 if self.contains_const(*a, 0.0) {
                     return Some(self.add(ENode::constant(0.0)));
@@ -470,7 +450,7 @@ impl EGraph {
                     if let ENode::Neg(inner) = child_node {
                         return Some(self.add(ENode::Abs(*inner)));
                     }
-                    // |c| → c if c >= 0
+                    // |c| -> c if c >= 0
                     if let Some(c) = child_node.as_f32() {
                         if c >= 0.0 {
                             return Some(*a);
@@ -482,7 +462,7 @@ impl EGraph {
                 None
             }
 
-            // min(x, x) → x
+            // min(x, x) -> x
             ENode::Min(a, b) => {
                 if self.find(*a) == self.find(*b) {
                     return Some(*a);
@@ -490,7 +470,7 @@ impl EGraph {
                 None
             }
 
-            // max(x, x) → x
+            // max(x, x) -> x
             ENode::Max(a, b) => {
                 if self.find(*a) == self.find(*b) {
                     return Some(*a);
@@ -498,7 +478,7 @@ impl EGraph {
                 None
             }
 
-            // a * b + c: check if c = 0 → a * b
+            // a * b + c: check if c = 0 -> a * b
             ENode::MulAdd(a, b, c) => {
                 if self.contains_const(*c, 0.0) {
                     return Some(self.add(ENode::Mul(*a, *b)));
@@ -541,13 +521,8 @@ impl EGraph {
     pub fn extract(&self, root: EClassId) -> ENode {
         let root = self.find(root);
 
-        // Simple cost table: (e-class id, (cost, best_node))
-        let mut costs: Vec<(EClassId, usize, ENode)> = Vec::new();
-
-        // Helper to get cost for an e-class
-        let get_cost = |costs: &[(EClassId, usize, ENode)], id: EClassId| -> Option<usize> {
-            costs.iter().find(|(cid, _, _)| *cid == id).map(|(_, c, _)| *c)
-        };
+        // Cost table: e-class id -> (cost, best_node)
+        let mut costs: HashMap<EClassId, (usize, ENode)> = HashMap::new();
 
         // Iterate until costs stabilize (simple fixpoint)
         for _ in 0..self.classes.len() {
@@ -559,16 +534,10 @@ impl EGraph {
 
                 for node in &self.classes[id.index()].nodes {
                     let cost = self.node_cost(node, &costs);
-                    let current = get_cost(&costs, id).unwrap_or(usize::MAX);
+                    let current = costs.get(&id).map(|(c, _)| *c).unwrap_or(usize::MAX);
 
                     if cost < current {
-                        // Update or insert
-                        if let Some(entry) = costs.iter_mut().find(|(cid, _, _)| *cid == id) {
-                            entry.1 = cost;
-                            entry.2 = node.clone();
-                        } else {
-                            costs.push((id, cost, node.clone()));
-                        }
+                        costs.insert(id, (cost, node.clone()));
                         changed = true;
                     }
                 }
@@ -580,21 +549,16 @@ impl EGraph {
         }
 
         costs
-            .iter()
-            .find(|(cid, _, _)| *cid == root)
-            .map(|(_, _, node)| node.clone())
+            .get(&root)
+            .map(|(_, node)| node.clone())
             .unwrap_or(ENode::Const(0))
     }
 
     /// Compute cost of a node given current best costs for children.
-    fn node_cost(&self, node: &ENode, costs: &[(EClassId, usize, ENode)]) -> usize {
+    fn node_cost(&self, node: &ENode, costs: &HashMap<EClassId, (usize, ENode)>) -> usize {
         let get_cost = |id: EClassId| -> usize {
             let id = self.find(id);
-            costs
-                .iter()
-                .find(|(cid, _, _)| *cid == id)
-                .map(|(_, c, _)| *c)
-                .unwrap_or(usize::MAX / 2)
+            costs.get(&id).map(|(c, _)| *c).unwrap_or(usize::MAX / 2)
         };
 
         match node {
@@ -696,11 +660,11 @@ impl ExprTree {
             ExprTree::Mul(a, b) => a.eval(vars) * b.eval(vars),
             ExprTree::Div(a, b) => a.eval(vars) / b.eval(vars),
             ExprTree::Neg(a) => -a.eval(vars),
-            ExprTree::Sqrt(a) => libm::sqrtf(a.eval(vars)),
-            ExprTree::Rsqrt(a) => 1.0 / libm::sqrtf(a.eval(vars)),
-            ExprTree::Abs(a) => libm::fabsf(a.eval(vars)),
-            ExprTree::Min(a, b) => libm::fminf(a.eval(vars), b.eval(vars)),
-            ExprTree::Max(a, b) => libm::fmaxf(a.eval(vars), b.eval(vars)),
+            ExprTree::Sqrt(a) => a.eval(vars).sqrt(),
+            ExprTree::Rsqrt(a) => 1.0 / a.eval(vars).sqrt(),
+            ExprTree::Abs(a) => a.eval(vars).abs(),
+            ExprTree::Min(a, b) => a.eval(vars).min(b.eval(vars)),
+            ExprTree::Max(a, b) => a.eval(vars).max(b.eval(vars)),
             ExprTree::MulAdd(a, b, c) => a.eval(vars) * b.eval(vars) + c.eval(vars),
         }
     }
@@ -894,7 +858,7 @@ mod tests {
             )),
         );
 
-        // x² + y² at (3, 4) = 9 + 16 = 25
+        // x^2 + y^2 at (3, 4) = 9 + 16 = 25
         let result = tree.eval(&[3.0, 4.0, 0.0, 0.0]);
         assert!((result - 25.0).abs() < 1e-6);
     }
