@@ -30,12 +30,12 @@ fn regression_mask_and_not_multiply() {
     // Create a 400x400 square from (100,100) to (500,500)
     // Use Geometry with lines (which now produce smooth AA coverage)
     let lines: Vec<Line<LineKernel>> = vec![
-        make_line([[100.0, 100.0], [500.0, 100.0]]), // bottom
-        make_line([[500.0, 100.0], [500.0, 500.0]]), // right
-        make_line([[500.0, 500.0], [100.0, 500.0]]), // top
-        make_line([[100.0, 500.0], [100.0, 100.0]]), // left
+        make_line([[100.0, 100.0], [500.0, 100.0]]).unwrap(), // bottom
+        make_line([[500.0, 100.0], [500.0, 500.0]]).unwrap(), // right
+        make_line([[500.0, 500.0], [100.0, 500.0]]).unwrap(), // top
+        make_line([[100.0, 500.0], [100.0, 100.0]]).unwrap(), // left
     ];
-    let geo: Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>> = Geometry {
+    let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
         lines: Arc::from(lines),
         quads: Arc::from(vec![]),
     };
@@ -97,8 +97,8 @@ fn regression_mask_and_not_multiply() {
 #[test]
 fn regression_line_x_intersection_test() {
     // Vertical line at x=500, going from (500,100) to (500,500)
-    let line = make_line([[500.0, 100.0], [500.0, 500.0]]);
-    let geo: Geometry<Line<LineKernel>, Quad<QuadKernel, LineKernel>> = Geometry {
+    let line = make_line([[500.0, 100.0], [500.0, 500.0]]).unwrap();
+    let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
         lines: Arc::from(vec![line]),
         quads: Arc::from(vec![]),
     };
