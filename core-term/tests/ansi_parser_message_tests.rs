@@ -61,7 +61,7 @@ impl Actor<Vec<u8>, (), ()> for RealParserActor {
 
 struct TestContext {
     cmd_rx: Receiver<Vec<AnsiCommand>>,
-    bytes_processed: Arc<AtomicUsize>,
+    _bytes_processed: Arc<AtomicUsize>,
     parser_tx: Option<actor_scheduler::ActorHandle<Vec<u8>, (), ()>>,
     parser_handle: Option<thread::JoinHandle<()>>,
 }
@@ -86,7 +86,7 @@ impl TestContext {
 
         Self {
             cmd_rx,
-            bytes_processed,
+            _bytes_processed: bytes_processed,
             parser_tx: Some(parser_tx),
             parser_handle: Some(parser_handle),
         }
@@ -421,7 +421,7 @@ impl TerminalMessageChain {
 #[test]
 fn cuj_e2e_complete_message_chain() {
     // Given: A complete terminal message chain
-    let mut chain = TerminalMessageChain::new();
+    let chain = TerminalMessageChain::new();
 
     // When: Terminal output is sent through the chain
     // Simulate: clear screen, move cursor, print text
@@ -467,7 +467,7 @@ fn cuj_e2e_complete_message_chain() {
 #[test]
 fn cuj_e2e_rapid_small_writes() {
     // Given: A complete chain
-    let mut chain = TerminalMessageChain::new();
+    let chain = TerminalMessageChain::new();
 
     // When: Many small writes (simulating character-by-character echo)
     for c in b"typing rapidly...".iter() {
