@@ -1,4 +1,2 @@
 [toolchain]
-channel = "nightly"
-# TODO: Remove type_alias_impl_trait from pixelflow-graphics to enable stable
-# See: pixelflow-graphics/src/fonts/ttf.rs (LineKernel, QuadKernel types)
+channel = "stable"
