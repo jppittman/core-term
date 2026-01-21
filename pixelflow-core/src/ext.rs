@@ -388,15 +388,13 @@ pub trait ManifoldExt: Sized {
     /// // Scale by 2: sample at (x/2, y/2)
     /// let scaled = circle.at(X / 2.0, Y / 2.0, Z, W);
     /// ```
+    /// Domain-generic coordinate transformation (contramap).
+    ///
+    /// Bounds are checked when the result is used as a Manifold, not here.
+    /// This allows `at` to work with any domain P where the coordinate
+    /// expressions are `Manifold<P, Output = I>` and self is `Manifold<(I,I,I,I)>`.
     #[inline(always)]
-    fn at<Cx, Cy, Cz, Cw>(self, x: Cx, y: Cy, z: Cz, w: Cw) -> At<Cx, Cy, Cz, Cw, Self>
-    where
-        Self: Manifold<Field4>,
-        Cx: Manifold<Field4>,
-        Cy: Manifold<Field4>,
-        Cz: Manifold<Field4>,
-        Cw: Manifold<Field4>,
-    {
+    fn at<Cx, Cy, Cz, Cw>(self, x: Cx, y: Cy, z: Cz, w: Cw) -> At<Cx, Cy, Cz, Cw, Self> {
         At {
             inner: self,
             x,

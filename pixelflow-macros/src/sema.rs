@@ -38,7 +38,9 @@ pub struct AnalyzedKernel {
 
 /// Perform semantic analysis on a parsed kernel.
 pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
-    let mut analyzer = SemanticAnalyzer::new();
+    // Anonymous kernels (no struct_decl) allow captured variables from environment
+    let is_anonymous = kernel.struct_decl.is_none();
+    let mut analyzer = SemanticAnalyzer::new(is_anonymous);
 
     // Register all parameters in the symbol table
     for param in &kernel.params {
@@ -57,12 +59,15 @@ pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
 /// The semantic analyzer state.
 struct SemanticAnalyzer {
     symbols: SymbolTable,
+    /// Whether this is an anonymous kernel (allows captured variables).
+    is_anonymous: bool,
 }
 
 impl SemanticAnalyzer {
-    fn new() -> Self {
+    fn new(is_anonymous: bool) -> Self {
         SemanticAnalyzer {
             symbols: SymbolTable::new(),
+            is_anonymous,
         }
     }
 
@@ -162,7 +167,13 @@ impl SemanticAnalyzer {
         match self.symbols.lookup(&name) {
             Some(symbol) => Ok(symbol.kind),
             None => {
-                // Try to find a similar symbol to suggest
+                // For anonymous kernels, unknown symbols are captured from environment
+                // The Rust closure will handle the capture - no error needed
+                if self.is_anonymous {
+                    return Ok(SymbolKind::Local); // Treat as external/captured
+                }
+
+                // For named kernels, undefined symbols are errors
                 let suggestion = self.find_similar_symbol(&name);
                 let msg = match suggestion {
                     Some(similar) => format!(
@@ -352,13 +363,23 @@ mod tests {
 
     #[test]
     fn error_on_undefined_symbol() {
-        let input = quote! { |r: f32| X * X + undefined_var };
+        // Named kernels reject undefined symbols (anonymous kernels allow captures)
+        let input = quote! { struct Test = |r: f32| X * X + undefined_var };
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("undefined symbol"));
+    }
+
+    #[test]
+    fn anonymous_allows_captured_variables() {
+        // Anonymous kernels allow captured variables from environment
+        let input = quote! { |r: f32| X * X + captured_from_env };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+        assert!(result.is_ok(), "Anonymous kernels should allow captured variables");
     }
 
     #[test]
@@ -387,8 +408,8 @@ mod tests {
 
     #[test]
     fn typo_suggestion_for_intrinsic() {
-        // Lowercase "x" should suggest uppercase "X"
-        let input = quote! { || x * x };
+        // Lowercase "x" should suggest uppercase "X" (named kernel rejects typos)
+        let input = quote! { struct Test = || x * x };
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
 
@@ -400,8 +421,8 @@ mod tests {
 
     #[test]
     fn typo_suggestion_for_parameter() {
-        // "radiu" should suggest "radius"
-        let input = quote! { |radius: f32| X - radiu };
+        // "radiu" should suggest "radius" (named kernel rejects typos)
+        let input = quote! { struct Test = |radius: f32| X - radiu };
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
 

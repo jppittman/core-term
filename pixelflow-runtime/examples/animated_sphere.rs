@@ -74,7 +74,7 @@ fn sphere_at(cx: f32, cy: f32, cz: f32, r: f32) -> impl Manifold<Jet3_4, Output 
 /// centered at origin with height = 2.0 (aspect-correct).
 fn screen_remap<M>(inner: M, width: f32, height: f32) -> impl Manifold<Output = Discrete> + Clone
 where
-    M: Manifold<Output = Discrete> + Clone + Send + Sync + 'static,
+    M: Manifold<Output = Discrete> + pixelflow_core::ManifoldExt + Clone + Send + Sync + 'static,
 {
     // Precompute constants
     let half_width = width * 0.5;
@@ -127,7 +127,7 @@ fn build_scene_at_time(
 
     let scene = ColorSurface {
         geometry: sphere,
-        material: ColorReflect { inner: world },
+        material: ColorReflect { inner: world.clone() },
         background: world,
     };
 

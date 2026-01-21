@@ -142,7 +142,7 @@ pub struct VsyncActor {
     clock_control: Option<Sender<ClockCommand>>,
 }
 
-const MAX_TOKENS: u32 = 3;
+const MAX_TOKENS: u32 = 100;
 
 impl VsyncActor {
     /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.

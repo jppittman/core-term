@@ -28,11 +28,11 @@
 
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, KernelDef, LetStmt, LiteralExpr,
-    MethodCallExpr, Param, ParamKind, Stmt, UnaryExpr, UnaryOp,
+    MethodCallExpr, Param, ParamKind, Stmt, StructDecl, UnaryExpr, UnaryOp,
 };
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
-use syn::{Pat, Token, Type};
+use syn::{Pat, Token, Type, Visibility};
 
 /// Parse kernel input from token stream.
 pub fn parse(input: TokenStream) -> syn::Result<KernelDef> {
@@ -44,6 +44,9 @@ struct KernelParser;
 
 impl Parse for KernelDef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        // Try to parse optional struct declaration: [visibility] struct Name =
+        let struct_decl = parse_struct_decl(input)?;
+
         // Parse: |param: Type, ...| body
         input.parse::<Token![|]>()?;
 
@@ -97,10 +100,45 @@ impl Parse for KernelDef {
         let body = convert_expr(syn_expr)?;
 
         Ok(KernelDef {
+            struct_decl,
             params,
             return_ty,
             body,
         })
+    }
+}
+
+/// Try to parse an optional struct declaration.
+///
+/// Grammar: [visibility] 'struct' IDENT '='
+///
+/// Returns None if the input doesn't start with a struct declaration.
+fn parse_struct_decl(input: ParseStream) -> syn::Result<Option<StructDecl>> {
+    // Check if we're looking at a struct declaration
+    // This could be: `pub struct Foo =`, `pub(crate) struct Foo =`, or `struct Foo =`
+
+    // First, try to peek ahead to see if there's a `struct` keyword
+    // We need to handle visibility first since it can consume tokens
+
+    // Use a fork to speculatively parse
+    let fork = input.fork();
+
+    // Try to parse visibility (this handles pub, pub(crate), etc.)
+    let visibility: Visibility = fork.parse()?;
+
+    // Check for `struct` keyword
+    if fork.peek(Token![struct]) {
+        // Commit to parsing the struct declaration
+        input.parse::<Visibility>()?; // consume visibility in real stream
+        input.parse::<Token![struct]>()?;
+
+        let name: syn::Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+
+        Ok(Some(StructDecl { visibility, name }))
+    } else {
+        // Not a struct declaration, leave input unchanged
+        Ok(None)
     }
 }
 
