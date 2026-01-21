@@ -56,13 +56,32 @@ fn determine_display_driver(target_os: &str) -> String {
     let has_web =
         cfg!(feature = "display_web") || std::env::var("CARGO_FEATURE_DISPLAY_WEB").is_ok();
 
-    if has_web {
+    // Check target architecture to allow disabling web driver on non-wasm targets
+    // even if the feature is enabled (e.g. via --all-features)
+    let is_wasm = std::env::var("CARGO_CFG_TARGET_ARCH").map_or(false, |a| a == "wasm32");
+
+    if has_web && is_wasm {
         return "web".to_string();
     }
-    if has_headless && !has_x11 && !has_cocoa {
+
+    // Prioritize OS-specific drivers when multiple features are enabled
+    if target_os == "macos" {
+        if has_cocoa { return "cocoa".to_string(); }
+        if has_headless { return "headless".to_string(); }
+        return "cocoa".to_string();
+    }
+
+    if target_os == "linux" {
+        if has_x11 { return "x11".to_string(); }
+        if has_headless { return "headless".to_string(); }
+        return "x11".to_string();
+    }
+
+    // Fallbacks
+    if has_headless {
         return "headless".to_string();
     }
-    if has_x11 && !has_headless {
+    if has_x11 {
         return "x11".to_string();
     }
     if has_cocoa {
