@@ -31,6 +31,24 @@ impl<Ctx, Body> WithContext<Ctx, Body> {
     }
 }
 
+// 0-element context (empty tuple) - body evaluates directly with original domain
+impl<P, B, Out> Manifold<P> for WithContext<(), B>
+where
+    P: Copy + Send + Sync,
+    B: Manifold<P, Output = Out>,
+{
+    type Output = Out;
+
+    #[inline(always)]
+    fn eval(&self, p: P) -> Self::Output {
+        // No context to add - evaluate body directly
+        self.body.eval(p)
+    }
+}
+
+// Conditional Copy for WithContext<(), B> when B is Copy
+impl<B: Copy> Copy for WithContext<(), B> {}
+
 // 5-element context - KEY TEST (replaces 5 nested Lets)
 impl<P, V0, V1, V2, V3, V4, B, O0, O1, O2, O3, O4, Out> Manifold<P>
     for WithContext<(V0, V1, V2, V3, V4), B>

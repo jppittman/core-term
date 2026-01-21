@@ -139,14 +139,97 @@ macro_rules! impl_base_div_concrete {
 // Apply to Base Types
 // ============================================================================
 
-// Note: We can only implement Add/Sub/Mul/Div for OUR types (X, Y, Z, W).
-// For f32 and i32, the orphan rules prevent us from implementing foreign
-// traits for foreign types. This means:
-// - `X + 1.0` works (X is ours, 1.0 becomes Add<X, f32>)
-// - `1.0 + X` does NOT work (would need impl Add<X> for f32, which is forbidden)
-// If you need `1.0 + X`, write `X + 1.0` or use ManifoldExt methods.
-
 impl_binary_ops_for!(X);
 impl_binary_ops_for!(Y);
 impl_binary_ops_for!(Z);
 impl_binary_ops_for!(W);
+
+// ============================================================================
+// Scalar-on-LHS Operators (e.g., 1.0 - X)
+// ============================================================================
+//
+// Orphan rules require specific impls for each AST type, not generic over trait.
+// This macro generates `impl Add<AstType> for f32` for each AST type.
+
+macro_rules! impl_scalar_lhs_ops {
+    ($ty:ident <$($gen:ident),*>) => {
+        impl<$($gen),*> core::ops::Add<$ty<$($gen),*>> for f32 {
+            type Output = Add<f32, $ty<$($gen),*>>;
+            #[inline(always)]
+            fn add(self, rhs: $ty<$($gen),*>) -> Self::Output { Add(self, rhs) }
+        }
+        impl<$($gen),*> core::ops::Sub<$ty<$($gen),*>> for f32 {
+            type Output = Sub<f32, $ty<$($gen),*>>;
+            #[inline(always)]
+            fn sub(self, rhs: $ty<$($gen),*>) -> Self::Output { Sub(self, rhs) }
+        }
+        impl<$($gen),*> core::ops::Mul<$ty<$($gen),*>> for f32 {
+            type Output = Mul<f32, $ty<$($gen),*>>;
+            #[inline(always)]
+            fn mul(self, rhs: $ty<$($gen),*>) -> Self::Output { Mul(self, rhs) }
+        }
+        impl<$($gen),*> core::ops::Div<$ty<$($gen),*>> for f32 {
+            type Output = Div<f32, $ty<$($gen),*>>;
+            #[inline(always)]
+            fn div(self, rhs: $ty<$($gen),*>) -> Self::Output { Div(self, rhs) }
+        }
+    };
+    // For non-generic types
+    ($ty:ty) => {
+        impl core::ops::Add<$ty> for f32 {
+            type Output = Add<f32, $ty>;
+            #[inline(always)]
+            fn add(self, rhs: $ty) -> Self::Output { Add(self, rhs) }
+        }
+        impl core::ops::Sub<$ty> for f32 {
+            type Output = Sub<f32, $ty>;
+            #[inline(always)]
+            fn sub(self, rhs: $ty) -> Self::Output { Sub(self, rhs) }
+        }
+        impl core::ops::Mul<$ty> for f32 {
+            type Output = Mul<f32, $ty>;
+            #[inline(always)]
+            fn mul(self, rhs: $ty) -> Self::Output { Mul(self, rhs) }
+        }
+        impl core::ops::Div<$ty> for f32 {
+            type Output = Div<f32, $ty>;
+            #[inline(always)]
+            fn div(self, rhs: $ty) -> Self::Output { Div(self, rhs) }
+        }
+    };
+}
+
+// Coordinate variables
+impl_scalar_lhs_ops!(X);
+impl_scalar_lhs_ops!(Y);
+impl_scalar_lhs_ops!(Z);
+impl_scalar_lhs_ops!(W);
+
+// Binary ops
+impl_scalar_lhs_ops!(Add<L, R>);
+impl_scalar_lhs_ops!(Sub<L, R>);
+impl_scalar_lhs_ops!(Mul<L, R>);
+impl_scalar_lhs_ops!(Div<L, R>);
+impl_scalar_lhs_ops!(Max<L, R>);
+impl_scalar_lhs_ops!(Min<L, R>);
+
+// Unary ops
+impl_scalar_lhs_ops!(Sqrt<M>);
+impl_scalar_lhs_ops!(Abs<M>);
+impl_scalar_lhs_ops!(Floor<M>);
+impl_scalar_lhs_ops!(Rsqrt<M>);
+impl_scalar_lhs_ops!(Sin<M>);
+impl_scalar_lhs_ops!(Cos<M>);
+
+// Compound ops
+impl_scalar_lhs_ops!(MulAdd<A, B, C>);
+impl_scalar_lhs_ops!(MulRecip<M>);
+impl_scalar_lhs_ops!(MulRsqrt<L, R>);
+
+// Select
+impl_scalar_lhs_ops!(Select<C, T, F>);
+
+// Binding combinators (for kernel! macro)
+use crate::combinators::context::CtxVar;
+impl_scalar_lhs_ops!(Var<N>);
+impl_scalar_lhs_ops!(CtxVar<N>);

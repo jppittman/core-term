@@ -86,7 +86,7 @@ pub fn eval_one_pixel(x: Field, y: Field) -> Discrete {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world },
+        material: ColorReflect { inner: world.clone() },
         background: world,
     };
 

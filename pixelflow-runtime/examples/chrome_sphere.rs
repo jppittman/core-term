@@ -96,7 +96,7 @@ fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world },
+        material: ColorReflect { inner: world.clone() },
         background: world,
     };
 

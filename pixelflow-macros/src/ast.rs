@@ -29,11 +29,26 @@
 //! ```
 
 use proc_macro2::Span;
-use syn::{Ident, Type};
+use syn::{Ident, Type, Visibility};
+
+/// Optional struct declaration for named kernels.
+///
+/// When present, the kernel emits a named struct instead of an anonymous one.
+/// Example: `kernel! pub struct Circle = |cx: f32, cy: f32, r: f32| -> Field { ... }`
+#[derive(Debug, Clone)]
+pub struct StructDecl {
+    /// Visibility (pub, pub(crate), or inherited).
+    pub visibility: Visibility,
+    /// The struct name.
+    pub name: Ident,
+}
 
 /// A complete kernel definition.
 #[derive(Debug, Clone)]
 pub struct KernelDef {
+    /// Optional struct declaration for named kernels.
+    /// If None, an anonymous closure-based kernel is emitted.
+    pub struct_decl: Option<StructDecl>,
     /// Parameters captured from the closure syntax.
     pub params: Vec<Param>,
     /// Optional return type annotation (e.g., `-> Jet3`).

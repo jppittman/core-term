@@ -150,7 +150,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Field4> for ColorScree
 
 /// Unit sphere centered at origin.
 /// Solves |t * ray| = 1  =>  t = 1 / |ray|
-pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
+pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
     kernel!(|| -> Jet3 {
         let len_sq = X * X + Y * Y + Z * Z;
         1.0 / len_sq.sqrt()
@@ -162,7 +162,7 @@ pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
 ///
 /// TODO: kernel! macro doesn't support Jet3_4 domain yet - needs generic domain support
 #[allow(dead_code)]
-pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Copy {
+pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
     #[derive(Copy, Clone)]
     struct PlaneKernel { h: f32 }
     impl Manifold<Jet3_4> for PlaneKernel {
@@ -1017,7 +1017,7 @@ impl Manifold<Jet3_4> for Checker {
 /// Simple Sky Gradient based on Y direction.
 ///
 /// Uses Lift to project Jet3 → Field (discards derivatives - sky doesn't need AA).
-pub fn sky() -> Lift<impl Manifold<Field4, Output = Field> + Copy> {
+pub fn sky() -> Lift<impl Manifold<Field4, Output = Field> + Clone> {
     Lift(kernel!(|| {
         let t = (Y * 0.5 + 0.5).max(0.0).min(1.0);
         t * 0.8 + 0.1

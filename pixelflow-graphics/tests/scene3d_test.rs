@@ -119,7 +119,7 @@ fn test_chrome_unit_sphere() {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: Reflect { inner: world },
+        material: Reflect { inner: world.clone() },
         background: world,
     };
 
@@ -290,7 +290,7 @@ fn test_color_chrome_sphere() {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world },
+        material: ColorReflect { inner: world.clone() },
         background: world,
     };
 
@@ -449,7 +449,7 @@ fn test_mullet_vs_3channel_comparison() {
                         center: (0.0, 0.0, 4.0),
                         radius: 1.0,
                     },
-                    material: Reflect { inner: world },
+                    material: Reflect { inner: world.clone() },
                     background: world,
                 },
             },
@@ -532,7 +532,7 @@ fn test_mullet_vs_3channel_comparison() {
                     center: (0.0, 0.0, 4.0),
                     radius: 1.0,
                 },
-                material: ColorReflect { inner: world },
+                material: ColorReflect { inner: world.clone() },
                 background: world,
             },
         },
@@ -615,7 +615,7 @@ fn test_work_stealing_benchmark() {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world },
+        material: ColorReflect { inner: world.clone() },
         background: world,
     };
 
