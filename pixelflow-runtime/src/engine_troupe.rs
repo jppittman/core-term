@@ -646,8 +646,15 @@ impl Troupe {
         };
         #[cfg(target_os = "linux")]
         let troupe = {
+            use crate::platform::linux::set_shared_waker;
             use crate::platform::waker::X11Waker;
-            Self::new_with_waker(Some(std::sync::Arc::new(X11Waker::new())))
+            // Create waker and share it with LinuxOps via static.
+            // Both the troupe's ActorHandle and LinuxOps need the same waker:
+            // - ActorHandle calls wake() when sending messages
+            // - LinuxOps calls set_target() when creating the X11 window
+            let waker = X11Waker::new();
+            set_shared_waker(waker.clone());
+            Self::new_with_waker(Some(std::sync::Arc::new(waker)))
         };
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let troupe = Self::new();

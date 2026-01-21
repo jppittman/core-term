@@ -162,6 +162,9 @@ impl sealed::Sealed for crate::combinators::B0 {}
 impl sealed::Sealed for crate::combinators::B1 {}
 impl<U, B> sealed::Sealed for crate::combinators::UInt<U, B> {}
 
+// Context variables (for kernel! macro)
+impl<N> sealed::Sealed for crate::combinators::CtxVar<N> {}
+
 // ============================================================================
 // Base ZST Implementations
 // ============================================================================
@@ -198,6 +201,7 @@ impl crate::Zst for crate::combinators::B0 {}
 impl crate::Zst for crate::combinators::B1 {}
 impl<U: crate::Zst, B: crate::Zst> crate::Zst for crate::combinators::UInt<U, B> {}
 impl<N: crate::Zst> crate::Zst for crate::combinators::Var<N> {}
+impl<N: crate::Zst> crate::Zst for crate::combinators::CtxVar<N> {}
 
 // ============================================================================
 // Operator Trait Implementations (Enumerate operators once)

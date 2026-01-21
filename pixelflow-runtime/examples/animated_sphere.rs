@@ -8,22 +8,25 @@
 //! Animation approach:
 //! - Each frame, a new scene is built with the sphere at the animated position
 //! - The position is computed using sin(t * freq) * amplitude at the app level
+//!
+//! Resize handling:
+//! - App receives Resized events and updates stored dimensions
+//! - Scene is rebuilt with new dimensions on next frame
 
 use actor_scheduler::Message;
-use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
+use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_macros::kernel;
 
-type Field4 = (Field, Field, Field, Field);
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
 };
 use pixelflow_runtime::api::private::EngineData;
-use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventData};
+use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventControl, EngineEventData};
 use pixelflow_runtime::platform::ColorCube;
 use pixelflow_runtime::{Application, EngineConfig, EngineTroupe, RuntimeError, WindowConfig};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -65,33 +68,26 @@ fn sphere_at(cx: f32, cy: f32, cz: f32, r: f32) -> impl Manifold<Jet3_4, Output 
     })(cx, cy, cz, r, EPSILON_SQ)
 }
 
-/// Screen coordinate remapper.
-#[derive(Clone)]
-struct ScreenRemap<M> {
-    inner: M,
-    width: f32,
-    height: f32,
-}
-
-impl<M: ManifoldCompat<Field, Output = Discrete> + Send + Sync> Manifold<Field4>
-    for ScreenRemap<M>
+/// Screen coordinate remapper using kernel! macro.
+///
+/// Maps pixel coordinates (0..width, 0..height) to normalized coordinates
+/// centered at origin with height = 2.0 (aspect-correct).
+fn screen_remap<M>(inner: M, width: f32, height: f32) -> impl Manifold<Output = Discrete> + Clone
+where
+    M: Manifold<Output = Discrete> + Clone + Send + Sync + 'static,
 {
-    type Output = Discrete;
+    // Precompute constants
+    let half_width = width * 0.5;
+    let half_height = height * 0.5;
+    let scale = 2.0 / height;
 
-    fn eval(&self, p: Field4) -> Discrete {
-        let (x, y, z, w) = p;
-        let scale = 2.0 / self.height;
-        let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
-        let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-        At {
-            inner: &self.inner,
-            x: sx,
-            y: sy,
-            z,
-            w,
-        }
-        .collapse()
-    }
+    // The kernel maps screen coords to normalized coords, then samples inner
+    kernel!(|half_w: f32, half_h: f32, scale: f32| -> Discrete {
+        // Map pixel coords to normalized: center at origin, height = 2.0
+        let sx = (X - half_w) * scale;
+        let sy = (half_h - Y) * scale;
+        inner.at(sx, sy, Z, W)
+    })(half_width, half_height, scale)
 }
 
 // ============================================================================
@@ -108,7 +104,11 @@ const RADIUS: f32 = 1.0;
 ///
 /// The animation offset is precomputed at the application level using
 /// sin(t * frequency) * amplitude, then baked into the sphere's center.
-fn build_scene_at_time(t: f32) -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
+fn build_scene_at_time(
+    t: f32,
+    width: u32,
+    height: u32,
+) -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
     // Compute the animated X offset
     let x_offset = (t * FREQUENCY).sin() * AMPLITUDE;
     let cx = BASE_CENTER.0 + x_offset;
@@ -131,11 +131,11 @@ fn build_scene_at_time(t: f32) -> impl Manifold<Output = Discrete> + Clone + Syn
         background: world,
     };
 
-    ScreenRemap {
-        inner: ColorScreenToDir { inner: scene },
-        width: WIDTH as f32,
-        height: HEIGHT as f32,
-    }
+    screen_remap(
+        ColorScreenToDir { inner: scene },
+        width as f32,
+        height as f32,
+    )
 }
 
 // ============================================================================
@@ -147,11 +147,16 @@ fn build_scene_at_time(t: f32) -> impl Manifold<Output = Discrete> + Clone + Syn
 /// Implements the pull-based rendering model:
 /// - Receives `RequestFrame` events from the engine
 /// - Responds with a manifold at the requested timestamp
+/// - Handles resize events to update dimensions
 struct AnimatedSphereApp {
     /// Animation start time
     start: Instant,
     /// Handle to send frames back to the engine
     engine_handle: pixelflow_runtime::api::private::EngineActorHandle,
+    /// Current width (atomic for interior mutability)
+    width: AtomicU32,
+    /// Current height (atomic for interior mutability)
+    height: AtomicU32,
 }
 
 impl Application for AnimatedSphereApp {
@@ -164,8 +169,12 @@ impl Application for AnimatedSphereApp {
                 // Compute elapsed time from animation start
                 let t = timestamp.duration_since(self.start).as_secs_f32();
 
-                // Build the scene at this moment in time with the sphere at the animated position
-                let scene = build_scene_at_time(t);
+                // Get current dimensions
+                let width = self.width.load(Ordering::Relaxed);
+                let height = self.height.load(Ordering::Relaxed);
+
+                // Build the scene at this moment in time with current dimensions
+                let scene = build_scene_at_time(t, width, height);
 
                 let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> = Arc::new(scene);
 
@@ -176,6 +185,21 @@ impl Application for AnimatedSphereApp {
                         arc,
                     ))))
                     .map_err(|e| RuntimeError::EventSendError(e.to_string()))?;
+            }
+            // Handle resize events
+            EngineEvent::Control(EngineEventControl::Resized {
+                width_px, height_px, ..
+            }) => {
+                log::info!("App: Window resized to {}x{}", width_px, height_px);
+                self.width.store(width_px, Ordering::Relaxed);
+                self.height.store(height_px, Ordering::Relaxed);
+            }
+            EngineEvent::Control(EngineEventControl::WindowCreated {
+                width_px, height_px, ..
+            }) => {
+                log::info!("App: Window created {}x{}", width_px, height_px);
+                self.width.store(width_px, Ordering::Relaxed);
+                self.height.store(height_px, Ordering::Relaxed);
             }
             EngineEvent::Control(ctrl) => {
                 log::debug!("App received Control event: {:?}", ctrl);
@@ -217,6 +241,8 @@ fn main() -> anyhow::Result<()> {
     let app = AnimatedSphereApp {
         start,
         engine_handle: engine_handle_for_app,
+        width: AtomicU32::new(WIDTH),
+        height: AtomicU32::new(HEIGHT),
     };
 
     // Register app and create window
@@ -225,7 +251,7 @@ fn main() -> anyhow::Result<()> {
         width: WIDTH,
         height: HEIGHT,
         title: "Animated Sphere".into(),
-        resizable: false,
+        resizable: true,
     };
     let _engine_handle = unregistered_handle.register(Arc::new(app), window)?;
 

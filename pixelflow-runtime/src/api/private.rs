@@ -134,9 +134,9 @@ pub type EngineActorScheduler =
 pub fn create_engine_actor(
     wake_handler: Option<Arc<dyn actor_scheduler::WakeHandler>>,
 ) -> (EngineActorHandle, EngineActorScheduler) {
-    // Note: wake_handler is no longer used by ActorScheduler::new
-    // We should probably remove it from the signature in a future refactor,
-    // but for now we keep it for backward compatibility and ignore it.
-    let _ = wake_handler;
-    actor_scheduler::ActorScheduler::new(DISPLAY_EVENT_BUFFER_SIZE, DISPLAY_EVENT_BURST_LIMIT)
+    actor_scheduler::ActorScheduler::new_with_wake_handler(
+        DISPLAY_EVENT_BURST_LIMIT,
+        DISPLAY_EVENT_BUFFER_SIZE,
+        wake_handler,
+    )
 }
