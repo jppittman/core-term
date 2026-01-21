@@ -8,10 +8,19 @@ use actor_scheduler::{
 };
 use core_term::ansi::{AnsiCommand, AnsiParser, AnsiProcessor};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const CMD_CHANNEL_SIZE: usize = 100;
+const PARSER_BURST_LIMIT: usize = 10;
+const PARSER_BUFFER_SIZE: usize = 64;
+const DEFAULT_SLEEP_MS: u64 = 50;
 
 // =============================================================================
 // Real Parser Actor Implementation
@@ -47,37 +56,78 @@ impl Actor<Vec<u8>, (), ()> for RealParserActor {
 }
 
 // =============================================================================
+// Test Setup Helper
+// =============================================================================
+
+struct TestContext {
+    cmd_rx: Receiver<Vec<AnsiCommand>>,
+    bytes_processed: Arc<AtomicUsize>,
+    parser_tx: Option<actor_scheduler::ActorHandle<Vec<u8>, (), ()>>,
+    parser_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl TestContext {
+    fn new() -> Self {
+        let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CMD_CHANNEL_SIZE);
+        let bytes_processed = Arc::new(AtomicUsize::new(0));
+
+        let (parser_tx, mut parser_rx) =
+            ActorScheduler::<Vec<u8>, (), ()>::new(PARSER_BURST_LIMIT, PARSER_BUFFER_SIZE);
+
+        let bytes_clone = bytes_processed.clone();
+        let parser_handle = thread::spawn(move || {
+            let mut actor = RealParserActor {
+                parser: AnsiProcessor::new(),
+                cmd_tx,
+                bytes_processed: bytes_clone,
+            };
+            parser_rx.run(&mut actor);
+        });
+
+        Self {
+            cmd_rx,
+            bytes_processed,
+            parser_tx: Some(parser_tx),
+            parser_handle: Some(parser_handle),
+        }
+    }
+
+    fn send_data(&self, data: Vec<u8>) {
+        if let Some(tx) = &self.parser_tx {
+            tx.send(Message::Data(data)).unwrap();
+        }
+    }
+
+    fn shutdown(&mut self) {
+        // Drop sender to trigger actor exit
+        if let Some(tx) = self.parser_tx.take() {
+            drop(tx);
+        }
+        // Wait for actor to exit
+        if let Some(h) = self.parser_handle.take() {
+            h.join().unwrap();
+        }
+    }
+}
+
+// =============================================================================
 // PTY-02 Tests with Real Parser
 // =============================================================================
 
 #[test]
 fn cuj_pty02_real_parser_simple_text() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
-    let bytes_processed = Arc::new(AtomicUsize::new(0));
-
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
-
-    let bytes_clone = bytes_processed.clone();
-    let parser_handle = thread::spawn(move || {
-        let mut actor = RealParserActor {
-            parser: AnsiProcessor::new(),
-            cmd_tx,
-            bytes_processed: bytes_clone,
-        };
-        parser_rx.run(&mut actor);
-    });
+    let mut ctx = TestContext::new();
 
     // When: Simple text is sent
     let text = b"Hello".to_vec();
-    parser_tx.send(Message::Data(text)).unwrap();
+    ctx.send_data(text);
 
-    thread::sleep(Duration::from_millis(50));
-    drop(parser_tx);
-    parser_handle.join().unwrap();
+    thread::sleep(Duration::from_millis(DEFAULT_SLEEP_MS));
+    ctx.shutdown();
 
     // Then: Should receive Print commands for each character
-    let commands = cmd_rx.try_recv().unwrap();
+    let commands = ctx.cmd_rx.try_recv().unwrap();
     assert_eq!(commands.len(), 5, "Should have 5 Print commands");
 
     // Verify each character
@@ -97,32 +147,18 @@ fn cuj_pty02_real_parser_simple_text() {
 #[test]
 fn cuj_pty02_real_parser_escape_sequence() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
-    let bytes_processed = Arc::new(AtomicUsize::new(0));
-
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
-
-    let bytes_clone = bytes_processed.clone();
-    let parser_handle = thread::spawn(move || {
-        let mut actor = RealParserActor {
-            parser: AnsiProcessor::new(),
-            cmd_tx,
-            bytes_processed: bytes_clone,
-        };
-        parser_rx.run(&mut actor);
-    });
+    let mut ctx = TestContext::new();
 
     // When: Cursor position escape sequence is sent
     // ESC [ H = cursor to home (1,1)
     let escape_seq = b"\x1b[H".to_vec();
-    parser_tx.send(Message::Data(escape_seq)).unwrap();
+    ctx.send_data(escape_seq);
 
-    thread::sleep(Duration::from_millis(50));
-    drop(parser_tx);
-    parser_handle.join().unwrap();
+    thread::sleep(Duration::from_millis(DEFAULT_SLEEP_MS));
+    ctx.shutdown();
 
     // Then: Should receive a CSI command
-    let commands = cmd_rx.try_recv().unwrap();
+    let commands = ctx.cmd_rx.try_recv().unwrap();
     assert_eq!(commands.len(), 1, "Should have 1 CSI command");
 
     // Verify it's a cursor position command
@@ -143,32 +179,18 @@ fn cuj_pty02_real_parser_escape_sequence() {
 #[test]
 fn cuj_pty02_real_parser_sgr_color() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
-    let bytes_processed = Arc::new(AtomicUsize::new(0));
-
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
-
-    let bytes_clone = bytes_processed.clone();
-    let parser_handle = thread::spawn(move || {
-        let mut actor = RealParserActor {
-            parser: AnsiProcessor::new(),
-            cmd_tx,
-            bytes_processed: bytes_clone,
-        };
-        parser_rx.run(&mut actor);
-    });
+    let mut ctx = TestContext::new();
 
     // When: SGR (Set Graphics Rendition) for red foreground is sent
     // ESC [ 31 m = set foreground to red
     let sgr_red = b"\x1b[31m".to_vec();
-    parser_tx.send(Message::Data(sgr_red)).unwrap();
+    ctx.send_data(sgr_red);
 
-    thread::sleep(Duration::from_millis(50));
-    drop(parser_tx);
-    parser_handle.join().unwrap();
+    thread::sleep(Duration::from_millis(DEFAULT_SLEEP_MS));
+    ctx.shutdown();
 
     // Then: Should receive an SGR command
-    let commands = cmd_rx.try_recv().unwrap();
+    let commands = ctx.cmd_rx.try_recv().unwrap();
     assert_eq!(commands.len(), 1, "Should have 1 SGR command");
 
     match &commands[0] {
@@ -187,32 +209,18 @@ fn cuj_pty02_real_parser_sgr_color() {
 #[test]
 fn cuj_pty02_real_parser_mixed_text_and_escapes() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
-    let bytes_processed = Arc::new(AtomicUsize::new(0));
-
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
-
-    let bytes_clone = bytes_processed.clone();
-    let parser_handle = thread::spawn(move || {
-        let mut actor = RealParserActor {
-            parser: AnsiProcessor::new(),
-            cmd_tx,
-            bytes_processed: bytes_clone,
-        };
-        parser_rx.run(&mut actor);
-    });
+    let mut ctx = TestContext::new();
 
     // When: Mixed content is sent
     // "Hi" + cursor home + "!"
     let mixed = b"Hi\x1b[H!".to_vec();
-    parser_tx.send(Message::Data(mixed)).unwrap();
+    ctx.send_data(mixed);
 
-    thread::sleep(Duration::from_millis(50));
-    drop(parser_tx);
-    parser_handle.join().unwrap();
+    thread::sleep(Duration::from_millis(DEFAULT_SLEEP_MS));
+    ctx.shutdown();
 
     // Then: Should receive Print, CSI, Print in order
-    let commands = cmd_rx.try_recv().unwrap();
+    let commands = ctx.cmd_rx.try_recv().unwrap();
     assert_eq!(commands.len(), 4, "Should have 4 commands (H, i, CSI, !)");
 
     // Verify order
@@ -225,40 +233,26 @@ fn cuj_pty02_real_parser_mixed_text_and_escapes() {
 #[test]
 fn cuj_pty02_real_parser_incremental_escape() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
-    let bytes_processed = Arc::new(AtomicUsize::new(0));
-
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
-
-    let bytes_clone = bytes_processed.clone();
-    let parser_handle = thread::spawn(move || {
-        let mut actor = RealParserActor {
-            parser: AnsiProcessor::new(),
-            cmd_tx,
-            bytes_processed: bytes_clone,
-        };
-        parser_rx.run(&mut actor);
-    });
+    let mut ctx = TestContext::new();
 
     // When: Escape sequence arrives in pieces (simulating network fragmentation)
     // First just ESC
-    parser_tx.send(Message::Data(vec![0x1b])).unwrap();
+    ctx.send_data(vec![0x1b]);
     thread::sleep(Duration::from_millis(10));
 
     // Then [
-    parser_tx.send(Message::Data(vec![b'['])).unwrap();
+    ctx.send_data(vec![b'[']);
     thread::sleep(Duration::from_millis(10));
 
     // Then H
-    parser_tx.send(Message::Data(vec![b'H'])).unwrap();
+    ctx.send_data(vec![b'H']);
 
-    thread::sleep(Duration::from_millis(50));
-    drop(parser_tx);
-    parser_handle.join().unwrap();
+    thread::sleep(Duration::from_millis(DEFAULT_SLEEP_MS));
+    ctx.shutdown();
 
     // Then: Parser should buffer and produce a complete CSI command
     let mut all_commands = Vec::new();
-    while let Ok(cmds) = cmd_rx.try_recv() {
+    while let Ok(cmds) = ctx.cmd_rx.try_recv() {
         all_commands.extend(cmds);
     }
 
@@ -276,32 +270,18 @@ fn cuj_pty02_real_parser_incremental_escape() {
 #[test]
 fn cuj_pty02_real_parser_c0_control() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
-    let bytes_processed = Arc::new(AtomicUsize::new(0));
-
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
-
-    let bytes_clone = bytes_processed.clone();
-    let parser_handle = thread::spawn(move || {
-        let mut actor = RealParserActor {
-            parser: AnsiProcessor::new(),
-            cmd_tx,
-            bytes_processed: bytes_clone,
-        };
-        parser_rx.run(&mut actor);
-    });
+    let mut ctx = TestContext::new();
 
     // When: C0 control characters are sent
     // BEL (0x07), LF (0x0A), CR (0x0D)
     let controls = vec![0x07, 0x0A, 0x0D];
-    parser_tx.send(Message::Data(controls)).unwrap();
+    ctx.send_data(controls);
 
-    thread::sleep(Duration::from_millis(50));
-    drop(parser_tx);
-    parser_handle.join().unwrap();
+    thread::sleep(Duration::from_millis(DEFAULT_SLEEP_MS));
+    ctx.shutdown();
 
     // Then: Should receive C0 control commands
-    let commands = cmd_rx.try_recv().unwrap();
+    let commands = ctx.cmd_rx.try_recv().unwrap();
     assert_eq!(commands.len(), 3, "Should have 3 C0 control commands");
 
     // All should be C0Control variants
@@ -317,9 +297,9 @@ fn cuj_pty02_real_parser_c0_control() {
 #[test]
 fn cuj_pty02_real_parser_high_throughput() {
     // Given: A real parser actor
+    // Requires larger buffers than default
     let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(1000);
     let bytes_processed = Arc::new(AtomicUsize::new(0));
-
     let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(100, 128);
 
     let bytes_clone = bytes_processed.clone();
@@ -370,7 +350,7 @@ fn cuj_pty02_real_parser_high_throughput() {
 
 /// Simulates the complete terminal message chain
 struct TerminalMessageChain {
-    parser_tx: actor_scheduler::ActorHandle<Vec<u8>, (), ()>,
+    parser_tx: Option<actor_scheduler::ActorHandle<Vec<u8>, (), ()>>,
     commands_received: Arc<Mutex<Vec<AnsiCommand>>>,
     parser_handle: Option<thread::JoinHandle<()>>,
     app_handle: Option<thread::JoinHandle<()>>,
@@ -382,10 +362,11 @@ impl TerminalMessageChain {
         let commands_clone = commands_received.clone();
 
         // Parser → App channel
-        let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
+        let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CMD_CHANNEL_SIZE);
 
         // ReadThread → Parser channel (actor scheduler)
-        let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
+        let (parser_tx, mut parser_rx) =
+            ActorScheduler::<Vec<u8>, (), ()>::new(PARSER_BURST_LIMIT, PARSER_BUFFER_SIZE);
 
         // Spawn parser thread
         let parser_handle = thread::spawn(move || {
@@ -405,7 +386,7 @@ impl TerminalMessageChain {
         });
 
         Self {
-            parser_tx,
+            parser_tx: Some(parser_tx),
             commands_received,
             parser_handle: Some(parser_handle),
             app_handle: Some(app_handle),
@@ -413,7 +394,9 @@ impl TerminalMessageChain {
     }
 
     fn send_bytes(&self, data: Vec<u8>) {
-        self.parser_tx.send(Message::Data(data)).unwrap();
+        if let Some(tx) = &self.parser_tx {
+            tx.send(Message::Data(data)).unwrap();
+        }
     }
 
     fn get_commands(&self) -> Vec<AnsiCommand> {
@@ -422,7 +405,9 @@ impl TerminalMessageChain {
 
     fn shutdown(mut self) {
         // Drop sender to trigger chain shutdown
-        drop(self.parser_tx);
+        if let Some(tx) = self.parser_tx.take() {
+            drop(tx);
+        }
 
         if let Some(h) = self.parser_handle.take() {
             h.join().unwrap();
@@ -436,7 +421,7 @@ impl TerminalMessageChain {
 #[test]
 fn cuj_e2e_complete_message_chain() {
     // Given: A complete terminal message chain
-    let chain = TerminalMessageChain::new();
+    let mut chain = TerminalMessageChain::new();
 
     // When: Terminal output is sent through the chain
     // Simulate: clear screen, move cursor, print text
@@ -445,16 +430,44 @@ fn cuj_e2e_complete_message_chain() {
     chain.send_bytes(b"Hello, Terminal!".to_vec()); // Print text
 
     thread::sleep(Duration::from_millis(100));
+    let commands = chain.get_commands();
     chain.shutdown();
 
     // Then: All commands should be received by app
-    // This validates the complete: PTY → ReadThread → Parser → App chain
+    assert!(!commands.is_empty(), "Should receive commands");
+
+    // Validate we got the specific commands we sent
+    // 1. Clear Screen (CSI)
+    let has_clear = commands.iter().any(|c| {
+        if let AnsiCommand::Csi(csi) = c {
+            format!("{:?}", csi).contains("EraseInDisplay")
+        } else {
+            false
+        }
+    });
+    assert!(has_clear, "Should contain Clear Screen command");
+
+    // 2. Cursor Position (CSI)
+    let has_cursor = commands.iter().any(|c| {
+        if let AnsiCommand::Csi(csi) = c {
+            format!("{:?}", csi).contains("CursorPosition")
+        } else {
+            false
+        }
+    });
+    assert!(has_cursor, "Should contain Cursor Position command");
+
+    // 3. Text (Print)
+    let text: String = commands.iter()
+        .filter_map(|c| if let AnsiCommand::Print(ch) = c { Some(*ch) } else { None })
+        .collect();
+    assert!(text.contains("Hello, Terminal!"), "Should contain printed text");
 }
 
 #[test]
 fn cuj_e2e_rapid_small_writes() {
     // Given: A complete chain
-    let chain = TerminalMessageChain::new();
+    let mut chain = TerminalMessageChain::new();
 
     // When: Many small writes (simulating character-by-character echo)
     for c in b"typing rapidly...".iter() {
