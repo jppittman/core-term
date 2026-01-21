@@ -10,9 +10,7 @@ use actor_scheduler::{
     Actor, ActorHandle, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{
-    Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
-};
+use pixelflow_core::{At, Discrete, Manifold, ManifoldExt, Select, W, X, Y, Z};
 
 /// Adapter to send PTY commands to TerminalApp actor.
 pub struct TerminalAppSender {
@@ -89,30 +87,6 @@ fn find_font_path() -> std::path::PathBuf {
     // Return workspace path and let MmapSource::open fail with a good error
     workspace_path
 }
-
-/// Bounded glyph manifold (returns coverage in [0,1], 0 if out of bounds).
-/// Select<Cond, CachedGlyph, f32>
-type BoundedGlyph =
-    Select<And<And<And<Ge<X, f32>, Le<X, f32>>, Ge<Y, f32>>, Le<Y, f32>>, CachedGlyph, f32>;
-
-/// Positioned glyph manifold
-type PositionedGlyph = At<Sub<X, f32>, Sub<Y, f32>, Z, W, BoundedGlyph>;
-
-/// Lerp manifold: X + Z * (Y - X)
-/// Maps X -> background, Y -> foreground, Z -> coverage
-type LerpManifold = Add<X, Mul<Z, Sub<Y, X>>>;
-
-/// Blended channel: Lerp(coverage, background, foreground)
-type BlendedChannel = At<f32, f32, PositionedGlyph, f32, LerpManifold>;
-
-/// Concrete leaf type: a terminal cell with background and foreground blending.
-type TerminalCellLeaf = At<
-    BlendedChannel, // R
-    BlendedChannel, // G
-    BlendedChannel, // B
-    f32,            // A
-    ColorCube,      // M
->;
 
 /// Layout parameters for a terminal cell.
 #[derive(Clone, Copy)]
