@@ -177,7 +177,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
         syn::Expr::Binary(expr_binary) => {
             let op = BinaryOp::from_syn(&expr_binary.op).ok_or_else(|| {
                 syn::Error::new_spanned(
-                    &expr_binary.op,
+                    expr_binary.op,
                     format!(
                         "unsupported binary operator `{}`\n\
                          note: kernel! supports: + - * / % < <= > >= == != & |",
@@ -198,7 +198,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
         syn::Expr::Unary(expr_unary) => {
             let op = UnaryOp::from_syn(&expr_unary.op).ok_or_else(|| {
                 syn::Error::new_spanned(
-                    &expr_unary.op,
+                    expr_unary.op,
                     "unsupported unary operator\n\
                      note: kernel! supports: - (negation), ! (logical not)",
                 )

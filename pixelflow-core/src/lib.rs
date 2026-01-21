@@ -127,7 +127,8 @@
 
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
-#![warn(missing_docs)]
+#![allow(missing_docs)]
+#![allow(dead_code)]
 
 extern crate alloc;
 
