@@ -49,13 +49,16 @@ impl AnalyticalLine {
         // Winding direction
         let dir = if dy > 0.0 { -1.0 } else { 1.0 };
 
+        let y_min = y0.min(y1);
+        let y_max = y0.max(y1);
+
         Some(Self {
             a,
             b,
             c,
             dir,
-            y_min: y0.min(y1),
-            y_max: y0.max(y1),
+            y_min,
+            y_max,
         })
     }
 }
@@ -99,6 +102,8 @@ pub struct AnalyticalQuad {
     u_x: f32, u_y: f32, u_c: f32,
     v_x: f32, v_y: f32, v_c: f32,
     w_x: f32, w_y: f32, w_c: f32,
+    // Bounding box for early rejection (and correct finite segment rendering)
+    y_min: f32, y_max: f32,
     // Curve classification
     is_linear: bool,
     // For winding: need to know curve orientation
@@ -115,6 +120,9 @@ impl AnalyticalQuad {
         let dy12 = y2 - y1;
         let cross = dx01 * dy12 - dy01 * dx12;
 
+        let y_min = y0.min(y1).min(y2);
+        let y_max = y0.max(y1).max(y2);
+
         if cross.abs() < 1e-6 {
             // Degenerate linear case
             let dx = x2 - x0;
@@ -127,6 +135,7 @@ impl AnalyticalQuad {
                     u_x: 0.0, u_y: 0.0, u_c: 1.0,
                     v_x: 0.0, v_y: 0.0, v_c: 0.0,
                     w_x: 0.0, w_y: 0.0, w_c: 0.0,
+                    y_min, y_max,
                     is_linear: true,
                     orientation: 1.0,
                 };
@@ -141,6 +150,7 @@ impl AnalyticalQuad {
                 u_x: a, u_y: b, u_c: c,
                 v_x: 0.0, v_y: 0.0, v_c: 0.0,
                 w_x: 0.0, w_y: 0.0, w_c: 0.0,
+                y_min, y_max,
                 is_linear: true,
                 orientation: if dy > 0.0 { -1.0 } else { 1.0 },
             }
@@ -165,6 +175,7 @@ impl AnalyticalQuad {
                     u_x: 0.0, u_y: 0.0, u_c: 1.0,
                     v_x: 0.0, v_y: 0.0, v_c: 0.0,
                     w_x: 0.0, w_y: 0.0, w_c: 0.0,
+                    y_min, y_max,
                     is_linear: true,
                     orientation: 1.0,
                 };
@@ -196,6 +207,7 @@ impl AnalyticalQuad {
                 u_x, u_y, u_c,
                 v_x, v_y, v_c,
                 w_x, w_y, w_c,
+                y_min, y_max,
                 is_linear: false,
                 orientation,
             }
@@ -210,13 +222,16 @@ impl Manifold<Field4> for AnalyticalQuad {
     fn eval(&self, p: Field4) -> Field {
         if self.is_linear {
             // Linear case: f = u (signed distance)
-            let k = kernel!(|u_x: f32, u_y: f32, u_c: f32, orientation: f32| {
+            let k = kernel!(|u_x: f32, u_y: f32, u_c: f32, orientation: f32, y_min: f32, y_max: f32| {
+                // Early rejection
+                let in_y_range = (Y >= y_min) & (Y < y_max);
                 let f = X * u_x + Y * u_y + u_c;
                 // Coverage with 1-pixel filter
                 let coverage = (f * -1.0 + 0.5).max(0.0).min(1.0);
-                orientation * coverage
+                let winding = orientation * coverage;
+                in_y_range.select(winding, 0.0)
             });
-            k(self.u_x, self.u_y, self.u_c, self.orientation).eval(p)
+            k(self.u_x, self.u_y, self.u_c, self.orientation, self.y_min, self.y_max).eval(p)
         } else {
             // Quadratic Loop-Blinn case: Compose Manifolds directly, no big kernel
 
@@ -243,8 +258,11 @@ impl Manifold<Field4> for AnalyticalQuad {
             let scaled_f = f / grad_mag.max(1e-6);
             let coverage = (scaled_f * -1.0 + 0.5).max(0.0).min(1.0);
 
-            // Apply orientation for winding
-            (coverage * self.orientation).eval(p)
+            // Apply orientation for winding and Y-bounds check
+            // Even for curves, we need to bound the vertical extent to prevent
+            // infinite strips from filling the bounding box.
+            let in_y_range = Y.ge(self.y_min) & Y.lt(self.y_max);
+            in_y_range.select(coverage * self.orientation, 0.0).eval(p)
         }
     }
 }
