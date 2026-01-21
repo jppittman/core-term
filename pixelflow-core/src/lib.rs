@@ -165,6 +165,9 @@ pub mod combinators;
 /// Fluent API extensions.
 pub mod ext;
 
+/// E-Graph for equality saturation and expression optimization.
+pub mod egraph;
+
 // ============================================================================
 // Re-exports (The "Prelude")
 // ============================================================================
