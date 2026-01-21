@@ -14,12 +14,28 @@ use log::{error, info};
 use pixelflow_graphics::render::color::Bgra8;
 use pixelflow_graphics::render::Frame;
 use std::mem;
+use std::sync::OnceLock;
 use x11::xlib;
 
 use super::events;
 
 /// Linux platform pixel type (BGRA for X11).
 pub type LinuxPixel = Bgra8;
+
+/// Shared X11Waker instance.
+///
+/// The waker is created by the troupe and stored here so that LinuxOps
+/// can use the same instance. This ensures that when the troupe calls
+/// wake() on message send, it wakes the same waker that has been
+/// initialized with the X11 display/window via set_target().
+static SHARED_WAKER: OnceLock<X11Waker> = OnceLock::new();
+
+/// Set the shared X11Waker for the Linux platform.
+///
+/// Called by the troupe before creating LinuxOps.
+pub fn set_shared_waker(waker: X11Waker) {
+    SHARED_WAKER.set(waker).ok();
+}
 
 /// Linux platform operations - direct X11 implementation.
 pub struct LinuxOps {
@@ -30,10 +46,14 @@ pub struct LinuxOps {
 
 impl LinuxOps {
     /// Create new Linux platform ops.
+    ///
+    /// Uses the shared waker set by `set_shared_waker()`, or creates a new
+    /// one if not set (for backwards compatibility in tests).
     pub fn new(engine_handle: EngineActorHandle) -> Result<Self, RuntimeError> {
+        let waker = SHARED_WAKER.get().cloned().unwrap_or_else(X11Waker::new);
         Ok(Self {
             engine_handle,
-            waker: X11Waker::new(),
+            waker,
             window: None,
         })
     }

@@ -2,4 +2,4 @@ pub mod events;
 pub mod platform;
 pub mod window;
 
-pub use platform::LinuxOps;
+pub use platform::{set_shared_waker, LinuxOps};
