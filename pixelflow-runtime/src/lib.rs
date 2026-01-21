@@ -39,11 +39,11 @@ pub use display::messages::{DisplayControl, DisplayMgmt};
 pub use engine_troupe::Troupe as EngineTroupe;
 pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
 
-#[cfg(use_web_display)]
+#[cfg(all(use_web_display, target_arch = "wasm32"))]
 use wasm_bindgen::prelude::*;
 
 // This code is dogshit and should be in the platform itself....
-#[cfg(use_web_display)]
+#[cfg(all(use_web_display, target_arch = "wasm32"))]
 #[wasm_bindgen]
 pub fn pixelflow_init_worker(
     canvas: web_sys::OffscreenCanvas,
@@ -54,7 +54,7 @@ pub fn pixelflow_init_worker(
 }
 
 // This code is dogshit and should be in the platform itself....
-#[cfg(use_web_display)]
+#[cfg(all(use_web_display, target_arch = "wasm32"))]
 #[wasm_bindgen]
 pub fn pixelflow_dispatch_event(
     sab: js_sys::SharedArrayBuffer,

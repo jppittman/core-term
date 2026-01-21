@@ -32,7 +32,10 @@ impl Actor<(), (), ()> for LatencyActor {
     }
 
     fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        Ok(hint)
+        match hint {
+            SystemStatus::Idle => Ok(ActorStatus::Idle),
+            SystemStatus::Busy => Ok(ActorStatus::Busy),
+        }
     }
 }
 
