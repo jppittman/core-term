@@ -15,7 +15,7 @@
 
 use actor_scheduler::Message;
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Discrete, Field, Manifold};
+use pixelflow_core::{Discrete, Manifold};
 use pixelflow_macros::kernel;
 
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);

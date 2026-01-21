@@ -254,7 +254,9 @@ fn directory_allows_cross_actor_messaging() {
 /// Simulates the Troupe struct that troupe! would generate
 struct TestTroupe {
     directory: TestDirectory,
+    #[allow(dead_code)]
     alpha_scheduler: ActorScheduler<AlphaData, AlphaControl, AlphaManagement>,
+    #[allow(dead_code)]
     beta_scheduler: ActorScheduler<BetaData, BetaControl, BetaManagement>,
 }
 

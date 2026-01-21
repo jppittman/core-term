@@ -13,7 +13,7 @@ use actor_scheduler::{
     Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SendError,
     SystemStatus,
 };
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -82,7 +82,8 @@ fn backoff_does_not_overflow_on_large_attempts() {
 #[test]
 fn zero_burst_limit_does_not_cause_infinite_loop() {
     // Burst limit of 0 could cause issues in the loop logic
-    let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(0, 10);
+    let (tx, rx) = ActorScheduler::<i32, i32, i32>::new(0, 10);
+    let mut rx = rx;
     let processed = Arc::new(AtomicUsize::new(0));
     let processed_clone = processed.clone();
 

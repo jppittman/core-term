@@ -216,6 +216,61 @@ fn token_bucket_does_not_underflow() {
     );
 }
 
+#[test]
+fn slow_consumer_backpressure_does_not_deadlock() {
+    // This tests that backpressure propagation works without deadlocking
+    // when the consumer is slower than the producer.
+
+    // Create a scheduler with a very small buffer to force backpressure
+    let (tx, rx) =
+        ActorScheduler::<RenderedResponse, VsyncCommand, VsyncManagement>::new(5, 1);
+    let mut rx = rx;
+
+    let processed = Arc::new(AtomicUsize::new(0));
+    let processed_clone = processed.clone();
+
+    let handle = thread::spawn(move || {
+        struct SlowActor {
+            processed: Arc<AtomicUsize>,
+        }
+        impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for SlowActor {
+            fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
+                // Simulate slow processing
+                thread::sleep(Duration::from_millis(10));
+                self.processed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn handle_control(&mut self, _: VsyncCommand) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult {
+                Ok(())
+            }
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
+            }
+        }
+        rx.run(&mut SlowActor {
+            processed: processed_clone,
+        });
+    });
+
+    // Send more messages than buffer size
+    for i in 0..20 {
+        tx.send(Message::Data(RenderedResponse {
+            frame_number: i,
+            rendered_at: Instant::now(),
+        }))
+        .unwrap();
+    }
+
+    thread::sleep(Duration::from_millis(500));
+    drop(tx);
+    handle.join().unwrap();
+
+    assert_eq!(processed.load(Ordering::SeqCst), 20);
+}
+
 // ============================================================================
 // POTENTIAL BUG: FPS Division by Zero
 // If elapsed time is zero (Instant::now() - fps_start == 0), dividing by it panics.

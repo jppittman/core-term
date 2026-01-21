@@ -3,6 +3,8 @@
 //! Note: This is a COMPILATION TEST to prove flat context tuples
 //! avoid trait solver explosion that occurs with nested Let.
 
+#![allow(unused_imports)]
+#![allow(dead_code)]
 use pixelflow_core::{Field, Manifold, WithContext, X, Y};
 
 type Field4 = (Field, Field, Field, Field);

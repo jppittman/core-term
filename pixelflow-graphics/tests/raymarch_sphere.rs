@@ -127,7 +127,6 @@ fn test_sphere_on_floor() {
 /// Test with solid gray material (non-reflective)
 #[test]
 fn test_sphere_on_matte_floor() {
-    use pixelflow_core::jet::Jet3;
 
     const W: usize = 400;
     const H: usize = 300;

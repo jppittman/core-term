@@ -2,6 +2,8 @@
 //!
 //! This is the key test - the old nested Let approach failed with >4 params.
 
+#![allow(unused_imports)]
+#![allow(dead_code)]
 use pixelflow_core::{Field, Manifold};
 use pixelflow_macros::kernel;
 
