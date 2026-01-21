@@ -23,9 +23,6 @@ pub(super) enum Utf8DecodeResult {
 }
 
 // --- Constants for Control Code Ranges ---
-// (These are from your provided code and look good for module-level constants)
-const C0_CONTROL_PRINTABLE_PART1_RANGE: core::ops::RangeInclusive<u8> = 0x00..=0x1A; // NUL to SUB
-const C0_CONTROL_PRINTABLE_PART2_RANGE: core::ops::RangeInclusive<u8> = 0x1C..=0x1F; // FS to US
 const DEL_BYTE: u8 = 0x7F;
 const ESC_BYTE: u8 = 0x1B;
 
@@ -39,25 +36,19 @@ const UTF8_ASCII_MAX: u8 = 0x7F;
 const UTF8_CONT_MIN: u8 = 0x80; // Start of continuation byte range
 const UTF8_CONT_MAX: u8 = 0xBF; // End of continuation byte range
 const UTF8_2_BYTE_MIN: u8 = 0xC2; // Excludes overlong 0xC0, 0xC1
-                                  // const UTF8_2_BYTE_MAX: u8 = 0xDF; // Defined by next min - 1
+const UTF8_2_BYTE_MAX: u8 = 0xDF;
 const UTF8_3_BYTE_MIN: u8 = 0xE0;
-// const UTF8_3_BYTE_MAX: u8 = 0xEF; // Defined by next min - 1
+const UTF8_3_BYTE_MAX: u8 = 0xEF;
 const UTF8_4_BYTE_MIN: u8 = 0xF0;
 const UTF8_4_BYTE_MAX: u8 = 0xF4; // Max valid start for 4-byte sequence (RFC 3629)
-const UTF8_INVALID_AS_START_MIN_RANGE1: u8 = UTF8_CONT_MIN; // 0x80 (can't start with continuation)
-const UTF8_INVALID_AS_START_MAX_RANGE1: u8 = 0xC1; // Up to (and including) overlong 0xC1
-const UTF8_INVALID_AS_START_MIN_RANGE2: u8 = 0xF5; // Invalid byte, per RFC 3629 (can't be > F4)
 
-// --- Const Ranges for Utf8Decoder to avoid runtime allocation ---
-const UTF8_ASCII_RANGE: std::ops::RangeInclusive<u8> = 0x00..=UTF8_ASCII_MAX;
-const UTF8_INVALID_EARLY_START_RANGE: std::ops::RangeInclusive<u8> =
-    UTF8_INVALID_AS_START_MIN_RANGE1..=UTF8_INVALID_AS_START_MAX_RANGE1; // 0x80..=0xC1
-const UTF8_2_BYTE_START_RANGE: std::ops::RangeInclusive<u8> = UTF8_2_BYTE_MIN..=0xDF;
-const UTF8_3_BYTE_START_RANGE: std::ops::RangeInclusive<u8> = UTF8_3_BYTE_MIN..=0xEF;
-const UTF8_4_BYTE_START_RANGE: std::ops::RangeInclusive<u8> = UTF8_4_BYTE_MIN..=UTF8_4_BYTE_MAX; // 0xF0..=0xF4
-const UTF8_INVALID_LATE_START_RANGE: std::ops::RangeInclusive<u8> =
-    UTF8_INVALID_AS_START_MIN_RANGE2..=0xFF; // 0xF5..=0xFF
-const UTF8_CONTINUATION_RANGE: std::ops::RangeInclusive<u8> = UTF8_CONT_MIN..=UTF8_CONT_MAX; // 0x80..=0xBF
+// Invalid ranges for pattern matching
+// 0x80..=0xC1 are invalid start bytes
+const UTF8_INVALID_START_MIN: u8 = 0x80;
+const UTF8_INVALID_START_MAX: u8 = 0xC1;
+// 0xF5..=0xFF are invalid start bytes
+const UTF8_INVALID_LATE_MIN: u8 = 0xF5;
+const UTF8_INVALID_LATE_MAX: u8 = 0xFF;
 
 /// Represents a single token identified by the lexer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,44 +86,38 @@ impl Utf8Decoder {
     #[inline]
     fn decode_first_byte(&mut self, byte: u8) -> Utf8DecodeResult {
         match byte {
-            b if UTF8_ASCII_RANGE.contains(&b) => Utf8DecodeResult::Decoded(b as char),
-            b if UTF8_2_BYTE_START_RANGE.contains(&b) => {
+            0x00..=UTF8_ASCII_MAX => Utf8DecodeResult::Decoded(byte as char),
+            UTF8_2_BYTE_MIN..=UTF8_2_BYTE_MAX => {
                 self.expected = 2;
-                self.buffer[0] = b;
+                self.buffer[0] = byte;
                 self.len = 1;
                 Utf8DecodeResult::NeedsMoreBytes
             }
-            b if UTF8_3_BYTE_START_RANGE.contains(&b) => {
+            UTF8_3_BYTE_MIN..=UTF8_3_BYTE_MAX => {
                 self.expected = 3;
-                self.buffer[0] = b;
+                self.buffer[0] = byte;
                 self.len = 1;
                 Utf8DecodeResult::NeedsMoreBytes
             }
-            b if UTF8_4_BYTE_START_RANGE.contains(&b) => {
+            UTF8_4_BYTE_MIN..=UTF8_4_BYTE_MAX => {
                 self.expected = 4;
-                self.buffer[0] = b;
+                self.buffer[0] = byte;
                 self.len = 1;
                 Utf8DecodeResult::NeedsMoreBytes
             }
             // Catches invalid start bytes: 0x80-0xC1 (continuation / overlong C0/C1) and 0xF5-0xFF
-            b if UTF8_INVALID_EARLY_START_RANGE.contains(&b)
-                || UTF8_INVALID_LATE_START_RANGE.contains(&b) =>
-            {
-                warn!("invalid utf8 sequence byte: {:X?}", b);
+            UTF8_INVALID_START_MIN..=UTF8_INVALID_START_MAX
+            | UTF8_INVALID_LATE_MIN..=UTF8_INVALID_LATE_MAX => {
+                warn!("invalid utf8 sequence byte: {:X?}", byte);
                 self.reset();
                 Utf8DecodeResult::InvalidSequence
-            }
-            _ => {
-                unreachable!(
-                    "This default branch should ideally not be hit if ranges cover all u8 values."
-                );
             }
         }
     }
 
     #[inline]
     fn decode_continuation_byte(&mut self, byte: u8) -> Utf8DecodeResult {
-        if !UTF8_CONTINUATION_RANGE.contains(&byte) {
+        if !(UTF8_CONT_MIN..=UTF8_CONT_MAX).contains(&byte) {
             // Current `byte` is not a valid UTF-8 continuation.
             // The previously buffered sequence is now considered invalid.
             self.reset();
@@ -212,10 +197,11 @@ impl AnsiLexer {
     /// Used when processing a byte from a ground state (no active UTF-8 sequence).
     #[inline]
     fn is_control_code(byte: u8) -> bool {
-        (C0_CONTROL_PRINTABLE_PART1_RANGE.contains(&byte))
-            || (C0_CONTROL_PRINTABLE_PART2_RANGE.contains(&byte))
-            || byte == DEL_BYTE
-            || byte == ESC_BYTE
+        // C0 Part 1: 0x00..=0x1A
+        // C0 Part 2: 0x1C..=0x1F
+        // DEL: 0x7F
+        // ESC: 0x1B
+        matches!(byte, 0x00..=0x1A | 0x1C..=0x1F | DEL_BYTE | ESC_BYTE)
     }
 
     fn process_byte_as_new_token(&mut self, byte: u8) {
