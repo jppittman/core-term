@@ -21,7 +21,6 @@ use std::time::Duration;
 enum MockAnsiCommand {
     Print(char),
     Newline,
-    CursorMove(u32, u32),
 }
 
 /// Parser actor that mimics ParserThread behavior
@@ -66,11 +65,13 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
 }
 
 /// App actor that receives parsed commands
+#[allow(dead_code)]
 struct MockAppActor {
     commands_received: Arc<Mutex<Vec<Vec<MockAnsiCommand>>>>,
 }
 
 impl MockAppActor {
+    #[allow(dead_code)]
     fn new() -> (Self, Arc<Mutex<Vec<Vec<MockAnsiCommand>>>>) {
         let commands = Arc::new(Mutex::new(Vec::new()));
         (

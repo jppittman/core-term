@@ -7,7 +7,6 @@ use crate::keys::{KeySymbol, Modifiers};
 // use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::term::{
     modes::{DecModeConstant, StandardModeConstant}, // For DECTCEM test
-    snapshot::SelectionRange,
     AnsiCommand,
     ControlEvent,
     CursorRenderState,
@@ -24,6 +23,9 @@ use crate::term::{
     UserInputAction,
 };
 use pixelflow_runtime::input::MouseButton; // For mouse input
+
+#[cfg(test)]
+use crate::term::snapshot::SelectionRange;
 
 // Default scrollback for tests, can be adjusted.
 // const TEST_SCROLLBACK_LIMIT: usize = 100;
@@ -1232,7 +1234,6 @@ fn test_primary_device_attributes_response() {
 #[cfg(test)]
 mod selection_logic_tests {
     use super::*;
-    use crate::term::snapshot::SelectionRange;
 
     #[test]
     fn test_start_selection() {
@@ -1348,7 +1349,6 @@ mod selection_logic_tests {
 #[cfg(test)]
 mod get_selected_text_tests {
     use super::*;
-    use crate::term::snapshot::{Point, SelectionRange};
 
     #[test]
     fn test_get_selected_text_no_selection() {
