@@ -10,7 +10,6 @@ use pixelflow_core::{
     Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select,
     Sub, W, X, Y, Z,
 };
-use pixelflow_macros::kernel;
 use std::sync::Arc;
 
 // Import analytical curve kernels
@@ -171,6 +170,7 @@ impl<K> Line<K> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Line segment optimized with precomputed division reciprocal.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct OptLine {
     x0: f32,
@@ -202,6 +202,7 @@ impl OptLine {
 }
 
 /// Quadratic curve optimized with precomputed reciprocals.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct OptQuad {
     // Bezier coefficients
