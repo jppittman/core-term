@@ -749,28 +749,12 @@ struct TerminalAppParamsRegistered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::commands::AnsiCommand;
     use crate::io::PtyCommand;
-    use crate::term::{EmulatorInput, TerminalEmulator, UserInputAction};
-    use actor_scheduler::{Actor, ActorStatus};
+    use crate::term::TerminalEmulator;
+    use actor_scheduler::Actor;
     use pixelflow_runtime::input::{KeySymbol, Modifiers};
     use pixelflow_runtime::{EngineEventControl, EngineEventManagement, WindowId};
-    use std::sync::mpsc::{Receiver, SyncSender};
-
-    // Define a DummyPixel struct for testing
-    #[derive(Debug, Clone, Copy, Default, PartialEq)]
-    struct DummyPixel;
-    impl pixelflow_graphics::render::Pixel for DummyPixel {
-        fn from_u32(_: u32) -> Self {
-            Self
-        }
-        fn to_u32(self) -> u32 {
-            0
-        }
-        fn from_rgba(_r: f32, _g: f32, _b: f32, _a: f32) -> Self {
-            Self
-        }
-    }
+    use std::sync::mpsc::Receiver;
 
     // Helper to create a test instance
     // Returns scheduler to keep doorbell channel alive during test
@@ -803,7 +787,6 @@ mod tests {
         let (mut app, pty_rx, _, _scheduler) = create_test_app();
 
         // Initial size is 80x24
-        use crate::term::TerminalInterface;
         let snapshot_initial = app.emulator.get_render_snapshot().expect("Snapshot");
         assert_eq!(snapshot_initial.dimensions, (80, 24));
 
