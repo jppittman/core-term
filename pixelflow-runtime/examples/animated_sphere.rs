@@ -82,7 +82,8 @@ where
     let scale = 2.0 / height;
 
     // The kernel maps screen coords to normalized coords, then samples inner
-    kernel!(|half_w: f32, half_h: f32, scale: f32| -> Discrete {
+    // Field -> Discrete: domain is Field (for coordinate math), output is Discrete
+    kernel!(|half_w: f32, half_h: f32, scale: f32| Field -> Discrete {
         // Map pixel coords to normalized: center at origin, height = 2.0
         let sx = (X - half_w) * scale;
         let sy = (half_h - Y) * scale;

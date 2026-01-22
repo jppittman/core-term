@@ -152,6 +152,30 @@ impl_binary_ops_for!(W);
 // This macro generates `impl Add<AstType> for f32` for each AST type.
 
 macro_rules! impl_scalar_lhs_ops {
+    // For CtxVar with const generic (type + const INDEX)
+    // Must be first to avoid matching ($ty:ty)
+    (CtxVar) => {
+        impl<__A, const __I: usize> core::ops::Add<CtxVar<__A, __I>> for f32 {
+            type Output = Add<f32, CtxVar<__A, __I>>;
+            #[inline(always)]
+            fn add(self, rhs: CtxVar<__A, __I>) -> Self::Output { Add(self, rhs) }
+        }
+        impl<__A, const __I: usize> core::ops::Sub<CtxVar<__A, __I>> for f32 {
+            type Output = Sub<f32, CtxVar<__A, __I>>;
+            #[inline(always)]
+            fn sub(self, rhs: CtxVar<__A, __I>) -> Self::Output { Sub(self, rhs) }
+        }
+        impl<__A, const __I: usize> core::ops::Mul<CtxVar<__A, __I>> for f32 {
+            type Output = Mul<f32, CtxVar<__A, __I>>;
+            #[inline(always)]
+            fn mul(self, rhs: CtxVar<__A, __I>) -> Self::Output { Mul(self, rhs) }
+        }
+        impl<__A, const __I: usize> core::ops::Div<CtxVar<__A, __I>> for f32 {
+            type Output = Div<f32, CtxVar<__A, __I>>;
+            #[inline(always)]
+            fn div(self, rhs: CtxVar<__A, __I>) -> Self::Output { Div(self, rhs) }
+        }
+    };
     ($ty:ident <$($gen:ident),*>) => {
         impl<$($gen),*> core::ops::Add<$ty<$($gen),*>> for f32 {
             type Output = Add<f32, $ty<$($gen),*>>;
@@ -232,4 +256,4 @@ impl_scalar_lhs_ops!(Select<C, T, F>);
 // Binding combinators (for kernel! macro)
 use crate::combinators::context::CtxVar;
 impl_scalar_lhs_ops!(Var<N>);
-impl_scalar_lhs_ops!(CtxVar<N>);
+impl_scalar_lhs_ops!(CtxVar);

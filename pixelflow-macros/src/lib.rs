@@ -38,15 +38,14 @@
 mod annotate;
 mod ast;
 mod codegen;
+mod egraph;
+mod fold;
 mod lexer;
 mod manifold_expr;
 mod optimize;
 mod parser;
 mod sema;
 mod symbol;
-
-/// E-graph for equality saturation and algebraic simplification.
-mod egraph;
 
 use proc_macro::TokenStream;
 use quote::format_ident;

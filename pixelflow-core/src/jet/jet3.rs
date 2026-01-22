@@ -458,6 +458,9 @@ impl Computational for Jet3 {
     }
 }
 
+// Jet3 is a coordinate type
+impl crate::numeric::Coordinate for Jet3 {}
+
 // ============================================================================
 // Selectable trait implementation (Jet3)
 // ============================================================================

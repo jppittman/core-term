@@ -21,7 +21,7 @@ pub use binding::{
     Var, UTerm, B0, B1, UInt,
 };
 pub use block::Block;
-pub use context::{CtxVar, WithContext};  // Flat context prototype
+pub use context::{A0, A1, A2, A3, CtxVar, WithContext};  // Array-based context
 pub use fix::Fix;
 pub use map::{ClosureMap, Map};
 pub use pack::Pack;

@@ -51,7 +51,10 @@ pub struct KernelDef {
     pub struct_decl: Option<StructDecl>,
     /// Parameters captured from the closure syntax.
     pub params: Vec<Param>,
-    /// Optional return type annotation (e.g., `-> Jet3`).
+    /// Optional domain type annotation (e.g., `Field` in `Field -> Discrete`).
+    /// When specified separately from return type, allows non-Coordinate output types.
+    pub domain_ty: Option<Type>,
+    /// Optional return type annotation (e.g., `-> Jet3` or `-> Discrete`).
     pub return_ty: Option<Type>,
     /// The kernel body expression.
     pub body: Expr,

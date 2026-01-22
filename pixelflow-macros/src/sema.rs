@@ -228,12 +228,12 @@ impl SemanticAnalyzer {
         None
     }
 
-    /// Known methods from ManifoldExt and standard numeric operations.
+    /// Known methods from ManifoldExt and standard operations.
     const KNOWN_METHODS: &'static [&'static str] = &[
         // ManifoldExt methods
         "abs", "sqrt", "floor", "ceil", "round", "fract",
         "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-        "exp", "ln", "log2", "log10", "pow",
+        "exp", "exp2", "ln", "log2", "log10", "pow",
         "min", "max", "clamp",
         "hypot", "rsqrt", "recip",
         // Comparison methods
@@ -246,6 +246,8 @@ impl SemanticAnalyzer {
         "constant", "collapse",
         // Unary
         "neg",
+        // Clone for reusing expressions
+        "clone",
     ];
 
     /// Analyze a method call.
@@ -285,7 +287,7 @@ impl SemanticAnalyzer {
                 ),
                 None => format!(
                     "unknown method '{}'\n\
-                     note: common methods: sqrt, abs, sin, cos, min, max, select\n\
+                     note: common methods: sqrt, abs, sin, cos, exp, min, max, clone\n\
                      help: see ManifoldExt trait for available methods",
                     method_name
                 ),
@@ -453,13 +455,12 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("unknown method"));
-        // The similar method "sqrt" should be suggested
     }
 
     #[test]
     fn known_methods_accepted() {
         // All ManifoldExt methods should be accepted
-        let input = quote! { || X.sqrt().abs().sin().cos() };
+        let input = quote! { || X.sqrt().abs().sin().cos().clone() };
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
         assert!(result.is_ok());
