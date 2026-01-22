@@ -1,8 +1,11 @@
-//! # PixelFlow ML: Linear Attention as Harmonic Global Illumination
+//! # PixelFlow ML: Neural Networks for Graphics and Compilers
 //!
-//! This crate unifies two seemingly disparate fields through a profound insight:
+//! This crate provides neural network primitives for two domains:
 //!
-//! **Linear Attention IS Harmonic Global Illumination.**
+//! 1. **Linear Attention as Harmonic Global Illumination** - Unifying ML and graphics
+//! 2. **NNUE for Instruction Selection** - Neural-guided compiler optimization
+//!
+//! ## Linear Attention IS Harmonic Global Illumination
 //!
 //! ## The Mathematical Connection
 //!
@@ -53,11 +56,16 @@
 //!
 //! The pixelflow manifold system provides the substrate for both.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
 extern crate alloc;
+
+pub mod nnue;
+
+#[cfg(feature = "training")]
+pub mod training;
 
 use alloc::vec::Vec;
 use pixelflow_core::{Field, ManifoldExt, ShCoeffs};
