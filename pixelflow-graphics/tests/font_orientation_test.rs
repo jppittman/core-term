@@ -165,12 +165,12 @@ fn letter_a_has_crossbar() {
 
     // Find the row with maximum width (the crossbar has solid fill)
     let mut max_width = 0;
-    let mut crossbar_row = search_start;
+    let mut _crossbar_row = search_start;
     for y in search_start..search_end {
         let w = row_width(&frame, y, threshold);
         if w > max_width {
             max_width = w;
-            crossbar_row = y;
+            _crossbar_row = y;
         }
     }
 
