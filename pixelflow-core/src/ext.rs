@@ -60,8 +60,8 @@
 use crate::Manifold;
 use crate::combinators::{At, ClosureMap, Map, Select};
 use crate::ops::{
-    Abs, Add, Cos, Div, Exp2, Floor, Ge, Gt, Le, Log2, Lt, Max, Min, Mul, Neg, Rsqrt, Sin, Sqrt,
-    Sub,
+    Abs, Add, Cos, Div, Exp, Exp2, Floor, Ge, Gt, Le, Log2, Lt, Max, Min, Mul, MulAdd, Neg, Rsqrt,
+    Sin, Sqrt, Sub,
 };
 
 use alloc::sync::Arc;
@@ -207,6 +207,12 @@ pub trait ManifoldExt: Sized {
         Exp2(self)
     }
 
+    /// Natural exponential (e^x).
+    #[inline(always)]
+    fn exp(self) -> Exp<Self> {
+        Exp(self)
+    }
+
     // =========================================================================
     // Binary Operations (no domain constraint)
     // =========================================================================
@@ -245,6 +251,14 @@ pub trait ManifoldExt: Sized {
     #[inline(always)]
     fn min<R>(self, rhs: R) -> Min<Self, R> {
         Min(self, rhs)
+    }
+
+    /// Fused multiply-add: self * b + c
+    ///
+    /// More efficient than separate multiply and add operations on most hardware.
+    #[inline(always)]
+    fn mul_add<B, C>(self, b: B, c: C) -> MulAdd<Self, B, C> {
+        MulAdd(self, b, c)
     }
 
     // =========================================================================
