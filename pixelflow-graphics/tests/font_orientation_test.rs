@@ -52,14 +52,14 @@ fn letter_a_apex_is_at_top() {
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(&color_manifold, &mut frame, 1);
-    let _pixels = &frame.data;
+    let pixels = &frame.data;
 
     // Debug: print the rendered 'A'
     println!("\nRendered 'A' at size 48 ({}x{}):", width, height);
     for y in 0..height {
         print!("{:2} | ", y);
         for x in 0..width {
-            let intensity = _pixels[y * width + x].r();
+            let intensity = pixels[y * width + x].r();
             let ch = if intensity > 128 {
                 '#'
             } else if intensity > 32 {
@@ -138,7 +138,6 @@ fn letter_a_has_crossbar() {
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(&color_manifold, &mut frame, 1);
-    let _pixels = &frame.data;
 
     let threshold = 32;
 
@@ -165,17 +164,12 @@ fn letter_a_has_crossbar() {
 
     // Find the row with maximum width (the crossbar has solid fill)
     let mut max_width = 0;
-    let mut _crossbar_row = search_start;
     for y in search_start..search_end {
         let w = row_width(&frame, y, threshold);
         if w > max_width {
             max_width = w;
-            _crossbar_row = y;
         }
     }
-
-    // The crossbar should be significantly wider than the apex (top)
-    let _apex_width = row_width(&frame, top_row + 2, threshold);
 
     assert!(max_width > 0, "Should have rendered content for crossbar search area");
 
@@ -202,7 +196,6 @@ fn letter_v_point_is_at_bottom() {
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(&color_manifold, &mut frame, 1);
-    let _pixels = &frame.data;
 
     // Find the vertical bounds (use threshold 32 for cleaner edges)
     let threshold = 32;
