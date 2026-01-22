@@ -2,13 +2,20 @@
 name = "pixelflow-ml"
 version = "0.1.0"
 edition = "2024"
-description = "Linear Attention as Harmonic Global Illumination"
+description = "Neural networks for graphics and compiler optimization"
 
 [lints]
 workspace = true
 
 [lib]
 bench = false
+
+[features]
+default = []
+# Enable std for benchmarking and training data generation
+std = []
+# Enable training data generation (implies std)
+training = ["std"]
 
 [dependencies]
 pixelflow-core = { path = "../pixelflow-core" }
