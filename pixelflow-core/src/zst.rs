@@ -141,6 +141,7 @@ impl<M> sealed::Sealed for crate::ops::Sin<M> {}
 impl<M> sealed::Sealed for crate::ops::Cos<M> {}
 impl<M> sealed::Sealed for crate::ops::Log2<M> {}
 impl<M> sealed::Sealed for crate::ops::Exp2<M> {}
+impl<M> sealed::Sealed for crate::ops::Exp<M> {}
 impl<M> sealed::Sealed for crate::ops::Neg<M> {}
 impl<M> sealed::Sealed for crate::ops::BNot<M> {}
 impl<A, B, C> sealed::Sealed for crate::ops::MulAdd<A, B, C> {}
@@ -162,8 +163,14 @@ impl sealed::Sealed for crate::combinators::B0 {}
 impl sealed::Sealed for crate::combinators::B1 {}
 impl<U, B> sealed::Sealed for crate::combinators::UInt<U, B> {}
 
+// Context array position markers (for kernel! macro)
+impl sealed::Sealed for crate::combinators::A0 {}
+impl sealed::Sealed for crate::combinators::A1 {}
+impl sealed::Sealed for crate::combinators::A2 {}
+impl sealed::Sealed for crate::combinators::A3 {}
+
 // Context variables (for kernel! macro)
-impl<N> sealed::Sealed for crate::combinators::CtxVar<N> {}
+impl<A, const I: usize> sealed::Sealed for crate::combinators::CtxVar<A, I> {}
 
 // ============================================================================
 // Base ZST Implementations
@@ -201,7 +208,14 @@ impl crate::Zst for crate::combinators::B0 {}
 impl crate::Zst for crate::combinators::B1 {}
 impl<U: crate::Zst, B: crate::Zst> crate::Zst for crate::combinators::UInt<U, B> {}
 impl<N: crate::Zst> crate::Zst for crate::combinators::Var<N> {}
-impl<N: crate::Zst> crate::Zst for crate::combinators::CtxVar<N> {}
+
+// Context array position markers
+impl crate::Zst for crate::combinators::A0 {}
+impl crate::Zst for crate::combinators::A1 {}
+impl crate::Zst for crate::combinators::A2 {}
+impl crate::Zst for crate::combinators::A3 {}
+
+impl<A: crate::Zst, const I: usize> crate::Zst for crate::combinators::CtxVar<A, I> {}
 
 // ============================================================================
 // Operator Trait Implementations (Enumerate operators once)
@@ -353,6 +367,7 @@ impl<M: crate::Zst> crate::Zst for crate::ops::Sin<M> {}
 impl<M: crate::Zst> crate::Zst for crate::ops::Cos<M> {}
 impl<M: crate::Zst> crate::Zst for crate::ops::Log2<M> {}
 impl<M: crate::Zst> crate::Zst for crate::ops::Exp2<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::Exp<M> {}
 impl<M: crate::Zst> crate::Zst for crate::ops::Neg<M> {}
 impl<M: crate::Zst> crate::Zst for crate::ops::BNot<M> {}
 
@@ -439,6 +454,7 @@ impl<M: crate::Zst + Copy> Copy for crate::ops::Sin<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Cos<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Log2<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Exp2<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::Exp<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::Neg<M> {}
 impl<M: crate::Zst + Copy> Copy for crate::ops::BNot<M> {}
 

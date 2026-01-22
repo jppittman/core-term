@@ -9,7 +9,7 @@
 //! 3. **Zero Propagation**: `x * 0.0` → `0.0`
 //! 4. **E-Graph Saturation**: Discovers all equivalent forms via rewrite rules
 //! 5. **FMA Fusion**: `a * b + c` → `MulAdd(a, b, c)` when profitable
-//! 6. **Rsqrt Fusion**: `x / sqrt(y)` → `MulRsqrt(x, y)` when profitable
+//! 6. **Rsqrt**: `1 / sqrt(y)` → `rsqrt(y)` (real instruction)
 //!
 //! These optimizations reduce the size of the generated expression tree,
 //! which reduces compile time and runtime overhead (fewer function calls).
@@ -56,19 +56,43 @@ pub fn optimize_with_egraph(mut analyzed: AnalyzedKernel, costs: &CostModel) -> 
 
 /// Optimize a single expression using e-graph saturation.
 fn optimize_expr_with_egraph(expr: Expr, costs: &CostModel) -> Expr {
-    let mut ctx = EGraphContext::new();
+    match expr {
+        // Preserve block structure, optimize each part independently
+        Expr::Block(mut block) => {
+            for stmt in &mut block.stmts {
+                if let Stmt::Let(let_stmt) = stmt {
+                    let init = std::mem::replace(
+                        &mut let_stmt.init,
+                        make_literal(0.0, Span::call_site()),
+                    );
+                    let_stmt.init = optimize_expr_with_egraph(init, costs);
+                }
+            }
+            if let Some(final_expr) = block.expr.take() {
+                block.expr = Some(Box::new(optimize_expr_with_egraph(*final_expr, costs)));
+            }
+            Expr::Block(block)
+        }
 
-    // Convert AST to e-graph, getting the root e-class
-    let root = ctx.expr_to_egraph(&expr);
+        // Preserve method call structure, optimize receiver and args
+        Expr::MethodCall(mut call) => {
+            call.receiver = Box::new(optimize_expr_with_egraph(*call.receiver, costs));
+            call.args = call.args
+                .into_iter()
+                .map(|arg| optimize_expr_with_egraph(arg, costs))
+                .collect();
+            Expr::MethodCall(call)
+        }
 
-    // Run equality saturation to discover all equivalent forms
-    ctx.egraph.saturate();
-
-    // Extract optimal expression tree
-    let tree = ctx.egraph.extract_tree_with_costs(root, costs);
-
-    // Convert back to AST
-    ctx.tree_to_expr(&tree)
+        // Pure expressions: use egraph optimization
+        expr => {
+            let mut ctx = EGraphContext::new();
+            let root = ctx.expr_to_egraph(&expr);
+            ctx.egraph.saturate();
+            let tree = ctx.egraph.extract_tree_with_costs(root, costs);
+            ctx.tree_to_expr(&tree)
+        }
+    }
 }
 
 // ============================================================================
@@ -121,6 +145,26 @@ impl EGraphContext {
         self.get_or_create_var(&name)
     }
 
+    /// Check if a method is known and can be converted to ENode.
+    fn is_known_method(method: &str, arg_count: usize) -> bool {
+        match method {
+            // Unary methods (0 args)
+            "sqrt" | "rsqrt" | "recip" | "abs" | "neg"
+            | "floor" | "ceil" | "round" | "fract"
+            | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
+            | "exp" | "exp2" | "ln" | "log2" | "log10" => arg_count == 0,
+
+            // Binary methods (1 arg)
+            "min" | "max" | "atan2" | "pow" | "hypot"
+            | "lt" | "le" | "gt" | "ge" | "eq" | "ne" => arg_count == 1,
+
+            // Ternary methods (2 args)
+            "mul_add" | "select" | "clamp" => arg_count == 2,
+
+            _ => false,
+        }
+    }
+
     /// Convert an AST expression to an e-graph, returning the root e-class.
     fn expr_to_egraph(&mut self, expr: &Expr) -> EClassId {
         match expr {
@@ -130,71 +174,157 @@ impl EGraphContext {
                 if let Some(val) = extract_f64_from_lit(&lit.lit) {
                     self.egraph.add(ENode::constant(val as f32))
                 } else {
-                    // Non-numeric literal - treat as a unique variable
-                    let name = format!("__lit_{:?}", lit.span);
-                    self.get_or_create_var(&name)
+                    // Non-numeric literal - preserve original
+                    self.create_opaque_var("lit", expr)
                 }
             }
 
             Expr::Binary(binary) => {
-                let lhs = self.expr_to_egraph(&binary.lhs);
-                let rhs = self.expr_to_egraph(&binary.rhs);
+                // Check if this is a supported binary op BEFORE converting children
+                // Unsupported ops are preserved as opaque expressions
+                match binary.op {
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+                    | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+                    | BinaryOp::Eq | BinaryOp::Ne => {
+                        // Supported - convert children
+                        let lhs = self.expr_to_egraph(&binary.lhs);
+                        let rhs = self.expr_to_egraph(&binary.rhs);
 
-                let node = match binary.op {
-                    BinaryOp::Add => ENode::Add(lhs, rhs),
-                    BinaryOp::Sub => ENode::Sub(lhs, rhs),
-                    BinaryOp::Mul => ENode::Mul(lhs, rhs),
-                    BinaryOp::Div => ENode::Div(lhs, rhs),
-                    // For other ops, we can't optimize them - treat as opaque
-                    _ => {
-                        // Create a unique "opaque" variable for unsupported ops
-                        let name = format!("__binop_{:?}", binary.span);
-                        return self.get_or_create_var(&name);
+                        let node = match binary.op {
+                            BinaryOp::Add => ENode::Add(lhs, rhs),
+                            BinaryOp::Sub => ENode::Sub(lhs, rhs),
+                            BinaryOp::Mul => ENode::Mul(lhs, rhs),
+                            BinaryOp::Div => ENode::Div(lhs, rhs),
+                            BinaryOp::Lt => ENode::Lt(lhs, rhs),
+                            BinaryOp::Le => ENode::Le(lhs, rhs),
+                            BinaryOp::Gt => ENode::Gt(lhs, rhs),
+                            BinaryOp::Ge => ENode::Ge(lhs, rhs),
+                            BinaryOp::Eq => ENode::Eq(lhs, rhs),
+                            BinaryOp::Ne => ENode::Ne(lhs, rhs),
+                            _ => unreachable!(),
+                        };
+                        self.egraph.add(node)
                     }
-                };
-                self.egraph.add(node)
+                    // For other ops (Rem, And, Or, BitAnd, BitOr, BitXor, Shl, Shr)
+                    // preserve as opaque expression with original structure
+                    _ => self.create_opaque_var("binop", expr),
+                }
             }
 
             Expr::Unary(unary) => {
-                let operand = self.expr_to_egraph(&unary.operand);
-
-                let node = match unary.op {
-                    UnaryOp::Neg => ENode::Neg(operand),
-                    UnaryOp::Not => {
-                        // Boolean not - treat as opaque
-                        let name = format!("__not_{:?}", unary.span);
-                        return self.get_or_create_var(&name);
+                match unary.op {
+                    UnaryOp::Neg => {
+                        let operand = self.expr_to_egraph(&unary.operand);
+                        self.egraph.add(ENode::Neg(operand))
                     }
-                };
-                self.egraph.add(node)
+                    UnaryOp::Not => {
+                        // Boolean not - preserve original
+                        self.create_opaque_var("not", expr)
+                    }
+                }
             }
 
             Expr::MethodCall(call) => {
                 let method = call.method.to_string();
+
+                // Check if this is a known method BEFORE converting children
+                // Unknown methods preserve the original expression structure
+                if !Self::is_known_method(&method, call.args.len()) {
+                    return self.create_opaque_var("method", expr);
+                }
+
                 let receiver = self.expr_to_egraph(&call.receiver);
 
                 match method.as_str() {
+                    // === Unary methods ===
                     "sqrt" => self.egraph.add(ENode::Sqrt(receiver)),
+                    "rsqrt" => self.egraph.add(ENode::Rsqrt(receiver)),
+                    "recip" => self.egraph.add(ENode::Recip(receiver)),
                     "abs" => self.egraph.add(ENode::Abs(receiver)),
-                    "min" if call.args.len() == 1 => {
+                    "neg" => self.egraph.add(ENode::Neg(receiver)),
+                    "floor" => self.egraph.add(ENode::Floor(receiver)),
+                    "ceil" => self.egraph.add(ENode::Ceil(receiver)),
+                    "round" => self.egraph.add(ENode::Round(receiver)),
+                    "fract" => self.egraph.add(ENode::Fract(receiver)),
+                    "sin" => self.egraph.add(ENode::Sin(receiver)),
+                    "cos" => self.egraph.add(ENode::Cos(receiver)),
+                    "tan" => self.egraph.add(ENode::Tan(receiver)),
+                    "asin" => self.egraph.add(ENode::Asin(receiver)),
+                    "acos" => self.egraph.add(ENode::Acos(receiver)),
+                    "atan" => self.egraph.add(ENode::Atan(receiver)),
+                    "exp" => self.egraph.add(ENode::Exp(receiver)),
+                    "exp2" => self.egraph.add(ENode::Exp2(receiver)),
+                    "ln" => self.egraph.add(ENode::Ln(receiver)),
+                    "log2" => self.egraph.add(ENode::Log2(receiver)),
+                    "log10" => self.egraph.add(ENode::Log10(receiver)),
+
+                    // === Binary methods ===
+                    "min" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
                         self.egraph.add(ENode::Min(receiver, arg))
                     }
-                    "max" if call.args.len() == 1 => {
+                    "max" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
                         self.egraph.add(ENode::Max(receiver, arg))
                     }
-                    "mul_add" if call.args.len() == 2 => {
-                        // receiver.mul_add(b, c) = receiver * b + c
+                    "atan2" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Atan2(receiver, arg))
+                    }
+                    "pow" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Pow(receiver, arg))
+                    }
+                    "hypot" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Hypot(receiver, arg))
+                    }
+
+                    // === Comparison methods ===
+                    "lt" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Lt(receiver, arg))
+                    }
+                    "le" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Le(receiver, arg))
+                    }
+                    "gt" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Gt(receiver, arg))
+                    }
+                    "ge" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Ge(receiver, arg))
+                    }
+                    "eq" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Eq(receiver, arg))
+                    }
+                    "ne" => {
+                        let arg = self.expr_to_egraph(&call.args[0]);
+                        self.egraph.add(ENode::Ne(receiver, arg))
+                    }
+
+                    // === Ternary methods ===
+                    "mul_add" => {
                         let b = self.expr_to_egraph(&call.args[0]);
                         let c = self.expr_to_egraph(&call.args[1]);
                         self.egraph.add(ENode::MulAdd(receiver, b, c))
                     }
-                    _ => {
-                        // Unknown method - treat as opaque
-                        let name = unique_opaque_name(&format!("method_{}_", method));
-                        self.get_or_create_var(&name)
+                    "select" => {
+                        let if_true = self.expr_to_egraph(&call.args[0]);
+                        let if_false = self.expr_to_egraph(&call.args[1]);
+                        self.egraph.add(ENode::Select(receiver, if_true, if_false))
                     }
+                    "clamp" => {
+                        let min_val = self.expr_to_egraph(&call.args[0]);
+                        let max_val = self.expr_to_egraph(&call.args[1]);
+                        self.egraph.add(ENode::Clamp(receiver, min_val, max_val))
+                    }
+
+                    // Should not reach here due to is_known_method check
+                    _ => unreachable!("Unknown method {} should have been handled as opaque", method),
                 }
             }
 
@@ -243,6 +373,12 @@ impl EGraphContext {
                     .get(*idx as usize)
                     .cloned()
                     .unwrap_or_else(|| format!("__var{}", idx));
+
+                // Check if this is an opaque variable - restore original expression
+                if let Some(original) = self.opaque_exprs.get(&name) {
+                    return original.clone();
+                }
+
                 Expr::Ident(IdentExpr {
                     name: Ident::new(&name, span),
                     span,
@@ -304,11 +440,11 @@ impl EGraphContext {
             }
 
             ExprTree::Recip(a) => {
-                // recip(x) = 1.0 / x, we emit as a method call since pixelflow-core has recip()
-                Expr::MethodCall(MethodCallExpr {
-                    receiver: Box::new(self.tree_to_expr(a)),
-                    method: Ident::new("recip", span),
-                    args: vec![],
+                // recip(x) = 1.0 / x - emit as division since there's no Recip combinator
+                Expr::Binary(BinaryExpr {
+                    op: BinaryOp::Div,
+                    lhs: Box::new(make_literal(1.0, span)),
+                    rhs: Box::new(self.tree_to_expr(a)),
                     span,
                 })
             }
@@ -340,15 +476,6 @@ impl EGraphContext {
                     receiver: Box::new(self.tree_to_expr(a)),
                     method: Ident::new("mul_add", span),
                     args: vec![self.tree_to_expr(b), self.tree_to_expr(c)],
-                    span,
-                })
-            }
-
-            ExprTree::MulRsqrt(a, b) => {
-                Expr::MethodCall(MethodCallExpr {
-                    receiver: Box::new(self.tree_to_expr(a)),
-                    method: Ident::new("mul_rsqrt", span),
-                    args: vec![self.tree_to_expr(b)],
                     span,
                 })
             }
@@ -761,11 +888,12 @@ mod tests {
 
     #[test]
     fn test_egraph_div_sqrt_to_rsqrt() {
-        // x / sqrt(y) should become x * rsqrt(y) then mul_rsqrt
+        // x / sqrt(y) should become x * rsqrt(y) via algebra:
+        // x / sqrt(y) = x * (1/sqrt(y)) = x * rsqrt(y)
         let input = quote! { |x: f32, y: f32| x / y.sqrt() };
         let debug = optimize_code_egraph(input, &CostModel::with_fast_rsqrt());
-        // Should be converted to mul_rsqrt (fused form)
-        assert!(debug.contains("mul_rsqrt") || debug.contains("rsqrt"));
+        // Should use rsqrt (real instruction) instead of 1/sqrt
+        assert!(debug.contains("rsqrt"));
     }
 
     #[test]

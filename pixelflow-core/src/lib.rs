@@ -175,7 +175,7 @@ pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
-pub use numeric::Computational;
+pub use numeric::{Computational, Coordinate};
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
@@ -773,6 +773,52 @@ impl Discrete {
 }
 
 // ============================================================================
+// Bitwise Operations for Discrete (required by Computational)
+// ============================================================================
+
+impl core::ops::BitAnd for Discrete {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0.bitand(rhs.0))
+    }
+}
+
+impl core::ops::BitOr for Discrete {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0.bitor(rhs.0))
+    }
+}
+
+impl core::ops::Not for Discrete {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(self.0.not())
+    }
+}
+
+// ============================================================================
+// Computational Implementation for Discrete
+// ============================================================================
+
+impl numeric::Computational for Discrete {
+    #[inline(always)]
+    fn from_f32(val: f32) -> Self {
+        // Direct truncation to u32, then splat
+        Self(NativeU32Simd::splat(val as u32))
+    }
+
+    #[inline(always)]
+    fn sequential(start: f32) -> Self {
+        // Splat the starting value (Discrete doesn't have meaningful sequential semantics)
+        Self::from_f32(start)
+    }
+}
+
+// ============================================================================
 // Computational Implementation for Field (Public API)
 // ============================================================================
 
@@ -787,6 +833,9 @@ impl numeric::Computational for Field {
         Self(NativeSimd::sequential(start))
     }
 }
+
+// Field is a coordinate type
+impl numeric::Coordinate for Field {}
 
 // ============================================================================
 // Selectable Implementation for Field (Internal)
