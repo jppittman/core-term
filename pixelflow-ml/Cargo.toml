@@ -35,3 +35,7 @@ harness = false
 [[bench]]
 name = "manifold_hce_validation"
 harness = false
+
+[[bench]]
+name = "nnue_training_suite"
+harness = false

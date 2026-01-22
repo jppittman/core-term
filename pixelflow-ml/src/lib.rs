@@ -70,6 +70,9 @@ pub mod nonlinear_eval;
 #[cfg(feature = "training")]
 pub mod training;
 
+#[cfg(feature = "training")]
+pub mod nnue_trainer;
+
 use alloc::vec::Vec;
 use pixelflow_core::{Field, ManifoldExt, ShCoeffs};
 
