@@ -65,6 +65,7 @@ extern crate alloc;
 pub mod nnue;
 pub mod evaluator;
 pub mod hce_extractor;
+pub mod nonlinear_eval;
 
 #[cfg(feature = "training")]
 pub mod training;
