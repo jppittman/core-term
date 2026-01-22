@@ -39,3 +39,7 @@ harness = false
 [[bench]]
 name = "nnue_training_suite"
 harness = false
+
+[[bench]]
+name = "generated_kernels"
+harness = false
