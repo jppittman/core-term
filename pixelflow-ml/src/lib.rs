@@ -63,6 +63,7 @@
 extern crate alloc;
 
 pub mod nnue;
+pub mod evaluator;
 
 #[cfg(feature = "training")]
 pub mod training;
