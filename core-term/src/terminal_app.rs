@@ -58,14 +58,15 @@ fn find_font_path() -> std::path::PathBuf {
     if let Ok(exe_path) = std::env::current_exe() {
         // exe is at CoreTerm.app/Contents/MacOS/CoreTerm
         // Resources is at CoreTerm.app/Contents/Resources/
-        if let Some(macos_dir) = exe_path.parent() {
-            let resources_dir = macos_dir.parent().map(|p| p.join("Resources"));
-            if let Some(resources) = resources_dir {
-                let bundle_font = resources.join(FONT_FILENAME);
-                if bundle_font.exists() {
-                    log::info!("Using bundled font: {}", bundle_font.display());
-                    return bundle_font;
-                }
+        let bundle_font = exe_path
+            .parent()
+            .and_then(|macos_dir| macos_dir.parent())
+            .map(|contents_dir| contents_dir.join("Resources").join(FONT_FILENAME));
+
+        if let Some(path) = bundle_font {
+            if path.exists() {
+                log::info!("Using bundled font: {}", path.display());
+                return path;
             }
         }
     }
@@ -350,13 +351,6 @@ impl TerminalApp {
                     Glyph::WideSpacer => continue, // Skip spacers
                 };
 
-                /*
-                // Skip empty cells
-                if ch == ' ' || ch == '\0' {
-                    continue;
-                }
-                */
-
                 // Get cached glyph - glyph_scaled now accounts for descenders
                 if let Some(cached) =
                     self.glyph_cache
@@ -522,7 +516,10 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 if let Some(action) = self.emulator.interpret_input(input) {
                     if let EmulatorAction::ResizePty { cols, rows } = action {
                         // Send resize command to PTY write thread
-                        if let Err(e) = self.pty_tx.send(PtyCommand::Resize { cols, rows }) {
+                        if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
+                            cols,
+                            rows,
+                        })) {
                             log::warn!("Failed to send PTY resize command: {}", e);
                         }
                     }
@@ -597,6 +594,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                                 log::warn!("Failed to send PTY resize command: {}", e);
                             }
                         }
+                    }
                 }
             }
             EngineEventManagement::MouseClick { button, x, y } => {
