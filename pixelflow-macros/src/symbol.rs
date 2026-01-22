@@ -25,8 +25,6 @@
 //! - `|cx: f32, cy: f32|` → `struct __Kernel { cx: f32, cy: f32 }`
 //! - References in the body become `self.cx`, `self.cy`
 
-#![allow(dead_code)]
-
 use proc_macro2::Span;
 use std::collections::HashMap;
 use syn::{Ident, Type};

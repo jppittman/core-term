@@ -35,20 +35,22 @@
 //! This mirrors the layered contramap pattern: parameters are fixed when you
 //! call the kernel constructor, coordinates are fixed when `eval_raw` is called.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
 mod annotate;
 mod ast;
 mod codegen;
+#[allow(dead_code)]
 mod lexer;
 mod manifold_expr;
+#[allow(dead_code)]
 mod optimize;
+#[allow(dead_code)]
 mod parser;
 mod sema;
+#[allow(dead_code)]
 mod symbol;
 
 /// E-graph for equality saturation and algebraic simplification.
+#[allow(dead_code)]
 mod egraph;
 
 use proc_macro::TokenStream;

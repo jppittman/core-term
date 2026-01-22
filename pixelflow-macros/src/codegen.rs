@@ -45,7 +45,7 @@
 //! ```
 
 use crate::annotate::{
-    annotate, AnnotatedCall, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
+    annotate, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
 };
 use crate::ast::{BinaryOp, ParamKind, UnaryOp};
 use crate::sema::AnalyzedKernel;

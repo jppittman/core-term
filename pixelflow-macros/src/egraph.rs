@@ -41,8 +41,6 @@
 //!
 //! - Willsey et al., "egg: Fast and Extensible Equality Saturation" (POPL 2021)
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ============================================================================

@@ -113,6 +113,7 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub struct IdentExpr {
     pub name: Ident,
+    #[allow(dead_code)]
     pub span: Span,
 }
 

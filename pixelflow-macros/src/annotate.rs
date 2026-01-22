@@ -19,7 +19,7 @@
 //! `Var<N>` references bound via `Let`. The annotation pass assigns each
 //! literal its Var index.
 
-use crate::ast::{BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, BlockExpr, Expr, IdentExpr, Stmt, UnaryOp};
 use proc_macro2::Span;
 use syn::{Ident, Lit, Type};
 
@@ -37,6 +37,7 @@ impl AnnotationCtx {
     }
 
     /// Total number of literals collected.
+    #[allow(dead_code)]
     pub fn literal_count(&self) -> usize {
         self.next_literal
     }
@@ -62,6 +63,7 @@ pub enum AnnotatedExpr {
 #[derive(Debug, Clone)]
 pub struct AnnotatedLiteral {
     pub lit: Lit,
+    #[allow(dead_code)]
     pub span: Span,
     /// If Some(idx), this literal should be emitted as `Var::<N{idx}>::new()`.
     /// If None, emit the literal directly.
@@ -73,6 +75,7 @@ pub struct AnnotatedBinary {
     pub op: BinaryOp,
     pub lhs: Box<AnnotatedExpr>,
     pub rhs: Box<AnnotatedExpr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -80,6 +83,7 @@ pub struct AnnotatedBinary {
 pub struct AnnotatedUnary {
     pub op: UnaryOp,
     pub operand: Box<AnnotatedExpr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -88,6 +92,7 @@ pub struct AnnotatedMethodCall {
     pub receiver: Box<AnnotatedExpr>,
     pub method: Ident,
     pub args: Vec<AnnotatedExpr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -96,6 +101,7 @@ pub struct AnnotatedMethodCall {
 pub struct AnnotatedCall {
     pub func: Ident,
     pub args: Vec<AnnotatedExpr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -103,6 +109,7 @@ pub struct AnnotatedCall {
 pub struct AnnotatedBlock {
     pub stmts: Vec<AnnotatedStmt>,
     pub expr: Option<Box<AnnotatedExpr>>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -117,6 +124,7 @@ pub struct AnnotatedLet {
     pub name: Ident,
     pub ty: Option<Type>,
     pub init: AnnotatedExpr,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -128,6 +136,7 @@ pub struct CollectedLiteral {
 }
 
 /// Result of annotation: the annotated tree plus collected literals.
+#[allow(dead_code)]
 pub struct AnnotationResult {
     pub expr: AnnotatedExpr,
     pub literals: Vec<CollectedLiteral>,

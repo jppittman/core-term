@@ -15,7 +15,7 @@
 //! which reduces compile time and runtime overhead (fewer function calls).
 
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
+    BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
 use crate::egraph::{CostModel, EClassId, EGraph, ENode, ExprTree};
