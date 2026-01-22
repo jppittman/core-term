@@ -20,3 +20,10 @@ training = ["std"]
 [dependencies]
 pixelflow-core = { path = "../pixelflow-core" }
 libm = "0.2.15"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "hce_bench"
+harness = false
