@@ -768,7 +768,7 @@ impl<'a> CodeEmitter<'a> {
         } else {
             // Build tuple of param values ordered by index
             // Index 0 goes to tuple position 0, index 1 to position 1, etc.
-            let n = params.len();
+            let _n = params.len();
             let mut indexed_params: Vec<(usize, TokenStream)> = Vec::new();
 
             for param in params.iter() {

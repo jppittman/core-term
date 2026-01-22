@@ -20,12 +20,14 @@
 use crate::Manifold;
 
 #[derive(Clone, Debug)]
+#[allow(missing_docs)]
 pub struct WithContext<Ctx, Body> {
     pub ctx: Ctx,
     pub body: Body,
 }
 
 impl<Ctx, Body> WithContext<Ctx, Body> {
+    #[allow(missing_docs)]
     pub const fn new(ctx: Ctx, body: Body) -> Self {
         Self { ctx, body }
     }
@@ -83,9 +85,11 @@ where
 use core::marker::PhantomData;
 
 #[derive(Clone, Copy, Debug, Default)]
+#[allow(missing_docs)]
 pub struct CtxVar<N>(PhantomData<N>);
 
 impl<N> CtxVar<N> {
+    #[allow(missing_docs)]
     pub const fn new() -> Self {
         Self(PhantomData)
     }
