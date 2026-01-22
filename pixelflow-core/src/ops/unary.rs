@@ -42,6 +42,10 @@ pub struct Log2<M>(pub M);
 #[derive(Clone, Debug)]
 pub struct Exp2<M>(pub M);
 
+/// Natural exponential (e^x).
+#[derive(Clone, Debug)]
+pub struct Exp<M>(pub M);
+
 /// Element-wise maximum.
 #[derive(Clone, Debug)]
 pub struct Max<L, R>(pub L, pub R);
@@ -168,6 +172,19 @@ where
     #[inline(always)]
     fn eval(&self, p: P) -> O {
         self.0.eval(p).exp2()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Exp<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).exp()
     }
 }
 

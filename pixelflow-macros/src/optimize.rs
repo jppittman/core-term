@@ -22,15 +22,26 @@ use crate::egraph::{CostModel, EClassId, EGraph, ENode, ExprTree};
 use crate::sema::AnalyzedKernel;
 use proc_macro2::Span;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use syn::{Ident, Lit};
 
-/// Optimize an analyzed kernel using tree rewriting.
-///
-/// This is the basic optimizer that applies local rewrites.
-/// For more powerful optimization, use [`optimize_with_egraph`].
+/// Counter for generating unique opaque variable names.
+static OPAQUE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Generate a unique name for an opaque expression (unknown method call, etc.)
+fn unique_opaque_name(prefix: &str) -> String {
+    let id = OPAQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("__{}{}", prefix, id)
+}
+
+/// Optimize an analyzed kernel using tree rewriting and e-graphs.
 pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
+    // 1. Structural optimization (catches things inside opaque nodes)
     analyzed.def.body = optimize_expr(analyzed.def.body);
-    analyzed
+
+    // 2. E-Graph optimization (global rewriting & fusion)
+    // We assume fully optimized costs for this project (AVX-512 target implied)
+    optimize_with_egraph(analyzed, &CostModel::fully_optimized())
 }
 
 /// Optimize an analyzed kernel using e-graph equality saturation.
@@ -38,14 +49,6 @@ pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
 /// This optimizer discovers all equivalent forms of an expression and
 /// extracts the optimal one based on the provided cost model. It enables
 /// optimizations like FMA fusion that span multiple operations.
-///
-/// # Cost Model
-///
-/// The cost model determines which equivalent form is "best". Use:
-/// - `CostModel::default()` for CPUs without FMA
-/// - `CostModel::with_fma()` for CPUs with FMA (Haswell+, M1+)
-/// - `CostModel::fully_optimized()` for modern CPUs with FMA and fast rsqrt
-/// - `CostModel::from_map()` for custom costs from build.rs detection
 pub fn optimize_with_egraph(mut analyzed: AnalyzedKernel, costs: &CostModel) -> AnalyzedKernel {
     analyzed.def.body = optimize_expr_with_egraph(analyzed.def.body, costs);
     analyzed
@@ -80,6 +83,9 @@ struct EGraphContext {
     var_to_eclass: HashMap<String, EClassId>,
     /// Map from variable index to name (for extraction).
     idx_to_name: Vec<String>,
+    /// Map from opaque variable names to their original expressions.
+    /// Used to restore expressions that can't be represented in the e-graph.
+    opaque_exprs: HashMap<String, Expr>,
 }
 
 impl EGraphContext {
@@ -88,6 +94,7 @@ impl EGraphContext {
             egraph: EGraph::new(),
             var_to_eclass: HashMap::new(),
             idx_to_name: Vec::new(),
+            opaque_exprs: HashMap::new(),
         }
     }
 
@@ -104,6 +111,14 @@ impl EGraphContext {
         let id = self.egraph.add(ENode::Var(idx));
         self.var_to_eclass.insert(name.to_string(), id);
         id
+    }
+
+    /// Create an opaque variable for an expression we can't optimize.
+    /// The original expression is stored and will be restored during extraction.
+    fn create_opaque_var(&mut self, prefix: &str, expr: &Expr) -> EClassId {
+        let name = unique_opaque_name(prefix);
+        self.opaque_exprs.insert(name.clone(), expr.clone());
+        self.get_or_create_var(&name)
     }
 
     /// Convert an AST expression to an e-graph, returning the root e-class.
@@ -177,7 +192,7 @@ impl EGraphContext {
                     }
                     _ => {
                         // Unknown method - treat as opaque
-                        let name = format!("__method_{}_{:?}", method, call.span);
+                        let name = unique_opaque_name(&format!("method_{}_", method));
                         self.get_or_create_var(&name)
                     }
                 }
@@ -206,7 +221,7 @@ impl EGraphContext {
 
             // For Call and Verbatim, treat as opaque
             Expr::Call(call) => {
-                let name = format!("__call_{}_{:?}", call.func, call.span);
+                let name = unique_opaque_name(&format!("call_{}_", call.func));
                 self.get_or_create_var(&name)
             }
 
@@ -288,6 +303,16 @@ impl EGraphContext {
                 })
             }
 
+            ExprTree::Recip(a) => {
+                // recip(x) = 1.0 / x, we emit as a method call since pixelflow-core has recip()
+                Expr::MethodCall(MethodCallExpr {
+                    receiver: Box::new(self.tree_to_expr(a)),
+                    method: Ident::new("recip", span),
+                    args: vec![],
+                    span,
+                })
+            }
+
             ExprTree::Abs(a) => Expr::MethodCall(MethodCallExpr {
                 receiver: Box::new(self.tree_to_expr(a)),
                 method: Ident::new("abs", span),
@@ -320,7 +345,6 @@ impl EGraphContext {
             }
 
             ExprTree::MulRsqrt(a, b) => {
-                // a * rsqrt(b) - emit as method call for fused operation
                 Expr::MethodCall(MethodCallExpr {
                     receiver: Box::new(self.tree_to_expr(a)),
                     method: Ident::new("mul_rsqrt", span),
@@ -328,7 +352,78 @@ impl EGraphContext {
                     span,
                 })
             }
+
+            // Unary
+            ExprTree::Floor(a) => self.unary_method(a, "floor", span),
+            ExprTree::Ceil(a) => self.unary_method(a, "ceil", span),
+            ExprTree::Round(a) => self.unary_method(a, "round", span),
+            ExprTree::Fract(a) => self.unary_method(a, "fract", span),
+            ExprTree::Sin(a) => self.unary_method(a, "sin", span),
+            ExprTree::Cos(a) => self.unary_method(a, "cos", span),
+            ExprTree::Tan(a) => self.unary_method(a, "tan", span),
+            ExprTree::Asin(a) => self.unary_method(a, "asin", span),
+            ExprTree::Acos(a) => self.unary_method(a, "acos", span),
+            ExprTree::Atan(a) => self.unary_method(a, "atan", span),
+            ExprTree::Exp(a) => self.unary_method(a, "exp", span),
+            ExprTree::Exp2(a) => self.unary_method(a, "exp2", span),
+            ExprTree::Ln(a) => self.unary_method(a, "ln", span),
+            ExprTree::Log2(a) => self.unary_method(a, "log2", span),
+            ExprTree::Log10(a) => self.unary_method(a, "log10", span),
+
+            // Binary
+            ExprTree::Atan2(a, b) => self.binary_method(a, b, "atan2", span),
+            ExprTree::Pow(a, b) => self.binary_method(a, b, "pow", span),
+            ExprTree::Hypot(a, b) => self.binary_method(a, b, "hypot", span),
+
+            // Comparisons
+            ExprTree::Lt(a, b) => self.binary_op(a, b, BinaryOp::Lt, span),
+            ExprTree::Le(a, b) => self.binary_op(a, b, BinaryOp::Le, span),
+            ExprTree::Gt(a, b) => self.binary_op(a, b, BinaryOp::Gt, span),
+            ExprTree::Ge(a, b) => self.binary_op(a, b, BinaryOp::Ge, span),
+            ExprTree::Eq(a, b) => self.binary_op(a, b, BinaryOp::Eq, span),
+            ExprTree::Ne(a, b) => self.binary_op(a, b, BinaryOp::Ne, span),
+
+            // Ternary
+            ExprTree::Select(a, b, c) => Expr::MethodCall(MethodCallExpr {
+                receiver: Box::new(self.tree_to_expr(a)),
+                method: Ident::new("select", span),
+                args: vec![self.tree_to_expr(b), self.tree_to_expr(c)],
+                span,
+            }),
+            ExprTree::Clamp(a, b, c) => Expr::MethodCall(MethodCallExpr {
+                receiver: Box::new(self.tree_to_expr(a)),
+                method: Ident::new("clamp", span),
+                args: vec![self.tree_to_expr(b), self.tree_to_expr(c)],
+                span,
+            }),
         }
+    }
+
+    fn unary_method(&self, a: &ExprTree, name: &str, span: Span) -> Expr {
+        Expr::MethodCall(MethodCallExpr {
+            receiver: Box::new(self.tree_to_expr(a)),
+            method: Ident::new(name, span),
+            args: vec![],
+            span,
+        })
+    }
+
+    fn binary_method(&self, a: &ExprTree, b: &ExprTree, name: &str, span: Span) -> Expr {
+        Expr::MethodCall(MethodCallExpr {
+            receiver: Box::new(self.tree_to_expr(a)),
+            method: Ident::new(name, span),
+            args: vec![self.tree_to_expr(b)],
+            span,
+        })
+    }
+
+    fn binary_op(&self, a: &ExprTree, b: &ExprTree, op: BinaryOp, span: Span) -> Expr {
+        Expr::Binary(BinaryExpr {
+            op,
+            lhs: Box::new(self.tree_to_expr(a)),
+            rhs: Box::new(self.tree_to_expr(b)),
+            span,
+        })
     }
 }
 
