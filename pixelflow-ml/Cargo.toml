@@ -27,3 +27,11 @@ criterion = "0.5"
 [[bench]]
 name = "hce_bench"
 harness = false
+
+[[bench]]
+name = "expr_perf"
+harness = false
+
+[[bench]]
+name = "manifold_hce_validation"
+harness = false
