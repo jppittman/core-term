@@ -8,20 +8,12 @@
 //! 2. Convert to training samples with sparse HalfEP features
 //! 3. Train via gradient descent to minimize MSE
 //! 4. Export weights for use in e-graph cost function
-//!
-//! ## Loss Function
-//!
-//! We optimize for ranking accuracy (Spearman correlation) indirectly by
-//! minimizing MSE on log-transformed costs. This helps because:
-//! - Log transform reduces impact of outliers
-//! - Relative cost differences matter more than absolute
-//! - Ranking is what matters for instruction selection
 
 extern crate alloc;
 
 use alloc::vec::Vec;
 use crate::nnue::{
-    Expr, Nnue, NnueConfig, Accumulator, HalfEPFeature,
+    Expr, HalfEPFeature,
     extract_features,
 };
 use libm::logf;
@@ -51,7 +43,7 @@ impl NnueSample {
         indices.sort_unstable();
         indices.dedup();
 
-        let log_target = logf(cost_ns.max(1.0));
+        let log_target = logf(cost_ns.max(0.01));
 
         Self {
             feature_indices: indices,
@@ -66,7 +58,7 @@ impl NnueSample {
         indices.sort_unstable();
         indices.dedup();
 
-        let log_target = logf(cost_ns.max(1.0));
+        let log_target = logf(cost_ns.max(0.01));
 
         Self {
             feature_indices: indices,
@@ -100,10 +92,10 @@ pub struct TrainConfig {
 impl Default for TrainConfig {
     fn default() -> Self {
         Self {
-            learning_rate: 0.001,
+            learning_rate: 0.01,
             epochs: 100,
             batch_size: 32,
-            l2_lambda: 0.0001,
+            l2_lambda: 0.001,
             use_log_transform: true,
             print_every: 10,
         }
@@ -111,13 +103,56 @@ impl Default for TrainConfig {
 }
 
 // ============================================================================
-// NNUE Trainer
+// Simple Linear NNUE (actually learns!)
 // ============================================================================
 
-/// Training state and methods for NNUE.
+/// A simple linear model on sparse features.
+///
+/// This is the core of NNUE's first layer: a linear combination of
+/// feature weights. For small datasets, this is more effective than
+/// the full deep network.
+pub struct LinearNnue {
+    /// Weights for each HalfEP feature.
+    pub weights: Vec<f32>,
+    /// Bias term.
+    pub bias: f32,
+}
+
+impl LinearNnue {
+    /// Create a new linear NNUE with zero weights.
+    pub fn new() -> Self {
+        Self {
+            weights: alloc::vec![0.0; HalfEPFeature::COUNT],
+            bias: 0.0,
+        }
+    }
+
+    /// Predict cost for a sample.
+    pub fn predict(&self, sample: &NnueSample) -> f32 {
+        let mut sum = self.bias;
+        for &idx in &sample.feature_indices {
+            if idx < self.weights.len() {
+                sum += self.weights[idx];
+            }
+        }
+        sum
+    }
+}
+
+impl Default for LinearNnue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// NNUE Trainer (Linear version that works)
+// ============================================================================
+
+/// Training state and methods for linear NNUE.
 pub struct NnueTrainer {
-    /// The NNUE network being trained.
-    pub nnue: Nnue,
+    /// The linear model being trained.
+    pub model: LinearNnue,
     /// Training configuration.
     pub config: TrainConfig,
     /// Training samples.
@@ -130,7 +165,7 @@ impl NnueTrainer {
     /// Create a new trainer with default config.
     pub fn new() -> Self {
         Self {
-            nnue: Nnue::with_defaults(),
+            model: LinearNnue::new(),
             config: TrainConfig::default(),
             samples: Vec::new(),
             rng_state: 42,
@@ -138,9 +173,9 @@ impl NnueTrainer {
     }
 
     /// Create a new trainer with custom config.
-    pub fn with_config(nnue_config: NnueConfig, train_config: TrainConfig) -> Self {
+    pub fn with_config(train_config: TrainConfig) -> Self {
         Self {
-            nnue: Nnue::new(nnue_config),
+            model: LinearNnue::new(),
             config: train_config,
             samples: Vec::new(),
             rng_state: 42,
@@ -174,41 +209,16 @@ impl NnueTrainer {
         }
     }
 
-    /// Forward pass for a single sample.
-    fn forward(&self, sample: &NnueSample) -> (i32, Accumulator) {
-        let mut acc = Accumulator::new(&self.nnue);
-
-        // Add all features
-        for &idx in &sample.feature_indices {
-            acc.add_feature(&self.nnue, idx);
+    /// Get target value for a sample.
+    fn get_target(&self, sample: &NnueSample) -> f32 {
+        if self.config.use_log_transform {
+            sample.log_target
+        } else {
+            sample.target_cost
         }
-
-        let output = acc.forward(&self.nnue);
-        (output, acc)
     }
 
-    /// Compute loss for a batch of samples.
-    fn compute_batch_loss(&self, samples: &[NnueSample]) -> f32 {
-        let mut total_loss = 0.0f32;
-
-        for sample in samples {
-            let (output, _) = self.forward(sample);
-            let prediction = output as f32 / 64.0; // Scale factor
-
-            let target = if self.config.use_log_transform {
-                sample.log_target
-            } else {
-                sample.target_cost
-            };
-
-            let diff = prediction - target;
-            total_loss += diff * diff;
-        }
-
-        total_loss / samples.len() as f32
-    }
-
-    /// Train the network.
+    /// Train the model using SGD.
     ///
     /// Returns training history (loss per epoch).
     #[cfg(feature = "std")]
@@ -219,144 +229,58 @@ impl NnueTrainer {
 
         let mut history = Vec::with_capacity(self.config.epochs);
 
-        // Initialize weights with small random values
-        self.initialize_weights();
+        // Initialize bias to mean of targets
+        let mean_target: f32 = self.samples.iter()
+            .map(|s| self.get_target(s))
+            .sum::<f32>() / self.samples.len() as f32;
+        self.model.bias = mean_target;
 
         for epoch in 0..self.config.epochs {
             self.shuffle_samples();
 
             let mut epoch_loss = 0.0f32;
-            let num_batches = (self.samples.len() + self.config.batch_size - 1)
-                / self.config.batch_size;
+            let n_samples = self.samples.len();
 
-            for batch_idx in 0..num_batches {
-                let start = batch_idx * self.config.batch_size;
-                let end = (start + self.config.batch_size).min(self.samples.len());
-                // Clone batch to avoid borrow conflict
-                let batch: Vec<_> = self.samples[start..end].to_vec();
+            // SGD over all samples
+            for i in 0..n_samples {
+                let sample = &self.samples[i];
+                let target = self.get_target(sample);
+                let prediction = self.model.predict(sample);
+                let error = prediction - target;
 
-                let batch_loss = self.train_batch(&batch);
-                epoch_loss += batch_loss;
+                epoch_loss += error * error;
+
+                // Update weights for active features
+                let lr = self.config.learning_rate;
+                let l2 = self.config.l2_lambda;
+
+                for &idx in &sample.feature_indices {
+                    if idx < self.model.weights.len() {
+                        // Gradient: d(MSE)/dw = 2 * error * 1 (since feature is 1 when active)
+                        // Plus L2 regularization: + 2 * l2 * w
+                        let grad = 2.0 * error + 2.0 * l2 * self.model.weights[idx];
+                        self.model.weights[idx] -= lr * grad;
+                    }
+                }
+
+                // Update bias
+                self.model.bias -= lr * 2.0 * error;
             }
 
-            epoch_loss /= num_batches as f32;
+            epoch_loss /= n_samples as f32;
             history.push(epoch_loss);
 
             if self.config.print_every > 0 && (epoch + 1) % self.config.print_every == 0 {
-                eprintln!("Epoch {}/{}: loss = {:.6}", epoch + 1, self.config.epochs, epoch_loss);
+                let corr = self.spearman_correlation(&self.samples.clone());
+                eprintln!("Epoch {}/{}: loss = {:.4}, spearman = {:.4}",
+                    epoch + 1, self.config.epochs, epoch_loss, corr);
             }
         }
 
         history
     }
 
-    /// Initialize weights with small random values.
-    fn initialize_weights(&mut self) {
-        // Pre-generate random values to avoid borrow conflicts
-        let w1_len = self.nnue.w1.len();
-        let w2_len = self.nnue.w2.len();
-        let w3_len = self.nnue.w3.len();
-        let w_out_len = self.nnue.w_out.len();
-
-        let scale_w1 = 1.0 / (HalfEPFeature::COUNT as f32).sqrt();
-        let scale_w2 = 1.0 / (self.nnue.config.l1_size as f32).sqrt();
-        let scale_w3 = 1.0 / (self.nnue.config.l2_size as f32).sqrt();
-        let scale_out = 1.0 / (self.nnue.config.l3_size as f32).sqrt();
-
-        // Generate random values
-        let mut w1_vals: Vec<i16> = Vec::with_capacity(w1_len);
-        for _ in 0..w1_len {
-            w1_vals.push(((self.rand_f32() - 0.5) * 2.0 * scale_w1 * 32767.0) as i16);
-        }
-
-        let mut w2_vals: Vec<i8> = Vec::with_capacity(w2_len);
-        for _ in 0..w2_len {
-            w2_vals.push(((self.rand_f32() - 0.5) * 2.0 * scale_w2 * 127.0) as i8);
-        }
-
-        let mut w3_vals: Vec<i8> = Vec::with_capacity(w3_len);
-        for _ in 0..w3_len {
-            w3_vals.push(((self.rand_f32() - 0.5) * 2.0 * scale_w3 * 127.0) as i8);
-        }
-
-        let mut w_out_vals: Vec<i8> = Vec::with_capacity(w_out_len);
-        for _ in 0..w_out_len {
-            w_out_vals.push(((self.rand_f32() - 0.5) * 2.0 * scale_out * 127.0) as i8);
-        }
-
-        // Apply to network
-        self.nnue.w1.copy_from_slice(&w1_vals);
-        self.nnue.w2.copy_from_slice(&w2_vals);
-        self.nnue.w3.copy_from_slice(&w3_vals);
-        self.nnue.w_out.copy_from_slice(&w_out_vals);
-
-        // Zero biases
-        for b in &mut self.nnue.b1 { *b = 0; }
-        for b in &mut self.nnue.b2 { *b = 0; }
-        for b in &mut self.nnue.b3 { *b = 0; }
-        self.nnue.b_out = 0;
-    }
-
-    /// Train on a single batch using simplified gradient descent.
-    ///
-    /// This is a simplified training loop that updates weights based on
-    /// the gradient of MSE loss. For production use, consider using
-    /// proper autodiff or a more sophisticated optimizer.
-    fn train_batch(&mut self, batch: &[NnueSample]) -> f32 {
-        let lr = self.config.learning_rate;
-        let batch_size = batch.len() as f32;
-
-        // Accumulate gradients for output layer only (simplified)
-        // Full backprop would require tracking all intermediate activations
-        let _grad_w_out = vec![0.0f32; self.nnue.config.l3_size];
-        let mut grad_b_out = 0.0f32;
-        let mut total_loss = 0.0f32;
-
-        for sample in batch {
-            let (output, acc) = self.forward(sample);
-            let prediction = output as f32 / 64.0;
-
-            let target = if self.config.use_log_transform {
-                sample.log_target
-            } else {
-                sample.target_cost
-            };
-
-            let error = prediction - target;
-            total_loss += error * error;
-
-            // Gradient for output layer
-            // d(loss)/d(w_out[i]) = 2 * error * l3_activation[i]
-            // We need L3 activations, which requires forward pass state
-
-            // Simplified: just update output bias based on error direction
-            grad_b_out += error;
-
-            // For sparse first layer, we can update directly
-            // d(loss)/d(w1[feature_idx, j]) = 2 * error * (chain rule through layers)
-            // This is simplified - real training would track all gradients
-
-            // Update first layer weights for active features
-            for &idx in &sample.feature_indices {
-                let offset = idx * self.nnue.config.l1_size;
-                for j in 0..self.nnue.config.l1_size {
-                    // Simplified gradient: error propagated through
-                    let grad = error * (if acc.values[j] > 0 { 1.0 } else { 0.0 });
-                    let current = self.nnue.w1[offset + j] as f32;
-                    let updated = current - lr * grad / batch_size;
-                    self.nnue.w1[offset + j] = updated.clamp(-32767.0, 32767.0) as i16;
-                }
-            }
-        }
-
-        // Update output bias
-        let new_b_out = self.nnue.b_out as f32 - lr * grad_b_out / batch_size;
-        self.nnue.b_out = new_b_out.clamp(-2147483648.0, 2147483647.0) as i32;
-
-        total_loss / batch_size
-    }
-
-    /// Evaluate the network on a set of samples.
+    /// Evaluate the model on a set of samples.
     ///
     /// Returns (predictions, targets) for correlation analysis.
     pub fn evaluate(&self, samples: &[NnueSample]) -> (Vec<f32>, Vec<f32>) {
@@ -364,8 +288,7 @@ impl NnueTrainer {
         let mut targets = Vec::with_capacity(samples.len());
 
         for sample in samples {
-            let (output, _) = self.forward(sample);
-            predictions.push(output as f32 / 64.0);
+            predictions.push(self.model.predict(sample));
             targets.push(sample.target_cost);
         }
 
@@ -458,6 +381,19 @@ mod tests {
     fn test_trainer_creation() {
         let trainer = NnueTrainer::new();
         assert_eq!(trainer.samples.len(), 0);
+    }
+
+    #[test]
+    fn test_linear_nnue_predict() {
+        let mut model = LinearNnue::new();
+        model.bias = 1.0;
+        model.weights[0] = 0.5;
+        model.weights[1] = 0.3;
+
+        let sample = NnueSample::from_features(vec![0, 1], 10.0);
+        let pred = model.predict(&sample);
+        // Should be 1.0 + 0.5 + 0.3 = 1.8
+        assert!((pred - 1.8).abs() < 0.001);
     }
 
     #[test]
