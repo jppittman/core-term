@@ -286,11 +286,19 @@ pub struct ExprFeatures {
     pub has_self_cancel: i32,
     /// Has fusable pattern (a*b+c without FMA)
     pub has_fusable: i32,
+
+    // === ILP Features (Non-linear insight captured as precomputed values) ===
+    /// Critical path cost: longest dependency chain (not sum of all ops).
+    /// This captures ILP - parallel ops don't add to critical path.
+    pub critical_path: i32,
+    /// Maximum width: max nodes at any depth level.
+    /// Approximates register pressure (more parallel = more live values).
+    pub max_width: i32,
 }
 
 impl ExprFeatures {
     /// Number of features in this struct.
-    pub const COUNT: usize = 19;
+    pub const COUNT: usize = 21;
 
     /// Feature names for debugging.
     pub const NAMES: [&'static str; Self::COUNT] = [
@@ -299,6 +307,7 @@ impl ExprFeatures {
         "fma", "mul_rsqrt",
         "nodes", "depth", "vars", "consts",
         "has_identity", "has_self_cancel", "has_fusable",
+        "critical_path", "max_width",
     ];
 }
 
@@ -328,6 +337,8 @@ impl LinearFeatures for ExprFeatures {
             16 => self.has_identity,
             17 => self.has_self_cancel,
             18 => self.has_fusable,
+            19 => self.critical_path,
+            20 => self.max_width,
             _ => 0,
         }
     }
@@ -352,10 +363,12 @@ impl LinearFeatures for ExprFeatures {
 /// - **Fused ops**: Should be cheaper than unfused equivalents
 /// - **Patterns**: Negative weights = "good to have" (will reduce cost)
 /// - **Structure**: Slight bias toward smaller expressions
+/// - **ILP features**: Critical path matters more than total ops
 pub fn default_expr_weights() -> HandCraftedEvaluator {
     let mut hce = HandCraftedEvaluator::zeros(ExprFeatures::COUNT);
 
     // Operation costs (approximate x86-64 cycles)
+    // NOTE: These are now SECONDARY to critical_path for ILP-aware evaluation
     hce.set_weight(0, 4);    // add: ~4 cycles
     hce.set_weight(1, 4);    // sub: ~4 cycles
     hce.set_weight(2, 5);    // mul: ~5 cycles
@@ -373,7 +386,7 @@ pub fn default_expr_weights() -> HandCraftedEvaluator {
 
     // Structural features (mild preferences)
     hce.set_weight(12, 0);   // node_count: neutral (covered by ops)
-    hce.set_weight(13, 0);   // depth: neutral (for now)
+    hce.set_weight(13, 0);   // depth: neutral (superseded by critical_path)
     hce.set_weight(14, 0);   // var_count: free (just register refs)
     hce.set_weight(15, 0);   // const_count: free (immediates)
 
@@ -382,6 +395,12 @@ pub fn default_expr_weights() -> HandCraftedEvaluator {
     hce.set_weight(16, 0);   // has_identity: neutral (rewrite will fix)
     hce.set_weight(17, 0);   // has_self_cancel: neutral
     hce.set_weight(18, -2);  // has_fusable: slight bonus if FMA available
+
+    // ILP features - THE KEY NON-LINEAR INSIGHT
+    // critical_path captures actual execution time on superscalar CPUs
+    hce.set_weight(19, 1);   // critical_path: primary cost driver
+    // max_width approximates register pressure (more parallel = more regs needed)
+    hce.set_weight(20, 1);   // max_width: penalty for wide expressions
 
     hce
 }
@@ -413,17 +432,33 @@ use crate::nnue::{Expr, OpType};
 /// a fixed-size feature vector for the evaluator.
 pub fn extract_expr_features(expr: &Expr) -> ExprFeatures {
     let mut features = ExprFeatures::default();
-    extract_features_recursive(expr, &mut features, 0);
+    let mut width_at_depth = Vec::new();
+    let critical_path = extract_features_recursive(expr, &mut features, 0, &mut width_at_depth);
+    features.critical_path = critical_path;
+    features.max_width = width_at_depth.iter().copied().max().unwrap_or(0);
     features
 }
 
-fn extract_features_recursive(expr: &Expr, features: &mut ExprFeatures, depth: i32) {
+/// Returns the critical path cost of this subtree.
+fn extract_features_recursive(
+    expr: &Expr,
+    features: &mut ExprFeatures,
+    depth: usize,
+    width_at_depth: &mut Vec<i32>,
+) -> i32 {
     features.node_count += 1;
-    features.depth = features.depth.max(depth + 1);
+    features.depth = features.depth.max(depth as i32 + 1);
+
+    // Track width at each depth level
+    if depth >= width_at_depth.len() {
+        width_at_depth.resize(depth + 1, 0);
+    }
+    width_at_depth[depth] += 1;
 
     match expr {
         Expr::Var(_) => {
             features.var_count += 1;
+            0 // No latency for variable access
         }
         Expr::Const(c) => {
             features.const_count += 1;
@@ -431,19 +466,21 @@ fn extract_features_recursive(expr: &Expr, features: &mut ExprFeatures, depth: i
             if (*c - 0.0).abs() < 1e-10 || (*c - 1.0).abs() < 1e-10 {
                 // Might be part of identity pattern
             }
+            0 // No latency for constant
         }
         Expr::Unary(op, a) => {
-            match op {
-                OpType::Neg => features.neg_count += 1,
-                OpType::Sqrt => features.sqrt_count += 1,
-                OpType::Rsqrt => features.rsqrt_count += 1,
-                OpType::Abs => features.abs_count += 1,
-                _ => {}
-            }
-            extract_features_recursive(a, features, depth + 1);
+            let op_cost = match op {
+                OpType::Neg => { features.neg_count += 1; 1 }
+                OpType::Sqrt => { features.sqrt_count += 1; 15 }
+                OpType::Rsqrt => { features.rsqrt_count += 1; 5 }
+                OpType::Abs => { features.abs_count += 1; 1 }
+                _ => 5, // Default for unknown ops
+            };
+            let child_critical = extract_features_recursive(a, features, depth + 1, width_at_depth);
+            op_cost + child_critical
         }
         Expr::Binary(op, a, b) => {
-            match op {
+            let op_cost = match op {
                 OpType::Add => {
                     features.add_count += 1;
                     // Check for fusable: if 'a' is a Mul, this is a*b+c pattern
@@ -454,6 +491,7 @@ fn extract_features_recursive(expr: &Expr, features: &mut ExprFeatures, depth: i
                     if is_zero(b) || is_zero(a) {
                         features.has_identity += 1;
                     }
+                    4
                 }
                 OpType::Sub => {
                     features.sub_count += 1;
@@ -461,6 +499,7 @@ fn extract_features_recursive(expr: &Expr, features: &mut ExprFeatures, depth: i
                     if exprs_structurally_equal(a, b) {
                         features.has_self_cancel += 1;
                     }
+                    4
                 }
                 OpType::Mul => {
                     features.mul_count += 1;
@@ -473,6 +512,7 @@ fn extract_features_recursive(expr: &Expr, features: &mut ExprFeatures, depth: i
                        matches!(a.as_ref(), Expr::Unary(OpType::Rsqrt, _)) {
                         features.has_fusable += 1;
                     }
+                    5
                 }
                 OpType::Div => {
                     features.div_count += 1;
@@ -480,23 +520,28 @@ fn extract_features_recursive(expr: &Expr, features: &mut ExprFeatures, depth: i
                     if exprs_structurally_equal(a, b) {
                         features.has_self_cancel += 1;
                     }
+                    15
                 }
-                OpType::Min => features.min_count += 1,
-                OpType::Max => features.max_count += 1,
-                OpType::MulRsqrt => features.mul_rsqrt_count += 1,
-                _ => {}
-            }
-            extract_features_recursive(a, features, depth + 1);
-            extract_features_recursive(b, features, depth + 1);
+                OpType::Min => { features.min_count += 1; 4 }
+                OpType::Max => { features.max_count += 1; 4 }
+                OpType::MulRsqrt => { features.mul_rsqrt_count += 1; 6 }
+                _ => 5, // Default
+            };
+            let crit_a = extract_features_recursive(a, features, depth + 1, width_at_depth);
+            let crit_b = extract_features_recursive(b, features, depth + 1, width_at_depth);
+            // Critical path = max of children (parallel execution) + this op
+            op_cost + crit_a.max(crit_b)
         }
         Expr::Ternary(op, a, b, c) => {
-            match op {
-                OpType::MulAdd => features.fma_count += 1,
-                _ => {}
-            }
-            extract_features_recursive(a, features, depth + 1);
-            extract_features_recursive(b, features, depth + 1);
-            extract_features_recursive(c, features, depth + 1);
+            let op_cost = match op {
+                OpType::MulAdd => { features.fma_count += 1; 5 }
+                _ => 10, // Default for unknown ternary
+            };
+            let crit_a = extract_features_recursive(a, features, depth + 1, width_at_depth);
+            let crit_b = extract_features_recursive(b, features, depth + 1, width_at_depth);
+            let crit_c = extract_features_recursive(c, features, depth + 1, width_at_depth);
+            // Critical path = max of all children + this op
+            op_cost + crit_a.max(crit_b).max(crit_c)
         }
     }
 }
@@ -752,6 +797,164 @@ mod tests {
         let features = extract_expr_features(&expr);
 
         assert_eq!(features.has_self_cancel, 1, "Should detect x-x as self-cancel");
+    }
+
+    // =========================================================================
+    // ILP Feature Tests
+    // =========================================================================
+
+    #[test]
+    fn test_critical_path_wide_vs_deep() {
+        use alloc::boxed::Box;
+
+        // Wide expression: (a + b) + (c + d)
+        // Critical path: 4 + 4 = 8 (two adds in sequence, but children parallel)
+        let wide = Expr::Binary(
+            OpType::Add,
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Var(0)),
+                Box::new(Expr::Var(1)),
+            )),
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Var(2)),
+                Box::new(Expr::Var(3)),
+            )),
+        );
+
+        // Deep expression: ((a + b) + c) + d
+        // Critical path: 4 + 4 + 4 = 12 (three sequential adds)
+        let deep = Expr::Binary(
+            OpType::Add,
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Binary(
+                    OpType::Add,
+                    Box::new(Expr::Var(0)),
+                    Box::new(Expr::Var(1)),
+                )),
+                Box::new(Expr::Var(2)),
+            )),
+            Box::new(Expr::Var(3)),
+        );
+
+        let wide_features = extract_expr_features(&wide);
+        let deep_features = extract_expr_features(&deep);
+
+        // Same total operation count
+        assert_eq!(wide_features.add_count, 3, "Wide should have 3 adds");
+        assert_eq!(deep_features.add_count, 3, "Deep should have 3 adds");
+
+        // But different critical paths
+        assert_eq!(wide_features.critical_path, 8, "Wide: two levels of adds = 8");
+        assert_eq!(deep_features.critical_path, 12, "Deep: three sequential adds = 12");
+
+        // Critical path prefers wide (more parallel)
+        assert!(wide_features.critical_path < deep_features.critical_path,
+            "Wide ({}) should have shorter critical path than deep ({})",
+            wide_features.critical_path, deep_features.critical_path);
+    }
+
+    #[test]
+    fn test_max_width_computation() {
+        use alloc::boxed::Box;
+
+        // Wide expression: (a + b) + (c + d)
+        // Width at each depth:
+        //   depth 0: 1 (root add)
+        //   depth 1: 2 (two child adds)
+        //   depth 2: 4 (four vars)
+        let wide = Expr::Binary(
+            OpType::Add,
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Var(0)),
+                Box::new(Expr::Var(1)),
+            )),
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Var(2)),
+                Box::new(Expr::Var(3)),
+            )),
+        );
+
+        // Deep expression: ((a + b) + c) + d
+        // Width at each depth:
+        //   depth 0: 1
+        //   depth 1: 2 (add + var)
+        //   depth 2: 2 (add + var)
+        //   depth 3: 2 (two vars)
+        let deep = Expr::Binary(
+            OpType::Add,
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Binary(
+                    OpType::Add,
+                    Box::new(Expr::Var(0)),
+                    Box::new(Expr::Var(1)),
+                )),
+                Box::new(Expr::Var(2)),
+            )),
+            Box::new(Expr::Var(3)),
+        );
+
+        let wide_features = extract_expr_features(&wide);
+        let deep_features = extract_expr_features(&deep);
+
+        // Wide has higher max_width (more parallel = more live values)
+        assert_eq!(wide_features.max_width, 4, "Wide max_width should be 4 (all vars at depth 2)");
+        assert_eq!(deep_features.max_width, 2, "Deep max_width should be 2");
+
+        assert!(wide_features.max_width > deep_features.max_width,
+            "Wide ({}) should have higher max_width than deep ({})",
+            wide_features.max_width, deep_features.max_width);
+    }
+
+    #[test]
+    fn test_ilp_features_affect_cost() {
+        use alloc::boxed::Box;
+
+        // Wide expression: (a + b) + (c + d)
+        let wide = Expr::Binary(
+            OpType::Add,
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Var(0)),
+                Box::new(Expr::Var(1)),
+            )),
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Var(2)),
+                Box::new(Expr::Var(3)),
+            )),
+        );
+
+        // Deep expression: ((a + b) + c) + d
+        let deep = Expr::Binary(
+            OpType::Add,
+            Box::new(Expr::Binary(
+                OpType::Add,
+                Box::new(Expr::Binary(
+                    OpType::Add,
+                    Box::new(Expr::Var(0)),
+                    Box::new(Expr::Var(1)),
+                )),
+                Box::new(Expr::Var(2)),
+            )),
+            Box::new(Expr::Var(3)),
+        );
+
+        let hce = default_expr_weights();
+        let wide_cost = hce.evaluate_linear(&extract_expr_features(&wide));
+        let deep_cost = hce.evaluate_linear(&extract_expr_features(&deep));
+
+        // Wide has: 3 adds (12) + critical_path 8 + max_width 4 = 24
+        // Deep has: 3 adds (12) + critical_path 12 + max_width 2 = 26
+        // So even though wide has higher register pressure, its shorter critical path wins
+        assert!(wide_cost < deep_cost,
+            "Wide ({}) should be cheaper than deep ({}) due to shorter critical path",
+            wide_cost, deep_cost);
     }
 
     // =========================================================================

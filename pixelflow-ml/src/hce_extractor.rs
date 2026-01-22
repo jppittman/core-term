@@ -628,7 +628,12 @@ mod tests {
 
         let cost = extractor.cost(&expr);
         assert!(cost > 0, "Add should have non-zero cost");
-        assert_eq!(cost, 4, "Add cost should be 4 cycles");
+        // Cost breakdown with ILP features:
+        // - add: 4 cycles
+        // - critical_path: 4 (add latency) * weight(1) = 4
+        // - max_width: 2 (two vars at depth 1) * weight(1) = 2
+        // Total = 4 + 4 + 2 = 10
+        assert_eq!(cost, 10, "Add cost should include ILP features");
     }
 
     #[test]
@@ -710,7 +715,12 @@ mod tests {
         let (mv, rewritten, cost) = result.unwrap();
         assert!(matches!(mv.rule, RewriteRule::AddZero), "Should be AddZero rule");
         assert!(matches!(rewritten, Expr::Var(0)), "Should simplify to x");
-        assert_eq!(cost, 0, "Variable should have zero cost");
+        // Variable cost with ILP features:
+        // - var_count: 0 (weight 0)
+        // - critical_path: 0 (no latency) * weight(1) = 0
+        // - max_width: 1 (one node at depth 0) * weight(1) = 1
+        // Total = 1
+        assert_eq!(cost, 1, "Variable should have minimal cost (just max_width)");
     }
 
     #[test]
