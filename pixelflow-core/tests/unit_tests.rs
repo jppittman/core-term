@@ -55,11 +55,15 @@ fn assert_field_approx_eq(field: Field, expected: f32) {
         struct Wrapper(Field);
         impl pixelflow_core::ops::Vector for Wrapper {
             type Component = Field;
-            fn get(&self, _axis: Axis) -> Field { self.0 }
+            fn get(&self, _axis: Axis) -> Field {
+                self.0
+            }
         }
         impl Manifold for Wrapper {
             type Output = Wrapper;
-            fn eval(&self, _: (Field, Field, Field, Field)) -> Wrapper { *self }
+            fn eval(&self, _: (Field, Field, Field, Field)) -> Wrapper {
+                *self
+            }
         }
 
         let m = Wrapper(field);
@@ -73,7 +77,10 @@ fn assert_field_approx_eq(field: Field, expected: f32) {
             actual_values.push(out[i * 4]);
         }
 
-        panic!("Field assertion failed.\nExpected: approx {}\nActual (lanes): {:?}", expected, actual_values);
+        panic!(
+            "Field assertion failed.\nExpected: approx {}\nActual (lanes): {:?}",
+            expected, actual_values
+        );
     }
 }
 
@@ -272,8 +279,18 @@ mod select_tests {
 
     #[test]
     fn select_should_choose_based_on_condition() {
-        let coords_pos = (Field::from(5.0), Field::from(10.0), Field::from(20.0), Field::from(0.0));
-        let coords_neg = (Field::from(-1.0), Field::from(10.0), Field::from(20.0), Field::from(0.0));
+        let coords_pos = (
+            Field::from(5.0),
+            Field::from(10.0),
+            Field::from(20.0),
+            Field::from(0.0),
+        );
+        let coords_neg = (
+            Field::from(-1.0),
+            Field::from(10.0),
+            Field::from(20.0),
+            Field::from(0.0),
+        );
 
         let sel_pos = Select {
             cond: X.gt(0.0f32),
@@ -334,7 +351,9 @@ mod select_tests {
 
     #[test]
     fn select_should_blend_mixed_mask() {
-        if PARALLELISM < 2 { return; }
+        if PARALLELISM < 2 {
+            return;
+        }
 
         // X = sequential(0.0) -> [0, 1, 2, 3...]
         // cond: X < 1.0. True for lane 0, False for lane 1+.
@@ -354,11 +373,15 @@ mod select_tests {
         struct Res(Field);
         impl pixelflow_core::ops::Vector for Res {
             type Component = Field;
-            fn get(&self, _axis: Axis) -> Field { self.0 }
+            fn get(&self, _axis: Axis) -> Field {
+                self.0
+            }
         }
         impl Manifold for Res {
-             type Output = Res;
-             fn eval(&self, _: (Field, Field, Field, Field)) -> Res { *self }
+            type Output = Res;
+            fn eval(&self, _: (Field, Field, Field, Field)) -> Res {
+                *self
+            }
         }
 
         let m = Res(result);
@@ -394,16 +417,16 @@ mod map_tests {
 
     #[test]
     fn map_clamp_should_restrict_range() {
-         let clamped = X.map(X.max(0.0f32).min(1.0f32));
-         let zero = Field::from(0.0);
+        let clamped = X.map(X.max(0.0f32).min(1.0f32));
+        let zero = Field::from(0.0);
 
-         let coords_half = (Field::from(0.5), zero, zero, zero);
-         let coords_low = (Field::from(-0.5), zero, zero, zero);
-         let coords_high = (Field::from(1.5), zero, zero, zero);
+        let coords_half = (Field::from(0.5), zero, zero, zero);
+        let coords_low = (Field::from(-0.5), zero, zero, zero);
+        let coords_high = (Field::from(1.5), zero, zero, zero);
 
-         assert_field_approx_eq(clamped.eval(coords_half), 0.5);
-         assert_field_approx_eq(clamped.eval(coords_low), 0.0);
-         assert_field_approx_eq(clamped.eval(coords_high), 1.0);
+        assert_field_approx_eq(clamped.eval(coords_half), 0.5);
+        assert_field_approx_eq(clamped.eval(coords_low), 0.0);
+        assert_field_approx_eq(clamped.eval(coords_high), 1.0);
     }
 }
 
@@ -449,7 +472,7 @@ mod jet2_tests {
 
         assert_field_approx_eq(result.val, 28.0);
         assert_field_approx_eq(result.dx, 10.0); // 2x
-        assert_field_approx_eq(result.dy, 1.0);  // 1
+        assert_field_approx_eq(result.dy, 1.0); // 1
     }
 }
 
@@ -568,7 +591,11 @@ mod bnot_tests {
 
         // -5 > 0 is False. Not False is True.
         // Use select to verify mask logic
-        let sel = Select { cond: not_x, if_true: Field::from(1.0), if_false: Field::from(0.0) };
+        let sel = Select {
+            cond: not_x,
+            if_true: Field::from(1.0),
+            if_false: Field::from(0.0),
+        };
         assert_field_approx_eq(sel.eval(coords_neg), 1.0);
     }
 }

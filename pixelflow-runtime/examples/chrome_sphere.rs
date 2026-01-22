@@ -13,7 +13,7 @@ use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
+    plane, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
 use pixelflow_runtime::platform::ColorCube;
 
@@ -96,7 +96,9 @@ fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world.clone() },
+        material: ColorReflect {
+            inner: world.clone(),
+        },
         background: world,
     };
 

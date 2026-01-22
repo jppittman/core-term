@@ -19,7 +19,7 @@
 //! `Var<N>` references bound via `Let`. The annotation pass assigns each
 //! literal its Var index.
 
-use crate::ast::{BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, BlockExpr, Expr, IdentExpr, Stmt, UnaryOp};
 use proc_macro2::Span;
 use syn::{Ident, Lit, Type};
 
@@ -62,7 +62,6 @@ pub enum AnnotatedExpr {
 #[derive(Debug, Clone)]
 pub struct AnnotatedLiteral {
     pub lit: Lit,
-    pub span: Span,
     /// If Some(idx), this literal should be emitted as `Var::<N{idx}>::new()`.
     /// If None, emit the literal directly.
     pub var_index: Option<usize>,
@@ -73,14 +72,12 @@ pub struct AnnotatedBinary {
     pub op: BinaryOp,
     pub lhs: Box<AnnotatedExpr>,
     pub rhs: Box<AnnotatedExpr>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct AnnotatedUnary {
     pub op: UnaryOp,
     pub operand: Box<AnnotatedExpr>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +85,6 @@ pub struct AnnotatedMethodCall {
     pub receiver: Box<AnnotatedExpr>,
     pub method: Ident,
     pub args: Vec<AnnotatedExpr>,
-    pub span: Span,
 }
 
 /// A free function call (V(m), DX(expr), etc.).
@@ -96,19 +92,17 @@ pub struct AnnotatedMethodCall {
 pub struct AnnotatedCall {
     pub func: Ident,
     pub args: Vec<AnnotatedExpr>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct AnnotatedBlock {
     pub stmts: Vec<AnnotatedStmt>,
     pub expr: Option<Box<AnnotatedExpr>>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum AnnotatedStmt {
-    Let(AnnotatedLet),
+    Let(Box<AnnotatedLet>),
     Expr(AnnotatedExpr),
 }
 
@@ -117,7 +111,6 @@ pub struct AnnotatedLet {
     pub name: Ident,
     pub ty: Option<Type>,
     pub init: AnnotatedExpr,
-    pub span: Span,
 }
 
 /// Collected literal for Let binding generation.
@@ -136,7 +129,10 @@ pub struct AnnotationResult {
 /// Annotate an expression tree, resolving literal Var indices.
 ///
 /// This is a pure function - context flows through return values.
-pub fn annotate(expr: &Expr, ctx: AnnotationCtx) -> (AnnotatedExpr, AnnotationCtx, Vec<CollectedLiteral>) {
+pub fn annotate(
+    expr: &Expr,
+    ctx: AnnotationCtx,
+) -> (AnnotatedExpr, AnnotationCtx, Vec<CollectedLiteral>) {
     let mut literals = Vec::new();
     let (annotated, final_ctx) = annotate_expr(expr, ctx, &mut literals);
     (annotated, final_ctx, literals)
@@ -167,12 +163,10 @@ fn annotate_expr(
             });
             let new_ctx = AnnotationCtx {
                 next_literal: ctx.next_literal + 1,
-                ..ctx
             };
             (
                 AnnotatedExpr::Literal(AnnotatedLiteral {
                     lit: lit_expr.lit.clone(),
-                    span: lit_expr.span,
                     var_index: Some(collection_index),
                 }),
                 new_ctx,
@@ -187,7 +181,6 @@ fn annotate_expr(
                     op: binary.op,
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
-                    span: binary.span,
                 }),
                 ctx2,
             )
@@ -199,7 +192,6 @@ fn annotate_expr(
                 AnnotatedExpr::Unary(AnnotatedUnary {
                     op: unary.op,
                     operand: Box::new(operand),
-                    span: unary.span,
                 }),
                 ctx1,
             )
@@ -218,7 +210,6 @@ fn annotate_expr(
                     receiver: Box::new(receiver),
                     method: call.method.clone(),
                     args,
-                    span: call.span,
                 }),
                 ctx1,
             )
@@ -247,7 +238,6 @@ fn annotate_expr(
                 AnnotatedExpr::Call(AnnotatedCall {
                     func: call.func.clone(),
                     args,
-                    span: call.span,
                 }),
                 ctx1,
             )
@@ -283,7 +273,6 @@ fn annotate_block(
         AnnotatedBlock {
             stmts,
             expr: final_expr,
-            span: block.span,
         },
         final_ctx,
     )
@@ -298,12 +287,11 @@ fn annotate_stmt(
         Stmt::Let(let_stmt) => {
             let (init, ctx1) = annotate_expr(&let_stmt.init, ctx, literals);
             (
-                AnnotatedStmt::Let(AnnotatedLet {
+                AnnotatedStmt::Let(Box::new(AnnotatedLet {
                     name: let_stmt.name.clone(),
                     ty: let_stmt.ty.clone(),
                     init,
-                    span: let_stmt.span,
-                }),
+                })),
                 ctx1,
             )
         }

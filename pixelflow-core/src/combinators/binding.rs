@@ -296,14 +296,14 @@ where
 {
     #[inline(always)]
     fn get(&self) -> crate::Field {
-        self.1.get()  // Skip head, get UInt<U, B0> from tail
+        self.1.get() // Skip head, get UInt<U, B0> from tail
     }
 }
 
 // UInt<UTerm, B0>: special case for index 2 (0b10)
 impl<Tail> Get<UInt<UTerm, B0>> for (crate::Field, Tail)
 where
-    Tail: Get<UTerm>,  // 2 - 1 = 1, 1 - 1 = 0 = UTerm
+    Tail: Get<UTerm>, // 2 - 1 = 1, 1 - 1 = 0 = UTerm
 {
     #[inline(always)]
     fn get(&self) -> crate::Field {
@@ -315,7 +315,7 @@ where
 // 2*N - 1 = 2*(N-1) + 1 = UInt<(N-1), B1>
 impl<U, UB, Tail> Get<UInt<UInt<U, UB>, B0>> for (crate::Field, Tail)
 where
-    Tail: Get<UInt<UInt<U, UB>, B1>>,  // Simplified: just flip B0 to B1 and recurse twice
+    Tail: Get<UInt<UInt<U, UB>, B1>>, // Simplified: just flip B0 to B1 and recurse twice
 {
     #[inline(always)]
     fn get(&self) -> crate::Field {

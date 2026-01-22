@@ -38,20 +38,16 @@
 mod annotate;
 mod ast;
 mod codegen;
-mod lexer;
 mod manifold_expr;
 mod optimize;
 mod parser;
 mod sema;
 mod symbol;
 
-/// E-graph for equality saturation and algebraic simplification.
-mod egraph;
-
 use proc_macro::TokenStream;
 use quote::format_ident;
 use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, LitInt};
+use syn::{LitInt, parse_macro_input};
 
 /// The `kernel!` macro: closure-like syntax for SIMD manifold kernels.
 ///

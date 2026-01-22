@@ -400,7 +400,8 @@ where
 }
 
 /// Generic Select impl for 6-element tuple domains (needed for antialiased line rendering)
-impl<V0, V1, V2, V3, V4, V5, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5), P)> for Select<C, T, F>
+impl<V0, V1, V2, V3, V4, V5, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5), P)>
+    for Select<C, T, F>
 where
     V0: Copy + Send + Sync,
     V1: Copy + Send + Sync,
@@ -431,7 +432,8 @@ where
 }
 
 /// Generic Select impl for 8-element tuple domains
-impl<V0, V1, V2, V3, V4, V5, V6, V7, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>
+impl<V0, V1, V2, V3, V4, V5, V6, V7, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)>
+    for Select<C, T, F>
 where
     V0: Copy + Send + Sync,
     V1: Copy + Send + Sync,
@@ -464,7 +466,8 @@ where
 }
 
 /// Generic Select impl for 9-element tuple domains (for font quadratic curves with dy/dt)
-impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P, C, T, F, O>
+    Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>
 where
     V0: Copy + Send + Sync,
     V1: Copy + Send + Sync,
@@ -498,7 +501,8 @@ where
 }
 
 /// Generic Select impl for 10-element tuple domains (for Loop-Blinn quadratic curves)
-impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for Select<C, T, F>
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P, C, T, F, O>
+    Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for Select<C, T, F>
 where
     V0: Copy + Send + Sync,
     V1: Copy + Send + Sync,

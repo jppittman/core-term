@@ -193,23 +193,23 @@ const fn generate_palette() -> [u32; 256] {
         let (r, g, b) = if idx < ANSI_NAMED_COLOR_COUNT {
             // Named colors (must match NamedColor::to_rgb)
             match idx {
-                0 => (0, 0, 0),             // Black
-                1 => (205, 0, 0),           // Red
-                2 => (0, 205, 0),           // Green
-                3 => (205, 205, 0),         // Yellow
-                4 => (0, 0, 238),           // Blue
-                5 => (205, 0, 205),         // Magenta
-                6 => (0, 205, 205),         // Cyan
-                7 => (229, 229, 229),       // White
-                8 => (127, 127, 127),       // BrightBlack
-                9 => (255, 0, 0),           // BrightRed
-                10 => (0, 255, 0),          // BrightGreen
-                11 => (255, 255, 0),        // BrightYellow
-                12 => (92, 92, 255),        // BrightBlue
-                13 => (255, 0, 255),        // BrightMagenta
-                14 => (0, 255, 255),        // BrightCyan
-                15 => (255, 255, 255),      // BrightWhite
-                _ => (0, 0, 0),             // Unreachable
+                0 => (0, 0, 0),        // Black
+                1 => (205, 0, 0),      // Red
+                2 => (0, 205, 0),      // Green
+                3 => (205, 205, 0),    // Yellow
+                4 => (0, 0, 238),      // Blue
+                5 => (205, 0, 205),    // Magenta
+                6 => (0, 205, 205),    // Cyan
+                7 => (229, 229, 229),  // White
+                8 => (127, 127, 127),  // BrightBlack
+                9 => (255, 0, 0),      // BrightRed
+                10 => (0, 255, 0),     // BrightGreen
+                11 => (255, 255, 0),   // BrightYellow
+                12 => (92, 92, 255),   // BrightBlue
+                13 => (255, 0, 255),   // BrightMagenta
+                14 => (0, 255, 255),   // BrightCyan
+                15 => (255, 255, 255), // BrightWhite
+                _ => (0, 0, 0),        // Unreachable
             }
         } else if idx < GRAYSCALE_OFFSET {
             // 6x6x6 Color Cube (indices 16-231)

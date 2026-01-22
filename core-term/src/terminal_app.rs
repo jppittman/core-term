@@ -516,10 +516,10 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 if let Some(action) = self.emulator.interpret_input(input) {
                     if let EmulatorAction::ResizePty { cols, rows } = action {
                         // Send resize command to PTY write thread
-                        if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
-                            cols,
-                            rows,
-                        })) {
+                        if let Err(e) = self
+                            .pty_tx
+                            .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
+                        {
                             log::warn!("Failed to send PTY resize command: {}", e);
                         }
                     }
@@ -587,10 +587,10 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                         }
                         EmulatorAction::ResizePty { cols, rows } => {
                             // Send resize command to PTY write thread
-                            if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
-                                cols,
-                                rows,
-                            })) {
+                            if let Err(e) = self
+                                .pty_tx
+                                .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
+                            {
                                 log::warn!("Failed to send PTY resize command: {}", e);
                             }
                         }

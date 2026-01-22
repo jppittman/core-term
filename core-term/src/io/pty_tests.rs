@@ -320,9 +320,14 @@ fn test_pty_spawn_invalid_command() {
             // If it's wrapped in anyhow, we check the root cause.
             let root_cause = e.root_cause();
             if let Some(io_err) = root_cause.downcast_ref::<std::io::Error>() {
-                 assert_eq!(io_err.kind(), std::io::ErrorKind::NotFound, "Expected NotFound error, got {:?}", io_err.kind());
+                assert_eq!(
+                    io_err.kind(),
+                    std::io::ErrorKind::NotFound,
+                    "Expected NotFound error, got {:?}",
+                    io_err.kind()
+                );
             } else {
-                 log::warn!("Could not downcast error to std::io::Error to verify ErrorKind::NotFound, but an error occurred as expected.");
+                log::warn!("Could not downcast error to std::io::Error to verify ErrorKind::NotFound, but an error occurred as expected.");
             }
         }
     }

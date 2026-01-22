@@ -67,7 +67,7 @@ impl Parse for KernelDef {
                 let kind = if is_kernel_keyword(&ty) {
                     ParamKind::Manifold
                 } else {
-                    ParamKind::Scalar(ty)
+                    ParamKind::Scalar(Box::new(ty))
                 };
 
                 params.push(Param { name: ident, kind });
@@ -161,7 +161,6 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                 if segment.arguments.is_empty() {
                     return Ok(Expr::Ident(IdentExpr {
                         name: segment.ident.clone(),
-                        span: segment.ident.span(),
                     }));
                 }
             }
@@ -177,7 +176,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
         syn::Expr::Binary(expr_binary) => {
             let op = BinaryOp::from_syn(&expr_binary.op).ok_or_else(|| {
                 syn::Error::new_spanned(
-                    &expr_binary.op,
+                    expr_binary.op,
                     format!(
                         "unsupported binary operator `{}`\n\
                          note: kernel! supports: + - * / % < <= > >= == != & |",
@@ -198,7 +197,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
         syn::Expr::Unary(expr_unary) => {
             let op = UnaryOp::from_syn(&expr_unary.op).ok_or_else(|| {
                 syn::Error::new_spanned(
-                    &expr_unary.op,
+                    expr_unary.op,
                     "unsupported unary operator\n\
                      note: kernel! supports: - (negation), ! (logical not)",
                 )
@@ -304,12 +303,12 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
 
                 let init_expr = convert_expr((*init.expr).clone())?;
 
-                stmts.push(Stmt::Let(LetStmt {
+                stmts.push(Stmt::Let(Box::new(LetStmt {
                     name,
                     ty,
                     init: init_expr,
                     span: Span::call_site(),
-                }));
+                })));
             }
 
             syn::Stmt::Expr(expr, semi) => {

@@ -164,12 +164,14 @@ pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
 #[allow(dead_code)]
 pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
     #[derive(Copy, Clone)]
-    struct PlaneKernel { h: f32 }
+    struct PlaneKernel {
+        h: f32,
+    }
     impl Manifold<Jet3_4> for PlaneKernel {
         type Output = Jet3;
         fn eval(&self, p: Jet3_4) -> Jet3 {
             let h = Jet3::from(Field::from(self.h));
-            h / p.1  // h / Y
+            h / p.1 // h / Y
         }
     }
     PlaneKernel { h: height }

@@ -104,7 +104,7 @@ impl SemanticAnalyzer {
         match &param.kind {
             ParamKind::Scalar(ty) => {
                 self.symbols
-                    .register_parameter(param.name.clone(), ty.clone());
+                    .register_parameter(param.name.clone(), *ty.clone());
             }
             ParamKind::Manifold => {
                 self.symbols.register_manifold_param(param.name.clone());
@@ -231,20 +231,13 @@ impl SemanticAnalyzer {
     /// Known methods from ManifoldExt and standard numeric operations.
     const KNOWN_METHODS: &'static [&'static str] = &[
         // ManifoldExt methods
-        "abs", "sqrt", "floor", "ceil", "round", "fract",
-        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-        "exp", "ln", "log2", "log10", "pow",
-        "min", "max", "clamp",
-        "hypot", "rsqrt", "recip",
-        // Comparison methods
-        "lt", "le", "gt", "ge", "eq", "ne",
-        // Selection
-        "select",
-        // Coordinate warp (contramap)
-        "at",
-        // Field/Jet specific
-        "constant", "collapse",
-        // Unary
+        "abs", "sqrt", "floor", "ceil", "round", "fract", "sin", "cos", "tan", "asin", "acos",
+        "atan", "atan2", "exp", "ln", "log2", "log10", "pow", "min", "max", "clamp", "hypot",
+        "rsqrt", "recip", // Comparison methods
+        "lt", "le", "gt", "ge", "eq", "ne", // Selection
+        "select", // Coordinate warp (contramap)
+        "at", // Field/Jet specific
+        "constant", "collapse", // Unary
         "neg",
     ];
 
@@ -379,7 +372,10 @@ mod tests {
         let input = quote! { |r: f32| X * X + captured_from_env };
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
-        assert!(result.is_ok(), "Anonymous kernels should allow captured variables");
+        assert!(
+            result.is_ok(),
+            "Anonymous kernels should allow captured variables"
+        );
     }
 
     #[test]

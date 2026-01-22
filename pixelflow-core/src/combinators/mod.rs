@@ -4,7 +4,7 @@
 
 pub mod at;
 pub mod binding;
-pub mod context;  // Flat context tuple prototype
+pub mod context; // Flat context tuple prototype
 pub mod fix;
 pub mod map;
 pub mod pack;
@@ -16,10 +16,10 @@ pub mod with_gradient;
 
 pub use at::{At, AtArray};
 pub use binding::{
-    Empty, GAdd, GDiv, GMul, GSub, Get, Graph, Let, Lift, N0, N1, N2, N3, N4, N5, N6, N7, Root,
-    Var, UTerm, B0, B1, UInt,
+    B0, B1, Empty, GAdd, GDiv, GMul, GSub, Get, Graph, Let, Lift, N0, N1, N2, N3, N4, N5, N6, N7,
+    Root, UInt, UTerm, Var,
 };
-pub use context::{CtxVar, WithContext};  // Flat context prototype
+pub use context::{CtxVar, WithContext}; // Flat context prototype
 pub use fix::Fix;
 pub use map::{ClosureMap, Map};
 pub use pack::Pack;

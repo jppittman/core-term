@@ -59,8 +59,6 @@ pub struct Symbol {
     pub kind: SymbolKind,
     /// The type (if known). Intrinsics have implicit types.
     pub ty: Option<Type>,
-    /// Where the symbol was defined.
-    pub span: Span,
 }
 
 /// The symbol table for a kernel compilation.
@@ -89,7 +87,6 @@ impl SymbolTable {
                     name: Ident::new(name, Span::call_site()),
                     kind: SymbolKind::Intrinsic,
                     ty: None, // Intrinsics are polymorphic over Numeric
-                    span: Span::call_site(),
                 },
             );
         }
@@ -106,7 +103,6 @@ impl SymbolTable {
                 name,
                 kind: SymbolKind::Parameter,
                 ty: Some(ty),
-                span: Span::call_site(),
             },
         );
         // Add to current scope
@@ -124,7 +120,6 @@ impl SymbolTable {
                 name,
                 kind: SymbolKind::ManifoldParam,
                 ty: None, // Type is generic (M0, M1, etc.)
-                span: Span::call_site(),
             },
         );
         // Add to current scope
@@ -142,7 +137,6 @@ impl SymbolTable {
                 name,
                 kind: SymbolKind::Local,
                 ty,
-                span: Span::call_site(),
             },
         );
         if let Some(scope) = self.scope_stack.last_mut() {
@@ -159,14 +153,14 @@ impl SymbolTable {
     pub fn is_intrinsic(&self, name: &str) -> bool {
         self.symbols
             .get(name)
-            .map_or(false, |s| s.kind == SymbolKind::Intrinsic)
+            .is_some_and(|s| s.kind == SymbolKind::Intrinsic)
     }
 
     /// Check if a name is a captured parameter.
     pub fn is_parameter(&self, name: &str) -> bool {
         self.symbols
             .get(name)
-            .map_or(false, |s| s.kind == SymbolKind::Parameter)
+            .is_some_and(|s| s.kind == SymbolKind::Parameter)
     }
 
     /// Get all scalar parameter symbols (for struct generation).
@@ -180,7 +174,7 @@ impl SymbolTable {
     pub fn is_manifold_param(&self, name: &str) -> bool {
         self.symbols
             .get(name)
-            .map_or(false, |s| s.kind == SymbolKind::ManifoldParam)
+            .is_some_and(|s| s.kind == SymbolKind::ManifoldParam)
     }
 
     /// Get all manifold parameter symbols (for generic type generation).

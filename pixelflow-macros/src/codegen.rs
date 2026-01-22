@@ -45,7 +45,7 @@
 //! ```
 
 use crate::annotate::{
-    annotate, AnnotatedCall, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
+    AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral, annotate,
 };
 use crate::ast::{BinaryOp, ParamKind, UnaryOp};
 use crate::sema::AnalyzedKernel;
@@ -147,7 +147,8 @@ impl<'a> CodeEmitter<'a> {
 
         // Run annotation pass to collect literals and assign Var indices
         let annotation_ctx = AnnotationCtx::new();
-        let (annotated_body, _, collected_literals) = annotate(&self.analyzed.def.body, annotation_ctx);
+        let (annotated_body, _, collected_literals) =
+            annotate(&self.analyzed.def.body, annotation_ctx);
         self.collected_literals = collected_literals;
 
         // Only adjust param indices for literals if we're in Jet mode
@@ -201,7 +202,8 @@ impl<'a> CodeEmitter<'a> {
                 let mut indexed_lits: Vec<(usize, TokenStream)> = Vec::new();
                 for collected in self.collected_literals.iter() {
                     let lit = &collected.lit;
-                    let lit_value = quote! { #scalar_type::constant(::pixelflow_core::Field::from(#lit)) };
+                    let lit_value =
+                        quote! { #scalar_type::constant(::pixelflow_core::Field::from(#lit)) };
                     indexed_lits.push((collected.index, lit_value));
                 }
                 indexed_lits.sort_by_key(|(idx, _)| *idx);
@@ -278,11 +280,14 @@ impl<'a> CodeEmitter<'a> {
 
             // Add literals to indexed values (Jet mode only)
             if self.use_jet_wrapper {
-                let scalar_ty = scalar_type.clone().unwrap_or(quote! { ::pixelflow_core::Field });
+                let scalar_ty = scalar_type
+                    .clone()
+                    .unwrap_or(quote! { ::pixelflow_core::Field });
                 for collected in self.collected_literals.iter() {
                     let lit = &collected.lit;
                     // Literals go at indices 0..literal_count-1 (using collection index)
-                    let lit_value = quote! { #scalar_ty::constant(::pixelflow_core::Field::from(#lit)) };
+                    let lit_value =
+                        quote! { #scalar_ty::constant(::pixelflow_core::Field::from(#lit)) };
                     indexed_values.push((collected.index, lit_value));
                 }
             }
@@ -364,7 +369,8 @@ impl<'a> CodeEmitter<'a> {
 
         // Run annotation pass to collect literals and assign Var indices
         let annotation_ctx = AnnotationCtx::new();
-        let (annotated_body, _, collected_literals) = annotate(&self.analyzed.def.body, annotation_ctx);
+        let (annotated_body, _, collected_literals) =
+            annotate(&self.analyzed.def.body, annotation_ctx);
         self.collected_literals = collected_literals;
 
         // Only adjust param indices for literals if we're in Jet mode
@@ -733,7 +739,9 @@ impl<'a> CodeEmitter<'a> {
 
         // Determine if we need to pre-evaluate manifold params
         let manifold_count = self.manifold_indices.len();
-        let has_scalar_params = params.iter().any(|p| matches!(p.kind, ParamKind::Scalar(_)));
+        let has_scalar_params = params
+            .iter()
+            .any(|p| matches!(p.kind, ParamKind::Scalar(_)));
         let needs_pre_eval = manifold_count > 0 && (manifold_count > 1 || has_scalar_params);
 
         // Determine the scalar type to use for pre-evaluation
@@ -910,10 +918,8 @@ impl<'a> CodeEmitter<'a> {
                         // Use var_index directly (no reversal - flat tuple, not Let stack)
                         if var_idx < 256 {
                             let peano_name_str = format!("N{}", var_idx);
-                            let peano_name = syn::Ident::new(
-                                &peano_name_str,
-                                proc_macro2::Span::call_site(),
-                            );
+                            let peano_name =
+                                syn::Ident::new(&peano_name_str, proc_macro2::Span::call_site());
                             quote! { CtxVar::<#peano_name>::new() }
                         } else {
                             let err_msg = format!(
@@ -966,7 +972,9 @@ impl<'a> CodeEmitter<'a> {
             AnnotatedExpr::MethodCall(call) => {
                 let receiver = self.emit_annotated_expr(&call.receiver);
                 let method = &call.method;
-                let args: Vec<TokenStream> = call.args.iter()
+                let args: Vec<TokenStream> = call
+                    .args
+                    .iter()
                     .map(|a| self.emit_annotated_expr(a))
                     .collect();
 
@@ -981,7 +989,9 @@ impl<'a> CodeEmitter<'a> {
                 // Free function call: V(m), DX(expr), etc.
                 // Emit with transformed arguments (manifold params become Var<N>)
                 let func = &call.func;
-                let args: Vec<TokenStream> = call.args.iter()
+                let args: Vec<TokenStream> = call
+                    .args
+                    .iter()
                     .map(|a| self.emit_annotated_expr(a))
                     .collect();
 
@@ -993,7 +1003,9 @@ impl<'a> CodeEmitter<'a> {
             }
 
             AnnotatedExpr::Block(block) => {
-                let stmts: Vec<TokenStream> = block.stmts.iter()
+                let stmts: Vec<TokenStream> = block
+                    .stmts
+                    .iter()
                     .map(|s| self.emit_annotated_stmt(s))
                     .collect();
 
@@ -1019,9 +1031,7 @@ impl<'a> CodeEmitter<'a> {
                 quote! { (#inner_code) }
             }
 
-            AnnotatedExpr::Verbatim(syn_expr) => {
-                syn_expr.to_token_stream()
-            }
+            AnnotatedExpr::Verbatim(syn_expr) => syn_expr.to_token_stream(),
         }
     }
 

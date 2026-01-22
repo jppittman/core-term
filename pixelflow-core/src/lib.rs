@@ -178,14 +178,35 @@ pub use manifold::*;
 pub use numeric::Computational;
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
+pub use ops::derivative::{
+    Antialias2D,
+    Antialias3D,
+    Curvature2D,
+    DX,
+    DXX,
+    DXY,
+    DY,
+    DYY,
+    DZ,
+    // Simple accessor combinators and convenience functions
+    DxOf,
+    DxxOf,
+    DxyOf,
+    DyOf,
+    DyyOf,
+    DzOf,
+    GradientMag2D,
+    GradientMag3D,
+    HasDerivatives,
+    HasDz,
+    HasHessian,
+    Normalized2D,
+    Normalized3D,
+    V,
+    ValOf,
+};
 pub use ops::logic::*;
 pub use ops::unary::*;
-pub use ops::derivative::{
-    Antialias2D, Antialias3D, Curvature2D, GradientMag2D, GradientMag3D, HasDerivatives, HasDz,
-    HasHessian, Normalized2D, Normalized3D,
-    // Simple accessor combinators and convenience functions
-    DxOf, DxxOf, DxyOf, DyOf, DyyOf, DzOf, ValOf, DX, DXX, DXY, DY, DYY, DZ, V,
-};
 pub use variables::*;
 pub use zst::Zst;
 
