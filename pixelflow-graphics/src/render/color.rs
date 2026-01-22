@@ -180,35 +180,76 @@ const COLOR_CUBE_SIZE: u8 = 6;
 const COLOR_CUBE_TOTAL_COLORS: u8 = COLOR_CUBE_SIZE * COLOR_CUBE_SIZE * COLOR_CUBE_SIZE;
 const GRAYSCALE_OFFSET: u8 = COLOR_CUBE_OFFSET + COLOR_CUBE_TOTAL_COLORS;
 
+/// Precomputed 256-color palette lookup table.
+/// Stores packed RGBA (0xAABBGGRR) values for O(1) conversion.
+static PALETTE: [u32; 256] = generate_palette();
+
+/// Generates the 256-color palette at compile/link time.
+const fn generate_palette() -> [u32; 256] {
+    let mut palette = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let idx = i as u8;
+        let (r, g, b) = if idx < ANSI_NAMED_COLOR_COUNT {
+            // Named colors (must match NamedColor::to_rgb)
+            match idx {
+                0 => (0, 0, 0),             // Black
+                1 => (205, 0, 0),           // Red
+                2 => (0, 205, 0),           // Green
+                3 => (205, 205, 0),         // Yellow
+                4 => (0, 0, 238),           // Blue
+                5 => (205, 0, 205),         // Magenta
+                6 => (0, 205, 205),         // Cyan
+                7 => (229, 229, 229),       // White
+                8 => (127, 127, 127),       // BrightBlack
+                9 => (255, 0, 0),           // BrightRed
+                10 => (0, 255, 0),          // BrightGreen
+                11 => (255, 255, 0),        // BrightYellow
+                12 => (92, 92, 255),        // BrightBlue
+                13 => (255, 0, 255),        // BrightMagenta
+                14 => (0, 255, 255),        // BrightCyan
+                15 => (255, 255, 255),      // BrightWhite
+                _ => (0, 0, 0),             // Unreachable
+            }
+        } else if idx < GRAYSCALE_OFFSET {
+            // 6x6x6 Color Cube (indices 16-231)
+            let cube_idx = idx - COLOR_CUBE_OFFSET;
+            let r_comp = (cube_idx / (COLOR_CUBE_SIZE * COLOR_CUBE_SIZE)) % COLOR_CUBE_SIZE;
+            let g_comp = (cube_idx / COLOR_CUBE_SIZE) % COLOR_CUBE_SIZE;
+            let b_comp = cube_idx % COLOR_CUBE_SIZE;
+            let r_val = if r_comp == 0 { 0 } else { r_comp * 40 + 55 };
+            let g_val = if g_comp == 0 { 0 } else { g_comp * 40 + 55 };
+            let b_val = if b_comp == 0 { 0 } else { b_comp * 40 + 55 };
+            (r_val, g_val, b_val)
+        } else {
+            // Grayscale ramp (indices 232-255)
+            let gray_idx = idx - GRAYSCALE_OFFSET;
+            let level = gray_idx * 10 + 8;
+            (level, level, level)
+        };
+
+        // Pack into u32 (RGBA little-endian: 0xAABBGGRR)
+        // u32::from_le_bytes is const-stable since 1.32
+        palette[i] = u32::from_le_bytes([r, g, b, 255]);
+        i += 1;
+    }
+    palette
+}
+
 impl From<Color> for u32 {
     /// Convert a Color to a u32 pixel value (RGBA format: 0xAABBGGRR).
+    #[inline] // Hot path!
     fn from(color: Color) -> u32 {
-        let (r, g, b) = match color {
-            Color::Default => (0, 0, 0),
-            Color::Named(named) => named.to_rgb(),
-            Color::Indexed(idx) => {
-                if idx < ANSI_NAMED_COLOR_COUNT {
-                    NamedColor::from_index(idx).to_rgb()
-                } else if idx < GRAYSCALE_OFFSET {
-                    // 6x6x6 Color Cube (indices 16-231)
-                    let cube_idx = idx - COLOR_CUBE_OFFSET;
-                    let r_comp = (cube_idx / (COLOR_CUBE_SIZE * COLOR_CUBE_SIZE)) % COLOR_CUBE_SIZE;
-                    let g_comp = (cube_idx / COLOR_CUBE_SIZE) % COLOR_CUBE_SIZE;
-                    let b_comp = cube_idx % COLOR_CUBE_SIZE;
-                    let r_val = if r_comp == 0 { 0 } else { r_comp * 40 + 55 };
-                    let g_val = if g_comp == 0 { 0 } else { g_comp * 40 + 55 };
-                    let b_val = if b_comp == 0 { 0 } else { b_comp * 40 + 55 };
-                    (r_val, g_val, b_val)
-                } else {
-                    // Grayscale ramp (indices 232-255)
-                    let gray_idx = idx - GRAYSCALE_OFFSET;
-                    let level = gray_idx * 10 + 8;
-                    (level, level, level)
-                }
-            }
-            Color::Rgb(r, g, b) => (r, g, b),
-        };
-        u32::from_le_bytes([r, g, b, 255])
+        match color {
+            Color::Default => u32::from_le_bytes([0, 0, 0, 255]),
+
+            // Optimized lookup for Named and Indexed
+            Color::Named(named) => PALETTE[named as usize],
+            Color::Indexed(idx) => PALETTE[idx as usize],
+
+            // Fallback for TrueColor
+            Color::Rgb(r, g, b) => u32::from_le_bytes([r, g, b, 255]),
+        }
     }
 }
 
