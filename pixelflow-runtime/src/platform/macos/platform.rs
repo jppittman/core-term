@@ -121,17 +121,6 @@ impl PlatformOps for MetalOps {
             DisplayControl::RequestPaste => {
                 // Implementation pending
             }
-            DisplayControl::Shutdown => {
-                unsafe {
-                    // [NSApp terminate:nil]
-                    // Wrapper doesn't have terminate yet, stick to sys::send
-                    sys::send_1::<(), sys::Id>(
-                        self.app.0,
-                        sys::sel(b"terminate:\0"),
-                        std::ptr::null_mut(),
-                    );
-                }
-            }
         }
         Ok(())
     }
@@ -276,5 +265,18 @@ impl PlatformOps for MetalOps {
         }
         // Always return Idle since we block inside next_event when needed
         Ok(ActorStatus::Idle)
+    }
+}
+
+impl Drop for MetalOps {
+    fn drop(&mut self) {
+        unsafe {
+            // [NSApp terminate:nil]
+            sys::send_1::<(), sys::Id>(
+                self.app.0,
+                sys::sel(b"terminate:\0"),
+                std::ptr::null_mut(),
+            );
+        }
     }
 }

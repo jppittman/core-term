@@ -28,7 +28,7 @@ pub type LinuxPixel = Bgra8;
 /// can use the same instance. This ensures that when the troupe calls
 /// wake() on message send, it wakes the same waker that has been
 /// initialized with the X11 display/window via set_target().
-static SHARED_WAKER: OnceLock<X11Waker> = OnceLock::new();
+pub(super) static SHARED_WAKER: OnceLock<X11Waker> = OnceLock::new();
 
 /// Set the shared X11Waker for the Linux platform.
 ///
@@ -85,9 +85,6 @@ impl PlatformOps for LinuxOps {
     ) -> Result<(), actor_scheduler::HandlerError> {
         if let Some(window) = &mut self.window {
             match ctrl {
-                DisplayControl::Shutdown => {
-                    // Handled by scheduler drop/exit, but we can close early if needed
-                }
                 DisplayControl::SetTitle { title, .. } => {
                     window.set_title(&title);
                 }
@@ -204,3 +201,4 @@ impl PlatformOps for LinuxOps {
         Ok(ActorStatus::Idle)
     }
 }
+
