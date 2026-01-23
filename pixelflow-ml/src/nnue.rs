@@ -885,6 +885,400 @@ pub fn find_all_rewrites(expr: &Expr) -> Vec<(Vec<usize>, RewriteRule, Expr)> {
     rewrites
 }
 
+// ============================================================================
+// Backward Generation (BWD) - Lample & Charton 2019
+// ============================================================================
+
+/// De-optimization rewrites for backward data generation.
+///
+/// These are the inverse of optimization rewrites. Given an optimized expression,
+/// they produce an equivalent but less efficient form.
+///
+/// Based on: "Deep Learning for Symbolic Mathematics" (Lample & Charton, ICLR 2020)
+/// The key insight: generate "answers" (optimized code), derive "questions"
+/// (unoptimized code) via deterministic transformation.
+#[derive(Clone, Debug)]
+pub enum UnfuseRewrite {
+    /// MulAdd(a, b, c) → a * b + c
+    UnfuseMulAdd,
+    /// MulRsqrt(x, y) → x * (1/sqrt(y))
+    UnfuseMulRsqrt,
+    /// MulRsqrt(x, y) → x / sqrt(y)
+    MulRsqrtToDiv,
+    /// x → x + 0 (add identity)
+    AddIdentity,
+    /// x → x * 1 (mul identity)
+    MulIdentity,
+    /// x → --x (double negation)
+    DoubleNegate,
+    /// 2 * x → x + x (strength reduction inverse)
+    MulTwoToAddSelf,
+}
+
+impl UnfuseRewrite {
+    /// All unfusing rewrites for backward generation.
+    pub const ALL: &'static [UnfuseRewrite] = &[
+        UnfuseRewrite::UnfuseMulAdd,
+        UnfuseRewrite::UnfuseMulRsqrt,
+        UnfuseRewrite::MulRsqrtToDiv,
+        UnfuseRewrite::AddIdentity,
+        UnfuseRewrite::MulIdentity,
+        UnfuseRewrite::DoubleNegate,
+        UnfuseRewrite::MulTwoToAddSelf,
+    ];
+
+    /// Apply this unfusing rewrite to an expression.
+    ///
+    /// Unlike optimization rewrites that may fail to match, these always succeed
+    /// for the appropriate expression types.
+    pub fn apply(&self, expr: &Expr) -> Option<Expr> {
+        match self {
+            UnfuseRewrite::UnfuseMulAdd => match expr {
+                Expr::Ternary(OpType::MulAdd, a, b, c) => Some(Expr::Binary(
+                    OpType::Add,
+                    Box::new(Expr::Binary(OpType::Mul, a.clone(), b.clone())),
+                    c.clone(),
+                )),
+                _ => None,
+            },
+            UnfuseRewrite::UnfuseMulRsqrt => match expr {
+                Expr::Binary(OpType::MulRsqrt, x, y) => Some(Expr::Binary(
+                    OpType::Mul,
+                    x.clone(),
+                    Box::new(Expr::Unary(OpType::Rsqrt, y.clone())),
+                )),
+                _ => None,
+            },
+            UnfuseRewrite::MulRsqrtToDiv => match expr {
+                Expr::Binary(OpType::MulRsqrt, x, y) => Some(Expr::Binary(
+                    OpType::Div,
+                    x.clone(),
+                    Box::new(Expr::Unary(OpType::Sqrt, y.clone())),
+                )),
+                _ => None,
+            },
+            UnfuseRewrite::AddIdentity => {
+                // x → x + 0
+                Some(Expr::Binary(
+                    OpType::Add,
+                    Box::new(expr.clone()),
+                    Box::new(Expr::Const(0.0)),
+                ))
+            },
+            UnfuseRewrite::MulIdentity => {
+                // x → x * 1
+                Some(Expr::Binary(
+                    OpType::Mul,
+                    Box::new(expr.clone()),
+                    Box::new(Expr::Const(1.0)),
+                ))
+            },
+            UnfuseRewrite::DoubleNegate => {
+                // x → --x
+                Some(Expr::Unary(
+                    OpType::Neg,
+                    Box::new(Expr::Unary(OpType::Neg, Box::new(expr.clone()))),
+                ))
+            },
+            UnfuseRewrite::MulTwoToAddSelf => match expr {
+                Expr::Binary(OpType::Mul, a, b) => {
+                    // Check if either operand is 2.0
+                    if matches!(a.as_ref(), Expr::Const(c) if (*c - 2.0).abs() < 1e-6) {
+                        Some(Expr::Binary(OpType::Add, b.clone(), b.clone()))
+                    } else if matches!(b.as_ref(), Expr::Const(c) if (*c - 2.0).abs() < 1e-6) {
+                        Some(Expr::Binary(OpType::Add, a.clone(), a.clone()))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
+/// A training pair for backward generation.
+///
+/// Contains both the optimized form (target) and unoptimized form (input).
+#[derive(Clone, Debug)]
+pub struct BwdTrainingPair {
+    /// The optimized expression (what we want the model to produce/recognize).
+    pub optimized: Expr,
+    /// The unoptimized expression (input to the model).
+    pub unoptimized: Expr,
+    /// Which unfusing rewrites were applied.
+    pub rewrites_applied: Vec<UnfuseRewrite>,
+}
+
+/// Configuration for backward expression generation.
+#[derive(Clone, Debug)]
+pub struct BwdGenConfig {
+    /// Maximum depth of generated optimized expressions.
+    pub max_depth: usize,
+    /// Probability of generating a leaf (var or const) vs operation.
+    pub leaf_prob: f32,
+    /// Number of variables available (0-3 for X,Y,Z,W).
+    pub num_vars: usize,
+    /// Probability of using a fused operation when generating.
+    pub fused_op_prob: f32,
+    /// Maximum number of unfusing rewrites to apply.
+    pub max_unfuse_passes: usize,
+    /// Probability of applying an unfusing rewrite at each opportunity.
+    pub unfuse_prob: f32,
+}
+
+impl Default for BwdGenConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: 5,
+            leaf_prob: 0.25,
+            num_vars: 4,
+            fused_op_prob: 0.4, // Higher probability of fused ops
+            max_unfuse_passes: 3,
+            unfuse_prob: 0.7,
+        }
+    }
+}
+
+/// Backward expression generator following Lample & Charton's approach.
+///
+/// Generates optimized expressions (with fused operations), then applies
+/// unfusing rewrites to create equivalent unoptimized expressions.
+///
+/// This is the inverse of how we want the model to work:
+/// - Generation: optimized → unoptimized (easy, deterministic)
+/// - Inference: unoptimized → optimized (learned)
+pub struct BwdGenerator {
+    /// Configuration.
+    pub config: BwdGenConfig,
+    /// Random state.
+    state: u64,
+}
+
+impl BwdGenerator {
+    /// Create a new backward generator with the given seed.
+    pub fn new(seed: u64, config: BwdGenConfig) -> Self {
+        Self { config, state: seed }
+    }
+
+    /// Generate a random f32 in [0, 1).
+    fn rand_f32(&mut self) -> f32 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (self.state >> 33) as f32 / (1u64 << 31) as f32
+    }
+
+    /// Generate a random usize in [0, max).
+    fn rand_usize(&mut self, max: usize) -> usize {
+        if max == 0 { return 0; }
+        (self.rand_f32() * max as f32) as usize
+    }
+
+    /// Generate a backward training pair.
+    ///
+    /// Returns (optimized, unoptimized) where unoptimized is derived from
+    /// optimized via unfusing rewrites.
+    pub fn generate(&mut self) -> BwdTrainingPair {
+        // Step 1: Generate an optimized expression (rich in fused ops)
+        let optimized = self.generate_optimized(0);
+
+        // Step 2: Apply unfusing rewrites to create unoptimized version
+        let (unoptimized, rewrites) = self.unfuse_expression(&optimized);
+
+        BwdTrainingPair {
+            optimized,
+            unoptimized,
+            rewrites_applied: rewrites,
+        }
+    }
+
+    /// Generate an optimized expression tree (biased toward fused ops).
+    fn generate_optimized(&mut self, depth: usize) -> Expr {
+        // Force leaf at max depth or with probability
+        if depth >= self.config.max_depth || self.rand_f32() < self.config.leaf_prob {
+            return self.generate_leaf();
+        }
+
+        // Decide: fused op or regular op
+        if self.rand_f32() < self.config.fused_op_prob {
+            // Generate a fused operation
+            if self.rand_f32() < 0.6 {
+                // MulAdd: a * b + c
+                Expr::Ternary(
+                    OpType::MulAdd,
+                    Box::new(self.generate_optimized(depth + 1)),
+                    Box::new(self.generate_optimized(depth + 1)),
+                    Box::new(self.generate_optimized(depth + 1)),
+                )
+            } else {
+                // MulRsqrt: x * rsqrt(y)
+                Expr::Binary(
+                    OpType::MulRsqrt,
+                    Box::new(self.generate_optimized(depth + 1)),
+                    Box::new(self.generate_optimized(depth + 1)),
+                )
+            }
+        } else {
+            // Regular operation
+            self.generate_regular_op(depth)
+        }
+    }
+
+    /// Generate a leaf node (variable or constant).
+    fn generate_leaf(&mut self) -> Expr {
+        if self.rand_f32() < 0.7 {
+            Expr::Var(self.rand_usize(self.config.num_vars) as u8)
+        } else {
+            // Constants: small range to avoid numerical issues
+            let val = self.rand_f32() * 4.0 - 2.0;
+            Expr::Const(val)
+        }
+    }
+
+    /// Generate a regular (non-fused) operation.
+    fn generate_regular_op(&mut self, depth: usize) -> Expr {
+        let choice = self.rand_usize(8);
+        match choice {
+            0 => Expr::Binary(
+                OpType::Add,
+                Box::new(self.generate_optimized(depth + 1)),
+                Box::new(self.generate_optimized(depth + 1)),
+            ),
+            1 => Expr::Binary(
+                OpType::Sub,
+                Box::new(self.generate_optimized(depth + 1)),
+                Box::new(self.generate_optimized(depth + 1)),
+            ),
+            2 => Expr::Binary(
+                OpType::Mul,
+                Box::new(self.generate_optimized(depth + 1)),
+                Box::new(self.generate_optimized(depth + 1)),
+            ),
+            3 => Expr::Binary(
+                OpType::Min,
+                Box::new(self.generate_optimized(depth + 1)),
+                Box::new(self.generate_optimized(depth + 1)),
+            ),
+            4 => Expr::Binary(
+                OpType::Max,
+                Box::new(self.generate_optimized(depth + 1)),
+                Box::new(self.generate_optimized(depth + 1)),
+            ),
+            5 => Expr::Unary(OpType::Neg, Box::new(self.generate_optimized(depth + 1))),
+            6 => Expr::Unary(OpType::Sqrt, Box::new(self.generate_optimized(depth + 1))),
+            7 => Expr::Unary(OpType::Abs, Box::new(self.generate_optimized(depth + 1))),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Apply unfusing rewrites to de-optimize an expression.
+    ///
+    /// Returns the unoptimized expression and the list of rewrites applied.
+    fn unfuse_expression(&mut self, expr: &Expr) -> (Expr, Vec<UnfuseRewrite>) {
+        let mut result = expr.clone();
+        let mut applied = Vec::new();
+
+        for _ in 0..self.config.max_unfuse_passes {
+            let (new_result, new_applied) = self.unfuse_pass(&result);
+            if new_applied.is_empty() {
+                break; // No more unfusing opportunities
+            }
+            result = new_result;
+            applied.extend(new_applied);
+        }
+
+        (result, applied)
+    }
+
+    /// Single pass of unfusing rewrites over the expression.
+    fn unfuse_pass(&mut self, expr: &Expr) -> (Expr, Vec<UnfuseRewrite>) {
+        let mut applied = Vec::new();
+        let result = self.unfuse_recursive(expr, &mut applied);
+        (result, applied)
+    }
+
+    /// Recursively apply unfusing rewrites.
+    fn unfuse_recursive(&mut self, expr: &Expr, applied: &mut Vec<UnfuseRewrite>) -> Expr {
+        // First, try to apply an unfusing rewrite at this node
+        let expr = if self.rand_f32() < self.config.unfuse_prob {
+            self.try_unfuse_node(expr, applied)
+        } else {
+            expr.clone()
+        };
+
+        // Then recurse into children
+        match &expr {
+            Expr::Var(_) | Expr::Const(_) => expr,
+            Expr::Unary(op, a) => {
+                let new_a = self.unfuse_recursive(a, applied);
+                Expr::Unary(*op, Box::new(new_a))
+            }
+            Expr::Binary(op, a, b) => {
+                let new_a = self.unfuse_recursive(a, applied);
+                let new_b = self.unfuse_recursive(b, applied);
+                Expr::Binary(*op, Box::new(new_a), Box::new(new_b))
+            }
+            Expr::Ternary(op, a, b, c) => {
+                let new_a = self.unfuse_recursive(a, applied);
+                let new_b = self.unfuse_recursive(b, applied);
+                let new_c = self.unfuse_recursive(c, applied);
+                Expr::Ternary(*op, Box::new(new_a), Box::new(new_b), Box::new(new_c))
+            }
+        }
+    }
+
+    /// Try to apply an unfusing rewrite at this node.
+    fn try_unfuse_node(&mut self, expr: &Expr, applied: &mut Vec<UnfuseRewrite>) -> Expr {
+        // Prioritize structural unfusing (MulAdd, MulRsqrt) over identity insertions
+        let structural_rewrites = [
+            UnfuseRewrite::UnfuseMulAdd,
+            UnfuseRewrite::UnfuseMulRsqrt,
+            UnfuseRewrite::MulRsqrtToDiv,
+            UnfuseRewrite::MulTwoToAddSelf,
+        ];
+
+        // Try structural rewrites first
+        for rewrite in &structural_rewrites {
+            if let Some(result) = rewrite.apply(expr) {
+                applied.push(rewrite.clone());
+                return result;
+            }
+        }
+
+        // Occasionally add identity operations (bloat the expression)
+        if self.rand_f32() < 0.2 {
+            let identity_rewrites = [
+                UnfuseRewrite::AddIdentity,
+                UnfuseRewrite::MulIdentity,
+                UnfuseRewrite::DoubleNegate,
+            ];
+            let idx = self.rand_usize(identity_rewrites.len());
+            let rewrite = &identity_rewrites[idx];
+            if let Some(result) = rewrite.apply(expr) {
+                applied.push(rewrite.clone());
+                return result;
+            }
+        }
+
+        expr.clone()
+    }
+}
+
+/// Count fused operations in an expression.
+pub fn count_fused_ops(expr: &Expr) -> usize {
+    match expr {
+        Expr::Var(_) | Expr::Const(_) => 0,
+        Expr::Unary(_, a) => count_fused_ops(a),
+        Expr::Binary(op, a, b) => {
+            let this = if *op == OpType::MulRsqrt { 1 } else { 0 };
+            this + count_fused_ops(a) + count_fused_ops(b)
+        }
+        Expr::Ternary(op, a, b, c) => {
+            let this = if *op == OpType::MulAdd { 1 } else { 0 };
+            this + count_fused_ops(a) + count_fused_ops(b) + count_fused_ops(c)
+        }
+    }
+}
+
 fn find_rewrites_recursive(
     expr: &Expr,
     path: &mut Vec<usize>,
@@ -1059,5 +1453,142 @@ mod tests {
         for (i, &val) in acc.values.iter().enumerate() {
             assert_eq!(val, nnue.b1[i], "Accumulator should return to bias after add/remove");
         }
+    }
+
+    // ========================================================================
+    // Backward Generation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_unfuse_muladd() {
+        // MulAdd(x, y, z) → x * y + z
+        let expr = Expr::Ternary(
+            OpType::MulAdd,
+            Box::new(Expr::Var(0)),
+            Box::new(Expr::Var(1)),
+            Box::new(Expr::Var(2)),
+        );
+
+        let result = UnfuseRewrite::UnfuseMulAdd.apply(&expr);
+        assert!(result.is_some());
+
+        let unoptimized = result.unwrap();
+        // Should be Add(Mul(x, y), z)
+        assert!(matches!(unoptimized, Expr::Binary(OpType::Add, _, _)));
+
+        // Verify semantic equivalence
+        let vars = [2.0, 3.0, 4.0, 0.0];
+        let orig_val = expr.eval(&vars);
+        let unfused_val = unoptimized.eval(&vars);
+        assert!((orig_val - unfused_val).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_unfuse_mulrsqrt() {
+        // MulRsqrt(x, y) → x * rsqrt(y)
+        let expr = Expr::Binary(
+            OpType::MulRsqrt,
+            Box::new(Expr::Var(0)),
+            Box::new(Expr::Var(1)),
+        );
+
+        let result = UnfuseRewrite::UnfuseMulRsqrt.apply(&expr);
+        assert!(result.is_some());
+
+        let unoptimized = result.unwrap();
+        // Should be Mul(x, Rsqrt(y))
+        assert!(matches!(unoptimized, Expr::Binary(OpType::Mul, _, _)));
+
+        // Verify semantic equivalence
+        let vars = [6.0, 4.0, 0.0, 0.0]; // x=6, y=4 → 6/sqrt(4) = 3
+        let orig_val = expr.eval(&vars);
+        let unfused_val = unoptimized.eval(&vars);
+        assert!((orig_val - unfused_val).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_unfuse_add_identity() {
+        let expr = Expr::Var(0);
+        let result = UnfuseRewrite::AddIdentity.apply(&expr);
+        assert!(result.is_some());
+
+        let unoptimized = result.unwrap();
+        // Should be x + 0
+        assert!(matches!(unoptimized, Expr::Binary(OpType::Add, _, _)));
+
+        // Verify semantic equivalence
+        let vars = [5.0, 0.0, 0.0, 0.0];
+        let orig_val = expr.eval(&vars);
+        let unfused_val = unoptimized.eval(&vars);
+        assert!((orig_val - unfused_val).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_bwd_generator_produces_valid_pairs() {
+        let config = BwdGenConfig::default();
+        let mut generator = BwdGenerator::new(42, config);
+
+        for _ in 0..10 {
+            let pair = generator.generate();
+
+            // Both expressions should be valid
+            assert!(pair.optimized.node_count() > 0);
+            assert!(pair.unoptimized.node_count() > 0);
+
+            // Unoptimized should generally be larger or equal
+            // (unfusing increases or maintains size)
+            assert!(pair.unoptimized.node_count() >= pair.optimized.node_count());
+
+            // Verify semantic equivalence
+            let vars = [1.5, 2.5, 3.5, 0.5];
+            let opt_val = pair.optimized.eval(&vars);
+            let unopt_val = pair.unoptimized.eval(&vars);
+
+            // Allow for NaN (from sqrt of negative, etc)
+            if !opt_val.is_nan() && !unopt_val.is_nan() {
+                assert!(
+                    (opt_val - unopt_val).abs() < 1e-4,
+                    "Semantic equivalence failed: {} vs {}",
+                    opt_val,
+                    unopt_val
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_bwd_generator_has_fused_ops() {
+        let config = BwdGenConfig {
+            fused_op_prob: 0.8, // High probability of fused ops
+            max_depth: 4,
+            ..Default::default()
+        };
+        let mut generator = BwdGenerator::new(12345, config);
+
+        let mut total_fused = 0;
+        for _ in 0..20 {
+            let pair = generator.generate();
+            total_fused += count_fused_ops(&pair.optimized);
+        }
+
+        // With 80% fused op probability, we should see some fused ops
+        assert!(total_fused > 0, "Expected some fused operations in generated expressions");
+    }
+
+    #[test]
+    fn test_count_fused_ops() {
+        // Expression with MulAdd and MulRsqrt
+        let expr = Expr::Ternary(
+            OpType::MulAdd,
+            Box::new(Expr::Binary(
+                OpType::MulRsqrt,
+                Box::new(Expr::Var(0)),
+                Box::new(Expr::Var(1)),
+            )),
+            Box::new(Expr::Var(2)),
+            Box::new(Expr::Var(3)),
+        );
+
+        assert_eq!(count_fused_ops(&expr), 2);
     }
 }
