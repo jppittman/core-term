@@ -106,6 +106,14 @@ mod x11_waker {
         pub fn wake_atom(&self) -> Option<xlib::Atom> {
             self.inner.lock().unwrap().as_ref().map(|i| i.wake_atom)
         }
+
+        /// Clear the waker target, making subsequent `wake()` calls no-ops.
+        ///
+        /// Call this before destroying the X11 window to prevent BadWindow errors.
+        pub fn clear_target(&self) {
+            let mut guard = self.inner.lock().unwrap();
+            *guard = None;
+        }
     }
 
     impl EventLoopWaker for X11Waker {

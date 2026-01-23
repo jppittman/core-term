@@ -14,12 +14,6 @@ use pixelflow_runtime::input::{KeySymbol, Modifiers, MouseButton};
 // ============================================================================
 
 #[test]
-fn display_control_default_is_shutdown() {
-    let ctrl: DisplayControl = Default::default();
-    assert!(matches!(ctrl, DisplayControl::Shutdown));
-}
-
-#[test]
 fn display_control_debug_format() {
     let ctrl = DisplayControl::Bell;
     let debug_str = format!("{:?}", ctrl);

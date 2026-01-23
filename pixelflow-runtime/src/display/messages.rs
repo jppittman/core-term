@@ -81,7 +81,7 @@ pub enum DisplayData {
 /// - **Queueing**: Burst-limited (subject to flow control, may queue)
 ///
 /// # Control Message Types
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub enum DisplayControl {
     /// Set the window title.
     ///
@@ -231,21 +231,6 @@ pub enum DisplayControl {
     /// Terminal emulator receives Ctrl+V, sends `RequestPaste`, and receives the
     /// pasted text via `DisplayEvent::PasteData`.
     RequestPaste,
-
-    /// Shut down the display driver.
-    ///
-    /// # Contract
-    ///
-    /// **Sender**: Signals display driver shutdown.
-    ///
-    /// **Receiver**: Exits the event loop and cleans up all windows.
-    /// No more events will be emitted after this message.
-    ///
-    /// # Note
-    ///
-    /// This is the default variant, used when no other control message is specified.
-    #[default]
-    Shutdown,
 }
 
 /// Management messages for the display driver (lifecycle operations).
