@@ -371,6 +371,44 @@ mod select_tests {
         assert!((lane0 - 10.0).abs() < 1e-5, "Lane 0 should be 10.0");
         assert!((lane1 - 20.0).abs() < 1e-5, "Lane 1 should be 20.0");
     }
+
+    #[test]
+    fn select_comparisons_should_respect_equality_boundary() {
+        let zero = Field::from(0.0);
+        let coords = (zero, zero, zero, zero);
+
+        // Gt: 0 > 0 -> False
+        let sel_gt = Select {
+            cond: X.gt(0.0f32),
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        assert_field_approx_eq(sel_gt.eval(coords), 2.0);
+
+        // Ge: 0 >= 0 -> True
+        let sel_ge = Select {
+            cond: X.ge(0.0f32),
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        assert_field_approx_eq(sel_ge.eval(coords), 1.0);
+
+        // Lt: 0 < 0 -> False
+        let sel_lt = Select {
+            cond: X.lt(0.0f32),
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        assert_field_approx_eq(sel_lt.eval(coords), 2.0);
+
+        // Le: 0 <= 0 -> True
+        let sel_le = Select {
+            cond: X.le(0.0f32),
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        assert_field_approx_eq(sel_le.eval(coords), 1.0);
+    }
 }
 
 // ============================================================================
