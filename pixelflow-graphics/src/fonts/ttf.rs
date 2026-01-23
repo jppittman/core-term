@@ -682,6 +682,20 @@ impl<'a> Kern<'a> {
 // Font
 // ═══════════════════════════════════════════════════════════════════════════
 
+// TTF/OTF Platform IDs
+const PLATFORM_UNICODE: u16 = 0;
+const PLATFORM_WINDOWS: u16 = 3;
+
+// TTF/OTF Encoding IDs
+const ENCODING_WINDOWS_UNICODE_BMP: u16 = 1;
+const ENCODING_WINDOWS_UNICODE_FULL: u16 = 10;
+const ENCODING_UNICODE_2_0_BMP: u16 = 3;
+const ENCODING_UNICODE_2_0_FULL: u16 = 4;
+
+// TTF/OTF Format IDs
+const FORMAT_SEGMENT_MAPPING: u16 = 4;
+const FORMAT_SEGMENTED_COVERAGE: u16 = 12;
+
 /// Normalization parameters for simple glyphs.
 struct Normalization {
     scale: f32,
@@ -753,8 +767,21 @@ impl<'a> Font<'a> {
                 );
                 let f = R(d, o).u16()?;
                 match (p, e, f) {
-                    (3, 10, 12) | (0, 4, 12) => Some((2, o, f)),
-                    (3, 1, 4) | (0, 3, 4) => Some((1, o, f)),
+                    (
+                        PLATFORM_WINDOWS,
+                        ENCODING_WINDOWS_UNICODE_FULL,
+                        FORMAT_SEGMENTED_COVERAGE,
+                    )
+                    | (
+                        PLATFORM_UNICODE,
+                        ENCODING_UNICODE_2_0_FULL,
+                        FORMAT_SEGMENTED_COVERAGE,
+                    ) => Some((2, o, f)),
+
+                    (PLATFORM_WINDOWS, ENCODING_WINDOWS_UNICODE_BMP, FORMAT_SEGMENT_MAPPING)
+                    | (PLATFORM_UNICODE, ENCODING_UNICODE_2_0_BMP, FORMAT_SEGMENT_MAPPING) => {
+                        Some((1, o, f))
+                    }
                     _ => None,
                 }
             })
@@ -877,14 +904,6 @@ impl<'a> Font<'a> {
         let y_min = r.i16()?;
         let x_max = r.i16()?;
         let y_max = r.i16()?;
-
-        if id == 36 {
-            // ASCII 'A'
-            eprintln!(
-                "[DEBUG] compile id={}: bbox=[{}, {}, {}, {}]",
-                id, x_min, y_min, x_max, y_max
-            );
-        }
 
         let width = (x_max - x_min) as f32;
         let height = (y_max - y_min) as f32;
