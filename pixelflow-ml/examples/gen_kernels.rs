@@ -1,28 +1,50 @@
-//! Generate random kernels for NNUE training data collection.
+//! Generate kernels for NNUE training data collection.
 //!
-//! This generates:
-//! 1. A Rust benchmark file with Manifold kernels
-//! 2. A matching data file with Expr trees for feature extraction
+//! Supports two generation modes:
+//!
+//! ## Forward Generation (FWD) - Original approach
+//! Generates random expression trees directly.
+//!
+//! ## Backward Generation (BWD) - Lample & Charton 2019
+//! Generates optimized expressions, then unfuses them to create
+//! (unoptimized, optimized) training pairs. This approach:
+//! - Guarantees every example has an optimization opportunity
+//! - Creates natural distribution of optimization patterns
+//! - Based on "Deep Learning for Symbolic Mathematics" (ICLR 2020)
 //!
 //! Usage:
+//!   # Forward generation (original)
 //!   cargo run -p pixelflow-ml --example gen_kernels --features training -- --count 500
+//!
+//!   # Backward generation (recommended)
+//!   cargo run -p pixelflow-ml --example gen_kernels --features training -- --count 500 --mode bwd
 //!
 //! Output files:
 //!   - pixelflow-ml/benches/generated_kernels.rs (benchmark)
-//!   - pixelflow-ml/data/generated_exprs.bin (serialized Expr trees)
+//!   - pixelflow-ml/data/generated_exprs.txt (FWD mode)
+//!   - pixelflow-ml/data/bwd_training_pairs.txt (BWD mode)
 
-use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator, OpType};
+use pixelflow_ml::nnue::{
+    BwdGenConfig, BwdGenerator, Expr, ExprGenConfig, ExprGenerator, OpType, count_fused_ops,
+};
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 
+#[derive(Clone, Copy, PartialEq)]
+enum GenerationMode {
+    Forward,
+    Backward,
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // Parse --count N argument
+    // Parse arguments
     let mut count = 500;
     let mut seed = 12345u64;
+    let mut mode = GenerationMode::Backward; // Default to BWD per Lample & Charton
 
     let mut i = 1;
     while i < args.len() {
@@ -39,21 +61,58 @@ fn main() {
                     seed = args[i].parse().expect("Invalid seed");
                 }
             }
+            "--mode" => {
+                i += 1;
+                if i < args.len() {
+                    mode = match args[i].as_str() {
+                        "fwd" | "forward" => GenerationMode::Forward,
+                        "bwd" | "backward" => GenerationMode::Backward,
+                        _ => panic!("Invalid mode: use 'fwd' or 'bwd'"),
+                    };
+                }
+            }
+            "--help" | "-h" => {
+                println!("Usage: gen_kernels [OPTIONS]");
+                println!();
+                println!("Options:");
+                println!("  --count N     Number of kernels to generate (default: 500)");
+                println!("  --seed N      Random seed (default: 12345)");
+                println!("  --mode MODE   Generation mode: 'fwd' or 'bwd' (default: bwd)");
+                println!();
+                println!("Modes:");
+                println!("  fwd  Forward generation - random expression trees");
+                println!("  bwd  Backward generation - optimized → unoptimized pairs");
+                println!("       (Lample & Charton, ICLR 2020)");
+                return;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    println!("Generating {} kernels with seed {}", count, seed);
+    let mode_str = match mode {
+        GenerationMode::Forward => "forward (FWD)",
+        GenerationMode::Backward => "backward (BWD)",
+    };
+    println!("Generating {} kernels with seed {} using {} mode", count, seed, mode_str);
 
     // Find workspace root
     let workspace_root = find_workspace_root();
     let bench_path = workspace_root.join("pixelflow-ml/benches/generated_kernels.rs");
     let data_dir = workspace_root.join("pixelflow-ml/data");
-    let data_path = data_dir.join("generated_exprs.txt");
 
     // Create data directory
     fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+
+    match mode {
+        GenerationMode::Forward => generate_forward(count, seed, &bench_path, &data_dir),
+        GenerationMode::Backward => generate_backward(count, seed, &bench_path, &data_dir),
+    }
+}
+
+/// Forward generation: random expression trees (original approach).
+fn generate_forward(count: usize, seed: u64, bench_path: &PathBuf, data_dir: &PathBuf) {
+    let data_path = data_dir.join("generated_exprs.txt");
 
     // Configure generator for diverse expressions
     let config = ExprGenConfig {
@@ -90,33 +149,152 @@ fn main() {
         kernels.push((name, expr));
     }
 
-    println!("Generated {} unique kernels", kernels.len());
+    println!("Generated {} unique kernels (FWD)", kernels.len());
 
     // Generate benchmark file
     let bench_code = generate_benchmark_file(&kernels);
-    let mut bench_file = File::create(&bench_path).expect("Failed to create benchmark file");
+    let mut bench_file = File::create(bench_path).expect("Failed to create benchmark file");
     bench_file.write_all(bench_code.as_bytes()).expect("Failed to write benchmark");
     println!("Wrote benchmark to {}", bench_path.display());
 
-    // Generate expr data file (simple text format for now)
+    // Generate expr data file
     let mut data_file = File::create(&data_path).expect("Failed to create data file");
     for (name, expr) in &kernels {
-        // Format: name|node_count|depth|expr_string
         let expr_str = expr_to_string(expr);
         writeln!(data_file, "{}|{}|{}|{}", name, expr.node_count(), expr.depth(), expr_str)
             .expect("Failed to write data");
     }
     println!("Wrote expr data to {}", data_path.display());
 
-    // Print summary stats
+    print_fwd_stats(&kernels);
+}
+
+/// Backward generation: optimized → unoptimized pairs (Lample & Charton 2019).
+fn generate_backward(count: usize, seed: u64, bench_path: &PathBuf, data_dir: &PathBuf) {
+    let pairs_path = data_dir.join("bwd_training_pairs.txt");
+
+    // Configure backward generator with high fused op probability
+    let config = BwdGenConfig {
+        max_depth: 5,
+        leaf_prob: 0.25,
+        num_vars: 4,
+        fused_op_prob: 0.5,   // 50% chance of fused ops
+        max_unfuse_passes: 3, // Apply unfusing multiple times
+        unfuse_prob: 0.8,     // High probability of applying unfusing
+    };
+
+    let mut generator = BwdGenerator::new(seed, config);
+
+    // Generate training pairs
+    let mut pairs: Vec<(String, Expr, Expr)> = Vec::new(); // (name, unoptimized, optimized)
+    let mut seen = std::collections::HashSet::new();
+
+    while pairs.len() < count {
+        let pair = generator.generate();
+
+        // Filter: require meaningful difference
+        let opt_nodes = pair.optimized.node_count();
+        let unopt_nodes = pair.unoptimized.node_count();
+
+        // Skip if no unfusing happened (identical expressions)
+        if opt_nodes >= unopt_nodes || opt_nodes < 2 {
+            continue;
+        }
+
+        // Convert to Manifold code for deduplication
+        let unopt_code = expr_to_manifold(&pair.unoptimized);
+        if seen.contains(&unopt_code) {
+            continue;
+        }
+        seen.insert(unopt_code);
+
+        let name = format!("bwd{:04}", pairs.len());
+        pairs.push((name, pair.unoptimized, pair.optimized));
+    }
+
+    println!("Generated {} unique training pairs (BWD)", pairs.len());
+
+    // Generate benchmark file using UNOPTIMIZED expressions
+    // (we benchmark what the model will see as input)
+    let bench_kernels: Vec<(String, Expr)> = pairs
+        .iter()
+        .map(|(name, unopt, _)| (name.clone(), unopt.clone()))
+        .collect();
+
+    let bench_code = generate_benchmark_file(&bench_kernels);
+    let mut bench_file = File::create(bench_path).expect("Failed to create benchmark file");
+    bench_file.write_all(bench_code.as_bytes()).expect("Failed to write benchmark");
+    println!("Wrote benchmark to {}", bench_path.display());
+
+    // Generate training pairs data file
+    // Format: name|unopt_nodes|opt_nodes|savings|unopt_expr|opt_expr
+    let mut data_file = File::create(&pairs_path).expect("Failed to create data file");
+
+    // Write header comment
+    writeln!(data_file, "# BWD Training Pairs - Lample & Charton style").unwrap();
+    writeln!(data_file, "# Format: name|unopt_nodes|opt_nodes|node_savings|unopt_expr|opt_expr").unwrap();
+    writeln!(data_file, "# node_savings = unopt_nodes - opt_nodes (larger = more optimization)").unwrap();
+    writeln!(data_file, "#").unwrap();
+
+    for (name, unoptimized, optimized) in &pairs {
+        let unopt_nodes = unoptimized.node_count();
+        let opt_nodes = optimized.node_count();
+        let savings = unopt_nodes.saturating_sub(opt_nodes);
+
+        let unopt_str = expr_to_string(unoptimized);
+        let opt_str = expr_to_string(optimized);
+
+        writeln!(
+            data_file,
+            "{}|{}|{}|{}|{}|{}",
+            name, unopt_nodes, opt_nodes, savings, unopt_str, opt_str
+        )
+        .expect("Failed to write data");
+    }
+    println!("Wrote training pairs to {}", pairs_path.display());
+
+    print_bwd_stats(&pairs);
+}
+
+fn print_fwd_stats(kernels: &[(String, Expr)]) {
     let total_nodes: usize = kernels.iter().map(|(_, e)| e.node_count()).sum();
     let avg_nodes = total_nodes as f64 / kernels.len() as f64;
     let max_depth = kernels.iter().map(|(_, e)| e.depth()).max().unwrap_or(0);
 
-    println!("\nStats:");
+    println!("\nStats (FWD):");
     println!("  Total kernels: {}", kernels.len());
     println!("  Average nodes: {:.1}", avg_nodes);
     println!("  Max depth: {}", max_depth);
+    println!("\nTo run benchmarks:");
+    println!("  cargo bench -p pixelflow-ml --bench generated_kernels");
+}
+
+fn print_bwd_stats(pairs: &[(String, Expr, Expr)]) {
+    let total_unopt: usize = pairs.iter().map(|(_, u, _)| u.node_count()).sum();
+    let total_opt: usize = pairs.iter().map(|(_, _, o)| o.node_count()).sum();
+    let total_fused: usize = pairs.iter().map(|(_, _, o)| count_fused_ops(o)).sum();
+
+    let avg_unopt = total_unopt as f64 / pairs.len() as f64;
+    let avg_opt = total_opt as f64 / pairs.len() as f64;
+    let avg_fused = total_fused as f64 / pairs.len() as f64;
+    let avg_savings = avg_unopt - avg_opt;
+
+    let max_savings = pairs
+        .iter()
+        .map(|(_, u, o)| u.node_count().saturating_sub(o.node_count()))
+        .max()
+        .unwrap_or(0);
+
+    println!("\nStats (BWD - Lample & Charton style):");
+    println!("  Total pairs: {}", pairs.len());
+    println!("  Avg unoptimized nodes: {:.1}", avg_unopt);
+    println!("  Avg optimized nodes: {:.1}", avg_opt);
+    println!("  Avg node savings: {:.1}", avg_savings);
+    println!("  Max node savings: {}", max_savings);
+    println!("  Avg fused ops per optimized: {:.2}", avg_fused);
+    println!("\nThe training signal:");
+    println!("  Input: unoptimized expression features");
+    println!("  Target: learn to recognize optimization opportunities");
     println!("\nTo run benchmarks:");
     println!("  cargo bench -p pixelflow-ml --bench generated_kernels");
 }
