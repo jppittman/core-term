@@ -177,6 +177,9 @@ struct SendPtr<T>(*mut T);
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
 
+// 2MB stack per thread (needed for deep 3D scene recursion)
+const STACK_SIZE: usize = 2 * 1024 * 1024;
+
 /// Render with parallel rasterization (spawns new threads).
 pub fn render_parallel<P, M>(manifold: &M, frame: &mut Frame<P>, options: RenderOptions)
 where
@@ -211,9 +214,6 @@ where
         remaining = rest;
         start_y = end_y;
     }
-
-    // 2MB stack per thread (needed for deep 3D scene recursion)
-    const STACK_SIZE: usize = 2 * 1024 * 1024;
 
     // Use scope to spawn threads with borrowed data
     std::thread::scope(|s| {
@@ -258,9 +258,6 @@ where
 
     // Wrap raw pointer for Send
     let buffer_ptr = SendPtr(frame.data.as_mut_ptr());
-
-    // 2MB stack per thread (needed for deep 3D scene recursion)
-    const STACK_SIZE: usize = 2 * 1024 * 1024;
 
     std::thread::scope(|s| {
         for _ in 0..options.num_threads {
